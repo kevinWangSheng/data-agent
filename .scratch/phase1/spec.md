@@ -38,5 +38,5 @@ CRUD、MongoDB 产品连接器、Langfuse、LiveSQLBench、澄清层消融、语
 
 ## 待定（不阻塞开工）
 
-- 模型与上限金额：01 实测后定（ADR-0001、ADR-0006）。默认先用 `claude-sonnet-5-5` 测量。
-- 运行环境：需要 `ANTHROPIC_API_KEY`、Docker、`uv tool install harbor`；DAB 另需 PG ≥17.5 + Mongo 8（资源占用未确认）。
+- 模型与上限金额：01 实测后定（ADR-0001、ADR-0006）。默认用 DeepSeek 兼容端点测量，Claude Sonnet 5.5 跑 5 题做对照（ADR-0001 Update）。计费：DeepSeek API key（Claude 对照另需 Anthropic API key）。
+- 运行环境：需要模型 API key、Docker、`uv tool install harbor`；DAB 另需 PG ≥17.5 + Mongo 8（资源占用未确认）。
