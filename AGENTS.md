@@ -17,6 +17,13 @@ Local markdown：issues 与 spec 放在 `.scratch/<feature>/`（无 remote 的 s
 
 Single-context：根目录 `CONTEXT.md` + `docs/adr/`。See `docs/agents/domain.md`.
 
+## 入口文档
+
+- 产品全局：`docs/overview.md`
+- 一期范围与工单：`.scratch/phase1/spec.md`、`.scratch/phase1/issues/`
+- 开发流程（谁实现、谁审核、一张工单怎么走）：`docs/agents/dev-workflow.md`
+- 资源与环境：`docs/setup.md`
+
 ## 推进原则
 
 - 目标是尽快做出可用于求职的完整项目：能抄的直接抄，有上游实现的照上游做（对标与参考见 `HANDOFF.md` §4），引用具体文件。
