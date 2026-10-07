@@ -17,14 +17,12 @@ Local markdown：issues 与 spec 放在 `.scratch/<feature>/`（无 remote 的 s
 
 Single-context：根目录 `CONTEXT.md` + `docs/adr/`。See `docs/agents/domain.md`.
 
-## 入口文档
+## 资源与环境
 
-- 产品全局：`docs/overview.md`
-- 一期范围与工单：`.scratch/phase1/spec.md`、`.scratch/phase1/issues/`
-- 开发流程（谁实现、谁审核、一张工单怎么走）：`docs/agents/dev-workflow.md`
-- 资源与环境：`docs/setup.md`
+见 `docs/setup.md`。
 
 ## 推进原则
 
 - 目标是尽快做出可用于求职的完整项目：能抄的直接抄，有上游实现的照上游做（对标与参考见 `HANDOFF.md` §4），引用具体文件。
-- 决策都是可改的默认值，不是定稿。参考项目或常识能定的，agent 直接定、记一笔理由就往下做，不再拿出来逐条讨论；只把只有用户掌握的事（钱、账号）或确无先例的缺口交给用户，且同时给出一个能让工作继续的默认值。
+- 有上游先例、能直接定的小决策不要反复拷问，给出推荐和依据即可。
+- 但"怎么构建"的内容（全局设计、开发流程、spec、工单、文档）先和用户逐项讨论、确认后再落文件；不要一上来就产出。一次讨论一个主题。
