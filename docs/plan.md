@@ -22,12 +22,17 @@
 - **时机**：agent 和评测跑通后再做界面。但 agent 一开始就把运行过程输出成结构化事件，让界面、评测回放、trace 共用（带到第 3 节）。
 - **界面以外**：README（一句话说清楚 + 运行页动图）、榜单提交链接、消融与失败归因报告；博客可选。trace 先用自己的轨迹文件在界面里回放，要不要接 Langfuse 以后再看。
 
-## 3. agent 设计（待讨论）
+## 3. agent 设计（已讨论，2026-10-11）
 
-五块：Skill、验证子 agent、问与做、上下文策略、失败归因。已有方向：ADR-0002（移植 SignalPilot 的验证工具）、ADR-0003（抄 ktx 的工具契约）、CONTEXT.md 的词条。顺带要看的两点：
+依据：`docs/research/2026-10-11-upstream-agent-design.md`；之前已定的 ADR-0002（验证工具）、ADR-0003（上下文工具契约）、ADR-0005（FM1–FM4）和 CONTEXT 词条不变。大体照 SignalPilot 做：
 
-- 命令行里要不要支持交互式澄清（参考 SP 的暂停等待、nao 的 `clarification` 工具）。
-- Memory 要不要人审（SP 用审批队列、ktx 用 git diff）。
+- **主循环**：一个主 agent，一次 `query()`，先加载工作流 skill——dbt 任务用 dbt-workflow（8 步），查数任务用 sql-workflow + 方言 skill。最大轮数暂按 SP：dbt 200、查数 50（大库 75）。验证者用 SDK 的 `agents=` 定义（内容照抄 SP 的 md），这样每次运行按配置开关各层，方便消融。
+- **先抄的 skills**：dbt-workflow、dbt-write、dbt-debugging、sql-workflow、duckdb-sql、sqlite-sql、verifier、value-verifier，外加自补的 postgres-sql。其余（snapshots、versioning、testing、domain-*、write-report）等失败归因说明需要时再加。
+- **验证**：照 dbt-workflow 第 8 步——结构、数值两个只读验证者并行，逐项给"通过 / 失败 / 需更多信息 / 不适用"；主 agent 先复现失败再做最小修改，改过的模型重审；全部通过或不适用为止，受最大轮数约束。只用于 dbt 任务；查数任务用 sql-workflow 自带的验证步骤。
+- **澄清**：产品里用 nao 的工具形式（一个问题 + 2–5 个可点选项，问完本轮结束等回答），规则照 SP"先探索、只在歧义会改变答案时问；不问就在答案里写明假设"。跑榜时移除该工具。
+- **Memory**：照 SP 的知识库——agent 提议、人在界面里批准后才生效，按连接分开存。评测里沿用 CONTEXT 的口径：每题从空开始、题后丢弃，避免题与题、次与次之间串信息。
+- **事件流**：照 SP 聊天，每次运行一份只追加、带序号的事件日志；事件类型取与 agent 过程有关的一部分（状态、文本增量、工具开始/完成、SQL、澄清请求、错误、结果含花费与 token），验证者的开始结束用 hooks 记。界面按序号续读，评测回放和 Harbor 轨迹都从这份日志转出。
+- **失败 → 改 Skill**：照 SP 赛后自诊断，只看开发集失败题；agent 写报告（FM1–FM4 分类、引用出问题的 skill 原文、给具体修改），建议必须通用、不针对单题；人审后再提交。不做全自动改写。
 
 ## 4. 评测设计（待讨论）
 
