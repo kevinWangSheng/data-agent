@@ -9,13 +9,18 @@
 - **定位**：开源、可自托管的通用 data agent，对标 SignalPilot，项目主体是 agent 的行为。
 - **用户与场景**：分析师或数据工程师给出业务问题或数据任务，agent 探索数据源、必要时澄清、执行、自检、交付。
 - **任务类型**：目前两类——dbt 分析工程、跨库查数。原来的"SQL 与 CRUD 管理操作"先不做：上游五个项目都默认只读、写操作都被隔离，和我们的只读网关 + dbt 写入一致。
-- **形态**：一期是命令行工具（ADR-0001）。要不要加聊天界面、Slack 或对外 MCP，放到第 2 节一起想。
+- **形态**：agent 本体是命令行工具（ADR-0001），外面加网页界面（见第 2 节）。Slack、对外 MCP 暂不做。
 - **数据源**：Postgres、DuckDB、dbt 项目；MongoDB 只在 DAB 评测里用（ADR-0005）。"文档"暂时指项目里已有的文件（dbt yml、README、榜单自带的库说明），用文件工具读；Notion/Confluence 之类的连接器以后再说。上游多数也是把这些先同步成文件再让 agent 搜。
 - **一期大致算完成**：沿用 HANDOFF §3 的验收线——DAB 与 data-eng-bench 超过基线，消融能拆出各层贡献，能接任意 Postgres + dbt 跑。具体怎么测放到第 4 节。
 
-## 2. 求职呈现（待讨论）
+## 2. 求职呈现（已讨论，2026-10-11）
 
-面试官最终看到什么：README、演示录屏、消融报告、博客，以及一句话怎么讲。可能会反过来影响第 1 节的形态（要不要界面）和第 4 节追哪些分数。trace（Langfuse）要不要提前也在这里一起看。
+- **做一个网页界面**，模仿上游，不追求轻量，合适就行。大致两块，照 SignalPilot 的"对话 + 评测"划分：
+  - 运行页：提问后实时看到 agent 的过程（工具调用、SQL、验证结果、澄清提问），最后给答案、表格或图。
+  - 评测页：基线与各层消融的分数、成本；点进单题可回放轨迹和失败归因。
+- **暂定模仿 SignalPilot**（`signalpilot/web/app/chats/`、`app/evals/`，聊天组件用 `@assistant-ui/react`）：它是总对标，同时有对话和评测两块，它的对话 agent 也跑在 Claude Agent SDK 上（`notebook-server/signalpilot/_server/ai/standalone_chat_tools.py`）。澄清交互和图表可以参考 nao（`apps/frontend/src/components/chat-messages/`）。整体不 fork：两者都绑着各自的后端。真正动手做界面时再核一次、定下来。
+- **时机**：agent 和评测跑通后再做界面。但 agent 一开始就把运行过程输出成结构化事件，让界面、评测回放、trace 共用（带到第 3 节）。
+- **界面以外**：README（一句话说清楚 + 运行页动图）、榜单提交链接、消融与失败归因报告；博客可选。trace 先用自己的轨迹文件在界面里回放，要不要接 Langfuse 以后再看。
 
 ## 3. agent 设计（待讨论）
 
