@@ -17,9 +17,9 @@ Local markdown：issues 与 spec 放在 `.scratch/<feature>/`（无 remote 的 s
 
 Single-context：根目录 `CONTEXT.md` + `docs/adr/`。See `docs/agents/domain.md`.
 
-## 资源与环境
+## 规划、资源与环境
 
-见 `docs/setup.md`。
+大致规划与讨论进度见 `docs/plan.md`（可改，不是规则）；资源与环境见 `docs/setup.md`。
 
 ## 推进原则
 
