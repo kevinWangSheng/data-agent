@@ -34,9 +34,17 @@
 - **事件流**：照 SP 聊天，每次运行一份只追加、带序号的事件日志；事件类型取与 agent 过程有关的一部分（状态、文本增量、工具开始/完成、SQL、澄清请求、错误、结果含花费与 token），验证者的开始结束用 hooks 记。界面按序号续读，评测回放和 Harbor 轨迹都从这份日志转出。
 - **失败 → 改 Skill**：照 SP 赛后自诊断，只看开发集失败题；agent 写报告（FM1–FM4 分类、引用出问题的 skill 原文、给具体修改），建议必须通用、不针对单题；人审后再提交。不做全自动改写。
 
-## 4. 评测设计（待讨论）
+## 4. 评测设计（已讨论，2026-10-12）
 
-已有方向：ADR-0004（开发集/留出集与消融配置）、ADR-0005（DAB 接入）。待定：怎么判定"超过基线"、"接任意 Postgres + dbt"怎么测——ADR-0006 草稿里的 bootstrap 置信区间、`jaffle_shop` 冒烟测试可以作为起点。不做 CRUD 的话，LiveSQLBench（二期）只跑 180 道 SELECT 题。
+依据：`docs/research/2026-10-12-upstream-eval-design.md`；ADR-0004（开发集/留出集、6 个消融配置、主指标）、ADR-0005（DAB 接入）、CONTEXT 的 Baseline 定义不变。
+
+- **算分**：照 data-eng-bench 榜单代码（`leaderboard/src/leaderboard/core/metrics.py`）——准确率 ± 按题标准误，外加 pass@k；出错的运行记 0。DAB 用它自带的统计脚本。本地数字和榜上同一算法。
+- **超过基线**：留出集上按题配对做 bootstrap，差值 95% 区间不含 0 才算超过；每一层的消融贡献也这样报，未显著或负贡献照实写。上游没人做显著性检验，这是按学术惯例补的。
+- **防看答案**：data-eng-bench 由 Harbor 在 agent 跑完后才拷入测试；我们照官方配置关掉网页搜索与抓取（题和答案在 GitHub 公开）。
+- **成本**：每次运行记未缓存输入、缓存输入、输出 token 和美元花费（取自 SDK `ResultMessage`），经 Harbor `populate_context_post_run` 回填；报告给逐题明细和总量。
+- **接任意 Postgres + dbt**：dbt 官方 `jaffle-shop` + 本地 Postgres，约 5 个用例，格式照 SP `e2e-eval/eval-set/eval.json`（查数核数值带容差；改 dbt 核模型重建、行数、粒度、列），再加 1–2 个越权反例确认只读网关能拦住。
+- **DAB 基线**：和最终配置一样每题 5 次；预算不够怎么削减放到第 7 节。DAB 自带 ReAct 的榜上分数只作榜单对照。
+- LiveSQLBench（二期）不做 CRUD，只跑 180 道 SELECT 题。
 
 ## 5. 技术栈（待确认）
 
