@@ -7,7 +7,7 @@
 
 ### Issue tracker
 
-Local markdown：issues 与 spec 放在 `.scratch/<feature>/`（无 remote 的 solo 仓库）。See `docs/agents/issue-tracker.md`.
+Local markdown：issues 与 spec 放在 `.scratch/<feature>/`（solo 仓库，issues 不放 GitHub）。See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

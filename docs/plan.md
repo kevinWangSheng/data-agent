@@ -63,9 +63,24 @@
 - **形态与许可**：一期是命令行 + 网页，不做 Slack；仓库 Apache-2.0，从 SP 复制的文件保留原版权头并在 `NOTICE` 注明。
 - **运行环境**：Mac 做开发与单元测试，批量评测和 DAB 在 x86_64 Linux 服务器上跑（见 `docs/setup.md`）。
 
-## 6. 开发环境（待讨论）
+## 6. 开发环境（已讨论，2026-10-12）
 
-编码规范、检查命令、测试策略、权限配置、人和 agent 的分工。
+依据：SP `CONTRIBUTING.md`、nao `AGENTS.md` / `CLAUDE.md` / `.husky/pre-commit` / `cli/Makefile`、ktx `AGENTS.md` / `.pre-commit-config.yaml`、Harbor `AGENTS.md`。以下大多"先写下，后续统一配置"。
+
+- **流程与分工**：`/to-spec` → `/to-tickets` → 每个工单 `/implement`（在约定的测试接缝上 TDD）→ 代码审查 → 提交。一个工单一个分支（如 `t/01-tracer-bare-agent`，照 SP `CONTRIBUTING.md:209-216`），你看过 diff 后合进 main。你把关：spec 的测试接缝、工单拆分、每个分支的 diff、push 与榜单提交。
+- **代码审查用不同的模型**：写代码的 agent 和审查的 agent 用不同模型。审查用 Codex，模型按你指定的 GPT-6 astra、high 推理（本机 Codex 当前默认是 `gpt-6.1-sol`，配置时核实确切模型名）。审查结论同样交给另一个模型复核。
+- **检查命令**：`make check` = `ruff check` + `ruff format --check` + `basedpyright` + `pytest`（只跑单元测试）；做界面后加前端 lint、类型检查、vitest。每次改完都跑，提交前必须通过。
+- **提交前检查**：照 ktx 用 pre-commit——行尾空格、yaml/json/toml 校验、拦大文件（防轨迹误提交）、ruff，外加密钥扫描（如 gitleaks；SP 在 CI 里用 trufflehog）。
+- **测试三层**：单元测试（只读网关、MCP 工具接 DuckDB 小样本、事件转换、算分；不联网不调模型，`make check` 跑）；集成测试（真调模型：单题 data-eng-bench、jaffle-shop 冒烟；用 pytest 标记默认跳过、手动跑，照 SP `e2e_cloud` 标记）；评测（服务器上跑 Harbor，见第 4 节）。
+- **编码规范**：`CODING_STANDARDS.md` 给审查者读。照 SP：Python 3.12+、类型注解写全、ruff、新逻辑配测试；本项目专属：Skill 不含针对榜单的内容（ADR-0005）、不绕过只读网关、上游复制的文件保留版权头。只写审查者能逐条核对的规则。
+- **AGENTS.md** 只放导航指针（检查命令、编码规范、`plan.md`），不堆规则。
+- **目录**：`src/data_agent/`（照 Harbor `src/harbor/`）、`skills/`、`evals/`、`tests/`，以后加 `web/`。运行产出（如 `runs/`）不进 git，只提交汇总报告。
+- **密钥与敏感信息**：
+  - API key 只放 `.env`（不进 git）或系统环境变量；服务器 IP 不写进仓库，用 `~/.ssh/config` 的主机别名（如 `data-agent-server`）。
+  - 配置 coding agent 不读这些：Claude Code 在 `.claude/settings.json` 的 `permissions.deny` 里禁止读 `.env*`、密钥目录、`~/.ssh`；Codex 做对应设置。注意只禁 Read 工具挡不住 shell 里 `cat`，需要连同 Bash 规则或沙箱一起配，配置时核实各自支持到什么程度。
+  - 服务器用 SSH 密钥登录（私钥只在本机）。
+  - "全部跳过权限检查"只在 Harbor 容器里用，本机不用。常用安全命令（`uv run`、`make check`、只读 git）预先放行。
+- **远程仓库与 CI**：已建私有仓库 `github.com/kevinWangSheng/data-agent`（2026-10-12），以后转公开——转之前再扫一遍历史里的密钥与 IP。CI 用 GitHub Actions，push 时跑 `make check`。
 
 ## 7. 运行与评测环境（大体已有）
 
