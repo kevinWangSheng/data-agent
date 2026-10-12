@@ -20,7 +20,7 @@
   - 评测页：基线与各层消融的分数、成本；点进单题可回放轨迹和失败归因。
 - **暂定模仿 SignalPilot**（`signalpilot/web/app/chats/`、`app/evals/`，聊天组件用 `@assistant-ui/react`）：它是总对标，同时有对话和评测两块，它的对话 agent 也跑在 Claude Agent SDK 上（`notebook-server/signalpilot/_server/ai/standalone_chat_tools.py`）。澄清交互和图表可以参考 nao（`apps/frontend/src/components/chat-messages/`）。整体不 fork：两者都绑着各自的后端。真正动手做界面时再核一次、定下来。
 - **时机**：agent 和评测跑通后再做界面。但 agent 一开始就把运行过程输出成结构化事件，让界面、评测回放、trace 共用（带到第 3 节）。
-- **界面以外**：README（一句话说清楚 + 运行页动图）、榜单提交链接、消融与失败归因报告；博客可选。trace 先用自己的轨迹文件在界面里回放，要不要接 Langfuse 以后再看。
+- **界面以外**：README（一句话说清楚 + 运行页动图）、榜单提交链接、消融与失败归因报告；博客可选。trace 以自己的事件文件为准，在界面里回放；另接 Langfuse 作为可选的 trace 看板（见第 5 节）。
 
 ## 3. agent 设计（已讨论，2026-10-11）
 
@@ -46,9 +46,22 @@
 - **DAB 基线**：和最终配置一样每题 5 次；预算不够怎么削减放到第 7 节。DAB 自带 ReAct 的榜上分数只作榜单对照。
 - LiveSQLBench（二期）不做 CRUD，只跑 180 道 SELECT 题。
 
-## 5. 技术栈（待确认）
+## 5. 技术栈（已讨论，2026-10-12）
 
-草稿：ADR-0001 Update（模型可配置，默认 DeepSeek）、ADR-0007（Python 3.12 + uv + Claude Agent SDK + MCP Python SDK）。跟着上游走，主要是了解和确认。
+依据：上游各仓库的 `pyproject.toml` / `package.json` / Dockerfile 与 PyPI、npm 当前版本（2026-10-12）。模型与配置方式见 ADR-0001 Update，不变。
+
+- **agent 本体**：Python 3.12（SP 网关、Harbor 要求 ≥3.12；data-eng-bench 镜像是 `python:3.12-slim`）；uv 管依赖，锁文件进 git；`claude-agent-sdk` 锁精确版本（SP 锁 `==0.2.157`，当前 0.2.165）；官方 `mcp` Python SDK 2.x，stdio 方式运行（SP 用 `mcp>=2.2,<3`）；只读网关照搬 SP `engine/`（sqlglot）；数据库驱动 `duckdb`、`psycopg` 3。
+- **检查与测试**：ruff、pytest + pytest-asyncio、basedpyright（SP notebook 在用）。
+- **界面**：后端 FastAPI + uvicorn，用 SSE 推事件（SP、nao、Harbor 都用 FastAPI）；前端照 SP `web/package.json`——Next.js 16、React 19、`@assistant-ui/react`（MIT）、Tailwind 4、zustand、swr、recharts、vitest，pnpm 管依赖。
+- **数据存储**：
+  - 运行事件：每次运行一个 JSONL 文件，是唯一的原始记录（上榜轨迹、失败归因、回放、成本都从它来；Harbor 容器里只能靠文件带出记录）。
+  - 应用状态：SQLite，存运行索引和 Memory 的待批准/已批准条目（nao 的默认做法）。
+  - Postgres 只当被查询的数据源（jaffle-shop、DAB），不存应用状态。
+  - trace 看板：Langfuse 作为可选导出，同一份事件多写一份，开关控制、不开不影响功能。不用 LangSmith：它只有企业版能自托管，和"开源可自托管"不符。Langfuse 自托管要 6 个容器，放 Linux 服务器上，和界面一起做。SDK 能否直接导出 OpenTelemetry 未确认，做的时候再核。
+- **评测**：Harbor（`uv tool install harbor`，当前 0.24.0）跑 data-eng-bench；DAB 用自写的小 runner，从本地 clone 按路径 import 它的脚手架（DAB 无许可证，不复制进仓库）；统计只用 numpy，算分复用 data-eng-bench 的 `metrics.py`。
+- **dbt 版本**：data-eng-bench 镜像固定 `dbt-core>=1.8,<1.11`、`dbt-duckdb==1.10.0`、`duckdb==1.2.2`（`base-image/Dockerfile:19-21`）。Harbor 里把 agent 装进独立虚拟环境，dbt 用镜像自带的；本地开发和 jaffle-shop 也锁 dbt 1.10.x，与评测一致。
+- **形态与许可**：一期是命令行 + 网页，不做 Slack；仓库 Apache-2.0，从 SP 复制的文件保留原版权头并在 `NOTICE` 注明。
+- **运行环境**：Mac 做开发与单元测试，批量评测和 DAB 在 x86_64 Linux 服务器上跑（见 `docs/setup.md`）。
 
 ## 6. 开发环境（待讨论）
 
