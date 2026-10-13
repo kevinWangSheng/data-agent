@@ -6,8 +6,8 @@
 
 | # | 资源 | 说明 | 状态 |
 |---|---|---|---|
-| 1 | DeepSeek API key，充值约 $20 | platform.deepseek.com。粗估 fast-30 跑一遍约 $5、一期总计约 $150（未确认，01 实测后更新） | ☐ |
-| 2 | Anthropic API key，充值约 $20（可选） | 只用于 01 的 5 题 Sonnet 5.5 对照 | ☐ |
+| 1 | DeepSeek API key，充值约 $20 | platform.deepseek.com。一期上限暂定 $300、推算约 $250（未实测，见 `docs/plan.md` 第 7 节） | ☐ |
+| 2 | Anthropic API key，充值约 $20（可选） | 只用于 01 的 5 题 Sonnet 5.5 对照（约 $7）；不跑 Claude 全量 | ☐ |
 | 3 | x86_64 Linux 服务器 | Docker、uv、git、git-lfs；Mac 能 SSH 免密登录。建议 ≥8 核 / 32 GB / 100 GB 空闲磁盘（估计，未确认） | ☐ |
 | 4 | Mac 上的 Docker 守护进程运行中 | 开发期跑单元测试和单题用 | ☐ |
 | 5 | 私有 GitHub 仓库作为 remote | 代码从 Mac 同步到服务器靠它；一期跑通前保持私有，之后转公开 | ☑ `github.com/kevinWangSheng/data-agent`（2026-10-12） |
