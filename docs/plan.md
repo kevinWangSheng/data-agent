@@ -93,6 +93,17 @@
 - **超支时的降级顺序**：DAB 基线每题 5→3 次 → 留出集每题 3→2 次 → 去掉"全开旧版 Skill"配置 → 留出集 30→20 题。上榜要的 data-eng-bench 103×3 与 DAB 54×5 不降。
 - 批量评测尽量放在 DeepSeek 闲时半价时段跑（具体时段配置时核实）。
 
+运行时还要注意的（依据 data-eng-bench@a3278ad、harbor@dc933be）：
+
+- **上榜轨迹是公开的**（`leaderboard/SUBMIT.md:45` "Trials must be publicly readable"）。上传 Harbor Hub 前，从轨迹和事件文件里清掉 API key、`ANTHROPIC_BASE_URL` 之外的私有地址、服务器 IP 与主机名；写一个清理脚本，上传前强制跑，并在单元测试里覆盖。
+- **报错按 0 分算**（`SUBMIT.md:41`），而 Harbor 默认不重试（`src/harbor/models/job/config.py:293-295`）。只对模型接口的临时错误（限流、5xx、断连）开重试；超时、拒答不重试，照 Harbor 默认的排除列表（`:303-315`）。本地消融把"基础设施报错"和"agent 失败"分开统计，前者重跑，不进分数。
+- **服务器与并发**：每题容器 2 核 / 8 GB、agent 超时 4000 秒（`tasks/*/task.toml`），官方配置并发 4（`configs/data-eng-bench-duckdb.claude-code.yaml`），所以 8 核 / 32 GB 够用。上榜不许改超时和资源（`SUBMIT.md:36-37`），只能靠并发提速；DeepSeek 的并发与限流额度未确认，工单 01 实测。
+- **每次运行记版本**：事件文件开头写 git commit、Skill 版本、配置名（基线/全开/关某层）、模型名、SDK 版本。"新旧 Skill 对比"和复现全靠它。
+- **结果怎么拿回来**：`runs/` 只留在服务器，用 `~/.ssh/config` 的主机别名 rsync 回 Mac 做失败归因；只把汇总报告提交进 git。
+- **trace 看板**：Langfuse/LangSmith 的选择见第 5 节，不变。补一点：评测容器里不往 Langfuse 发（容器只靠文件带出记录），只在本地运行和网页界面里接。
+
 ## 8. 实施计划（最后做）
 
 前面几节定了以后，再用 `/to-spec`、`/to-tickets` 重写或修改 `.scratch/phase1/` 的草稿。
+
+- 没有截止时间，每天推进；开发主要由多个 agent 并行完成。拆工单时尽量让工单之间少依赖、能并行，每个工单在独立分支（或 worktree）上做。
