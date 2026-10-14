@@ -1,0 +1,35 @@
+# Secrets — never commit; copy .env.example to .env
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node (web/ later)
+node_modules/
+.next/
+
+# Run outputs stay out of git; only summary reports are committed
+runs/
+jobs/
+
+# Coding-agent worktrees and per-user overrides
+.claude/worktrees/
+.claude/settings.local.json
+
+# Local databases
+*.duckdb
+*.duckdb.wal
+!tests/fixtures/*.duckdb
+
+.DS_Store

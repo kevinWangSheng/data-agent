@@ -1,0 +1,24 @@
+# Default gitleaks rules plus one for public IPv4 addresses: server IPs must never be committed (plan §6).
+[extend]
+useDefault = true
+
+[[rules]]
+id = "public-ipv4"
+description = "Public IPv4 address (use the SSH host alias instead)"
+regex = '''\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b'''
+keywords = ["."]
+
+[[rules.allowlists]]
+description = "Loopback, private, link-local, unspecified and documentation ranges"
+regexTarget = "match"
+regexes = [
+  '''^127\.''',
+  '''^0\.0\.0\.0$''',
+  '''^10\.''',
+  '''^192\.168\.''',
+  '''^172\.(?:1[6-9]|2\d|3[01])\.''',
+  '''^169\.254\.''',
+  '''^192\.0\.2\.''',
+  '''^198\.51\.100\.''',
+  '''^203\.0\.113\.''',
+]
