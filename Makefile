@@ -12,6 +12,7 @@ fmt:
 	uv run ruff check --fix .
 	uv run ruff format .
 
-# Integration tests call a real model; key is passed to the test process only.
+# Integration tests call a real model. In a coding-agent session the key is a masked env var that the
+# sandbox proxy swaps for the real value on requests to the model host (plan §6).
 test-integration:
-	uv run --env-file .env pytest -q -m integration
+	uv run pytest -q -m integration

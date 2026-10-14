@@ -93,14 +93,14 @@
 - **自检回路**：
   - 快：`make check` = ruff check + ruff format --check + basedpyright + 单元测试，不联网不调模型，约 1 分钟内，每次改完都跑；按改动面挑最小检查集，慢命令输出存文件再反复看（ktx `AGENTS.md:146-168`）。
   - 小样本：一个很小的 DuckDB 文件测只读网关和 MCP 工具，进 git。
-  - 主循环不做测试替身，用真模型的集成测试（pytest 标记，默认跳过，手动跑），密钥用 `uv run --env-file .env` 只交给测试进程。
+  - 主循环不做测试替身，用真模型的集成测试（pytest 标记，默认跳过，手动跑），密钥在 coding agent 会话里是遮罩过的占位符（见下面的权限一条），只在请求发往模型域名时由沙箱代理换成真值。变量名用 `DATA_AGENT_*`，不用 `ANTHROPIC_*`，免得把本机 Claude Code 也指到 DeepSeek。
   - 我们的 agent 启动时 `env` 只传给它自己的子进程，`setting_sources=["user"]` 不读本仓库的 `.claude/` 设置（照 SP `claude_agent_options.py:185-209`）；不影响本机正在用的 Claude Code。
   - 评测在服务器上跑（第 4、7 节）。
 - **权限、沙箱与防泄密**：
   - 提交进 git 的 `.claude/settings.json`：deny 读写 `.env*`、`~/.ssh`、`~/.aws` 等；deny `git reset --hard`、`git clean`、`git push --force`，以及直接执行的 `ssh` / `scp` / `rsync`。
   - 开 Claude Code 沙箱：禁读上述路径；网络白名单（PyPI、GitHub、npm、DeepSeek），新域名第一次弹窗放行；docker 用 `excludedCommands` 排除。
   - 凭证遮罩：DeepSeek key 只以占位符出现在 agent 眼前，由沙箱代理在发往允许的域名时替换（只能配在用户级设置里）。
-  - 连服务器：仓库外固定脚本 `~/bin/da-remote`，只接受几个子命令（开始评测、查状态、拉结果），在沙箱外运行，agent 不能改它，输出里的 IP 换成 `<server>`。服务器 IP 只在 `~/.ssh/config`。不装 Tailscale；以后公开部署网页时再定是否用 Cloudflare 代理隐藏源站。
+  - 连服务器：仓库外固定脚本 `~/.local/bin/da-remote`，只接受几个子命令（开始评测、查状态、拉结果），在沙箱外运行，agent 不能改它，输出里的 IP 换成 `<server>`。服务器 IP 只在 `~/.ssh/config`。不装 Tailscale；以后公开部署网页时再定是否用 Cloudflare 代理隐藏源站。
   - Codex：审查一律 `-s read-only`（覆盖全局的 `danger-full-access`）；按路径禁读是 beta，先实测再启用。
   - 转公开前再扫一遍历史里的密钥与 IP。
 - **hooks**：

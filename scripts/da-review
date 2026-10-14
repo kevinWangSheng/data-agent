@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Cross-model code review with Codex (plan §6): Claude writes, Codex reviews read-only.
+# Source of truth lives in the repo; the installed copy at ~/.local/bin/da-review is what agents run.
+# It runs outside the Claude sandbox (Codex needs its own login), so agents cannot edit the installed copy.
+#
+# Usage: da-review [base-branch]   (default: main)
+set -euo pipefail
+
+base="${1:-main}"
+if [[ ! "$base" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  echo "da-review: invalid branch name: $base" >&2
+  exit 2
+fi
+
+exec codex review --base "$base" \
+  -c model="gpt-6-astra" \
+  -c model_reasoning_effort="high" \
+  -c sandbox_mode="read-only" \
+  -c approval_policy="never" \
+  "Review this branch against CODING_STANDARDS.md and the acceptance criteria of the ticket it implements \
+(.scratch/*/issues/, Branch: line). Report findings ranked by severity with file:line; do not modify files."

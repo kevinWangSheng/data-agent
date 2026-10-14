@@ -10,7 +10,8 @@
 uv sync                 # 装依赖（只用 uv，不用 pip）
 make check              # 快检查：ruff、格式、basedpyright、单元测试；不联网、不调模型
 make fmt                # 自动修 lint 与格式
-make test-integration   # 真调模型的集成测试；手动跑，密钥只交给测试进程
+make test-integration   # 真调模型的集成测试；手动跑，密钥是遮罩过的占位符
+da-review main          # Codex 换模型审查本分支（只读）
 uv run pytest tests/test_x.py -q   # 只跑一个测试文件
 ```
 
@@ -37,7 +38,7 @@ runs/             运行产出，不进 git
 1. 认领：工单 `Status: ready-for-agent` 且 `Blocked by:` 都已 `done` 才能领；先把 `Status:` 改成 `in-progress`、填 `Claimed by:` 和 `Branch:` 并保存，再做别的。
 2. 先跑测试拿基线，再在 spec 约定的测试接缝上 TDD 实现（`/implement`）。
 3. `make check` 通过后，真实运行一次改动的行为，把命令和真实输出贴进工单 `## Comments`。
-4. 换模型审查（Codex），修复最多 2 轮；还不过就停下。
+4. 换模型审查：`da-review main`（Codex，只读），修复最多 2 轮；还不过就停下。
 5. 填工单 `## Ledger`，`Status:` 改成 `in-review`，提交到本工单分支。合并由人做。
 
 停下交回时：`Status: ready-for-human`，Comment 写清试了什么、哪里失败、分支名。工单格式见 `docs/agents/ticket-template.md`。
