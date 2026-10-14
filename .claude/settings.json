@@ -30,7 +30,8 @@
       "Read(~/.config/gh/**)",
       "Read(~/.codex/auth.json)",
       "Read(~/.claude/data-agent.settings.json)",
-      "Edit(~/bin/da-remote)",
+      "Edit(~/.local/bin/da-*)",
+      "Edit(~/.claude/data-agent.settings.json)",
       "Edit(./.claude/settings.json)",
       "Bash(ssh *)",
       "Bash(scp *)",
@@ -50,7 +51,13 @@
     "enabled": true,
     "allowUnsandboxedCommands": false,
     "failIfUnavailable": true,
-    "excludedCommands": ["docker *", "git push *"],
+    "excludedCommands": [
+      "docker *",
+      "git push *",
+      "da-review",
+      "da-review *",
+      "da-remote *"
+    ],
     "filesystem": {
       "denyRead": [
         "./.env",
@@ -62,8 +69,17 @@
         "~/.codex/auth.json",
         "~/.claude/data-agent.settings.json"
       ],
-      "allowWrite": ["~/.cache/uv", "~/.local/share/uv", "~/.cache/pre-commit"],
-      "denyWrite": ["~/bin/da-remote", "./.claude/settings.json"]
+      "allowWrite": [
+        "~/.cache/uv",
+        "~/.local/share/uv",
+        "~/.cache/pre-commit"
+      ],
+      "denyWrite": [
+        "~/.local/bin/da-review",
+        "~/.local/bin/da-remote",
+        "~/.claude/data-agent.settings.json",
+        "./.claude/settings.json"
+      ]
     },
     "network": {
       "allowedDomains": [

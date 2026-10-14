@@ -78,7 +78,7 @@ Single-context：根目录 `CONTEXT.md` + `docs/adr/`。See `docs/agents/domain.
 
 ### Code review
 
-审查者读 `CODING_STANDARDS.md`（只放需要判断的规则；能自动检查的都在 `make check` 和 pre-commit 里）。
+审查者读 `CODING_STANDARDS.md`（只放需要判断的规则；能自动检查的都在 `make check` 和 pre-commit 里），并对照本分支对应工单（`.scratch/*/issues/` 里 `Branch:` 行）的验收标准；只报问题、按严重程度排序、带 `file:line`，不改文件。
 
 ## 和用户协作
 

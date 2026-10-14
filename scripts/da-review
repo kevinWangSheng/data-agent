@@ -12,10 +12,10 @@ if [[ ! "$base" =~ ^[A-Za-z0-9._/-]+$ ]]; then
   exit 2
 fi
 
+# --base takes no custom prompt (codex-cli 0.162); Codex picks up AGENTS.md, which points reviewers to
+# CODING_STANDARDS.md and the ticket.
 exec codex review --base "$base" \
   -c model="gpt-6-astra" \
   -c model_reasoning_effort="high" \
   -c sandbox_mode="read-only" \
-  -c approval_policy="never" \
-  "Review this branch against CODING_STANDARDS.md and the acceptance criteria of the ticket it implements \
-(.scratch/*/issues/, Branch: line). Report findings ranked by severity with file:line; do not modify files."
+  -c approval_policy="never"
