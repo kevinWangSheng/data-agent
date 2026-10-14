@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(make check)",
+      "Bash(make fmt)",
+      "Bash(uv sync)",
+      "Bash(uv run *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch *)",
+      "Bash(git worktree list *)"
+    ],
+    "ask": [
+      "Bash(git push)",
+      "Bash(git push *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(**/.env)",
+      "Edit(./.env)",
+      "Edit(./.env.local)",
+      "Edit(**/.env)",
+      "Read(~/.ssh/**)",
+      "Edit(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.codex/auth.json)",
+      "Read(~/.claude/data-agent.settings.json)",
+      "Edit(~/bin/da-remote)",
+      "Edit(./.claude/settings.json)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean *)",
+      "Bash(git checkout .)",
+      "Bash(git checkout -- .)",
+      "Bash(git stash*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "excludedCommands": ["docker *", "git push *"],
+    "filesystem": {
+      "denyRead": [
+        "./.env",
+        "./.env.local",
+        "./**/.env",
+        "~/.ssh",
+        "~/.aws",
+        "~/.config/gh",
+        "~/.codex/auth.json",
+        "~/.claude/data-agent.settings.json"
+      ],
+      "allowWrite": ["~/.cache/uv", "~/.local/share/uv", "~/.cache/pre-commit"],
+      "denyWrite": ["~/bin/da-remote", "./.claude/settings.json"]
+    },
+    "network": {
+      "allowedDomains": [
+        "pypi.org",
+        "files.pythonhosted.org",
+        "github.com",
+        "*.githubusercontent.com",
+        "registry.npmjs.org",
+        "api.deepseek.com"
+      ]
+    }
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.py) cd \"$CLAUDE_PROJECT_DIR\" && uv run ruff check --fix --quiet \"$f\"; uv run ruff format --quiet \"$f\";; esac; exit 0",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
