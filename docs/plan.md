@@ -63,24 +63,55 @@
 - **形态与许可**：一期是命令行 + 网页，不做 Slack；仓库 Apache-2.0，从 SP 复制的文件保留原版权头并在 `NOTICE` 注明。
 - **运行环境**：Mac 做开发与单元测试，批量评测和 DAB 在 x86_64 Linux 服务器上跑（见 `docs/setup.md`）。
 
-## 6. 开发环境（已讨论，2026-10-12）
+## 6. coding agent 开发环境与开发模式（已讨论，2026-10-14；替换 2026-10-12 版）
 
-依据：SP `CONTRIBUTING.md`、nao `AGENTS.md` / `CLAUDE.md` / `.husky/pre-commit` / `cli/Makefile`、ktx `AGENTS.md` / `.pre-commit-config.yaml`、Harbor `AGENTS.md`。以下大多"先写下，后续统一配置"。
+这一节讲给 coding agent（Claude Code 写代码、Codex 审查）干活用的环境和流程，不是给人用的工具准备。依据：`docs/research/2026-10-13-coding-agent-env.md`（上游仓库与 Claude Code / Codex 官方文档）、`~/dev/AI/report/agentic-software-delivery-research/report.md`（交付流程研究）。全部"先写下，再统一配置"，配置时逐项实测。
 
-- **流程与分工**：`/to-spec` → `/to-tickets` → 每个工单 `/implement`（在约定的测试接缝上 TDD）→ 代码审查 → 提交。一个工单一个分支（如 `t/01-tracer-bare-agent`，照 SP `CONTRIBUTING.md:209-216`），你看过 diff 后合进 main。你把关：spec 的测试接缝、工单拆分、每个分支的 diff、push 与榜单提交。
-- **代码审查用不同的模型**：写代码的 agent 和审查的 agent 用不同模型。审查用 Codex，模型按你指定的 GPT-6 astra、high 推理（本机 Codex 当前默认是 `gpt-6.1-sol`，配置时核实确切模型名）。审查结论同样交给另一个模型复核。
-- **检查命令**：`make check` = `ruff check` + `ruff format --check` + `basedpyright` + `pytest`（只跑单元测试）；做界面后加前端 lint、类型检查、vitest。每次改完都跑，提交前必须通过。
-- **提交前检查**：照 ktx 用 pre-commit——行尾空格、yaml/json/toml 校验、拦大文件（防轨迹误提交）、ruff，外加密钥扫描（如 gitleaks；SP 在 CI 里用 trufflehog）。
-- **测试三层**：单元测试（只读网关、MCP 工具接 DuckDB 小样本、事件转换、算分；不联网不调模型，`make check` 跑）；集成测试（真调模型：单题 data-eng-bench、jaffle-shop 冒烟；用 pytest 标记默认跳过、手动跑，照 SP `e2e_cloud` 标记）；评测（服务器上跑 Harbor，见第 4 节）。
-- **编码规范**：`CODING_STANDARDS.md` 给审查者读。照 SP：Python 3.12+、类型注解写全、ruff、新逻辑配测试；本项目专属：Skill 不含针对榜单的内容（ADR-0005）、不绕过只读网关、上游复制的文件保留版权头。只写审查者能逐条核对的规则。
-- **AGENTS.md** 只放导航指针（检查命令、编码规范、`plan.md`），不堆规则。
-- **目录**：`src/data_agent/`（照 Harbor `src/harbor/`）、`skills/`、`evals/`、`tests/`，以后加 `web/`。运行产出（如 `runs/`）不进 git，只提交汇总报告。
-- **密钥与敏感信息**：
-  - API key 只放 `.env`（不进 git）或系统环境变量；服务器 IP 不写进仓库，用 `~/.ssh/config` 的主机别名（如 `data-agent-server`）。
-  - 配置 coding agent 不读这些：Claude Code 在 `.claude/settings.json` 的 `permissions.deny` 里禁止读 `.env*`、密钥目录、`~/.ssh`；Codex 做对应设置。注意只禁 Read 工具挡不住 shell 里 `cat`，需要连同 Bash 规则或沙箱一起配，配置时核实各自支持到什么程度。
-  - 服务器用 SSH 密钥登录（私钥只在本机）。
-  - "全部跳过权限检查"只在 Harbor 容器里用，本机不用。常用安全命令（`uv run`、`make check`、只读 git）预先放行。
-- **远程仓库与 CI**：已建私有仓库 `github.com/kevinWangSheng/data-agent`（2026-10-12），以后转公开——转之前再扫一遍历史里的密钥与 IP。CI 用 GitHub Actions，push 时跑 `make check`。
+### 开发模式
+
+照报告里"以工单和依赖图为控制面"的一类做（round-4 机制比较 §4），借三个案例的具体做法：Stripe Minions 的固定流水线（确定性步骤与 agent 步骤交替）、Simon Willison 的"先跑测试 → 红绿 TDD → 真实运行并留证据"、StrongDM 的外部行为验证（agent 改不到验收标准）。
+
+- **控制面**：工单放 `.scratch/<feature>/issues/`，带"Blocked by"依赖；状态 `ready-for-agent → in-progress → in-review → done`，一个工单一个 agent，开工前先认领。同时跑几个 agent 不设上限，只要工单之间不互相依赖；审查堆积时再调。
+- **交接契约**：工单模板补齐报告列的 7 项（`report.md:63`）：目标、权限（可改哪些目录、能否连服务器）、上下文链接、证据要求、当前状态、停止条件、失败处理。
+- **隔离**：一个工单一个 worktree，加上沙箱（见下）。worktree 只隔离代码，每个 worktree 还要有自己的 DuckDB 文件、Postgres 库或端口、`runs/` 目录（Armin Ronacher：共享状态要另外分开）。
+- **每个工单的流水线**：
+  1. 确定性：建 worktree、装依赖，先跑测试拿基线。
+  2. agent：在 spec 约定的测试接缝上 TDD 实现（`/implement`）。
+  3. 确定性：`make check` 与 pre-commit。
+  4. agent：真实运行一次（跑 CLI、单题、截图），命令与真实输出贴进工单 Comments。
+  5. agent：Codex 换模型审查，再交另一个模型复核；修复最多 2 轮，不过就转给人。
+  6. 人：看 diff 和证据，决定合并。
+- **强制程度**：先靠 skill（`/implement` + 新工单模板）约束步骤，只有提交前检查是硬卡；`/retro` 发现哪一步常被跳过，再把那一步改成脚本。
+- **外部行为验证**：验收的测试接缝在 `/to-spec` 时由人确认，实现时 agent 不改；留出集只经 `da-remote` 返回汇总分数，agent 拿不到失败细节。
+- **人的边界**：spec 的测试接缝、工单拆分、合并到 main、push、上榜提交、超出花费上限。agent 不合并、不 push。
+- **反馈**：每批工单后 `/retro`；机械性规则改成检查，需要判断的写进 `CODING_STANDARDS.md`。
+- **每个工单记小账**：工单末尾记尝试次数、审查轮数、花费、接受/退回、人审查用时，最后汇总成"用 agent 开发"的数据。
+
+### 环境
+
+- **说明文件**：`AGENTS.md` 是短主文件（约 100–150 行）：检查命令、目录地图、硬规矩（照 ktx 的 MUST / MUST NOT 与 git 安全）、指针；细节放 `docs/` 和子目录 `AGENTS.md`。`CLAUDE.md` 保持 `@AGENTS.md` 导入（官方做法）。
+- **自检回路**：
+  - 快：`make check` = ruff check + ruff format --check + basedpyright + 单元测试，不联网不调模型，约 1 分钟内，每次改完都跑；按改动面挑最小检查集，慢命令输出存文件再反复看（ktx `AGENTS.md:146-168`）。
+  - 小样本：一个很小的 DuckDB 文件测只读网关和 MCP 工具，进 git。
+  - 主循环不做测试替身，用真模型的集成测试（pytest 标记，默认跳过，手动跑），密钥用 `uv run --env-file .env` 只交给测试进程。
+  - 我们的 agent 启动时 `env` 只传给它自己的子进程，`setting_sources=["user"]` 不读本仓库的 `.claude/` 设置（照 SP `claude_agent_options.py:185-209`）；不影响本机正在用的 Claude Code。
+  - 评测在服务器上跑（第 4、7 节）。
+- **权限、沙箱与防泄密**：
+  - 提交进 git 的 `.claude/settings.json`：deny 读写 `.env*`、`~/.ssh`、`~/.aws` 等；deny `git reset --hard`、`git clean`、`git push --force`，以及直接执行的 `ssh` / `scp` / `rsync`。
+  - 开 Claude Code 沙箱：禁读上述路径；网络白名单（PyPI、GitHub、npm、DeepSeek），新域名第一次弹窗放行；docker 用 `excludedCommands` 排除。
+  - 凭证遮罩：DeepSeek key 只以占位符出现在 agent 眼前，由沙箱代理在发往允许的域名时替换（只能配在用户级设置里）。
+  - 连服务器：仓库外固定脚本 `~/bin/da-remote`，只接受几个子命令（开始评测、查状态、拉结果），在沙箱外运行，agent 不能改它，输出里的 IP 换成 `<server>`。服务器 IP 只在 `~/.ssh/config`。不装 Tailscale；以后公开部署网页时再定是否用 Cloudflare 代理隐藏源站。
+  - Codex：审查一律 `-s read-only`（覆盖全局的 `danger-full-access`）；按路径禁读是 beta，先实测再启用。
+  - 转公开前再扫一遍历史里的密钥与 IP。
+- **hooks**：
+  - pre-commit（照 ktx）：行尾空格、yaml/json/toml、拦大文件、ruff、gitleaks；Claude 和 Codex 都绕不过。
+  - Claude PostToolUse：改完 `.py` 自动 `ruff format` + `ruff check --fix`（只处理那个文件）。
+  - 先不加 Stop hook；agent 常不跑检查就收工时再加。
+- **审查模型**：Codex 用 `gpt-6-astra`（官方最强档，已核实是官方 id），高推理；本机默认 `gpt-6.1-sol` 接近 Astra、成本更低，可作复核或备选。
+- **开发期 MCP**：先不配；需要查外部文档时照 ktx 用 Context7。
+- **目录**：`src/data_agent/`、`skills/`、`evals/`、`tests/`，以后加 `web/`；`runs/`、`.claude/worktrees/` 不进 git；只提交汇总报告。
+- **远程仓库与 CI**：私有仓库 `github.com/kevinWangSheng/data-agent`（2026-10-12），以后转公开；GitHub Actions 在 push 时跑 `make check`。
+- **编码规范**：`CODING_STANDARDS.md` 只放需要判断的规则（类型注解写全、新逻辑配测试、Skill 不含针对榜单的内容、不绕过只读网关、上游复制的文件保留版权头）。
 
 ## 7. 运行与评测环境（已讨论，2026-10-12）
 
