@@ -71,9 +71,9 @@
 
 照报告里"以工单和依赖图为控制面"的一类做（round-4 机制比较 §4），借三个案例的具体做法：Stripe Minions 的固定流水线（确定性步骤与 agent 步骤交替）、Simon Willison 的"先跑测试 → 红绿 TDD → 真实运行并留证据"、StrongDM 的外部行为验证（agent 改不到验收标准）。
 
-- **控制面**：工单放 `.scratch/<feature>/issues/`，带"Blocked by"依赖；状态 `ready-for-agent → in-progress → in-review → done`，一个工单一个 agent，开工前先认领。工单文件只在主 checkout 里改（绝对路径），工单分支不提交 `.scratch/*/issues/`，所有会话看到同一份状态，工单状态由人在 main 上提交（2026-10-15 定）。派工由编排器自动做（设计中，见下面"编排与隔离"）；在它建好之前由人开会话、输入 `/implement <工单路径>`。同时跑几个 agent 不设上限，只要工单之间不互相依赖（2026-10-15 再次确认）；第 9 节第 7 项试跑只开 1 个。
+- **控制面**：工单放 `.scratch/<feature>/issues/`，带"Blocked by"依赖；状态 `ready-for-agent → in-progress → in-review → done`，一个工单一个 agent，开工前先认领。工单文件只在主 checkout 里改（绝对路径），工单分支不提交 `.scratch/*/issues/`，所有会话看到同一份状态，工单状态由人在 main 上提交（2026-10-15 定）。派工的是人：挑可开工的工单，`claude -w NN-<slug>` 开会话，输入 `/implement <工单路径>`；之后到交回为止都由 agent 自己跑，包括调 Codex 审查。同时跑几个 agent 不设上限，只要工单之间不互相依赖（2026-10-15 再次确认）；第 9 节第 7 项试跑只开 1 个。
 - **交接契约**：工单模板补齐报告列的 7 项（`report.md:63`）：目标、权限（可改哪些目录、能否连服务器）、上下文链接、证据要求、当前状态、停止条件、失败处理。
-- **隔离**：一个工单一个 worktree，agent 跑在容器里（见下面"编排与隔离"）。worktree 只隔离代码，每个 worktree 还要有自己的 DuckDB 文件、Postgres 库或端口、`runs/` 目录（Armin Ronacher：共享状态要另外分开）。
+- **隔离**：一个工单一个 worktree。worktree 只隔离代码，每个 worktree 还要有自己的 DuckDB 文件、Postgres 库或端口、`runs/` 目录（Armin Ronacher：共享状态要另外分开）。
 - **每个工单的流水线**：
   1. 确定性：建 worktree、装依赖，先跑测试拿基线。
   2. agent：在 spec 约定的测试接缝上 TDD 实现（`/implement`）。
@@ -81,18 +81,15 @@
   4. agent：真实运行一次（跑 CLI、单题、截图），命令与真实输出贴进工单 Comments。
   5. agent：先提交到工单分支（两道审查都只看已提交的 diff），再做两道审查。先 Codex（`da-review`，换模型找 bug，只读）；再由 Claude 开新上下文跑 `eng:code-review`（Standards、Spec 两个子 agent 并行，Spec 对照本工单验收标准；照 mattpocock `/code-review`）。第二道补的是 `codex review --base` 不能带提示词、不对照 spec 的缺口；它和写代码的同为 Claude，独立性靠 Codex 那一道补，`/retro` 发现漏审再改（2026-10-15 定）。AGENTS.md 点名 `eng:code-review`，不用内置的 `code-review`；`/implement` 原文的审查和提交顺序以本节为准。每条结果修（修完提交）或在工单写明不修的理由；修复最多 2 轮，不过就转给人。
   6. 人：看工单证据和 diff。接受：push 分支、`gh pr create --fill`，CI 绿后在网页上 squash 合并，工单 `done`，删 worktree 和分支；PR 历史即"用 agent 开发"的公开记录。退回：Comments 写"退回：原因"、Status 改回 `ready-for-agent`，新会话在原分支上接着修，不推倒重来（2026-10-15 定）。
-- **强制程度**：固定步骤（建 worktree、`make check`、提交、Codex 审查、填 Ledger、开 PR）由编排器的代码执行，agent 只负责实现和修复（Stripe 的确定性节点与 agent 节点交替）；提交前检查由 pre-commit 硬卡。
+- **强制程度**：先靠 skill（`/implement` + 新工单模板）约束步骤，只有提交前检查是硬卡；`/retro` 发现哪一步常被跳过，再把那一步改成脚本。
 - **外部行为验证**：验收的测试接缝在 `/to-spec` 时由人确认；每个 feature 的第一张工单写出这些验收测试，人审后合并进 main，之后的实现工单在 Authority 里列为不可改（2026-10-15 定，免得实现 agent 自己出题自己答）；留出集只经 `da-remote` 返回汇总分数，agent 拿不到失败细节。
 - **人的边界**：spec 的测试接缝、工单拆分、合并到 main、push、上榜提交、超出花费上限。agent 不合并、不 push。
 - **反馈**：每批工单后 `/retro`；机械性规则改成检查，需要判断的写进 `CODING_STANDARDS.md`。
 - **每个工单记小账**：工单末尾记尝试次数、审查轮数、花费、接受/退回、人审查用时，最后汇总成"用 agent 开发"的数据。花费只记 data agent 调用模型的花费（从事件文件读）；Claude Code、Codex 走订阅、agent 读不到，不记；人审用时由人在合并时填，可空（2026-10-15 定）。
 
-### 编排与隔离（2026-10-15 定方向，细节待设计）
+### 不用宿主机沙箱（2026-10-15）
 
-- **为什么改**：原方案让 agent 直接跑在 Mac 上、靠 Claude Code 沙箱禁读密钥。实测：装工具写不进系统目录、Codex 在沙箱里起不来只能靠一条精确命令例外、Docker 必须排除在沙箱外而 `docker run -v ~/.ssh:...` 就能读到密钥（官方文档："An excluded command runs with your full access"）。结果是既拦不住，又让流程离不开人。2026-10-15 去掉宿主机沙箱与密钥遮罩（`da-claude`）。
-- **方向**：agent 跑在容器里，容器里没有 `~/.ssh`、服务器 IP、gh 登录、Docker socket，里面全放开（Claude `--dangerously-skip-permissions`，官方 devcontainer 文档允许；Codex 全权限；随意装工具）。只注入一个开发用 DeepSeek key（余额小，公开出口靠 gitleaks 拦）。Postgres 等用旁挂容器。连服务器用服务器端 `command=` 限定的专用 key（只能开始评测、查状态、拉汇总），即 `da-remote` 的实现，留出集保密由服务器保证。Harbor 评测在服务器跑。
-- **编排器**：一个常驻进程按工单依赖自动派工，固定步骤写成代码、实现与修复交给 agent，失败或卡住转 `ready-for-human`。人只管 spec 接缝、工单拆分、合并、`ready-for-human`。参考 Symphony SPEC（认领、重试、卡死检测、并发）与 Stripe blueprint。
-- **过渡期**（容器建好前）：agent 直接跑在 Mac 上，deny 规则只是提醒；密钥在仓库外，提交靠 gitleaks 拦；integration 测试暂不跑。
+原来用 Claude Code 沙箱禁读密钥。实测它挡住了正常开发：装工具写不进系统目录、Codex 起不来只能靠一条精确命令例外、Docker 要排除在沙箱外而 `docker run -v ~/.ssh:...` 照样能读到密钥（官方文档："An excluded command runs with your full access"）。去掉沙箱和密钥遮罩（`da-claude`）后，安装、Codex、网络都实测可用。现在防泄密靠：密钥在仓库外、deny 规则提醒、pre-commit gitleaks 拦提交、CI。编排器和 agent 容器不做；同时开的会话多到人管不过来、或要无人值守跑时再议。
 
 ### 环境
 
@@ -100,13 +97,13 @@
 - **自检回路**：
   - 快：`make check` = ruff check + ruff format --check + basedpyright + 单元测试，不联网不调模型，约 1 分钟内，每次改完都跑；按改动面挑最小检查集，慢命令输出存文件再反复看（ktx `AGENTS.md:146-168`）。
   - 小样本：一个很小的 DuckDB 文件测只读网关和 MCP 工具，进 git。
-  - 主循环不做测试替身，用真模型的集成测试（pytest 标记，默认跳过，手动跑），密钥由容器启动时注入（见"编排与隔离"）。变量名用 `DATA_AGENT_*`，不用 `ANTHROPIC_*`，免得把本机 Claude Code 也指到 DeepSeek。
+  - 主循环不做测试替身，用真模型的集成测试（pytest 标记，默认跳过，手动跑），`make test-integration` 从 `~/.config/data-agent/env` 读密钥。变量名用 `DATA_AGENT_*`，不用 `ANTHROPIC_*`，免得把本机 Claude Code 也指到 DeepSeek。
   - 我们的 agent 启动时 `env` 只传给它自己的子进程，`setting_sources=["user"]` 不读本仓库的 `.claude/` 设置（照 SP `claude_agent_options.py:185-209`）；不影响本机正在用的 Claude Code。
   - 评测在服务器上跑（第 4、7 节）。
 - **权限与防泄密**：
-  - 提交进 git 的 `.claude/settings.json`：deny 读写 `.env*`、`~/.config/data-agent`、`~/.ssh`、`~/.aws` 等；deny `git reset --hard`、`git clean`、`git push --force`，以及直接执行的 `ssh` / `scp` / `rsync`。只是提醒，不是边界（2026-10-15 实测 `/usr/bin/ssh -V` 能绕过 `Bash(ssh *)`）；边界是"容器里没有这些东西"。
+  - 提交进 git 的 `.claude/settings.json`：deny 读写 `.env*`、`~/.config/data-agent`、`~/.ssh`、`~/.aws` 等；deny `git reset --hard`、`git clean`、`git push --force`，以及直接执行的 `ssh` / `scp` / `rsync`。只是提醒，不是边界（2026-10-15 实测 `/usr/bin/ssh -V` 能绕过 `Bash(ssh *)`）；真正拦住公开泄露的是 gitleaks。
   - 密钥文件放仓库外 `~/.config/data-agent/env`，永远不会被提交。
-  - Codex 审查目前用 `da-review`（`-s read-only`）；进容器后由编排器直接调 `codex review`。
+  - Codex 审查用 `da-review`（`-s read-only`），由 agent 在流水线第 5 步自己调。
   - 转公开前再扫一遍历史里的密钥与 IP。
 - **hooks**：
   - pre-commit（照 ktx）：行尾空格、yaml/json/toml、拦大文件、ruff、gitleaks；Claude 和 Codex 都绕不过。
@@ -124,8 +121,7 @@
 
 - [ ] 在 `~/.config/data-agent/env` 照 `.env.example` 填好 key 并 `chmod 600`（人做）。
 - [ ] `da-remote`：源码放 `scripts/`，装到 `~/.local/bin/`，子命令只有开始评测、查状态、拉结果，输出把 IP 换成 `<server>`。等服务器就绪（`docs/setup.md` #3）再写、再实测。
-- [ ] 编排器与 agent 容器（见"编排与隔离"）：先设计、再建、再逐项实测。
-- [ ] 流水线端到端试跑一次：编排器从派工到开 PR 全自动跑通工单 01，CI 在 push 后为绿。
+- [ ] 流水线端到端试跑一次：用工单 01 跑通认领 → 实现 → `make check` → 提交 → 两道审查 → Ledger，CI 在 push 后为绿。
 
 ## 7. 运行与评测环境（已讨论，2026-10-12）
 
@@ -168,11 +164,9 @@
 
 - [x] 1. 审查第二道复核：做法 `acdaac7`；顺序改为先提交再审，并定下工单状态位置、验收测试工单、合并方式、Ledger 口径（2026-10-15，AGENTS.md 与 `docs/agents/` 同步）。
 - [x] 2. ~~Codex 按路径禁读~~：不做，理由见第 6 节 Codex 一条（2026-10-15）。
-- [x] 3. ~~本机工具装在 Mac 上~~：改为 Harbor 进仓库依赖、其余进容器镜像；宿主机沙箱与遮罩已去掉（2026-10-15，见第 6 节"编排与隔离"）。
+- [x] 3. 本机工具：去掉宿主机沙箱后 agent 自己能装；Harbor 已装（`uv tool`，2026-10-15）；git-lfs、psql 到工单要用时由 agent 用 brew 装。
 - [ ] 4. 人：`~/.config/data-agent/env` 填 key、`chmod 600`。随时可做。
-- [ ] 5. 编排器设计：调研 Claude Code 无头模式 / Agent SDK、Codex review 的可解析输出、Symphony SPEC 可借鉴部分，出设计稿与人讨论。
-- [ ] 6. 建 agent 容器与编排器，逐项实测（make check 与耗时、worktree 两边可用、pre-commit、Codex 审查与改代码、装依赖、Postgres 旁挂、3 个并行与内存）。
-- [ ] 7. 第 8 节：`/to-spec` 写一期 spec，人确认验收的测试接缝；分几次讨论。
-- [ ] 8. 第 8 节：`/to-tickets` 拆工单与依赖图，改掉 `docs/setup.md` 与第 7 节的旧工单编号。
-- [ ] 9. 编排器全自动跑工单 01 端到端（依赖 4–8）。
-- [ ] 10. `da-remote`：服务器端 `command=` 限定 key（等服务器就绪）。
+- [ ] 5. 第 8 节：`/to-spec` 写一期 spec，人确认验收的测试接缝；分几次讨论。
+- [ ] 6. 第 8 节：`/to-tickets` 拆工单与依赖图，改掉 `docs/setup.md` 与第 7 节的旧工单编号。
+- [ ] 7. 用工单 01 端到端试跑流水线（依赖 4、6）。
+- [ ] 8. `da-remote`（等服务器就绪）。
