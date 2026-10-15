@@ -121,6 +121,7 @@
 - [ ] 在 `~/.config/data-agent/env` 照 `.env.example` 填好 key 并 `chmod 600`（人做；agent 读不到，无法核实）。仓库内 `.env` 已移除、settings 禁读已加、沙箱内 `make check` 已通过（2026-10-15，`4c43d33`）。
 - [ ] `da-remote`：源码放 `scripts/`，装到 `~/.local/bin/`，子命令只有开始评测、查状态、拉结果，输出把 IP 换成 `<server>`。等服务器就绪（`docs/setup.md` #3）再写、再实测。
 - [ ] Codex 按路径禁读（beta）实测，能用再在 `da-review` 里启用。
+- [ ] 审查的复核一步（上面流水线第 5 步）：已定但未配，`da-review` 现在只有 Codex 一轮，`AGENTS.md` 流程第 4 步也还没写复核。配置时照 `docs/research/2026-10-13-coding-agent-env.md` 第 7 节（nao 每条问题派子 agent 复核、只留高信号；复核模型候选 `gpt-6.1-sol`，见本节"审查模型"），配好后同步改 `AGENTS.md`。
 - [ ] 本机工具（Docker 守护进程、Harbor、git-lfs、psql）照 `docs/setup.md` 在工单 01 开始时装。
 - [ ] 流水线端到端试跑一次（等 key 填好）：`da-claude` 启动后遮罩生效、建 worktree + `uv sync` + pre-commit 能跑、`da-review` 审一个真实分支、工单 Ledger 能填。用工单 01 来跑，不另造假工单；各段此前只单独配置过，没有连起来跑过。
 
