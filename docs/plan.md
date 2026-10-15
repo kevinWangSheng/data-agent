@@ -118,7 +118,7 @@
 
 上面已配好并实测的不再列。做完一项删一项。
 
-- [ ] 密钥文件迁到 `~/.config/data-agent/env`（人做），并在 `.claude/settings.json` 的 `permissions.deny` 与 `sandbox.filesystem.denyRead` 加上这个路径（人做：该文件对 agent 写保护）；之后 `make check` 在沙箱里应通过。
+- [ ] 在 `~/.config/data-agent/env` 照 `.env.example` 填好 key 并 `chmod 600`（人做；agent 读不到，无法核实）。仓库内 `.env` 已移除、settings 禁读已加、沙箱内 `make check` 已通过（2026-10-15，`4c43d33`）。
 - [ ] `da-remote`：源码放 `scripts/`，装到 `~/.local/bin/`，子命令只有开始评测、查状态、拉结果，输出把 IP 换成 `<server>`。等服务器就绪（`docs/setup.md` #3）再写、再实测。
 - [ ] Codex 按路径禁读（beta）实测，能用再在 `da-review` 里启用。
 - [ ] 本机工具（Docker 守护进程、Harbor、git-lfs、psql）照 `docs/setup.md` 在工单 01 开始时装。
