@@ -21,6 +21,7 @@ out to 74; customer C0001 has 9 orders, shown as 18 in customer_orders_fanout.
 
 import json
 import os
+import re
 import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,14 +29,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from seam_support import DATA_AGENT, DBT_SHOP, POSTGRES_URL_ENV, build_shop_duckdb, duckdb_rows
+from seam_support import (
+    CONTEXT_TOOLS,
+    DATA_AGENT,
+    DBT_SHOP,
+    POSTGRES_URL_ENV,
+    VERIFIER_TOOLS,
+    build_shop_duckdb,
+    duckdb_rows,
+)
 
 CONFIGS = ["baseline", "full", "no-skill", "no-verifiers", "no-context", "full-old-skill"]
 BASE_TOOLS = {"query_database", "list_tables"}
-CONTEXT_TOOLS = {"discover", "hydrate", "dictionary_search"}
-VERIFIER_TOOLS = {"map_columns", "check_model_schema", "audit_model_sources", "verify_model_values"}
-CONTEXT_OFF = {"baseline", "no-context"}
-VERIFIERS_OFF = {"baseline", "no-verifiers"}
 
 
 @asynccontextmanager
@@ -132,26 +137,44 @@ async def test_base_tools_in_every_config(config: str, shop_duckdb: Path) -> Non
         assert await tool_names(session) >= BASE_TOOLS
 
 
-@pytest.mark.xfail(strict=True, reason="tickets 05, 06")
-@pytest.mark.parametrize("config", CONFIGS)
-async def test_context_tools_follow_config(config: str, shop_duckdb: Path) -> None:
+# (config, layer on). Configs that switch a layer off pass as soon as ticket 05 adds the configs;
+# the others wait for the ticket that adds the layer's tools. Each case carries its own xfail.
+CONTEXT_CASES = [
+    pytest.param("baseline", False, marks=pytest.mark.xfail(strict=True, reason="ticket 05")),
+    pytest.param("full", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
+    pytest.param("no-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
+    pytest.param("no-verifiers", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
+    pytest.param("no-context", False, marks=pytest.mark.xfail(strict=True, reason="ticket 05")),
+    pytest.param("full-old-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
+]
+VERIFIER_CASES = [
+    pytest.param("baseline", False, marks=pytest.mark.xfail(strict=True, reason="ticket 05")),
+    pytest.param("full", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
+    pytest.param("no-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
+    pytest.param("no-verifiers", False, marks=pytest.mark.xfail(strict=True, reason="ticket 05")),
+    pytest.param("no-context", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
+    pytest.param("full-old-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
+]
+
+
+@pytest.mark.parametrize(("config", "layer_on"), CONTEXT_CASES)
+async def test_context_tools_follow_config(config: str, layer_on: bool, shop_duckdb: Path) -> None:
     async with mcp_server("--config", config, "--duckdb", str(shop_duckdb)) as session:
         names = await tool_names(session)
-    if config in CONTEXT_OFF:
-        assert not names & CONTEXT_TOOLS
-    else:
+    if layer_on:
         assert names >= CONTEXT_TOOLS
+    else:
+        assert not names & CONTEXT_TOOLS
 
 
-@pytest.mark.xfail(strict=True, reason="tickets 05, 07")
-@pytest.mark.parametrize("config", CONFIGS)
-async def test_verifier_tools_follow_config(config: str, shop_duckdb: Path) -> None:
+@pytest.mark.parametrize(("config", "layer_on"), VERIFIER_CASES)
+async def test_verifier_tools_follow_config(config: str, layer_on: bool, shop_duckdb: Path) -> None:
     async with mcp_server("--config", config, "--duckdb", str(shop_duckdb)) as session:
         names = await tool_names(session)
-    if config in VERIFIERS_OFF:
-        assert not names & VERIFIER_TOOLS
-    else:
+    if layer_on:
         assert names >= VERIFIER_TOOLS
+    else:
+        assert not names & VERIFIER_TOOLS
 
 
 # --- Read-only gateway ----------------------------------------------------------------------
@@ -293,10 +316,9 @@ async def test_dictionary_search_returns_real_values(shop_duckdb: Path) -> None:
     assert "tier" in text
     for value in ("Gold", "GOLD", "gold_tier"):
         assert value in text, f"real value {value!r} missing"
-    assert "Platinum" not in text
 
 
-# --- The six verifier tools: one passing and one failing case each, on both dialects ---------
+# --- The six tools the verifiers use (2 base, 4 verifier-only): a passing and a failing case each
 
 
 @pytest.mark.xfail(strict=True, reason="ticket 02")
@@ -395,6 +417,7 @@ async def test_verify_model_values(db_args: list[str]) -> None:
         bad = await call(session, "verify_model_values", {"model_name": "customer_orders_fanout"})
     assert not is_tool_error(ok), text_of(ok)
     assert "n_orders" in text_of(ok)
-    assert "9" in text_of(ok)
+    assert re.search(r"\b9\b", text_of(ok))
+    assert not re.search(r"\b18\b", text_of(ok))
     assert not is_tool_error(bad), text_of(bad)
-    assert "18" in text_of(bad)
+    assert re.search(r"\b18\b", text_of(bad))

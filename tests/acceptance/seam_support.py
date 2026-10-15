@@ -20,6 +20,12 @@ EVAL_MANIFEST = FIXTURES / "eval_manifest.json"
 # Console script installed into the project venv by `uv sync`.
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
 
+# Tool names the run config switches on and off (spec: MCP server).
+CONTEXT_TOOLS = frozenset({"discover", "hydrate", "dictionary_search"})
+VERIFIER_TOOLS = frozenset(
+    {"map_columns", "check_model_schema", "audit_model_sources", "verify_model_values"}
+)
+
 # Postgres variants read a connection string to a scratch database owned by this worktree.
 POSTGRES_URL_ENV = "DATA_AGENT_TEST_POSTGRES_URL"
 

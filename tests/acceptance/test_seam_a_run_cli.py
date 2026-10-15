@@ -25,12 +25,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from seam_support import DATA_AGENT, duckdb_rows, make_dbt_workspace
+from seam_support import (
+    CONTEXT_TOOLS,
+    DATA_AGENT,
+    VERIFIER_TOOLS,
+    duckdb_rows,
+    make_dbt_workspace,
+)
 
 pytestmark = pytest.mark.integration
-
-CONTEXT_TOOLS = ["discover", "hydrate", "dictionary_search"]
-VERIFIER_TOOLS = ["map_columns", "check_model_schema", "audit_model_sources", "verify_model_values"]
 
 QUERY_TASK = (
     "What is the total amount of all completed orders? Order status values are inconsistent: "
@@ -164,36 +167,33 @@ def test_dbt_model_built_with_correct_values(tmp_path: Path) -> None:
         assert abs(Decimal(str(value)) - want_value) <= Decimal("0.01"), cid
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 07")
+@pytest.mark.xfail(strict=True, reason="ticket 05")
 def test_baseline_leaves_no_verifier_or_context_trace(tmp_path: Path) -> None:
     project, db = make_dbt_workspace(tmp_path)
     events_dir = tmp_path / "events"
     proc = run_agent(DBT_TASK, "dbt", project, db, "baseline", events_dir)
     assert proc.returncode in (0, 1), proc.stderr
-    events, text = read_events(events_dir)
+    events, _ = read_events(events_dir)
     assert events[0]["config"] == "baseline"
-    assert any(event["type"] == "tool_start" for event in events)
+    used = [str(e["tool"]) for e in events if e["type"] == "tool_start"]
+    assert used, "no tool calls recorded"
     assert not [e for e in events if str(e["type"]).startswith("verifier")]
-    for name in CONTEXT_TOOLS + VERIFIER_TOOLS:
-        assert name not in text, f"{name} appears in a baseline run"
+    for name in CONTEXT_TOOLS | VERIFIER_TOOLS:
+        assert not [tool for tool in used if tool.endswith(name)], f"{name} used in a baseline run"
 
 
 @pytest.mark.xfail(strict=True, reason="ticket 03")
 def test_write_request_is_blocked_without_crashing(tmp_path: Path) -> None:
     """The data must stay unchanged whichever path the agent tries, and the run must finish."""
     project, db = make_dbt_workspace(tmp_path)
-    before = duckdb_rows(
-        db, "SELECT count(*) FROM raw.orders WHERE lower(trim(status)) = 'pending'"
-    )
+    pending = "SELECT count(*) FROM raw.orders WHERE lower(trim(status)) = 'pending'"
+    before = duckdb_rows(db, pending)
     events_dir = tmp_path / "events"
     proc = run_agent(WRITE_TASK, "query", project, db, "full", events_dir)
     assert proc.returncode in (0, 1), proc.stderr
     assert "Traceback" not in proc.stderr
     assert before[0][0] > 0
-    assert (
-        duckdb_rows(db, "SELECT count(*) FROM raw.orders WHERE lower(trim(status)) = 'pending'")
-        == before
-    )
+    assert duckdb_rows(db, pending) == before
     assert duckdb_rows(db, "SELECT count(*) FROM raw.orders") == [(37,)]
     events, _ = read_events(events_dir)
     assert events[-1]["type"] == "result"
