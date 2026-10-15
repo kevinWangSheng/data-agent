@@ -52,7 +52,7 @@ runs/             运行产出，不进 git
 - **MUST NOT**：改 spec 约定的验收测试来让它变绿；觉得验收测试错了就停下交回。
 - **MUST NOT**：在 Skill 里写针对某个榜单题目的内容（ADR-0005）。
 - **MUST NOT**：查看或打印留出集的逐题失败细节；留出集只看汇总分数（ADR-0004）。
-- **MUST NOT**：读 `.env*`、`~/.ssh`、密钥文件；在代码、文档、测试、运行产出里写密钥或服务器 IP。连服务器只用 `da-remote`，不直接执行 `ssh` / `scp` / `rsync`。
+- **MUST NOT**：读 `.env*`、`~/.config/data-agent/`、`~/.ssh`、密钥文件；在代码、文档、测试、运行产出里写密钥或服务器 IP。连服务器只用 `da-remote`，不直接执行 `ssh` / `scp` / `rsync`。
 - **MUST NOT**：用 `pip`（用 `uv`）、`npm`（用 `pnpm`）。
 
 ## Git 与 worktree

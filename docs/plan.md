@@ -99,6 +99,7 @@
 - **权限、沙箱与防泄密**：
   - 提交进 git 的 `.claude/settings.json`：deny 读写 `.env*`、`~/.ssh`、`~/.aws` 等；deny `git reset --hard`、`git clean`、`git push --force`，以及直接执行的 `ssh` / `scp` / `rsync`。
   - 开 Claude Code 沙箱：禁读上述路径；网络白名单（PyPI、GitHub、npm、DeepSeek），新域名第一次弹窗放行；docker 用 `excludedCommands` 排除。
+  - 密钥文件放仓库外 `~/.config/data-agent/env`，由 `scripts/da-claude` 加载（2026-10-15：放在仓库里时沙箱禁读让 pytest 收集失败，且 Codex 审查能读到）。
   - 凭证遮罩：DeepSeek key 只以占位符出现在 agent 眼前，由沙箱代理在发往允许的域名时替换（只能配在用户级设置里）。
   - 连服务器：仓库外固定脚本 `~/.local/bin/da-remote`，只接受几个子命令（开始评测、查状态、拉结果），在沙箱外运行，agent 不能改它，输出里的 IP 换成 `<server>`。服务器 IP 只在 `~/.ssh/config`。不装 Tailscale；以后公开部署网页时再定是否用 Cloudflare 代理隐藏源站。
   - Codex：审查一律 `-s read-only`（覆盖全局的 `danger-full-access`）；按路径禁读是 beta，先实测再启用。
@@ -112,6 +113,15 @@
 - **目录**：`src/data_agent/`、`skills/`、`evals/`、`tests/`，以后加 `web/`；`runs/`、`.claude/worktrees/` 不进 git；只提交汇总报告。
 - **远程仓库与 CI**：私有仓库 `github.com/kevinWangSheng/data-agent`（2026-10-12），以后转公开；GitHub Actions 在 push 时跑 `make check`。
 - **编码规范**：`CODING_STANDARDS.md` 只放需要判断的规则（类型注解写全、新逻辑配测试、Skill 不含针对榜单的内容、不绕过只读网关、上游复制的文件保留版权头）。
+
+### 环境配置剩余项（2026-10-15）
+
+上面已配好并实测的不再列。做完一项删一项。
+
+- [ ] 密钥文件迁到 `~/.config/data-agent/env`（人做），并在 `.claude/settings.json` 的 `permissions.deny` 与 `sandbox.filesystem.denyRead` 加上这个路径（人做：该文件对 agent 写保护）；之后 `make check` 在沙箱里应通过。
+- [ ] `da-remote`：源码放 `scripts/`，装到 `~/.local/bin/`，子命令只有开始评测、查状态、拉结果，输出把 IP 换成 `<server>`。等服务器就绪（`docs/setup.md` #3）再写、再实测。
+- [ ] Codex 按路径禁读（beta）实测，能用再在 `da-review` 里启用。
+- [ ] 本机工具（Docker 守护进程、Harbor、git-lfs、psql）照 `docs/setup.md` 在工单 01 开始时装。
 
 ## 7. 运行与评测环境（已讨论，2026-10-12）
 
@@ -135,6 +145,6 @@
 
 ## 8. 实施计划（最后做）
 
-前面几节定了以后，再用 `/to-spec`、`/to-tickets` 重写或修改 `.scratch/phase1/` 的草稿。
+前面几节定了以后，用 `/to-spec`、`/to-tickets` 写 spec 与工单。2026-10-05 的旧草稿 `.scratch/phase1/` 已于 2026-10-15 删除（git 历史 `f0ccd77` 可查）；`docs/setup.md` 与第 7 节里的"工单 01/08/09/10"是旧编号，写新工单时一并改。
 
 - 没有截止时间，每天推进；开发主要由多个 agent 并行完成。拆工单时尽量让工单之间少依赖、能并行，每个工单在独立分支（或 worktree）上做。

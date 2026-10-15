@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Start Claude Code in this repo with the model keys from .env masked (plan §6).
+# Start Claude Code in this repo with the model keys from ~/.config/data-agent/env masked (plan §6).
+# The env file lives outside the repo: inside the repo the sandbox's read-deny breaks tools that stat
+# every entry of the repo root (pytest collection), and Codex review would find it among the files it reads.
 # Sandboxed commands see a placeholder; the sandbox proxy swaps in the real key only on requests to the
 # model hosts. Masking is honored only from a trusted scope, so the settings live in
 # ~/.claude/data-agent.settings.json (copied from scripts/data-agent.settings.json), not in the repo.
@@ -8,12 +10,13 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 settings="$HOME/.claude/data-agent.settings.json"
+env_file="$HOME/.config/data-agent/env"
 [[ -f "$settings" ]] || { echo "da-claude: missing $settings" >&2; exit 1; }
-[[ -f "$repo/.env" ]] || { echo "da-claude: missing $repo/.env (copy .env.example)" >&2; exit 1; }
+[[ -f "$env_file" ]] || { echo "da-claude: missing $env_file (copy .env.example)" >&2; exit 1; }
 
 cd "$repo"
 set -a
 # shellcheck disable=SC1091
-source .env
+source "$env_file"
 set +a
 exec claude --settings "$settings" "$@"

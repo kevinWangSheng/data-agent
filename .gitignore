@@ -1,4 +1,4 @@
-# Secrets — never commit; copy .env.example to .env
+# Secrets — never commit. Real keys live in ~/.config/data-agent/env (see .env.example).
 .env
 .env.*
 !.env.example

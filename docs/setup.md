@@ -12,7 +12,7 @@
 | 4 | Mac 上的 Docker 守护进程运行中 | 开发期跑单元测试和单题用 | ☐ |
 | 5 | 私有 GitHub 仓库作为 remote | 代码从 Mac 同步到服务器靠它；一期跑通前保持私有，之后转公开 | ☑ `github.com/kevinWangSheng/data-agent`（2026-10-12） |
 
-密钥只放在机器的环境变量或 `.env` 里（`.env` 不进 git），不贴进对话或文档。
+密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），由 `scripts/da-claude` 加载；不放仓库里的 `.env`（沙箱禁读会让 pytest 收集失败，Codex 审查也能读到），不贴进对话或文档。
 
 ## 以后才要
 
