@@ -3,6 +3,14 @@
 useDefault = true
 
 [[rules]]
+# The default generic-api-key rule only fires next to a key-like name (KEY=, api_key:); a bare literal such as
+# Client("sk-...") slips through. DeepSeek keys are sk- followed by 32 hex characters.
+id = "deepseek-api-key"
+description = "DeepSeek API key"
+regex = '''\bsk-[0-9a-f]{32}\b'''
+keywords = ["sk-"]
+
+[[rules]]
 id = "public-ipv4"
 description = "Public IPv4 address (use the SSH host alias instead)"
 regex = '''\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b'''
