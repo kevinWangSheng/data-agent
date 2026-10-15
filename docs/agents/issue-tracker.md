@@ -9,8 +9,11 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
-- New tickets follow `ticket-template.md` (handoff fields + ledger)
+- New tickets follow `ticket-template.md` (handoff fields + ledger); it overrides the simpler template bundled with `/to-tickets`
+- The first ticket of each feature writes the acceptance tests at the seams agreed in the spec; it is human-reviewed and merged before any implementation ticket starts, and later tickets list those test files under `Must not edit`
+- Ticket files are edited only in the main checkout (first line of `git worktree list`), by absolute path; ticket branches do not commit `.scratch/*/issues/`, and the human commits ticket state on main
 - Claim before work: set `Status: in-progress`, `Claimed by:` and `Branch:`, and save; a ticket is free when it is `ready-for-agent` and every `Blocked by:` ticket is `done`
+- Return for rework: the human adds a `退回：<reason>` comment and sets `Status: ready-for-agent`; the next session continues on the same branch
 
 ## When a skill says "publish to the issue tracker"
 

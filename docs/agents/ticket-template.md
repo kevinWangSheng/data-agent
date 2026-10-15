@@ -20,7 +20,7 @@ What exists when this is done, in one or two sentences.
 ## Authority
 
 - May edit: <directories/files>
-- Must not edit: acceptance tests at the agreed seam, other tickets' files, `.claude/`, `CODING_STANDARDS.md`
+- Must not edit: acceptance tests at the agreed seam (<test files, merged by ticket 01>), other tickets' files, `.claude/`, `CODING_STANDARDS.md`
 - Server access: none | `da-remote <subcommands>`
 - Spend cap: none | $X of model calls
 
@@ -52,9 +52,9 @@ and the branch name.
 
 - Attempts: 0
 - Review rounds: 0
-- Model spend: $0
+- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
-- Human review minutes: —
+- Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
 ```
