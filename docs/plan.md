@@ -79,7 +79,7 @@
   2. agent：在 spec 约定的测试接缝上 TDD 实现（`/implement`）。
   3. 确定性：`make check` 与 pre-commit。
   4. agent：真实运行一次（跑 CLI、单题、截图），命令与真实输出贴进工单 Comments。
-  5. agent：Codex 换模型审查，再交另一个模型复核；修复最多 2 轮，不过就转给人。
+  5. agent：两道审查。先 Codex（`da-review`，换模型找 bug，只读）；再由 Claude 开新上下文跑 `eng:code-review`（Standards、Spec 两个子 agent 并行，Spec 对照本工单验收标准；照 mattpocock `/code-review`）。第二道补的是 `codex review --base` 不能带提示词、不对照 spec 的缺口；它和写代码的同为 Claude，独立性靠 Codex 那一道补，`/retro` 发现漏审再改（2026-10-15 定）。每条结果修或在工单写明不修的理由；修复最多 2 轮，不过就转给人。
   6. 人：看 diff 和证据，决定合并。
 - **强制程度**：先靠 skill（`/implement` + 新工单模板）约束步骤，只有提交前检查是硬卡；`/retro` 发现哪一步常被跳过，再把那一步改成脚本。
 - **外部行为验证**：验收的测试接缝在 `/to-spec` 时由人确认，实现时 agent 不改；留出集只经 `da-remote` 返回汇总分数，agent 拿不到失败细节。
@@ -121,7 +121,6 @@
 - [ ] 在 `~/.config/data-agent/env` 照 `.env.example` 填好 key 并 `chmod 600`（人做；agent 读不到，无法核实）。仓库内 `.env` 已移除、settings 禁读已加、沙箱内 `make check` 已通过（2026-10-15，`4c43d33`）。
 - [ ] `da-remote`：源码放 `scripts/`，装到 `~/.local/bin/`，子命令只有开始评测、查状态、拉结果，输出把 IP 换成 `<server>`。等服务器就绪（`docs/setup.md` #3）再写、再实测。
 - [ ] Codex 按路径禁读（beta）实测，能用再在 `da-review` 里启用。
-- [ ] 审查的复核一步（上面流水线第 5 步）：`da-review` 现在只配了 Codex 一轮。配置时先看 `docs/research/2026-10-13-coding-agent-env.md` 第 7 节，未确认的再讨论决定。
 - [ ] 本机工具（Docker 守护进程、Harbor、git-lfs、psql）照 `docs/setup.md` 在工单 01 开始时装。
 - [ ] 流水线端到端试跑一次（等 key 填好）：`da-claude` 启动后遮罩生效、建 worktree + `uv sync` + pre-commit 能跑、`da-review` 审一个真实分支、工单 Ledger 能填。用工单 01 来跑，不另造假工单；各段此前只单独配置过，没有连起来跑过。
 
@@ -164,7 +163,7 @@
 
 顺序：
 
-- [ ] 1. 审查第二道复核：定做法并配好（第 6 节流水线第 5 步）。
+- [x] 1. 审查第二道复核：定做法并配好（第 6 节流水线第 5 步）。
 - [ ] 2. Codex 按路径禁读（beta）实测，能用就在 `da-review` 里启用。
 - [ ] 3. 本机工具：Harbor、git-lfs、psql 安装命令备好由人执行（要写沙箱外目录）；Docker Desktop 由人启动；`docs/setup.md` 同步（参考仓库已于 2026-10-14 clone 到 `~/dev/AI/data-agent-refs/`）。
 - [ ] 4. 人：`~/.config/data-agent/env` 填 key、`chmod 600`。与 3 一样可随时做，不挡 5、6。

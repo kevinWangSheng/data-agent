@@ -38,7 +38,7 @@ runs/             运行产出，不进 git
 1. 认领：工单 `Status: ready-for-agent` 且 `Blocked by:` 都已 `done` 才能领；先把 `Status:` 改成 `in-progress`、填 `Claimed by:` 和 `Branch:` 并保存，再做别的。
 2. 先跑测试拿基线，再在 spec 约定的测试接缝上 TDD 实现（`/implement`）。
 3. `make check` 通过后，真实运行一次改动的行为，把命令和真实输出贴进工单 `## Comments`。
-4. 换模型审查：`da-review main`（Codex，只读），修复最多 2 轮；还不过就停下。
+4. 两道审查：先 `da-review main`（Codex，只读，换模型找 bug）；再开新上下文跑 `eng:code-review main`（Standards、Spec 两个子 agent，对照本工单验收标准）。每条结果要么修，要么在工单 Comments 写明不修的理由；修复最多 2 轮，还不过就停下。
 5. 填工单 `## Ledger`，`Status:` 改成 `in-review`，提交到本工单分支。合并由人做。
 
 停下交回时：`Status: ready-for-human`，Comment 写清试了什么、哪里失败、分支名。工单格式见 `docs/agents/ticket-template.md`。
