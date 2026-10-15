@@ -36,20 +36,24 @@ runs/             运行产出，不进 git
 
 照 `docs/plan.md` 第 6 节。一个工单一个 agent、一个 worktree：
 
-1. 认领：工单 `Status: ready-for-agent` 且 `Blocked by:` 都已 `done` 才能领；先把 `Status:` 改成 `in-progress`、填 `Claimed by:` 和 `Branch:` 并保存，再做别的。
-2. 先跑测试拿基线，再在 spec 约定的测试接缝上 TDD 实现（`/implement`）。
-3. `make check` 通过后，真实运行一次改动的行为，把命令和真实输出贴进工单 `## Comments`。
-4. 两道审查：先 `da-review main`（Codex，只读，换模型找 bug）；再开新上下文跑 `eng:code-review main`（Standards、Spec 两个子 agent，对照本工单验收标准）。每条结果要么修，要么在工单 Comments 写明不修的理由；修复最多 2 轮，还不过就停下。
-5. 填工单 `## Ledger`，`Status:` 改成 `in-review`，提交到本工单分支。合并由人做。
+工单文件只在主 checkout（`git worktree list` 第一行）里改，用绝对路径；工单分支不提交 `.scratch/*/issues/`，这样所有会话看到同一份状态。
 
-停下交回时：`Status: ready-for-human`，Comment 写清试了什么、哪里失败、分支名。工单格式见 `docs/agents/ticket-template.md`。
+1. 认领：工单 `Status: ready-for-agent` 且 `Blocked by:` 都已 `done` 才能领；先把 `Status:` 改成 `in-progress`、填 `Claimed by:` 和 `Branch:` 并保存，再做别的。
+2. 先跑测试拿基线，再在 spec 约定的测试接缝上 TDD 实现（`/implement`；它原文里的审查和提交顺序以本节为准）。
+3. `make check` 通过后，真实运行一次改动的行为，把命令和真实输出贴进工单 `## Comments`。
+4. 提交到本工单分支。先提交再审查：两道审查都只看已提交的 diff。
+5. 两道审查：先 `da-review main`（Codex，只读，换模型找 bug）；再开新上下文跑 `eng:code-review main`（点名这个，不用内置的 `code-review`；Standards、Spec 两个子 agent，对照本工单验收标准）。每条结果要么修（修完提交），要么在工单 Comments 写明不修的理由；修复最多 2 轮，还不过就停下。
+6. 填工单 `## Ledger`，`Status:` 改成 `in-review`。合并由人做（GitHub PR，squash）。
+
+停下交回时：`Status: ready-for-human`，Comment 写清试了什么、哪里失败、分支名。被退回时（Comments 里有"退回：原因"，Status 回到 `ready-for-agent`）在原分支上接着修。工单格式见 `docs/agents/ticket-template.md`。
 
 ## 硬规矩
 
 - **MUST**：改文件前先读；只改工单 `Authority` 允许的范围。
 - **MUST**：新行为配测试；bug 修复配一个修复前会失败的测试。
 - **MUST**：所有对数据源的 SQL 走只读网关；唯一的写方式是改 dbt 项目后 `dbt run`。
-- **MUST**：从上游复制的文件保留原版权头，并登记到 `NOTICE`。
+- **MUST**：从上游复制的文件保留原版权头，并登记到 `NOTICE`（MIT 和 Apache-2.0 都要求保留版权与许可声明；上游自带 `NOTICE` 的，如 data-eng-bench，相关内容一并带上）。
+- **MUST NOT**：从没有许可证的仓库（DataAgentBench）或 nao 里标 `@license Enterprise` 的文件复制代码，只能参考思路。
 - **MUST NOT**：改 spec 约定的验收测试来让它变绿；觉得验收测试错了就停下交回。
 - **MUST NOT**：在 Skill 里写针对某个榜单题目的内容（ADR-0005）。
 - **MUST NOT**：查看或打印留出集的逐题失败细节；留出集只看汇总分数（ADR-0004）。
