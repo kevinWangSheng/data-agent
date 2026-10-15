@@ -53,7 +53,7 @@ runs/             运行产出，不进 git
 - **MUST**：所有对数据源的 SQL 走只读网关；唯一的写方式是改 dbt 项目后 `dbt run`。
 - **MUST**：从上游复制的文件保留原版权头，并登记到 `NOTICE`（MIT 和 Apache-2.0 都要求保留版权与许可声明；上游自带 `NOTICE` 的，如 data-eng-bench，相关内容一并带上）。
 - **MUST NOT**：从没有许可证的仓库（DataAgentBench）或 nao 里标 `@license Enterprise` 的文件复制代码，只能参考思路。
-- **MUST NOT**：改 spec 约定的验收测试来让它变绿；觉得验收测试错了就停下交回。
+- **MUST NOT**：改 spec 约定的验收测试来让它变绿；觉得验收测试错了就停下交回。唯一例外：本工单让某个验收测试转绿时，删掉它的 `xfail` 标记，其余一字不改。
 - **MUST NOT**：在 Skill 里写针对某个榜单题目的内容（ADR-0005）。
 - **MUST NOT**：查看或打印留出集的逐题失败细节；留出集只看汇总分数（ADR-0004）。
 - **MUST NOT**：读 `.env*`、`~/.config/data-agent/`、`~/.ssh`、密钥文件；在代码、文档、测试、运行产出里写密钥或服务器 IP。连服务器只用 `da-remote`，不直接执行 `ssh` / `scp` / `rsync`。
