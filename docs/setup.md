@@ -9,10 +9,10 @@
 | 1 | DeepSeek API key，充值约 $20 | platform.deepseek.com。一期上限暂定 $300、推算约 $250（未实测，见 `docs/plan.md` 第 7 节） | ☐ |
 | 2 | Anthropic API key，充值约 $20（可选） | 只用于 01 的 5 题 Sonnet 5.5 对照（约 $7）；不跑 Claude 全量 | ☐ |
 | 3 | x86_64 Linux 服务器 | Docker、uv、git、git-lfs；Mac 能 SSH 免密登录。建议 ≥8 核 / 32 GB / 100 GB 空闲磁盘（估计，未确认） | ☐ |
-| 4 | Mac 上的 Docker 守护进程运行中 | 开发期跑单元测试和单题用 | ☐ |
+| 4 | Mac 上的 colima 运行中（Docker 运行时；数据在外接盘 sd710） | agent 容器与测试用数据库（plan §6，待建） | ☐ |
 | 5 | 私有 GitHub 仓库作为 remote | 代码从 Mac 同步到服务器靠它；一期跑通前保持私有，之后转公开 | ☑ `github.com/kevinWangSheng/data-agent`（2026-10-12） |
 
-密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），由 `scripts/da-claude` 加载；不放仓库里的 `.env`（沙箱禁读会让 pytest 收集失败，Codex 审查也能读到），不贴进对话或文档。
+密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），agent 容器启动时读取（待建）；不放仓库里的 `.env`，不贴进对话或文档。
 
 ## 以后才要
 
@@ -30,6 +30,6 @@
 
 ## 本机检查（2026-10-07）
 
-- arm64 Mac，16 GB 内存，磁盘剩约 25 GB → 只做开发，不跑批量评测。
-- 已装：Docker 29.3（守护进程未运行）、uv 0.10.8、Node 24、gh（已登录）、Claude Code 2.1.292、Codex CLI 0.160.1。
-- 未装：Harbor、git-lfs、psql。
+- arm64 Mac，10 核，16 GB 内存；内置盘只剩约 5.7 GB（2026-10-15，98%），外接盘 sd710 剩约 650 GB → 只做开发，不跑批量评测。
+- 已装：Docker CLI 29.3 + colima（profile `m1-kind`：4 核 / 8 GB / 30 GB，数据在 sd710；没有 Docker Desktop）、uv 0.10.8、Node 24、gh（已登录）、Claude Code 2.1.292、Codex CLI 0.160.1。
+- Harbor、git-lfs、psql 不装在 Mac 上：Harbor 进仓库依赖（`uv run harbor`），其余装进 agent 容器镜像（plan §6，待建）。

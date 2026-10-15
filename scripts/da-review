@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cross-model code review with Codex (plan §6): Claude writes, Codex reviews read-only.
 # Source of truth lives in the repo; the installed copy at ~/.local/bin/da-review is what agents run.
-# It runs outside the Claude sandbox (Codex needs its own login), so agents cannot edit the installed copy.
+# Agents must not edit the installed copy (settings.json denies it).
 #
 # Usage: da-review [base-branch]   (default: main)
 set -euo pipefail

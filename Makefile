@@ -12,7 +12,7 @@ fmt:
 	uv run ruff check --fix .
 	uv run ruff format .
 
-# Integration tests call a real model. In a coding-agent session the key is a masked env var that the
-# sandbox proxy swaps for the real value on requests to the model host (plan §6).
+# Integration tests call a real model and need the DATA_AGENT_* variables from ~/.config/data-agent/env
+# in the environment (plan §6).
 test-integration:
 	uv run pytest -q -m integration

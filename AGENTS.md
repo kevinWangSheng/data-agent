@@ -10,14 +10,13 @@
 uv sync                 # 装依赖（只用 uv，不用 pip）
 make check              # 快检查：ruff、格式、basedpyright、单元测试；不联网、不调模型
 make fmt                # 自动修 lint 与格式
-make test-integration   # 真调模型的集成测试；手动跑，密钥是遮罩过的占位符
+make test-integration   # 真调模型的集成测试；手动跑，需要环境里有 ~/.config/data-agent/env 的变量
 da-review main          # Codex 换模型审查本分支（只读）
 uv run pytest tests/test_x.py -q   # 只跑一个测试文件
 ```
 
 - 每次改完代码都跑 `make check`；提交时 pre-commit 会再跑格式、lint、大文件拦截、密钥与公网 IP 扫描。
 - 按改动面挑最小检查集；慢命令的输出用 `tee` 存成文件，之后反复看文件，不重复跑。
-- `da-review` 单独作为一条命令执行，前后不接 `cd`、`&&`、管道或重定向：只有整条命令匹配时才会在沙箱外运行，否则 Codex 在沙箱里启动失败。
 
 ## 目录
 
