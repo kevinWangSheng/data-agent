@@ -1,0 +1,4 @@
+{"seq": 0, "type": "version", "git_commit": "0123456789abcdef0123456789abcdef01234567", "skill_version": "skills-3f2a9c1e", "config": "full", "model": "deepseek-flash", "sdk_version": "0.2.165"}
+{"seq": 1, "type": "tool_start", "tool": "mcp__data-agent__list_tables", "input": {}}
+{"seq": 2, "type": "tool_end", "tool": "mcp__data-agent__list_tables", "output": "raw.orders, customer_orders"}
+{"seq": 3, "type": "result", "uncached_input_tokens": 20000, "cached_input_tokens": 100000, "output_tokens": 4000, "cost_usd": 0.125}

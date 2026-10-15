@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: customers
+      - name: orders
+        description: "customer_ref is a dirty key: the same customer appears as C0001, c0001, ' C0001' and 'C-0001 '."
+      - name: order_items
+      - name: web_events

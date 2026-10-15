@@ -1,0 +1,24 @@
+{
+  "id": "0610a5d6-05e9-524d-a42c-e5242f5517d2",
+  "task_name": "dbt-echo",
+  "trial_name": "dbt-echo__Lp8vR2c",
+  "trial_uri": "file:///jobs/fixture-job/dbt-echo__Lp8vR2c",
+  "agent_info": {
+    "name": "data-agent",
+    "version": "0.0.0",
+    "model_info": {
+      "name": "deepseek-flash",
+      "provider": "deepseek"
+    }
+  },
+  "agent_result": null,
+  "verifier_result": null,
+  "exception_info": {
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 4000.0 seconds in dbt-echo__Lp8vR2c",
+    "exception_traceback": "Traceback (most recent call last):\n  ...\n",
+    "occurred_at": "2026-10-14T09:14:45Z"
+  },
+  "started_at": "2026-10-14T09:14:00Z",
+  "finished_at": "2026-10-14T09:14:45Z"
+}

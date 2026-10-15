@@ -1,0 +1,5 @@
+{
+  "seed": 20261015,
+  "dev": ["dbt-alpha", "dbt-bravo", "dbt-charlie"],
+  "holdout": ["dbt-delta", "dbt-echo", "dbt-foxtrot", "dbt-golf"]
+}

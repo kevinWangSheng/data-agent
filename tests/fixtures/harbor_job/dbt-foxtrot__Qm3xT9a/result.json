@@ -1,0 +1,28 @@
+{
+  "id": "bbb454a1-5ab6-5811-aa87-db7217027e6e",
+  "task_name": "dbt-foxtrot",
+  "trial_name": "dbt-foxtrot__Qm3xT9a",
+  "trial_uri": "file:///jobs/fixture-job/dbt-foxtrot__Qm3xT9a",
+  "agent_info": {
+    "name": "data-agent",
+    "version": "0.0.0",
+    "model_info": {
+      "name": "deepseek-flash",
+      "provider": "deepseek"
+    }
+  },
+  "agent_result": {
+    "n_input_tokens": 120000,
+    "n_cache_tokens": 100000,
+    "n_output_tokens": 4000,
+    "cost_usd": 0.125
+  },
+  "verifier_result": {
+    "rewards": {
+      "reward": 1.0
+    }
+  },
+  "exception_info": null,
+  "started_at": "2026-10-14T09:16:00Z",
+  "finished_at": "2026-10-14T09:16:45Z"
+}

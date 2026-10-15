@@ -1,0 +1,12 @@
+# Mini dbt project for the acceptance tests (ticket 01). Tests copy it to a temp dir and write a
+# profiles.yml next to it that points at that test's own DuckDB file (built from ../shop.sql).
+name: shop
+version: "1.0.0"
+config-version: 2
+profile: shop
+
+model-paths: ["models"]
+
+models:
+  shop:
+    +materialized: table

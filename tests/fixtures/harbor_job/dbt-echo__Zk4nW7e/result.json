@@ -1,0 +1,28 @@
+{
+  "id": "ca1e42ae-7a09-5d8e-8262-7e1758dfe6eb",
+  "task_name": "dbt-echo",
+  "trial_name": "dbt-echo__Zk4nW7e",
+  "trial_uri": "file:///jobs/fixture-job/dbt-echo__Zk4nW7e",
+  "agent_info": {
+    "name": "data-agent",
+    "version": "0.0.0",
+    "model_info": {
+      "name": "deepseek-flash",
+      "provider": "deepseek"
+    }
+  },
+  "agent_result": {
+    "n_input_tokens": 120000,
+    "n_cache_tokens": 100000,
+    "n_output_tokens": 4000,
+    "cost_usd": 0.125
+  },
+  "verifier_result": {
+    "rewards": {
+      "reward": 1.0
+    }
+  },
+  "exception_info": null,
+  "started_at": "2026-10-14T09:15:00Z",
+  "finished_at": "2026-10-14T09:15:45Z"
+}

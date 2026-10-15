@@ -1,0 +1,24 @@
+{
+  "id": "5d6e8e15-775e-5d01-a533-d2265563000e",
+  "task_name": "dbt-bravo",
+  "trial_name": "dbt-bravo__Zk4nW7e",
+  "trial_uri": "file:///jobs/fixture-job/dbt-bravo__Zk4nW7e",
+  "agent_info": {
+    "name": "data-agent",
+    "version": "0.0.0",
+    "model_info": {
+      "name": "deepseek-flash",
+      "provider": "deepseek"
+    }
+  },
+  "agent_result": null,
+  "verifier_result": null,
+  "exception_info": {
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 4000.0 seconds in dbt-bravo__Zk4nW7e",
+    "exception_traceback": "Traceback (most recent call last):\n  ...\n",
+    "occurred_at": "2026-10-14T09:06:45Z"
+  },
+  "started_at": "2026-10-14T09:06:00Z",
+  "finished_at": "2026-10-14T09:06:45Z"
+}
