@@ -2,7 +2,7 @@
 
 开工前一次性准备。依据：ADR-0001 Update、ADR-0006、ADR-0007。2026-10-07 本机检查结果见末尾。
 
-## 现在就要（工单 01 开始用）
+## 现在就要（开工前）
 
 | # | 资源 | 说明 | 状态 |
 |---|---|---|---|
@@ -18,15 +18,15 @@
 
 | # | 资源 | 用于 |
 |---|---|---|
-| 6 | Harbor Hub 账号 | 工单 10，data-eng-bench 提交要 Hub 上的 job 链接 |
-| 7 | 服务器上的 PostgreSQL ≥17.5、MongoDB 8（用 Docker 起） | 工单 08 DAB、09 jaffle_shop |
-| 8 | DAB 数据（Git LFS，约 5 GB） | 工单 08 |
+| 6 | Harbor Hub 账号 | 上榜提交（人做），data-eng-bench 提交要 Hub 上的 job 链接 |
+| 7 | 服务器上的 PostgreSQL ≥17.5、MongoDB 8（用 Docker 起） | 工单 13 DAB；jaffle-shop（工单 08）在本地用 colima 起 |
+| 8 | DAB 数据（Git LFS，约 5 GB） | 工单 13 |
 
 不需要：GPU、云数仓账号、LiveSQLBench 标准答案邮件（二期）。
 
 ## 上游参考仓库
 
-放在仓库外 `~/dev/AI/data-agent-refs/`，按 `docs/research/` 里记录的 commit 检出：harbor、data-eng-bench、SignalPilot、signalpilot-plugin、ktx、DataAgentBench、BIRD-Interact。DAB 无 LICENSE，不复制进本仓库（ADR-0007）。由 agent 在工单 01 开始时 clone。
+放在仓库外 `~/dev/AI/data-agent-refs/`，按 `docs/research/` 里记录的 commit 检出：harbor、data-eng-bench、SignalPilot、signalpilot-plugin、ktx、DataAgentBench、BIRD-Interact。DAB 无 LICENSE，不复制进本仓库（ADR-0007）。已于 2026-10-14 clone。
 
 ## 本机检查（2026-10-07）
 
