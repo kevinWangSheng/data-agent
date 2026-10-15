@@ -119,7 +119,6 @@
 
 上面已配好并实测的不再列。做完一项删一项。
 
-- [ ] 在 `~/.config/data-agent/env` 照 `.env.example` 填好 key 并 `chmod 600`（人做）。
 - [ ] `da-remote`：源码放 `scripts/`，装到 `~/.local/bin/`，子命令只有开始评测、查状态、拉结果，输出把 IP 换成 `<server>`。等服务器就绪（`docs/setup.md` #3）再写、再实测。
 - [ ] 流水线端到端试跑一次：用工单 01 跑通认领 → 实现 → `make check` → 提交 → 两道审查 → Ledger，CI 在 push 后为绿。
 
@@ -165,7 +164,7 @@
 - [x] 1. 审查第二道复核：做法 `acdaac7`；顺序改为先提交再审，并定下工单状态位置、验收测试工单、合并方式、Ledger 口径（2026-10-15，AGENTS.md 与 `docs/agents/` 同步）。
 - [x] 2. ~~Codex 按路径禁读~~：不做，理由见第 6 节 Codex 一条（2026-10-15）。
 - [x] 3. 本机工具：去掉宿主机沙箱后 agent 自己能装；Harbor 已装（`uv tool`，2026-10-15）；git-lfs、psql 到工单要用时由 agent 用 brew 装。
-- [ ] 4. 人：`~/.config/data-agent/env` 填 key、`chmod 600`。随时可做。
+- [x] 4. 人：`~/.config/data-agent/env` 填 key、`chmod 600`（2026-10-15 人已填并自测；agent 按规则不读该目录，未独立核实）。
 - [ ] 5. 第 8 节：`/to-spec` 写一期 spec，人确认验收的测试接缝；分几次讨论。
 - [ ] 6. 第 8 节：`/to-tickets` 拆工单与依赖图，改掉 `docs/setup.md` 与第 7 节的旧工单编号。
 - [ ] 7. 用工单 01 端到端试跑流水线（依赖 4、6）。
