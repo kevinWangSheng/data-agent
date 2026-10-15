@@ -102,7 +102,7 @@
   - 密钥文件放仓库外 `~/.config/data-agent/env`，由 `scripts/da-claude` 加载（2026-10-15：放在仓库里时沙箱禁读让 pytest 收集失败，且 Codex 审查能读到）。
   - 凭证遮罩：DeepSeek key 只以占位符出现在 agent 眼前，由沙箱代理在发往允许的域名时替换（只能配在用户级设置里）。
   - 连服务器：仓库外固定脚本 `~/.local/bin/da-remote`，只接受几个子命令（开始评测、查状态、拉结果），在沙箱外运行，agent 不能改它，输出里的 IP 换成 `<server>`。服务器 IP 只在 `~/.ssh/config`。不装 Tailscale；以后公开部署网页时再定是否用 Cloudflare 代理隐藏源站。
-  - Codex：审查一律 `-s read-only`（覆盖全局的 `danger-full-access`）；按路径禁读是 beta，先实测再启用。
+  - Codex：审查一律 `-s read-only`（覆盖全局的 `danger-full-access`），审查者不改文件。不再限制 Codex 读什么（2026-10-15 定）：实测 read-only 下它能读仓库外文件，但要按路径禁读得改全局 Codex 配置或另设 `CODEX_HOME`，代价大于收益；key 若经审查意见流进提交，由 pre-commit gitleaks 拦（已覆盖裸 DeepSeek key）。已接受的风险。
   - 转公开前再扫一遍历史里的密钥与 IP。
 - **hooks**：
   - pre-commit（照 ktx）：行尾空格、yaml/json/toml、拦大文件、ruff、gitleaks；Claude 和 Codex 都绕不过。
@@ -120,9 +120,8 @@
 
 - [ ] 在 `~/.config/data-agent/env` 照 `.env.example` 填好 key 并 `chmod 600`（人做；agent 读不到，无法核实）。仓库内 `.env` 已移除、settings 禁读已加、沙箱内 `make check` 已通过（2026-10-15，`4c43d33`）。
 - [ ] `da-remote`：源码放 `scripts/`，装到 `~/.local/bin/`，子命令只有开始评测、查状态、拉结果，输出把 IP 换成 `<server>`。等服务器就绪（`docs/setup.md` #3）再写、再实测。
-- [ ] Codex 按路径禁读（beta）实测，能用再在 `da-review` 里启用。
 - [ ] 本机工具（Docker 守护进程、Harbor、git-lfs、psql）照 `docs/setup.md` 在工单 01 开始时装。
-- [ ] 流水线端到端试跑一次（等 key 填好）：`da-claude` 启动后遮罩生效、建 worktree + `uv sync` + pre-commit 能跑、`da-review` 审一个真实分支、工单 Ledger 能填。用工单 01 来跑，不另造假工单；各段此前只单独配置过，没有连起来跑过。
+- [ ] 流水线端到端试跑一次（等 key 填好）：`da-claude` 启动后遮罩生效、建 worktree + `uv sync` + pre-commit 能跑、`da-review` 审一个真实分支、工单 Ledger 能填、CI 在 push 后为绿（沙箱内读不到 gh 登录，2026-10-15 未核实）。用工单 01 来跑，不另造假工单；各段此前只单独配置过，没有连起来跑过。
 
 ## 7. 运行与评测环境（已讨论，2026-10-12）
 
@@ -163,8 +162,8 @@
 
 顺序：
 
-- [x] 1. 审查第二道复核：定做法并配好（第 6 节流水线第 5 步）。
-- [ ] 2. Codex 按路径禁读（beta）实测，能用就在 `da-review` 里启用。
+- [ ] 1. 审查第二道复核：做法已定（`acdaac7`），但顺序有误——`eng:code-review` 只审已提交的 diff，须先提交再审（Codex 实测指出），留待第二部分 P3 一起改。
+- [x] 2. ~~Codex 按路径禁读~~：不做，理由见第 6 节 Codex 一条（2026-10-15）。
 - [ ] 3. 本机工具：Harbor、git-lfs、psql 安装命令备好由人执行（要写沙箱外目录）；Docker Desktop 由人启动；`docs/setup.md` 同步（参考仓库已于 2026-10-14 clone 到 `~/dev/AI/data-agent-refs/`）。
 - [ ] 4. 人：`~/.config/data-agent/env` 填 key、`chmod 600`。与 3 一样可随时做，不挡 5、6。
 - [ ] 5. 第 8 节：`/to-spec` 写一期 spec，人确认验收的测试接缝；分几次讨论。
