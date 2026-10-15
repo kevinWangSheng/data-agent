@@ -97,7 +97,7 @@
   - 我们的 agent 启动时 `env` 只传给它自己的子进程，`setting_sources=["user"]` 不读本仓库的 `.claude/` 设置（照 SP `claude_agent_options.py:185-209`）；不影响本机正在用的 Claude Code。
   - 评测在服务器上跑（第 4、7 节）。
 - **权限、沙箱与防泄密**：
-  - 提交进 git 的 `.claude/settings.json`：deny 读写 `.env*`、`~/.ssh`、`~/.aws` 等；deny `git reset --hard`、`git clean`、`git push --force`，以及直接执行的 `ssh` / `scp` / `rsync`。
+  - 提交进 git 的 `.claude/settings.json`：deny 读写 `.env*`、`~/.ssh`、`~/.aws` 等；deny `git reset --hard`、`git clean`、`git push --force`，以及直接执行的 `ssh` / `scp` / `rsync`。这些 Bash 规则只是第一道提醒，不是边界（官方 permissions 文档原话；2026-10-15 实测 `/usr/bin/ssh -V` 能绕过 `Bash(ssh *)`）；边界靠下面的沙箱：读不到 `~/.ssh`、服务器地址不在网络白名单。沙箱还保护 `.git/config`，`git branch -D` 会报 `could not lock config file`，分支照样删除，可忽略。
   - 开 Claude Code 沙箱：禁读上述路径；网络白名单（PyPI、GitHub、npm、DeepSeek），新域名第一次弹窗放行；docker 用 `excludedCommands` 排除。
   - 密钥文件放仓库外 `~/.config/data-agent/env`，由 `scripts/da-claude` 加载（2026-10-15：放在仓库里时沙箱禁读让 pytest 收集失败，且 Codex 审查能读到）。
   - 凭证遮罩：DeepSeek key 只以占位符出现在 agent 眼前，由沙箱代理在发往允许的域名时替换（只能配在用户级设置里）。
