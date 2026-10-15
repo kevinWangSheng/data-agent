@@ -122,6 +122,7 @@
 - [ ] `da-remote`：源码放 `scripts/`，装到 `~/.local/bin/`，子命令只有开始评测、查状态、拉结果，输出把 IP 换成 `<server>`。等服务器就绪（`docs/setup.md` #3）再写、再实测。
 - [ ] Codex 按路径禁读（beta）实测，能用再在 `da-review` 里启用。
 - [ ] 本机工具（Docker 守护进程、Harbor、git-lfs、psql）照 `docs/setup.md` 在工单 01 开始时装。
+- [ ] 流水线端到端试跑一次（等 key 填好）：`da-claude` 启动后遮罩生效、建 worktree + `uv sync` + pre-commit 能跑、`da-review` 审一个真实分支、工单 Ledger 能填。用工单 01 来跑，不另造假工单；各段此前只单独配置过，没有连起来跑过。
 
 ## 7. 运行与评测环境（已讨论，2026-10-12）
 
@@ -147,4 +148,5 @@
 
 前面几节定了以后，用 `/to-spec`、`/to-tickets` 写 spec 与工单。2026-10-05 的旧草稿 `.scratch/phase1/` 已于 2026-10-15 删除（git 历史 `f0ccd77` 可查）；`docs/setup.md` 与第 7 节里的"工单 01/08/09/10"是旧编号，写新工单时一并改。
 
+- 首批写代码的工单在 spec 里定下每个 worktree 的 `runs/` 目录、DuckDB 文件、Postgres 库或端口怎么区分（`AGENTS.md` 有这条规则，还没有实现机制）。
 - 没有截止时间，每天推进；开发主要由多个 agent 并行完成。拆工单时尽量让工单之间少依赖、能并行，每个工单在独立分支（或 worktree）上做。
