@@ -97,7 +97,9 @@ def test_query_answer_within_tolerance(
          if is_completed(status)),
         Decimal(0),
     )  # fmt: skip
-    numbers = [Decimal(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", proc.stdout)]
+    numbers = [
+        Decimal(n.replace(",", "")) for n in re.findall(r"-?\d[\d,]*(?:\.\d+)?", proc.stdout)
+    ]
     assert any(abs(n - expected) <= Decimal("0.01") for n in numbers), (
         f"expected {expected} in the answer: {proc.stdout!r}"
     )
@@ -154,9 +156,9 @@ def test_dbt_model_built_with_correct_values(tmp_path: Path) -> None:
     built = duckdb_rows(
         db, "SELECT customer_id, completed_orders, lifetime_value FROM main.customer_ltv"
     )
-    assert len(built) == len(expected) == 12
+    assert len(expected) == 12
+    assert sorted(row[0] for row in built) == sorted(expected), "not one row per customer"
     for cid, completed, value in built:
-        assert cid in expected, f"unexpected customer_id {cid!r}"
         want_count, want_value = expected[cid]
         assert completed == want_count, cid
         assert abs(Decimal(str(value)) - want_value) <= Decimal("0.01"), cid

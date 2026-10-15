@@ -166,7 +166,9 @@ def test_bootstrap_interval_on_known_data(tmp_path: Path) -> None:
         {t: [1.0, 1.0, 1.0] if i < 5 else [0.0, 0.0, 0.0] for i, t in enumerate(tasks)},
     )
 
-    same = compare(fail, fail)
+    # Paired per task, a mixed job against itself differs by exactly 0 in every resample;
+    # resampling the two sides independently would give a non-zero-width interval.
+    same = compare(half, half)
     assert same["diff"] == pytest.approx(0)
     assert same["ci_low"] == pytest.approx(0) and same["ci_high"] == pytest.approx(0)
     assert same["significant"] is False
