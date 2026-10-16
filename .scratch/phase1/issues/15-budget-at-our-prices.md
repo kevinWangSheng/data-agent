@@ -1,6 +1,6 @@
 # 15 — 单次花费上限按本项目价目表计
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude (worktree 15-budget-at-our-prices)
@@ -116,3 +116,11 @@ SDK 拿不到运行中的逐轮用量、无法在运行中停止（要写明查�
 **待人决定**：记录文件读取失败后，价目表上限会在本次运行余下部分关掉，只剩 SDK 后备上限。flash 的后备是 $1 × 83.3；按实测 SDK 与价目表约 17–23 倍的比例，相当于价目表价格下的约 $3.6–5。另一种做法是保持价目表上限，但截停时花费会少报，Codex 已把这种做法判为问题。现在照人的原话"退回到 SDK 的 model_usage"实现。是否接受这个更松的上限，需要人确认。
 
 **主会话判断（待人决定那条）**：接受"记录文件读取失败后本次运行退回 SDK 后备上限"。理由：只在 CLI 改记录格式时发生、每次都写 `error` 事件、批量花费跟踪（工单 11）在总预算 80% 时停整批，单次放松的风险有界；另一种做法会少报花费。交人在最终审查时复核。
+
+### 2026-10-16 第 7 步：PR #16 退回第 1 轮（主会话）
+
+`cfa3f2f` CI 两次全绿。Codex 1 条 P1，属实：
+
+1. **`src/data_agent/agent.py:319`**：计费用的 `SubagentStop` hook 不过滤子 agent 类型；CLI 的内部活动/压缩摘要子 agent 也会触发 `SubagentStop`（上游 issue anthropics/claude-code#91910），读不到记录文件就把 `transcript_failed` 置位，本次运行余下部分价目表上限失效。照旁边 `verifier_hooks` 的做法，只对 `agent_type in VERIFIER_NAMES` 读记录文件；其他子 agent 的用量不在这里计（由结束时的 SDK `model_usage` 对账，若对账出差额写进结果事件）。配修复前会失败的测试。
+
+在原分支上修，修完提交，不 push、不 rebase。修完 `make check`、默认 $1 真实 dbt 运行一次，再跑一轮 `da-review main`。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
