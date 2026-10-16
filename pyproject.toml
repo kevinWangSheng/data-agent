@@ -4,7 +4,14 @@ version = "0.0.0"
 description = "Open-source, self-hostable data agent"
 license = "Apache-2.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "duckdb==1.2.2",
+    "mcp>=2.2,<3",
+    "sqlglot==30.8.0",
+]
+
+[project.scripts]
+data-agent = "data_agent.cli:main"
 
 [dependency-groups]
 dev = [
@@ -25,12 +32,17 @@ packages = ["src/data_agent"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Copied verbatim from SignalPilot (NOTICE); keep upstream's style so diffs against it stay clean.
+extend-exclude = ["src/data_agent/engine", "tests/engine"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.basedpyright]
 include = ["src", "tests"]
+# Verbatim SignalPilot copies (see [tool.ruff]); their annotations predate sqlglot 30's stubs.
+exclude = ["src/data_agent/engine", "tests/engine"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 

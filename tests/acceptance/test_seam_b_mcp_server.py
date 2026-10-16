@@ -130,7 +130,6 @@ async def orders_count(session: Any) -> str:
 # --- Tool list follows the run config -------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="tickets 02, 05")
 @pytest.mark.parametrize("config", CONFIGS)
 async def test_base_tools_in_every_config(config: str, shop_duckdb: Path) -> None:
     async with mcp_server("--config", config, "--duckdb", str(shop_duckdb)) as session:
@@ -140,18 +139,18 @@ async def test_base_tools_in_every_config(config: str, shop_duckdb: Path) -> Non
 # (config, layer on). Configs that switch a layer off pass as soon as ticket 05 adds the configs;
 # the others wait for the ticket that adds the layer's tools. Each case carries its own xfail.
 CONTEXT_CASES = [
-    pytest.param("baseline", False, marks=pytest.mark.xfail(strict=True, reason="ticket 05")),
+    pytest.param("baseline", False),
     pytest.param("full", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
     pytest.param("no-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
     pytest.param("no-verifiers", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
-    pytest.param("no-context", False, marks=pytest.mark.xfail(strict=True, reason="ticket 05")),
+    pytest.param("no-context", False),
     pytest.param("full-old-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
 ]
 VERIFIER_CASES = [
-    pytest.param("baseline", False, marks=pytest.mark.xfail(strict=True, reason="ticket 05")),
+    pytest.param("baseline", False),
     pytest.param("full", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
     pytest.param("no-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
-    pytest.param("no-verifiers", False, marks=pytest.mark.xfail(strict=True, reason="ticket 05")),
+    pytest.param("no-verifiers", False),
     pytest.param("no-context", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
     pytest.param("full-old-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
 ]
@@ -180,7 +179,6 @@ async def test_verifier_tools_follow_config(config: str, layer_on: bool, shop_du
 # --- Read-only gateway ----------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02")
 async def test_select_executes(db_args: list[str]) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         result = await call(
@@ -200,7 +198,6 @@ DDL = [
 ]
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02")
 async def test_ddl_blocked(db_args: list[str]) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         before = await orders_count(session)
@@ -226,7 +223,6 @@ DML = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02")
 async def test_dml_blocked(db_args: list[str], dialect: str) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         before = await orders_count(session)
@@ -253,7 +249,6 @@ DANGEROUS = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02")
 async def test_dangerous_functions_blocked(db_args: list[str], dialect: str) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         for sql in DANGEROUS[dialect]:
@@ -321,7 +316,6 @@ async def test_dictionary_search_returns_real_values(shop_duckdb: Path) -> None:
 # --- The six tools the verifiers use (2 base, 4 verifier-only): a passing and a failing case each
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02")
 async def test_list_tables(db_args: list[str]) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         everything = await call(session, "list_tables", {})
@@ -334,7 +328,6 @@ async def test_list_tables(db_args: list[str]) -> None:
         assert table not in text_of(nothing)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02")
 async def test_query_database(db_args: list[str]) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         ok = await call(session, "query_database", {"sql": "SELECT count(*) AS n FROM raw.orders"})
