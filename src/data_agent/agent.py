@@ -32,11 +32,12 @@ from claude_agent_sdk import (
 
 # Not re-exported by the SDK; the pinned SDK version fixes where it lives.
 from claude_agent_sdk._cli_version import __cli_version__
-from claude_agent_sdk.types import McpStdioServerConfig
+from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent.command_guard import command_guard
 from data_agent.events import EventLog, known_secrets
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
+from data_agent.verifiers import AGENT_TOOL, VERIFIERS_PROMPT, Emit, verifier_agents, verifier_hooks
 from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -245,12 +246,20 @@ def system_prompt(task_type: str, config: RunConfig) -> str:
     prompt = base.format(server=MCP_SERVER)
     if config.skill:
         prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
+    if uses_verifiers(task_type, config):
+        prompt += VERIFIERS_PROMPT
     return prompt
 
 
+def uses_verifiers(task_type: str, config: RunConfig) -> bool:
+    """The verifier subagents check dbt work only; query runs use sql-workflow's own checks."""
+    return task_type == "dbt" and config.verifiers
+
+
 def build_options(
-    task: Task, config: RunConfig, settings: ModelSettings, stderr: list[str]
+    task: Task, config: RunConfig, settings: ModelSettings, stderr: list[str], emit: Emit
 ) -> ClaudeAgentOptions:
+    """`emit` records events from hooks (the verifiers' start and end)."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
@@ -268,6 +277,12 @@ def build_options(
         tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
     guard = workspace_guard(task.workspace, protected=(task.duckdb,))
     hooks.append(HookMatcher(matcher="|".join(file_tools), hooks=[guard]))
+    all_hooks: dict[HookEvent, list[HookMatcher]] = {"PreToolUse": hooks}
+    agents = None
+    if uses_verifiers(task.type, config):
+        tools = [*tools, AGENT_TOOL]
+        agents = verifier_agents(MCP_SERVER)
+        all_hooks |= verifier_hooks(emit)
     return ClaudeAgentOptions(
         model=settings.model,
         env=settings.sdk_env(),
@@ -277,7 +292,8 @@ def build_options(
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
-        hooks={"PreToolUse": hooks},
+        hooks=all_hooks,
+        agents=agents,
         mcp_servers={MCP_SERVER: server},
         strict_mcp_config=True,
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.
@@ -408,7 +424,7 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
         tools: dict[str, str] = {}
         try:
             async for message in query(
-                prompt=prompt, options=build_options(task, config, settings, stderr)
+                prompt=prompt, options=build_options(task, config, settings, stderr, log.emit)
             ):
                 if isinstance(message, ResultMessage):
                     final = message

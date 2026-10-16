@@ -77,3 +77,16 @@ def test_installed_wheel_reports_the_commit_it_was_built_from(tmp_path: Path) ->
         check=True,
     ).stdout.strip()
     assert proc.stdout.strip() == built_from
+
+
+def test_installed_wheel_loads_the_verifier_agents(tmp_path: Path) -> None:
+    site = build_and_extract_wheel(tmp_path)
+    probe = (
+        "from data_agent import verifiers; "
+        "agents = verifiers.verifier_agents('data'); "
+        "assert set(agents) == {'verifier', 'value-verifier'}; "
+        "print(verifiers.AGENTS_DIR)"
+    )
+    proc = run_installed(tmp_path, site, probe)
+    assert proc.returncode == 0, proc.stderr
+    assert Path(proc.stdout.strip()).is_relative_to(site)

@@ -8,6 +8,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from data_agent.context_tools import register_context_tools
 from data_agent.gateway import MAX_ROWS, DuckDBGateway, QueryBlocked, QueryFailed, QueryResult
 from data_agent.run_config import RunConfig
+from data_agent.verifier_tools import register_verifier_tools
 
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
 LIST_TABLES_SQL = """
@@ -46,7 +47,7 @@ def format_rows(result: QueryResult) -> str:
 
 def build_server(gateway: DuckDBGateway, config: RunConfig) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
-    `config` turns that layer on, so a run with it off cannot see them (verifiers: ticket 07)."""
+    `config` turns that layer on, so a run with it off cannot see them."""
     server = MCPServer("data-agent")
 
     @server.tool()
@@ -77,4 +78,6 @@ def build_server(gateway: DuckDBGateway, config: RunConfig) -> MCPServer:
 
     if config.context:
         register_context_tools(server, partial(run_query, gateway))
+    if config.verifiers:
+        register_verifier_tools(server, partial(run_query, gateway))
     return server
