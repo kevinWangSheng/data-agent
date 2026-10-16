@@ -1,6 +1,6 @@
 # 06 — 上下文策略工具
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 02, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 06-context-tools)
@@ -41,10 +41,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 1
+- Attempts: 2
 - Review rounds: 2
 - Model spend: $0（没调模型）
-- Outcome: 三个上下文工具和 join 候选完成；接缝 B 的 7 个工单 06 验收用例转绿
+- Outcome: 三个上下文工具和 join 候选完成；接缝 B 的 7 个工单 06 验收用例转绿；PR #8 退回第 1 轮已修（hydrate 先精确匹配 ref；带点名字的 ref 不再冲突）
 - Human review minutes: —
 
 ## Comments
@@ -100,3 +100,30 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-06-context-tool
 1. **Codex P2（`src/data_agent/context_tools.py:134` `find_table`）属实**：先 `strip().lower()` 再匹配，discover 返回的带首尾空格的带引号标识符（如 DuckDB 表 `"events "`）在 hydrate 里找不到；大小写折叠会让 Postgres 里只差大小写的带引号标识符变成歧义。改为：先按 ref 原样精确匹配限定名，命中即返回；没命中再做现在的规范化与裸名查找。配一个修复前会失败的测试（带空格的表名、只差大小写的两张表）。
 
 修完 `make check`，跑一次修复相关的真实 MCP 调用，再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。
+
+### 2026-10-16 Ticket agent, round-1 return handed back (commits `bdad8c1`, `b7a7a5b`)
+
+**Fix 1 (`bdad8c1`): Codex P2 on `find_table`.** `find_table` now returns a table whose `table.ref == ref` exactly before trying anything else. Only if nothing matches does it fall back to the old trimmed, lowercased match on the full ref or bare name. Two new tests, both failed before the fix:
+- `test_hydrate_finds_a_discovered_name_with_surrounding_spaces`: real stdio MCP. Discover returns the ref `"main.events "` (quoted table name with a trailing space), and hydrate accepts it.
+- `test_find_table_prefers_the_exact_ref_over_a_case_folded_match`: unit test on `find_table`. With `public.Orders` and `public.orders` both present, each exact ref returns its own table, and `ORDERS` still reports ambiguous. This one can't be a stdio test because DuckDB won't create two names that differ only in case (`Catalog Error: Table with name "t" already exists!`).
+
+**da-review round 3 (`/tmp/06-evidence-r1/da-review-3.txt`).** Found one new P2, which was in the code before this round: a schema or table name containing a dot made refs collide. `a."b.c"` and `"a.b".c` both became `a.b.c`, so hydrate could silently show the wrong table.
+
+**Fix 2 (`b7a7a5b`).** In `Table.ref`, a name part is double-quoted only if it contains `.` or `"`. Ordinary refs (`raw.web_events`) are unchanged, so the acceptance tests are untouched. New test `test_refs_of_dotted_names_do_not_collide` (stdio, discover then hydrate) failed before the fix: `['a.b.c', 'a.b.c']`. This fix has not been through da-review again; the PR's Codex review covers it.
+
+**Checks:** `make check`: 0 errors, 558 passed, 15 deselected, 8 xfailed.
+
+**Real MCP runs:** `uv run python -I /tmp/06-evidence-r1/demo.py <worktree>` and `.../dots.py <worktree>`, starting `data-agent mcp-server --config full` over stdio:
+```
+== discover({'query': 'events'})  -> "ref": "main.events "
+== hydrate({'ref': 'main.events '}) is_error=False
+main.events  (table, 0 rows, 2 columns)
+  event_id INTEGER
+  customer_id VARCHAR
+Join candidates (by _id column name; check the key values before joining):
+  customer_id -> main.customers.customer_id
+== hydrate({'ref': 'events'}) is_error=True   (a bare name without the space is a different name; expected)
+== discover({'query': 'c'}) -> refs "\"a.b\".c", "a.\"b.c\""
+== hydrate({'ref': 'a."b.c"'}) -> a."b.c" (table, 0 rows, 1 columns) / left_x INTEGER
+== hydrate({'ref': '"a.b".c'}) -> "a.b".c (table, 0 rows, 1 columns) / right_y INTEGER
+```
