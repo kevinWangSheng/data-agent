@@ -5,7 +5,8 @@ gateway or leave the workspace, so a `PreToolUse` hook denies it. Allowed: one c
 `2>&1` and a pipe into `tail` or `head`, in the foreground. dbt subcommands that run ad-hoc SQL
 (`show`, `--inline`, `run-operation`) are denied too, so ad-hoc reads go through the gateway, and
 so are those that write anything but the project's models (`build`, `seed`, `snapshot`,
-`test --store-failures`): the only write is `dbt run` of the edited project.
+`test --store-failures`, `--record-timing-info`): the only write is `dbt run` of the edited
+project.
 
 Known limit: dbt itself runs whatever the project holds. A model, a Python model, an `on-run-start`
 hook, a profile or a `store_failures` test config the agent edits can run any SQL or code under
@@ -25,6 +26,11 @@ from data_agent.workspace_guard import inside, resolve
 DBT_SUBCOMMANDS = frozenset({"run", "test", "compile", "parse", "ls", "list", "deps", "debug"})
 # `dbt test` writes failing rows into tables with these.
 STORE_FAILURES_FLAGS = ("--store-failures", "--store-failures-as")
+# Options that write a file at the path they are given, anywhere (dbt 1.10 `dbt.cli.params`).
+FILE_WRITING_FLAGS = ("--record-timing-info", "--partial-parse-file-path")
+# Short form of --record-timing-info; click also takes it bundled (`-xr f`) or with the value
+# attached (`-rf`), so any single-dash word holding an `r` is refused.
+FILE_WRITING_SHORT = "r"
 # Flags naming a directory dbt reads from or writes to; each must stay inside the workspace.
 DIR_FLAGS = ("--project-dir", "--profiles-dir", "--target-path", "--log-path")
 PAGERS = frozenset({"tail", "head"})
@@ -83,6 +89,10 @@ def _dbt_denial(args: list[str], workspace: Path) -> str | None:
         flag, _, value = arg.partition("=")
         if flag in STORE_FAILURES_FLAGS:
             return f"{flag} writes test failures into the database"
+        if flag in FILE_WRITING_FLAGS or (
+            arg.startswith("-") and not arg.startswith("--") and FILE_WRITING_SHORT in arg
+        ):
+            return f"{flag} writes a file outside the project's models"
         if flag in DIR_FLAGS:
             if not value:
                 value = args[i + 1] if i + 1 < len(args) else ""

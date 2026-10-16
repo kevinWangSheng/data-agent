@@ -90,6 +90,13 @@ async def test_dbt_and_the_workflow_scripts_run(tmp_path: Path, command: str) ->
         "dbt test --store-failures",
         "dbt test --select customer_ltv --store-failures-as table",
         "dbt test --store-failures-as=view",
+        # Options that write a file wherever their value points.
+        "dbt parse --record-timing-info ../shop.duckdb",
+        "dbt parse --record-timing-info=../shop.duckdb",
+        "dbt run -r ../shop.duckdb",
+        "dbt run -r../shop.duckdb",
+        "dbt run -xr ../shop.duckdb",
+        "dbt parse --partial-parse-file-path ../shop.duckdb",
         # Bash expands braces and globs after the guard has read the words.
         "dbt compile {--inline,} 'select 1'",
         "dbt run --profiles-dir={.,/etc}",
