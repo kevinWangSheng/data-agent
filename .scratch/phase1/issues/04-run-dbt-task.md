@@ -1,6 +1,6 @@
 # 04 — dbt 任务端到端
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 03
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -41,9 +41,9 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 3（da-review；eng:code-review；集成后 da-review 1 轮）
-- Model spend: ~$0.12（之前 ~$0.06；集成 3 次手动运行 $0.0138 + $0.0063 + $0.0131；一次 `make test-integration` 约 $0.03，未确认：事件文件在 pytest 临时目录未保留）
+- Attempts: 2
+- Review rounds: 6（之前 3；本轮 da-review ×2、eng:code-review ×1）
+- Model spend: ~$0.22（之前 ~$0.12；本轮 3 次真实运行 $0.0424，两次 `make test-integration` 约 $0.06，未确认：事件文件未保留）
 - Outcome: —
 - Human review minutes: —
 
@@ -101,3 +101,59 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-04-run-dbt-task
 4. **Codex P2（`skills/dbt-workflow/scan_project.py:207`）属实**：`classify_sql_models` 把项目下所有 `.sql`（含 `tests/`、`analyses/`、`snapshots/`）当模型，同名时会把缺失的模型算成已完成。只扫 `dbt_project.yml` 的 `model-paths`（缺省 `models`）。配测试；文件头修改说明一并更新。
 
 修完 `make check`、`make test-integration`、full 配置真实 dbt 运行一次，再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。
+
+### 2026-10-16 工单 agent：PR #9 退回第 1 轮处理完（commits `8372cca`、`585e786`、`50d0fc8`、`cf7859c`，接在 `268ac11` 后）
+
+**退回 4 条，全部修了：**
+1. **ADR-0005**：dbt-debugging §3 不再写具体表名，改成通用规则："模型名与 source 表同名、且在同一 schema 时会覆盖源数据；先用 `list_tables` 或 `information_schema` 查 source 在哪个 schema，同 schema 就换模型名或在 YML 里给 source 补 `schema:`；不同 schema 同名合法，不要拒绝。"另外把三个 dbt Skill 和两个脚本整体过了一遍，以下改成通用写法：
+   - 国家名变体（Brunei/Russia、Muenchen、Côte d'Ivoire）、IBM
+   - `supplier_id`/`suppliers`、`eng_headcount`、`'ACTOR'`、`return_pct` 0.65
+   - `reporting_grain`、16/13 行、3 列 rank+name+metric
+   - `total_parts`、NPS、guide per day、`extract_hour`/`normalize_timestamp`
+   - customer/driver/order、"due to returned items"
+   - CRM 列名（`converted_date`/`is_won` 等）
+   - "multiple-choice"、scan 输出里的 "guaranteed fail"
+
+   新增测试 `test_dbt_skills_carry_no_project_specific_names` 守住这些词。各文件头的修改说明已同步。
+2. **command guard 子命令**：允许的子命令里去掉 `build`、`seed`、`snapshot`；`test` 拒绝 `--store-failures`、`--store-failures-as`（含 `=` 写法）。拒绝措辞只列允许的子命令。Skill 原本没有让 agent 跑这三个子命令的地方；scan 的 snapshots 提示改成"只读作参考，这里不能跑 `dbt snapshot`"。配了测试。
+3. **后台 Bash**：`run_in_background: true` 一律拒绝。配了测试。
+4. **scan 范围**：`scan_project.py` 只扫 `dbt_project.yml` 的 `model-paths`（缺省 `models`）。支持行内列表、跨行列表、块列表，以及老的 `source-paths`（dbt 1.10 在没有 `model-paths` 时仍读它）。分类、依赖、同目录模型、`current_date` 扫描都只看这些路径。配了测试：`tests/`、`analyses/`、`snapshots/` 里同名的 SQL 不再让缺失的模型算成已完成，并对照旧脚本确认修复前会失败。文件头说明已更新。
+
+**审查：**
+- **da-review 第 1 轮**：1 个 P1，修了（`585e786`）。`dbt parse --record-timing-info ../shop.duckdb` 和 `-r` 能覆写 workspace 外的任意文件，包括数据库。现在拒绝 `--record-timing-info`、`--partial-parse-file-path`，以及任何含 `r` 的单横线参数（包括 `-xr`、`-rfile` 这类合并写法）。按 dbt 1.10 的 `dbt.cli.params` 核过：`-o/--output` 只属于 `source freshness`，那个子命令本来就被拒绝。
+- **eng:code-review**（Standards、Spec 两个子 agent）修了（`50d0fc8`）：
+  - Skill 里剩下的 driver 和 CRM 列名；
+  - `model-paths` 跨行列表和 `source-paths`；
+  - snapshot 提示；
+  - guard docstring 补全被拒绝的写文件参数；
+  - 常量改名为 `RECORD_TIMING_SHORT`，`reason` 的类型注解移到 if/else 之前；
+  - 测试里重复的 scan 调用合并成 `scan()`。
+- **da-review 第 2 轮**：2 个 P2，修了（`cf7859c`）：
+  - workspace 里有个叫 `123` 的符号链接指向外面时，`python3 <script> 123` 能通过 guard。现在脚本的项目参数一律按路径检查，只有 validate 的超时参数可以是纯数字。
+  - `model-paths: ["../x"]` 或者符号链接的 SQL 文件能让 scan 读到项目外的内容。现在 model path、SQL、YAML、宏文件解析到项目外的都不读。
+
+  两条都配了修复前会失败的测试。修复已到第 2 轮（上限），之后没再跑审查。
+
+**不修的理由：**
+- dbt-write §8 的 0-33/34-66/67-100、`MAX(score)` 返回 150：这是编出来的示例数字，不是哪个项目的数据。
+- dbt-write §13 由"pct 必须 0-100"改成"先用项目已有的比例，项目里没说明时才用 0-100"：Spec 审查说这超出了要求。保留的理由是：只删例子，剩下的绝对规则本身就是按某个榜单的比例调出来的，"先看项目"才是通用写法。
+- 单横线参数含 `r` 就拒绝，会多拒一些：这是宁严勿宽，dbt 的参数值不会以 `-` 开头。
+- model-paths 有重叠时文件会列两次：输出用的是集合，结果不受影响。
+- 这几条之外，`dbt test` 在 `store_failures` 配在项目里时也会写表：这和之前记的"dbt 会执行项目里的任何内容"是同一个已知限制，已写进 `command_guard` 的 docstring。
+
+**检查：**
+- `make check`（`cf7859c`）：639 passed, 15 deselected, 15 xfailed（基线 613）。
+- `make test-integration`：`8372cca` 时 5 passed, 10 xfailed；`cf7859c` 时 5 passed, 654 deselected, 10 xfailed。
+- 输出都在 `runs/return04/`（`make-check*.txt`、`test-integration*.txt`、`da-review*.txt`）。
+
+**真实运行**（`runs/return04/run.sh <out> full`，题面为接缝 A 的 DBT_TASK，用 `inspect.py` 对照 raw.orders 核对）：
+
+| commit | exit | `customer_ltv` | 轮数 | 花费 |
+|---|---|---|---|---|
+| `8372cca` | 0 | 12 行，每客户一行 True，数值一致 True | 27 | $0.013844 |
+| `50d0fc8` | 0 | 12 行，数值一致 | 23 | $0.013635 |
+| `cf7859c` | 0 | 12 行，数值一致 | 23 | $0.014912 |
+
+- 三次的前三行都是 C0001 6 285.25、C0002 4 232.50、C0003 2 98.75；`grep REDACTED` 都是 0。
+- 每次 agent 都试了一次 `ls`/`find`，被 guard 拒绝后改用 Glob。
+- 工具顺序：scan → validate → `dbt run --select customer_ltv 2>&1 | tail` → 只读核对。
