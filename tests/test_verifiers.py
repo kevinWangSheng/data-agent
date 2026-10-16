@@ -164,3 +164,40 @@ async def test_hooks_record_verifier_start_and_end_with_verdicts(tmp_path: Path)
         "PASS",
         "N/A",
     ]
+
+
+def value_verifier_prompt() -> str:
+    agents = options(Path("."), "dbt", "full").agents or {}
+    return agents["value-verifier"].prompt
+
+
+def test_value_verifier_reads_total_as_a_count_only_for_row_nouns() -> None:
+    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+    assert 'Column named "total_X" → MUST match COUNT(*)' not in check_2
+    rule = next(line for line in check_2.splitlines() if "total_<row noun>" in line)
+    assert "total_orders" in rule
+    sums = check_2.split("is not a count")[1]
+    assert "total_amount" in sums and "total_revenue" in sums
+
+
+def test_value_verifier_compares_counts_exactly_and_sums_within_ten_percent() -> None:
+    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+    assert "exactly" in check_2 and "10%" in check_2
+
+
+def test_verifier_calls_duplicate_lookup_keys_a_possible_fan_out() -> None:
+    check_3 = verifier_prompt().split("### CHECK 3")[1].split("### CHECK 4")[0]
+    assert "the fan-out is CORRECT" not in check_3
+    assert "byte-identical" not in check_3
+    assert "never a reason for PASS" in check_3
+
+
+def test_verifier_finds_models_under_the_model_paths() -> None:
+    check_1 = verifier_prompt().split("### CHECK 1")[1].split("### CHECK 2")[0]
+    assert "model-paths" in check_1 and "recursively" in check_1
+    assert "models/*.yml" not in check_1
+
+
+def test_verifier_passes_yml_types_to_check_model_schema() -> None:
+    check_2 = verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+    assert "check_model_schema" in check_2 and "name:data_type" in check_2

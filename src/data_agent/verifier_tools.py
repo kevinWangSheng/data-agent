@@ -8,7 +8,8 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   this server's read-only gateway, and tables are found in the catalog (information_schema) and
   quoted from there, so names are never pasted into SQL unchecked.
 - Portable SQL instead of DuckDB-only forms: no `SHOW TABLES` or `PRAGMA table_info`, no
-  `COUNT(*) FILTER`; one profiling statement per table instead of one per column.
+  `COUNT(*) FILTER` (except in a model's own count, rewritten in the gateway's dialect); one
+  profiling statement per table instead of one per column.
 - map_columns reads only inside the run's workspace when the server is given one. It keeps
   upstream's lineage mode and its MAPPED / UNMAPPED-INCLUDE / UNMAPPED-EXCLUDE labels (the ones
   the copied Skill and verifier prompts use). Dropped: the pre-write `upstream_tables` mode, the
@@ -27,10 +28,17 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   slice on every grouping column is marked inconclusive, a one-row model without dimensions is
   compared with whole upstreams, and the output says the baselines do not apply the model's
   own filters.
-  It marks a COUNT(*) match or mismatch only for count metrics: an integer column whose
-  expression in the model's SQL (read when given `project_dir`) is count(...), or, without
-  one, whose name says count (n_*, num_*, count_*, *_count); upstream also held sums up against
-  row counts.
+  Given `project_dir` it reads the model's SQL with sqlglot (outermost SELECT, through CTEs and
+  subqueries): the slice is the GROUP BY outputs, numeric ones too, and never an aggregate such
+  as MAX(ordered_at); a metric is a count only when its outermost aggregate is COUNT under
+  CAST / COALESCE, and is held exactly against the same COUNT rewritten over each candidate, so
+  COUNT(DISTINCT x) meets COUNT(DISTINCT x) and a conditional count keeps its predicate (a
+  column the candidate lacks makes it inconclusive). Without the SQL, or when it does not
+  parse (the output says so), dimensions come from column types and an integer named as a
+  count (n_*, num_*, count_*, *_count) is held exactly against COUNT(*). Upstream also held
+  sums up against row counts.
+- check_model_schema also takes `name:data_type` pairs and compares the types by kind, DuckDB
+  and Postgres aliases folded.
 - A table profiled over a sample says so, its NULL shares are of the sample, and a column that
   looks unique in the sample is counted over the whole table before it is called the grain; the
   grain key is looked for in every scanned column.
@@ -43,8 +51,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import sqlglot
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from data_agent.context_tools import RunQuery, Table, is_text, literal, load_catalog, quote
 
@@ -85,6 +96,8 @@ SLICE_TABLES = 50
 REF_RE = re.compile(r"\{\{\s*ref\(\s*['\"](\w+)['\"]\s*\)\s*\}\}")
 SOURCE_RE = re.compile(r"\{\{\s*source\(\s*['\"](\w+)['\"]\s*,\s*['\"](\w+)['\"]\s*\)\s*\}\}")
 NAME_LINE_RE = re.compile(r"-\s*name:\s*['\"]?([^'\"\s]+)")
+# The gateway's dialect: model SQL is parsed in it and rewritten counts are run in it.
+DIALECT = "duckdb"
 SQL_KEYWORDS = frozenset(
     {"THEN", "ELSE", "END", "WHEN", "CASE", "AND", "OR", "NOT", "NULL", "TRUE", "FALSE", "AS"}
 )
@@ -381,22 +394,6 @@ def sql_columns(sql: str) -> list[str]:
     ]
 
 
-def is_count(metric: str, sql: str | None) -> bool:
-    """Whether a metric counts rows: its expression in the model's SQL (in any SELECT, a CTE's
-    included) is count(...), or, when the SQL is missing or only passes the column through,
-    its name says count."""
-    expressions = [
-        re.sub(r"\s+AS\s+\w+\s*$", "", item, flags=re.IGNORECASE)
-        for items in (select_lists(sql) if sql else [])
-        for item in items
-        if item_name(item).lower() == metric.lower()
-    ]
-    computed = [e for e in expressions if not re.fullmatch(r"[\w.\"]+", e.strip())]
-    if computed:
-        return any(re.search(r"\bcount\s*\(", e, re.IGNORECASE) for e in computed)
-    return bool(COUNT_NAME_RE.match(metric))
-
-
 def classify(
     column: str, data_type: str, stats: Profile | None, mapped: set[str], exclude: set[str]
 ) -> tuple[str, str]:
@@ -615,19 +612,25 @@ def unique_key(run: RunQuery, candidate: Table, bridge: Table) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class Slice:
+    tail: str  # FROM-clause tail limiting the candidate, aliased c, to the slice
+    sliced_on: str
+    missing: list[str]  # slice columns it could not apply
+    bridge: Table | None  # the upstream joined as d to reach the other slice columns
+
+
 def slice_filter(
     run: RunQuery, candidate: Table, slice_values: dict[str, Any], bridges: list[Table]
-) -> tuple[str, str, list[str]] | None:
-    """(FROM-clause tail limiting `candidate`, aliased c, to the slice; what it slices on; the
-    slice columns it could not apply). Slice columns the candidate has apply directly; the rest
-    through one named upstream that has them and a unique join column. None when no slice column
-    applies at all."""
+) -> Slice | None:
+    """Slice columns the candidate has apply directly; the rest through one named upstream that
+    has them and a unique join column. None when no slice column applies at all."""
     keys = column_map(candidate)
     applied = [column for column in slice_values if column.lower() in keys]
     tests = [equals(f"c.{quote(keys[c.lower()])}", slice_values[c]) for c in applied]
     described = [", ".join(applied)] if applied else []
     missing = [column for column in slice_values if column not in applied]
-    join = ""
+    join, joined = "", None
     for bridge in bridges if missing else []:
         bridge_keys = column_map(bridge)
         covered = [column for column in missing if column.lower() in bridge_keys]
@@ -640,10 +643,11 @@ def slice_filter(
         tests += [equals(f"d.{quote(bridge_keys[c.lower()])}", slice_values[c]) for c in covered]
         described.append(f"{', '.join(covered)} via {bridge.ref}.{bridge_keys[key]}")
         missing = [column for column in missing if column not in covered]
+        joined = bridge
         break
     if not tests:
         return None
-    return f"{join}WHERE {' AND '.join(tests)}", "; ".join(described), missing
+    return Slice(f"{join}WHERE {' AND '.join(tests)}", "; ".join(described), missing, joined)
 
 
 def nearest_finer_table(
@@ -659,45 +663,296 @@ def nearest_finer_table(
 
 
 def candidate_counts(
-    run: RunQuery, candidate: Table, tail: str
-) -> tuple[int, list[tuple[str, int]]]:
-    """COUNT(*) and COUNT(DISTINCT) of the first `_id` columns over the slice."""
+    run: RunQuery, candidate: Table, tail: str, baselines: list[str]
+) -> tuple[int, list[tuple[str, int]], list[int]]:
+    """COUNT(*), COUNT(DISTINCT) of the first `_id` columns and the `baselines` over the slice."""
     ids = [name for name, _ in candidate.columns if is_identifier(name)][:ID_COLUMNS]
-    parts = ["count(*)", *(f"count(DISTINCT c.{quote(name)})" for name in ids)]
+    parts = ["count(*)", *(f"count(DISTINCT c.{quote(name)})" for name in ids), *baselines]
     values = run(f"SELECT {', '.join(parts)} FROM {candidate.sql_name} AS c {tail}", 1).rows[0]
-    return int(values[0]), [(name, int(v)) for name, v in zip(ids, values[1:], strict=True)]
+    distinct = [(name, int(v)) for name, v in zip(ids, values[1 : 1 + len(ids)], strict=True)]
+    return int(values[0]), distinct, [int(v or 0) for v in values[1 + len(ids) :]]
+
+
+# --- reading a model's SQL for verify_model_values (sqlglot) ---------------------------------
+
+
+@dataclass(frozen=True)
+class Output:
+    """How the model's SQL computes one output column, traced through CTEs and subqueries to the
+    SELECT that computes it."""
+
+    expression: exp.Expr
+    grouped: bool  # a GROUP BY expression of that SELECT: a dimension, whatever its type
+    aggregate: bool  # an aggregate outside a window: a metric, never a dimension
+
+
+def parse_model(sql: str) -> tuple[exp.Select, dict[str, exp.Select]] | None:
+    """(outermost SELECT, CTEs by lowercase name) of the model's SQL with Jinja rendered away
+    (ref and source become table names); None when it does not parse to one SELECT."""
+    plain = re.sub(r"\{#.*?#\}", "", sql, flags=re.DOTALL)
+    plain = REF_RE.sub(lambda match: match.group(1), plain)
+    plain = SOURCE_RE.sub(lambda match: f"{match.group(1)}.{match.group(2)}", plain)
+    plain = re.sub(r"\{%.*?%\}|\{\{.*?\}\}", "", plain, flags=re.DOTALL)
+    try:
+        tree = sqlglot.parse_one(plain, dialect=DIALECT)
+    except SqlglotError:
+        return None
+    if not isinstance(tree, exp.Select):
+        return None
+    ctes = {
+        cte.alias.lower(): cte.this
+        for cte in tree.find_all(exp.CTE)
+        if isinstance(cte.this, exp.Select)
+    }
+    return tree, ctes
+
+
+def has_aggregate(expression: exp.Expr) -> bool:
+    """An aggregate outside windows and subqueries."""
+    nodes = expression.walk(prune=lambda node: isinstance(node, exp.Window | exp.Subquery))
+    return any(isinstance(node, exp.AggFunc) for node in nodes)
+
+
+def unqualified(expression: exp.Expr) -> exp.Expr:
+    return expression.transform(
+        lambda node: exp.column(node.this.copy()) if isinstance(node, exp.Column) else node
+    )
+
+
+def in_group_by(select: exp.Select, projection: exp.Expr) -> bool:
+    """Whether the projection is grouped on: GROUP BY ALL, its ordinal, its alias, or the same
+    expression with table qualifiers ignored."""
+    group = select.args.get("group")
+    if not group:
+        return False
+    expression = projection.unalias()
+    if group.args.get("all"):
+        return not has_aggregate(expression)
+    position = select.expressions.index(projection) + 1
+    target = unqualified(expression)
+    for item in group.expressions:
+        if isinstance(item, exp.Literal) and item.is_int and int(item.name) == position:
+            return True
+        alias = projection.alias_or_name.lower()
+        if isinstance(item, exp.Column) and not item.table and item.name.lower() == alias:
+            return True
+        if unqualified(item) == target:
+            return True
+    return False
+
+
+def derived(select: exp.Select, ctes: dict[str, exp.Select]) -> dict[str, exp.Select | None]:
+    """The SELECT's FROM and JOIN sources by lowercase alias: a CTE's or subquery's SELECT, or
+    None for a table."""
+    sources: dict[str, exp.Select | None] = {}
+    from_ = select.args.get("from_")
+    for source in [
+        from_.this if from_ else None,
+        *(j.this for j in select.args.get("joins") or []),
+    ]:
+        if isinstance(source, exp.Table):
+            sources[source.alias_or_name.lower()] = ctes.get(source.name.lower())
+        elif isinstance(source, exp.Subquery):
+            body = source.this
+            sources[source.alias_or_name.lower()] = body if isinstance(body, exp.Select) else None
+    return sources
+
+
+def trace(
+    select: exp.Select, name: str, ctes: dict[str, exp.Select], depth: int = 0
+) -> Output | None:
+    """How `select` computes output column `name`: a plain column taken from a CTE or subquery
+    is followed into it, a star expanded through them. None when the column comes from a table's
+    star or the SQL nests deeper than the CTEs plausibly do."""
+    if depth > len(ctes) + 10:
+        return None
+    sources = derived(select, ctes)
+    for projection in select.expressions:
+        star = projection if isinstance(projection, exp.Star) else None
+        if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
+            star = projection
+        if star is not None:
+            table = star.table.lower() if isinstance(star, exp.Column) else ""
+            for alias, body in sources.items():
+                if body is not None and table in ("", alias):
+                    found = trace(body, name, ctes, depth + 1)
+                    if found:
+                        return found
+            continue
+        if projection.alias_or_name.lower() != name.lower():
+            continue
+        expression = projection.unalias()
+        grouped = in_group_by(select, projection)
+        aggregate = not grouped and has_aggregate(expression)
+        if not grouped and not aggregate and isinstance(expression, exp.Column):
+            table = expression.table.lower()
+            for alias, body in sources.items():
+                if body is not None and table in ("", alias):
+                    found = trace(body, expression.name, ctes, depth + 1)
+                    if found:
+                        return found
+        return Output(expression, grouped, aggregate)
+    return None
+
+
+def count_of(output: Output) -> exp.Expr | None:
+    """The COUNT(...) (with its FILTER) when it is the outermost aggregate, under CAST, COALESCE
+    or parentheses only; None for any other metric, such as CAST(SUM(a) / COUNT(*) AS BIGINT)."""
+    node = output.expression if output.aggregate else None
+    while isinstance(node, exp.Paren | exp.Cast | exp.Coalesce):
+        node = node.this
+    if isinstance(node, exp.Filter) and isinstance(node.this, exp.Count):
+        return node
+    return node if isinstance(node, exp.Count) else None
+
+
+def counts_all_rows(count: exp.Expr) -> bool:
+    """COUNT(*) or COUNT(<constant>) without FILTER: the baseline is the slice's row count."""
+    return isinstance(count, exp.Count) and isinstance(count.this, exp.Star | exp.Literal)
+
+
+def label(count: exp.Expr) -> str:
+    return "COUNT(*)" if counts_all_rows(count) else unqualified(count).sql(dialect=DIALECT)
+
+
+def baseline_sql(count: exp.Expr, candidate: Table, bridge: Table | None) -> str | list[str]:
+    """The model's count rewritten over the candidate (alias c) and the bridge it is sliced
+    through (alias d), or the columns neither has, which leave the count without a baseline."""
+    if count.find(exp.Select):
+        return [unqualified(count).sql(dialect=DIALECT)]
+    keys = column_map(candidate)
+    bridge_keys = column_map(bridge) if bridge else {}
+    missing: list[str] = []
+
+    def rewrite(node: exp.Expr) -> exp.Expr:
+        if not isinstance(node, exp.Column) or isinstance(node.this, exp.Star):
+            return node
+        name = node.name.lower()
+        if name in keys:
+            return exp.column(keys[name], table="c", quoted=True)
+        if name in bridge_keys:
+            return exp.column(bridge_keys[name], table="d", quoted=True)
+        missing.append(node.name)
+        return node
+
+    rewritten = count.transform(rewrite)
+    return missing or rewritten.sql(dialect=DIALECT)
+
+
+ROW_COUNT = exp.Count(this=exp.Star())
+NESTED_TYPES = frozenset({"STRUCT", "MAP", "LIST", "UNION", "ARRAY"})
+
+
+def sliceable(data_type: str) -> bool:
+    """A type whose values the slice can match with `=`."""
+    return (
+        comparable(data_type) and "[" not in data_type and base_type(data_type) not in NESTED_TYPES
+    )
+
+
+@dataclass
+class Roles:
+    """The model's columns by role. From its SQL when it parses: a GROUP BY output is a
+    dimension, a numeric aggregate a metric and a count when its outermost aggregate is COUNT;
+    other columns, and every column without the SQL, by type and name (text, date and `*_id` are
+    dimensions; an integer named as a count is COUNT(*))."""
+
+    dimensions: list[str]
+    unsliceable: list[str]  # grouping columns the slice cannot match: every slice is too wide
+    metrics: list[str]
+    counts: dict[str, exp.Expr]  # metric -> the COUNT(...) to recompute over each candidate
+
+
+def column_roles(model: Table, sql: str | None) -> tuple[Roles, str]:
+    """The roles and a note on how they were read."""
+    parsed = parse_model(sql) if sql is not None else None
+    if sql is None:
+        note = "Model SQL not read: only metrics named as counts are held against COUNT(*)"
+    elif parsed is None:
+        note = (
+            "Model SQL could not be parsed: dimensions and counts from column types and names; "
+            "only metrics named as counts are held against COUNT(*)"
+        )
+    else:
+        note = (
+            "Model SQL read: the slice is its GROUP BY columns, and a COUNT(...) metric is held "
+            "against the same COUNT over each candidate"
+        )
+    roles = Roles([], [], [], {})
+    for name, data_type in model.columns:
+        output = trace(parsed[0], name, parsed[1]) if parsed else None
+        if output and output.grouped:
+            (roles.dimensions if sliceable(data_type) else roles.unsliceable).append(name)
+        elif output and output.aggregate:
+            if is_numeric(data_type):
+                roles.metrics.append(name)
+                count = count_of(output)
+                if count is not None:
+                    roles.counts[name] = count
+        elif is_dimension(name, data_type):
+            roles.dimensions.append(name)
+        elif is_numeric(data_type):
+            # A sum, even of integers, or an average is compared by the verifier, not here.
+            roles.metrics.append(name)
+            if base_type(data_type) in INTEGER_TYPES and COUNT_NAME_RE.match(name):
+                roles.counts[name] = ROW_COUNT
+        else:
+            roles.unsliceable.append(name)
+    return roles, note
+
+
+@dataclass(frozen=True)
+class Measured:
+    candidate: Table
+    rows: int
+    found: Slice | None  # None: no slice column applies
+    count: int = 0
+    distinct: tuple[tuple[str, int], ...] = ()
+    baselines: tuple[tuple[str, int | list[str]], ...] = ()  # metric -> count, or missing columns
+
+
+def measure(
+    run: RunQuery, candidate: Table, found: Slice | None, counts: dict[str, exp.Expr]
+) -> Measured:
+    rows = row_count(run, candidate)
+    if found is None:
+        return Measured(candidate, rows, None)
+    rewritten = {
+        metric: baseline_sql(count, candidate, found.bridge)
+        for metric, count in counts.items()
+        if not counts_all_rows(count)
+    }
+    queried = [(metric, sql) for metric, sql in rewritten.items() if isinstance(sql, str)]
+    count, distinct, values = candidate_counts(run, candidate, found.tail, [s for _, s in queried])
+    baselines: dict[str, int | list[str]] = {
+        metric: sql for metric, sql in rewritten.items() if isinstance(sql, list)
+    }
+    baselines.update(zip([metric for metric, _ in queried], values, strict=True))
+    return Measured(candidate, rows, found, count, tuple(distinct), tuple(baselines.items()))
 
 
 def verify_values(
     run: RunQuery, model: Table, sources: list[str], sql: str | None = None
 ) -> list[str]:
     catalog = load_catalog(run)
-    # An identifier is part of the grain even when it is a number, so it slices, not measures.
-    metrics = [
-        name
-        for name, data_type in model.columns
-        if is_numeric(data_type) and not is_identifier(name)
-    ]
+    roles, note = column_roles(model, sql)
+    metrics = roles.metrics
     if not metrics:
-        return [f"No numeric columns in '{model.ref}'; nothing to verify."]
+        return [f"No numeric metric columns in '{model.ref}'; nothing to verify."]
     top = run(f"SELECT * FROM {model.sql_name} ORDER BY {quote(metrics[0])} DESC NULLS LAST", 1)
     if not top.rows:
         return [f"No rows in '{model.ref}'."]
     row = dict(zip(top.columns, top.rows[0], strict=True))
-    # Every text, date or identifier column of the top row, NULLs included: the model's full
-    # grouping grain, as far as it shows in its columns.
-    slice_values = {name: row[name] for name, t in model.columns if is_dimension(name, t)}
-    # A grouping column the slice cannot match (a blob, a list) leaves every slice too wide.
-    unsliceable = [
-        name for name, t in model.columns if name not in slice_values and not is_numeric(t)
-    ]
+    # Every dimension of the top row, NULLs included: the model's full grouping grain.
+    slice_values = {name: row[name] for name in roles.dimensions}
+    unsliceable = roles.unsliceable
     # A one-row model without dimensions is a scalar aggregate over its whole upstreams.
     whole_table = not slice_values and bool(sources) and row_count(run, model) == 1
     shown = ", ".join(
         f"{name} IS NULL" if value is None else f"{name} = '{value}'"
         for name, value in slice_values.items()
     )
-    lines = [f"## Value Verification: {model.ref}"]
+    lines = [f"## Value Verification: {model.ref}", note]
     if slice_values:
         lines.append(f"Top row (by {metrics[0]}) slice: {shown}")
     elif whole_table:
@@ -705,8 +960,6 @@ def verify_values(
     else:
         lines.append("No dimension column for slicing; candidates skipped")
         return lines
-    if sql is None:
-        lines.append("Model SQL not read: only metrics named as counts are held against COUNT(*)")
     candidates: list[Table] = []
     if sources:
         for name in sources[:MAX_SOURCES]:
@@ -723,45 +976,43 @@ def verify_values(
     # Bridges only between the named upstreams: a join the model's lineage does not show could
     # put unrelated rows into the count.
     bridges = candidates if sources else []
-    measured: list[tuple[Table, str, list[str], int | None, list[tuple[str, int]], int]] = []
-    for candidate in candidates:
-        rows = row_count(run, candidate)
-        found = (
-            ("", "the whole table", [])
+    measured = [
+        measure(
+            run,
+            candidate,
+            Slice("", "the whole table", [], None)
             if whole_table
-            else slice_filter(run, candidate, slice_values, bridges)
+            else slice_filter(run, candidate, slice_values, bridges),
+            roles.counts,
         )
-        if found is None:
-            measured.append((candidate, "", [], None, [], rows))
-            continue
-        tail, sliced_on, missing = found
-        count, distinct = candidate_counts(run, candidate, tail)
-        measured.append((candidate, sliced_on, missing, count, distinct, rows))
+        for candidate in candidates
+    ]
     lines += [
         "Baselines apply the slice only, not the model's own filters (WHERE, join conditions);",
         "for a model that filters rows, count with those filters before calling a mismatch.",
         "",
     ]
 
-    types = dict(model.columns)
     for metric in metrics:
         value = row.get(metric)
         if value is None:
             continue
         lines += [f"### Metric: {metric}", f"  Model value: {value}"]
-        # A sum, even of integers, or an average is compared by the verifier, not here.
-        counts_rows = base_type(types[metric]) in INTEGER_TYPES and is_count(metric, sql)
-        for candidate, sliced_on, missing, count, distinct, rows in measured:
-            if count is None:
+        count = roles.counts.get(metric)
+        for m in measured:
+            found = m.found
+            if found is None:
                 lines.append(
-                    f"  Candidate: {candidate.ref} ({rows} rows) — no slice column and no "
+                    f"  Candidate: {m.candidate.ref} ({m.rows} rows) — no slice column and no "
                     "safe join to one; inconclusive, skipped"
                 )
                 continue
-            lines.append(f"  Candidate: {candidate.ref} ({rows} rows), sliced on {sliced_on}")
-            if missing:
+            lines.append(
+                f"  Candidate: {m.candidate.ref} ({m.rows} rows), sliced on {found.sliced_on}"
+            )
+            if found.missing:
                 lines.append(
-                    f"    not sliced on {', '.join(missing)} (no such column or safe join): "
+                    f"    not sliced on {', '.join(found.missing)} (no such column or safe join): "
                     "a wider slice than the model row; inconclusive"
                 )
             if unsliceable:
@@ -769,18 +1020,59 @@ def verify_values(
                     f"    not sliced on {', '.join(unsliceable)} (a type the slice cannot "
                     "match): a wider slice than the model row; inconclusive"
                 )
-            lines.append(f"    COUNT(*): {count}")
-            lines.extend(f"    COUNT(DISTINCT {name}): {n}" for name, n in distinct)
-            model_value = float(value)
-            if counts_rows and not missing and not unsliceable and model_value > 0 and count > 0:
-                ratio = count / model_value
+            counted = [f"    COUNT(*): {m.count}"]
+            counted += [f"    COUNT(DISTINCT {name}): {n}" for name, n in m.distinct]
+            lines += counted
+            if count is None:
+                continue
+            baseline: int | list[str] = dict(m.baselines).get(metric, m.count)
+            if isinstance(baseline, list):
                 lines.append(
-                    "    → Model matches COUNT(*)"
-                    if 0.9 <= ratio <= 1.1
-                    else f"    → MISMATCH vs COUNT(*) ({ratio:.1f}x)"
+                    f"    {label(count)}: uses {', '.join(baseline)}, not in {m.candidate.ref}; "
+                    "no baseline, inconclusive"
                 )
+                continue
+            if f"    {label(count)}: {baseline}" not in counted:
+                lines.append(f"    {label(count)}: {baseline}")
+            if found.missing or unsliceable:
+                continue
+            # A count is exact: a row too many or too few is a defect.
+            model_value = float(value)
+            if baseline == model_value:
+                lines.append(f"    → Model matches {label(count)}")
+            else:
+                ratio = f" ({baseline / model_value:.1f}x)" if model_value else ""
+                lines.append(f"    → MISMATCH vs {label(count)}{ratio}")
         lines.append("")
     return lines
+
+
+# --- check_model_schema ----------------------------------------------------------------------
+
+# Kinds the gateway's database treats as one type: DuckDB's VARCHAR is also TEXT and STRING, and
+# its TIMESTAMP is Postgres' timestamp without time zone.
+SAME_KIND: dict[str, str] = {
+    **dict.fromkeys(("TEXT", "CHAR", "NCHAR", "NVARCHAR", "BPCHAR", "NAME"), "VARCHAR"),
+    **dict.fromkeys(("TIMESTAMPNTZ", "DATETIME"), "TIMESTAMP"),
+}
+
+
+def declared_columns(text: str) -> list[tuple[str, str]]:
+    """(name, data type or "") per comma-separated `name[:data_type]`; a comma inside a type's
+    parentheses, as in numeric(10,2), does not split."""
+    pairs = [item.partition(":") for item in re.split(r",(?![^()]*\))", text)]
+    return [(name.strip(), data_type.strip()) for name, _, data_type in pairs if name.strip()]
+
+
+def normalized_type(data_type: str) -> str:
+    """The type's kind, aliases folded: int4, int and integer are INT."""
+    try:
+        kind = str(exp.DataType.build(data_type, dialect=DIALECT).this.name)
+    except SqlglotError:
+        return base_type(data_type)
+    if kind == "USERDEFINED":
+        return base_type(data_type)
+    return SAME_KIND.get(kind, kind)
 
 
 def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | None) -> None:
@@ -815,13 +1107,25 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
     @server.tool()
     def check_model_schema(model_name: str, yml_columns: str) -> str:
         """Compare a built model's columns with the comma-separated column list from its YML:
-        matching, missing, extra and case-mismatched columns."""
-        expected = split_names(yml_columns)
+        matching, missing, extra and case-mismatched columns, and wrong types. Give a column as
+        `name:data_type` (e.g. `amount:numeric(10,2)`) to check its type, or as `name` alone.
+        Types compare by kind with DuckDB and Postgres aliases folded (int4 = INTEGER,
+        text = VARCHAR); precision and length are not compared."""
+        declared = declared_columns(yml_columns)
+        expected = [name for name, _ in declared]
         if not expected:
             raise ToolError(
                 "Error: yml_columns is empty; pass the YML column names, comma-separated"
             )
         model = resolve(load_catalog(run), model_name)
+        actual_types = {column.lower(): data_type for column, data_type in model.columns}
+        wrong_types = [
+            f"{name} (expected {data_type}, actual {actual_types[name.lower()]})"
+            for name, data_type in declared
+            if data_type
+            and name.lower() in actual_types
+            and normalized_type(data_type) != normalized_type(actual_types[name.lower()])
+        ]
         actual = [column for column, _ in model.columns]
         expected_lower = {column.lower(): column for column in expected}
         actual_lower = {column.lower(): column for column in actual}
@@ -842,6 +1146,7 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
                 f"  [X] Missing: {listed([c for c in expected if c not in actual])}",
                 f"  [X] Extra: {listed([c for c in actual if c not in expected])}",
                 f"  [!] Case mismatch: {listed(mismatched)}",
+                f"  [X] Type mismatch: {listed(wrong_types)}",
             ]
         )
 
@@ -860,16 +1165,20 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
     def verify_model_values(model_name: str, source_tables: str = "", project_dir: str = "") -> str:
         """Cross-check a model's metric values against its upstream data.
 
-        Takes the model's top row by its first numeric non-id column and slices on every text,
-        date or id column of that row (NULLs included), then counts COUNT(*) and
-        COUNT(DISTINCT <_id column>) for the same slice in each upstream table; a candidate it
-        cannot slice on every column is marked inconclusive, and a one-row model with no
-        dimension is compared with the whole upstreams. The counts skip the model's own filters.
+        Takes the model's top row by its first metric and slices on that row's dimensions
+        (NULLs included), then counts COUNT(*) and COUNT(DISTINCT <_id column>) for the same
+        slice in each upstream table; a candidate it cannot slice on every dimension is marked
+        inconclusive, and a one-row model with no dimension is compared with the whole
+        upstreams. The counts skip the model's own filters.
         Pass the model's upstreams (the tables in its FROM / ref() / source(), comma-separated)
         as `source_tables`; without them the nearest finer-grained table that has the first
-        slice column stands in. Pass the dbt project directory as `project_dir` so a metric is
-        held against COUNT(*) only when its SQL is count(...); without it, only metrics named
-        as counts (n_*, num_*, count_*, *_count) are.
+        slice column stands in. Pass the dbt project directory as `project_dir` so the model's
+        SQL is read: the dimensions are its GROUP BY columns, and a metric whose outermost
+        aggregate is COUNT(...) is compared exactly with the same COUNT (DISTINCT, CASE WHEN or
+        FILTER included) over each upstream. Without it, or when the SQL does not parse, text,
+        date and id columns are the dimensions and only integer metrics named as counts
+        (n_*, num_*, count_*, *_count) are compared, exactly, with COUNT(*). Sums and averages
+        get no verdict.
         """
         model = resolve(load_catalog(run), model_name)
         sql = None
