@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from claude_agent_sdk import ResultMessage
+from claude_agent_sdk import ResultMessage, SystemMessage
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult, TextContent
@@ -330,8 +330,41 @@ async def test_existing_runs_are_never_overwritten(
 ) -> None:
     out = tmp_path / "out"
     await run_dab(monkeypatch, dab_root, out, runs=1)
+    # A run with a trace but no submission entry (it broke) is not redone over its trace.
+    (out / "submission.json").write_text("[]")
     with pytest.raises(FileExistsError):
         await run_dab(monkeypatch, dab_root, out, runs=1)
+
+
+async def test_rerun_skips_finished_runs_and_redoes_removed_ones(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=2)
+    shutil.rmtree(dab.run_dir(out, "toyset", "1", 1))
+    submission = json.loads((out / "submission.json").read_text())
+    (out / "submission.json").write_text(json.dumps(submission[:1]))
+    seen = await run_dab(monkeypatch, dab_root, out, runs=2)
+    assert len(seen) == 1  # only run 1 ran again
+    assert [e["run"] for e in json.loads((out / "submission.json").read_text())] == ["0", "1"]
+
+
+async def test_a_dab_server_that_failed_to_start_is_an_infra_error(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    async def server_down(**_: Any) -> AsyncIterator[Any]:
+        servers = [{"name": "data", "status": "failed"}]
+        yield SystemMessage(subtype="init", data={"mcp_servers": servers, "tools": []})
+        yield result("The database is unavailable.")
+
+    monkeypatch.setattr(dab, "query", server_down)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    errors = await dab.run_query(dab_root, query, load_config("full"), out, 1, ENV)
+    assert errors == 1
+    assert json.loads((out / "submission.json").read_text()) == []
+    events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
+    assert any(e["type"] == "error" and e["source"] == "mcp" for e in events)
 
 
 async def test_submission_keeps_entries_from_earlier_queries(

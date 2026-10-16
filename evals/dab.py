@@ -34,7 +34,7 @@ from types import ModuleType
 from typing import Any
 
 import claude_agent_sdk
-from claude_agent_sdk import ResultMessage, query
+from claude_agent_sdk import ResultMessage, SystemMessage, query
 from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import McpStdioServerConfig
 
@@ -300,23 +300,44 @@ async def run_once(
             },
         )
         tools: dict[str, str] = {}
+        server_up = True
         try:
             async for message in query(prompt=task_prompt(dab_query, workspace), options=options):
                 if isinstance(message, ResultMessage):
                     final = message
-                else:
-                    record_message(log, message, tools)
+                    continue
+                record_message(log, message, tools)
+                if isinstance(message, SystemMessage) and message.subtype == "init":
+                    # Without DAB's tools the agent can only say the data is unreachable; that
+                    # is an outage, not an answer.
+                    server_status = mcp_status(message.data.get("mcp_servers"))
+                    if server_status != "connected":
+                        server_up = False
+                        log.emit("error", source="mcp", error=f"DAB tool server {server_status}")
         except Exception as exc:
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
         log.emit("result", **result_fields(final, settings.model))
-    if final is None or final.api_error_status is not None or final.terminal_reason == "api_error":
+    if (
+        not server_up
+        or final is None
+        or final.api_error_status is not None
+        or final.terminal_reason == "api_error"
+    ):
         status = "infra_error"
     elif final.subtype == "success" and not final.is_error:
         status = "finished"
     else:
         status = "unfinished"
     return (final.result or "") if final else "", status
+
+
+def mcp_status(servers: Any) -> str:
+    """The DAB server's status in the SDK's init message (`connected` when it started)."""
+    for server in servers or []:
+        if isinstance(server, dict) and server.get("name") == MCP_SERVER:
+            return str(server.get("status"))
+    return "missing"
 
 
 def spent(out: Path) -> Decimal:
@@ -350,19 +371,26 @@ async def run_query(
 
     A session that broke on infrastructure is not an answer: it stays out of the submission (its
     trace stays for a look) and is counted in the return value, so the caller can fail and the
-    run be redone after removing its directory.
+    run be redone after removing its directory. Runs already in the submission are skipped, so a
+    rerun only redoes what is missing.
     """
     out.mkdir(parents=True, exist_ok=True)
+    submission = out / "submission.json"
+    done = set()
+    if submission.exists():
+        done = {(e["dataset"], e["query"], e["run"]) for e in json.loads(submission.read_text())}
     secrets = sorted(set(known_secrets(env)), key=len, reverse=True)
     infra_errors = 0
     for run in range(runs):
+        if (dab_query.dataset, dab_query.query_id, str(run)) in done:
+            continue
         if budget is not None and spent(out) >= budget * spend.STOP_FRACTION:
             raise BudgetReached(f"spend under {out} reached {spend.STOP_PERCENT} of ${budget}")
         answer, status = await run_once(dab_root, dab_query, config, out, run, env)
         print(f"{dab_query.dataset} query{dab_query.query_id} run{run}: {status}")
         if status == "infra_error":
             infra_errors += 1
-            write_submission(out / "submission.json", [])
+            write_submission(submission, [])
             continue
         # Masked like the trace, so the answer in the submission matches the one in the trace.
         for secret in secrets:
@@ -373,7 +401,7 @@ async def run_query(
             "run": str(run),
             "answer": answer,
         }
-        write_submission(out / "submission.json", [entry])
+        write_submission(submission, [entry])
     return infra_errors
 
 
