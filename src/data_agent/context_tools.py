@@ -19,8 +19,10 @@ from data_agent.gateway import MAX_ROWS, QueryResult
 Run = Callable[[str, int], QueryResult]
 
 SUMMARY_LIMIT = 200
-# Distinct values shown per column by dictionary_search.
+# Distinct values shown per column by dictionary_search, and columns searched per statement so
+# that every column's values fit under the gateway's row cap.
 VALUES_PER_COLUMN = 20
+COLUMNS_PER_STATEMENT = MAX_ROWS // VALUES_PER_COLUMN
 
 CATALOG_SQL = """
 SELECT c.table_schema, c.table_name, t.table_type, c.column_name, c.data_type
@@ -31,6 +33,7 @@ JOIN information_schema.tables AS t
  AND t.table_name = c.table_name
 WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
 ORDER BY c.table_schema, c.table_name, c.ordinal_position
+LIMIT {limit} OFFSET {offset}
 """
 
 
@@ -64,13 +67,19 @@ def is_text(data_type: str) -> bool:
 
 
 def load_catalog(run: Run) -> list[Table]:
+    """Every column of every table, read in pages: one gateway query returns at most MAX_ROWS."""
     tables: dict[tuple[str, str], Table] = {}
-    for schema, name, kind, column, data_type in run(CATALOG_SQL, MAX_ROWS).rows:
-        table = tables.setdefault(
-            (schema, name), Table(schema, name, kind.lower().removeprefix("base "), [])
-        )
-        table.columns.append((column, data_type))
-    return list(tables.values())
+    offset = 0
+    while True:
+        rows = run(CATALOG_SQL.format(limit=MAX_ROWS, offset=offset), MAX_ROWS).rows
+        for schema, name, kind, column, data_type in rows:
+            table = tables.setdefault(
+                (schema, name), Table(schema, name, kind.lower().removeprefix("base "), [])
+            )
+            table.columns.append((column, data_type))
+        if len(rows) < MAX_ROWS:
+            return list(tables.values())
+        offset += MAX_ROWS
 
 
 def terms_of(text: str) -> list[str]:
@@ -141,25 +150,39 @@ def join_candidates(catalog: list[Table], table: Table) -> list[str]:
     return lines
 
 
-def dictionary_sql(table: Table, keyword: str) -> str | None:
-    """One statement per table: each text column's distinct values that contain the keyword."""
-    text_columns = [column for column, data_type in table.columns if is_text(data_type)]
-    if not text_columns:
-        return None
+def dictionary_sql(table: Table, columns: list[str], keyword: str) -> str:
+    """Per column, its most frequent VALUES_PER_COLUMN distinct values that contain the keyword,
+    with the number of distinct matching values (`distinct_values`, counted before the limit)."""
     needle = f"lower({literal(keyword)})"
     parts = [
-        f"SELECT {literal(column)} AS column_name, CAST({quote(column)} AS VARCHAR) AS value, "
-        f"count(*) AS n FROM {table.sql_name} "
+        f"SELECT {literal(column)} AS column_name, value, n, distinct_values FROM ("
+        f"SELECT CAST({quote(column)} AS VARCHAR) AS value, count(*) AS n, "
+        f"count(*) OVER () AS distinct_values FROM {table.sql_name} "
         f"WHERE strpos(lower(CAST({quote(column)} AS VARCHAR)), {needle}) > 0 "
-        f"GROUP BY {quote(column)}"
-        for column in text_columns
+        f"GROUP BY {quote(column)} ORDER BY n DESC, value LIMIT {VALUES_PER_COLUMN}) AS c{i}"
+        for i, column in enumerate(columns)
     ]
-    return "\nUNION ALL\n".join(parts) + "\nORDER BY column_name, n DESC, value"
+    return "\nUNION ALL\n".join(parts)
 
 
-def format_values(shown: list[str]) -> str:
-    extra = len(shown) - VALUES_PER_COLUMN
-    return ", ".join(shown[:VALUES_PER_COLUMN]) + (f", … {extra} more" if extra > 0 else "")
+def search_values(run: Run, table: Table, keyword: str) -> list[str]:
+    text_columns = [column for column, data_type in table.columns if is_text(data_type)]
+    shown: dict[str, list[str]] = {}
+    distinct: dict[str, int] = {}
+    for start in range(0, len(text_columns), COLUMNS_PER_STATEMENT):
+        chunk = text_columns[start : start + COLUMNS_PER_STATEMENT]
+        for column, value, n, distinct_values in run(
+            dictionary_sql(table, chunk, keyword), MAX_ROWS
+        ).rows:
+            shown.setdefault(column, []).append(f"{value!r} ({n})")
+            distinct[column] = distinct_values
+    lines: list[str] = []
+    for column in text_columns:
+        if column in shown:
+            extra = distinct[column] - len(shown[column])
+            more = f", … {extra} more" if extra > 0 else ""
+            lines.append(f"{table.ref}.{column}: {', '.join(shown[column])}{more}")
+    return lines
 
 
 def register_context_tools(server: MCPServer, run: Run) -> None:
@@ -207,15 +230,5 @@ def register_context_tools(server: MCPServer, run: Run) -> None:
         their row counts, to match dirty keys and enum spellings before filtering or joining."""
         if not keyword.strip():
             raise ToolError("Error: keyword is empty")
-        lines: list[str] = []
-        for table in load_catalog(run):
-            sql = dictionary_sql(table, keyword)
-            if sql is None:
-                continue
-            values: dict[str, list[str]] = {}
-            for column, value, n in run(sql, MAX_ROWS).rows:
-                values.setdefault(column, []).append(f"{value!r} ({n})")
-            lines.extend(
-                f"{table.ref}.{column}: {format_values(shown)}" for column, shown in values.items()
-            )
+        lines = [line for table in load_catalog(run) for line in search_values(run, table, keyword)]
         return "\n".join(lines) if lines else f"No values contain {keyword!r}"

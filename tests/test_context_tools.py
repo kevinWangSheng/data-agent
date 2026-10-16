@@ -104,6 +104,40 @@ async def test_dictionary_search_reports_counts_per_value(shop: Path) -> None:
     assert "raw.orders.customer_ref: 'C-0001 ' (2)" in text_of(result)
 
 
+async def test_catalog_past_the_gateway_row_cap_is_complete(tmp_path: Path) -> None:
+    """101 tables x 100 columns: more catalog rows than one gateway query returns."""
+    db = tmp_path / "wide.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        for i in range(101):
+            columns = ", ".join(f"c{j:03d} INTEGER" for j in range(100))
+            con.execute(f"CREATE TABLE t{i:03d} ({columns})")
+    finally:
+        con.close()
+    async with mcp_server(db) as session:
+        found = await session.call_tool("discover", {"query": "t100"})
+        hydrated = await session.call_tool("hydrate", {"ref": "main.t100"})
+    assert refs_of(found) == ["main.t100"]
+    assert "100 columns" in text_of(hydrated)
+
+
+async def test_dictionary_search_shows_every_column_despite_many_values(tmp_path: Path) -> None:
+    db = tmp_path / "values.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        con.execute(
+            "CREATE TABLE items AS SELECT 'gold-' || range AS a_text, 'gold_tier' AS z_tier "
+            "FROM range(10001)"
+        )
+    finally:
+        con.close()
+    async with mcp_server(db) as session:
+        result = await session.call_tool("dictionary_search", {"keyword": "gold"})
+    text = text_of(result)
+    assert "main.items.z_tier: 'gold_tier' (10001)" in text
+    assert "9981 more" in text
+
+
 @pytest.mark.parametrize("keyword", ["zebra", "o'brien"])
 async def test_dictionary_search_without_matches(shop: Path, keyword: str) -> None:
     async with mcp_server(shop) as session:
