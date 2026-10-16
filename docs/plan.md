@@ -138,7 +138,12 @@
 
 - **上榜轨迹是公开的**（`leaderboard/SUBMIT.md:45` "Trials must be publicly readable"）。上传 Harbor Hub 前，从轨迹和事件文件里清掉 API key、私有端点地址、服务器 IP 与主机名；写一个清理脚本，上传前强制跑，并在单元测试里覆盖。
 - **报错按 0 分算**（`SUBMIT.md:41`），而 Harbor 默认不重试（`src/harbor/models/job/config.py:293-295`）。只对模型接口的临时错误（限流、5xx、断连）开重试；超时、拒答不重试，照 Harbor 默认的排除列表（`:303-315`）。本地消融把"基础设施报错"和"agent 失败"分开统计，前者重跑，不进分数。
-- **服务器与并发**：每题容器 2 核 / 8 GB、agent 超时 4000 秒（`tasks/*/task.toml`），官方配置并发 4（`configs/data-eng-bench-duckdb.claude-code.yaml`），所以 8 核 / 32 GB 够用。上榜不许改超时和资源（`SUBMIT.md:36-37`），只能靠并发提速；DeepSeek 的并发与限流额度未确认，工单 09 实测。
+- **服务器与并发**（2026-10-16 改）：每题 `task.toml` 写 2 核 / 8000 MB、agent 超时 4000 秒；官方配置并发 4（`configs/data-eng-bench-duckdb.claude-code.yaml`）。Harbor 的 Docker 环境默认把 `memory_mb` 写成 `mem_limit`（`harbor/src/harbor/environments/docker/__init__.py:56-57`），是上限不是预留，7 GB 的机器也能起容器，只有真用超了才失败。题目数据很小（全部约 103 题共 11 MB），单题实际用量估计 1–3 GB（未确认）；报错的 trial 按 0 分计（`SUBMIT.md`），所以并发要按实测定。
+  - 做法：先不加资源。工单 09 跑 5 题时记每题峰值内存（`docker stats`）和用时；每台机器的并发 ≈ (内存 − 1 GB) ÷ 单题峰值。
+  - 一台不够快就加机器，大小不限：每台跑一部分题、各自是一个 Harbor job，提交时 `lb submit` 接多个 job 链接（`SUBMIT.md`）。不改 `task.toml` 的资源（上榜规则禁止）。工单 12 的留出集也按题拆。
+  - 量级：全量约 103 题 × 3 次 ≈ 309 次；单次若 15 分钟（未确认），并发 1 约 77 小时，两台各并发 2 约 19 小时。
+  - DAB（工单 13）另算：要起 Postgres、MongoDB 和约 5 GB 数据，用量未测，放一台机器上。
+  - DeepSeek 的并发与限流额度未确认，工单 09 实测。
 - **每次运行记版本**：事件文件开头写 git commit、Skill 版本、配置名（基线/全开/关某层）、模型名、SDK 版本。"新旧 Skill 对比"和复现全靠它。
 - **结果怎么拿回来**：`runs/` 只留在服务器，用 `~/.ssh/config` 的主机别名 rsync 回 Mac 做失败归因；只把汇总报告提交进 git。
 - **trace 看板**：Langfuse/LangSmith 的选择见第 5 节，不变。补一点：评测容器里不往 Langfuse 发（容器只靠文件带出记录），只在本地运行和网页界面里接。
@@ -169,4 +174,4 @@
 - [x] 5. 第 8 节：`/to-spec` 写一期 spec，人确认验收的测试接缝；分几次讨论。
 - [x] 6. 第 8 节：`/to-tickets` 拆工单与依赖图，改掉 `docs/setup.md` 与第 7 节的旧工单编号。
 - [x] 7. 用工单 01 端到端试跑流水线（依赖 4、6）：PR #1 squash 合并、CI 绿（2026-10-15）。
-- [ ] 8. `da-remote`：`check` 子命令已写并实测（`7b9ebcd`，2026-10-16）；服务器 6 核 / 7 GB，内存不够跑单题容器（8 GB），仓库也未 clone。**延后**：开发在 Mac 上，服务器到工单 12 全量、13 DAB 前再升配（≥32 GB）；那时补 start-eval / status / pull-results。
+- [ ] 8. `da-remote`：`check` 子命令已写并实测（`7b9ebcd`，2026-10-16）；服务器 6 核 / 7 GB、不能升配，仓库未 clone。**延后**：开发在 Mac 上；8 GB 是容器上限不是预留，台数与并发等工单 09 实测单题峰值内存再定（第 7 节"服务器与并发"）；工单 12 全量、13 DAB 前补 start-eval / status / pull-results。
