@@ -1,10 +1,10 @@
 # 05 — 运行配置与层开关
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 03
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 05-run-configs)
+Branch: worktree-05-run-configs
 
 ## Goal
 
@@ -42,10 +42,38 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: ~$0.007（两次真实运行）
+- Outcome: 开关、配置、Skill 哈希版本头完成；接缝 A 基线测试等 04
 - Human review minutes: —
 
 ## Comments
+
+### 2026-10-16 工单 agent 交回（commits `01bd07e`、`551a919`）
+
+**实现**：`src/data_agent/configs/` 6 个配置（baseline、full、no-skill、no-verifiers、no-context、full-old-skill），各含三层开关、Skill 目录、最大轮数（dbt 200 / query 50）、$1 预算；单测保证各配置轮数与预算一致。Skill 层关时 system prompt 不含 Skill，版本头 `skill_version: "none"`；开时为 Skill 目录内容哈希。版本头加 `layers` 字段。`build_server` 接收配置，06/07 的工具按开关注册。配置指向不存在的 Skill 目录时加载即失败，CLI 退出码 2。
+
+**检查**：`make check` 532 passed, 15 deselected, 15 xfailed。
+
+**真实运行**（同一 query 题，fixture DuckDB）：
+```
+data-agent run --task "What is the total amount of all completed orders? ..." --type query \
+  --workspace runs/05/ws/dbt_shop --duckdb runs/05/ws/shop.duckdb --config {baseline|full} --events-dir runs/05/{config}
+baseline exit=0  header: skill_version=none, layers all false; 10 turns, $0.0033; answer 1459.75
+full     exit=0  header: skill_version=3c62ed4f0db4, layers all true; 7 turns, $0.00341; answer 1459.75
+init MCP tools (both):  mcp__data__list_tables, mcp__data__query_database
+built-in tools (both):  Glob, Grep, Read
+verifier events (both): none
+```
+工具列表相同，因为层工具要到 06/07 才有。
+
+**审查**：`da-review main` 两轮无意见。`eng:code-review main` 修了 3 条（缺失 Skill 目录加载即失败并配 CLI 测试；`build_server` docstring；测试辅助函数去重）。
+
+**不修的理由**：
+- 接缝 A `test_baseline_leaves_no_verifier_or_context_trace` 仍 xfail：该测试跑 dbt 任务，依赖 04（本工单 Blocked by 漏写 04）。04 合并后由主会话跑 `make test-integration` 并去掉 xfail。
+- `full-old-skill` 目前等于 `full`：还没有旧版 Skill。已写进工单 12 验收标准。
+- 大库 75 轮上限未做：没有"大库"定义与任务类型。已写进工单 13 验收标准。
+- 保留 `layers` 字段、`SKILLS_DIR` 仅测试使用、配置文件重复轮数与预算（单测防漂移）。
+
+**预期冲突**：04 也改 `agent.py`；合并后 dbt Skill 须从 `config.skills_dir` 加载、Skill 层关时跳过。

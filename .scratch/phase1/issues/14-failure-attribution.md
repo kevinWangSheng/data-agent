@@ -1,10 +1,10 @@
 # 14 — 失败归因报告
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 03, 10
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5)
+Branch: worktree-14-failure-attribution
 
 ## Goal
 

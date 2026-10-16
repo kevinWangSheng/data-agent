@@ -25,6 +25,7 @@ ADR-0005；plan §4 DAB 基线；上游 `~/dev/AI/data-agent-refs/DataAgentBench
 
 - [ ] 单题真实跑通 5 次并产出提交格式
 - [ ] 本仓库里没有任何 DAB 代码或提示文本
+- [ ] 大库任务最大 75 轮（spec「运行配置」；工单 05 留的缺口）：定义何为大库并接到运行配置
 - [ ] `make check` 通过
 
 ## Evidence required

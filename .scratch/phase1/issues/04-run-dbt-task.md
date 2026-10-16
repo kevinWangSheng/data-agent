@@ -1,10 +1,10 @@
 # 04 — dbt 任务端到端
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 03
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (opus-5.5)
+Branch: worktree-04-run-dbt-task
 
 ## Goal
 
