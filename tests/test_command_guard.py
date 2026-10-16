@@ -125,6 +125,19 @@ async def test_everything_else_is_denied_with_a_reason(tmp_path: Path, command: 
     assert "dbt" in reason
 
 
+NUMERIC_PROJECT = (f"python3 {SCRIPTS[0]} 123", f"python3 {SCRIPTS[1]} 123 60")
+
+
+@pytest.mark.parametrize("command", NUMERIC_PROJECT)
+async def test_a_numeric_project_argument_is_a_path(tmp_path: Path, command: str) -> None:
+    """`123` may be a symlink out of the workspace; only validate's timeout may be a bare number."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "123").symlink_to(tmp_path)
+    decision, _ = await decide(workspace, command)
+    assert decision == "deny"
+
+
 async def test_a_background_command_is_denied(tmp_path: Path) -> None:
     """The guard cannot see a background command finish, and dbt holds the database write lock."""
     decision, reason = await decide(tmp_path, "dbt run --select customer_ltv", background=True)

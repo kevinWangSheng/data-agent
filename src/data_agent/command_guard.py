@@ -116,10 +116,13 @@ def denial(command: str, workspace: Path, scripts: Sequence[Path]) -> str | None
         allowed = {script.resolve() for script in scripts}
         if resolve(workspace, args[0]) not in allowed:
             return f"python3 may only run {', '.join(sorted(s.name for s in allowed))}"
-        # The scripts take the project directory and, for validate, a timeout in seconds.
-        for arg in args[1:]:
-            if not arg.isdigit() and not inside(resolve(workspace, arg), workspace):
-                return "the dbt-workflow scripts may only read the workspace"
+        # The scripts take the project directory and, for validate, a timeout in seconds. The
+        # project is always checked as a path: `123` may be a symlink out of the workspace.
+        project, *timeout = args[1:] or ["."]
+        if len(timeout) > 1 or (timeout and not timeout[0].isdigit()):
+            return "the dbt-workflow scripts take a project directory and a timeout in seconds"
+        if not inside(resolve(workspace, project), workspace):
+            return "the dbt-workflow scripts may only read the workspace"
         return None
     return f"{program!r} is not allowed"
 

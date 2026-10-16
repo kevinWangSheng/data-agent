@@ -9,6 +9,7 @@
 # Model SQL is read only from the project's model-paths (dbt_project.yml, default `models`), so a
 # data test, analysis or snapshot named like a missing model does not count as that model; the older
 # `source-paths` key is read when `model-paths` is absent, as dbt does.
+# Model paths, SQL, YAML and macro files that resolve outside the project are not read.
 # The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
 # The snapshots hint says `dbt snapshot` cannot run here (data-agent's Bash allows no snapshot).
 """Pre-scan a dbt project and emit a structured context block.
@@ -81,13 +82,22 @@ def _model_paths(work_dir: Path) -> list[str]:
     return [n for n in names if n] or ["models"]
 
 
+def _inside(path: Path, work_dir: Path) -> bool:
+    return path.resolve().is_relative_to(work_dir.resolve())
+
+
 def _model_sql_files(work_dir: Path) -> list[Path]:
-    """The model SQL files: `*.sql` under the model-paths, minus skipped directories."""
+    """The model SQL files: `*.sql` under the model-paths, minus skipped directories and anything
+    (a model path, a symlinked file) that resolves outside the project."""
     files: list[Path] = []
     for name in _model_paths(work_dir):
         model_dir = work_dir / name
-        if model_dir.is_dir():
-            files.extend(f for f in model_dir.rglob("*.sql") if not _skipped(f, work_dir))
+        if model_dir.is_dir() and _inside(model_dir, work_dir):
+            files.extend(
+                f
+                for f in model_dir.rglob("*.sql")
+                if _inside(f, work_dir) and not _skipped(f, work_dir)
+            )
     return files
 
 
@@ -279,6 +289,8 @@ def scan_macros(work_dir: Path) -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     seen: set[str] = set()
     for sql_file in macros_dir.rglob("*.sql"):
+        if not _inside(sql_file, work_dir):
+            continue
         try:
             body = _read_text(sql_file).strip()
             for m in pat.finditer(body):
@@ -355,7 +367,7 @@ def scan_packages(work_dir: Path) -> str:
 
     # Check for dbt.* namespace usage in existing SQL
     for sql_file in work_dir.rglob("*.sql"):
-        if _skipped(sql_file, work_dir):
+        if _skipped(sql_file, work_dir) or not _inside(sql_file, work_dir):
             continue
         try:
             if "dbt." in _read_text(sql_file):
@@ -392,7 +404,7 @@ def main():
 
     for ext in ("*.yml", "*.yaml"):
         for yml_file in work_dir.rglob(ext):
-            if _skipped(yml_file, work_dir):
+            if _skipped(yml_file, work_dir) or not _inside(yml_file, work_dir):
                 continue
             try:
                 text = _read_text(yml_file)
@@ -439,7 +451,7 @@ def main():
             yml_file = ""
             siblings_in_yml = []
             for yf in (work_dir / "models").rglob("*.yml"):
-                if "dbt_packages" in str(yf):
+                if "dbt_packages" in str(yf) or not _inside(yf, work_dir):
                     continue
                 try:
                     import yaml

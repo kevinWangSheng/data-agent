@@ -145,6 +145,27 @@ def test_workflow_never_skips_building_a_model_the_task_asks_for() -> None:
     assert "create" in skip_rule
 
 
+def test_scan_reads_no_sql_outside_the_project(tmp_path: Path) -> None:
+    """A model path or a symlinked file leading out of the project is not read."""
+    outside = tmp_path / "other" / "models"
+    outside.mkdir(parents=True)
+    (outside / "secret_model.sql").write_text("select 1 as secret_column\n")
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    (project / "models" / "linked_model.sql").symlink_to(outside / "secret_model.sql")
+    (outside / "secret.yml").write_text("models:\n  - name: secret_yml_model\n")
+    (project / "models" / "linked.yml").symlink_to(outside / "secret.yml")
+    (outside / "secret_macro.sql").write_text("{% macro secret_macro() %}1{% endmacro %}\n")
+    (project / "macros").mkdir()
+    (project / "macros" / "linked_macro.sql").symlink_to(outside / "secret_macro.sql")
+    config = project / "dbt_project.yml"
+    config.write_text(config.read_text().replace('["models"]', '["models", "../other/models"]'))
+    output = scan(project)
+    for name in ("secret_model", "linked_model", "secret_yml_model", "secret_macro"):
+        assert name not in output, output
+    assert "stg_orders" in section(output, "COMPLETE MODELS"), output
+
+
 def test_scan_does_not_point_at_snapshots_to_run(tmp_path: Path) -> None:
     """Bash cannot run `dbt snapshot`, so the scan must not suggest it."""
     project = tmp_path / "dbt_shop"
