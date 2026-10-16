@@ -13,6 +13,7 @@ import duckdb
 import psycopg
 import pytest
 
+from data_agent.events import REDACTED
 from data_agent.gateway import DuckDBGateway
 from evals import jaffle
 
@@ -202,6 +203,28 @@ def test_redact_masks_the_url_password_and_host() -> None:
     text = jaffle.redact(f"dbt debug: host=db.example password=s3cret-pw url={url}", url)
     assert "s3cret-pw" not in text
     assert "db.example" not in text
+
+
+def test_redact_masks_a_single_label_host() -> None:
+    url = "postgresql://u:s3cret-pw@postgres:5432/shop"
+    text = jaffle.redact('could not translate host name "postgres" to address', url)
+    assert text == f'could not translate host name "{REDACTED}" to address'
+
+
+def test_rerun_replaces_the_case_directory(tmp_path: Path) -> None:
+    # A failed or timed-out case leaves its workspace and events behind (PR #14 review).
+    project = tmp_path / "project"
+    (project / "models").mkdir(parents=True)
+    (project / "models" / "orders.sql").write_text("select 1")
+    case_dir = tmp_path / "out" / "q1"
+    first = jaffle.prepare_case_dir(project, case_dir)
+    (first / "models" / "orders.sql").write_text("edited by the agent")
+    (case_dir / "events").mkdir()
+    (case_dir / "events" / "old.jsonl").write_text("{}\n")
+    second = jaffle.prepare_case_dir(project, case_dir)
+    assert second == first
+    assert (second / "models" / "orders.sql").read_text() == "select 1"
+    assert not (case_dir / "events").exists()
 
 
 @pytest.mark.integration

@@ -35,7 +35,7 @@ from psycopg import sql as pgsql
 from psycopg.conninfo import conninfo_to_dict
 
 from data_agent.context_tools import literal, quote
-from data_agent.events import REDACTED, url_secrets
+from data_agent.events import mask, url_names, url_secrets
 from data_agent.gateway import Gateway, PostgresGateway, QueryBlocked, QueryFailed
 
 EVAL_FILE = Path(__file__).resolve().parent / "jaffle_shop" / "eval.json"
@@ -202,9 +202,7 @@ def negative_passed(unchanged: bool, exit_code: int, events: Sequence[Mapping[st
 
 def redact(text: str, url: str) -> str:
     """Harness errors (libpq's among them) can name the server; mask it as the event log does."""
-    for secret in sorted({s for s in url_secrets(url) if s}, key=len, reverse=True):
-        text = text.replace(secret, REDACTED)
-    return text
+    return mask(text, url_secrets(url), url_names(url))
 
 
 def dbt_profile(url: str, schema: str) -> tuple[str, dict[str, str]]:
@@ -284,14 +282,22 @@ def read_events(events_dir: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in files[0].read_text().split("\n") if line.strip()]
 
 
+def prepare_case_dir(project: Path, case_dir: Path) -> Path:
+    """A fresh case directory holding a clean copy of the project. A rerun with the same --out
+    replaces what an earlier attempt left there: the agent's edits and its event file."""
+    shutil.rmtree(case_dir, ignore_errors=True)
+    workspace = case_dir / "jaffle_shop"
+    shutil.copytree(project, workspace, ignore=shutil.ignore_patterns(".git", "target", "logs"))
+    return workspace
+
+
 def run_case(
     case: Mapping[str, Any], project: Path, out: Path, url_env: str, config: str, tolerance: float
 ) -> dict[str, Any]:
     url = os.environ[url_env]
     case_dir = out / case["id"]
-    workspace = case_dir / "jaffle_shop"
+    workspace = prepare_case_dir(project, case_dir)
     schema = SCHEMA_PREFIX + case["id"].lower()
-    shutil.copytree(project, workspace, ignore=shutil.ignore_patterns(".git", "target", "logs"))
     profile, profile_env = dbt_profile(url, schema)
     (workspace / "profiles.yml").write_text(profile)
     apply_edits(workspace, case.get("setup", {}).get("edits", []))

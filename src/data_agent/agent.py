@@ -35,7 +35,7 @@ from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent.command_guard import command_guard
-from data_agent.events import EventLog, known_secrets, url_secrets
+from data_agent.events import EventLog, known_secrets, url_names, url_secrets
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.verifiers import AGENT_TOOL, VERIFIERS_PROMPT, Emit, verifier_agents, verifier_hooks
 from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
@@ -452,9 +452,11 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     stderr: list[str] = []
     final: ResultMessage | None = None
     secrets = known_secrets(env)
+    names: list[str] = []
     if task.postgres_env:
         secrets += url_secrets(env.get(task.postgres_env, ""))
-    with EventLog(path, secrets=secrets) as log:
+        names = url_names(env.get(task.postgres_env, ""))
+    with EventLog(path, secrets=secrets, names=names) as log:
         log.emit(
             "version",
             git_commit=git_commit(),

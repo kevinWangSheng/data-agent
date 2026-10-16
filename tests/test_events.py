@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from data_agent.events import REDACTED, EventLog, known_secrets
+import pytest
+
+from data_agent.events import REDACTED, EventLog, known_secrets, url_names, url_secrets
 
 
 def read(path: Path) -> list[dict[str, Any]]:
@@ -62,3 +64,30 @@ def test_endpoint_host_is_masked_on_its_own(tmp_path: Path) -> None:
     with EventLog(path, secrets=secrets) as log:
         log.emit("error", message="connect to llm.internal.example failed")
     assert "llm.internal.example" not in path.read_text()
+
+
+def test_database_url_hosts_are_masked_even_as_bare_names(tmp_path: Path) -> None:
+    # Docker and Kubernetes hosts are often single-label names (PR #14 review).
+    url = "postgresql://u:s3cret-pw@prod-db:5432/shop"
+    path = tmp_path / "run.jsonl"
+    with EventLog(path, secrets=url_secrets(url), names=url_names(url)) as log:
+        log.emit("tool_end", content='could not translate host name "prod-db" to address')
+        log.emit("tool_end", content="prod-dbx and prod-db-replica are other words; dbt too")
+    events = read(path)
+    assert events[0]["content"] == f'could not translate host name "{REDACTED}" to address'
+    assert events[1]["content"] == "prod-dbx and prod-db-replica are other words; dbt too"
+
+
+@pytest.mark.parametrize(
+    ("url", "names"),
+    [
+        ("postgresql://u:pw@postgres:5432/shop", ["postgres"]),
+        ("host=db1,db2 dbname=shop", ["db1", "db2"]),
+        ("postgresql://u:pw@db.example:5432/shop", []),
+        ("postgresql://u:pw@localhost:5432/shop", []),
+        ("host=/var/run/postgresql dbname=shop", []),
+        ("", []),
+    ],
+)
+def test_url_names_are_the_single_label_hosts(url: str, names: list[str]) -> None:
+    assert url_names(url) == names

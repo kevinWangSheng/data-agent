@@ -32,7 +32,7 @@ another one: find the real schema with `list_tables` before writing a query.
 ## Date Parsing
 
 - Non-ISO strings: `to_date(col, 'DD/MM/YYYY')`, `to_timestamp(col, 'DD/MM/YYYY HH24:MI')`
-- There is no `TRY_CAST`: guard the cast, e.g. `CASE WHEN col ~ '^\d{4}-\d{2}-\d{2}$' THEN col::date END`
+- There is no `TRY_CAST`: guard the cast, e.g. `CASE WHEN col ~ '^\d{4}-\d{2}-\d{2}$' AND pg_input_is_valid(col, 'date') THEN col::date END`. The pattern alone is not enough: `'2026-99-31'::date` and `'2026-02-30'::date` raise errors. `pg_input_is_valid` (PostgreSQL 16+) checks the calendar, but it also accepts `03/04/2026` under the session's DateStyle, so keep the pattern
 - Never `col::date` on non-ISO strings
 
 ## Window Filters and First Row per Group

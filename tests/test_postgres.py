@@ -79,7 +79,11 @@ def test_run_rejects_an_unset_postgres_variable(tmp_path: Path) -> None:
 
 
 async def run_postgres(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, task_type: str, said: str = "done"
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    task_type: str,
+    said: str = "done",
+    url: str = UNREACHABLE,
 ) -> tuple[Any, list[dict[str, Any]]]:
     seen: list[Any] = []
 
@@ -100,7 +104,7 @@ async def run_postgres(
     monkeypatch.setattr(agent, "query", fake_query)
     monkeypatch.setattr(agent.shutil, "which", lambda *_, **__: "/usr/bin/dbt")
     task = Task(text="q", type=task_type, workspace=tmp_path, postgres_env="DA_TEST_URL")  # pyright: ignore[reportArgumentType]
-    env = {"DATA_AGENT_API_KEY": "sk-test", "DA_TEST_URL": UNREACHABLE}
+    env = {"DATA_AGENT_API_KEY": "sk-test", "DA_TEST_URL": url}
     outcome = await agent.run(task, load_config("full"), tmp_path / "events", env)
     events = [json.loads(line) for line in outcome.events_path.read_text().splitlines()]
     return seen[0], events
@@ -140,6 +144,16 @@ async def test_postgres_url_and_password_are_masked_in_events(
     text = json.dumps(events)
     assert "hunter2-secret" not in text
     assert "127.0.0.1" not in text
+
+
+async def test_bare_host_name_is_masked_in_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    url = "postgresql://someone:hunter2-secret@prod-db:5432/nowhere"
+    _, events = await run_postgres(
+        monkeypatch, tmp_path, "query", said='host name "prod-db" not known', url=url
+    )
+    assert "prod-db" not in json.dumps(events)
 
 
 def test_postgres_skill_names_only_real_tools_and_no_scoring() -> None:
@@ -244,3 +258,18 @@ def test_postgres_skill_states_division_as_postgres_does_it(postgres_url: str) -
     text = (SKILLS_DIR / "postgres-sql" / "SKILL.md").read_text()
     assert PostgresGateway(postgres_url).query("SELECT 5 / 2, 5 / 2.0").rows[0][0] == 2
     assert "`5 / 2 = 2`" in text
+
+
+@pytest.mark.integration
+def test_postgres_skill_date_guard_rejects_impossible_dates(postgres_url: str) -> None:
+    text = (SKILLS_DIR / "postgres-sql" / "SKILL.md").read_text()
+    guard = (
+        r"CASE WHEN col ~ '^\d{4}-\d{2}-\d{2}$' AND pg_input_is_valid(col, 'date') "
+        "THEN col::date END"
+    )
+    assert f"`{guard}`" in text
+    values = "('2024-02-29'), ('2026-99-31'), ('2026-02-30'), ('03/04/2026'), ('junk')"
+    sql = f"SELECT {guard} FROM (VALUES {values}) AS t(col)"
+    rows = PostgresGateway(postgres_url).query(sql).rows
+    dates = [str(row[0]) if row[0] else None for row in rows]
+    assert dates == ["2024-02-29", None, None, None, None]
