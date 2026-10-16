@@ -23,11 +23,13 @@ def paired_bootstrap(
 
     Tasks are resampled with replacement and both configs keep their own result for each
     drawn task, so per-task difficulty cancels out of the difference. The difference is
-    significant only when the interval excludes 0.
+    significant only when the interval excludes 0. Each task weighs the same; with the same
+    number of trials per task (k=3 here) that equals the difference in leaderboard accuracy.
     """
     if set(baseline) != set(candidate):
-        missing = sorted(set(baseline) ^ set(candidate))
-        raise ValueError(f"jobs must cover the same tasks; unpaired: {missing}")
+        # Count only: these may be holdout jobs, whose task ids stay out of the output.
+        unpaired = len(set(baseline) ^ set(candidate))
+        raise ValueError(f"jobs must cover the same tasks; {unpaired} tasks are unpaired")
     base, cand = task_success_rates(baseline), task_success_rates(candidate)
     diffs = [100.0 * (cand[task] - base[task]) for task in sorted(base)]
     rng = random.Random(seed)

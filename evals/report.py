@@ -25,23 +25,49 @@ def score(trials: list[Trial]) -> dict[str, Any]:
     }
 
 
-def summary(trials: list[Trial], expected_tasks: list[str]) -> dict[str, Any]:
+# Harbor's default `RetryConfig.exclude_exceptions` (harbor src/harbor/models/job/config.py):
+# errors a rerun would not fix, so they are the agent's (or the task's) and stay in the score.
+# Any other exception is infrastructure noise that Harbor retries.
+NOT_RETRIED = frozenset(
+    {
+        "AgentTimeoutError",
+        "VerifierTimeoutError",
+        "RewardFileNotFoundError",
+        "RewardFileEmptyError",
+        "VerifierOutputParseError",
+        "ApiUsageLimitError",
+        "AgentSafetyRefusalError",
+        "AgentAuthenticationError",
+        "ModelNotFoundError",
+        "UnsupportedModelParametersError",
+    }
+)
+
+
+def is_infra_error(trial: Trial) -> bool:
+    return (
+        not is_success(trial.reward)
+        and trial.exception_type is not None
+        and trial.exception_type not in NOT_RETRIED
+    )
+
+
+def summary(trials: list[Trial]) -> dict[str, Any]:
     """Aggregate scores, outcome counts and usage totals.
 
     Outcomes are disjoint: a passing trial counts as succeeded even if Harbor also recorded an
-    error (the verifier still runs after an agent timeout); among the rest, errored trials are
-    kept apart from agent failures that ran to the end and scored 0.
+    error (the verifier still runs after an agent timeout); of the rest, infrastructure errors
+    (see NOT_RETRIED) are kept apart from agent failures. Both still score 0, as on the
+    leaderboard; infrastructure errors are the ones to rerun.
     """
     succeeded = [t for t in trials if is_success(t.reward)]
-    errored = [t for t in trials if not is_success(t.reward) and t.exception_type is not None]
-    present = {t.task for t in trials}
+    infra = [t for t in trials if is_infra_error(t)]
     return {
         **score(trials),
-        "n_tasks": len(present),
-        "n_tasks_missing": len(set(expected_tasks) - present),
+        "n_tasks": len({t.task for t in trials}),
         "n_succeeded": len(succeeded),
-        "n_failed": len(trials) - len(succeeded) - len(errored),
-        "n_errored": len(errored),
+        "n_failed": len(trials) - len(succeeded) - len(infra),
+        "n_infra_errors": len(infra),
         "uncached_input_tokens": sum(t.uncached_input_tokens for t in trials),
         "cached_input_tokens": sum(t.cached_input_tokens for t in trials),
         "output_tokens": sum(t.output_tokens for t in trials),
@@ -66,6 +92,7 @@ def _trial_rows(trials: list[Trial]) -> list[dict[str, Any]]:
                 "trial": t.name,
                 "reward": t.reward,
                 "exception_type": t.exception_type,
+                "infra_error": is_infra_error(t),
                 "uncached_input_tokens": t.uncached_input_tokens,
                 "cached_input_tokens": t.cached_input_tokens,
                 "output_tokens": t.output_tokens,
@@ -82,9 +109,15 @@ def write_report(
     """Write `out_dir/report.json` for one split of the manifest; dev also gets `trials.json`."""
     tasks: list[str] = manifest[split]
     in_split = [t for t in trials if t.task in set(tasks)]
-    if not in_split:
-        raise ValueError(f"no trial results for the {split} split in this job")
-    report: dict[str, Any] = {"split": split, **summary(in_split, tasks)}
+    # Scoring only the tasks present would inflate accuracy; only the count is shown, so a
+    # holdout report still names no task.
+    missing = set(tasks) - {t.task for t in in_split}
+    if missing:
+        raise ValueError(
+            f"no trial results for {len(missing)} of {len(tasks)} {split} tasks in this job; "
+            "a report needs every task in the split"
+        )
+    report: dict[str, Any] = {"split": split, **summary(in_split)}
     out_dir.mkdir(parents=True, exist_ok=True)
     if split == "dev":
         report["per_task"] = _per_task(in_split)

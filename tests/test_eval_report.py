@@ -35,9 +35,9 @@ def report(job: Path, tmp_path: Path) -> dict[str, Any]:
     return json.loads((out / "report.json").read_text())
 
 
-def test_outcome_counts_are_disjoint_when_a_timed_out_trial_still_passes(tmp_path: Path) -> None:
-    # Harbor still runs the verifier after an agent timeout, so a trial can carry both.
+def test_outcomes_separate_infrastructure_errors_from_agent_failures(tmp_path: Path) -> None:
     job = tmp_path / "job"
+    # Harbor still runs the verifier after an agent timeout, so a trial can pass and error.
     write_trial(
         job,
         "t1__a",
@@ -47,9 +47,14 @@ def test_outcome_counts_are_disjoint_when_a_timed_out_trial_still_passes(tmp_pat
         },
     )
     write_trial(job, "t1__b", {"verifier_result": {"rewards": {"reward": 0.0}}})
+    # Harbor does not retry a timeout: it is the agent's failure.
     write_trial(job, "t1__c", {"exception_info": {"exception_type": "AgentTimeoutError"}})
+    # Harbor retries a provider 5xx: it is infrastructure.
+    write_trial(job, "t1__d", {"exception_info": {"exception_type": "ApiInternalServerError"}})
     summary = report(job, tmp_path)
-    assert (summary["n_succeeded"], summary["n_failed"], summary["n_errored"]) == (1, 1, 1)
+    counts = (summary["n_succeeded"], summary["n_failed"], summary["n_infra_errors"])
+    assert counts == (1, 2, 1)
+    assert summary["accuracy"] == 25.0
 
 
 def test_report_totals_tokens_and_cost(tmp_path: Path) -> None:
@@ -86,3 +91,42 @@ def test_report_on_a_job_without_the_split_is_an_error(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "no trial results" in proc.stderr
     assert not (out / "report.json").exists()
+
+
+def test_report_with_a_split_task_missing_is_an_error(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"seed": 0, "dev": [], "holdout": ["t1", "t-secret"]}))
+    proc = evals(
+        *("report", str(job), "--manifest", str(manifest)),
+        *("--split", "holdout", "--out", str(tmp_path / "report")),
+    )
+    assert proc.returncode != 0
+    assert "1 of 2 holdout tasks" in proc.stderr
+    assert "t-secret" not in proc.stderr
+
+
+def test_compare_unpaired_jobs_is_an_error_naming_no_task(tmp_path: Path) -> None:
+    base, cand = tmp_path / "base", tmp_path / "cand"
+    write_trial(base, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    (cand / "t-secret__a").mkdir(parents=True)
+    (cand / "t-secret__a" / "result.json").write_text(json.dumps({"task_name": "t-secret"}))
+    proc = evals("compare", "--baseline", str(base), "--candidate", str(cand), "--json")
+    assert proc.returncode != 0
+    assert "2 tasks are unpaired" in proc.stderr
+    assert "t-secret" not in proc.stderr
+
+
+def test_sample_rejects_dev_tasks_missing_from_tasks_dir(tmp_path: Path) -> None:
+    tasks = tmp_path / "tasks"
+    (tasks / "a").mkdir(parents=True)
+    (tasks / "a" / "task.toml").write_text('[metadata]\ndifficulty = "hard"\n')
+    dev_list = tmp_path / "dev.txt"
+    dev_list.write_text("# dev set\n\nnot-a-task\n")
+    proc = evals(
+        *("sample", "--tasks-dir", str(tasks), "--dev-list", str(dev_list)),
+        *("--size", "1", "--seed", "0", "--out", str(tmp_path / "m.json")),
+    )
+    assert proc.returncode != 0
+    assert "not-a-task" in proc.stderr
