@@ -81,6 +81,14 @@ async def test_hydrate_lists_types_row_count_and_join_candidates(shop: Path) -> 
     assert "customer_id -> main.stg_customers.customer_id" in text
 
 
+async def test_hydrate_lists_tables_sharing_an_id_column(shop: Path) -> None:
+    async with mcp_server(shop) as session:
+        result = await session.call_tool("hydrate", {"ref": "raw.orders"})
+    text = text_of(result)
+    assert "order_id -> raw.order_items.order_id" in text
+    assert "order_id -> main.orders_enriched.order_id" in text
+
+
 async def test_hydrate_accepts_a_bare_table_name(shop: Path) -> None:
     async with mcp_server(shop) as session:
         result = await session.call_tool("hydrate", {"ref": "web_events"})
@@ -136,6 +144,67 @@ async def test_dictionary_search_shows_every_column_despite_many_values(tmp_path
     text = text_of(result)
     assert "main.items.z_tier: 'gold_tier' (10001)" in text
     assert "9981 more" in text
+
+
+async def test_dictionary_search_on_a_table_too_wide_for_one_statement(tmp_path: Path) -> None:
+    """501 text columns: more than one statement fits under the gateway's size and row caps."""
+    db = tmp_path / "wide.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        values = ["'x'"] * 500 + ["'gold'"]
+        columns = ", ".join(f"{value} AS text_column_{j:03d}" for j, value in enumerate(values))
+        con.execute(f"CREATE TABLE wide AS SELECT {columns}")
+    finally:
+        con.close()
+    async with mcp_server(db) as session:
+        result = await session.call_tool("dictionary_search", {"keyword": "gold"})
+    assert not result.is_error, text_of(result)
+    assert "main.wide.text_column_500: 'gold' (1)" in text_of(result)
+
+
+async def test_dictionary_search_output_is_bounded(tmp_path: Path) -> None:
+    db = tmp_path / "many.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        long_value = "gold" + "x" * 500
+        columns = ", ".join(f"'{long_value}' AS c{j:02d}" for j in range(60))
+        con.execute(f"CREATE TABLE many AS SELECT {columns}")
+    finally:
+        con.close()
+    async with mcp_server(db) as session:
+        result = await session.call_tool("dictionary_search", {"keyword": "gold"})
+    lines = text_of(result).splitlines()
+    assert len(lines) == 51
+    assert "more specific keyword" in lines[-1]
+    assert all(len(line) < 200 for line in lines)
+
+
+async def test_hydrate_ambiguous_bare_name_lists_the_refs(tmp_path: Path) -> None:
+    db = tmp_path / "two.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA a; CREATE SCHEMA b; CREATE TABLE a.t (x INTEGER);")
+        con.execute("CREATE TABLE b.t (x INTEGER)")
+    finally:
+        con.close()
+    async with mcp_server(db) as session:
+        result = await session.call_tool("hydrate", {"ref": "t"})
+    assert result.is_error
+    assert "ambiguous" in text_of(result)
+    assert "a.t" in text_of(result) and "b.t" in text_of(result)
+
+
+async def test_discover_finds_non_ascii_names(tmp_path: Path) -> None:
+    db = tmp_path / "unicode.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        con.execute('CREATE TABLE "商品" ("名称" VARCHAR)')
+    finally:
+        con.close()
+    async with mcp_server(db) as session:
+        result = await session.call_tool("discover", {"query": "商品"})
+    assert not result.is_error, text_of(result)
+    assert refs_of(result) == ["main.商品"]
 
 
 @pytest.mark.parametrize("keyword", ["zebra", "o'brien"])

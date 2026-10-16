@@ -1,14 +1,15 @@
 """Context-strategy tools (ADR-0003): discover → hydrate, dictionary search, `_id` join candidates.
 
 Contracts copied from ktx (ideas only, no code): `discover` returns references plus a summary of at
-most 200 characters and never a column list in full; `hydrate` reads one object in full;
-`dictionary_search` finds a keyword among the real values of text columns. Join candidates follow
-SignalPilot `analyze_project_db`'s `_id` matching. All SQL goes through the gateway.
+most 200 characters; `hydrate` reads one object in full; `dictionary_search` finds a keyword among
+the real values of text columns. Join candidates follow SignalPilot `analyze_project_db`'s `_id`
+matching, capped at ktx's 25 candidates per column. All SQL goes through the gateway.
 """
 
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -16,13 +17,18 @@ from mcp.server.mcpserver.exceptions import ToolError
 from data_agent.gateway import MAX_ROWS, QueryResult
 
 # Runs one statement through the gateway; blocks and database errors raise ToolError.
-Run = Callable[[str, int], QueryResult]
+RunQuery = Callable[[str, int], QueryResult]
 
 SUMMARY_LIMIT = 200
-# Distinct values shown per column by dictionary_search, and columns searched per statement so
-# that every column's values fit under the gateway's row cap.
+JOIN_CANDIDATES_PER_COLUMN = 25
+# dictionary_search output bounds: values per column, characters per value, columns in all.
 VALUES_PER_COLUMN = 20
+VALUE_CHARS = 80
+COLUMNS_SHOWN = 50
+KEYWORD_CHARS = 200
+# A dictionary statement must fit the gateway's row cap and its 100,000-character length limit.
 COLUMNS_PER_STATEMENT = MAX_ROWS // VALUES_PER_COLUMN
+STATEMENT_CHARS = 90_000
 
 CATALOG_SQL = """
 SELECT c.table_schema, c.table_name, t.table_type, c.column_name, c.data_type
@@ -37,7 +43,7 @@ LIMIT {limit} OFFSET {offset}
 """
 
 
-@dataclass(frozen=True)
+@dataclass
 class Table:
     schema: str
     name: str
@@ -66,7 +72,7 @@ def is_text(data_type: str) -> bool:
     return "CHAR" in upper or "TEXT" in upper or upper == "STRING"
 
 
-def load_catalog(run: Run) -> list[Table]:
+def load_catalog(run: RunQuery) -> list[Table]:
     """Every column of every table, read in pages: one gateway query returns at most MAX_ROWS."""
     tables: dict[tuple[str, str], Table] = {}
     offset = 0
@@ -83,23 +89,28 @@ def load_catalog(run: Run) -> list[Table]:
 
 
 def terms_of(text: str) -> list[str]:
-    return [term for term in re.split(r"[^a-z0-9]+", text.lower()) if term]
+    return [term for term in re.split(r"[\W_]+", text.lower()) if term]
+
+
+def singular(term: str) -> str:
+    return term[:-1] if len(term) > 3 and term.endswith("s") else term
 
 
 def matches(term: str, identifier: str) -> bool:
     """Substring match, also on the singular, so "events" finds event_name."""
     name = identifier.lower()
-    return term in name or (len(term) > 3 and term.endswith("s") and term[:-1] in name)
+    return term in name or singular(term) in name
 
 
 def score(table: Table, terms: list[str]) -> tuple[int, list[str]]:
     """Per term: 3 if the table name holds it whole, 2 if only its singular, 1 if a column does."""
     total = 0
     matched_columns: list[str] = []
+    name = table.name.lower()
     for term in terms:
-        if term in table.name.lower():
+        if term in name:
             total += 3
-        elif matches(term, table.name):
+        elif singular(term) in name:
             total += 2
         hits = [column for column, _ in table.columns if matches(term, column)]
         if hits:
@@ -109,11 +120,13 @@ def score(table: Table, terms: list[str]) -> tuple[int, list[str]]:
 
 
 def summarize(table: Table, matched_columns: list[str]) -> str:
-    rest = [column for column, _ in table.columns if column not in matched_columns]
+    """Kind and column count, then matching columns, then as many other columns as fit."""
     text = f"{table.kind}, {len(table.columns)} columns"
     if matched_columns:
         text += "; matching: " + ", ".join(matched_columns)
-    text += "; columns: " + ", ".join(rest) if rest else ""
+    rest = [column for column, _ in table.columns if column not in matched_columns]
+    if rest:
+        text += "; columns: " + ", ".join(rest)
     if len(text) > SUMMARY_LIMIT:
         text = text[: SUMMARY_LIMIT - 1].rstrip(", ") + "…"
     return text
@@ -130,71 +143,101 @@ def find_table(catalog: list[Table], ref: str) -> Table:
     raise ToolError(f"Error: no table or view {ref!r}; use a ref returned by discover")
 
 
+def named_after(prefix: str) -> set[str]:
+    """Table names a `<prefix>_id` column points at, as in SignalPilot (customers, stg_customer)."""
+    plurals = {f"{prefix}s"} | ({f"{prefix[:-1]}ies"} if prefix.endswith("y") else set())
+    bases = {prefix, *plurals}
+    return bases | {f"stg_{base}" for base in bases} | {f"dim_{base}" for base in bases}
+
+
 def join_candidates(catalog: list[Table], table: Table) -> list[str]:
-    """For each `<x>_id` column: tables named after x (x, xs, stg_xs, dim_xs, as SignalPilot does),
-    joined on the same column or on their `id`."""
+    """For each `<x>_id` column: tables named after x (joined on the same column or their `id`)
+    first, then other tables that have the same `_id` column."""
     lines: list[str] = []
     for column, _ in table.columns:
         low = column.lower()
         if not low.endswith("_id") or low == "_id":
             continue
-        prefix = low.removesuffix("_id")
-        names = {prefix, f"{prefix}s", f"stg_{prefix}", f"stg_{prefix}s", f"dim_{prefix}s"}
+        names = named_after(low.removesuffix("_id"))
+        lookups: list[str] = []
+        shared: list[str] = []
         for other in catalog:
-            if other is table or other.name.lower() not in names:
+            if other is table:
                 continue
             keys = {name.lower(): name for name, _ in other.columns}
-            key = keys.get(low) or keys.get("id")
-            if key:
-                lines.append(f"{column} -> {other.ref}.{key}")
+            if other.name.lower() in names and (key := keys.get(low) or keys.get("id")):
+                lookups.append(f"{column} -> {other.ref}.{key}")
+            elif low in keys:
+                shared.append(f"{column} -> {other.ref}.{keys[low]}")
+        lines.extend([*lookups, *shared][:JOIN_CANDIDATES_PER_COLUMN])
     return lines
 
 
-def dictionary_sql(table: Table, columns: list[str], keyword: str) -> str:
-    """Per column, its most frequent VALUES_PER_COLUMN distinct values that contain the keyword,
-    with the number of distinct matching values (`distinct_values`, counted before the limit)."""
-    needle = f"lower({literal(keyword)})"
-    parts = [
+def value_query(table: Table, column: str, keyword: str, index: int) -> str:
+    """A column's most frequent VALUES_PER_COLUMN distinct values that contain the keyword, with
+    the number of distinct matching values (`distinct_values`, counted before the limit)."""
+    value = f"CAST({quote(column)} AS VARCHAR)"
+    return (
         f"SELECT {literal(column)} AS column_name, value, n, distinct_values FROM ("
-        f"SELECT CAST({quote(column)} AS VARCHAR) AS value, count(*) AS n, "
-        f"count(*) OVER () AS distinct_values FROM {table.sql_name} "
-        f"WHERE strpos(lower(CAST({quote(column)} AS VARCHAR)), {needle}) > 0 "
-        f"GROUP BY {quote(column)} ORDER BY n DESC, value LIMIT {VALUES_PER_COLUMN}) AS c{i}"
-        for i, column in enumerate(columns)
-    ]
-    return "\nUNION ALL\n".join(parts)
+        f"SELECT {value} AS value, count(*) AS n, count(*) OVER () AS distinct_values "
+        f"FROM {table.sql_name} WHERE strpos(lower({value}), lower({literal(keyword)})) > 0 "
+        f"GROUP BY {quote(column)} ORDER BY n DESC, value LIMIT {VALUES_PER_COLUMN}) AS c{index}"
+    )
 
 
-def search_values(run: Run, table: Table, keyword: str) -> list[str]:
-    text_columns = [column for column, data_type in table.columns if is_text(data_type)]
+def dictionary_statements(table: Table, keyword: str) -> list[str]:
+    """The table's text columns, batched into statements under the gateway's row and size caps."""
+    separator = "\nUNION ALL\n"
+    columns = [column for column, data_type in table.columns if is_text(data_type)]
+    statements: list[str] = []
+    batch: list[str] = []
+    size = 0
+    for index, column in enumerate(columns):
+        part = value_query(table, column, keyword, index)
+        if batch and (
+            len(batch) == COLUMNS_PER_STATEMENT
+            or size + len(separator) + len(part) > STATEMENT_CHARS
+        ):
+            statements.append(separator.join(batch))
+            batch, size = [], 0
+        size += len(part) + (len(separator) if batch else 0)
+        batch.append(part)
+    if batch:
+        statements.append(separator.join(batch))
+    return statements
+
+
+def short(value: object) -> str:
+    text = str(value)
+    return repr(text if len(text) <= VALUE_CHARS else text[:VALUE_CHARS] + "…")
+
+
+def search_values(run: RunQuery, table: Table, keyword: str) -> list[str]:
     shown: dict[str, list[str]] = {}
     distinct: dict[str, int] = {}
-    for start in range(0, len(text_columns), COLUMNS_PER_STATEMENT):
-        chunk = text_columns[start : start + COLUMNS_PER_STATEMENT]
-        for column, value, n, distinct_values in run(
-            dictionary_sql(table, chunk, keyword), MAX_ROWS
-        ).rows:
-            shown.setdefault(column, []).append(f"{value!r} ({n})")
+    for sql in dictionary_statements(table, keyword):
+        for column, value, n, distinct_values in run(sql, MAX_ROWS).rows:
+            shown.setdefault(column, []).append(f"{short(value)} ({n})")
             distinct[column] = distinct_values
     lines: list[str] = []
-    for column in text_columns:
-        if column in shown:
-            extra = distinct[column] - len(shown[column])
-            more = f", … {extra} more" if extra > 0 else ""
-            lines.append(f"{table.ref}.{column}: {', '.join(shown[column])}{more}")
+    for column, values in shown.items():
+        extra = distinct[column] - len(values)
+        more = f", … {extra} more" if extra > 0 else ""
+        lines.append(f"{table.ref}.{column}: {', '.join(values)}{more}")
     return lines
 
 
-def register_context_tools(server: MCPServer, run: Run) -> None:
+def register_context_tools(server: MCPServer, run: RunQuery) -> None:
     """Add the context-strategy tools to `server`; called only when the run config turns the
     context layer on."""
 
     @server.tool()
-    def discover(query: str, limit: int = 10) -> dict[str, list[dict[str, str]]]:
+    def discover(query: str, limit: int = 10) -> dict[str, list[dict[str, Any]]]:
         """Search table, view and column names; returns refs with a short summary, best first.
 
-        Each result is `{"ref", "summary"}` with a summary of at most 200 characters, never the
-        full column list: call `hydrate(ref)` for one object's full detail. `limit` is 1-50.
+        Each result is `{"ref", "summary"}`; the summary has at most 200 characters, so a wide
+        table's column list is cut short. Call `hydrate(ref)` for one object's full detail.
+        `limit` is 1-50.
         """
         terms = terms_of(query)
         if not terms:
@@ -227,8 +270,19 @@ def register_context_tools(server: MCPServer, run: Run) -> None:
     @server.tool()
     def dictionary_search(keyword: str) -> str:
         """Find the real values of text columns that contain `keyword` (ignores case), with
-        their row counts, to match dirty keys and enum spellings before filtering or joining."""
+        their row counts, to match dirty keys and enum spellings before filtering or joining.
+
+        Shows up to 20 values per column and 50 columns; a broader match asks for a narrower
+        keyword."""
         if not keyword.strip():
             raise ToolError("Error: keyword is empty")
-        lines = [line for table in load_catalog(run) for line in search_values(run, table, keyword)]
+        if len(keyword) > KEYWORD_CHARS:
+            raise ToolError(f"Error: keyword is longer than {KEYWORD_CHARS} characters")
+        lines: list[str] = []
+        for table in load_catalog(run):
+            lines.extend(search_values(run, table, keyword))
+            if len(lines) > COLUMNS_SHOWN:
+                lines = lines[:COLUMNS_SHOWN]
+                lines.append(f"… more columns match {keyword!r}; use a more specific keyword")
+                break
         return "\n".join(lines) if lines else f"No values contain {keyword!r}"
