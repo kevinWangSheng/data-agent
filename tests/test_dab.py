@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -38,6 +39,8 @@ from evals.dab_server import RESULT_CHARS, STORAGE_DIR
 
 FAKE_DAB = Path(__file__).parent / "fixtures" / "fake_dab"
 ENV = {"DATA_AGENT_API_KEY": "sk-test-secret"}
+# Every layer DAB can serve: its tool server has no context tools, so `full` is refused there.
+CONFIG = "no-context"
 GROUND_TRUTH = "GOLD-ANSWER-7731"
 
 
@@ -240,7 +243,7 @@ def test_cli_rejects_a_bad_budget(
     code = evals_main(
         [
             *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
-            *("--config", "full", "--out", str(tmp_path / "out"), "--budget", budget),
+            *("--config", CONFIG, "--out", str(tmp_path / "out"), "--budget", budget),
         ]
     )
     assert code == 2
@@ -257,7 +260,7 @@ def test_cli_stops_when_spend_cannot_be_totalled(
     code = evals_main(
         [
             *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
-            *("--config", "full", "--out", str(out), "--budget", "1"),
+            *("--config", CONFIG, "--out", str(out), "--budget", "1"),
         ]
     )
     assert code == 2
@@ -396,7 +399,7 @@ def test_data_size_counts_database_files_and_dump_folders(dab_root: Path) -> Non
 
 
 def test_large_databases_get_the_large_turn_limit(dab_root: Path, tmp_path: Path) -> None:
-    config = load_config("full")
+    config = load_config(CONFIG)
     query = dab.load_query(dab_root, "toyset", "1", hints=False)
     assert dab.max_turns(query, config) == config.max_turns["query"]
     big = dab_root / "query_toyset" / "dump" / "big.bson"
@@ -437,7 +440,7 @@ async def run_dab(
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(dab, "query", scripted([f"answer {i}" for i in range(runs)], seen))
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
-    await dab.run_query(dab_root, query, load_config("full"), out, runs, ENV, **kwargs)
+    await dab.run_query(dab_root, query, load_config(CONFIG), out, runs, ENV, **kwargs)
     return seen
 
 
@@ -458,7 +461,7 @@ async def test_each_run_writes_a_trace_and_a_submission_entry(
     for run in (0, 1):
         events = read_events(dab.run_dir(out, "toyset", "1", run) / "events.jsonl")
         assert events[0]["type"] == "version"
-        assert events[0]["config"] == "full"
+        assert events[0]["config"] == CONFIG
         assert events[0]["dab"] == {
             "commit": "unknown",  # the fake DAB root is not a repository
             "dataset": "toyset",
@@ -504,7 +507,7 @@ async def test_skills_follow_the_run_config(
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(dab, "query", scripted(["a", "b"], seen))
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
-    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "full", 1, ENV)
+    await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "full", 1, ENV)
     await dab.run_query(dab_root, query, load_config("baseline"), tmp_path / "base", 1, ENV)
     full, baseline = (s["options"].system_prompt for s in seen)
     assert "name: sql-workflow" in full
@@ -542,6 +545,8 @@ async def test_rerun_skips_finished_runs_and_redoes_removed_ones(
         ({"env": {**ENV, "DATA_AGENT_MODEL": "other-model"}}, "model"),
         ({"hints": False}, "hints"),
         ({"commit": "f00d"}, "DAB commit"),
+        ({"git_commit": "c0ffee"}, "git commit"),
+        ({"skill_version": "0ld5k1ll"}, "Skill version"),
     ],
 )
 async def test_rerun_under_other_conditions_refuses_to_mix_them(
@@ -554,14 +559,102 @@ async def test_rerun_under_other_conditions_refuses_to_mix_them(
     out = tmp_path / "out"
     await run_dab(monkeypatch, dab_root, out, runs=1)
     monkeypatch.setattr(dab, "dab_commit", lambda _root: change.get("commit", "unknown"))
+    commit, version = dab.git_commit(), dab.skill_version
+    monkeypatch.setattr(dab, "git_commit", lambda: change.get("git_commit", commit))
+    monkeypatch.setattr(
+        dab, "skill_version", lambda path: change.get("skill_version", version(path))
+    )
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(dab, "query", scripted(["x", "y"], seen))
     query = dab.load_query(dab_root, "toyset", "1", hints=change.get("hints", True))
-    config = load_config(change.get("config", "full"))
+    config = load_config(change.get("config", CONFIG))
     with pytest.raises(dab.ConditionsChanged, match=field):
         await dab.run_query(dab_root, query, config, out, 2, change.get("env", ENV))
     assert seen == []  # nothing ran, not even the missing run 1
     assert len(json.loads((out / "submission.json").read_text())) == 1
+
+
+async def test_rerun_refuses_a_dirty_dab_checkout(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    """Two dirty checkouts at one commit may hold different edits: the commit proves nothing."""
+    monkeypatch.setattr(dab, "dab_commit", lambda _root: "f00d-dirty")
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=1)
+    with pytest.raises(dab.ConditionsChanged, match="dirty"):
+        await run_dab(monkeypatch, dab_root, out, runs=2)
+    assert len(json.loads((out / "submission.json").read_text())) == 1
+
+
+def git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    )
+    return proc.stdout.strip()
+
+
+def test_dab_commit_marks_a_dirty_checkout(tmp_path: Path) -> None:
+    repo = tmp_path / "dab"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    (repo / "README.md").write_text("DAB\n")
+    git(repo, "add", "README.md")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+    head = git(repo, "rev-parse", "HEAD")
+    (repo / "results.csv").write_text("untracked output\n")  # untracked files do not count
+    assert dab.dab_commit(repo) == head
+    (repo / "README.md").write_text("DAB, edited\n")
+    assert dab.dab_commit(repo) == f"{head}-dirty"
+
+
+async def test_configs_with_context_tools_are_refused(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    """DAB's tool server has no context tools: a context-on config would claim a layer it lacks."""
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["x"], seen))
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    with pytest.raises(ValueError, match="context"):
+        await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, ENV)
+    assert seen == []
+    assert not (tmp_path / "out").exists()
+
+
+def test_cli_refuses_configs_with_context_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    dab_root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["x"], seen))
+    args = [
+        *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+        *("--runs", "1", "--config", "full-old-skill", "--out", str(tmp_path / "out")),
+    ]
+    assert evals_main(args) == 2
+    assert "context" in capsys.readouterr().err
+    assert seen == []
+
+
+async def test_an_interrupted_submission_write_keeps_the_old_file(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=1)
+    before = (out / "submission.json").read_text()
+    write_text = Path.write_text
+
+    def cut_short(path: Path, data: str, *args: Any, **kwargs: Any) -> int:
+        write_text(path, data[:5], *args, **kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(Path, "write_text", cut_short)
+    with pytest.raises(KeyboardInterrupt):
+        dab.write_submission(out / "submission.json", [])
+    monkeypatch.undo()
+    assert (out / "submission.json").read_text() == before
+    assert [p.name for p in out.iterdir() if p.is_file()] == ["submission.json"]
 
 
 async def test_a_finished_run_without_its_trace_cannot_be_checked(
@@ -583,7 +676,7 @@ async def test_another_query_under_other_conditions_refuses_to_join_the_submissi
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(dab, "query", scripted(["one", "two"], seen))
     query1 = dab.load_query(root, "toyset", "1", hints=True)
-    await dab.run_query(root, query1, load_config("full"), out, 1, ENV)
+    await dab.run_query(root, query1, load_config(CONFIG), out, 1, ENV)
     query2 = dab.load_query(root, "toyset", "2", hints=True)
     with pytest.raises(dab.ConditionsChanged, match="config"):
         await dab.run_query(root, query2, load_config("baseline"), out, 1, ENV)
@@ -601,7 +694,7 @@ def test_cli_fails_when_the_out_directory_holds_other_conditions(
         *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
         *("--runs", "1", "--out", str(out)),
     ]
-    assert evals_main([*args, "--config", "full"]) == 0
+    assert evals_main([*args, "--config", CONFIG]) == 0
     assert evals_main([*args, "--config", "baseline"]) == 2
     assert len(seen) == 1
 
@@ -653,7 +746,7 @@ async def test_each_run_removes_its_exec_container_after_the_session(
     await run_dab(monkeypatch, dab_root, out, runs=1)
     monkeypatch.setattr(dab, "query", broken_query)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
-    await dab.run_query(dab_root, query, load_config("full"), out, 2, ENV)
+    await dab.run_query(dab_root, query, load_config(CONFIG), out, 2, ENV)
     assert cleaned == [dab.run_dir(out, "toyset", "1", r) / "workspace" for r in (0, 1)]
 
 
@@ -668,7 +761,7 @@ async def test_a_dab_server_that_failed_to_start_is_an_infra_error(
     monkeypatch.setattr(dab, "query", server_down)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
     out = tmp_path / "out"
-    errors = await dab.run_query(dab_root, query, load_config("full"), out, 1, ENV)
+    errors = await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, ENV)
     assert errors == 1
     assert json.loads((out / "submission.json").read_text()) == []
     events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
@@ -683,7 +776,7 @@ async def test_submission_keeps_entries_from_earlier_queries(
     out = tmp_path / "out"
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(dab, "query", scripted(["one", "two"], seen))
-    config = load_config("full")
+    config = load_config(CONFIG)
     for query_id in ("2", "1"):
         query = dab.load_query(root, "toyset", query_id, hints=True)
         await dab.run_query(root, query, config, out, 1, ENV)
@@ -708,7 +801,7 @@ async def test_answers_are_masked_like_the_trace(
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(dab, "query", scripted(["key sk-test-secret here"], seen))
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
-    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, ENV)
+    await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, ENV)
     submission = (tmp_path / "out" / "submission.json").read_text()
     assert "sk-test-secret" not in submission
     assert "key [REDACTED] here" in submission
@@ -730,7 +823,7 @@ async def test_dab_logs_are_masked_like_the_trace(
 
     monkeypatch.setattr(dab, "query", leaky_query)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
-    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, ENV)
+    await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, ENV)
     run = dab.run_dir(tmp_path / "out", "toyset", "1", 0)
     for name in ("dab_tool_calls.jsonl", "execute_python_artifacts.jsonl"):
         text = (run / name).read_text()
@@ -755,7 +848,7 @@ async def test_dab_logs_mask_secrets_in_their_json_escaped_form(
     monkeypatch.setattr(dab, "query", leaky_query)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
     env = {**ENV, "PG_PASSWORD": password}
-    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, env)
+    await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, env)
     log = dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "dab_tool_calls.jsonl"
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     assert entries == [{"result": "bad [REDACTED]"}] * 2
@@ -775,7 +868,7 @@ async def test_dab_logs_are_masked_when_the_run_is_interrupted(
     monkeypatch.setattr(dab, "query", interrupted_query)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
     with pytest.raises(asyncio.CancelledError):
-        await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, ENV)
+        await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, ENV)
     log = dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "dab_tool_calls.jsonl"
     assert log.read_text() == '{"result": "[REDACTED]"}\n'
 
@@ -806,7 +899,7 @@ async def test_the_trace_masks_database_connection_settings(
     monkeypatch.setattr(dab, "query", scripted(["pg.example.internal is down"], seen))
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
     env = {**ENV, "PG_HOST": "pg.example.internal"}
-    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, env)
+    await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, env)
     trace = (dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "events.jsonl").read_text()
     assert "pg.example.internal" not in trace
     assert "pg.example.internal" not in (tmp_path / "out" / "submission.json").read_text()
@@ -825,7 +918,7 @@ def test_infra_errors_are_left_out_of_the_submission_and_fail_the_cli(
     code = evals_main(
         [
             *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
-            *("--runs", "2", "--config", "full", "--out", str(out)),
+            *("--runs", "2", "--config", CONFIG, "--out", str(out)),
         ]
     )
     assert code == 2
@@ -856,7 +949,7 @@ def test_cli_rejects_a_missing_dab_root(tmp_path: Path, capsys: pytest.CaptureFi
     code = evals_main(
         [
             *("dab", "--dab-root", str(tmp_path / "none"), "--dataset", "toyset", "--query", "1"),
-            *("--config", "full", "--out", str(tmp_path / "out")),
+            *("--config", CONFIG, "--out", str(tmp_path / "out")),
         ]
     )
     assert code == 2
@@ -903,7 +996,7 @@ async def test_dab_runs_have_the_same_price_table_cap(
     monkeypatch.setattr(dab, "query", fake_query)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
     out = tmp_path / "out"
-    assert await dab.run_query(dab_root, query, load_config("full"), out, 1, ENV) == 0
+    assert await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, ENV) == 0
     events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
     assert "never reached" not in json.dumps(events)
     assert events[-1]["terminal_reason"] == "budget_exhausted"
