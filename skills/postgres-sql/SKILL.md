@@ -4,8 +4,8 @@ description: "Load when hitting PostgreSQL syntax errors or writing PostgreSQL-s
 type: skill
 ---
 
-<!-- Written for data-agent in the format of signalpilot-plugin's duckdb-sql Skill (see NOTICE for
-that Skill); every rule below was checked against PostgreSQL 16. -->
+<!-- Written for data-agent, laid out like the duckdb-sql Skill (front matter and section order
+only, no copied text); every rule below was checked against PostgreSQL 16. -->
 
 # PostgreSQL SQL - Key Differences from DuckDB/MySQL
 
@@ -22,10 +22,6 @@ that Skill); every rule below was checked against PostgreSQL 16. -->
 - **GROUP BY is strict**: every selected column that is not aggregated must be in GROUP BY
 - **NULL ordering**: NULLs sort last ascending and FIRST descending. Add `NULLS LAST` to `ORDER BY col DESC` when NULLs must not lead
 - **Aggregate types**: `count(*)` and `sum(integer)` return BIGINT, `avg(integer)` returns NUMERIC, `extract(...)` returns NUMERIC
-- **ROUND precision**: If the YML specifies a decimal type like `numeric(6,2)`,
-  cast the FINAL output to match: `round(avg(col)::numeric, 2)::numeric(6,2)`.
-  Do NOT cast the input - cast the result after rounding.
-- **Avoid CURRENT_DATE** in models with historical data - use `(SELECT MAX(date_col) FROM source)` to anchor to the data's actual date range
 
 ## Schemas
 
@@ -59,7 +55,6 @@ For exactly one row per group: `SELECT DISTINCT ON (grp) * FROM table ORDER BY g
 ```sql
 SELECT generate_series(min_date, max_date, interval '1 day')::date AS date_day
 ```
-Always use the primary fact table's max date as endpoint - query its `MIN`/`MAX` first.
 
 ## Type Casting
 

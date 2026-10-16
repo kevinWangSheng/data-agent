@@ -312,14 +312,15 @@ def run_case(
         *("--events-dir", str(case_dir / "events")),
     ]
     proc = subprocess.run(command, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT)
-    (case_dir / "stdout.txt").write_text(proc.stdout)
-    (case_dir / "stderr.txt").write_text(proc.stderr)
+    stdout, stderr = redact(proc.stdout, url), redact(proc.stderr, url)
+    (case_dir / "stdout.txt").write_text(stdout)
+    (case_dir / "stderr.txt").write_text(stderr)
     events = read_events(case_dir / "events")
     result_event = events[-1] if events and events[-1].get("type") == "result" else {}
 
     details: Any
     if case["kind"] == "query" and not case.get("negative"):
-        passed, details = grade_answer(proc.stdout, case["checks"], tolerance)
+        passed, details = grade_answer(stdout, case["checks"], tolerance)
         passed = passed and proc.returncode == 0
     elif grade["kind"] == "model_rebuilt":
         passed, details = grade_model(gateway, schema, grade["model"], grade["expect"])
@@ -338,7 +339,7 @@ def run_case(
         "blocked": [content_text(event.get("content"))[:300] for event in blocked],
         "cost_usd": result_event.get("cost_usd"),
         "num_turns": result_event.get("num_turns"),
-        "answer": proc.stdout.strip()[-1000:],
+        "answer": stdout.strip()[-1000:],
         "command": " ".join(command),
     }
 

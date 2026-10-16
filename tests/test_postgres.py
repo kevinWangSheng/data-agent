@@ -194,6 +194,19 @@ def test_long_query_times_out(postgres_url: str) -> None:
 
 
 @pytest.mark.integration
+def test_lost_connection_is_a_readable_error_and_reconnects(postgres_url: str) -> None:
+    import psycopg
+
+    gateway = PostgresGateway(postgres_url)
+    (pid,) = gateway.query("SELECT pg_backend_pid()").rows[0]
+    with psycopg.connect(postgres_url, autocommit=True) as con:
+        con.execute("SELECT pg_terminate_backend(%s)", (pid,))
+    with pytest.raises(QueryFailed):
+        gateway.query("SELECT 1")
+    assert gateway.query("SELECT 1").rows == [(1,)]
+
+
+@pytest.mark.integration
 def test_connection_string_options_are_kept(postgres_url: str) -> None:
     """The gateway adds its statement timeout to the URL's own options, such as a search_path."""
     import psycopg

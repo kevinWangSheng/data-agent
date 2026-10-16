@@ -197,6 +197,13 @@ def test_case_failures_are_recorded_without_credentials(
         assert secret not in summary
 
 
+def test_redact_masks_the_url_password_and_host() -> None:
+    url = "postgresql://u:s3cret-pw@db.example:6543/shop"
+    text = jaffle.redact(f"dbt debug: host=db.example password=s3cret-pw url={url}", url)
+    assert "s3cret-pw" not in text
+    assert "db.example" not in text
+
+
 @pytest.mark.integration
 def test_reset_drops_only_case_schemas() -> None:
     url = os.environ["DATA_AGENT_TEST_POSTGRES_URL"]
