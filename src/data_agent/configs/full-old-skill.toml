@@ -1,0 +1,11 @@
+# Full with the Skills from before the failure-attribution loop (ADR-0004). Until the first
+# attribution round freezes that older copy, this points at the current Skills.
+skill = true
+verifiers = true
+context = true
+skills_dir = "skills"
+max_budget_usd = 1.0
+
+[max_turns]
+dbt = 200
+query = 50

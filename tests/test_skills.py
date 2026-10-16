@@ -8,6 +8,7 @@ import duckdb
 from data_agent.agent import MCP_SERVER, QUERY_SKILLS, SKILLS_DIR
 from data_agent.gateway import DuckDBGateway
 from data_agent.mcp_server import build_server
+from data_agent.run_config import load_config
 
 # SignalPilot MCP tools the upstream Skills call (docs/research/2026-09-21-signalpilot-mcp-reuse.md)
 UPSTREAM_TOOLS = {
@@ -28,7 +29,7 @@ UPSTREAM_TOOLS = {
 
 
 async def test_query_skills_name_only_tools_the_server_has(tmp_path: Path) -> None:
-    server = build_server(DuckDBGateway(tmp_path / "unused.duckdb"))
+    server = build_server(DuckDBGateway(tmp_path / "unused.duckdb"), load_config("full"))
     served = {tool.name for tool in await server.list_tools()}
     text = "\n".join((SKILLS_DIR / name / "SKILL.md").read_text() for name in QUERY_SKILLS)
 

@@ -44,11 +44,24 @@ def test_installed_wheel_loads_its_skills(tmp_path: Path) -> None:
     probe = (
         "from data_agent import agent; "
         "print(agent.SKILLS_DIR); "
-        f"assert agent.load_skills({QUERY_SKILLS!r})"
+        f"assert agent.load_skills({QUERY_SKILLS!r}, agent.SKILLS_DIR)"
     )
     proc = run_installed(tmp_path, site, probe)
     assert proc.returncode == 0, proc.stderr
     assert Path(proc.stdout.strip()).is_relative_to(site)
+
+
+def test_installed_wheel_loads_every_run_config(tmp_path: Path) -> None:
+    site = build_and_extract_wheel(tmp_path)
+    probe = (
+        "from data_agent.run_config import CONFIG_NAMES, load_config; "
+        "configs = [load_config(name) for name in CONFIG_NAMES]; "
+        "assert len(configs) == 6, CONFIG_NAMES; "
+        "print(*{c.skills_dir for c in configs}, sep='\\n')"
+    )
+    proc = run_installed(tmp_path, site, probe)
+    assert proc.returncode == 0, proc.stderr
+    assert all(Path(line).is_relative_to(site) for line in proc.stdout.splitlines())
 
 
 def test_installed_wheel_reports_the_commit_it_was_built_from(tmp_path: Path) -> None:

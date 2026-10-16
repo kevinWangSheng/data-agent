@@ -4,6 +4,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.gateway import MAX_ROWS, DuckDBGateway, QueryBlocked, QueryFailed, QueryResult
+from data_agent.run_config import RunConfig
 
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
 LIST_TABLES_SQL = """
@@ -40,7 +41,10 @@ def format_rows(result: QueryResult) -> str:
     return "\n".join(lines)
 
 
-def build_server(gateway: DuckDBGateway) -> MCPServer:
+def build_server(gateway: DuckDBGateway, config: RunConfig) -> MCPServer:
+    """The base tools are served in every config. A layer's tools (context strategy: ticket 06,
+    verifiers: ticket 07) are to be registered only when `config` turns that layer on, so a run
+    with it off cannot see them; no layer tools exist yet."""
     server = MCPServer("data-agent")
 
     @server.tool()
