@@ -32,6 +32,8 @@ no per-file copyright header.
   its top; skills/dbt-workflow/validate_project.py <- same path, unmodified.
 - src/data_agent/agents/verifier.md, src/data_agent/agents/value-verifier.md <- agents/ (same
   names), modified as noted at the top of each file.
+- skills-frozen/fa6028eef62b/ is an unmodified copy of skills/ at that Skill version; the files
+  above keep the same upstream source and notices there.
 
 ------------------------------------------------------------------------------
 data-eng-bench (https://github.com/Snowflake-Labs/data-eng-bench)
