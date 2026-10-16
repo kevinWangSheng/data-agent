@@ -1,6 +1,6 @@
 # 03 — `data-agent run` 查数任务端到端
 
-Status: in-review
+Status: done
 Blocked by: 02
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (claude code)
@@ -46,7 +46,7 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 - Attempts: 3 (2 reworks after 退回)
 - Review rounds: 2 (da-review; eng:code-review); reworks not re-reviewed, per the 退回 notes
 - Model spend (tokens × ADR-0001 upper list prices): rework 2 ≈ $0.016 (2 manual runs $0.0062 from their result events + 1 `make test-integration` ≈ $0.01, 未确认: the integration runs' events were not kept). Rework 1 $0.010; first attempt ≈ $0.02 (re-estimated). Total ≈ $0.05.
-- Outcome: seam A query, event-file and write-block tests are green; make check passes; 退回 #1 (4 items) and 退回 #2 (3 items) fixed
+- Outcome: accepted (PR #4, squash f946b53)
 - Human review minutes: —
 
 ## Comments
@@ -161,3 +161,7 @@ PR #4 上 Codex 对 cea4109 的 3 条意见（已核实）：
 2. `hatch_build.py` 在仓库根目录，超出本工单 Authority。主会话接受：Hatch 构建钩子惯例放在根目录，内容只写构建 commit。
 3. 从 sdist 构建的 wheel 记 `unknown`。不处理：项目不发布 sdist。
 另：本轮 agent 自报的已知限制（递归 Glob 可能经 workspace 内 symlink 列出文件名；拒绝消息把本机绝对路径写进事件文件）。绝对路径转工单 09。
+
+### 2026-10-16 主会话：合并 main（解 NOTICE 冲突，4484bfa）；Codex 对 4484bfa 的 1 条记为已知限制
+
+`hatch_build.py:24`：没装 `git` 的构建环境里 `subprocess` 抛 `FileNotFoundError`，wheel 构建失败（应像 `agent.git_commit()` 一样捕获 `OSError` 回落 `unknown`）。转工单 09（Harbor 容器里构建）。
