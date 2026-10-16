@@ -96,6 +96,18 @@ def test_scrub_removes_secrets_right_after_json_escapes(tmp_path: Path) -> None:
     assert json.loads(text)["output"].startswith("ok\n")
 
 
+def test_scrub_sees_through_json_escapes_without_breaking_them(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"output": "build\\u002dbox-7 up"}\n{"output": "ok\\node-1 up"}\n')
+    result = tmp_path / "result.json"
+    result.write_text('{\n  "error": "build\\u002dbox-7 down"\n}\n')
+    proc = scrub(tmp_path, "--hostname", "build-box-7", "--hostname", "node-1")
+    assert proc.returncode == 0, proc.stderr
+    lines = [json.loads(line)["output"] for line in events.read_text().splitlines()]
+    assert lines == ["[redacted-host] up", "ok\node-1 up"]
+    assert json.loads(result.read_text()) == {"error": "[redacted-host] down"}
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read any directory")
 def test_scrub_fails_when_a_subdirectory_cannot_be_read(tmp_path: Path) -> None:
     locked = tmp_path / "trial" / "agent"

@@ -1,23 +1,27 @@
 """`scrub DIR`: remove API keys, the model endpoint, IPv4 addresses and hostnames before upload.
 
-Rewrites every file under DIR in place (plan §7: published trajectories leak nothing). Works on the
-raw text, so JSON and JSONL stay valid: no redaction marker contains a quote or a backslash.
+Rewrites every file under DIR in place (plan §7: published trajectories leak nothing). In `.json`
+and `.jsonl` files it scrubs the decoded strings and re-serializes, so JSON escapes neither hide a
+secret nor get broken by a redaction; other files, and lines that do not parse, are scrubbed as
+text.
 Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks) is
 listed and the command fails.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from evals.walk import walk_files
 
-# Not preceded by a name character, except as the last character of a JSON escape: in the raw text
-# of {"output": "ok\nbuild-box-7"} the hostname follows the "n" of "\n".
+# Not preceded by a name character, except as the last character of a JSON escape: tool output is
+# often JSON serialized into a string, and in '{"output": "ok\nbuild-box-7"}' the host follows "n".
 NAME_START = r"(?:(?<![A-Za-z0-9_-])|(?<=\\[bfnrt])|(?<=\\u[0-9A-Fa-f]{4}))"
 # DeepSeek, OpenAI and Anthropic keys start with sk-; 20+ characters keeps "task-sk-x" prose out.
 KEY_SHAPE = re.compile(rf"{NAME_START}sk-[A-Za-z0-9_-]{{20,}}")
@@ -67,6 +71,45 @@ def scrub_text(text: str, rules: list[tuple[str, re.Pattern[str]]], counts: Coun
     return text
 
 
+def scrub_value(value: Any, rules: list[tuple[str, re.Pattern[str]]], counts: Counter[str]) -> Any:
+    if isinstance(value, str):
+        return scrub_text(value, rules, counts)
+    if isinstance(value, list):
+        return [scrub_value(v, rules, counts) for v in value]
+    if isinstance(value, dict):
+        return {
+            scrub_text(k, rules, counts): scrub_value(v, rules, counts) for k, v in value.items()
+        }
+    return value
+
+
+def scrub_json(text: str, rules: list[tuple[str, re.Pattern[str]]], counts: Counter[str]) -> str:
+    """One JSON document; kept byte for byte unless a string in it changed."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return scrub_text(text, rules, counts)
+    before = counts.total()
+    value = scrub_value(value, rules, counts)
+    if counts.total() == before:
+        return text
+    indent = 2 if "\n" in text.strip() else None
+    return json.dumps(value, indent=indent) + text[len(text.rstrip()) :]
+
+
+def scrub_file(
+    path: Path, text: str, rules: list[tuple[str, re.Pattern[str]]], counts: Counter[str]
+) -> str:
+    if path.suffix == ".json":
+        return scrub_json(text, rules, counts)
+    if path.suffix == ".jsonl":
+        lines = text.split("\n")
+        return "\n".join(
+            scrub_json(line, rules, counts) if line.strip() else line for line in lines
+        )
+    return scrub_text(text, rules, counts)
+
+
 def run(args: argparse.Namespace) -> int:
     root: Path = args.dir
     if not root.is_dir():
@@ -82,7 +125,7 @@ def run(args: argparse.Namespace) -> int:
         except (OSError, UnicodeDecodeError) as e:
             unchecked.append(f"{path}: {e}")
             continue
-        scrubbed = scrub_text(text, rules, counts)
+        scrubbed = scrub_file(path, text, rules, counts)
         if scrubbed != text:
             path.write_bytes(scrubbed.encode("utf-8"))
             changed += 1
