@@ -1,10 +1,10 @@
 # 06 — 上下文策略工具
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 02, 05
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 06-context-tools)
+Branch: worktree-06-context-tools
 
 ## Goal
 

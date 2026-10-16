@@ -1,6 +1,6 @@
 # 14 — 失败归因报告
 
-Status: in-progress
+Status: in-review
 Blocked by: 03, 10
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -42,10 +42,32 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0.078（agent 运行 $0.0346；judge $0.0089 + $0.0157 + $0.0189）
+- Outcome: 实现完成；夹具 job 出真实报告；`make check` 绿
 - Human review minutes: —
 
 ## Comments
+
+### 2026-10-16 工单 agent 交回（commits `428df6f`、`7567624`、`ed1b3a3`）
+
+**实现**：`python -m evals attribute JOB_DIR --manifest M --out DIR [--tasks-dir D] [--budget USD]`（`evals/attribute.py`，注册于 `evals/__main__.py`；`tests/test_eval_attribute.py` 15 个测试，用假 judge）。
+- 只读开发集：读每个 trial 的 `result.json` 判定所属题；不在 `manifest["dev"]` 的只计数，不打开事件、验证输出、题面（测试把留出集事件文件 chmod 0 证明）。
+- judge：每道开发集失败题一次无工具的 Claude Agent SDK 调用，读轨迹、全部 Skill、题面与验证输出；`DATA_AGENT_*` 配置；提示自写，不抄 DAB。
+- 标签 FM1–FM4，措辞同 CONTEXT。引用必须逐字出现在所点名的 Skill 里。
+- 建议不得含 manifest 题号、运行 SQL 里的表或列、轨迹/题面/验证输出里的 snake_case 或 `schema.table` 名；Skill 已用的词放行。不合格重试一次，仍点名具体对象则扣下建议。
+- 按调用计费，到预算不再调用（含重试）；基础设施错误不归因；已知密钥打码；输出 `attribution.json` 与 `report.md`，不写 `skills/`。
+
+**真实运行**：没有真实开发集 Harbor job，用 shop 夹具跑真 agent 4 次，包成 Harbor 形状的 job（`runs/14/`，不进 git）。agent 花费 $0.0346（`python -m evals spend runs/14/events --budget 2`）；4 题对 3 题，"How many customers are repeat buyers?" 答 10，期望 7。
+```
+$ python -m evals attribute runs/14/job --manifest runs/14/manifest.json --tasks-dir runs/14/tasks --out runs/14/report
+attribute: 1 of 1 dev failures attributed, $0.0189 spent -> runs/14/report
+```
+报告标 FM4，逐字引用 `sql-workflow` 的 "**Case sensitivity**: Use the correct case-insensitive function for your backend"；找到真实原因（`LOWER(status)='completed'` 漏掉 `'COMPLETE'`）；建议不含表名与题号（列出状态列的不同取值、归并到规范状态、答前核对计数）。job 里另放一个带哨兵事件文件的留出集失败题，`grep HOLDOUT runs/14/report/*` 无结果。
+
+**审查**：`da-review main` 4 条全修（`7567624`，各配测试）：重试可超预算；重试抛错时丢花费；只出现在 `list_tables` 输出里的表名未拦；报错文本未打码。`eng:code-review main` 修 5 条（`ed1b3a3`）：docstring 误称不打开留出集 `result.json`；FM2/FM4 措辞超出 CONTEXT；lazy judge 改用 `functools.cache`；两个魔数改常量；删多余的 `Failure` dataclass。
+
+**不修的理由**：模块约 570 行，各节独立，拆分会打散一个功能；`mask` 不复用私有的 `EventLog._mask`；测试里 `sys.path` 插入（假 judge 无法经子进程注入，`pyproject` 不在 Authority）；`check_reply` 返回元组与重复的 entry dict 属小问题；名称检查不拦 Skill 也用的单词表名或只以裸名出现的表名——Skill 词汇按政策是通用的，其余靠提示规则与人审。
+
+**已知限制**：引用对照当前 Skill（运行用的版本不同时报告会注明）；预算在重试中途耗尽时丢弃首次回复；真实开发集报告要等有 Harbor 开发集 job（09/12 之后）。
