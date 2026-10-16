@@ -332,6 +332,11 @@ async def run_once(
         finally:
             remove_exec_containers(workspace)
         log.emit("result", **result_fields(final, settings.model))
+    # DAB's tools log arguments and results unmasked; the server is gone, so mask them now.
+    secrets = secrets_of(env)
+    for path in directory.glob("*.jsonl"):
+        if path.name != "events.jsonl":
+            path.write_text(mask(path.read_text(), secrets))
     if (
         not server_up
         or final is None
@@ -344,6 +349,17 @@ async def run_once(
     else:
         status = "unfinished"
     return (final.result or "") if final else "", status
+
+
+def secrets_of(env: dict[str, str]) -> list[str]:
+    """The values the trace masks, longest first so a URL is masked whole before its host."""
+    return sorted(set(known_secrets(env)), key=len, reverse=True)
+
+
+def mask(text: str, secrets: list[str]) -> str:
+    for secret in secrets:
+        text = text.replace(secret, REDACTED)
+    return text
 
 
 def remove_exec_containers(workspace: Path, client: Any = None) -> list[str]:
@@ -446,24 +462,24 @@ async def run_query(
     trace stays for a look) and is counted in the return value, so the caller can fail and the
     run be redone after removing its directory. Runs already in the submission are skipped, so a
     rerun only redoes what is missing, and only under the conditions (config, model, hints, DAB
-    commit) of the runs it keeps; otherwise it raises ConditionsChanged before running anything.
+    commit) of every run already in the submission; otherwise it raises ConditionsChanged before
+    running anything.
     """
     out.mkdir(parents=True, exist_ok=True)
     submission = out / "submission.json"
     done = set()
     if submission.exists():
         done = {(e["dataset"], e["query"], e["run"]) for e in json.loads(submission.read_text())}
-    finished = [r for r in range(runs) if (dab_query.dataset, dab_query.query_id, str(r)) in done]
-    if finished:
+    if done:  # every run in the submission, of any query: the file is one experiment
         expected = {
             "config": config.name,
             "model": ModelSettings.from_env(env).model,
             "hints": dab_query.hints,
             "DAB commit": dab_commit(dab_root),
         }
-        for run in finished:
-            check_finished_run(run_dir(out, dab_query.dataset, dab_query.query_id, run), expected)
-    secrets = sorted(set(known_secrets(env)), key=len, reverse=True)
+        for dataset, query_id, run in sorted(done):
+            check_finished_run(run_dir(out, dataset, query_id, int(run)), expected)
+    secrets = secrets_of(env)
     infra_errors = 0
     for run in range(runs):
         if (dab_query.dataset, dab_query.query_id, str(run)) in done:
@@ -477,8 +493,7 @@ async def run_query(
             write_submission(submission, [])  # no entry, but the file exists for the batch
             continue
         # Masked like the trace, so the answer in the submission matches the one in the trace.
-        for secret in secrets:
-            answer = answer.replace(secret, REDACTED)
+        answer = mask(answer, secrets)
         entry = {
             "dataset": dab_query.dataset,
             "query": dab_query.query_id,

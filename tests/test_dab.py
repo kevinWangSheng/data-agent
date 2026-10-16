@@ -496,6 +496,22 @@ async def test_a_finished_run_without_its_trace_cannot_be_checked(
         await run_dab(monkeypatch, dab_root, out, runs=1)
 
 
+async def test_another_query_under_other_conditions_refuses_to_join_the_submission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = make_dab(tmp_path / "dab")
+    shutil.copytree(root / "query_toyset" / "query1", root / "query_toyset" / "query2")
+    out = tmp_path / "out"
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["one", "two"], seen))
+    query1 = dab.load_query(root, "toyset", "1", hints=True)
+    await dab.run_query(root, query1, load_config("full"), out, 1, ENV)
+    query2 = dab.load_query(root, "toyset", "2", hints=True)
+    with pytest.raises(dab.ConditionsChanged, match="config"):
+        await dab.run_query(root, query2, load_config("baseline"), out, 1, ENV)
+    assert len(seen) == 1
+
+
 def test_cli_fails_when_the_out_directory_holds_other_conditions(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:
@@ -618,6 +634,30 @@ async def test_answers_are_masked_like_the_trace(
     submission = (tmp_path / "out" / "submission.json").read_text()
     assert "sk-test-secret" not in submission
     assert "key [REDACTED] here" in submission
+
+
+async def test_dab_logs_are_masked_like_the_trace(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # DAB's tools write their own logs, unmasked; the runner masks them once the session is over.
+    async def leaky_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        log = Path(
+            options.mcp_servers["data"]["args"][
+                options.mcp_servers["data"]["args"].index("--log") + 1
+            ]
+        )
+        log.write_text(json.dumps({"result": "error at sk-test-secret"}) + "\n")
+        log.with_name("execute_python_artifacts.jsonl").write_text("sk-test-secret\n")
+        yield result("done")
+
+    monkeypatch.setattr(dab, "query", leaky_query)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, ENV)
+    run = dab.run_dir(tmp_path / "out", "toyset", "1", 0)
+    for name in ("dab_tool_calls.jsonl", "execute_python_artifacts.jsonl"):
+        text = (run / name).read_text()
+        assert "sk-test-secret" not in text
+        assert "[REDACTED]" in text
 
 
 def test_infra_errors_are_left_out_of_the_submission_and_fail_the_cli(
