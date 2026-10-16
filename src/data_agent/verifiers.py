@@ -68,9 +68,6 @@ def load_definition(name: str, server: str) -> AgentDefinition:
         prompt=body.strip(),
         tools=[*READ_TOOLS, *(f"mcp__{server}__{tool}" for tool in DATA_TOOLS[name])],
         model="inherit",
-        # In the foreground: a background verifier ends the main turn before its report is in,
-        # and the run then continues over several SDK results.
-        background=False,
     )
 
 

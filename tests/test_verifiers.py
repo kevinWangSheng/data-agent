@@ -46,9 +46,9 @@ def test_dbt_runs_offer_both_read_only_verifiers(tmp_path: Path) -> None:
         assert tools >= {"Read", "mcp__data__query_database"}
         assert not tools & {"Write", "Edit", "Bash", "Agent"}
         assert "NEEDS_INFO" in definition.prompt and "N/A" in definition.prompt
-        # A background verifier ends the main turn early and splits the run into several results.
-        assert definition.background is False
     assert {"SubagentStart", "SubagentStop"} <= set(built.hooks or {})
+    # A background verifier ends the main turn before its report is in, splitting the run.
+    assert built.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
     servers: Any = built.mcp_servers
     server = servers["data"]
     assert server["args"][-2:] == ["--workspace", str(tmp_path.resolve())]

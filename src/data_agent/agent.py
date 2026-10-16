@@ -190,6 +190,9 @@ class ModelSettings:
             "ANTHROPIC_DEFAULT_OPUS_MODEL": self.model,
             "CLAUDE_CODE_SUBAGENT_MODEL": self.model,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            # Subagents (the verifiers) run in the foreground. Launched in the background, they
+            # end the main turn before their reports are in and split the run into several results.
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
         }
 
 
