@@ -71,7 +71,7 @@
 
 照报告里"以工单和依赖图为控制面"的一类做（round-4 机制比较 §4），借三个案例的具体做法：Stripe Minions 的固定流水线（确定性步骤与 agent 步骤交替）、Simon Willison 的"先跑测试 → 红绿 TDD → 真实运行并留证据"、StrongDM 的外部行为验证（agent 改不到验收标准）。
 
-- **控制面**：工单放 `.scratch/<feature>/issues/`，带"Blocked by"依赖；状态 `ready-for-agent → in-progress → in-review → done`，一个工单一个 agent，开工前先认领。工单文件只在主 checkout 里改（绝对路径），工单分支不提交 `.scratch/*/issues/`，所有会话看到同一份状态，工单状态由人在 main 上提交（2026-10-15 定）。派工的是人：挑可开工的工单，`claude -w NN-<slug>` 开会话，输入 `/implement <工单路径>`；之后到交回为止都由 agent 自己跑，包括调 Codex 审查。同时跑几个 agent 不设上限，只要工单之间不互相依赖（2026-10-15 再次确认）；第 9 节第 7 项试跑只开 1 个。
+- **控制面**：工单放 `.scratch/<feature>/issues/`，带"Blocked by"依赖；状态 `ready-for-agent → in-progress → in-review → done`，一个工单一个 agent，开工前先认领。工单文件只在主 checkout 里改（绝对路径），工单分支不提交 `.scratch/*/issues/`，所有会话看到同一份状态；工单 agent 只在认领时改工单，之后的 Comments、Ledger、状态由主会话从它的最终回复抄进去（2026-10-16），工单状态由人在 main 上提交（2026-10-15 定）。派工的是人：挑可开工的工单，`claude -w NN-<slug>` 开会话，输入 `/implement <工单路径>`；之后到交回为止都由 agent 自己跑，包括调 Codex 审查。同时跑几个 agent 不设上限，只要工单之间不互相依赖（2026-10-15 再次确认）；第 9 节第 7 项试跑只开 1 个。
 - **交接契约**：工单模板补齐报告列的 7 项（`report.md:63`）：目标、权限（可改哪些目录、能否连服务器）、上下文链接、证据要求、当前状态、停止条件、失败处理。
 - **隔离**：一个工单一个 worktree。worktree 只隔离代码，每个 worktree 还要有自己的 DuckDB 文件、Postgres 库或端口、`runs/` 目录（Armin Ronacher：共享状态要另外分开）。
 - **每个工单的流水线**：
