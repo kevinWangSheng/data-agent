@@ -35,7 +35,8 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   COUNT(DISTINCT x) meets COUNT(DISTINCT x) and a conditional count keeps its predicate. The
   count's columns are traced to the upstream columns they read (sqlglot qualify against the
   catalog); one the SQL computes, renames out of reach or takes from another table, or rows of
-  an aggregated CTE, make it inconclusive, as does a computed GROUP BY expression for the slice.
+  an aggregated CTE, make it inconclusive, as does a computed GROUP BY expression or a ROLLUP /
+  CUBE / GROUPING SETS key (subtotal NULLs) for the slice; a constant output is not sliced on.
   ref() and source() resolve to the relations dbt builds and reads (a model's `alias`, a
   source's `schema` and `identifier`; from target/manifest.json when dbt has compiled the
   project), and an aliased model's SQL is found under its model name.
@@ -845,7 +846,7 @@ def in_group_by(select: exp.Select, projection: exp.Expr) -> bool:
         return not has_aggregate(expression)
     position = select.expressions.index(projection) + 1
     target = unqualified(expression)
-    for item in group.expressions:
+    for item in group.expressions + subtotal_keys(group):
         if isinstance(item, exp.Literal) and item.is_int and int(item.name) == position:
             return True
         alias = projection.alias_or_name.lower()
@@ -854,6 +855,18 @@ def in_group_by(select: exp.Select, projection: exp.Expr) -> bool:
         if unqualified(item) == target:
             return True
     return False
+
+
+def subtotal_keys(group: exp.Group) -> list[exp.Expr]:
+    """The expressions grouped in ROLLUP, CUBE or GROUPING SETS, whose rows include subtotals
+    with NULL in their place."""
+    keys: list[exp.Expr] = []
+    for kind in ("rollup", "cube", "grouping_sets"):
+        for node in group.args.get(kind) or []:
+            for item in node.expressions:
+                item = item.unnest() if isinstance(item, exp.Paren) else item
+                keys.extend(item.expressions if isinstance(item, exp.Tuple) else [item])
+    return keys
 
 
 def derived(query: exp.Expr, parsed: Parsed) -> dict[str, exp.Expr | None]:
@@ -920,15 +933,15 @@ def count_of(output: Output) -> exp.Expr | None:
     return node if isinstance(node, exp.Count) else None
 
 
-def origin(scope: Scope, column: exp.Column, depth: int = 0) -> tuple[str, str] | str:
-    """(table, column), lowercase, of the upstream column that `column` reads unchanged through
-    CTEs and subqueries, or why there is none."""
+def origin(scope: Scope, column: exp.Column, depth: int = 0) -> tuple[str, str, str] | str:
+    """(schema or "", table, column), lowercase, of the upstream column that `column` reads
+    unchanged through CTEs and subqueries, or why there is none."""
     sources = {alias: source for alias, (_, source) in scope.selected_sources.items()}
     source = sources.get(column.table) if column.table else None
     if not column.table and len(sources) == 1:
         source = next(iter(sources.values()))
     if isinstance(source, exp.Table):
-        return source.name.lower(), column.name.lower()
+        return source.db.lower(), source.name.lower(), column.name.lower()
     if isinstance(source, Scope) and isinstance(source.expression, exp.Select) and depth < 50:
         for projection in source.expression.expressions:
             if projection.alias_or_name.lower() == column.name.lower():
@@ -953,7 +966,7 @@ def portable(count: exp.Expr, scope: Scope) -> exp.Expr | str:
             problems.append(found)
             return node
         # Unquoted, for the label; baseline_sql quotes the catalog's names.
-        return exp.column(found[1], table=found[0])
+        return exp.column(found[2], table=found[1], db=found[0] or None)
 
     rewritten = count.transform(rewrite)
     return problems[0] if problems else rewritten
@@ -1002,10 +1015,14 @@ def baseline_sql(count: exp.Expr, candidate: Table, bridge: Table | None) -> str
     def rewrite(node: exp.Expr) -> exp.Expr:
         if not isinstance(node, exp.Column) or isinstance(node.this, exp.Star):
             return node
-        name, table = node.name.lower(), node.table.lower()
-        if table in ("", candidate.name.lower()) and name in keys:
+        name, table, schema = node.name.lower(), node.table.lower(), node.db.lower()
+
+        def reads(upstream: Table) -> bool:
+            return table in ("", upstream.name.lower()) and schema in ("", upstream.schema.lower())
+
+        if reads(candidate) and name in keys:
             return exp.column(keys[name], table="c", quoted=True)
-        if bridge and table in ("", bridge.name.lower()) and name in bridge_keys:
+        if bridge and reads(bridge) and name in bridge_keys:
             return exp.column(bridge_keys[name], table="d", quoted=True)
         missing.append(f"{node.table}.{node.name}" if node.table else node.name)
         return node
@@ -1066,9 +1083,17 @@ def column_roles(
             kept = (
                 isinstance(column, exp.Column)
                 and scope is not None
-                and origin(scope, column)[1:] == (name.lower(),)
+                and origin(scope, column)[2:] == (name.lower(),)
             )
-            if kept and sliceable(data_type):
+            # A ROLLUP's subtotal row has NULL there, which no upstream row matches.
+            subtotals = subtotal_keys(output.select.args["group"])
+            target = unqualified(column)
+            subtotal = any(
+                unqualified(key) == target
+                or (isinstance(key, exp.Column) and key.name.lower() == name.lower())
+                for key in subtotals
+            )
+            if kept and sliceable(data_type) and not subtotal:
                 roles.dimensions.append(name)
             else:
                 roles.unsliceable.append(name)
@@ -1084,6 +1109,9 @@ def column_roles(
                         roles.opaque[name] = problem or str(rewritten)
                     else:
                         roles.counts[name] = rewritten
+        elif output and not output.expression.find(exp.Column, exp.Star):
+            # A constant: the same in every row, so neither a slice nor a measure.
+            continue
         elif is_dimension(name, data_type):
             roles.dimensions.append(name)
         elif is_numeric(data_type):
@@ -1225,8 +1253,8 @@ def verify_values(
             if unsliceable:
                 lines.append(
                     f"    not sliced on {', '.join(unsliceable)} (computed or renamed in the "
-                    "SQL, or a type the slice cannot match): a wider slice than the model row; "
-                    "inconclusive"
+                    "SQL, a ROLLUP / CUBE / GROUPING SETS key, or a type the slice cannot "
+                    "match): a wider slice than the model row; inconclusive"
                 )
             counted = [f"    COUNT(*): {m.count}"]
             counted += [f"    COUNT(DISTINCT {name}): {n}" for name, n in m.distinct]

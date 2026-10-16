@@ -943,3 +943,50 @@ def test_declared_columns_split_only_at_top_level_commas() -> None:
     assert verifier_tools.declared_columns(
         "payload:STRUCT(id INT, amount DECIMAL(10,2)), flag:BOOLEAN, id"
     ) == [("payload", "STRUCT(id INT, amount DECIMAL(10,2))"), ("flag", "BOOLEAN"), ("id", "")]
+
+
+def test_a_constant_output_is_not_a_slice_dimension(tmp_path: Path) -> None:
+    sql = "SELECT 'all' AS region, count(*) AS n_orders FROM orders"
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    assert "compared with whole upstreams" in text, text
+    assert "Model matches COUNT(*)" in metric_block(text, "n_orders")
+
+
+def subdir(tmp_path: Path) -> Path:
+    path = tmp_path / "second"
+    path.mkdir()
+    return path
+
+
+def test_a_rollup_subtotal_is_not_sliced_as_a_null(tmp_path: Path) -> None:
+    sql = "SELECT region, count(*) AS n_orders FROM orders GROUP BY ROLLUP (region)"
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    assert "region IS NULL" not in text and "MISMATCH" not in text, text
+    by_channel = (
+        "SELECT status, region, count(*) AS n_orders FROM orders GROUP BY status, ROLLUP (region)"
+    )
+    block = metric_block(
+        verify(model_db(subdir(tmp_path), by_channel), "m", ["orders"], by_channel), "n_orders"
+    )
+    assert "not sliced on region" in block and "inconclusive" in block, block
+    assert "MISMATCH" not in block
+
+
+def test_a_count_keeps_its_columns_schema(tmp_path: Path) -> None:
+    sql = (
+        "SELECT r.event_id, COUNT(*) FILTER (WHERE s.status = 'ok') AS n_ok"
+        " FROM raw.events AS r JOIN staging.events AS s USING (event_id) GROUP BY r.event_id"
+    )
+    db = make_db(
+        tmp_path / "schemas.duckdb",
+        "CREATE SCHEMA raw; CREATE SCHEMA staging;"
+        "CREATE TABLE raw.events (event_id INT, status VARCHAR);"
+        "CREATE TABLE staging.events (event_id INT, status VARCHAR);"
+        "INSERT INTO raw.events VALUES (1, 'bad'), (2, 'bad');"
+        "INSERT INTO staging.events VALUES (1, 'ok'), (2, 'ok');"
+        f"CREATE TABLE m AS {sql};",
+    )
+    text = verify(db, "m", ["raw.events", "staging.events"], sql)
+    block = metric_block(text, "n_ok")
+    assert "MISMATCH" not in block, block
+    assert "Model matches" in block.split("staging.events")[1]
