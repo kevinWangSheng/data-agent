@@ -1,6 +1,6 @@
 # 15 — 单次花费上限按本项目价目表计
 
-Status: in-review
+Status: done
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude (worktree 15-budget-at-our-prices)
@@ -159,3 +159,7 @@ SDK 拿不到运行中的逐轮用量、无法在运行中停止（要写明查�
 - **Second `da-review main`** (on `cb60043`): "No actionable regressions were identified."
 
 **Known limitation (not fixed)**: if the cap stops the run while one of the CLI's own subagents has spent tokens, that spend is missing from the reported `cost_usd`. The SDK never sends its own result in that case, so there is no `model_usage` to compare against. Only runs the SDK ends get `unmetered_cost_usd`.
+
+### 2026-10-16 第 7 步：PR #16 合并（主会话）
+
+`cb60043` CI 两次全绿；Codex 复审 `has_any_findings: false`。合并。worktree 保留（`runs/ticket-15*` 有实测证据），人看过后删。
