@@ -242,3 +242,23 @@ def test_scan_strips_quotes_from_yml_names(tmp_path: Path) -> None:
     assert "stg_customers" in complete and "stg_orders" in complete, output
     assert '"' not in complete and "'" not in complete, output
     assert "SQL FILES WITHOUT YML" not in output, output
+
+
+def test_scan_ignores_parentheses_in_literals_and_comments(tmp_path: Path) -> None:
+    """A complete model with `(` inside a string or comment is not a stub."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    (project / "models" / "staging" / "stg_customers.sql").write_text(
+        "-- strip the ( from names\n"
+        "select replace(customer_name, '(', '') as customer_name, 'it''s (' as note /* ( */\n"
+        "from {{ source('raw', 'customers') }}\n"
+    )
+    output = scan(project)
+    assert "stg_customers" in section(output, "COMPLETE MODELS"), output
+    assert "stg_customers" not in section(output, "STUBS TO REWRITE"), output
+
+
+def test_current_date_fix_keeps_a_real_today() -> None:
+    """Anchoring `current_date` to the data's last date is conditional, not a blanket rewrite."""
+    fix = body("dbt-debugging").split("## 4.", 1)[1].split("## 5.", 1)[0]
+    assert "real current date" in fix, fix

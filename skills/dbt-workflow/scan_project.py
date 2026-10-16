@@ -13,6 +13,7 @@
 # Without a dbt_project.yml at the root, a subdirectory is taken as the project only if it
 # resolves inside the given directory (a symlink leading out is not followed).
 # YML names are compared without the single or double quotes YAML allows around them.
+# Parentheses inside SQL string literals and comments do not make a model a stub.
 # The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
 # The snapshots hint says `dbt snapshot` cannot run here (data-agent's Bash allows no snapshot).
 """Pre-scan a dbt project and emit a structured context block.
@@ -264,6 +265,10 @@ def _extract_deps_from_sql(work_dir: Path) -> dict[str, list[str]]:
 
 # ── SQL classification ────────────────────────────────────────────────────
 
+# String literals ('' escapes a quote) and comments, removed before counting parentheses.
+SQL_LITERALS_AND_COMMENTS = re.compile(r"'(?:[^']|'')*'|--[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
 def classify_sql_models(work_dir: Path) -> tuple[set[str], set[str]]:
     complete: set[str] = set()
     stubs: set[str] = set()
@@ -272,11 +277,12 @@ def classify_sql_models(work_dir: Path) -> tuple[set[str], set[str]]:
             content = _read_text(sql_file).strip()
         except Exception:
             continue
+        code = SQL_LITERALS_AND_COMMENTS.sub(" ", content).strip()
         is_stub = (
             len(content) < 5
-            or content.endswith(",")
-            or content.endswith("(")
-            or (content.count("(") > content.count(")"))
+            or code.endswith(",")
+            or code.endswith("(")
+            or (code.count("(") > code.count(")"))
             or re.search(r'(?i)\bREPLACE\b.*\bENTIRE\b.*\bFILE\b', content)
             or re.match(r'^--\s*(TODO|FIXME|PLACEHOLDER)', content, re.IGNORECASE)
         )

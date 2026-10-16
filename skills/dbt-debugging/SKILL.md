@@ -8,7 +8,8 @@ type: skill
 were replaced (dbt_project_map by the dbt-workflow scan, get_date_boundaries by MIN/MAX queries
 and describe_table by list_tables, both through this agent's tools); the remark about a sandbox
 was reworded (ADR-0005); the rule about models named like source tables was rewritten as a general
-rule without example table names. -->
+rule without example table names; the current_date fix keeps a real current date the task or
+project asks for. -->
 
 # dbt Debugging Skill
 
@@ -48,8 +49,9 @@ source data with the model.
 
 If the dbt-workflow scan warns about `current_date` usage:
 1. Run `SELECT MIN(<col>), MAX(<col>)` with `query_database` on the source's date columns - pick the column whose range ends at the data's real last date
-2. Replace `current_date`/`now()` with `(SELECT MAX(<col>) FROM {{ ref('<table>') }})`
-3. For package models: create `models/<name>.sql`, paste full SQL, replace current_date
+2. Keep `current_date`/`now()` when the task or the project's YML asks for the real current date (e.g. age or overdue as of today), or when the data still runs up to today
+3. Otherwise - the data stops well before today and nothing asks for the real current date - replace `current_date`/`now()` with `(SELECT MAX(<col>) FROM {{ ref('<table>') }})`
+4. For package models: create `models/<name>.sql`, paste full SQL, replace current_date under the same rule
 
 ## 5. ROW_NUMBER Non-Determinism
 
