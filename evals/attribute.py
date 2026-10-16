@@ -1,8 +1,11 @@
 """`attribute JOB_DIR --manifest M --out DIR`: draft a failure-attribution report (plan §3).
 
-Reads only the dev set's failed trials: a trial of any other task is skipped before its files
-are opened (ADR-0004). For each failure a judge model reads the run's event file, the Skills and,
-when available, the task instruction and verifier output, and drafts one FM1-FM4 label
+Attributes only the dev set's failed trials (ADR-0004). Every trial's `result.json` is parsed to
+learn its task, but a trial outside the dev set is then only counted: its events, verifier output
+and task instruction are never opened and nothing of it reaches the report.
+
+For each failure a judge model reads the run's event file, the Skills and, when available, the
+task instruction and verifier output, and drafts one FM1-FM4 label
 (CONTEXT: Failure mode), a verbatim quote of the Skill text involved and a generic Skill edit.
 Nothing is applied: a human reviews the report before any Skill changes.
 
@@ -16,6 +19,7 @@ The judge prompt is our own (ADR-0005 Update: DAB's `failure_analysis/` text is 
 
 import argparse
 import asyncio
+import functools
 import json
 import os
 import re
@@ -39,12 +43,10 @@ from evals.report import is_infra_error
 FAILURE_MODES = {
     "FM1": "no attempt: the agent never produced a real answer or model (gave up, stalled, "
     "ran out of turns before acting)",
-    "FM2": "wrong plan: the approach itself could not give the asked-for result (wrong "
-    "steps, wrong grain or output shape, a misread question)",
+    "FM2": "wrong plan: the approach itself could not give the asked-for result",
     "FM3": "right plan, wrong data: the approach was sound but used the wrong database, "
     "table, column or field",
-    "FM4": "right plan and data, wrong implementation: formula, join, filter, parsing or "
-    "type handling was wrong",
+    "FM4": "right plan and data, wrong implementation: formula, join or parsing was wrong",
 }
 NO_SKILL = "none"
 MAX_ATTEMPTS = 2
@@ -53,6 +55,8 @@ DEFAULT_BUDGET_USD = 2.0
 MAX_TRACE_CHARS = 60_000
 MAX_EVENT_CHARS = 1_500
 MAX_VERIFIER_CHARS = 4_000
+MAX_INSTRUCTION_CHARS = 20_000
+MAX_PREVIOUS_REPLY_CHARS = 4_000
 
 JUDGE_SYSTEM = """\
 You review failed runs of a data agent to improve its Skills, the workflow guidance it follows. \
@@ -298,12 +302,6 @@ class Meter:
         return reply
 
 
-@dataclass
-class Failure:
-    trial: Trial
-    events_path: Path
-
-
 def _read_optional(path: Path | None, limit: int) -> str | None:
     if path is None or not path.is_file():
         return None
@@ -312,17 +310,17 @@ def _read_optional(path: Path | None, limit: int) -> str | None:
 
 
 async def attribute_one(
-    failure: Failure,
+    trial: Trial,
+    events_path: Path,
     manifest: Mapping[str, Any],
     judge: Judge,
     skills: dict[str, str],
     tasks_dir: Path | None,
 ) -> dict[str, Any]:
-    trial = failure.trial
-    events = read_events(failure.events_path)
+    events = read_events(events_path)
     header = events[0] if events and events[0].get("type") == "version" else {}
     instruction = _read_optional(
-        tasks_dir / trial.task / "instruction.md" if tasks_dir else None, 20_000
+        tasks_dir / trial.task / "instruction.md" if tasks_dir else None, MAX_INSTRUCTION_CHARS
     )
     verifier = _read_optional(trial.dir / "verifier" / "test-stdout.txt", MAX_VERIFIER_CHARS)
     names = specific_names(manifest, events, f"{instruction or ''}\n{verifier or ''}", skills)
@@ -336,7 +334,7 @@ async def attribute_one(
     entry: dict[str, Any] = {
         "task": trial.task,
         "trial": trial.name,
-        "events": str(failure.events_path),
+        "events": str(events_path),
         "run_skill_version": header.get("skill_version"),
         "run_config": header.get("config"),
     }
@@ -357,7 +355,8 @@ async def attribute_one(
         if not feedback:
             break
         attempt_prompt = prompt + RETRY.format(
-            previous=_cut(reply.text, 4_000), problems="\n".join(f"- {p}" for p in feedback)
+            previous=_cut(reply.text, MAX_PREVIOUS_REPLY_CHARS),
+            problems="\n".join(f"- {p}" for p in feedback),
         )
     if problems:
         entry.update(failure_mode=None, error="; ".join(problems))
@@ -410,9 +409,7 @@ async def attribute(
             entry = {**base, "error": "no event file"}
         else:
             try:
-                entry = await attribute_one(
-                    Failure(trial, events), manifest, meter, skills, tasks_dir
-                )
+                entry = await attribute_one(trial, events, manifest, meter, skills, tasks_dir)
             except ConfigError:
                 raise
             except BudgetReached as exc:
@@ -541,12 +538,11 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
 
 def run(args: argparse.Namespace) -> int:
     manifest = json.loads(args.manifest.read_text())
-    lazy: list[Judge] = []
+    # Built on first use, so a job without dev failures needs no model settings.
+    make_judge = functools.cache(lambda: sdk_judge(os.environ, max_budget_usd=args.budget))
 
     async def judge(prompt: str) -> JudgeReply:
-        if not lazy:  # built on first use, so a job without failures needs no model settings
-            lazy.append(sdk_judge(os.environ, max_budget_usd=args.budget))
-        return await lazy[0](prompt)
+        return await make_judge()(prompt)
 
     try:
         report = asyncio.run(
