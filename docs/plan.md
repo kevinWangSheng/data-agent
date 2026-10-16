@@ -71,7 +71,7 @@
 
 照报告里"以工单和依赖图为控制面"的一类做（round-4 机制比较 §4），借三个案例的具体做法：Stripe Minions 的固定流水线（确定性步骤与 agent 步骤交替）、Simon Willison 的"先跑测试 → 红绿 TDD → 真实运行并留证据"、StrongDM 的外部行为验证（agent 改不到验收标准）。
 
-- **控制面**：工单放 `.scratch/<feature>/issues/`，带"Blocked by"依赖；状态 `ready-for-agent → in-progress → in-review → done`，一个工单一个 agent，开工前先认领。工单文件只在主 checkout 里改（绝对路径），工单分支不提交 `.scratch/*/issues/`，所有会话看到同一份状态；工单 agent 只在认领时改工单，之后的 Comments、Ledger、状态由主会话从它的最终回复抄进去（2026-10-16），工单状态由人在 main 上提交（2026-10-15 定）。派工的是人：挑可开工的工单，`claude -w NN-<slug>` 开会话，输入 `/implement <工单路径>`；之后到交回为止都由 agent 自己跑，包括调 Codex 审查。同时跑几个 agent 不设上限，只要工单之间不互相依赖（2026-10-15 再次确认）；第 9 节第 7 项试跑只开 1 个。
+- **控制面**：工单放 `.scratch/<feature>/issues/`，带"Blocked by"依赖；状态 `ready-for-agent → in-progress → in-review → done`，一个工单一个 agent，开工前先认领。工单文件只在主 checkout 里改（绝对路径），工单分支不提交 `.scratch/*/issues/`，所有会话看到同一份状态；工单 agent 只在认领时改工单，之后的 Comments、Ledger、状态由主会话从它的最终回复抄进去（2026-10-16），工单状态由主会话在 main 上提交（2026-10-16 改）。派工的是人或主会话：挑可开工的工单，`claude -p -w NN-<slug> --permission-mode auto "/implement <工单绝对路径>"`；之后到交回为止都由 agent 自己跑，包括调 Codex 审查。同时跑几个 agent 不设上限，只要工单之间不互相依赖（2026-10-15 再次确认）；第 9 节第 7 项试跑只开 1 个。
 - **交接契约**：工单模板补齐报告列的 7 项（`report.md:63`）：目标、权限（可改哪些目录、能否连服务器）、上下文链接、证据要求、当前状态、停止条件、失败处理。
 - **隔离**：一个工单一个 worktree。worktree 只隔离代码，每个 worktree 还要有自己的 DuckDB 文件、Postgres 库或端口、`runs/` 目录（Armin Ronacher：共享状态要另外分开）。
 - **每个工单的流水线**：
@@ -80,10 +80,11 @@
   3. 确定性：`make check` 与 pre-commit。
   4. agent：真实运行一次（跑 CLI、单题、截图），命令与真实输出贴进工单 Comments。
   5. agent：先提交到工单分支（两道审查都只看已提交的 diff），再做两道审查。先 Codex（`da-review`，换模型找 bug，只读）；再由 Claude 开新上下文跑 `eng:code-review`（Standards、Spec 两个子 agent 并行，Spec 对照本工单验收标准；照 mattpocock `/code-review`）。第二道补的是 `codex review --base` 不能带提示词、不对照 spec 的缺口；它和写代码的同为 Claude，独立性靠 Codex 那一道补，`/retro` 发现漏审再改（2026-10-15 定）。AGENTS.md 点名 `eng:code-review`，不用内置的 `code-review`；`/implement` 原文的审查和提交顺序以本节为准。每条结果修（修完提交）或在工单写明不修的理由；修复最多 2 轮，不过就转给人。
-  6. 人：看工单证据和 diff。接受：push 分支、`gh pr create --fill`，CI 绿后在网页上 squash 合并，工单 `done`，删 worktree 和分支；PR 历史即"用 agent 开发"的公开记录。退回：Comments 写"退回：原因"、Status 改回 `ready-for-agent`，新会话在原分支上接着修，不推倒重来（2026-10-15 定）。
+  6. 主会话：把工单 agent 最终回复里的 Comments、Ledger、Status 抄进工单；push 分支、`gh pr create --fill`。
+  7. 主会话：CI 绿后逐条核实 Codex GitHub app 在 PR 上的意见（每次 push 自动审查）。属实的写"退回：原因"、Status 改回 `ready-for-agent`，在原 worktree 里 `claude -p` 接着修，不推倒重来；每个 PR 最多退回 2 轮，之后的意见记成已知限制或写进后续工单。处理完 `gh pr merge --squash`，工单 `done`，删 worktree 和分支；PR 历史即"用 agent 开发"的公开记录（2026-10-16 改，原为人在网页上合并）。
 - **强制程度**：先靠 skill（`/implement` + 新工单模板）约束步骤，只有提交前检查是硬卡；`/retro` 发现哪一步常被跳过，再把那一步改成脚本。
 - **外部行为验证**：验收的测试接缝在 `/to-spec` 时由人确认；每个 feature 的第一张工单写出这些验收测试，人审后合并进 main，之后的实现工单在 Authority 里列为不可改（2026-10-15 定，免得实现 agent 自己出题自己答）；留出集只经 `da-remote` 返回汇总分数，agent 拿不到失败细节。
-- **人的边界**：spec 的测试接缝、工单拆分、合并到 main、push、上榜提交、超出花费上限。agent 不合并、不 push。
+- **人的边界**：spec 的测试接缝、工单拆分、何时开始开发、上榜提交、超出花费上限。工单 agent 不合并、不 push；主会话按第 6、7 步 push 与合并（2026-10-16 改）。
 - **反馈**：每批工单后 `/retro`；机械性规则改成检查，需要判断的写进 `CODING_STANDARDS.md`。
 - **每个工单记小账**：工单末尾记尝试次数、审查轮数、花费、接受/退回、人审查用时，最后汇总成"用 agent 开发"的数据。花费只记 data agent 调用模型的花费（从事件文件读）；Claude Code、Codex 走订阅、agent 读不到，不记；人审用时由人在合并时填，可空（2026-10-15 定）。
 

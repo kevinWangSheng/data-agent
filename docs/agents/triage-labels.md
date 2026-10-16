@@ -21,7 +21,7 @@ After triage, a `ready-for-agent` ticket moves through three more states, record
 | State         | Set by                     | Meaning                                                                 |
 | ------------- | -------------------------- | ----------------------------------------------------------------------- |
 | `in-progress` | the agent that claims it   | Claimed; `Claimed by:` and `Branch:` are filled in before any other work |
-| `in-review`   | that agent, when finished  | Evidence and ledger filled in; waiting for the human to review the diff |
-| `done`        | the human, after merging   | Merged to main                                                          |
+| `in-review`   | the main session, from that agent's final reply | Evidence and ledger copied in; PR open, waiting for CI and the Codex PR review |
+| `done`        | the main session, after merging | Squash-merged to main                                               |
 
 An agent that stops early sets `ready-for-human` and leaves a Comment (see `ticket-template.md`, Failure handling).
