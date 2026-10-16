@@ -20,7 +20,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from data_agent.agent import SKILLS_DIR, ConfigError, ModelSettings, result_fields, skill_version
+from data_agent.events import REDACTED, known_secrets
 from evals.harbor import Trial, load_trials
 from evals.metrics import is_success
 from evals.report import is_infra_error
@@ -181,6 +182,7 @@ def render_trace(events: list[dict[str, Any]]) -> str:
 
 SNAKE_CASE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b")
 WORD = re.compile(r"[\w-]+")
+DOTTED = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
 
 
 def sql_names(sql: str) -> set[str]:
@@ -201,14 +203,17 @@ def specific_names(
     manifest: Mapping[str, Any], events: list[dict[str, Any]], context: str, skills: dict[str, str]
 ) -> set[str]:
     """Names a generic suggestion must not use: every task id in the manifest, every table and
-    column the run's SQL touched, and snake_case identifiers from the task instruction and
+    column the run's SQL touched, every `schema.table` name and snake_case identifier anywhere in
+    the trace (schema tools list tables the SQL may never touch), the task instruction or the
     verifier output. Words the Skills use are general by policy, so they are allowed.
     """
     names = {*manifest.get("dev", []), *manifest.get("holdout", [])}
     for event in events:
         if event.get("type") == "sql" and isinstance(event.get("sql"), str):
             names |= sql_names(event["sql"])
-    names |= set(SNAKE_CASE.findall(context))
+    text = f"{json.dumps(events, ensure_ascii=False)}\n{context}"
+    names |= set(SNAKE_CASE.findall(text))
+    names |= {part for dotted in DOTTED.findall(text) for part in dotted}
     allowed = {w.lower() for text in skills.values() for w in WORD.findall(text)}
     return {n for n in names if n.lower() not in allowed}
 
@@ -272,6 +277,27 @@ def _feedback(problems: list[str], verified: bool, named: list[str], skill: Any)
     return out
 
 
+class BudgetReached(Exception):
+    pass
+
+
+class Meter:
+    """Counts every judge call's cost as it happens and refuses a call once spend reaches the
+    budget, so retries stay under it and a later failure never hides an earlier charge."""
+
+    def __init__(self, judge: Judge, budget_usd: float) -> None:
+        self._judge = judge
+        self.budget_usd = budget_usd
+        self.spent = 0.0
+
+    async def __call__(self, prompt: str) -> JudgeReply:
+        if self.spent >= self.budget_usd:
+            raise BudgetReached(f"not attributed: spend reached the ${self.budget_usd} budget")
+        reply = await self._judge(prompt)
+        self.spent += reply.cost_usd
+        return reply
+
+
 @dataclass
 class Failure:
     trial: Trial
@@ -291,7 +317,7 @@ async def attribute_one(
     judge: Judge,
     skills: dict[str, str],
     tasks_dir: Path | None,
-) -> tuple[dict[str, Any], float]:
+) -> dict[str, Any]:
     trial = failure.trial
     events = read_events(failure.events_path)
     header = events[0] if events and events[0].get("type") == "version" else {}
@@ -314,13 +340,12 @@ async def attribute_one(
         "run_skill_version": header.get("skill_version"),
         "run_config": header.get("config"),
     }
-    cost, attempt_prompt = 0.0, prompt
+    attempt_prompt = prompt
     fields: dict[str, Any] = {}
     problems: list[str] = []
     verified, named = False, []
     for attempt in range(1, MAX_ATTEMPTS + 1):
         reply = await judge(attempt_prompt)
-        cost += reply.cost_usd
         entry["attempts"] = attempt
         try:
             fields = parse_reply(reply.text)
@@ -335,8 +360,8 @@ async def attribute_one(
             previous=_cut(reply.text, 4_000), problems="\n".join(f"- {p}" for p in feedback)
         )
     if problems:
-        entry.update(failure_mode=None, error="; ".join(problems), cost_usd=cost)
-        return entry, cost
+        entry.update(failure_mode=None, error="; ".join(problems))
+        return entry
     entry.update(
         failure_mode=fields["failure_mode"],
         evidence=fields["evidence"],
@@ -346,9 +371,8 @@ async def attribute_one(
         suggestion=None if named else fields["suggestion"],
         specific_names=named,
         error=None,
-        cost_usd=cost,
     )
-    return entry, cost
+    return entry
 
 
 def dev_failures(trials: list[Trial], dev: set[str]) -> tuple[list[Trial], int, int]:
@@ -367,36 +391,36 @@ async def attribute(
     skills: dict[str, str],
     tasks_dir: Path | None = None,
     budget_usd: float = DEFAULT_BUDGET_USD,
+    secrets: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Attribute every failed dev trial in the job; write `attribution.json` and `report.md`.
 
     Infrastructure errors are rerun, not attributed. Stops calling the judge once spend
-    reaches `budget_usd`; the rest are listed as not attributed.
+    reaches `budget_usd`; the rest are listed as not attributed. `secrets` are masked in
+    everything written, as in event files.
     """
     failures, skipped, infra = dev_failures(load_trials(job_dir), set(manifest["dev"]))
+    meter = Meter(judge, budget_usd)
     entries: list[dict[str, Any]] = []
-    spent = 0.0
     for trial in failures:
         events = trial.dir / "agent" / "events.jsonl"
         base = {"task": trial.task, "trial": trial.name, "failure_mode": None}
+        before = meter.spent
         if not events.is_file():
-            entries.append({**base, "error": "no event file"})
-        elif spent >= budget_usd:
-            entries.append(
-                {**base, "error": f"not attributed: spend reached the ${budget_usd} budget"}
-            )
+            entry = {**base, "error": "no event file"}
         else:
             try:
-                entry, cost = await attribute_one(
-                    Failure(trial, events), manifest, judge, skills, tasks_dir
+                entry = await attribute_one(
+                    Failure(trial, events), manifest, meter, skills, tasks_dir
                 )
             except ConfigError:
                 raise
+            except BudgetReached as exc:
+                entry = {**base, "error": str(exc)}
             except Exception as exc:  # one broken call or event file must not lose the rest
-                entries.append({**base, "error": f"judge failed: {exc}"})
-                continue
-            entries.append(entry)
-            spent += cost
+                entry = {**base, "error": f"judge failed: {exc}"}
+        entries.append({**entry, "cost_usd": round(meter.spent - before, 6)})
+    spent = meter.spent
     report = {
         "skill_version": skill_version(),
         "n_failures": len(failures),
@@ -405,12 +429,24 @@ async def attribute(
         "cost_usd": round(spent, 6),
         "failures": entries,
     }
+    report = mask(report, secrets)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "attribution.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False) + "\n"
     )
     (out_dir / "report.md").write_text(render_markdown(report))
     return report
+
+
+def mask(value: Any, secrets: Iterable[str]) -> Any:
+    """`value` with every secret string replaced, longest first (as `EventLog` does)."""
+    ordered = sorted({s for s in secrets if s}, key=len, reverse=True)
+    if not ordered:
+        return value
+    text = json.dumps(value, ensure_ascii=False)
+    for secret in ordered:
+        text = text.replace(json.dumps(secret, ensure_ascii=False)[1:-1], REDACTED)
+    return json.loads(text)
 
 
 def _quote_block(text: str) -> str:
@@ -515,7 +551,14 @@ def run(args: argparse.Namespace) -> int:
     try:
         report = asyncio.run(
             attribute(
-                args.job_dir, manifest, args.out, judge, load_skills(), args.tasks_dir, args.budget
+                args.job_dir,
+                manifest,
+                args.out,
+                judge,
+                load_skills(),
+                args.tasks_dir,
+                args.budget,
+                known_secrets(os.environ),
             )
         )
     except (ValueError, ConfigError) as exc:

@@ -25,7 +25,9 @@ def event(seq: int, type: str, **fields: Any) -> dict[str, Any]:
     return {"seq": seq, "type": type, **fields}
 
 
-def write_trial(job: Path, name: str, task: str, reward: float, sql: str = "SELECT 1") -> Path:
+def write_trial(
+    job: Path, name: str, task: str, reward: float, sql: str = "SELECT 1", tables: str = "42"
+) -> Path:
     trial = job / name
     (trial / "agent").mkdir(parents=True)
     result = {
@@ -36,11 +38,13 @@ def write_trial(job: Path, name: str, task: str, reward: float, sql: str = "SELE
     (trial / "result.json").write_text(json.dumps(result))
     events = [
         event(0, "version", skill_version="abc123", config="full", model="m"),
-        event(1, "tool_start", tool="mcp__data__query_database", input={"sql": sql}),
-        event(2, "sql", sql=sql),
-        event(3, "tool_end", tool="mcp__data__query_database", is_error=False, content="42"),
-        event(4, "text", text="The answer is 42."),
-        event(5, "result", subtype="success", num_turns=3, cost_usd=0.01),
+        event(1, "tool_start", tool="mcp__data__list_tables", input={}),
+        event(2, "tool_end", tool="mcp__data__list_tables", is_error=False, content=tables),
+        event(3, "tool_start", tool="mcp__data__query_database", input={"sql": sql}),
+        event(4, "sql", sql=sql),
+        event(5, "tool_end", tool="mcp__data__query_database", is_error=False, content="42"),
+        event(6, "text", text="The answer is 42."),
+        event(7, "result", subtype="success", num_turns=3, cost_usd=0.01),
     ]
     (trial / "agent" / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     return trial
@@ -59,13 +63,16 @@ def reply(**overrides: str) -> str:
 
 
 class FakeJudge:
-    def __init__(self, *replies: str) -> None:
+    def __init__(self, *replies: str | Exception) -> None:
         self.replies = list(replies)
         self.prompts: list[str] = []
 
     async def __call__(self, prompt: str) -> JudgeReply:
         self.prompts.append(prompt)
-        return JudgeReply(text=self.replies.pop(0), cost_usd=0.02)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return JudgeReply(text=reply, cost_usd=0.02)
 
 
 def run(job: Path, out: Path, judge: FakeJudge, **kwargs: Any) -> dict[str, Any]:
@@ -239,3 +246,51 @@ def test_cli_without_dev_failures_needs_no_model(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert "0 dev failures" in proc.stdout
     assert json.loads((out / "attribution.json").read_text())["failures"] == []
+
+
+def test_retries_stop_at_the_budget(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 0.0)
+    judge = FakeJudge("not json", reply())
+
+    report = run(job, tmp_path / "out", judge, budget_usd=0.02)
+
+    assert len(judge.prompts) == 1
+    assert report["failures"][0]["error"] == "not attributed: spend reached the $0.02 budget"
+    assert report["cost_usd"] == 0.02
+
+
+def test_cost_of_earlier_attempts_is_kept_when_a_retry_breaks(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 0.0)
+    judge = FakeJudge("not json", RuntimeError("connection reset"))
+
+    report = run(job, tmp_path / "out", judge)
+
+    assert report["cost_usd"] == 0.02
+    assert report["failures"][0]["error"] == "judge failed: connection reset"
+
+
+def test_names_the_schema_tools_showed_are_specific(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    listing = "raw.payments (table): payment_ref, amount\nraw.web_events (table): page_url"
+    write_trial(job, "dev-task__a", "dev-task", 0.0, tables=listing)
+    judge = FakeJudge(reply(suggestion="Join payments to web_events by payment_ref."), reply())
+
+    run(job, tmp_path / "out", judge)
+
+    assert len(judge.prompts) == 2
+    assert "(payment_ref, payments, web_events)" in judge.prompts[1]
+
+
+def test_secrets_in_errors_are_masked(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 0.0)
+    judge = FakeJudge(RuntimeError("401 from https://llm.internal.example/v1 key sk-test-123"))
+
+    run(job, tmp_path / "out", judge, secrets=["sk-test-123", "https://llm.internal.example"])
+
+    out_text = "".join(p.read_text() for p in (tmp_path / "out").iterdir())
+    assert "sk-test-123" not in out_text
+    assert "llm.internal.example" not in out_text
+    assert "[REDACTED]" in out_text
