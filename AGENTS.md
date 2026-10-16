@@ -37,6 +37,8 @@ runs/             运行产出，不进 git
 
 工单文件只在主 checkout（`git worktree list` 第一行）里改，用绝对路径；工单分支不提交 `.scratch/*/issues/`，这样所有会话看到同一份状态。
 
+开工：`claude -p -w NN-<slug> --permission-mode auto "/implement <工单绝对路径>"`（人或主会话启动均可）。`-w` 从远端 `origin/main` 建 worktree，所以派工前本地 main 不能有未推送的提交。
+
 1. 认领：工单 `Status: ready-for-agent` 且 `Blocked by:` 都已 `done` 才能领；先把 `Status:` 改成 `in-progress`、填 `Claimed by:` 和 `Branch:` 并保存，再做别的。
 2. 先跑测试拿基线，再在 spec 约定的测试接缝上 TDD 实现（`/implement`；它原文里的审查和提交顺序以本节为准）。
 3. `make check` 通过后，真实运行一次改动的行为，把命令和真实输出贴进工单 `## Comments`。

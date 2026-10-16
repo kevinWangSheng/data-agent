@@ -24,6 +24,7 @@ ADR-0002（复制 SignalPilot `engine/`，随附其测试）；plan §5（官方
 ## Acceptance
 
 - [ ] 接缝 B 中关于工具列表（基础工具部分）、SELECT 执行、DDL/DML/危险函数拦截的验收测试转绿
+- [ ] `--config` 接受 6 个配置名（`baseline`、`full` 等，名字照 spec）；本工单只需最小占位，各名字都按全开处理，层开关由 05 实现
 - [ ] SignalPilot `engine/` 自带测试随代码复制并通过
 - [ ] 复制的文件保留版权头并登记 `NOTICE`
 - [ ] `make check` 通过

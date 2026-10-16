@@ -24,6 +24,7 @@ ADR-0001 与其 Update（模型可配置、`DATA_AGENT_*` 只传给 SDK 子进�
 ## Acceptance
 
 - [ ] 接缝 A 中查数任务与事件文件相关的验收测试转绿（`make test-integration`）
+- [ ] `data-agent run --config` 接受 6 个配置名（`baseline`、`full` 等，名字照 spec）；本工单只需最小占位，各名字都按全开处理，层开关由 05 实现
 - [ ] 单次运行有 `max_budget_usd`
 - [ ] 事件文件写入前遮盖已知密钥值与端点
 - [ ] `make check` 通过

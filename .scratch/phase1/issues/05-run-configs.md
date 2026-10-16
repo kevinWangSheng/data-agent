@@ -24,7 +24,7 @@ ADR-0004（6 个配置）；CONTEXT 的 Baseline、Ablation；spec「运行配�
 ## Acceptance
 
 - [ ] 接缝 B 中「工具列表随配置变化」的验收测试转绿（以目前已有的工具为限）
-- [ ] 接缝 A 中基线配置无验证者痕迹的测试，若验证层尚未实现，保持 xfail
+- [ ] 接缝 A 中 `test_baseline_leaves_no_verifier_or_context_trace` 转绿（`make test-integration`；基线不开验证层，所以不依赖 07）
 - [ ] Skill 版本取 Skill 目录内容哈希并写进版本头
 - [ ] `make check` 通过
 
