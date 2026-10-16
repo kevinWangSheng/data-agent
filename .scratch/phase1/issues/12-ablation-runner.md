@@ -29,6 +29,7 @@ ADR-0004（6 配置 × 3 次 = 540 次）；plan §7 降级顺序与护栏。
 - [ ] 每次报告用新的空 `--out` 目录；遇到配置类报错（`AgentAuthenticationError`、`ModelNotFoundError`、`UnsupportedModelParametersError`）停下找人，不出报告（工单 10 已知限制）
 - [ ] 冻结旧版 Skill 到独立目录，`full-old-skill` 配置指向它（工单 05 留的缺口；目前等于 `full`）；该目录加进 `pyproject.toml` 的 force-include
 - [ ] DAB runner 接上 context 层开关（工单 13 已知限制：DAB server 不注册 context tools，`full` 与 `no-context` 在 DAB 上行为相同）：把开关传给 `evals/dab_server.py` 并注册对应工具，或拒绝在 DAB 上跑 `context = true` 的配置
+- [ ] DAB 续跑核对加上 `git_commit` 与 `skill_version`（工单 13 已知限制：`evals/dab.py` 的续跑检查只比 config、model、hints、DAB commit）
 - [ ] `make check` 通过
 
 ## Evidence required

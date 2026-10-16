@@ -1,6 +1,6 @@
 # 13 — DAB runner
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 03, 05
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -244,3 +244,13 @@ stockindex query2 run0: finished   exit=0
 - 上一轮的已知限制保持不变，比如只在 DAB 自己 `.env` 里设置的连接值不会被遮盖。
 
 **主会话**：第 4 轮的 context 开关问题影响 DAB 消融的有效性，已写进工单 12 验收标准；另两条（autogen 代码文件可被符号链接劫持、嵌套 JSON 预览的二次转义遮盖）交人在最终审查时决定是否开后续工单。
+
+### 2026-10-16 第 7 步：PR #11 退回第 3 轮（人批准的例外）
+
+`8670498` CI 两次全绿。Codex 复审 1 P1 + 2 P2。P1 违反 AGENTS.md 硬规矩"所有对数据源的 SQL 走只读网关"，人决定破例退回第 3 轮，只修这一条：
+
+1. **[P1] `evals/dab_server.py:158`**：`list_tables` 直接调 DAB 的 `ListDBTool`，SQL 不经 `governed()`/网关 AST 检查。改为：SQL 类数据源的表列举走网关校验过的实现（查询先过与 `query_database` 相同的网关检查），MongoDB 仍走 DAB 的只读路径。配修复前会失败的测试（假 DAB 的 `ListDBTool` 被调用即失败，或断言列表查询经过网关）。在原分支上修，修完提交，不 push、不 rebase。修完 `make check`、真实运行 stockindex 一题一次、再跑一轮 `da-review main`（新意见只记录，不再修）。最终回复给出 Comments、Ledger（Attempts 4）与 `Status: in-review`。
+
+其余两条记为已知限制：
+- [P2] `evals/dab.py:429` 续跑核对不含 `git_commit`、`skill_version`：已写进工单 12 验收标准。
+- [P2] `evals/dab_server.py:194` `ExecTool` 构造失败时已加载的 PG/Mongo 数据不清理（DAB 用固定库名，可能干扰重试）。
