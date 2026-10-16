@@ -1,6 +1,6 @@
 # 10 — 评测 CLI：抽样、算分、比较、报告
 
-Status: in-review
+Status: done
 Blocked by: 01
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 10-eval-cli-score)
@@ -44,7 +44,7 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 - Attempts: 5 (rework after PR #3 review, four times)
 - Review rounds: 2 (da-review 3 fixed; eng:code-review Spec 3 of 4 fixed, Standards 0 hard violations)
 - Model spend: $0 (no model calls)
-- Outcome: 6 ticket-10 seam C tests green, make check passes; branch worktree-10-eval-cli-score, commits 5fb8b94 d8dbc68 64a1282 + rework 765589e, d4ec78f, 9514961, e30937d (not pushed)
+- Outcome: accepted (PR #3, squash 180970a)
 - Human review minutes: —
 
 ## Comments

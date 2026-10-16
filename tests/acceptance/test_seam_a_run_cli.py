@@ -89,7 +89,6 @@ def query_run(
     return proc, db, events_dir
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 03")
 def test_query_answer_within_tolerance(
     query_run: tuple[subprocess.CompletedProcess[str], Path, Path],
 ) -> None:
@@ -108,7 +107,6 @@ def test_query_answer_within_tolerance(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 03")
 def test_event_file_header_sequence_and_cost(
     query_run: tuple[subprocess.CompletedProcess[str], Path, Path],
 ) -> None:
@@ -182,7 +180,6 @@ def test_baseline_leaves_no_verifier_or_context_trace(tmp_path: Path) -> None:
         assert not [tool for tool in used if tool.endswith(name)], f"{name} used in a baseline run"
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 03")
 def test_write_request_is_blocked_without_crashing(tmp_path: Path) -> None:
     """The data must stay unchanged whichever path the agent tries, and the run must finish."""
     project, db = make_dbt_workspace(tmp_path)

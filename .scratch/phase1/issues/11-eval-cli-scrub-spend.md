@@ -1,6 +1,6 @@
 # 11 — 评测 CLI：scrub 与累计花费
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 01
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 11-eval-cli-scrub-spend)
@@ -149,3 +149,20 @@ scrub: cannot check these; remove or scrub by hand before upload:
 2. P2 `evals/scrub.py:118`：对象的键走的是 `scrub_text`，不是 `scrub_string`。键里嵌的 JSON 或剩下的 `\uXXXX` 既不解码也不拒绝。修法是一行，把键也交给 `scrub_string`。
 
 两条都是一两行的修法，各配一个测试就能修好。**需要人决定**：是在本工单再给一轮修，还是先合并，另开工单处理。
+
+### 2026-10-16 主会话：修复轮数到上限，以下记为已知限制；rebase 到 main 180970a
+
+确认审查的 2 条新 P2 不再返工：
+1. JSON 里重复的键只检查最后一个值（`{"output":"build-box-7","output":"ok"}` 第一个会漏）。
+2. 对象的键不走嵌套解码，键里的嵌套 JSON 或 `\uXXXX` 不检查。
+理由：我们自己的事件文件由 `json.dumps` 写，不会有重复键，键是固定字段名；只有工具输出里恰好带这类 JSON 时才会出现。上传前的最终把关在工单 09。
+
+rebase 时 `evals/__main__.py` 冲突：保留工单 10 的 `build_parser`，把 scrub、spend 的 `add_parser` 挂进去；`make check` 455 passed。
+
+### 2026-10-16 主会话：退回：PR #5 上 Codex 的 3 条意见，已核实（推翻上一条"记为已知限制"，这三处都小）
+
+在原分支 `worktree-11-eval-cli-scrub-spend` 上接着修（已 rebase 到 main 180970a 并 push；不要 rebase，不要 push）。只修这 3 条，各配一个修复前会失败的测试；`make check`、提交；不跑新一轮审查。按 AGENTS 第 6 步，把 Comments、Ledger、Status 写进最终回复，不改工单文件。
+
+1. `evals/scrub.py:126`：重复键。用 `object_pairs_hook` 检出重复键，判为检查不了（列出文件，退出 1）。
+2. `evals/scrub.py:119`：对象的键也走与字符串值相同的清理（嵌套 JSON 解码、残留 `\uXXXX` 判为检查不了）。
+3. `evals/spend.py:49`：负的 `cost_usd` 判为花费算不清（退出 2）。
