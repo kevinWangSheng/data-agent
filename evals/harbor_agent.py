@@ -183,6 +183,8 @@ class DataAgent(BaseInstalledAgent):
                 # from astral.sh or GitHub failed the TLS handshake in 2 of 5 local trials.
                 f"python3 -m venv {shlex.quote(str(self.venv))}; "
                 f"{python} -m pip install --quiet --retries 5 uv=={UV_VERSION}; "
+                # uv's defaults (3 retries, 30 s) lost a PyPI fetch in 1 of 5 local trials.
+                "export UV_HTTP_RETRIES=10 UV_HTTP_TIMEOUT=120; "
                 f"{uv} pip install --python {python} --require-hashes "
                 f"-r {shlex.quote(str(remote_requirements))}; "
                 f"{uv} pip install --python {python} --no-deps {shlex.quote(str(remote_wheel))}; "
