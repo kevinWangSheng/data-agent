@@ -1,6 +1,6 @@
 # 13 — DAB runner
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 03, 05
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -42,10 +42,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 3
-- Review rounds: 7（da-review 6 轮；code-review 1 轮）
-- Model spend: ~$0.095（之前 ~$0.09；本轮真实运行 $0.0046）
-- Outcome: 退回第 2 轮 4 项完成并经真实运行验证；da-review 第 4 轮 2 P1 + 1 P2 记为已知限制
+- Attempts: 4
+- Review rounds: 8（da-review 7；code-review 1）
+- Model spend: ~$0.104（之前 ~$0.095；本轮真实运行 $0.0092）
+- Outcome: 退回第 3 轮 [P1] list_tables 绕过网关已修并经真实运行验证；da-review 第 5 轮无新意见
 - Human review minutes: —
 
 ## Comments
@@ -254,3 +254,42 @@ stockindex query2 run0: finished   exit=0
 其余两条记为已知限制：
 - [P2] `evals/dab.py:429` 续跑核对不含 `git_commit`、`skill_version`：已写进工单 12 验收标准。
 - [P2] `evals/dab_server.py:194` `ExecTool` 构造失败时已加载的 PG/Mongo 数据不清理（DAB 用固定库名，可能干扰重试）。
+
+### 2026-10-16 Ticket agent: returned round 3 handed back (commit `56289da`)
+
+**[P1] `list_tables` bypassed the read-only gateway**
+- `evals/dab_server.py`:
+  - **SQLite, DuckDB, Postgres:** `list_tables` now lists tables with our own query. Each type uses a new `LIST_TABLES` entry that matches the schema filter in DAB's list tool (`sqlite_master`, and `information_schema` with `main` or `public`). The query goes through `governed()` (AST check and `LIMIT 10000`) and then DAB's `QueryDBTool`. The returned rows are turned back into a list of names, the same form DAB's list tool returns.
+  - **MongoDB:** still uses DAB's `ListDBTool`.
+  - **Other types (e.g. mysql):** refused, the same as `query_database`.
+  - **Unknown `db_name`:** still passed to DAB, which rejects it without running anything.
+  - The type check now lives in one shared helper, `checkable()`, used by both `query_database` and `list_tables`.
+- Tests: there are 3 new tests, and one existing test's expected call log changed from `list_db` to `query_db`.
+  - `test_sql_tables_are_listed_through_the_gateway`: the log has exactly one `query_db` call, and its SQL includes `LIMIT 10000`. It failed before the fix, because the call was `list_db`.
+  - `test_listing_tables_the_gateway_cannot_check_is_refused`: `other_db` (mysql) gets an error that names mysql, and nothing reaches DAB. It failed before the fix, because the call raised inside DAB's tool.
+  - `test_mongo_collections_are_listed_by_dab`: this already passed before the fix. It guards the Mongo path. The fake `ListDBTool` gained a Mongo branch for it; that is our own code, with no DAB code.
+
+**Checks**: `make check` reports All checks passed, basedpyright 0 errors, 754 passed, 15 deselected, 8 xfailed. `tests/test_dab.py` has 57 tests.
+
+**Real run** (DAB `6ad9d68`, stockindex, across SQLite and DuckDB):
+```
+DOCKER_HOST=unix://$HOME/.colima/m1-kind/docker.sock uv run --env-file ~/.config/data-agent/env \
+  --with-requirements evals/dab-requirements.txt python -m evals dab --dab-root runs/13/DataAgentBench \
+  --dataset stockindex --query 2 --runs 1 --config full --out runs/13/out-r3 --budget 3
+stockindex query2 run0: finished
+```
+- 13 turns, $0.0092 (`cost_usd`), passed DAB's `validate.py` (I only printed pass or fail). There were 25 `query_database` calls and 1 `execute_python` call, and 0 `python-data:3.12` containers were left behind.
+- Submission JSON excerpt: `{"dataset": "stockindex", "query": "2", "run": "0", "answer": "## Answer\n\n**Only one North American index had more up days than down days in 2018: the NASDAQ Composite (IXIC) — 131 up days vs. 120 down days.**…`
+- The agent did not call `list_tables` in this run, so I also called it directly against DAB's real tools, without a model (`runs/13/smoke-r3/smoke.py`):
+  - `indexinfo_database` → `["index_info"]`; DAB's log has `query_db` with `SELECT name FROM sqlite_master WHERE type = 'table' LIMIT 10000`.
+  - `indextrade_database` → `["index_trade"]`; DAB's log has `query_db` with `SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' LIMIT 10000`.
+  - There are no `list_db` calls in the log. The Postgres listing query passes `governed()` (checked directly), but no Postgres dataset was run for real.
+
+**`da-review main` (round 5) findings**: there are 5. None is about `list_tables` or the gateway, and all 5 are already known limitations. Per the return request, they are recorded and not fixed:
+- [P1] AutoGen's `tmp_code_*.py` writes can follow symlinks in the workspace (same as da-review round 4).
+- [P1] Secrets inside DAB's double-encoded `result.preview` are not fully masked (same as round 4).
+- [P2] The DAB runner ignores the context-layer switch, so `full` and `no-context` behave the same on DAB (same as round 4).
+- [P2] The resume check does not compare `git_commit` or `skill_version` (already in ticket 12's acceptance criteria).
+- [P2] If `ExecTool` fails to start, the PG/Mongo databases already loaded are not cleaned up (the known limitation from return round 3).
+
+Full output is in `runs/13/da-review-r5.txt`. As in the earlier return rounds, I did not run `eng:code-review main` this round.
