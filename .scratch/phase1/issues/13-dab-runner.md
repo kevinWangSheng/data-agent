@@ -42,10 +42,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 3（da-review 2 轮，code-review 1 轮）
-- Model spend: ~$0.050（6 次真实运行）
-- Outcome: DAB runner 完成；1 题 × 5 次真实运行并写出提交文件；PG/Mongo 数据集待服务器补跑
+- Attempts: 2
+- Review rounds: 6（da-review 5 轮：首次 2 + 本次 3；code-review 1 轮）
+- Model spend: ~$0.09（首次 ~$0.050；本次 3 次真实运行 $0.0352；另一次 SIGINT/SIGTERM 探针花费未记录）
+- Outcome: 退回第 1 轮两项已修并经真实运行验证；第 3 轮 da-review 2 P1 + 1 P2 未修
 - Human review minutes: —
 
 ## Comments
@@ -129,3 +129,65 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-13-dab-runner` 
 3. **Codex P1（`src/data_agent/configs/baseline.toml:12` 等，越权改配置）不退回**：主会话已接受（见上节"交回时的两个判断"），本工单 Authority 视为含 `src/data_agent/configs/` 的 `large` 字段。
 
 修完 `make check`、上述真实运行，再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。花费上限仍 $3。
+
+### 2026-10-16 工单 agent：退回第 1 轮交回（commits `b821803`、`a3bb468`、`6546eee`、`1f91847`）
+
+**1. `execute_python` 与大结果（Codex P1）**
+- `evals/dab_server.py` 按路径 import DAB 的 `ExecTool`，以 `execute_python` 暴露；工具描述取自 DAB 的 `get_spec()`，结果标记取自 DAB 的 `parse_result.RESULT_MARKER`，打印格式说明是我们自己写的。
+- 每个成功结果存为变量 `var_1`、`var_2`…，供 `execute_python` 的代码直接使用（做法同 DAB 的脚手架）。
+- 超过 10000 字符的结果写入 `workspace/file_storage/var_N.json`，变量的值是这个路径，agent 看到预览。
+- 写文件时不跟随符号链接（`O_NOFOLLOW|O_EXCL`）。原因：容器内代码以 root 身份改得了 workspace。
+- 镜像用 DAB 自带的 Dockerfile 在本机 colima（profile `m1-kind`）构建，没有复制 DAB 的文件。Docker Hub 经 VM 代理认证时 EOF，所以基础镜像从 `mirror.gcr.io` 拉取，digest `a6e34c…` 与 Docker Hub 一致，再 tag 成 `python:3.12-slim`。
+- 运行时要设 `DOCKER_HOST=unix://$HOME/.colima/m1-kind/docker.sock`。
+- 真实运行时发现一个问题：CLI 在会话结束时先发 SIGINT，0.1 s 后发 SIGTERM，约 0.5 s 内杀掉 MCP server；DAB 的清理要 `docker stop`（约 10 s），来不及执行，容器会残留。已用探针实测确认。
+  - 改法：runner 在每次运行后强制删除挂着该 workspace 的 `python-data:3.12` 容器（`remove_exec_containers`）。
+- 依赖：`dab-requirements.txt` 加了 `autogen-core==0.7.5`、`autogen-ext[docker]==0.7.5`、`docker==7.1.0`，版本照 DAB 的 `environment.yaml`。
+
+**2. 换条件重跑（Codex P2）**
+- 开跑前读取提交文件里所有已有运行的版本头（任何 query 都算），核对 config、model、hints、DAB commit；不一致就抛 `ConditionsChanged`，退出码 2，什么都不跑。
+
+**另修（da-review 第 1、2 轮）**
+- 只核对本 query 的运行 → 改为核对提交文件里的全部运行。
+- DAB 自己的日志（`dab_tool_calls.jsonl`、`execute_python_artifacts.jsonl`）原先没有遮盖 → 会话结束后遮盖。
+- 大结果写入时会跟随符号链接（P1）→ 已修。
+- 遮盖范围加入 `PG_HOST`、`PG_PASSWORD`、`MONGO_URI` 及其 host、`MYSQL_HOST`、`MYSQL_PASSWORD`；loopback 名称不遮盖。
+
+**检查**：`make check` 结果为 All checks passed、basedpyright 0 errors、583 passed, 15 deselected, 15 xfailed。`tests/test_dab.py` 共 51 个测试；假 DAB 里新增的 `ExecTool`、`exec_utils/parse_result.py` 是自己写的，不含 DAB 代码。
+
+**真实运行**（DAB `6ad9d68`，stockindex，跨库：SQLite 的 `index_info` × DuckDB 的 `index_trade`）：
+```
+DOCKER_HOST=unix://$HOME/.colima/m1-kind/docker.sock uv run --env-file ~/.config/data-agent/env \
+  --with-requirements evals/dab-requirements.txt python -m evals dab --dab-root runs/13/DataAgentBench \
+  --dataset stockindex --query 2 --runs 1 --config full --out runs/13/out-r1 --budget 3
+stockindex query2 run0: finished   exit=0
+```
+- query2：9 轮，$0.0055，通过 DAB 的 `validate.py`（只打印通过与否，没有看标准答案）。
+- query3：17 轮，$0.0224，通过。
+- query2 run1：12 轮，$0.0073，通过；同时验证了"核对 run0 条件后跳过"、DAB 日志遮盖、0 个残留容器。
+- 提交 JSON 片段：`{"dataset": "stockindex", "query": "2", "run": "0", "answer": "## Answer\n\nAmong North American stock indices, only **one** had more up days than down days in 2018: the **NASDAQ Composite (IXIC)** — 131 up days vs. 120 down …"}`
+- 两题 agent 都看到并连上了 `mcp__data__execute_python`，但都没有调用：它把索引列表带进 DuckDB 的 `IN (...)` 完成合并。
+- `execute_python` 的真实性另用不经模型的冒烟测试验证：真 DAB 工具 + Docker，2000 行结果（377654 字符）存入 `file_storage/var_1.json`，容器内 `json.load(open(var_1))` 得到 2000。
+- 换条件重跑：`--config baseline` 跑 query 2 和 query 1 都得到退出码 2，提示 `run0 was run under other conditions (config 'full' there, 'baseline' now)`，没有花费。
+
+**第 3 轮 da-review 的新意见，未修（修复轮次已用完）**
+- **[P1] JSON 转义后的密钥遮不住**：DAB 日志是在落盘后按原文替换的；密钥含引号、反斜杠或非 ASCII 时，JSON 里的写法不同，替换不到。现有的 API key 和 host 不受影响，含特殊字符的 `PG_PASSWORD` 会受影响。建议按 JSON 编码后的形式也替换一遍。
+- **[P1] 中断时日志不遮盖**：Ctrl-C 取消会跳过遮盖步骤。建议把遮盖挪进 `finally`，和删除容器放在一起。
+- **[P2] NaN/inf 结果会弄坏后续所有 `execute_python`**：DAB 的 `ExecTool` 把变量的 repr 拼进代码，`nan` 成了未定义名字。DAB 自己的 agent 也有这个问题。建议 `Results.reply` 存值前把非有限浮点数转成 `None` 或字符串。
+- 三条都是几行的改动，各配一个测试即可。
+
+**已知限制**
+- 只在 DAB 自己的 `.env` 里设置的数据库连接值，runner 看不到，不会遮盖；在服务器上要把它们设在环境变量里。
+- 本轮按工单要求只跑了 `da-review main`，没有跑 `eng:code-review main`。
+
+另：colima `m1-kind` profile 里留有本地镜像 `python-data:3.12`、`python:3.12-slim`、`mirror.gcr.io/library/python:3.12-slim`（DAB `execute_python` 运行需要，保留）。
+
+### 2026-10-16 主会话：退回第 2 轮（最后一轮）
+
+工单 agent 因自审修复轮次用满停在 `ready-for-human`。三条新意见都是几行的具体修复，不需要人做决定；PR #11 只退回过 1 轮，主会话把它们并入退回第 2 轮。另外分支与 main 在 `evals/__main__.py` 冲突（工单 14 加了 `attribute` 命令）。在原分支上修，修完提交，不 push、不 rebase：
+
+1. `git merge origin/main`，解决 `evals/__main__.py` 冲突（`dab` 与 `attribute` 两个命令都保留）。
+2. [P1] DAB 日志的密钥遮盖除原文外，也替换 JSON 编码后的形式（含引号、反斜杠、非 ASCII 的密钥）。配测试。
+3. [P1] 遮盖挪进 `finally`，和删除容器放在一起，Ctrl-C 中断也会遮盖。配测试。
+4. [P2] `Results.reply` 存值前把 NaN/inf 转成 `None`，后续 `execute_python` 不再因 `nan` 未定义而失败。配测试。
+
+修完 `make check`、真实运行 stockindex 一题一次，再跑一轮 `da-review main`；之后的新意见记为已知限制，不再停下。最终回复给出要追加的 Comments 与 Ledger（Attempts 3）和 `Status: in-review`。

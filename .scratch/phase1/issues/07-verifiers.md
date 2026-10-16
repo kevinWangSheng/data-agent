@@ -1,10 +1,10 @@
 # 07 — 验证子 agent 与 6 个验证工具
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 04, 05
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 07-verifiers)
+Branch: worktree-07-verifiers
 
 ## Goal
 
