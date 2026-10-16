@@ -41,10 +41,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 4
-- Model spend: ≈ $0.47（之前 ≈ $0.4 + 本轮 4 次真实运行 $0.0732）
-- Outcome: PR #14 退回 3 条全修，另修 da-review 3 条；make check 通过；真实重跑通过
+- Attempts: 3
+- Review rounds: 5
+- Model spend: ≈ $0.47（本轮无模型运行）
+- Outcome: PR #14 退回第 2 轮两条已修；da-review 新 P2 记为已知限制
 - Human review minutes: —
 
 ## Comments
@@ -165,3 +165,29 @@ PASS n2_update_last_names exit=0 cost=0.0035 blocked=1 — "…Blocked: Update s
 2. **`evals/jaffle.py:132`**：dbt 用例判分只查缺列，多出列也算过；`b2_fix_customers_fanout` 要求不改列。改为比较完整列集合（多列、缺列都判失败）。
 
 这是最后一轮；之后的新意见记为已知限制。修完 `make check`；第 1 条配一个经 `run()` 的测试；第 2 条不经模型演示判分；再跑一轮 `da-review main`（新意见只记录）。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
+
+### 2026-10-16 ticket agent: PR #14 return round 2
+
+**Fixes (`ecf7ef5`).** Each test below failed before its fix.
+1. **`run()` now passes the Postgres variable from its `env` to the SDK subprocess** (`src/data_agent/agent.py`). `build_options` takes a new optional `database_env`, and `ClaudeAgentOptions.env` is `sdk_env() | database_env`. Only that one variable is passed; the URL still never reaches the argv or the MCP config. If the variable is not in `run()`'s `env`, `run()` now raises `ConfigError` before it creates the event directory, instead of quietly falling back to the parent environment. `evals/dab.py` uses the default (`None`), so it is unchanged. Tests (in `tests/test_postgres.py`, both through `run()`):
+   - `test_run_hands_the_database_variable_from_its_env_to_the_sdk`: the parent process sets a different URL, but `options.env` holds the one from `env`. Its keys are exactly `sdk_env()` plus that one variable.
+   - `test_run_without_the_database_variable_in_its_env_is_a_config_error`.
+2. **dbt grading compares the exact set of columns** (`evals/jaffle.py` `grade_model`). Both missing and extra columns now fail the check, and both are written into the details (`missing_columns` / `extra_columns`). In the test, the fixture `EXPECT` now lists the table's full column set, and a new case checks that an extra column fails (`test_model_check_catches_defects[...-name]`).
+
+**Grading shown without a model.** Command: `PYTHONPATH=. uv run python runs/08/grade-demo/demo.py runs/08/grade-demo/w.duckdb`. It grades the real `expect` of `b2_fix_customers_fanout` from `eval.json`; sums are left out because the data is made up.
+```
+customers PASS {'missing_columns': [], 'extra_columns': [], 'row_count': {'want': 100, 'got': 100}}
+customers_plus FAIL {'missing_columns': [], 'extra_columns': ['debug_flag'], 'row_count': {'want': 100, 'got': 100}}
+```
+
+**Checks.** `make check` at `ecf7ef5`: ruff All checks passed; basedpyright 0 errors, 0 warnings, 0 notes; pytest 921 passed, 24 deselected. Pre-commit all Passed. I did not rerun `make test-integration` or the real jaffle runs this round.
+
+**`da-review main` (this round, record only).** Output is in `runs/08/da-review-r2-return.txt`. There are two new P2s. I checked both against the code and both are true. They are not fixed because this was the last round, so they are known limitations:
+- `evals/jaffle.py:217-223`: if the URL leaves out the port, the dbt profile uses 5432. The gateway and the schema reset use libpq defaults (`PGPORT`) instead, so with `PGPORT` set, dbt could connect to a different instance. Possible fix in a later ticket: resolve libpq defaults the same way for both, or reject a URL without a port.
+- `evals/jaffle.py:393-398`: if grading raises after the agent has finished (for example `sum()` on a text column), the `except` branch replaces the whole result. The cost of that paid run is lost, and the summary undercounts spend. Possible fix in a later ticket: keep the result fields that were already collected (cost and events) when grading fails.
+
+**During development.** Before I guarded it, one of my new tests called the real SDK, because `query` was not stubbed. It started a CLI process using the test key `sk-test` and the default base URL. I stopped the test and killed that process (pid 46595). The test now stubs `query` and fails if the run starts. No model call was billed: the key was not a real one.
+
+### 2026-10-16 主会话：合并前集成
+
+工单 15（PR #16）已合并，本分支与 main 在 `src/data_agent/agent.py` 冲突（`git merge-tree` 实测）。在原分支上 `git merge origin/main` 解决：两边都保留（15 的价目表上限与 `include_partial_messages`、本分支的 `database_env` 传进 SDK 子进程环境）；`build_options` 若两边都改了签名，合并成一个并更新所有调用（含 `evals/dab.py` 与测试）。`make check` 通过后提交；不 push、不 rebase；不需要真实运行与审查。
