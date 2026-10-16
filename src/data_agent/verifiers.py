@@ -28,7 +28,10 @@ READ_TOOLS = ("Read", "Glob", "Grep")
 # MCP tools per verifier, by the server's tool names; the checks in each prompt name these.
 DATA_TOOLS = {
     "verifier": (
-        *("list_tables", "query_database", "map_columns", "check_model_schema"),
+        "list_tables",
+        "query_database",
+        "map_columns",
+        "check_model_schema",
         "audit_model_sources",
     ),
     "value-verifier": ("list_tables", "query_database", "verify_model_values"),

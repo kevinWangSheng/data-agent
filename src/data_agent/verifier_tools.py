@@ -519,11 +519,9 @@ def nearest_finer_table(
 ) -> list[Table]:
     """The table with the slice column whose row count is the smallest above the model's."""
     model_rows = row_count(run, model)
-    having = [
-        table
-        for table in catalog
-        if table != model and column.lower() in {name.lower() for name, _ in table.columns}
-    ][:SLICE_TABLES]
+    having = [table for table in catalog if table != model and column.lower() in column_map(table)][
+        :SLICE_TABLES
+    ]
     finer = [(rows, table) for table in having if (rows := row_count(run, table)) > model_rows]
     return [min(finer, key=lambda item: item[0])[1]] if finer else []
 
@@ -705,11 +703,12 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
     def verify_model_values(model_name: str, source_tables: str = "") -> str:
         """Cross-check a model's metric values against its upstream data.
 
-        Takes the model's top row by its first numeric column and slices on that row's first
-        text or date column, then counts COUNT(*) and COUNT(DISTINCT <_id column>) for the same
-        slice in each upstream table. Pass the model's upstreams (the tables in its FROM / ref()
-        / source(), comma-separated) as `source_tables`; without them the nearest finer-grained
-        table that has the slice column stands in.
+        Takes the model's top row by its first numeric column and slices on every text or date
+        column of that row, then counts COUNT(*) and COUNT(DISTINCT <_id column>) for the same
+        slice in each upstream table; a candidate it cannot slice on every column is marked
+        inconclusive. The counts skip the model's own filters. Pass the model's upstreams (the
+        tables in its FROM / ref() / source(), comma-separated) as `source_tables`; without them
+        the nearest finer-grained table that has the first slice column stands in.
         """
         model = resolve(load_catalog(run), model_name)
         return "\n".join(verify_values(run, model, split_names(source_tables)))

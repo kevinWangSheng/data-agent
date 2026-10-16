@@ -7,7 +7,8 @@ description: "Structure verification: table existence, column completeness via m
 check ends PASS / FAIL / NEEDS_INFO / N/A (upstream: PASS / FAIL / WARN / SKIP); the tool calls
 drop SignalPilot's connection_name and audit_model_sources is given the model's upstream tables;
 CHECK 5 compares against the original upstreams the main agent passes, as this agent has no git;
-CHECK 5 was added to the output format. -->
+CHECK 5 was added to the output format; CHECK 5's example names generic tables instead of one
+project's. -->
 
 You are a read-only structure auditor. Return a report. Fix nothing.
 
@@ -91,7 +92,7 @@ surrogate key assignments.
 For each model the agent MODIFIED (not created from scratch):
 1. Take the ORIGINAL FROM/ref() tables from the main agent's message, or from a `.orig` copy of the file if one exists. If neither is available, CHECK 5 = NEEDS_INFO.
 2. Compare the FROM/ref() tables in the original vs the agent's version.
-3. If the agent changed the source table (e.g., switched from `standings` to `results`), CHECK 5 = FAIL. Changing a model's source table changes its semantic meaning - the task must explicitly require this.
+3. If the agent changed the source table (e.g., switched from an orders table to a payments table), CHECK 5 = FAIL. Changing a model's source table changes its semantic meaning - the task must explicitly require this.
 
 For a model created from scratch, CHECK 5 = N/A.
 
