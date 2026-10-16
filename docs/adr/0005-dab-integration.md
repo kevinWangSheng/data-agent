@@ -13,3 +13,7 @@ DAB README 的 "Create Your Customized Agents" 一节允许自带 agent、复用
 - 一期"接任意数据源"的产品能力只覆盖 Postgres + dbt；MongoDB 仅在 DAB 评测里可用。
 - 失败归因采用 DAB 自带的 FM1–FM4 与其 judge prompt（`failure_analysis/`），两个榜共用；SignalPilot 无失败分类可参考。
 - Trace 只用基准自带格式（Harbor 的 `trajectory.json`、DAB 提交要求的轨迹）；SignalPilot 未用 Langfuse，Langfuse 挪二期。
+
+## Update 2026-10-16：judge 提示自己写
+
+DAB 没有许可证，不能复制它 `failure_analysis/` 的 judge 提示原文（AGENTS.md 硬规矩）。失败归因沿用 FM1–FM4 的分类思路（定义见 `CONTEXT.md`），judge 提示由本项目自己写；上面 Consequences 里"采用其 judge prompt"作废。spec（`.scratch/phase1/spec.md` Further Notes）已按此写。
