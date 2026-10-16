@@ -123,6 +123,23 @@ def test_report_trials_per_task_is_configurable(tmp_path: Path) -> None:
     assert json.loads((tmp_path / "report" / "report.json").read_text())["accuracy"] == 50.0
 
 
+def test_report_omits_pass_at_k_above_trials_per_task(tmp_path: Path) -> None:
+    # With 2 trials per task pass@3 is undefined; reporting it as 0.0 would read as a score.
+    job = tmp_path / "job"
+    write_trial(job, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    write_trial(job, "t1__b", {"verifier_result": {"rewards": {"reward": 0.0}}})
+    holdout = tmp_path / "manifest.json"
+    holdout.write_text(json.dumps({"seed": 0, "dev": [], "holdout": ["t1"]}))
+    proc = evals(
+        *("report", str(job), "--manifest", str(holdout), "--split", "holdout"),
+        *("--trials", "2", "--out", str(tmp_path / "report")),
+    )
+    assert proc.returncode == 0, proc.stderr
+    summary = json.loads((tmp_path / "report" / "report.json").read_text())
+    assert summary["pass_at_2"] == 1.0
+    assert "pass_at_3" not in summary
+
+
 def test_report_totals_tokens_and_cost(tmp_path: Path) -> None:
     # Harbor's n_input_tokens includes the cached tokens.
     usage = {"n_input_tokens": 120, "n_cache_tokens": 100, "n_output_tokens": 4, "cost_usd": 0.5}

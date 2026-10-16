@@ -11,17 +11,21 @@ from pathlib import Path
 from typing import Any
 
 from evals.harbor import Trial, by_task
-from evals.metrics import compute_metrics, compute_pass_at_k, is_success
+from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
 
 
 def score(trials: list[Trial]) -> dict[str, Any]:
-    """Leaderboard metrics (data-eng-bench `metrics.py`): errored trials count as 0."""
+    """Leaderboard metrics (data-eng-bench `metrics.py`): errored trials count as 0.
+
+    pass@k is given only for k up to the fewest trials any task has; above that it is undefined.
+    """
     rewards = by_task(trials)
     accuracy, stderr = compute_metrics(rewards)
+    fewest = min((len(rs) for rs in rewards.values()), default=0)
     return {
         "accuracy": accuracy,
         "accuracy_stderr": stderr,
-        **compute_pass_at_k(rewards),
+        **compute_pass_at_k(rewards, tuple(k for k in PASS_AT_KS if k <= fewest)),
         "n_trials": len(trials),
     }
 
