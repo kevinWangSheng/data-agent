@@ -240,3 +240,20 @@ def test_find_table_prefers_the_exact_ref_over_a_case_folded_match() -> None:
     assert find_table([upper, lower], "public.orders") is lower
     with pytest.raises(ToolError, match="ambiguous"):
         find_table([upper, lower], "ORDERS")
+
+
+async def test_refs_of_dotted_names_do_not_collide(tmp_path: Path) -> None:
+    db = tmp_path / "dots.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        con.execute('CREATE SCHEMA a; CREATE SCHEMA "a.b"; CREATE TABLE a."b.c" (left_x INTEGER)')
+        con.execute('CREATE TABLE "a.b".c (right_y INTEGER)')
+    finally:
+        con.close()
+    async with mcp_server(db) as session:
+        refs = refs_of(await session.call_tool("discover", {"query": "c"}))
+        assert sorted(refs) == ['"a.b".c', 'a."b.c"']
+        left = await session.call_tool("hydrate", {"ref": 'a."b.c"'})
+        right = await session.call_tool("hydrate", {"ref": '"a.b".c'})
+    assert "left_x" in text_of(left) and "right_y" not in text_of(left)
+    assert "right_y" in text_of(right) and "left_x" not in text_of(right)

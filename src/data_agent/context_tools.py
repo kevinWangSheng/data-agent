@@ -52,7 +52,7 @@ class Table:
 
     @property
     def ref(self) -> str:
-        return f"{self.schema}.{self.name}"
+        return f"{ref_part(self.schema)}.{ref_part(self.name)}"
 
     @property
     def sql_name(self) -> str:
@@ -61,6 +61,11 @@ class Table:
 
 def quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
+
+
+def ref_part(identifier: str) -> str:
+    """Plain unless a dot or quote would make the ref ambiguous: a."b.c" and "a.b".c stay apart."""
+    return quote(identifier) if "." in identifier or '"' in identifier else identifier
 
 
 def literal(value: str) -> str:
