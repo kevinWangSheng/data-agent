@@ -133,6 +133,11 @@ def summarize(table: Table, matched_columns: list[str]) -> str:
 
 
 def find_table(catalog: list[Table], ref: str) -> Table:
+    """The exact ref first, so quoted names with spaces or case-only differences resolve; then a
+    case-folded match on the ref or the bare name."""
+    for table in catalog:
+        if table.ref == ref:
+            return table
     wanted = ref.strip().lower()
     hits = [table for table in catalog if wanted in (table.ref.lower(), table.name.lower())]
     if len(hits) == 1:

@@ -11,7 +11,10 @@ import duckdb
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
+
+from data_agent.context_tools import Table, find_table
 
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
 SHOP_SQL = Path(__file__).resolve().parent / "fixtures" / "shop.sql"
@@ -213,3 +216,27 @@ async def test_dictionary_search_without_matches(shop: Path, keyword: str) -> No
         result = await session.call_tool("dictionary_search", {"keyword": keyword})
     assert not result.is_error, text_of(result)
     assert "No values" in text_of(result)
+
+
+async def test_hydrate_finds_a_discovered_name_with_surrounding_spaces(tmp_path: Path) -> None:
+    db = tmp_path / "spaces.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        con.execute('CREATE TABLE "events " (x INTEGER)')
+    finally:
+        con.close()
+    async with mcp_server(db) as session:
+        [ref] = refs_of(await session.call_tool("discover", {"query": "events"}))
+        result = await session.call_tool("hydrate", {"ref": ref})
+    assert not result.is_error, text_of(result)
+    assert text_of(result).startswith("main.events  (table")
+
+
+def test_find_table_prefers_the_exact_ref_over_a_case_folded_match() -> None:
+    # Postgres keeps quoted identifiers that differ only in case apart; DuckDB cannot create them.
+    upper = Table("public", "Orders", "table", [("x", "integer")])
+    lower = Table("public", "orders", "table", [("x", "integer")])
+    assert find_table([upper, lower], "public.Orders") is upper
+    assert find_table([upper, lower], "public.orders") is lower
+    with pytest.raises(ToolError, match="ambiguous"):
+        find_table([upper, lower], "ORDERS")
