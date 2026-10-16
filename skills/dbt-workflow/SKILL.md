@@ -11,7 +11,9 @@ present); SignalPilot-only steps were removed or rewritten: analyze_project_db (
 query_database), the knowledge-base check, TaskCreate tracking, loading domain/testing/snapshot/
 versioning skills (data-agent does not ship them; dbt-write, dbt-debugging and duckdb-sql are
 loaded with this one), and the knowledge-base skill in Step 6 (its spec fields are inlined). Two
-remarks about how results are graded were reworded as plain dbt reasons (ADR-0005). -->
+remarks about how results are graded were reworded as plain dbt reasons (ADR-0005). The rules that
+limited rolling/period-over-period models to the latest date with NULL comparisons were replaced by
+general ones (one date only when the description asks; comparisons from the source history). -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -249,16 +251,16 @@ Extract from `description:` field:
 - **RANK CONSTRAINT**: "top N" / "ranks the top N" → exactly N output rows. Filter
   with `ROW_NUMBER() ... <= N` using a deterministic tiebreaker (add primary key to
   ORDER BY). Do NOT use DENSE_RANK for filtering - it can return more than N rows.
-- **TEMPORAL SCOPE**: "rolling window", "MoM", "WoW", or "month-over-month" in the
-  description → ONE output date (latest), not all historical dates. Filter with
-  `WHERE date_col = (SELECT MAX(date_col) FROM source)`.
+- **TEMPORAL SCOPE**: "latest", "current", "as of the last date" in the
+  description → ONE output date. Filter with
+  `WHERE date_col = (SELECT MAX(date_col) FROM source)`. A rolling window or a
+  period-over-period column alone does not limit the output to one date.
 - **DATE BOUNDARY**: "from X to the current date" or "to today" in the description
   → cap the output with `WHERE date_col <= current_date`. When crossing a calendar
   spine with entities (e.g. one row per guide per day), add the cap to the cross
   join: `ON spine.date_day >= entity.created_on AND spine.date_day <= current_date`.
-- **PERIOD-OVER-PERIOD**: If the description mentions MoM, WoW, YoY comparisons
-  AND you are writing this model from scratch (stub/missing), the comparison column
-  must be `CAST(NULL AS DOUBLE)` - see rule below.
+- **PERIOD-OVER-PERIOD**: If the description mentions MoM, WoW, YoY comparisons,
+  compute them from the periods the source holds - see rule below.
 
 **How to read YML descriptions:** Descriptions tell you what the data MEANS, not
 what code to write. Use them to:
@@ -277,16 +279,13 @@ When a dbt project uses `materialized="incremental"` models, the project is
 designed to accumulate state over multiple runs. On a **first run** (full refresh,
 no prior state), incremental models build from scratch.
 
-**If you are writing a new model that includes period-over-period metrics
-(MoM, WoW, YoY) and the project has not been run incrementally before**:
-1. Output rows for the **latest date only**: `WHERE date_col = (SELECT MAX(date_col) FROM source)`
-2. Period-over-period columns must be `CAST(NULL AS DOUBLE)` - there is no prior
-   aggregated state to compare against.
-
-**This rule overrides sibling patterns.** Even if a sibling model computes
-period-over-period values with LAG/LEAD, your new model MUST use
-CAST(NULL AS DOUBLE). The sibling is incremental and accumulates history
-over multiple runs - your table-materialized model has no prior state.
+**Period-over-period metrics (MoM, WoW, YoY)** come from the source history, not
+from earlier runs of the model: aggregate to the period grain, then compare with
+`LAG`/`LEAD` over the periods. Check which periods the source holds
+(`SELECT MIN(date_col), MAX(date_col)` with `query_database`). A period with no
+earlier period in the source gets NULL for the comparison - do NOT fill it with 0.
+If a sibling incremental model reads its prior periods from `{{ this }}` instead,
+do not copy that into a table model: a table model has no `{{ this }}` history.
 
 **Debugging incremental models with missing rows**: inspect the boundary predicate first. If the model uses `WHERE date_col > (SELECT MAX(date_col) FROM {{ this }})`, rows sharing the MAX date are silently dropped - change `>` to `>=` and add a `unique_key` to handle deduplication. Do NOT use `--full-refresh` as a fix - it bypasses the incremental logic that every later run depends on.
 

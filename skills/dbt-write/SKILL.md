@@ -8,7 +8,9 @@ type: skill
 only when present (it is a verification tool); SignalPilot-only tools were replaced
 (compare_join_types by row-count queries with query_database, dbt_project_map and
 dbt_project_validate by the dbt-workflow scan and validate scripts); remarks about how results
-are graded or about a sandbox were reworded as plain dbt reasons (ADR-0005). -->
+are graded or about a sandbox were reworded as plain dbt reasons (ADR-0005); the sibling exception
+for period-over-period columns and Section 6 (which forced COUNT(*) whenever a SUM used every row)
+were rewritten as general rules. -->
 
 # dbt Write Skill
 
@@ -66,11 +68,10 @@ Specifically, for shared elements:
 Exception: if Section 6 (Grain Consistency) conflicts with a sibling
 pattern, Section 6 wins.
 
-Exception: if a sibling is `materialized="incremental"` and computes
-period-over-period columns (MoM, WoW, YoY) with LAG/LEAD, do NOT copy
-the LAG/LEAD expression. The sibling relies on incremental history that
-does not exist on a first build. Use `CAST(NULL AS DOUBLE)` for the
-period-over-period column instead - see dbt-workflow "Incremental Models".
+Exception: if a sibling is `materialized="incremental"` and reads its
+prior periods from `{{ this }}`, do NOT copy that into a table model;
+compute period-over-period columns from the source history instead - see
+dbt-workflow "Incremental Models".
 
 **But your model may have elements the sibling does not.** If your model joins
 additional source tables, adds lookup enrichment, or has columns the sibling lacks,
@@ -215,17 +216,16 @@ Before writing any aggregate, run:
 `SELECT COUNT(*), COUNT(DISTINCT <key>) FROM <source_table>`.
 If they differ, the source grain is finer than the key.
 
-All metrics in a report MUST operate at the same grain. If a SUM
-uses every row, every COUNT must use COUNT(*) - not COUNT(DISTINCT).
+Derive each metric's aggregation from what it counts or sums, at the
+source's measured grain. On an order-line source, `SUM(line_amount)`
+sums lines while "number of orders" is `COUNT(DISTINCT order_id)`;
+"number of lines" is `COUNT(*)`. Pick the expression whose unit matches
+the column's meaning, and check it against the grain query above.
 
-YML column descriptions explain what a column represents, not how
-to aggregate it. The source table's grain determines the correct
-aggregation.
-
-If this rule conflicts with a sibling pattern, the grain check
-wins - if a sibling uses COUNT(DISTINCT) but the grain check shows
-the source is finer, MUST use COUNT(*). The grain check is
-measurable; sibling patterns are inherited assumptions.
+If a sibling's expression counts a different unit than the column's
+meaning on this source (e.g. COUNT(*) for "orders" on a line-grain
+source), the grain check wins. The grain check is measurable; sibling
+patterns are inherited assumptions.
 
 ## 7. Build Order
 

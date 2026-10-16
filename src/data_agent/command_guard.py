@@ -18,11 +18,13 @@ from data_agent.workspace_guard import inside, resolve
 DBT_SUBCOMMANDS = frozenset(
     {"run", "build", "test", "seed", "snapshot", "compile", "parse", "ls", "list", "deps", "debug"}
 )
-DIR_FLAGS = ("--project-dir", "--profiles-dir")
+# Flags naming a directory dbt reads from or writes to; each must stay inside the workspace.
+DIR_FLAGS = ("--project-dir", "--profiles-dir", "--target-path", "--log-path")
 PAGERS = frozenset({"tail", "head"})
 PAGER_ARG = re.compile(r"-n|-?\d+|-n\d+|--lines=\d+")
 OPERATOR_CHARS = frozenset("();<>|&")
-FORBIDDEN_CHARS = frozenset("$`\n\r")
+# `#` too: shlex reads it as a comment mid-word, Bash does not, so the two would split differently.
+FORBIDDEN_CHARS = frozenset("$`#\n\r")
 RULE = (
     "Bash may only run one dbt command (run, build, test, seed, snapshot, compile, parse, ls, "
     "deps, debug) or the dbt-workflow scan/validate script, from the workspace, optionally "
@@ -87,9 +89,13 @@ def denial(command: str, workspace: Path, scripts: Sequence[Path]) -> str | None
         return _dbt_denial(args, workspace)
     if program == "python3" and args:
         allowed = {script.resolve() for script in scripts}
-        if resolve(workspace, args[0]) in allowed:
-            return None
-        return f"python3 may only run {', '.join(sorted(s.name for s in allowed))}"
+        if resolve(workspace, args[0]) not in allowed:
+            return f"python3 may only run {', '.join(sorted(s.name for s in allowed))}"
+        # The scripts take the project directory and, for validate, a timeout in seconds.
+        for arg in args[1:]:
+            if not arg.isdigit() and not inside(resolve(workspace, arg), workspace):
+                return "the dbt-workflow scripts may only read the workspace"
+        return None
     return f"{program!r} is not allowed"
 
 

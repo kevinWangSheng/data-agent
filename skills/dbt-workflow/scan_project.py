@@ -4,6 +4,8 @@
 # fix_date_spine_hazards and the dbt-snapshots skill, which data-agent does not have.
 # Skipped directories (SKIP_DIRS) are matched against path parts inside the project, not as
 # substrings of the absolute path, so a project under e.g. .claude/ or target/ is still scanned.
+# A model starting with `select * from` is no longer classed as a stub: passthrough and filtered
+# models are complete SQL.
 """Pre-scan a dbt project and emit a structured context block.
 
 Used by the dbt-workflow SKILL.md via !`python3 scan_project.py` to inject
@@ -210,7 +212,6 @@ def classify_sql_models(work_dir: Path) -> tuple[set[str], set[str]]:
             continue
         is_stub = (
             len(content) < 5
-            or re.match(r'^select\s+\*\s+from\s+', content, re.IGNORECASE)
             or content.endswith(",")
             or content.endswith("(")
             or (content.count("(") > content.count(")"))

@@ -41,6 +41,24 @@ def test_scan_finds_the_models_wherever_the_project_lives(tmp_path: Path) -> Non
         assert model in complete, proc.stdout
 
 
+def test_scan_counts_select_star_models_as_complete(tmp_path: Path) -> None:
+    """A passthrough or filtered `select * from` model is real SQL, not a stub to rewrite."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    staging = project / "models" / "staging"
+    (staging / "stg_customers.sql").write_text("select * from {{ source('raw', 'customers') }}\n")
+    (staging / "stg_orders.sql").write_text(
+        "select * from {{ source('raw', 'orders') }} where status <> 'returned'\n"
+    )
+    (staging / "stg_items.sql").write_text("-- TODO: write this model\n")
+    proc = subprocess.run(
+        [sys.executable, str(SCAN), str(project)], capture_output=True, text=True, timeout=60
+    )
+    stubs = proc.stdout.split("STUBS TO REWRITE", 1)[1].split("\n\n", 1)[0]
+    assert "stg_items" in stubs, proc.stdout
+    assert "stg_customers" not in stubs and "stg_orders" not in stubs, proc.stdout
+
+
 def test_dbt_skills_load_in_workflow_order() -> None:
     assert DBT_SKILLS[0] == "dbt-workflow"
     for name in DBT_SKILLS:
