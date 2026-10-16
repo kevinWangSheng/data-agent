@@ -12,6 +12,9 @@ from types import TracebackType
 from typing import Any, Self
 from urllib.parse import urlsplit
 
+import psycopg
+from psycopg.conninfo import conninfo_to_dict
+
 REDACTED = "[REDACTED]"
 
 # Environment variables whose values must never reach an event file; DATA_AGENT_ANTHROPIC_API_KEY
@@ -26,6 +29,24 @@ def known_secrets(env: Mapping[str, str]) -> list[str]:
     if host:
         secrets.append(host)
     return secrets
+
+
+def url_secrets(url: str) -> list[str]:
+    """Values to mask for a database connection string (URL or key=value form): the string, its
+    password, and its hosts when they are addresses or domain names. A bare name such as `db`
+    is left alone, since masking it would mangle unrelated words."""
+    if not url:
+        return []
+    try:
+        params = conninfo_to_dict(url)
+    except psycopg.ProgrammingError:
+        return [url]
+    hosts = str(params.get("host") or "").split(",") + str(params.get("hostaddr") or "").split(",")
+    return [
+        url,
+        str(params.get("password") or ""),
+        *(host for host in hosts if "." in host or ":" in host),
+    ]
 
 
 class EventLog:

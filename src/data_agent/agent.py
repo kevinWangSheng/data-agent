@@ -35,7 +35,7 @@ from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent.command_guard import command_guard
-from data_agent.events import EventLog, known_secrets
+from data_agent.events import EventLog, known_secrets, url_secrets
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.verifiers import AGENT_TOOL, VERIFIERS_PROMPT, Emit, verifier_agents, verifier_hooks
 from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
@@ -48,6 +48,9 @@ SKILLS_DIR = skills_path("skills")
 QUERY_SKILLS = ("sql-workflow", "duckdb-sql")
 # dbt-workflow first (plan §3); its Step 2 Skills are preloaded with it, as there is no Skill tool.
 DBT_SKILLS = ("dbt-workflow", "dbt-write", "dbt-debugging", "duckdb-sql")
+# The lists above name DuckDB's dialect Skill; a run on another database swaps in its own.
+DIALECT_SKILLS = {"duckdb": "duckdb-sql", "postgres": "postgres-sql"}
+DATABASE_NAMES = {"duckdb": "DuckDB", "postgres": "PostgreSQL"}
 # The scripts dbt-workflow runs; its text names them through ${CLAUDE_SKILL_DIR}.
 DBT_SCRIPTS = ("scan_project.py", "validate_project.py")
 # Written into a wheel at build time (hatch_build.py); absent in a source checkout.
@@ -81,7 +84,7 @@ Follow these skills.
 
 QUERY_PROMPT = """\
 Task type: query
-Database: DuckDB, reachable only through the `{server}` MCP tools.
+Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
 
 <task>
@@ -102,7 +105,7 @@ files show you; do not guess table names, column names or values.
 
 DBT_PROMPT = """\
 Task type: dbt
-Database: DuckDB. dbt writes to it through the project's profile; you read it only through the \
+Database: {database}. dbt writes to it through the project's profile; you read it only through the \
 `{server}` MCP tools.
 dbt project (your working directory): {workspace}
 Bash runs only dbt commands{scripts}, from the working directory.
@@ -140,10 +143,24 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class Task:
+    """The database is a DuckDB file, or a Postgres URL held in the variable `postgres_env`
+    names: the run passes the name on, so the URL reaches no argv or MCP config."""
+
     text: str
     type: Literal["dbt", "query"]
     workspace: Path
-    duckdb: Path
+    duckdb: Path | None = None
+    postgres_env: str | None = None
+
+    @property
+    def dialect(self) -> Literal["duckdb", "postgres"]:
+        return "postgres" if self.postgres_env else "duckdb"
+
+    def database_args(self) -> tuple[str, ...]:
+        if self.postgres_env:
+            return ("--postgres-env", self.postgres_env)
+        assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
+        return ("--duckdb", str(self.duckdb.resolve()))
 
 
 @dataclass(frozen=True)
@@ -242,10 +259,14 @@ def dbt_scripts(config: RunConfig) -> tuple[Path, ...]:
     return tuple(config.skills_dir / "dbt-workflow" / name for name in DBT_SCRIPTS)
 
 
-def system_prompt(task_type: str, config: RunConfig) -> str:
-    base, names = (
-        (DBT_SYSTEM_PROMPT, DBT_SKILLS) if task_type == "dbt" else (SYSTEM_PROMPT, QUERY_SKILLS)
-    )
+def skill_names(task_type: str, dialect: str) -> tuple[str, ...]:
+    names = DBT_SKILLS if task_type == "dbt" else QUERY_SKILLS
+    return tuple(DIALECT_SKILLS[dialect] if name == "duckdb-sql" else name for name in names)
+
+
+def system_prompt(task_type: str, config: RunConfig, dialect: str = "duckdb") -> str:
+    base = DBT_SYSTEM_PROMPT if task_type == "dbt" else SYSTEM_PROMPT
+    names = skill_names(task_type, dialect)
     prompt = base.format(server=MCP_SERVER)
     if config.skill:
         prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
@@ -268,7 +289,7 @@ def build_options(
         "command": sys.executable,
         "args": [
             *("-m", "data_agent", "mcp-server"),
-            *("--config", config.name, "--duckdb", str(task.duckdb.resolve())),
+            *("--config", config.name, *task.database_args()),
             # A run without the verifier subagents gets no verifier tools either (the ablation).
             *(() if uses_verifiers(task.type, config) else ("--no-verifier-tools",)),
             *("--workspace", str(task.workspace.resolve())),
@@ -281,7 +302,7 @@ def build_options(
         hooks = [HookMatcher(matcher="Bash", hooks=[bash_guard])]
     else:
         tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
-    guard = workspace_guard(task.workspace, protected=(task.duckdb,))
+    guard = workspace_guard(task.workspace, protected=(task.duckdb,) if task.duckdb else ())
     hooks.append(HookMatcher(matcher="|".join(file_tools), hooks=[guard]))
     all_hooks: dict[HookEvent, list[HookMatcher]] = {"PreToolUse": hooks}
     agents = None
@@ -292,7 +313,7 @@ def build_options(
     return ClaudeAgentOptions(
         model=settings.model,
         env=settings.sdk_env(),
-        system_prompt=system_prompt(task.type, config),
+        system_prompt=system_prompt(task.type, config, task.dialect),
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
@@ -417,7 +438,10 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     path = events_file(events_dir)
     stderr: list[str] = []
     final: ResultMessage | None = None
-    with EventLog(path, secrets=known_secrets(env)) as log:
+    secrets = known_secrets(env)
+    if task.postgres_env:
+        secrets += url_secrets(env.get(task.postgres_env, ""))
+    with EventLog(path, secrets=secrets) as log:
         log.emit(
             "version",
             git_commit=git_commit(),
@@ -430,6 +454,7 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
         )
         prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
             server=MCP_SERVER,
+            database=DATABASE_NAMES[task.dialect],
             workspace=task.workspace.resolve(),
             task=task.text,
             scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
