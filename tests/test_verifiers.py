@@ -46,6 +46,8 @@ def test_dbt_runs_offer_both_read_only_verifiers(tmp_path: Path) -> None:
         assert tools >= {"Read", "mcp__data__query_database"}
         assert not tools & {"Write", "Edit", "Bash", "Agent"}
         assert "NEEDS_INFO" in definition.prompt and "N/A" in definition.prompt
+        # A background verifier ends the main turn early and splits the run into several results.
+        assert definition.background is False
     assert {"SubagentStart", "SubagentStop"} <= set(built.hooks or {})
     assert VERIFIERS_PROMPT in str(built.system_prompt)
 
@@ -76,6 +78,19 @@ def test_verifier_definitions_name_only_tools_the_server_has() -> None:
                     "audit_model_sources",
                     "verify_model_values",
                 }
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "- CHECK 2: FAIL - missing",
+        "- **CHECK 2**: FAIL - missing",
+        "**CHECK 2 - Aggregate Cross-Validation: FAIL**",
+        "- CHECK 2: **FAIL** - missing",
+    ],
+)
+def test_parse_checks_reads_markdown_variants(line: str) -> None:
+    assert parse_checks(f"### m\n{line}") == [{"model": "m", "check": "CHECK 2", "status": "FAIL"}]
 
 
 def test_parse_checks_reads_each_models_verdicts() -> None:

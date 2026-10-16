@@ -34,7 +34,8 @@ DATA_TOOLS = {
     "value-verifier": ("list_tables", "query_database", "verify_model_values"),
 }
 STATUSES = ("PASS", "FAIL", "NEEDS_INFO", "N/A")
-CHECK_RE = re.compile(r"(CHECK\s*\d+)\s*:\s*\**\s*(PASS|FAIL|NEEDS_INFO|N/A)\b")
+# "CHECK 2: FAIL", "**CHECK 2**: FAIL", "**CHECK 2 - Aggregate Cross-Validation: FAIL**".
+CHECK_RE = re.compile(r"(CHECK\s*\d+)\b[^:\n]{0,80}:[\s*]*(PASS|FAIL|NEEDS_INFO|N/A)\b")
 MODEL_RE = re.compile(r"^###\s+(.+?)\s*$")
 
 # Appended to a dbt run's system prompt when the verifier layer is on, so the protocol holds with
@@ -67,6 +68,9 @@ def load_definition(name: str, server: str) -> AgentDefinition:
         prompt=body.strip(),
         tools=[*READ_TOOLS, *(f"mcp__{server}__{tool}" for tool in DATA_TOOLS[name])],
         model="inherit",
+        # In the foreground: a background verifier ends the main turn before its report is in,
+        # and the run then continues over several SDK results.
+        background=False,
     )
 
 
