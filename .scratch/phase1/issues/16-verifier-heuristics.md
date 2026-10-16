@@ -1,6 +1,6 @@
 # 16 — 验证工具与验证提示的口径修正
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5) 2026-10-16
@@ -188,3 +188,11 @@ Spec 自相矛盾或验收测试看起来有错；需要人做决定；花费到
 - The direct-call evidence script `runs/16/evidence.py` gives output identical to the previous round's (`diff` is empty).
 
 **主会话**：工单 agent 因自审修复轮次用满停在 `ready-for-human`；剩下 3 条都是更少见的 SQL 形状（切片维度丢所属表、CTE 分组列外的 COALESCE/CAST、`ROLLUP(1)` 位置键），不需要人决定，记为已知限制。推 PR 让 Codex 复审；PR 还剩 1 轮退回。
+
+### 2026-10-16 第 7 步：PR #15 退回第 2 轮（主会话；最后一轮）
+
+`af8d190` CI 两次全绿。Codex 1 条 P1，属实，且是主会话写验收标准时的错误（"±10% 容差只用于非计数的加和/均值"）：
+
+1. **`src/data_agent/agents/value-verifier.md:116`**：验证子 agent 自己用同一切片、同样的过滤重算 sum/avg，结果只应差浮点或小数舍入；±10% 会放过误差 10% 以内的错误结果，也与 `CODING_STANDARDS.md` 去掉评分式容差的规则不符。改为舍入级容差：按模型列的小数位（DECIMAL 的 scale）舍入后相等，浮点列相对误差不超过 1e-6；超出即 MISMATCH。同步改 `verifier_tools.py` 里非计数指标若有相关文字、dbt-workflow Step 8 的说明和 prompt 测试（断言新规则、断言 "10%" 不再出现）。本工单 Acceptance 里那句以此为准。
+
+这是最后一轮；之后的新意见记为已知限制。在原分支上修，修完提交，不 push、不 rebase。修完 `make check`、full 配置真实 dbt 运行一次（看 value-verifier 的 `verifier_end`），再跑一轮 `da-review main`（新意见只记录）。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
