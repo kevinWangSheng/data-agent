@@ -15,6 +15,7 @@ import duckdb
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
+    ClaudeAgentOptions,
     ResultError,
     ResultMessage,
     StreamEvent,
@@ -458,48 +459,42 @@ async def test_transcript_still_being_written_is_waited_for(
     assert events[-1]["output_tokens"] == 1_000 + 7201
 
 
-async def test_transcript_never_finished_is_an_error(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("finished", [False, True], ids=["unfinished", "missing"])
+async def test_transcript_failure_falls_back_to_the_sdks_model_usage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, finished: bool
 ) -> None:
+    """Without the verifier's own usage the price-table figure would understate the spend, so it
+    stops capping: the failure is an event, the run ends through the SDK (its cap still on), and
+    the result prices the SDK's `model_usage`."""
     monkeypatch.setattr(agent, "TRANSCRIPT_WAIT_S", 0.05)
     path = tmp_path / "agent.jsonl"
-    path.write_text(without_last_usage()[0])
-    fake = capped_script(*call("m1", 1_000), SubagentStop(path), TOOL_RESULT, result())
-    _, events = await run_with(monkeypatch, tmp_path, fake)
-    errors = [e for e in events if e["type"] == "error"]
-    assert [e["source"] for e in errors] == ["spend"]
-    assert "unfinished" in errors[0]["error"]
-
-
-async def test_unreadable_transcript_is_recorded_and_streamed_usage_counts_instead(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The verifier's calls the SDK streamed (input known, output not) are what is left to count;
-    the failure is an event, never a silent zero."""
-    verifier_call = AssistantMessage(
-        content=[TextBlock(text="checking")],
-        model="deepseek-flash",
-        parent_tool_use_id="toolu_m1",
-        usage=usage(20_000),
-        message_id="s1",
-    )
-    missing = tmp_path / "gone.jsonl"
+    if not finished:
+        path.write_text(without_last_usage()[0])
+    model_usage = {
+        "deepseek-flash": {
+            "inputTokens": 100_000,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "outputTokens": 10_000,
+        }
+    }
     fake = capped_script(
-        *call("m1", 0),
-        verifier_call,
-        SubagentStop(missing),
+        *call("m1", 1_000),
+        SubagentStart(),
+        SubagentStop(path),
         TOOL_RESULT,
-        *call("m2", 1, text="never reached"),
-        result(),
+        *call("m2", 1_000_000),
+        TOOL_RESULT,
+        result(model_usage=model_usage),
     )
     outcome, events = await run_with(monkeypatch, tmp_path, fake, config=budget(0.005))
     errors = [e for e in events if e["type"] == "error"]
-    assert len(errors) == 1
-    assert errors[0]["source"] == "spend"
-    assert str(missing) in errors[0]["error"]
-    assert not outcome.finished
-    assert events[-1]["terminal_reason"] == "budget_exhausted"
-    assert events[-1]["cost_usd"] == pytest.approx(20_000 * 0.30 / 1e6)
+    assert [e["source"] for e in errors] == ["spend"]
+    assert str(path) in errors[0]["error"]
+    assert ("unfinished" in errors[0]["error"]) is not finished
+    assert outcome.finished
+    assert events[-1]["subtype"] == "success"
+    assert events[-1]["cost_usd"] == pytest.approx((100_000 * 0.30 + 10_000 * 1.2) / 1e6)
 
 
 async def test_unpriced_model_is_not_stopped_by_the_price_table(
@@ -545,3 +540,26 @@ async def test_sdk_cap_of_an_unpriced_model_is_the_configured_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     assert await sdk_cap(monkeypatch, tmp_path, "some-unpriced-model", 1.0) == 1.0
+
+
+async def test_closing_the_query_ends_the_sdk_session_before_it_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stopped run closes the SDK's stream; the session (its CLI subprocess) must be closed
+    when that returns, not later by the event loop's async-generator finalizer."""
+    closed: list[bool] = []
+
+    class FakeClient:
+        async def process_query(self, **_: Any) -> AsyncIterator[Any]:
+            try:
+                yield result()
+                yield result()
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(agent, "InternalClient", FakeClient)
+    stream = agent.query(prompt="q", options=ClaudeAgentOptions())
+    async for _ in stream:
+        break
+    await stream.aclose()
+    assert closed == [True]

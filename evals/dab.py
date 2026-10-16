@@ -29,17 +29,16 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import ModuleType
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlsplit
 
 import claude_agent_sdk
-from claude_agent_sdk import ResultMessage, SystemMessage, query
+from claude_agent_sdk import ResultMessage, SystemMessage
 from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import McpStdioServerConfig
 
@@ -54,6 +53,7 @@ from data_agent.agent import (
     capped,
     git_commit,
     load_skills,
+    query,
     record_message,
     result_fields,
     skill_version,
@@ -326,7 +326,7 @@ async def run_once(
         server_up = True
         try:
             stream = query(prompt=task_prompt(dab_query, workspace), options=options)
-            async with aclosing(capped(cast(AsyncGenerator[Any], stream), cap)) as messages:
+            async with aclosing(capped(stream, cap)) as messages:
                 async for message in messages:
                     if isinstance(message, ResultMessage):
                         final = message

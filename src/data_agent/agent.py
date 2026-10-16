@@ -35,11 +35,11 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
-    query,
 )
 
-# Not re-exported by the SDK; the pinned SDK version fixes where it lives.
+# Not re-exported by the SDK; the pinned SDK version fixes where they live.
 from claude_agent_sdk._cli_version import __cli_version__
+from claude_agent_sdk._internal.client import InternalClient
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent.command_guard import command_guard
@@ -251,8 +251,9 @@ class Spend:
 
     Subagents (the verifiers) stream no partial messages and only some of their calls, so each is
     priced when it stops, from the transcript the CLI wrote (`hooks`). A transcript that
-    cannot be read is recorded as an error event, and the subagent calls the SDK streamed (output
-    unknown) count instead. A run the SDK ends prices the SDK's `model_usage` (`result_fields`).
+    cannot be read is recorded as an error event and turns this cap off: what is left to count
+    would understate the spend, so the run ends through the SDK, under the SDK's cap, and its
+    result prices the SDK's `model_usage` (`result_fields`), as every run the SDK ends does.
 
     The cap is checked only between two main-thread calls, after a call that used tools, and not
     while a subagent runs: a run may pass it by its last main call and the subagents it started
@@ -263,7 +264,6 @@ class Spend:
     budget: float
     main: dict[str, Tokens] = field(default_factory=dict)
     subagents: dict[str, Tokens] = field(default_factory=dict)  # from transcripts
-    streamed: dict[str, Tokens] = field(default_factory=dict)  # subagent calls the SDK streamed
     transcript_failed: bool = False
     running: set[str] = field(default_factory=set)  # subagents started and not yet stopped
     between_calls: bool = False
@@ -287,12 +287,9 @@ class Spend:
                 final = {k: v for k, v in (event.get("usage") or {}).items() if v is not None}
                 self.main[self._call] = usage_tokens(self._call_start | final)
                 self.between_calls = self._call_uses_tools
-        elif isinstance(message, AssistantMessage):
-            if message.parent_tool_use_id is None:
-                if any(isinstance(block, ToolUseBlock) for block in message.content):
-                    self._call_uses_tools = True
-            elif message.usage and message.message_id:
-                self.streamed[message.message_id] = usage_tokens(message.usage)
+        elif isinstance(message, AssistantMessage) and message.parent_tool_use_id is None:
+            if any(isinstance(block, ToolUseBlock) for block in message.content):
+                self._call_uses_tools = True
 
     def hooks(self, emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
         """Hooks that follow the subagents and price each one from its transcript when it
@@ -315,7 +312,12 @@ class Spend:
                 self.subagents |= await finished_transcript_usage(Path(path))
             except TranscriptError as exc:
                 self.transcript_failed = True
-                emit("error", source="spend", error=str(exc))
+                emit(
+                    "error",
+                    source="spend",
+                    error=f"{exc}; the price-table cap is off for the rest of the run, which "
+                    "ends through the SDK (its cap still on) and is priced from its model_usage",
+                )
             finally:
                 self.running.discard(str(fields.get("agent_id")))
             return {}
@@ -326,15 +328,16 @@ class Spend:
         }
 
     def tokens(self) -> Tokens:
-        streamed = self.streamed if self.transcript_failed else {}
-        calls = (streamed | self.subagents | self.main).values()
+        calls = (self.subagents | self.main).values()
         return (sum(c[0] for c in calls), sum(c[1] for c in calls), sum(c[2] for c in calls))
 
     def cost_usd(self) -> float:
         return priced_usd(self.price, *self.tokens())
 
     def passed(self) -> bool:
-        return self.between_calls and not self.running and self.cost_usd() > self.budget
+        if self.transcript_failed or self.running or not self.between_calls:
+            return False
+        return self.cost_usd() > self.budget
 
     def result_fields(self) -> dict[str, Any]:
         """The result event of a run this cap stopped; the SDK never sent its own."""
@@ -359,6 +362,16 @@ def spend_cap(model: str, budget: float) -> Spend | None:
     """The price-table cap for a priced model; a model without a price keeps the SDK's cap."""
     price = PRICES.get(model)
     return None if price is None else Spend(price, budget)
+
+
+async def query(*, prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[Any]:
+    """`claude_agent_sdk.query`, except that closing it closes the SDK session (and its CLI
+    subprocess) before `aclose` returns. The SDK's own `query` does not close the session's
+    generator, which leaves that to the event loop's async-generator finalizer, later."""
+    session = InternalClient().process_query(prompt=prompt, options=options)
+    async with aclosing(cast(AsyncGenerator[Any], session)) as messages:
+        async for message in messages:
+            yield message
 
 
 async def capped(messages: AsyncGenerator[Any], spend: Spend | None) -> AsyncGenerator[Any]:
@@ -693,7 +706,7 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
         tools: dict[str, str] = {}
         options = build_options(task, config, settings, stderr, log.emit, spend)
         try:
-            stream = cast(AsyncGenerator[Any], query(prompt=prompt, options=options))
+            stream = query(prompt=prompt, options=options)
             async with aclosing(capped(stream, spend)) as messages:
                 async for message in messages:
                     if isinstance(message, ResultMessage):
