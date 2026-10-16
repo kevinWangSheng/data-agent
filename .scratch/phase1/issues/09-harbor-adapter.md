@@ -1,6 +1,6 @@
 # 09 — Harbor 适配器
 
-Status: in-review
+Status: done
 Blocked by: 04
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -164,3 +164,7 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 - **Known limits, not fixed:**
   - A user name that appears as a JSON key is kept and not reported, as the ticket requires.
   - Harbor's own pattern for `Stream idle timeout` / `Response stalled mid-stream` still maps to `ApiResponseStalledError`, which stays in `TRANSIENT_ERRORS` and is retried. This is unchanged from before. I didn't find the current CLI producing these messages for our runs (not confirmed).
+
+### 2026-10-16 第 7 步：PR #13 合并（主会话）
+
+`c418f9c` CI 两次全绿。Codex 唯一意见：适配器不写 ATIF `trajectory.json`，有 reward 的 trial 不能上传榜单（`docs/research/2026-09-21-harbor-signalpilot-dab.md:68,100-102`）。这是此前已记的遗漏（不在本工单验收标准里），交人在最终审查时决定开工单；合并。worktree 保留（`runs/09/` 有实测证据），人看过后删。
