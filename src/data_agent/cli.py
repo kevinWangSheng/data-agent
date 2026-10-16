@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "mcp-server":
         if not args.duckdb.is_file():
             serve.error(f"DuckDB file not found: {args.duckdb}")
-        build_server(DuckDBGateway(args.duckdb)).run("stdio")
+        build_server(DuckDBGateway(args.duckdb), load_config(args.config)).run("stdio")
         return
 
     if not args.duckdb.is_file():

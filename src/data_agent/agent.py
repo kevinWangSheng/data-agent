@@ -34,17 +34,14 @@ from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import McpStdioServerConfig
 
 from data_agent.events import EventLog, known_secrets
-from data_agent.run_config import MAX_TURNS, RunConfig
+from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.workspace_guard import GUARDED_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_MODEL = "deepseek-flash"
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-# A wheel ships the Skills inside the package (pyproject force-include); a checkout has them at the
-# repo root.
-PACKAGED_SKILLS = Path(__file__).resolve().parent / "skills"
-SKILLS_DIR = PACKAGED_SKILLS if PACKAGED_SKILLS.is_dir() else REPO_ROOT / "skills"
+# The current Skills; a run config may name another version (RunConfig.skills_dir).
+SKILLS_DIR = skills_path("skills")
 QUERY_SKILLS = ("sql-workflow", "duckdb-sql")
 # Written into a wheel at build time (hatch_build.py); absent in a source checkout.
 BUILD_COMMIT = Path(__file__).resolve().parent / "BUILD_COMMIT"
@@ -62,7 +59,10 @@ running SQL, then reply with the answer.
 
 All database access goes through the `{server}` MCP tools, which are read-only. Work only from \
 what the tools show you; do not guess table names, column names or values.
+"""
 
+# Appended only when the run config turns the Skill layer on.
+SKILLS_PROMPT = """
 Follow these skills.
 
 {skills}
@@ -158,11 +158,11 @@ class ModelSettings:
         }
 
 
-def skill_version() -> str:
-    """Hash of everything under skills/: any Skill edit changes it."""
+def skill_version(skills_dir: Path) -> str:
+    """Hash of everything under a Skill directory: any Skill edit changes it."""
     digest = hashlib.sha256()
-    for path in sorted(p for p in SKILLS_DIR.rglob("*") if p.is_file()):
-        digest.update(path.relative_to(SKILLS_DIR).as_posix().encode())
+    for path in sorted(p for p in skills_dir.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(skills_dir).as_posix().encode())
         digest.update(b"\0")
         digest.update(path.read_bytes())
     return digest.hexdigest()[:12]
@@ -185,10 +185,17 @@ def git_commit() -> str:
     return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else "unknown"
 
 
-def load_skills(names: tuple[str, ...]) -> str:
+def load_skills(names: tuple[str, ...], skills_dir: Path) -> str:
     """Skills go into the system prompt, so the workflow is loaded before the first turn instead
     of depending on the model choosing to call a Skill tool."""
-    return "\n\n".join((SKILLS_DIR / name / "SKILL.md").read_text() for name in names)
+    return "\n\n".join((skills_dir / name / "SKILL.md").read_text() for name in names)
+
+
+def system_prompt(config: RunConfig) -> str:
+    prompt = SYSTEM_PROMPT.format(server=MCP_SERVER)
+    if config.skill:
+        prompt += SKILLS_PROMPT.format(skills=load_skills(QUERY_SKILLS, config.skills_dir))
+    return prompt
 
 
 def build_options(
@@ -206,7 +213,7 @@ def build_options(
     return ClaudeAgentOptions(
         model=settings.model,
         env=settings.sdk_env(),
-        system_prompt=SYSTEM_PROMPT.format(server=MCP_SERVER, skills=load_skills(QUERY_SKILLS)),
+        system_prompt=system_prompt(config),
         cwd=str(task.workspace.resolve()),
         tools=QUERY_BUILTIN_TOOLS,
         allowed_tools=[*QUERY_BUILTIN_TOOLS, f"mcp__{MCP_SERVER}"],
@@ -218,7 +225,7 @@ def build_options(
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.
         setting_sources=["user"],
         skills=[],
-        max_turns=MAX_TURNS[task.type],
+        max_turns=config.max_turns[task.type],
         max_budget_usd=config.max_budget_usd,
         stderr=stderr.append,
     )
@@ -327,8 +334,9 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
         log.emit(
             "version",
             git_commit=git_commit(),
-            skill_version=skill_version(),
+            skill_version=skill_version(config.skills_dir) if config.skill else "none",
             config=config.name,
+            layers=config.layers(),
             model=settings.model,
             sdk_version=claude_agent_sdk.__version__,
             cli_version=__cli_version__,

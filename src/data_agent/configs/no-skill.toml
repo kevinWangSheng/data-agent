@@ -1,0 +1,10 @@
+# Ablation: full with the Skill layer off.
+skill = false
+verifiers = true
+context = true
+skills_dir = "skills"
+max_budget_usd = 1.0
+
+[max_turns]
+dbt = 200
+query = 50
