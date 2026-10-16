@@ -334,14 +334,10 @@ async def run_once(
         except Exception as exc:
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
-        finally:
+        finally:  # also when the run is interrupted
             remove_exec_containers(workspace)
+            mask_dab_logs(directory, secrets_of(env))
         log.emit("result", **result_fields(final, settings.model))
-    # DAB's tools log arguments and results unmasked; the server is gone, so mask them now.
-    secrets = secrets_of(env)
-    for path in directory.glob("*.jsonl"):
-        if path.name != "events.jsonl":
-            path.write_text(mask(path.read_text(), secrets))
     if (
         not server_up
         or final is None
@@ -369,9 +365,20 @@ def secrets_of(env: dict[str, str]) -> list[str]:
 
 
 def mask(text: str, secrets: list[str]) -> str:
+    """Mask each secret as written and as escaped inside a JSON string (quotes, backslashes,
+    non-ASCII letters), the form it takes in a JSON log."""
     for secret in secrets:
-        text = text.replace(secret, REDACTED)
+        escaped = (json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1])
+        for form in dict.fromkeys((*escaped, secret)):
+            text = text.replace(form, REDACTED)
     return text
+
+
+def mask_dab_logs(directory: Path, secrets: list[str]) -> None:
+    """DAB's tools log arguments and results unmasked; mask them once the session is over."""
+    for path in directory.glob("*.jsonl"):
+        if path.name != "events.jsonl":
+            path.write_text(mask(path.read_text(), secrets))
 
 
 def remove_exec_containers(workspace: Path, client: Any = None) -> list[str]:

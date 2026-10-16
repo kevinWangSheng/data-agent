@@ -21,6 +21,7 @@ requests, not SQL, and go to DAB's tool as given.
 
 import argparse
 import json
+import math
 import os
 import threading
 from pathlib import Path
@@ -58,6 +59,18 @@ def governed(sql: str, dialect: str) -> str:
     return inject_limit(sql, max_rows=MAX_ROWS, dialect=dialect)
 
 
+def finite(value: Any) -> Any:
+    """`value` with NaN and infinities as None. DAB's exec tool writes each variable's repr into
+    the code, where `nan` or `inf` is an undefined name."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: finite(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [finite(v) for v in value]
+    return value
+
+
 class Results:
     """Successful tool results by variable name, for `execute_python`.
 
@@ -78,7 +91,7 @@ class Results:
             if len(error) > RESULT_CHARS:
                 error = f"{error[:RESULT_CHARS]}\n... (cut at {RESULT_CHARS} characters)"
             raise ToolError(error)
-        text = json.dumps(outcome["result"], ensure_ascii=False, default=str)
+        text = json.dumps(finite(outcome["result"]), ensure_ascii=False, default=str)
         name = f"var_{len(self.variables) + 1}"
         if len(text) <= RESULT_CHARS:
             # Through JSON, so the value is plain data whatever types the database returned.

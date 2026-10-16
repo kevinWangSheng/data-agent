@@ -5,6 +5,7 @@ interface (no DAB code), so these run without a DAB clone or its dependencies. T
 proven by a real run on a DAB query (ticket 13 Comments).
 """
 
+import asyncio
 import json
 import os
 import shutil
@@ -254,6 +255,18 @@ async def test_results_are_variables_in_python(dab_root: Path, tmp_path: Path) -
     assert text_of(joined).startswith("Result `var_3`")
     assert data_of(again) == 4
     assert [call["tool_name"] for call in logged_calls(log)][-2:] == ["execute_python"] * 2
+
+
+async def test_non_finite_numbers_are_kept_as_null(dab_root: Path, tmp_path: Path) -> None:
+    # DAB's exec tool writes each variable's repr into the code; a NaN there is an undefined name
+    # that would break every later execute_python call.
+    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
+        code = PRINT.format("[float('nan'), {'x': float('inf')}, -float('inf'), 1.5]")
+        odd = await session.call_tool("execute_python", {"code": code})
+        later = await session.call_tool("execute_python", {"code": PRINT.format("var_1")})
+    assert data_of(odd) == [None, {"x": None}, None, 1.5]
+    assert not later.is_error, text_of(later)
+    assert data_of(later) == [None, {"x": None}, None, 1.5]
 
 
 async def test_long_results_are_saved_in_the_workspace_with_a_preview(
@@ -683,6 +696,48 @@ async def test_dab_logs_are_masked_like_the_trace(
         text = (run / name).read_text()
         assert "sk-test-secret" not in text
         assert "[REDACTED]" in text
+
+
+async def test_dab_logs_mask_secrets_in_their_json_escaped_form(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # In a JSON log a password with a quote, a backslash or a non-ASCII letter is escaped.
+    password = 'pa"ss\\wörd'
+
+    async def leaky_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        args = options.mcp_servers["data"]["args"]
+        log = Path(args[args.index("--log") + 1])
+        entry = {"result": f"bad {password}"}
+        lines = [json.dumps(entry, ensure_ascii=ascii) for ascii in (True, False)]
+        log.write_text("\n".join(lines) + "\n")
+        yield result("done")
+
+    monkeypatch.setattr(dab, "query", leaky_query)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    env = {**ENV, "PG_PASSWORD": password}
+    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, env)
+    log = dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "dab_tool_calls.jsonl"
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert entries == [{"result": "bad [REDACTED]"}] * 2
+
+
+async def test_dab_logs_are_masked_when_the_run_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # Ctrl-C cancels the session; DAB's log still gets masked.
+    async def interrupted_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        args = options.mcp_servers["data"]["args"]
+        Path(args[args.index("--log") + 1]).write_text('{"result": "sk-test-secret"}\n')
+        raise asyncio.CancelledError
+        yield
+
+    monkeypatch.setattr(dab, "remove_exec_containers", lambda ws: [])
+    monkeypatch.setattr(dab, "query", interrupted_query)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    with pytest.raises(asyncio.CancelledError):
+        await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, ENV)
+    log = dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "dab_tool_calls.jsonl"
+    assert log.read_text() == '{"result": "[REDACTED]"}\n'
 
 
 def test_database_connection_settings_are_masked_too() -> None:
