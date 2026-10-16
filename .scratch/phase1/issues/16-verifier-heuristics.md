@@ -1,6 +1,6 @@
 # 16 — 验证工具与验证提示的口径修正
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5) 2026-10-16
@@ -51,10 +51,10 @@ Spec 自相矛盾或验收测试看起来有错；需要人做决定；花费到
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 3（da-review 2 + eng:code-review 1，后者未修）
-- Model spend: ~$0.3（估算；两次 `make test-integration` 各 5 次 agent 运行，dbt 运行 $0.032、$0.029）
-- Outcome: 验收达成；value-verifier 名称规则与工具结论冲突一处，建议合并前修
+- Attempts: 2
+- Review rounds: 6（首次 da-review 2 + code-review 1；退回第 1 轮 da-review 3）
+- Model spend: ~$0.42
+- Outcome: 退回第 1 轮 3 条全修，另修 da-review 5 条；第 3 次 da-review 3 条 P2 记为已知限制
 - Human review minutes: —
 
 ## Comments
@@ -133,3 +133,58 @@ Spec 自相矛盾或验收测试看起来有错；需要人做决定；花费到
 3. **工单 agent 自己建议的提示修正（`agents/value-verifier.md`）**：名称规则（`total_<行名词>` 必须等于 COUNT(*)、"total" 列等于 COUNT(DISTINCT) 判 FAIL）会推翻工具已基于 SQL 判为匹配的 `total_customers = COUNT(DISTINCT customer_id)`。改为：工具给出基于 SQL 的结论时以它为准，名称规则只用于"Model SQL could not be parsed"的情况。顺带把 prompt 测试从"出现某些词"改成断言这条优先级。
 
 修完 `make check`、full 配置真实 dbt 运行一次，再跑一轮 `da-review main`。最终回复给出 Comments、Ledger（Attempts 2）和 `Status: in-review`。
+
+### 2026-10-16 Ticket agent, send-back round 1 (commits `b8f89d0`, `dc978ed`, `af8d190`)
+
+**The three send-back items (`b8f89d0`).** Each has a test that failed before the fix.
+
+1. **`ref()` / `source()` now resolve to the physical table names.**
+   - The new `dbt_relations(project)` reads `target/manifest.json` first.
+   - Without a manifest, it falls back to:
+     - the model YAML's `alias:`, then the model SQL's `{{ config(alias=...) }}`, which takes precedence as in dbt;
+     - the source YAML's `schema` and `identifier`.
+   - `parse_model`, `verify_values` and `map_columns` all use it.
+   - When the model itself has an alias, its SQL file is still found under the model name.
+   - Tests:
+     - `test_verify_model_values_reads_a_ref_through_the_model_alias`
+     - `test_verify_model_values_reads_a_source_through_its_identifier`
+     - `test_verify_model_values_prefers_the_manifests_relation_names`
+2. **Nested types are normalized recursively.**
+   - `INTEGER[]` becomes `ARRAY(INT)` and `VARCHAR[]` becomes `ARRAY(VARCHAR)`; `MAP` and `STRUCT` are normalized field by field; `LIST` is the same as `ARRAY`.
+   - A bare `ARRAY`, which is how Postgres' information_schema reports any array, matches any array.
+   - Tests: `test_check_model_schema_compares_nested_types_by_their_element_types`, `test_an_array_without_element_types_matches_any_array`.
+3. **`value-verifier.md`: the tool's verdict now wins over the name rules.**
+   - When the output starts with "Model SQL read", the tool's count verdict decides. The name rules, including "total_<row noun>" and the under-counting FAIL, apply only when the output says "Model SQL could not be parsed" or "not read".
+   - The prompt test now asserts this precedence: `test_value_verifier_lets_the_tools_sql_verdict_override_the_name_rules`.
+   - The exact/±10% test now checks the actual rule sentences rather than single words.
+
+**`da-review main`, first run → fixed in `dc978ed`:**
+- **P2:** a column the SQL reads through a UNION fell back to the name rule. A correct `SUM` named `n_units` was reported as a MISMATCH. Now, once the SQL is parsed, such a column is inconclusive.
+- **P2:** `declared_columns` split nested types such as `STRUCT(id INT, amount DECIMAL(10,2))`. It now splits by bracket depth.
+
+**`da-review main`, second run → fixed in `af8d190`:**
+- **P2:** when two schemas had a table of the same name, a count's column lost its schema. It now keeps `(schema, table, column)`.
+- **P2:** a constant output such as `'all' AS region` was used as a slice dimension. It no longer is.
+- **P2:** the subtotal row of `ROLLUP` / `CUBE` / `GROUPING SETS` was sliced with `IS NULL`. Those keys are now marked unsliceable, which makes the comparison inconclusive.
+
+**`da-review main`, third run: not fixed (fix-round limit reached).** These are worth recording as known limitations or putting in a follow-up ticket's acceptance criteria:
+- **P2 (`verifier_tools.py:1083`):** a slice dimension loses the table it belongs to. Grouping by `customers.year` while counting orders filters on `orders.year` instead.
+- **P2 (`verifier_tools.py:917`):** a `COALESCE` or `CAST` around a column that a CTE grouped on is dropped when tracing. `COALESCE(year, 0)` is sliced as `year = 0`.
+- **P2 (`verifier_tools.py:1091`):** a positional key such as `ROLLUP(1)` is not recognized as a subtotal key.
+
+**Evidence**
+- `make check`: ruff and format clean; basedpyright `0 errors, 0 warnings, 0 notes`; `838 passed, 15 deselected`.
+- **Real dbt run** at the final commit `af8d190`: `make test-integration` with full config and seam A's DBT_TASK gave `5 passed, 838 deselected, 10 xfailed`. The run took 22 turns and `cost_usd` 0.0304.
+  - The project had a `target/manifest.json`, so the manifest path was exercised.
+  - `verify_model_values` output:
+    - `Model SQL read: …`
+    - `stg_orders: COUNT(CASE WHEN LOWER(TRIM(status)) IN ('complete', 'completed') THEN order_id END): 6 → Model matches …`
+    - `stg_customers: uses stg_orders.status, stg_orders.order_id, not in main.stg_customers; no baseline, inconclusive`
+  - The two `verifier_end` events (full lines in `runs/16/real4_events.txt`):
+    ```
+    seq 120 value-verifier: CHECK 1 PASS, CHECK 2 PASS, CHECK 3 PASS
+    seq 122 verifier: CHECK 1 PASS, CHECK 2 PASS, CHECK 3 PASS, CHECK 4 PASS, CHECK 5 N/A
+    ```
+- The direct-call evidence script `runs/16/evidence.py` gives output identical to the previous round's (`diff` is empty).
+
+**主会话**：工单 agent 因自审修复轮次用满停在 `ready-for-human`；剩下 3 条都是更少见的 SQL 形状（切片维度丢所属表、CTE 分组列外的 COALESCE/CAST、`ROLLUP(1)` 位置键），不需要人决定，记为已知限制。推 PR 让 Codex 复审；PR 还剩 1 轮退回。
