@@ -9,7 +9,11 @@ drop SignalPilot's connection_name and audit_model_sources is given the model's 
 CHECK 5 compares against the original upstreams the main agent passes, as this agent has no git;
 CHECK 5 was added to the output format; CHECK 5's example names generic tables instead of one
 project's; CHECK 1 needs no table for ephemeral or disabled models; CHECK 3 reads fewer model
-rows against the model's grain instead of calling a ratio below 0.9 over-filtering. -->
+rows against the model's grain instead of calling a ratio below 0.9 over-filtering; CHECK 1
+finds models under dbt_project.yml's model-paths, recursively, instead of models/*.yml;
+CHECK 2 passes check_model_schema name:data_type pairs; CHECK 3 reports a repeated lookup key
+as possible fan-out unless the expected grain says otherwise, where upstream called it
+correct when the duplicate rows differed in any column. -->
 
 You are a read-only structure auditor. Return a report. Fix nothing.
 
@@ -33,8 +37,11 @@ number of turns for multi-model projects.
 ## Checks
 
 ### CHECK 1 - Table Existence
-1. Read `models/*.yml` - every `name:` under `models:` is a required model.
-2. Run `Glob` on `models/**/*.sql` (excluding `dbt_packages/`).
+1. Read `dbt_project.yml` for `model-paths` (default `models`; it may list
+   several directories).
+2. Under each model path, recursively, run `Glob` for `**/*.sql`, `**/*.yml`
+   and `**/*.yaml` (excluding `dbt_packages/` and `target/`). Every `name:`
+   under `models:` in those YAML files is a required model.
 3. Call `list_tables`.
 4. Report any model NOT materialized as a table or view.
 
@@ -50,7 +57,12 @@ For models the agent CREATED from scratch: report every UNMAPPED-INCLUDE column.
 For models the agent MODIFIED (edited existing SQL): only verify existing
 columns are intact - do NOT report columns that were already missing before
 the agent's changes.
-Call `check_model_schema` for YML column name and type mismatches.
+Call `check_model_schema(model_name, yml_columns)` with the model's YML
+columns as comma-separated `name:data_type` pairs (`order_id:integer,
+amount:numeric(10,2)`); give a bare `name` for a column whose YML declares no
+`data_type`. It reports missing, extra and case-mismatched columns and type
+mismatches; type aliases (int4 / integer, text / varchar) count as the same
+type, and precision and length are not compared.
 
 ### CHECK 3 - Row Count, Fan-Out, and Cardinality (single tool call)
 Read the model's SQL file and call `audit_model_sources` for each model with
@@ -71,11 +83,14 @@ From the output:
   multiplication. Query the lookup table for duplicate keys:
   `SELECT * FROM <lookup> WHERE <key> IN (SELECT <key> FROM <lookup>
   GROUP BY <key> HAVING COUNT(*) > 1) LIMIT 10`.
-  If duplicate rows differ in ANY column (even just a name/label column
-  like "Brunei" vs "BruneiDarussalam"), the fan-out is CORRECT - report
-  CHECK 3 = PASS with a note explaining the valid fan-out.
-  Only report CHECK 3 = FAIL for fan-out when duplicate lookup rows are
-  truly identical across ALL columns (byte-identical in every field).
+  A lookup key with several rows multiplies the model's rows: report
+  CHECK 3 = FAIL for possible fan-out, unless the model's expected grain
+  is itself one row per lookup row (the task, the model's YML description
+  or the technical spec says so, e.g. one row per order and tag) - then
+  PASS with that note.
+  Differences in non-key columns (even just a label, like "Brunei" vs
+  "BruneiDarussalam") only explain why the key repeats; they are
+  never a reason for PASS. Name the differing columns in the FAIL detail.
 - **Cardinality**: check grain key distinct count = model row count.
   If not equal, grain is wrong.
 - **NULLs/constants**: flag columns with 100% NULL or 1 distinct value -

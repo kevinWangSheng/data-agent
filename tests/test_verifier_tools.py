@@ -1,5 +1,6 @@
 """Verifier tools beyond the acceptance tests, driven over stdio like seam B."""
 
+import json
 import os
 import shutil
 import sys
@@ -544,3 +545,448 @@ async def test_no_verifier_tools_flag_serves_only_the_other_tools(shop: Path) ->
         "audit_model_sources",
         "verify_model_values",
     }
+
+
+def verify(db: Path, model: str, sources: list[str], sql: str | None) -> str:
+    gateway = DuckDBGateway(db)
+
+    def run(statement: str, row_limit: int) -> QueryResult:
+        return run_query(gateway, statement, row_limit)
+
+    table = verifier_tools.resolve(verifier_tools.load_catalog(run), model)
+    return "\n".join(verifier_tools.verify_values(run, table, sources, sql))
+
+
+ORDERS_SQL = """
+CREATE TABLE orders (order_id INT, customer_id VARCHAR, region VARCHAR, year INT,
+  status VARCHAR, amount DOUBLE, ordered_at DATE);
+INSERT INTO orders VALUES
+  (1, 'c1', 'north', 2024, 'placed', 10, DATE '2024-01-01'),
+  (2, 'c1', 'north', 2024, 'returned', 20, DATE '2024-02-01'),
+  (3, 'c1', 'north', 2025, 'placed', 30, DATE '2025-03-01'),
+  (4, 'c2', 'north', 2025, 'returned', 40, DATE '2025-04-01'),
+  (5, 'c3', 'south', 2025, 'placed', 50, DATE '2025-05-01');
+"""
+
+
+def model_db(tmp_path: Path, model_sql: str) -> Path:
+    """The orders table plus `m`, built from `model_sql` over it."""
+    return make_db(tmp_path / "m.duckdb", f"{ORDERS_SQL}CREATE TABLE m AS {model_sql};")
+
+
+def test_an_aggregate_output_is_not_a_slice_dimension(tmp_path: Path) -> None:
+    sql = (
+        "WITH per_customer AS (SELECT customer_id, MAX(ordered_at) AS ordered_at,"
+        " count(*) AS n_orders FROM orders GROUP BY customer_id)"
+        " SELECT * FROM per_customer"
+    )
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    block = metric_block(text, "n_orders")
+    assert "sliced on customer_id\n" in block
+    assert "Model matches COUNT(*)" in block
+
+
+def test_a_numeric_group_by_column_is_a_dimension(tmp_path: Path) -> None:
+    sql = "SELECT year, count(*) AS n_orders FROM orders GROUP BY year"
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    assert "### Metric: year" not in text
+    block = metric_block(text, "n_orders")
+    assert "sliced on year" in block and "Model matches COUNT(*)" in block
+
+
+def test_only_an_outermost_count_is_a_count(tmp_path: Path) -> None:
+    sql = (
+        "SELECT customer_id, CAST(SUM(amount) / COUNT(*) AS BIGINT) AS avg_amount,"
+        " COALESCE(COUNT(order_id), 0)::BIGINT AS placed FROM orders GROUP BY customer_id"
+    )
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    assert "→" not in metric_block(text, "avg_amount")
+    assert "Model matches COUNT(order_id)" in metric_block(text, "placed")
+
+
+def test_count_distinct_is_compared_with_count_distinct(tmp_path: Path) -> None:
+    sql = (
+        "SELECT region, count(DISTINCT o.customer_id) AS customers FROM orders AS o GROUP BY region"
+    )
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    block = metric_block(text, "customers")
+    assert "Model matches COUNT(DISTINCT customer_id)" in block
+    assert "MISMATCH" not in block
+
+
+def test_a_conditional_count_carries_its_predicate(tmp_path: Path) -> None:
+    sql = (
+        "SELECT customer_id, count(CASE WHEN status = 'returned' THEN 1 END) AS returns,"
+        " count(*) FILTER (WHERE status = 'returned') AS returns_too"
+        " FROM orders GROUP BY customer_id"
+    )
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    for metric in ("returns", "returns_too"):
+        block = metric_block(text, metric)
+        assert "status = 'returned'" in block and "Model matches" in block, block
+        assert "MISMATCH" not in block
+
+
+def test_a_predicate_the_upstream_lacks_is_inconclusive(tmp_path: Path) -> None:
+    sql = (
+        "WITH o AS (SELECT *, amount > 15 AS is_big FROM orders)"
+        " SELECT customer_id, count(*) FILTER (WHERE is_big) AS n_big"
+        " FROM o GROUP BY customer_id"
+    )
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    block = metric_block(text, "n_big")
+    assert "is_big" in block and "inconclusive" in block
+    assert "→" not in block
+
+
+def test_counts_are_compared_exactly(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "off.duckdb",
+        "CREATE TABLE orders AS SELECT range AS order_id, 'c1' AS customer_id FROM range(10);"
+        "CREATE TABLE m AS SELECT 'c1' AS customer_id, 11 AS n_orders;",
+    )
+    sql = "SELECT customer_id, count(*) AS n_orders FROM orders GROUP BY customer_id"
+    assert "MISMATCH vs COUNT(*)" in metric_block(verify(db, "m", ["orders"], sql), "n_orders")
+    # Without the SQL the name rule applies, still exactly.
+    assert "MISMATCH vs COUNT(*)" in metric_block(verify(db, "m", ["orders"], None), "n_orders")
+
+
+def test_unparsed_sql_falls_back_to_the_name_rules(tmp_path: Path) -> None:
+    sql = "SELECT region, count(*) AS n_orders FROM orders GROUP BY region"
+    db = model_db(tmp_path, sql)
+    text = verify(db, "m", ["orders"], "SELECT region,, count(*) AS n_orders FROM (((")
+    assert "Model SQL could not be parsed" in text
+    assert "Model matches COUNT(*)" in metric_block(text, "n_orders")
+
+
+async def test_check_model_schema_compares_declared_types(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "types.duckdb",
+        "CREATE TABLE m (id INTEGER, name VARCHAR, amount DECIMAL(10, 2), at TIMESTAMP)",
+    )
+    result = await call(
+        db,
+        "check_model_schema",
+        model_name="m",
+        yml_columns="id:int4, name:text, amount:numeric(10,2), at:varchar",
+    )
+    text = text_of(result)
+    assert not result.is_error, text
+    assert "[OK] Matching: id, name, amount, at" in text
+    assert "[X] Type mismatch: at (expected varchar, actual TIMESTAMP)" in text
+    assert "id (" not in text.split("Type mismatch")[1]
+
+
+def test_a_count_over_a_column_the_sql_transforms_is_inconclusive(tmp_path: Path) -> None:
+    sql = (
+        "WITH o AS (SELECT customer_id, COALESCE(status, 'unknown') AS status FROM orders)"
+        " SELECT customer_id, COUNT(status) AS n_statuses FROM o GROUP BY customer_id"
+    )
+    db = make_db(
+        tmp_path / "derived.duckdb",
+        "CREATE TABLE orders (customer_id VARCHAR, status VARCHAR);"
+        "INSERT INTO orders VALUES ('c1', NULL), ('c1', 'ok');"
+        f"CREATE TABLE m AS {sql};",
+    )
+    block = metric_block(verify(db, "m", ["orders"], sql), "n_statuses")
+    assert "inconclusive" in block and "→" not in block
+
+
+def test_a_count_of_an_aggregated_ctes_rows_is_inconclusive(tmp_path: Path) -> None:
+    sql = (
+        "WITH per_customer AS (SELECT region, customer_id FROM orders GROUP BY region, customer_id)"
+        " SELECT region, count(*) AS n_customers FROM per_customer GROUP BY region"
+    )
+    block = metric_block(verify(model_db(tmp_path, sql), "m", ["orders"], sql), "n_customers")
+    assert "inconclusive" in block and "→" not in block
+
+
+def test_a_wrapped_cte_count_is_still_a_count(tmp_path: Path) -> None:
+    sql = (
+        "WITH o AS (SELECT customer_id, count(*) AS placed FROM orders GROUP BY customer_id)"
+        " SELECT customer_id, COALESCE(placed, 0) AS placed FROM o"
+    )
+    db = model_db(tmp_path, sql)
+    con = duckdb.connect(str(db))
+    con.execute("UPDATE m SET placed = 20")
+    con.close()
+    assert "MISMATCH vs COUNT(*)" in metric_block(verify(db, "m", ["orders"], sql), "placed")
+
+
+def test_a_computed_non_count_ignores_its_count_like_name(tmp_path: Path) -> None:
+    sql = (
+        "SELECT customer_id, CAST(SUM(amount) OVER (PARTITION BY customer_id) AS BIGINT)"
+        " AS n_amount FROM orders"
+    )
+    block = metric_block(verify(model_db(tmp_path, sql), "m", ["orders"], sql), "n_amount")
+    assert "→" not in block
+
+
+LOOKUP_SQL = """
+CREATE TABLE customers (customer_id VARCHAR, status VARCHAR);
+INSERT INTO customers VALUES ('c1', 'active');
+CREATE TABLE orders (order_id INT, customer_id VARCHAR, status VARCHAR, other_status VARCHAR,
+  year INT);
+INSERT INTO orders VALUES (1, 'c1', 'inactive', 'active', 2024),
+  (2, 'c2', 'inactive', 'active', 2024);
+"""
+
+
+def test_a_count_keeps_its_columns_table(tmp_path: Path) -> None:
+    sql = (
+        "SELECT o.customer_id, COUNT(*) FILTER (WHERE customers.status = 'active') AS n_active"
+        " FROM orders AS o JOIN customers USING (customer_id) GROUP BY o.customer_id"
+    )
+    db = make_db(tmp_path / "bind.duckdb", f"{LOOKUP_SQL}CREATE TABLE m AS {sql};")
+    block = metric_block(verify(db, "m", ["orders", "customers"], sql), "n_active")
+    assert "MISMATCH" not in block
+    assert "Model matches" in block.split("main.customers")[1]
+
+
+def test_a_count_follows_a_renamed_cte_column(tmp_path: Path) -> None:
+    sql = (
+        "WITH o AS (SELECT customer_id, other_status AS status FROM orders)"
+        " SELECT customer_id, COUNT(CASE WHEN status = 'active' THEN 1 END) AS n_active"
+        " FROM o GROUP BY customer_id"
+    )
+    db = make_db(tmp_path / "rename.duckdb", f"{LOOKUP_SQL}CREATE TABLE m AS {sql};")
+    block = metric_block(verify(db, "m", ["orders"], sql), "n_active")
+    assert "other_status = 'active'" in block and "Model matches" in block
+
+
+def test_a_computed_grouping_expression_is_not_sliced_as_its_column(tmp_path: Path) -> None:
+    sql = "SELECT year % 10 AS year, count(*) AS n_orders FROM orders GROUP BY year % 10"
+    db = make_db(tmp_path / "computed.duckdb", f"{LOOKUP_SQL}CREATE TABLE m AS {sql};")
+    block = metric_block(verify(db, "m", ["orders"], sql), "n_orders")
+    assert "MISMATCH" not in block and "inconclusive" in block
+
+
+def test_a_cte_named_after_its_table_is_read_through(tmp_path: Path) -> None:
+    sql = (
+        "WITH orders AS (SELECT * FROM {{ ref('orders') }}),"
+        " per_customer AS (SELECT customer_id, count(DISTINCT region) AS regions,"
+        " count(*) FILTER (WHERE status = 'placed') AS placed FROM orders GROUP BY customer_id)"
+        " SELECT * FROM per_customer"
+    )
+    plain = sql.replace("{{ ref('orders') }}", "main.orders")
+    db = make_db(tmp_path / "idiom.duckdb", f"{ORDERS_SQL}CREATE TABLE m AS {plain};")
+    text = verify(db, "m", ["orders"], sql)
+    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions")
+    assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
+
+
+def aliased_project(tmp_path: Path, model_sql: str, *files: tuple[str, str]) -> Path:
+    """A dbt project whose model `m` is `model_sql`, plus the (relative path, text) files."""
+    project = tmp_path / "aliased"
+    (project / "models").mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: aliased\nversion: '1.0'\n")
+    (project / "models" / "m.sql").write_text(model_sql)
+    for relative, text in files:
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return project
+
+
+ALIASED_COUNT = (
+    "SELECT customer_id, count(DISTINCT region) AS regions,"
+    " count(*) FILTER (WHERE o.status = 'placed') AS placed"
+    " FROM {relation} AS o GROUP BY o.customer_id"
+)
+
+
+async def test_verify_model_values_reads_a_ref_through_the_model_alias(tmp_path: Path) -> None:
+    plain = ALIASED_COUNT.format(relation="orders_2024")
+    db = make_db(
+        tmp_path / "alias.duckdb",
+        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m_final AS {plain};",
+    )
+    project = aliased_project(
+        tmp_path,
+        ALIASED_COUNT.format(relation="{{ ref('stg_orders') }}"),
+        (
+            "models/stg_orders.sql",
+            "{{ config(materialized='table', alias='orders_2024') }}\nSELECT * FROM raw",
+        ),
+        (
+            "models/schema.yml",
+            "version: 2\nmodels:\n  - name: m\n    config:\n"
+            "      alias: m_final\n    columns:\n      - name: customer_id\n",
+        ),
+    )
+    result = await call(
+        db,
+        "verify_model_values",
+        model_name="m_final",
+        source_tables="orders_2024",
+        project_dir=str(project),
+    )
+    text = text_of(result)
+    assert "Model SQL read" in text, text
+    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions")
+    assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
+
+
+async def test_verify_model_values_reads_a_source_through_its_identifier(tmp_path: Path) -> None:
+    plain = ALIASED_COUNT.format(relation="orders_2024")
+    db = make_db(
+        tmp_path / "ident.duckdb",
+        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m AS {plain};",
+    )
+    project = aliased_project(
+        tmp_path,
+        ALIASED_COUNT.format(relation="{{ source('shop', 'orders') }}"),
+        (
+            "models/sources.yml",
+            "version: 2\nsources:\n  - name: shop\n    schema: main\n"
+            "    tables:\n      - name: orders\n        identifier: orders_2024\n",
+        ),
+    )
+    result = await call(
+        db,
+        "verify_model_values",
+        model_name="m",
+        source_tables="orders_2024",
+        project_dir=str(project),
+    )
+    text = text_of(result)
+    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions"), text
+    assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
+
+
+async def test_verify_model_values_prefers_the_manifests_relation_names(tmp_path: Path) -> None:
+    plain = ALIASED_COUNT.format(relation="orders_2024")
+    db = make_db(
+        tmp_path / "manifest.duckdb",
+        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m AS {plain};",
+    )
+    manifest = {
+        "nodes": {
+            "model.aliased.stg_orders": {
+                "resource_type": "model",
+                "name": "stg_orders",
+                "alias": "orders_2024",
+                "schema": "main",
+            },
+            "model.aliased.m": {
+                "resource_type": "model",
+                "name": "m",
+                "alias": "m",
+                "schema": "main",
+            },
+        },
+        "sources": {},
+    }
+    project = aliased_project(
+        tmp_path,
+        ALIASED_COUNT.format(relation="{{ ref('stg_orders') }}"),
+        # The SQL file's alias is stale; the manifest is what dbt last compiled.
+        ("models/stg_orders.sql", "{{ config(alias='orders_old') }}\nSELECT * FROM raw"),
+        ("target/manifest.json", json.dumps(manifest)),
+    )
+    result = await call(
+        db,
+        "verify_model_values",
+        model_name="m",
+        source_tables="orders_2024",
+        project_dir=str(project),
+    )
+    text = text_of(result)
+    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions"), text
+
+
+async def test_check_model_schema_compares_nested_types_by_their_element_types(
+    tmp_path: Path,
+) -> None:
+    db = make_db(
+        tmp_path / "nested.duckdb",
+        "CREATE TABLE m (ids INTEGER[], tags VARCHAR[], attrs MAP(VARCHAR, INTEGER),"
+        " point STRUCT(x DOUBLE, y DOUBLE))",
+    )
+    result = await call(
+        db,
+        "check_model_schema",
+        model_name="m",
+        yml_columns=(
+            "ids:int4[], tags:integer[], attrs:map(text, int), point:struct(x double, y int)"
+        ),
+    )
+    text = text_of(result)
+    assert not result.is_error, text
+    mismatched = text.split("Type mismatch")[1]
+    assert "tags (" in mismatched and "point (" in mismatched
+    assert "ids (" not in mismatched and "attrs (" not in mismatched
+
+
+def test_an_array_without_element_types_matches_any_array() -> None:
+    assert verifier_tools.same_type("integer[]", "ARRAY")
+    assert verifier_tools.same_type("LIST(INTEGER)", "INTEGER[]")
+    assert not verifier_tools.same_type("integer[]", "VARCHAR[]")
+
+
+def test_a_count_named_column_the_sql_does_not_show_is_inconclusive(tmp_path: Path) -> None:
+    sql = (
+        "WITH both_years AS (SELECT customer_id, amount FROM orders WHERE year = 2024"
+        " UNION ALL SELECT customer_id, amount FROM orders WHERE year = 2025),"
+        " per_customer AS (SELECT customer_id, SUM(amount)::BIGINT AS n_units FROM both_years"
+        " GROUP BY customer_id)"
+        " SELECT u.customer_id, u.n_units FROM (SELECT * FROM per_customer UNION ALL"
+        " SELECT * FROM per_customer WHERE false) AS u"
+    )
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    assert "Model SQL read" in text
+    block = metric_block(text, "n_units")
+    assert "inconclusive" in block and "→" not in block
+
+
+def test_declared_columns_split_only_at_top_level_commas() -> None:
+    assert verifier_tools.declared_columns(
+        "payload:STRUCT(id INT, amount DECIMAL(10,2)), flag:BOOLEAN, id"
+    ) == [("payload", "STRUCT(id INT, amount DECIMAL(10,2))"), ("flag", "BOOLEAN"), ("id", "")]
+
+
+def test_a_constant_output_is_not_a_slice_dimension(tmp_path: Path) -> None:
+    sql = "SELECT 'all' AS region, count(*) AS n_orders FROM orders"
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    assert "compared with whole upstreams" in text, text
+    assert "Model matches COUNT(*)" in metric_block(text, "n_orders")
+
+
+def subdir(tmp_path: Path) -> Path:
+    path = tmp_path / "second"
+    path.mkdir()
+    return path
+
+
+def test_a_rollup_subtotal_is_not_sliced_as_a_null(tmp_path: Path) -> None:
+    sql = "SELECT region, count(*) AS n_orders FROM orders GROUP BY ROLLUP (region)"
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    assert "region IS NULL" not in text and "MISMATCH" not in text, text
+    by_channel = (
+        "SELECT status, region, count(*) AS n_orders FROM orders GROUP BY status, ROLLUP (region)"
+    )
+    block = metric_block(
+        verify(model_db(subdir(tmp_path), by_channel), "m", ["orders"], by_channel), "n_orders"
+    )
+    assert "not sliced on region" in block and "inconclusive" in block, block
+    assert "MISMATCH" not in block
+
+
+def test_a_count_keeps_its_columns_schema(tmp_path: Path) -> None:
+    sql = (
+        "SELECT r.event_id, COUNT(*) FILTER (WHERE s.status = 'ok') AS n_ok"
+        " FROM raw.events AS r JOIN staging.events AS s USING (event_id) GROUP BY r.event_id"
+    )
+    db = make_db(
+        tmp_path / "schemas.duckdb",
+        "CREATE SCHEMA raw; CREATE SCHEMA staging;"
+        "CREATE TABLE raw.events (event_id INT, status VARCHAR);"
+        "CREATE TABLE staging.events (event_id INT, status VARCHAR);"
+        "INSERT INTO raw.events VALUES (1, 'bad'), (2, 'bad');"
+        "INSERT INTO staging.events VALUES (1, 'ok'), (2, 'ok');"
+        f"CREATE TABLE m AS {sql};",
+    )
+    text = verify(db, "m", ["raw.events", "staging.events"], sql)
+    block = metric_block(text, "n_ok")
+    assert "MISMATCH" not in block, block
+    assert "Model matches" in block.split("staging.events")[1]

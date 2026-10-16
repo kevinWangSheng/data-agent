@@ -164,3 +164,61 @@ async def test_hooks_record_verifier_start_and_end_with_verdicts(tmp_path: Path)
         "PASS",
         "N/A",
     ]
+
+
+def value_verifier_prompt() -> str:
+    agents = options(Path("."), "dbt", "full").agents or {}
+    return agents["value-verifier"].prompt
+
+
+def test_value_verifier_reads_total_as_a_count_only_for_row_nouns() -> None:
+    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+    assert 'Column named "total_X" → MUST match COUNT(*)' not in check_2
+    rule = next(line for line in check_2.splitlines() if "total_<row noun>" in line)
+    assert "total_orders" in rule
+    sums = check_2.split("is not a count")[1]
+    assert "total_amount" in sums and "total_revenue" in sums
+
+
+def test_value_verifier_compares_sums_and_averages_only_up_to_rounding() -> None:
+    """The verifier recomputes over the same slice and filters, so a sum or average may differ
+    from the model's only by rounding or float error; a 10% band would pass wrong results."""
+    prompt = value_verifier_prompt()
+    check_2 = prompt.split("### CHECK 2")[1].split("### CHECK 3")[0]
+    flat = " ".join(check_2.split())
+    assert "Counts compare exactly: one row off is a mismatch." in flat
+    assert "rounded to the column's scale (its DECIMAL places)" in flat
+    assert "relative error of at most 1e-6" in flat
+    assert "Anything beyond that is a MISMATCH" in flat
+    assert "10%" not in prompt
+
+
+def test_value_verifier_lets_the_tools_sql_verdict_override_the_name_rules() -> None:
+    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+    flat = " ".join(check_2.split())
+    read, _, unread = flat.partition('Only when the output says "Model SQL could not be parsed"')
+    assert unread, "the name rules need their own unparsed-SQL branch"
+    # With the SQL read, the tool's verdict decides, even against a "total" name.
+    assert 'starts with "Model SQL read"' in read and "whatever the column is named" in read
+    assert '`total_customers` marked "Model matches COUNT(DISTINCT customer_id)" is PASS' in read
+    # The name rules, the under-counting FAIL among them, sit only in the unparsed branch.
+    for rule in ("total_<row noun>", "unique_X", "under-counting"):
+        assert rule not in read and rule in unread, rule
+
+
+def test_verifier_calls_duplicate_lookup_keys_a_possible_fan_out() -> None:
+    check_3 = verifier_prompt().split("### CHECK 3")[1].split("### CHECK 4")[0]
+    assert "the fan-out is CORRECT" not in check_3
+    assert "byte-identical" not in check_3
+    assert "never a reason for PASS" in check_3
+
+
+def test_verifier_finds_models_under_the_model_paths() -> None:
+    check_1 = verifier_prompt().split("### CHECK 1")[1].split("### CHECK 2")[0]
+    assert "model-paths" in check_1 and "recursively" in check_1
+    assert "models/*.yml" not in check_1
+
+
+def test_verifier_passes_yml_types_to_check_model_schema() -> None:
+    check_2 = verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+    assert "check_model_schema" in check_2 and "name:data_type" in check_2
