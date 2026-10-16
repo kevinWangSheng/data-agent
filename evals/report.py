@@ -127,6 +127,23 @@ def check_complete(trials: list[Trial], label: str, trials_per_task: int) -> Non
         )
 
 
+def split_trials(
+    trials: list[Trial], manifest: dict[str, Any], split: str, label: str
+) -> list[Trial]:
+    """The trials of one manifest split; refuses a job missing any task of the split, since
+    scoring only the tasks present would inflate accuracy. Errors give counts only.
+    """
+    tasks: list[str] = manifest[split]
+    in_split = [t for t in trials if t.task in set(tasks)]
+    missing = set(tasks) - {t.task for t in in_split}
+    if missing:
+        raise ValueError(
+            f"no trial results for {len(missing)} of {len(tasks)} {split} tasks in {label} "
+            "job; every task in the split is needed"
+        )
+    return in_split
+
+
 def write_report(
     trials: list[Trial],
     manifest: dict[str, Any],
@@ -139,15 +156,7 @@ def write_report(
     Refuses a split that is incomplete: a task without results, or a split `check_complete`
     rejects. Errors give counts only, so they name no holdout task.
     """
-    tasks: list[str] = manifest[split]
-    in_split = [t for t in trials if t.task in set(tasks)]
-    # Scoring only the tasks present would inflate accuracy.
-    missing = set(tasks) - {t.task for t in in_split}
-    if missing:
-        raise ValueError(
-            f"no trial results for {len(missing)} of {len(tasks)} {split} tasks in this job; "
-            "a report needs every task in the split"
-        )
+    in_split = split_trials(trials, manifest, split, "this")
     check_complete(in_split, split, trials_per_task)
     report: dict[str, Any] = {"split": split, **summary(in_split)}
     out_dir.mkdir(parents=True, exist_ok=True)

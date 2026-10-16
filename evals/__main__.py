@@ -8,7 +8,7 @@ from typing import Any
 
 from evals.compare import paired_bootstrap
 from evals.harbor import by_task, load_trials
-from evals.report import TRIALS_PER_TASK, check_complete, score, write_report
+from evals.report import TRIALS_PER_TASK, check_complete, score, split_trials, write_report
 from evals.sample import read_task_list, sample, task_difficulty
 
 
@@ -32,6 +32,10 @@ def cmd_score(args: argparse.Namespace) -> None:
 
 def cmd_compare(args: argparse.Namespace) -> None:
     baseline, candidate = load_trials(args.baseline), load_trials(args.candidate)
+    if args.split:
+        manifest = json.loads(args.manifest.read_text())
+        baseline = split_trials(baseline, manifest, args.split, "the baseline")
+        candidate = split_trials(candidate, manifest, args.split, "the candidate")
     check_complete(baseline, "baseline", args.trials)
     check_complete(candidate, "candidate", args.trials)
     result = paired_bootstrap(
@@ -72,6 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--n-boot", type=int, default=10000)
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
+    p.add_argument("--manifest", type=Path, help="with --split: both jobs must cover the split")
+    p.add_argument("--split", choices=("dev", "holdout"))
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_compare)
 
@@ -86,7 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "compare" and (args.manifest is None) != (args.split is None):
+        parser.error("compare: --manifest and --split go together")
     try:
         args.func(args)
     except ValueError as exc:

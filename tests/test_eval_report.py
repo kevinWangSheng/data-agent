@@ -232,6 +232,45 @@ def test_compare_refuses_fewer_trials_than_required(tmp_path: Path) -> None:
     assert "t1" not in proc.stderr
 
 
+def compare_split(
+    tmp_path: Path, base_tasks: list[str], cand_tasks: list[str], holdout: list[str]
+) -> subprocess.CompletedProcess[str]:
+    base, cand = tmp_path / "base", tmp_path / "cand"
+    for job, tasks in ((base, base_tasks), (cand, cand_tasks)):
+        for task in tasks:
+            for attempt in "abc":
+                (job / f"{task}__{attempt}").mkdir(parents=True)
+                (job / f"{task}__{attempt}" / "result.json").write_text(
+                    json.dumps({"task_name": task, "verifier_result": {"rewards": {"reward": 1.0}}})
+                )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"seed": 0, "dev": ["d1"], "holdout": holdout}))
+    return evals(
+        *("compare", "--baseline", str(base), "--candidate", str(cand)),
+        *("--manifest", str(manifest), "--split", "holdout", "--json"),
+    )
+
+
+def test_compare_refuses_a_split_task_missing_from_both_jobs(tmp_path: Path) -> None:
+    proc = compare_split(tmp_path, ["t1"], ["t1"], holdout=["t1", "t-secret"])
+    assert proc.returncode != 0
+    assert "1 of 2 holdout tasks" in proc.stderr
+    assert "t-secret" not in proc.stderr
+
+
+def test_compare_scores_only_the_split(tmp_path: Path) -> None:
+    # The dev task outside the split would be unpaired; with --split it is left out.
+    proc = compare_split(tmp_path, ["t1", "t2"], ["t1", "t2", "d1"], holdout=["t1", "t2"])
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["diff"] == 0
+
+
+def test_compare_manifest_and_split_go_together(tmp_path: Path) -> None:
+    proc = evals("compare", "--baseline", ".", "--candidate", ".", "--split", "holdout")
+    assert proc.returncode != 0
+    assert "--manifest" in proc.stderr
+
+
 def test_sample_rejects_dev_tasks_missing_from_tasks_dir(tmp_path: Path) -> None:
     tasks = tmp_path / "tasks"
     (tasks / "a").mkdir(parents=True)
