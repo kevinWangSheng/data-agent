@@ -1,6 +1,6 @@
 # 06 — 上下文策略工具
 
-Status: in-review
+Status: done
 Blocked by: 02, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 06-context-tools)
@@ -127,3 +127,7 @@ Join candidates (by _id column name; check the key values before joining):
 == hydrate({'ref': 'a."b.c"'}) -> a."b.c" (table, 0 rows, 1 columns) / left_x INTEGER
 == hydrate({'ref': '"a.b".c'}) -> "a.b".c (table, 0 rows, 1 columns) / right_y INTEGER
 ```
+
+### 2026-10-16 第 7 步：PR #8 复审（主会话）
+
+`b7a7a5b` CI 两次全绿；Codex 复审 `has_any_findings: false`（👍），唯一行内意见是 `5601917` 上的旧意见、已由 `bdad8c1` 修复。合并。
