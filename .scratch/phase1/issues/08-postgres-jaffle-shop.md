@@ -1,6 +1,6 @@
 # 08 — Postgres 支持与 jaffle-shop 用例
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 06, 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5), worktree 08-postgres-jaffle-shop
@@ -119,3 +119,13 @@ PASS n2_update_last_names exit=0 cost=0.0035 blocked=1 — "…Blocked: Update s
 - `uv.lock` 冲突：取 main 版后 `uv lock` 重生成（未手改）；`uv lock --check` 通过；dbt-postgres 1.10.2、psycopg 3.3.6、psycopg-binary 3.3.6、psycopg2-binary 2.9.13 与合并前本分支锁文件一致，harbor 0.24.0 不变。
 - `make check`：ruff All checks passed；format 通过；basedpyright 0 errors, 0 warnings, 0 notes；pytest 906 passed, 23 deselected。提交时 pre-commit 全部 Passed。
 - 按本节约定，没有做真实运行，也没有做审查。
+
+### 2026-10-16 第 7 步：PR #14 退回第 1 轮（主会话）
+
+`49247ab` CI 两次全绿。Codex 3 条 P2，属实。在原分支上修，修完提交，不 push、不 rebase；各配修复前会失败的测试。
+
+1. **`src/data_agent/events.py:48`**：URL 的主机是单标签名（`postgres`、`prod-db`，Docker/K8s 常见）时不进遮盖列表，驱动报错和工具输出里单独出现的主机名会留在事件文件和 jaffle 结果里。单标签主机也遮盖（整词匹配；`localhost` 这类回环名可以不遮）。
+2. **`evals/jaffle.py:294`**：用例失败或超时后，用同一个 `--out` 重跑会因 workspace 已存在报 `FileExistsError`，用例记为失败但没真正执行。重跑时先删掉并重建该用例的 workspace（或每次尝试用新目录）。
+3. **`skills/postgres-sql/SKILL.md:35`**：建议的正则只核形状，`2026-99-31` 仍会让 `col::date` 报 out of range。改成能核日历有效性的写法（在 PG16 上实测，照本 Skill 的规矩）。
+
+修完 `make check`；第 2 条用 jaffle runner 不经模型或只跑一个用例演示重跑；再跑一轮 `da-review main`。最终回复给出 Comments、Ledger（Attempts 2）和 `Status: in-review`。
