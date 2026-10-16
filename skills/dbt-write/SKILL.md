@@ -10,7 +10,9 @@ only when present (it is a verification tool); SignalPilot-only tools were repla
 dbt_project_validate by the dbt-workflow scan and validate scripts); remarks about how results
 are graded or about a sandbox were reworded as plain dbt reasons (ADR-0005); the sibling exception
 for period-over-period columns and Section 6 (which forced COUNT(*) whenever a SUM used every row)
-were rewritten as general rules; the bug-class sweep uses the Grep tool instead of `grep` in Bash. -->
+were rewritten as general rules; the bug-class sweep uses the Grep tool instead of `grep` in Bash;
+examples carrying specific table, column, entity names or row counts were made generic, and
+Section 13 asks for the project's percentage scale before defaulting to 0-100. -->
 
 # dbt Write Skill
 
@@ -49,7 +51,7 @@ key" or "concatenation", follow this exact sequence:
 **CTE extraction OVERRIDES the sibling pattern.** When extracting CTEs from an existing model into a new model - GATE:
 1. Read the parent model's outermost final SELECT. The table in its FROM clause is the spine. Write it down.
 2. BLOCKED - do not write the new model until you run: `SELECT COUNT(DISTINCT <key>) FROM <spine>` and `SELECT COUNT(DISTINCT <key>) FROM <aggregation_source>`. If the spine count is higher, there are rows the aggregation does not cover.
-3. The new model MUST start FROM the spine table and LEFT JOIN the aggregation CTEs onto it. The new model's row count must equal the spine's row count - if the spine has 16 rows and the aggregation covers only 13, the new model still has 16 rows (3 with NULLs).
+3. The new model MUST start FROM the spine table and LEFT JOIN the aggregation CTEs onto it. The new model's row count must equal the spine's row count - spine rows the aggregation does not cover stay, with NULLs.
 4. Do NOT move COALESCE, CAST, or alias transformations from the parent's final SELECT - those belong to the parent (consumer), not the new model (producer).
 
 If a complete sibling model exists in the same directory, READ ITS SQL FIRST.
@@ -63,7 +65,7 @@ Specifically, for shared elements:
 - Same JOIN type and JOIN columns for shared source tables
 - Same filters and WHERE clauses
 - Same date/timestamp casts - if the sibling parses a non-ISO date string with `STRPTIME`, apply the same parse to the analogous column in your model. Never pass a date string through raw or use a generic `CAST(... AS DATE)` on a non-ISO string.
-- Same number of output columns - if all siblings have 3 columns (rank + name + metric), your model should too, even if the YML lists additional columns. Sibling consistency overrides a potentially aspirational YML.
+- Same number of output columns - if all siblings output the same small set of columns, your model should too, even if the YML lists additional columns. Sibling consistency overrides a potentially aspirational YML.
 
 Exception: if Section 6 (Grain Consistency) conflicts with a sibling
 pattern, Section 6 wins.
@@ -85,7 +87,7 @@ you MUST reason about those elements independently:
   in this skill from first principles.
 
 **Grain-spine rule for multi-source reports.** When a sibling builds a
-`reporting_grain` CTE by UNION ALL-ing some intermediates, match which
+grain CTE by UNION ALL-ing some intermediates, match which
 sources the sibling includes in its UNION ALL and which it LEFT JOINs.
 The sibling's author chose those specific sources for a reason - copy
 that selection logic, not just the CTE shape.
@@ -93,7 +95,7 @@ that selection logic, not just the CTE shape.
 Specifically: if the sibling UNION ALLs sources A + B but LEFT JOINs C
 and D, your model should also only UNION ALL the equivalents of A + B.
 The sibling typically unions sources that have different dimensional
-coverage (e.g., one synthesizes `cast(null as string) as source_type`)
+coverage (e.g., one fills a dimension it lacks with a typed NULL)
 and LEFT JOINs sources that share the same native grain columns.
 
 Do NOT override this pattern based on test data overlap. Test datasets
@@ -121,19 +123,19 @@ When fixing a bug in one model, grep ALL models/ for the same CLASS of bug BEFOR
 When enriching data with a lookup table, **use the original source
 values for display columns, not the lookup's values.** The lookup adds new columns
 (codes, regions, categories) - it does not replace existing ones. Source data often
-has encoding variants ("Muenchen" vs "München", "Cote d'Ivoire" vs "Côte d'Ivoire")
-that are separate valid rows. If the lookup has multiple name columns (primary +
+has spelling or encoding variants of the same name (transliterated vs accented,
+with or without spaces) that are separate valid rows. If the lookup has multiple name columns (primary +
 alternative), join on all of them so every variant finds a match.
 
-**`_id` columns with matching lookup tables:** If a YML column ends in `_id` (e.g., `supplier_id`) AND a lookup table matching the prefix exists (e.g., `suppliers` with a `company_name` column), JOIN the lookup table and output the display-name column. Check the sibling OBT or pre-existing table to confirm which alias the project uses - it may be `supplier_company`, `supplier_name`, or the original `supplier_id` depending on the project convention.
+**`_id` columns with matching lookup tables:** If a YML column ends in `_id` (`<entity>_id`) AND a lookup table matching the prefix exists (`<entity>s` with a name column), JOIN the lookup table and output the display-name column. Check the sibling OBT or pre-existing table to confirm which alias the project uses - it may be `<entity>_<name column>`, `<entity>_name`, or the original `<entity>_id` depending on the project convention.
 
-When the Step 1 scan's LOOKUP JOINS section flags an FK on your source (e.g. `supplier_id → join suppliers → use company`), apply that join - it reflects this model's data, even if a sibling dimension passes its own FK through unresolved. Skip only when the scan does not flag a lookup for that column.
+When the Step 1 scan's LOOKUP JOINS section flags an FK on your source (`<entity>_id → join <entity>s → use <name column>`), apply that join - it reflects this model's data, even if a sibling dimension passes its own FK through unresolved. Skip only when the scan does not flag a lookup for that column.
 
 **Choosing between multiple label columns:** When a lookup table has more than one
 name/label column for the same entity (e.g. `name` vs `display_name` vs
 `alternative_name`), do NOT guess which one to use - lookup tables often have both
-formal names ("International Business Machines Corporation") and common names
-("IBM"), and the project expects one specific convention. Query 3-5 rows from a
+formal (legal) names and common (short) names, and the project expects one
+specific convention. Query 3-5 rows from a
 pre-existing output table or a complete sibling model that already has this column.
 Pick the lookup column whose values match.
 
@@ -149,8 +151,7 @@ rows are truly identical across all columns (exact same values in every
 field).
 
 "Different values in ANY column" includes name/label variants for the same
-entity (e.g., "Brunei" vs "BruneiDarussalam", "Russia" vs "RussianFederation").
-These are separate valid rows that carry different information. Do NOT
+entity (a short name vs the full official name). These are separate valid rows that carry different information. Do NOT
 collapse them - the output should have one row per variant.
 
 ## 4. JOIN Defaults
@@ -196,12 +197,12 @@ and LEFT JOIN the fact aggregation, even if the domain skill says "drive
 from fact table."
 
 Common mistakes:
-- Filtering by a category/type/status inferred from the model name (e.g. adding
-  `WHERE department = 'Engineering'` because the model is called `eng_headcount` -
-  unless the YML description explicitly says to restrict, include all values)
+- Filtering by a category/type/status inferred from the model name (adding a
+  `WHERE` on a category because the model's name mentions it - unless the YML
+  description explicitly says to restrict, include all values)
 - Filtering by a column value that matches a word in the task description.
-  Task descriptions use domain language, not SQL predicates. "actors" does
-  not mean WHERE role = 'ACTOR'. The source table defines the population.
+  Task descriptions use domain language, not SQL predicates. A noun in the
+  task is not a `WHERE` on a matching value. The source table defines the population.
   Include all rows unless the YML description or a test explicitly restricts.
   If unsure, check complete sibling models in the same project. If they
   don't filter that table, neither should you.
@@ -288,7 +289,7 @@ database-native functions. This ensures compatibility across adapters.
 
 ## 13. Percentage Columns
 
-If a YML column name contains `pct`, `percent`, `percentage`, or `rate`, the output MUST be on a 0-100 scale, not a 0-1 ratio. Multiply the ratio by 100. A column called `return_pct` with value 0.65 is wrong - it MUST be 65.0.
+If a YML column name contains `pct`, `percent`, `percentage`, or `rate`, use the scale the project already uses: the YML description, a sibling model or a pre-existing table with the same kind of column. If nothing in the project says, output a 0-100 scale (multiply the 0-1 ratio by 100).
 
 ## 14. Boolean Flag Columns
 

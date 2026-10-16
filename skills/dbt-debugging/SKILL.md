@@ -7,7 +7,8 @@ type: skill
 <!-- Copied from signalpilot-plugin (see NOTICE). Modified for data-agent: SignalPilot-only tools
 were replaced (dbt_project_map by the dbt-workflow scan, get_date_boundaries by MIN/MAX queries
 and describe_table by list_tables, both through this agent's tools); the remark about a sandbox
-was reworded (ADR-0005). -->
+was reworded (ADR-0005); the rule about models named like source tables was rewritten as a general
+rule without example table names. -->
 
 # dbt Debugging Skill
 
@@ -30,11 +31,18 @@ If `Compilation Error: node not found for ref()`:
   ```
 - If ephemeral causes CTE issues, replace `{{ ref('name') }}` with `main.name` directly
 
-## 3. Passthrough Model Warning
+## 3. Model Named Like a Source Table
 
-NEVER create `.sql` files named after raw tables (e.g. `circuits.sql`, `results.sql`).
-This DESTROYS source data by replacing it with a materialized model.
-Fix: add `schema: main` to the source definition in YML instead.
+A model materializes into the target schema under its own name. If a source
+table has the same name AND lives in that same schema, `dbt run` replaces the
+source data with the model.
+1. Before naming a model after a source table, check where the source lives:
+   `list_tables`, or `SELECT table_schema, table_name FROM information_schema.tables
+   WHERE table_name = '<name>'` with `query_database`.
+2. Same schema as the model's target: give the model another name, or, when the
+   source definition in YML lacks a `schema:`, add the source's real schema there
+   so dbt reads it from the right place.
+3. Different schemas: the same name is legal - do NOT refuse or rename it.
 
 ## 4. current_date Fix
 

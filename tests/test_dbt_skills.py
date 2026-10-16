@@ -97,9 +97,81 @@ def test_dbt_skills_say_nothing_about_how_results_are_graded(name: str) -> None:
         assert term not in text, (name, term)
 
 
+# Names and values from specific projects the upstream Skills were tuned on (ADR-0005); the rules
+# that carried them are now stated generally.
+PROJECT_SPECIFIC = (
+    "circuits",
+    "results.sql",
+    "Brunei",
+    "RussianFederation",
+    "Muenchen",
+    "supplier_id",
+    "International Business Machines",
+    "eng_headcount",
+    "'ACTOR'",
+    "return_pct",
+    "reporting_grain",
+    "total_parts",
+    "guide per day",
+    "extract_hour",
+    "multiple-choice",
+    "guaranteed fail",
+)
+
+
+@pytest.mark.parametrize("name", [n for n in DBT_SKILLS if n != "duckdb-sql"])
+def test_dbt_skills_carry_no_project_specific_names(name: str) -> None:
+    for path in (p for p in (SKILLS_DIR / name).iterdir() if p.is_file()):
+        text = body(name) if path.name == "SKILL.md" else path.read_text()
+        for term in PROJECT_SPECIFIC:
+            assert term not in text, (path.name, term)
+
+
 def test_workflow_never_skips_building_a_model_the_task_asks_for() -> None:
     """The scan only sees models already declared in YAML; a task that asks for a new model must
     still run the build steps."""
     skip_rule = body("dbt-workflow").split("## The 8-Step Workflow", 1)[1].split("\n\n", 2)[1]
     assert "skip Steps 4-7" in skip_rule
     assert "create" in skip_rule
+
+
+def scan(project: Path) -> str:
+    proc = subprocess.run(
+        [sys.executable, str(SCAN), str(project)], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+def section(output: str, heading: str) -> str:
+    return output.split(heading, 1)[1].split("\n\n", 1)[0]
+
+
+def test_scan_counts_only_sql_under_the_model_paths(tmp_path: Path) -> None:
+    """A data test, analysis or snapshot named like a missing model does not make it complete."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    schema = project / "models" / "schema.yml"
+    schema.write_text(schema.read_text() + "  - name: customer_ltv\n")
+    for folder in ("tests", "analyses", "snapshots"):
+        (project / folder).mkdir()
+        (project / folder / "customer_ltv.sql").write_text("select 1 as customer_id\n")
+    output = scan(project)
+    assert "customer_ltv.sql" in section(output, "MODELS TO BUILD"), output
+    assert "customer_ltv" not in section(output, "COMPLETE MODELS"), output
+    assert "SQL FILES WITHOUT YML" not in output, output
+
+
+@pytest.mark.parametrize(
+    "setting",
+    ['model-paths: ["transform"]', "model-paths:\n  - transform\n", "model-paths: [transform]"],
+)
+def test_scan_reads_models_from_the_configured_model_paths(tmp_path: Path, setting: str) -> None:
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    (project / "models").rename(project / "transform")
+    config = project / "dbt_project.yml"
+    config.write_text(config.read_text().replace('model-paths: ["models"]', setting))
+    complete = section(scan(project), "COMPLETE MODELS")
+    for model in ("stg_customers", "stg_orders", "customer_orders"):
+        assert model in complete, complete

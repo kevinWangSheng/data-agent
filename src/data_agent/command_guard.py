@@ -2,12 +2,15 @@
 
 Any other command (a database CLI, `python3 -c`, `rm`, `cat ~/...`) would bypass the read-only
 gateway or leave the workspace, so a `PreToolUse` hook denies it. Allowed: one command, optionally
-`2>&1` and a pipe into `tail` or `head`. dbt subcommands that run ad-hoc SQL (`show`, `--inline`,
-`run-operation`) are denied too, so ad-hoc reads go through the gateway.
+`2>&1` and a pipe into `tail` or `head`, in the foreground. dbt subcommands that run ad-hoc SQL
+(`show`, `--inline`, `run-operation`) are denied too, so ad-hoc reads go through the gateway, and
+so are those that write anything but the project's models (`build`, `seed`, `snapshot`,
+`test --store-failures`): the only write is `dbt run` of the edited project.
 
 Known limit: dbt itself runs whatever the project holds. A model, a Python model, an `on-run-start`
-hook or a profile the agent edits can run any SQL or code under `dbt run`; that is the dbt write
-path (CONTEXT: dbt write), reviewable as project code, not something this guard can see.
+hook, a profile or a `store_failures` test config the agent edits can run any SQL or code under
+`dbt run` or `dbt test`; that is the dbt write path (CONTEXT: dbt write), reviewable as project
+code, not something this guard can see.
 """
 
 import re
@@ -19,9 +22,9 @@ from claude_agent_sdk import HookCallback, HookContext, HookInput, HookJSONOutpu
 
 from data_agent.workspace_guard import inside, resolve
 
-DBT_SUBCOMMANDS = frozenset(
-    {"run", "build", "test", "seed", "snapshot", "compile", "parse", "ls", "list", "deps", "debug"}
-)
+DBT_SUBCOMMANDS = frozenset({"run", "test", "compile", "parse", "ls", "list", "deps", "debug"})
+# `dbt test` writes failing rows into tables with these.
+STORE_FAILURES_FLAGS = ("--store-failures", "--store-failures-as")
 # Flags naming a directory dbt reads from or writes to; each must stay inside the workspace.
 DIR_FLAGS = ("--project-dir", "--profiles-dir", "--target-path", "--log-path")
 PAGERS = frozenset({"tail", "head"})
@@ -33,10 +36,9 @@ OPERATOR_CHARS = frozenset("();<>|&")
 FORBIDDEN_CHARS = frozenset("$`#{}*?[]\n\r")
 # {scripts} names the dbt-workflow scripts only when the run offers them (the Skill layer is on).
 RULE = (
-    "Bash may only run one dbt command, subcommand first (run, build, test, seed, snapshot, "
-    "compile, parse, ls, deps, debug){scripts}, from the workspace, optionally followed by 2>&1 "
-    "and a pipe into tail or head; no braces, globs, $ or #. Query data with the query_database "
-    "tool."
+    "Bash may only run one dbt command in the foreground, subcommand first (run, test, compile, "
+    "parse, ls, deps, debug){scripts}, from the workspace, optionally followed by 2>&1 and a pipe "
+    "into tail or head; no braces, globs, $ or #. Query data with the query_database tool."
 )
 SCRIPTS_RULE = ", or the dbt-workflow scan/validate script"
 
@@ -79,6 +81,8 @@ def _dbt_denial(args: list[str], workspace: Path) -> str | None:
         if arg == "--inline" or arg.startswith("--inline="):
             return "dbt --inline runs ad-hoc SQL outside the gateway"
         flag, _, value = arg.partition("=")
+        if flag in STORE_FAILURES_FLAGS:
+            return f"{flag} writes test failures into the database"
         if flag in DIR_FLAGS:
             if not value:
                 value = args[i + 1] if i + 1 < len(args) else ""
@@ -119,7 +123,11 @@ def command_guard(workspace: Path, scripts: Sequence[Path]) -> HookCallback:
     ) -> HookJSONOutput:
         if hook_input["hook_event_name"] != "PreToolUse" or hook_input["tool_name"] != "Bash":
             return {}
-        reason = denial(str(hook_input["tool_input"].get("command", "")), root, scripts)
+        tool_input = hook_input["tool_input"]
+        if tool_input.get("run_in_background"):
+            reason: str | None = "Bash may not run in the background"
+        else:
+            reason = denial(str(tool_input.get("command", "")), root, scripts)
         if reason is None:
             return {}
         return {

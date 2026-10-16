@@ -13,7 +13,11 @@ SCRIPTS = (SCRIPTS_DIR / "scan_project.py", SCRIPTS_DIR / "validate_project.py")
 
 
 async def decide(
-    workspace: Path, command: str, tool: str = "Bash", scripts: tuple[Path, ...] = SCRIPTS
+    workspace: Path,
+    command: str,
+    tool: str = "Bash",
+    scripts: tuple[Path, ...] = SCRIPTS,
+    background: bool = False,
 ) -> tuple[str, str]:
     guard = command_guard(workspace, scripts)
     hook_input: Any = {
@@ -22,7 +26,7 @@ async def decide(
         "transcript_path": "t",
         "cwd": str(workspace),
         "tool_name": tool,
-        "tool_input": {"command": command},
+        "tool_input": {"command": command, **({"run_in_background": True} if background else {})},
         "tool_use_id": "u",
     }
     output: Any = await guard(hook_input, "u", {"signal": None})
@@ -35,7 +39,6 @@ async def decide(
     [
         "dbt run --select customer_ltv",
         "dbt run --select +customer_ltv stg_orders",
-        "dbt build -s customer_ltv",
         "dbt parse",
         "dbt compile --select customer_ltv",
         "dbt ls --resource-type model",
@@ -80,6 +83,13 @@ async def test_dbt_and_the_workflow_scripts_run(tmp_path: Path, command: str) ->
         "dbt show --inline 'select * from raw.orders'",
         "dbt compile --inline 'select 1'",
         "dbt run-operation drop_everything",
+        # Subcommands that write outside `dbt run` of the project's models.
+        "dbt build -s customer_ltv",
+        "dbt seed",
+        "dbt snapshot",
+        "dbt test --store-failures",
+        "dbt test --select customer_ltv --store-failures-as table",
+        "dbt test --store-failures-as=view",
         # Bash expands braces and globs after the guard has read the words.
         "dbt compile {--inline,} 'select 1'",
         "dbt run --profiles-dir={.,/etc}",
@@ -106,6 +116,20 @@ async def test_everything_else_is_denied_with_a_reason(tmp_path: Path, command: 
     decision, reason = await decide(tmp_path, command)
     assert decision == "deny"
     assert "dbt" in reason
+
+
+async def test_a_background_command_is_denied(tmp_path: Path) -> None:
+    """The guard cannot see a background command finish, and dbt holds the database write lock."""
+    decision, reason = await decide(tmp_path, "dbt run --select customer_ltv", background=True)
+    assert decision == "deny"
+    assert "background" in reason
+
+
+async def test_the_rule_names_only_the_allowed_subcommands(tmp_path: Path) -> None:
+    _, reason = await decide(tmp_path, "rm -rf models")
+    assert "dbt" in reason
+    for subcommand in ("build", "seed", "snapshot"):
+        assert subcommand not in reason
 
 
 async def test_without_the_skill_layer_no_script_runs_or_is_named(tmp_path: Path) -> None:

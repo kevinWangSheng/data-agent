@@ -6,6 +6,9 @@
 # substrings of the absolute path, so a project under e.g. .claude/ or target/ is still scanned.
 # A model starting with `select * from` is no longer classed as a stub: passthrough and filtered
 # models are complete SQL.
+# Model SQL is read only from the project's model-paths (dbt_project.yml, default `models`), so a
+# data test, analysis or snapshot named like a missing model does not count as that model.
+# The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
 """Pre-scan a dbt project and emit a structured context block.
 
 Used by the dbt-workflow SKILL.md via !`python3 scan_project.py` to inject
@@ -42,6 +45,38 @@ def _read_text(path: Path) -> str:
     if raw[:3] == b'\xef\xbb\xbf':
         raw = raw[3:]
     return raw.decode("utf-8", errors="replace")
+
+
+def _model_paths(work_dir: Path) -> list[str]:
+    """`model-paths` from dbt_project.yml, inline (`[a, b]`) or block list; default `models`."""
+    config = work_dir / "dbt_project.yml"
+    text = _read_text(config) if config.exists() else ""
+    m = re.search(r"^model-paths:[ \t]*(.*)$", text, re.MULTILINE)
+    names: list[str] = []
+    if m:
+        inline = m.group(1).split("#", 1)[0].strip()
+        if inline:
+            names = inline.strip("[]").split(",")
+        else:
+            for line in text[m.end():].splitlines()[1:]:
+                item = re.match(r"\s*-\s*(.+)", line)
+                if not item:
+                    if line.strip() and not line.lstrip().startswith("#"):
+                        break
+                    continue
+                names.append(item.group(1).split("#", 1)[0])
+    names = [n.strip().strip("'\"") for n in names]
+    return [n for n in names if n] or ["models"]
+
+
+def _model_sql_files(work_dir: Path) -> list[Path]:
+    """The model SQL files: `*.sql` under the model-paths, minus skipped directories."""
+    files: list[Path] = []
+    for name in _model_paths(work_dir):
+        model_dir = work_dir / name
+        if model_dir.is_dir():
+            files.extend(f for f in model_dir.rglob("*.sql") if not _skipped(f, work_dir))
+    return files
 
 
 # ── YML parsing (no PyYAML dependency — regex-based) ──────────────────────
@@ -185,9 +220,7 @@ def _extract_deps_from_sql(work_dir: Path) -> dict[str, list[str]]:
     """Extract ref() dependencies from SQL files."""
     deps: dict[str, list[str]] = {}
     ref_pat = re.compile(r"\{\{\s*ref\(['\"](\w+)['\"]\)\s*\}\}")
-    for sql_file in work_dir.rglob("*.sql"):
-        if _skipped(sql_file, work_dir):
-            continue
+    for sql_file in _model_sql_files(work_dir):
         try:
             content = _read_text(sql_file)
             refs = ref_pat.findall(content)
@@ -203,9 +236,7 @@ def _extract_deps_from_sql(work_dir: Path) -> dict[str, list[str]]:
 def classify_sql_models(work_dir: Path) -> tuple[set[str], set[str]]:
     complete: set[str] = set()
     stubs: set[str] = set()
-    for sql_file in work_dir.rglob("*.sql"):
-        if _skipped(sql_file, work_dir):
-            continue
+    for sql_file in _model_sql_files(work_dir):
         try:
             content = _read_text(sql_file).strip()
         except Exception:
@@ -251,15 +282,12 @@ def scan_macros(work_dir: Path) -> list[tuple[str, str]]:
 # ── current_date scanner ─────────────────────────────────────────────────
 
 def scan_current_date(work_dir: Path) -> list[str]:
-    models_dir = work_dir / "models"
-    if not models_dir.exists():
-        return []
     pat = re.compile(
         r'\bcurrent_date\b|\bnow\(\)|\bcurrent_timestamp\b|\bgetdate\(\)',
         re.IGNORECASE,
     )
     hits: list[str] = []
-    for sql_file in models_dir.rglob("*.sql"):
+    for sql_file in _model_sql_files(work_dir):
         try:
             for i, line in enumerate(_read_text(sql_file).splitlines(), 1):
                 if pat.search(line):
@@ -280,9 +308,7 @@ def _find_sibling_patterns(
 ) -> dict[str, list[tuple[str, int]]]:
     """For each stub/missing model, find complete siblings in the same directory."""
     sql_dirs: dict[str, Path] = {}
-    for sql_file in work_dir.rglob("*.sql"):
-        if _skipped(sql_file, work_dir):
-            continue
+    for sql_file in _model_sql_files(work_dir):
         sql_dirs[sql_file.stem] = sql_file.parent
 
     result: dict[str, list[tuple[str, int]]] = {}
@@ -516,7 +542,7 @@ def main():
         if model in all_columns:
             col_lines.append(f"  {model}: {', '.join(all_columns[model])}{desc_str}")
     if col_lines:
-        print("REQUIRED COLUMNS (must match exactly — missing columns = guaranteed fail):")
+        print("REQUIRED COLUMNS (the YML contract — match these names exactly):")
         print("\n".join(col_lines))
     else:
         print("REQUIRED COLUMNS: (read YML files for column specs)")

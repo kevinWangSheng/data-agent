@@ -14,7 +14,9 @@ loaded with this one), and the knowledge-base skill in Step 6 (its spec fields a
 remarks about how results are graded were reworded as plain dbt reasons (ADR-0005). The rules that
 limited rolling/period-over-period models to the latest date with NULL comparisons were replaced by
 general ones (one date only when the description asks; comparisons from the source history). The
-rule for skipping Steps 4-7 also keeps them when the task asks for a new model. -->
+rule for skipping Steps 4-7 also keeps them when the task asks for a new model. Examples carrying
+specific macro, column or entity names were made generic; the rule for review tasks no longer
+names a task format. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -119,9 +121,9 @@ Do NOT use `+`. If no hazards flagged, skip the rebuild.
 Read the AVAILABLE MACROS section from Step 1 output. For each macro NOT
 referenced by any existing complete model:
 1. Read its definition - it is printed in the scan output.
-2. Identify what column it produces. `extract_hour(created_at)` produces
-   `hour_created_at`. `normalize_timestamp(created_at)` produces
-   `normalized_created_at`.
+2. Identify what column it produces - the macro's body shows the output
+   expression and the name it is meant to carry (often the input column with
+   a prefix or suffix).
 3. Record which models MUST use it - any model whose source table has the
    macro's input column.
 
@@ -135,11 +137,11 @@ For EACH model that needs SQL, gather the facts to write it correctly:
    parent whose rows have no matching children. Classify by the model's METRICS, then
    FOLLOW the result - this is binding; do NOT override based on the task phrase
    "aggregate X by Y" (that names what to summarize, not the FROM clause):
- - If every child metric is a COUNT or SUM (e.g. `total_parts`, `total_orders`) -
+ - If every child metric is a COUNT or SUM (e.g. `total_<children>`) -
      meaningful as 0 for a childless parent - KEEP childless rows: drive FROM the
      parent, LEFT JOIN children.
  - If any metric is a RATIO, AVERAGE, or SCORE that divides by the child count
-     (e.g. NPS = (positive − negative) / total, avg_rating) - undefined (division by
+     (a share of the children, an average) - undefined (division by
      zero) for a childless parent - DROP childless rows: drive FROM the child
      aggregation, INNER JOIN the entity.
    LEFT JOIN all other upstreams.
@@ -260,8 +262,8 @@ Extract from `description:` field:
   period-over-period column alone does not limit the output to one date.
 - **DATE BOUNDARY**: "from X to the current date" or "to today" in the description
   → cap the output with `WHERE date_col <= current_date`. When crossing a calendar
-  spine with entities (e.g. one row per guide per day), add the cap to the cross
-  join: `ON spine.date_day >= entity.created_on AND spine.date_day <= current_date`.
+  spine with entities (one row per entity per day), add the cap to the cross
+  join: `ON spine.date_day >= entity.<start_date> AND spine.date_day <= current_date`.
 - **PERIOD-OVER-PERIOD**: If the description mentions MoM, WoW, YoY comparisons,
   compute them from the periods the source holds - see rule below.
 
@@ -341,7 +343,7 @@ second argument for timeout in seconds (default 60).
 
 ## Rules
 
-- For code-review or multiple-choice analysis tasks: trace every output column back through all CTEs to its source. A computed-but-unused column (calculated but never SELECTed) is a defect. Do not assert a data quality problem without querying the source to confirm it exists.
+- For tasks that ask you to review or explain existing SQL: trace every output column back through all CTEs to its source. A computed-but-unused column (calculated but never SELECTed) is a defect. Do not assert a data quality problem without querying the source to confirm it exists.
 - NEVER run `dbt` commands with `run_in_background` or `&` - dbt holds a database
   write lock while running
 - Do NOT modify `.yml` files unless fixing a missing `schema:` in a source definition
