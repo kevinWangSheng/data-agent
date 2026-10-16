@@ -1,6 +1,6 @@
 # 04 — dbt 任务端到端
 
-Status: in-review
+Status: done
 Blocked by: 03
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -206,3 +206,9 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-04-run-dbt-task
 - 另有一次在未提交改动上的运行（`runs/return04/full6` 的首次，$0.015075）作废，已用 `bcd5313` 重跑覆盖。
 
 **已知限制（第 2 轮之后，不再修）：** 无新增。本轮审查意见都已修复。
+
+### 2026-10-16 第 7 步：PR #9 复审（主会话）
+
+`bcd5313` CI 两次全绿；Codex 复审完成，没有针对 `bcd5313` 的新行内意见（`has_unresolved_findings` 指 `268ac11`、`cf7859c` 上的旧线程，已由退回第 1、2 轮修复）。合并。
+
+已知限制（交人在最终审查时看）：`dbt run` 会执行项目里的任何内容（Python 模型、hook、profile、项目里配置的 `store_failures`），见 `command_guard` docstring；要收紧需另开工单（拒绝 Python 模型与 profile 改动）。
