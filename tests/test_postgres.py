@@ -194,6 +194,39 @@ def test_long_query_times_out(postgres_url: str) -> None:
 
 
 @pytest.mark.integration
+def test_connection_string_options_are_kept(postgres_url: str) -> None:
+    """The gateway adds its statement timeout to the URL's own options, such as a search_path."""
+    import psycopg
+
+    with psycopg.connect(postgres_url, autocommit=True) as con:
+        con.execute("CREATE SCHEMA IF NOT EXISTS da_opt")
+        con.execute("CREATE TABLE IF NOT EXISTS da_opt.only_here (x int)")
+    sep = "&" if "?" in postgres_url else "?"
+    url = f"{postgres_url}{sep}options=-csearch_path%3Dda_opt"
+    assert PostgresGateway(url).query("SELECT count(*) FROM only_here").rows == [(0,)]
+
+
+@pytest.mark.integration
+def test_concurrent_queries_do_not_share_a_failed_transaction(postgres_url: str) -> None:
+    """MCP runs tool calls on worker threads; a failing statement must not poison another."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    gateway = PostgresGateway(postgres_url)
+
+    def one(i: int) -> str:
+        try:
+            gateway.query("SELECT * FROM no_such_table_x" if i % 2 else "SELECT 1")
+        except QueryFailed as exc:
+            return str(exc)
+        return "ok"
+
+    with ThreadPoolExecutor(8) as pool:
+        outcomes = list(pool.map(one, range(200)))
+    assert outcomes[0::2] == ["ok"] * 100
+    assert all("no_such_table_x" in text for text in outcomes[1::2])
+
+
+@pytest.mark.integration
 def test_postgres_skill_states_division_as_postgres_does_it(postgres_url: str) -> None:
     text = (SKILLS_DIR / "postgres-sql" / "SKILL.md").read_text()
     assert PostgresGateway(postgres_url).query("SELECT 5 / 2, 5 / 2.0").rows[0][0] == 2

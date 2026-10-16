@@ -2,10 +2,15 @@
 the unchanged-data check for the direct-write cases. Grading SQL runs through the read-only
 gateway; here a DuckDB one stands in for Postgres."""
 
+import argparse
 import json
+import os
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import duckdb
+import psycopg
 import pytest
 
 from data_agent.gateway import DuckDBGateway
@@ -137,3 +142,75 @@ def test_setup_edit_must_match_once(tmp_path: Path) -> None:
     assert (tmp_path / "m.sql").read_text() == "group by b\n"
     with pytest.raises(ValueError, match=r"m\.sql"):
         jaffle.apply_edits(tmp_path, [{"file": "m.sql", "old": "group by a\n", "new": "x"}])
+
+
+BLOCK = {"type": "tool_end", "is_error": True, "content": "Query blocked by the read-only gateway"}
+RESULT = {"type": "result"}
+
+
+@pytest.mark.parametrize(
+    ("unchanged", "exit_code", "events", "passed"),
+    [
+        (True, 0, [BLOCK, RESULT], True),
+        (True, 1, [BLOCK, RESULT], True),
+        (True, 1, [RESULT], False),  # never reached the gateway: no evidence that it blocks
+        (False, 0, [BLOCK, RESULT], False),
+        (True, 2, [BLOCK, RESULT], False),
+        (True, 0, [BLOCK], False),  # ended before the result event
+    ],
+)
+def test_negative_case_needs_a_gateway_block(
+    unchanged: bool, exit_code: int, events: list[dict[str, Any]], passed: bool
+) -> None:
+    assert jaffle.negative_passed(unchanged, exit_code, events) is passed
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError('connection to server at "db.example" (10.1.2.3) failed: s3cret-pw'),
+        subprocess.TimeoutExpired(["dbt", "run"], 600),
+    ],
+)
+def test_case_failures_are_recorded_without_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error: Exception
+) -> None:
+    monkeypatch.setenv("DA_TEST_URL", "postgresql://u:s3cret-pw@db.example:6543/shop")
+    monkeypatch.setattr(jaffle, "clone_project", lambda *_: tmp_path)
+
+    def fail(*_: object) -> None:
+        raise error
+
+    monkeypatch.setattr(jaffle, "run_case", fail)
+    args = argparse.Namespace(
+        postgres_env="DA_TEST_URL",
+        out=tmp_path / "out",
+        config="full",
+        case=["q2_repeat_customers"],
+    )
+    assert jaffle.run(args) == 1
+    summary = (tmp_path / "out" / "summary.json").read_text()
+    result = json.loads((tmp_path / "out" / "q2_repeat_customers" / "result.json").read_text())
+    assert result["passed"] is False
+    assert result["error"]
+    for secret in ("s3cret-pw", "db.example"):
+        assert secret not in summary
+
+
+@pytest.mark.integration
+def test_reset_drops_only_case_schemas() -> None:
+    url = os.environ["DATA_AGENT_TEST_POSTGRES_URL"]
+    with psycopg.connect(url, autocommit=True) as con:
+        con.execute("CREATE SCHEMA IF NOT EXISTS jafflebackup")
+        con.execute("CREATE SCHEMA IF NOT EXISTS jaffle_case")
+    jaffle.reset_schemas(url)
+    with psycopg.connect(url, autocommit=True) as con:
+        left = {
+            row[0]
+            for row in con.execute(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name IN ('jafflebackup', 'jaffle_case')"
+            )
+        }
+        con.execute("DROP SCHEMA IF EXISTS jafflebackup")
+    assert left == {"jafflebackup"}

@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 import duckdb
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
 
 from data_agent.engine import inject_limit, validate_sql
 
@@ -86,7 +87,9 @@ class DuckDBGateway:
 
 class PostgresGateway:
     """`url` is a libpq connection string. One connection serves every statement, each in its own
-    READ ONLY transaction that is rolled back afterwards, with the server's statement timeout."""
+    READ ONLY transaction that is rolled back afterwards, with the server's statement timeout. The
+    MCP server runs tool calls on worker threads, so one statement's transaction is held at a time.
+    """
 
     dialect = "postgres"
 
@@ -94,9 +97,14 @@ class PostgresGateway:
         self._url = url
         self.timeout_seconds = timeout_seconds
         self._con: psycopg.Connection[tuple[Any, ...]] | None = None
+        self._lock = threading.Lock()
 
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
         governed = check(sql, self.dialect, row_limit)
+        with self._lock:
+            return self._run(governed)
+
+    def _run(self, governed: str) -> QueryResult:
         con = self._connect()
         try:
             # Not LiteralString: the statement is the agent's, and the gateway has just checked it.
@@ -118,9 +126,10 @@ class PostgresGateway:
             return self._con
         timeout_ms = max(1, int(self.timeout_seconds * 1000))
         try:
-            con = psycopg.connect(
-                self._url, options=f"-c statement_timeout={timeout_ms}", connect_timeout=10
-            )
+            # Added to the URL's own options (a search_path, say) rather than replacing them.
+            given = str(conninfo_to_dict(self._url).get("options") or "")
+            options = f"{given} -c statement_timeout={timeout_ms}".strip()
+            con = psycopg.connect(self._url, options=options, connect_timeout=10)
         except psycopg.Error as exc:
             raise QueryFailed(f"Could not connect to the Postgres database: {reason(exc)}") from exc
         con.read_only = True
