@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> None:
     except ConfigError as exc:
         run_cmd.error(str(exc))
     print(outcome.answer)
+    for error in outcome.errors:
+        print(f"error: {error}", file=sys.stderr)
     print(f"events: {outcome.events_path}", file=sys.stderr)
     if outcome.infra_error:
         sys.exit(EXIT_ERROR)

@@ -18,7 +18,6 @@ import claude_agent_sdk
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
-    ClaudeSDKError,
     ResultMessage,
     SystemMessage,
     TextBlock,
@@ -37,7 +36,10 @@ DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_MODEL = "deepseek-flash"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILLS_DIR = REPO_ROOT / "skills"
+# A wheel ships the Skills inside the package (pyproject force-include); a checkout has them at the
+# repo root.
+PACKAGED_SKILLS = Path(__file__).resolve().parent / "skills"
+SKILLS_DIR = PACKAGED_SKILLS if PACKAGED_SKILLS.is_dir() else REPO_ROOT / "skills"
 QUERY_SKILLS = ("sql-workflow", "duckdb-sql")
 
 # The MCP server's name in the SDK session; its tools appear as mcp__data__<tool>.
@@ -92,6 +94,7 @@ class Outcome:
     answer: str
     finished: bool
     infra_error: bool
+    errors: list[str]
     events_path: Path
 
 
@@ -246,6 +249,7 @@ def result_fields(message: ResultMessage | None) -> dict[str, Any]:
         "cached_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
         "output_tokens": int(usage.get("output_tokens") or 0),
         "cost_usd": (message.total_cost_usd or 0.0) if message else 0.0,
+        "errors": (message.errors or []) if message else [],
     }
 
 
@@ -279,13 +283,22 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
                     final = message
                 else:
                     record_message(log, message, tools)
-        except ClaudeSDKError as exc:
-            # A failed run ends with a ResultMessage and then this error; only a missing result
-            # means the run itself broke.
+        except Exception as exc:
+            # A failed run ends with a ResultMessage and then a ResultError, whose details the
+            # result event already holds. Anything else (the SDK also raises plain Exceptions,
+            # e.g. an `initialize` timeout) means the run itself broke.
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
         log.emit("result", **result_fields(final))
-    infra_error = final is None or final.api_error_status is not None
+    # Connection failures and timeouts end with an api_error that has no HTTP status.
+    infra_error = (
+        final is None or final.api_error_status is not None or final.terminal_reason == "api_error"
+    )
     finished = final is not None and final.subtype == "success" and not final.is_error
-    answer = (final.result or "") if final else ""
-    return Outcome(answer=answer, finished=finished, infra_error=infra_error, events_path=path)
+    return Outcome(
+        answer=(final.result or "") if final else "",
+        finished=finished and not infra_error,
+        infra_error=infra_error,
+        errors=(final.errors or []) if final else ["the agent SDK failed before the run ended"],
+        events_path=path,
+    )
