@@ -240,6 +240,7 @@ class SubagentStart:
     """In a scripted stream: the CLI calls the SubagentStart hooks for a new subagent."""
 
     agent_id: str = "a1"
+    agent_type: str = "verifier"
 
 
 @dataclasses.dataclass
@@ -248,6 +249,7 @@ class SubagentStop:
 
     transcript: Path
     agent_id: str = "a1"
+    agent_type: str = "verifier"
 
 
 async def call_hooks(options: Any, event: str, **fields: Any) -> None:
@@ -257,10 +259,16 @@ async def call_hooks(options: Any, event: str, **fields: Any) -> None:
             await hook(hook_input, None, {"signal": None})
 
 
-async def stop_subagent(options: Any, transcript: Path, agent_id: str = "a1") -> None:
+async def stop_subagent(
+    options: Any, transcript: Path, agent_id: str = "a1", agent_type: str = "verifier"
+) -> None:
     """What the CLI does when a subagent ends: call the SubagentStop hooks."""
     await call_hooks(
-        options, "SubagentStop", agent_id=agent_id, agent_transcript_path=str(transcript)
+        options,
+        "SubagentStop",
+        agent_id=agent_id,
+        agent_type=agent_type,
+        agent_transcript_path=str(transcript),
     )
 
 
@@ -271,9 +279,11 @@ def capped_script(
         try:
             for step in steps:
                 if isinstance(step, SubagentStart):
-                    await call_hooks(options, "SubagentStart", agent_id=step.agent_id)
+                    await call_hooks(
+                        options, "SubagentStart", agent_id=step.agent_id, agent_type=step.agent_type
+                    )
                 elif isinstance(step, SubagentStop):
-                    await stop_subagent(options, step.transcript, step.agent_id)
+                    await stop_subagent(options, step.transcript, step.agent_id, step.agent_type)
                 else:
                     yield step
         finally:
@@ -397,6 +407,74 @@ async def test_subagents_still_running_are_let_finish(
     assert "never reached" not in text
     assert events[-1]["terminal_reason"] == "budget_exhausted"
     assert events[-1]["output_tokens"] == 1_000 + 2 * 7201
+
+
+async def test_other_subagents_leave_the_cap_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The CLI's own subagents (activity summaries, compaction; anthropics/claude-code#91910)
+    also call the SubagentStart/SubagentStop hooks, with no transcript of the verifiers' format
+    to read. Only the verifiers are priced from their transcripts: another subagent neither
+    turns the cap off nor holds back its check, and leaves no error event."""
+    fake = capped_script(
+        *call("m1", 1_000),
+        SubagentStart("s1", agent_type="other"),
+        SubagentStop(tmp_path / "missing.jsonl", "s1", agent_type="other"),
+        TOOL_RESULT,
+        *call("m2", 1_000_000),
+        SubagentStart("s2", agent_type="other"),
+        TOOL_RESULT,
+        *call("m3", 1, text="never reached"),
+        result(),
+    )
+    outcome, events = await run_with(monkeypatch, tmp_path, fake)
+    assert not outcome.finished
+    assert "never reached" not in outcome.events_path.read_text()
+    assert [e for e in events if e["type"] == "error"] == []
+    assert events[-1]["terminal_reason"] == "budget_exhausted"
+    assert events[-1]["output_tokens"] == 1_001_000
+
+
+async def test_spend_the_cap_did_not_count_is_in_the_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Another subagent's calls reach only the SDK's `model_usage`: a run the SDK ends prices
+    that, and its result says how much of it the cap had not counted."""
+    model_usage = {
+        "deepseek-flash": {
+            "inputTokens": 101_000,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "outputTokens": 2_000,
+        }
+    }
+    fake = capped_script(
+        *call("m1", 1_000, input_tokens=1_000, tool=False),
+        result(model_usage=model_usage),
+    )
+    outcome, events = await run_with(monkeypatch, tmp_path, fake)
+    assert outcome.finished
+    assert events[-1]["cost_usd"] == pytest.approx((101_000 * 0.30 + 2_000 * 1.2) / 1e6)
+    assert events[-1]["unmetered_cost_usd"] == pytest.approx((100_000 * 0.30 + 1_000 * 1.2) / 1e6)
+
+
+async def test_result_has_no_gap_when_the_cap_counted_everything(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    model_usage = {
+        "deepseek-flash": {
+            "inputTokens": 1_000,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "outputTokens": 1_000,
+        }
+    }
+    fake = capped_script(
+        *call("m1", 1_000, input_tokens=1_000, tool=False),
+        result(model_usage=model_usage),
+    )
+    _, events = await run_with(monkeypatch, tmp_path, fake)
+    assert "unmetered_cost_usd" not in events[-1]
 
 
 def test_transcript_usage_reads_the_clis_line_format() -> None:

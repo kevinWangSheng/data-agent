@@ -45,7 +45,14 @@ from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 from data_agent.command_guard import command_guard
 from data_agent.events import EventLog, known_secrets
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
-from data_agent.verifiers import AGENT_TOOL, VERIFIERS_PROMPT, Emit, verifier_agents, verifier_hooks
+from data_agent.verifiers import (
+    AGENT_TOOL,
+    VERIFIER_NAMES,
+    VERIFIERS_PROMPT,
+    Emit,
+    verifier_agents,
+    verifier_hooks,
+)
 from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -253,8 +260,10 @@ class Spend:
     message_start, then message_delta with the call's final usage. The per-block
     AssistantMessages carry the usage from the start of the response, with no output.
 
-    Subagents (the verifiers) stream no partial messages and only some of their calls, so each is
-    priced when it stops, from the transcript the CLI wrote (`hooks`). A transcript that
+    The verifiers stream no partial messages and only some of their calls, so each is priced
+    when it stops, from the transcript the CLI wrote (`hooks`). The CLI's own subagents
+    (activity summaries, compaction) are not counted here: a run the SDK ends prices them from
+    `model_usage`, and its result says what this cap missed (`unmetered`). A transcript that
     cannot be read is recorded as an error event and turns this cap off: what is left to count
     would understate the spend, so the run ends through the SDK, under the SDK's cap, and its
     result prices the SDK's `model_usage` (`result_fields`), as every run the SDK ends does.
@@ -297,19 +306,23 @@ class Spend:
                 self._call_uses_tools = True
 
     def hooks(self, emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
-        """Hooks that follow the subagents and price each one from its transcript when it
+        """Hooks that follow the verifiers and price each one from its transcript when it
         stops."""
 
         async def start(
             hook_input: HookInput, tool_use_id: str | None, context: HookContext
         ) -> HookJSONOutput:
-            self.running.add(str(dict(hook_input).get("agent_id")))
+            fields = dict(hook_input)
+            if fields.get("agent_type") in VERIFIER_NAMES:
+                self.running.add(str(fields.get("agent_id")))
             return {}
 
         async def stop(
             hook_input: HookInput, tool_use_id: str | None, context: HookContext
         ) -> HookJSONOutput:
             fields = dict(hook_input)
+            if fields.get("agent_type") not in VERIFIER_NAMES:
+                return {}
             path = fields.get("agent_transcript_path")
             try:
                 if not isinstance(path, str) or not path:
@@ -349,6 +362,21 @@ class Spend:
             return False
         self.stopped = self.cost_usd() > self.budget
         return self.stopped
+
+    def unmetered(self, result: dict[str, Any]) -> dict[str, Any]:
+        """For a run the SDK ended: `unmetered_cost_usd`, the spend in the result (the SDK's
+        `model_usage`, every subagent included) that this cap did not count, if there is any.
+        After a failed transcript the gap is expected and already an error event."""
+        if self.transcript_failed or result["cost_basis"] != "price_table":
+            return {}
+        counted = self.tokens()
+        reported = Tokens(
+            result["uncached_input_tokens"], result["cached_input_tokens"], result["output_tokens"]
+        )
+        if reported == counted:
+            return {}
+        gap = (r - c for r, c in zip(reported, counted, strict=True))
+        return {"unmetered_cost_usd": priced_usd(self.price, *gap)}
 
     def result_fields(self) -> dict[str, Any]:
         """The result event of a run this cap stopped; the SDK never sent its own."""
@@ -687,6 +715,12 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
     }
 
 
+def ended_by_sdk(message: ResultMessage | None, model: str, spend: Spend | None) -> dict[str, Any]:
+    """The result event of a run the SDK ended: `result_fields`, and what `spend` missed."""
+    fields = result_fields(message, model)
+    return fields if spend is None else fields | spend.unmetered(fields)
+
+
 async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str, str]) -> Outcome:
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
@@ -730,7 +764,7 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
         stopped = spend.result_fields() if spend is not None and spend.stopped else None
-        log.emit("result", **(stopped or result_fields(final, settings.model)))
+        log.emit("result", **(stopped or ended_by_sdk(final, settings.model, spend)))
     if stopped is not None:
         return Outcome(
             answer="", finished=False, infra_error=False, errors=stopped["errors"], events_path=path

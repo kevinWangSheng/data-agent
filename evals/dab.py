@@ -51,11 +51,11 @@ from data_agent.agent import (
     Task,
     build_options,
     capped,
+    ended_by_sdk,
     git_commit,
     load_skills,
     query,
     record_message,
-    result_fields,
     skill_version,
     spend_cap,
 )
@@ -348,7 +348,7 @@ async def run_once(
             remove_exec_containers(workspace)
             mask_dab_logs(directory, secrets_of(env))
         stopped = cap.result_fields() if cap is not None and cap.stopped else None
-        log.emit("result", **(stopped or result_fields(final, settings.model)))
+        log.emit("result", **(stopped or ended_by_sdk(final, settings.model, cap)))
     if stopped is not None and server_up:
         return "", "unfinished"
     if (
