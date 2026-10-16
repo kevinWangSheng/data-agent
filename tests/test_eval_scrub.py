@@ -142,6 +142,37 @@ def test_scrub_decodes_json_nested_in_strings(tmp_path: Path) -> None:
     ]
 
 
+def test_scrub_fails_on_duplicate_json_keys(tmp_path: Path) -> None:
+    # json.loads keeps only the last value, so the first one would pass unchecked and unscrubbed.
+    events = tmp_path / "events.jsonl"
+    text = '{"output": "build-box-7", "output": "ok"}\n'
+    events.write_text(text)
+    nested = tmp_path / "nested.jsonl"
+    nested_text = json.dumps({"output": '{"h": "build\\u002dbox-7", "h": "ok"}'}) + "\n"
+    nested.write_text(nested_text)
+    proc = scrub(tmp_path, "--hostname", "build-box-7")
+    assert proc.returncode != 0
+    assert "events.jsonl" in proc.stderr and "nested.jsonl" in proc.stderr
+    assert events.read_text() == text
+    assert nested.read_text() == nested_text
+
+
+def test_scrub_treats_object_keys_like_string_values(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({'{"h": "build\\u002dbox-7"}': 1, "build-box-7": 2, "ok": 3}) + "\n"
+    )
+    stray = tmp_path / "stray.jsonl"
+    stray_text = json.dumps({"got build\\u002dbox-7 (truncated": 1}) + "\n"
+    stray.write_text(stray_text)
+    proc = scrub(tmp_path, "--hostname", "build-box-7")
+    assert proc.returncode != 0
+    assert "stray.jsonl" in proc.stderr and "events.jsonl" not in proc.stderr
+    assert stray.read_text() == stray_text
+    keys = list(json.loads(events.read_text()))
+    assert keys == ['{"h": "[redacted-host]"}', "[redacted-host]", "ok"]
+
+
 def test_scrub_fails_on_unicode_escapes_outside_json(tmp_path: Path) -> None:
     events = tmp_path / "events.jsonl"
     text = json.dumps({"output": 'got {"error": "build\\u002dbox-7 down" (truncated'}) + "\n"

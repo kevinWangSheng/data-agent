@@ -71,6 +71,14 @@ def test_spend_refuses_result_events_without_a_cost(tmp_path: Path) -> None:
     assert spend(tmp_path, "100").returncode == 2
 
 
+def test_spend_refuses_negative_costs(tmp_path: Path) -> None:
+    # A negative cost would hide real spend from the 80% guard.
+    write_events(tmp_path / "events.jsonl", result(5.0), result(-5.0))
+    proc = spend(tmp_path, "1")
+    assert proc.returncode == 2
+    assert "events.jsonl" in proc.stderr
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read any directory")
 def test_spend_refuses_when_a_subdirectory_cannot_be_read(tmp_path: Path) -> None:
     locked = tmp_path / "trial"

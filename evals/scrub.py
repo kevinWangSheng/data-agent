@@ -5,7 +5,7 @@ and `.jsonl` files it scrubs the decoded strings and re-serializes, so JSON esca
 secret nor get broken by a redaction; other files, and lines that do not parse, are scrubbed as
 text. JSON nested in a string (a tool that printed JSON) is decoded and scrubbed the same way.
 Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks, a
-`\\uXXXX` escape outside parseable JSON) is listed and the command fails.
+`\\uXXXX` escape outside parseable JSON, a repeated JSON key) is listed and the command fails.
 """
 
 import argparse
@@ -108,6 +108,14 @@ def scrub_string(text: str, rules: Rules, counts: Counter[str]) -> str:
     return scrub_plain(text, rules, counts)
 
 
+def unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """json.loads keeps only the last value of a repeated key, so the others would go unchecked."""
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise Unchecked("a repeated JSON key hides a value from the check")
+    return value
+
+
 def scrub_value(value: Any, rules: Rules, counts: Counter[str]) -> Any:
     if isinstance(value, str):
         return scrub_string(value, rules, counts)
@@ -115,7 +123,7 @@ def scrub_value(value: Any, rules: Rules, counts: Counter[str]) -> Any:
         return [scrub_value(v, rules, counts) for v in value]
     if isinstance(value, dict):
         return {
-            scrub_text(k, rules, counts): scrub_value(v, rules, counts) for k, v in value.items()
+            scrub_string(k, rules, counts): scrub_value(v, rules, counts) for k, v in value.items()
         }
     return value
 
@@ -123,7 +131,7 @@ def scrub_value(value: Any, rules: Rules, counts: Counter[str]) -> Any:
 def scrub_document(text: str, rules: Rules, counts: Counter[str]) -> str | None:
     """One JSON document, kept byte for byte unless a string in it changed; None if not JSON."""
     try:
-        value = json.loads(text)
+        value = json.loads(text, object_pairs_hook=unique_keys)
     except json.JSONDecodeError:
         return None
     before = counts.total()

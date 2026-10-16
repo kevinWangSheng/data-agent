@@ -3,7 +3,7 @@
 Sums `cost_usd` over the result events of every `*.jsonl` event file under RUNS_DIR. Exit 0 below
 80% of the budget; exit 1 at or above it, so a batch runner stops and a human decides; exit 2 when
 the spend cannot be known (unreadable directory or event file, a symlink, a result without a
-cost, bad arguments).
+cost or with a negative one, bad arguments).
 Amounts are Decimal so "exactly 80%" is exact.
 """
 
@@ -46,6 +46,8 @@ def file_spend(path: Path) -> Decimal:
         cost = event.get("cost_usd")
         if isinstance(cost, bool) or not isinstance(cost, Decimal | int):
             raise SpendUnknown(f"{path} line {number}: result event has no numeric cost_usd")
+        if cost < 0:  # would hide real spend from the guard
+            raise SpendUnknown(f"{path} line {number}: result event has a negative cost_usd")
         total += cost
     return total
 
