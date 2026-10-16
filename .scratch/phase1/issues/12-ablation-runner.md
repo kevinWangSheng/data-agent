@@ -12,7 +12,7 @@ Branch: —
 
 ## Authority
 
-- May edit: `evals/`、`tests/`（除 `tests/acceptance/`）
+- May edit: `evals/`、`tests/`（除 `tests/acceptance/`）、`src/data_agent/configs/full-old-skill.toml`、冻结的旧版 Skill 目录（新建，如 `skills-frozen/<版本>/`，内容是当前 `skills/` 的原样副本）、`pyproject.toml`（只限 force-include 该目录）
 - Must not edit: `tests/acceptance/` 下的验收测试（唯一例外：本工单让某个测试转绿时，删掉该测试的 `xfail` 标记，其余一字不改）、其他工单的文件、`.claude/`、`CODING_STANDARDS.md`
 - Server access: none
 - Spend cap: $3
@@ -54,3 +54,7 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 - Human review minutes: —
 
 ## Comments
+
+### 2026-10-16 主会话：派工前修正 Authority
+
+验收标准里"冻结旧版 Skill、`full-old-skill` 指向它、加进 force-include"是主会话从工单 05 转来的，但 Authority 原来只有 `evals/`、`tests/`，自相矛盾；已把对应的三处加进 May edit。"旧版"取当前 main 上的 `skills/`（工单 14 的失败归因还没改过 Skill）。本工单只做本地 1 题 × 6 配置验证；全量等 `da-remote` 与服务器升配，不在本工单内。
