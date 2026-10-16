@@ -17,7 +17,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 import claude_agent_sdk
 from claude_agent_sdk import (
@@ -165,13 +165,17 @@ def sdk_budget_usd(budget: float, model: str) -> float:
     )
 
 
-# Uncached input, cached input and output tokens of one model call.
-Tokens = tuple[int, int, int]
+class Tokens(NamedTuple):
+    """Tokens of one model call, or of several summed."""
+
+    uncached: int  # input, including tokens written to the cache (billed as fresh input)
+    cached: int
+    output: int
 
 
 def usage_tokens(usage: Mapping[str, Any]) -> Tokens:
     """Uncached input counts the tokens written to the cache too, billed as fresh input."""
-    return (
+    return Tokens(
         int(usage.get("input_tokens") or 0) + int(usage.get("cache_creation_input_tokens") or 0),
         int(usage.get("cache_read_input_tokens") or 0),
         int(usage.get("output_tokens") or 0),
@@ -266,6 +270,7 @@ class Spend:
     subagents: dict[str, Tokens] = field(default_factory=dict)  # from transcripts
     transcript_failed: bool = False
     running: set[str] = field(default_factory=set)  # subagents started and not yet stopped
+    # After a main call that used tools, until the next starts: the cap may be checked then.
     between_calls: bool = False
     stopped: bool = False
     # The main call in progress: its id, its usage at message_start, whether it used tools.
@@ -329,15 +334,21 @@ class Spend:
 
     def tokens(self) -> Tokens:
         calls = (self.subagents | self.main).values()
-        return (sum(c[0] for c in calls), sum(c[1] for c in calls), sum(c[2] for c in calls))
+        return Tokens(
+            sum(c.uncached for c in calls),
+            sum(c.cached for c in calls),
+            sum(c.output for c in calls),
+        )
 
     def cost_usd(self) -> float:
         return priced_usd(self.price, *self.tokens())
 
-    def passed(self) -> bool:
+    def check(self) -> bool:
+        """Whether the run is to stop now: the cap may be checked and spend is over it."""
         if self.transcript_failed or self.running or not self.between_calls:
             return False
-        return self.cost_usd() > self.budget
+        self.stopped = self.cost_usd() > self.budget
+        return self.stopped
 
     def result_fields(self) -> dict[str, Any]:
         """The result event of a run this cap stopped; the SDK never sent its own."""
@@ -383,8 +394,7 @@ async def capped(messages: AsyncGenerator[Any], spend: Spend | None) -> AsyncGen
             if spend is not None:
                 spend.observe(message)
             yield message
-            if spend is not None and not isinstance(message, ResultMessage) and spend.passed():
-                spend.stopped = True
+            if spend is not None and not isinstance(message, ResultMessage) and spend.check():
                 return
 
 
