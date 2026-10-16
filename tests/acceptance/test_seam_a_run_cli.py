@@ -136,7 +136,6 @@ def test_event_file_header_sequence_and_cost(
             assert value not in text, f"{name} leaked into the event file"
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 04")
 def test_dbt_model_built_with_correct_values(tmp_path: Path) -> None:
     project, db = make_dbt_workspace(tmp_path)
     proc = run_agent(DBT_TASK, "dbt", project, db, "full", tmp_path / "events")
@@ -165,7 +164,6 @@ def test_dbt_model_built_with_correct_values(tmp_path: Path) -> None:
         assert abs(Decimal(str(value)) - want_value) <= Decimal("0.01"), cid
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 05")
 def test_baseline_leaves_no_verifier_or_context_trace(tmp_path: Path) -> None:
     project, db = make_dbt_workspace(tmp_path)
     events_dir = tmp_path / "events"

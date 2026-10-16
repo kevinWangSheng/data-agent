@@ -23,6 +23,10 @@ no per-file copyright header.
 
 - skills/sql-workflow/SKILL.md, skills/duckdb-sql/SKILL.md <- skills/ (same paths), modified as
   noted at the top of each file.
+- skills/dbt-workflow/SKILL.md, skills/dbt-write/SKILL.md, skills/dbt-debugging/SKILL.md <- skills/
+  (same paths), modified as noted at the top of each file.
+- skills/dbt-workflow/scan_project.py <- skills/dbt-workflow/scan_project.py, modified as noted at
+  its top; skills/dbt-workflow/validate_project.py <- same path, unmodified.
 
 ------------------------------------------------------------------------------
 data-eng-bench (https://github.com/Snowflake-Labs/data-eng-bench)

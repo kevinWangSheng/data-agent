@@ -1,4 +1,4 @@
-"""Read, Glob and Grep may only reach files inside the task workspace."""
+"""Read, Glob, Grep, Write and Edit may only reach files inside the task workspace."""
 
 from pathlib import Path
 from typing import Any
@@ -22,8 +22,10 @@ def workspace(tmp_path: Path) -> Path:
     return ws
 
 
-async def decide(workspace: Path, tool: str, tool_input: dict[str, Any]) -> str:
-    guard = workspace_guard(workspace)
+async def decide(
+    workspace: Path, tool: str, tool_input: dict[str, Any], protected: tuple[Path, ...] = ()
+) -> str:
+    guard = workspace_guard(workspace, protected)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
         "session_id": "s",
@@ -91,3 +93,41 @@ def test_query_runs_install_the_guard_for_every_file_tool(tmp_path: Path) -> Non
     matchers = (options.hooks or {}).get("PreToolUse", [])
     guarded = {name for m in matchers if m.matcher for name in m.matcher.split("|")}
     assert set(agent.QUERY_BUILTIN_TOOLS) <= guarded
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input", "decision"),
+    [
+        ("Write", {"file_path": "models/marts/new.sql", "content": "select 1"}, "none"),
+        (
+            "Edit",
+            {"file_path": "{ws}/models/orders.sql", "old_string": "1", "new_string": "2"},
+            "none",
+        ),
+        ("Write", {"file_path": "../secret.env", "content": "x"}, "deny"),
+        ("Write", {"file_path": "{home}/.bashrc", "content": "x"}, "deny"),
+        ("Write", {"file_path": "escape/secret.env", "content": "x"}, "deny"),
+        ("Edit", {"file_path": "secret_link", "old_string": "x", "new_string": "y"}, "deny"),
+        ("Write", {"file_path": "shop.duckdb", "content": ""}, "deny"),
+        ("Write", {"file_path": "{ws}/shop.duckdb.wal", "content": ""}, "deny"),
+        ("Edit", {"file_path": "shop.duckdb", "old_string": "a", "new_string": "b"}, "deny"),
+    ],
+)
+async def test_writes_stay_inside_the_workspace_and_off_the_database(
+    workspace: Path, tool: str, tool_input: dict[str, Any], decision: str
+) -> None:
+    filled = {k: v.format(ws=workspace, home=Path.home()) for k, v in tool_input.items()}
+    assert await decide(workspace, tool, filled, (workspace / "shop.duckdb",)) == decision
+
+
+def test_dbt_runs_guard_file_writes_and_bash(tmp_path: Path) -> None:
+    task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
+    settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
+    options = agent.build_options(task, load_config("full"), settings, [])
+    matchers = (options.hooks or {}).get("PreToolUse", [])
+    guarded = {name for m in matchers if m.matcher for name in m.matcher.split("|")}
+    assert {"Read", "Glob", "Grep", "Write", "Edit", "Bash"} <= guarded
+    assert {"Write", "Edit", "Bash"} <= set(options.tools or [])
+    query = Task(text="q", type="query", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
+    query_tools = agent.build_options(query, load_config("full"), settings, []).tools or []
+    assert not {"Write", "Edit", "Bash"} & set(query_tools)
