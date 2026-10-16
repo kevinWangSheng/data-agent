@@ -112,8 +112,12 @@ class LocalEnvironment:
         self.uploads[target_path] = Path(source_path)
 
 
+# The adapter class installed under a test directory, and that directory.
+type Local = tuple[type[DataAgent], Path]
+
+
 @pytest.fixture
-def local(tmp_path: Path) -> tuple[type[DataAgent], Path]:
+def local(tmp_path: Path) -> Local:
     """A DataAgent installed under tmp_path, with a stub in place of the real `data-agent`."""
     agent_dir = tmp_path / "installed-agent"
     bin_dir = agent_dir / "venv" / "bin"
@@ -162,7 +166,7 @@ def stub_args(tmp_path: Path) -> list[str]:
     return json.loads((tmp_path / "args.json").read_text())
 
 
-def test_runs_the_dbt_task_on_the_images_project_and_database(local: Any) -> None:
+def test_runs_the_dbt_task_on_the_images_project_and_database(local: Local) -> None:
     cls, tmp_path = local
     agent = make_agent(cls, tmp_path, run_config="no-skill")
     env = LocalEnvironment(container_env(tmp_path, 0, jsonl(VERSION_EVENT, result_event())))
@@ -173,7 +177,7 @@ def test_runs_the_dbt_task_on_the_images_project_and_database(local: Any) -> Non
         return args[args.index(flag) + 1]
 
     assert value("--type") == "dbt"
-    assert value("--workspace") == "/app/dbt_models_duckdb"
+    assert value("--workspace") == "/app"
     assert value("--duckdb") == "/app/database/retail.duckdb"
     assert value("--config") == "no-skill"
     assert value("--task") == "Fix `rpt_x`; don't touch $HOME"
@@ -181,13 +185,10 @@ def test_runs_the_dbt_task_on_the_images_project_and_database(local: Any) -> Non
     assert "the answer" in (agent.logs_dir / "data-agent.txt").read_text()
 
 
-def test_model_settings_reach_the_agent_and_the_model_comes_from_harbor(local: Any) -> None:
+def test_model_settings_reach_the_agent_and_the_model_comes_from_harbor(local: Local) -> None:
     cls, tmp_path = local
     agent = make_agent(cls, tmp_path, model="deepseek/deepseek-v4-pro")
-    env = LocalEnvironment(
-        container_env(tmp_path, 0, jsonl(result_event()))
-        | {"STUB_ARGS": str(tmp_path / "args.json")}
-    )
+    env = LocalEnvironment(container_env(tmp_path, 0, jsonl(result_event())))
     seen: dict[str, str] = {}
     original = env.exec
 
@@ -202,7 +203,7 @@ def test_model_settings_reach_the_agent_and_the_model_comes_from_harbor(local: A
     assert seen["DATA_AGENT_MODEL"] == "deepseek-v4-pro"
 
 
-def test_an_unfinished_agent_is_left_to_the_verifier(local: Any) -> None:
+def test_an_unfinished_agent_is_left_to_the_verifier(local: Local) -> None:
     """Exit 1 (turn or budget cap): an agent failure, scored by the verifier, never retried."""
     cls, tmp_path = local
     events = jsonl(result_event(subtype="error_max_turns", is_error=True))
@@ -214,7 +215,7 @@ def test_an_unfinished_agent_is_left_to_the_verifier(local: Any) -> None:
     [(429, ApiRateLimitError), (401, AgentAuthenticationError)],
 )
 def test_a_failed_model_call_raises_harbors_error_for_its_status(
-    local: Any, status: int, error: type[Exception]
+    local: Local, status: int, error: type[Exception]
 ) -> None:
     cls, tmp_path = local
     events = jsonl(result_event(is_error=True, api_error_status=status))
@@ -223,7 +224,26 @@ def test_a_failed_model_call_raises_harbors_error_for_its_status(
         run(make_agent(cls, tmp_path), env)
 
 
-def test_a_run_that_broke_without_a_status_keeps_harbors_own_classification(local: Any) -> None:
+def test_a_model_call_that_lost_its_connection_is_retried(local: Local) -> None:
+    """No HTTP status: the connection dropped (agent.run's api_error without a status)."""
+    cls, tmp_path = local
+    final = result_event(is_error=True, terminal_reason="api_error")
+    env = LocalEnvironment(container_env(tmp_path, 2, jsonl(final), STUB_STDERR="Connection"))
+    with pytest.raises(NonZeroAgentExitCodeError) as raised:
+        run(make_agent(cls, tmp_path), env)
+    assert type(raised.value).__name__ in harbor_agent.TRANSIENT_ERRORS
+
+
+def test_a_cut_short_event_line_does_not_hide_the_status(local: Local) -> None:
+    """A run killed mid-write leaves half a line after the result event."""
+    cls, tmp_path = local
+    events = jsonl(result_event(is_error=True, api_error_status=429)) + '{"seq": 9, "ty'
+    env = LocalEnvironment(container_env(tmp_path, 2, events))
+    with pytest.raises(ApiRateLimitError):
+        run(make_agent(cls, tmp_path), env)
+
+
+def test_a_run_that_broke_without_a_status_keeps_harbors_own_classification(local: Local) -> None:
     cls, tmp_path = local
     env = LocalEnvironment(container_env(tmp_path, 2, "", STUB_STDERR="DATA_AGENT_API_KEY"))
     with pytest.raises(NonZeroAgentExitCodeError) as raised:
@@ -231,7 +251,7 @@ def test_a_run_that_broke_without_a_status_keeps_harbors_own_classification(loca
     assert type(raised.value).__name__ not in harbor_agent.TRANSIENT_ERRORS
 
 
-def test_only_the_duckdb_variant_is_supported(local: Any) -> None:
+def test_only_the_duckdb_variant_is_supported(local: Local) -> None:
     cls, tmp_path = local
     env = LocalEnvironment(container_env(tmp_path, 0, jsonl(result_event()), DB_TYPE="snowflake"))
     with pytest.raises(NonZeroAgentExitCodeError, match="DB_TYPE"):

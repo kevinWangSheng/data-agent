@@ -7,8 +7,9 @@ After the trial Harbor calls `populate_context_post_run()`, which fills tokens a
 the trial result from the event file's `result` event.
 
 Errors (plan §7): an agent that stops early (turn or spend cap) is an agent failure the verifier
-scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status, so the
-job config's retry list (`TRANSIENT_ERRORS`) retries rate limits and server errors only.
+scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status (or a
+dropped connection when it has none), so the job config's retry list (`TRANSIENT_ERRORS`) retries
+rate limits, server errors and disconnects only.
 
 Run from the repo root, with the `DATA_AGENT_*` variables in the environment:
 
@@ -28,6 +29,7 @@ from typing import Any, ClassVar, override
 
 from harbor.agents.installed.base import (
     AgentAuthenticationError,
+    ApiConnectionClosedError,
     ApiInternalServerError,
     ApiOverloadedError,
     ApiRateLimitError,
@@ -65,7 +67,7 @@ STATUS_ERRORS: dict[int, type[NonZeroAgentExitCodeError]] = {
 }
 # The variables `data-agent run` reads its model from (agent.ModelSettings).
 MODEL_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_BASE_URL", "DATA_AGENT_MODEL")
-# Pinned like the other tools; installs uv inside the container, which has none.
+# Pinned like the other tools; the container has no uv of its own.
 UV_VERSION = "0.10.8"
 
 _build_lock = threading.Lock()
@@ -82,9 +84,20 @@ def status_error(status: int | None) -> type[NonZeroAgentExitCodeError] | None:
     return ApiInternalServerError if 500 <= status < 600 else None
 
 
-def read_events(path: Path) -> Iterator[dict[str, Any]]:
-    """The events of one event file; a line cut short by a killed run is skipped."""
-    for line in path.read_text().splitlines():
+def result_error(result: dict[str, Any]) -> type[NonZeroAgentExitCodeError] | None:
+    """Harbor's error type for a run's `result` event. A model call that failed with no HTTP
+    status lost its connection or timed out on the request (agent.run): a dropped connection,
+    retried. Harbor's own agent timeout is a different error and stays unretried."""
+    if (status := result.get("api_error_status")) is not None:
+        return status_error(status)
+    if result.get("terminal_reason") == "api_error":
+        return ApiConnectionClosedError
+    return None
+
+
+def parse_events(text: str) -> Iterator[dict[str, Any]]:
+    """The events of an event file's text; a line cut short by a killed run is skipped."""
+    for line in text.splitlines():
         try:
             yield json.loads(line)
         except json.JSONDecodeError:
@@ -131,6 +144,8 @@ class DataAgent(BaseInstalledAgent):
     options_model = DataAgentOptions
     # Where the agent's virtualenv lives in the container.
     AGENT_DIR: ClassVar[PurePosixPath] = PurePosixPath("/installed-agent")
+    # The task image's WORKDIR, where the official configs' agents work too.
+    WORKSPACE: ClassVar[PurePosixPath] = PurePosixPath("/app")
     # Under the agent logs directory, which Harbor copies back to the trial directory.
     EVENTS_DIR: ClassVar[str] = "events"
     OUTPUT_FILE: ClassVar[str] = "data-agent.txt"
@@ -152,24 +167,22 @@ class DataAgent(BaseInstalledAgent):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
-        await self.ensure_system_dependencies(environment, ("curl",))
         wheel, requirements = await asyncio.to_thread(build_artifacts)
         remote_wheel = self.AGENT_DIR / wheel.name
         remote_requirements = self.AGENT_DIR / "requirements.txt"
         await environment.upload_file(wheel, str(remote_wheel))
         await environment.upload_file(requirements, str(remote_requirements))
-        uv_dir = self.AGENT_DIR / "uv"
-        uv = shlex.quote(str(uv_dir / "uv"))
-        python = shlex.quote(str(self.venv / "bin" / "python"))
+        bin_dir = self.venv / "bin"
+        uv = shlex.quote(str(bin_dir / "uv"))
+        python = shlex.quote(str(bin_dir / "python"))
         await self.exec_as_root(
             environment,
             command=(
                 "set -euo pipefail; "
-                f"curl -LsSf https://astral.sh/uv/{UV_VERSION}/install.sh "
-                f"| env UV_UNMANAGED_INSTALL={shlex.quote(str(uv_dir))} sh; "
-                # The image's Python, never a downloaded one.
-                f'{uv} venv --no-python-downloads --python "$(command -v python3)" '
-                f"{shlex.quote(str(self.venv))}; "
+                # The image's Python. uv comes from PyPI through the venv's own pip: fetching it
+                # from astral.sh or GitHub failed the TLS handshake in 2 of 5 local trials.
+                f"python3 -m venv {shlex.quote(str(self.venv))}; "
+                f"{python} -m pip install --quiet --retries 5 uv=={UV_VERSION}; "
                 f"{uv} pip install --python {python} --require-hashes "
                 f"-r {shlex.quote(str(remote_requirements))}; "
                 f"{uv} pip install --python {python} --no-deps {shlex.quote(str(remote_wheel))}; "
@@ -191,8 +204,9 @@ class DataAgent(BaseInstalledAgent):
             'if [ "$DB_TYPE" != duckdb ]; then '
             'echo "data-agent runs only DB_TYPE=duckdb, got DB_TYPE=$DB_TYPE" >&2; exit 2; fi; '
             f"{shlex.quote(str(self.venv / 'bin' / 'data-agent'))} run --type dbt "
-            # The image's dbt project and database (data-eng-bench base-image/Dockerfile).
-            '--workspace "${DBT_PROJECT_DIR_DUCKDB:-/app/dbt_models_duckdb}" '
+            # The image's working directory and database (data-eng-bench base-image/Dockerfile).
+            # Tasks edit the dbt project in it or create one beside it (/app/dbt_project, ...).
+            f"--workspace {shlex.quote(str(self.WORKSPACE))} "
             '--duckdb "${DUCKDB_PATH:-/app/database/retail.duckdb}" '
             f"--config {shlex.quote(self.options.run_config)} "
             f"--events-dir {shlex.quote(str(logs / self.EVENTS_DIR))} "
@@ -207,13 +221,7 @@ class DataAgent(BaseInstalledAgent):
         found = await environment.exec(command=f"cat {events}/*.jsonl")
         if found.return_code != 0 or not found.stdout:
             return None
-        results = [
-            event
-            for line in found.stdout.splitlines()
-            if line.strip().startswith("{")
-            for event in [json.loads(line)]
-            if event.get("type") == "result"
-        ]
+        results = [e for e in parse_events(found.stdout) if e.get("type") == "result"]
         return results[-1] if results else None
 
     @override
@@ -227,7 +235,7 @@ class DataAgent(BaseInstalledAgent):
             )
         except NonZeroAgentExitCodeError as exc:
             result = await self._last_result(environment)
-            error = status_error(result.get("api_error_status")) if result else None
+            error = result_error(result) if result else None
             if error is None:
                 raise
             raise error(str(exc)) from exc
@@ -237,7 +245,7 @@ class DataAgent(BaseInstalledAgent):
         version: dict[str, Any] = {}
         result: dict[str, Any] | None = None
         for path in sorted((self.logs_dir / self.EVENTS_DIR).glob("*.jsonl")):
-            for event in read_events(path):
+            for event in parse_events(path.read_text()):
                 if event.get("type") == "version":
                     version = event
                 elif event.get("type") == "result":

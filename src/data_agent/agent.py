@@ -106,8 +106,10 @@ DBT_PROMPT = """\
 Task type: dbt
 Database: DuckDB. dbt writes to it through the project's profile; you read it only through the \
 `{server}` MCP tools.
-dbt project (your working directory): {workspace}
-Bash runs only dbt commands{scripts}, from the working directory.
+Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
+Bash runs only dbt commands{scripts}, from the working directory; for a project in a \
+subdirectory, pass --project-dir and --profiles-dir. Relative paths in a profile resolve from the \
+working directory.
 
 <task>
 {task}
