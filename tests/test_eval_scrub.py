@@ -126,6 +126,34 @@ def test_scrub_sees_through_json_escapes_without_breaking_them(tmp_path: Path) -
     assert json.loads(result.read_text()) == {"error": "[redacted-host] down"}
 
 
+def test_scrub_decodes_json_nested_in_strings(tmp_path: Path) -> None:
+    # A tool that prints JSON: after the outer decode, the inner escape still spells the host.
+    inner = '{"error": "build\\u002dbox-7 down", "name": "caf\\u00e9"}'
+    lines = '{"a": "build\\u002dbox-7"}\n{"b": "node\\u002d1"}'
+    events = tmp_path / "events.jsonl"
+    events.write_text(json.dumps({"output": inner}) + "\n" + json.dumps({"output": lines}) + "\n")
+    proc = scrub(tmp_path, "--hostname", "build-box-7", "--hostname", "node-1")
+    assert proc.returncode == 0, proc.stderr
+    first, second = (json.loads(line)["output"] for line in events.read_text().splitlines())
+    assert json.loads(first) == {"error": "[redacted-host] down", "name": "café"}
+    assert [json.loads(line) for line in second.split("\n")] == [
+        {"a": "[redacted-host]"},
+        {"b": "[redacted-host]"},
+    ]
+
+
+def test_scrub_fails_on_unicode_escapes_outside_json(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    text = json.dumps({"output": 'got {"error": "build\\u002dbox-7 down" (truncated'}) + "\n"
+    events.write_text(text)
+    log = tmp_path / "run.log"
+    log.write_text("echo build\\u002dbox-7\n")
+    proc = scrub(tmp_path, "--hostname", "build-box-7")
+    assert proc.returncode != 0
+    assert "events.jsonl" in proc.stderr and "run.log" in proc.stderr
+    assert events.read_text() == text
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read any directory")
 def test_scrub_fails_when_a_subdirectory_cannot_be_read(tmp_path: Path) -> None:
     locked = tmp_path / "trial" / "agent"

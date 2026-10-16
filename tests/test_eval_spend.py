@@ -56,6 +56,16 @@ def test_spend_refuses_unreadable_event_files(tmp_path: Path) -> None:
     assert "events.jsonl" in proc.stderr
 
 
+def test_spend_reads_lines_with_unicode_line_separators(tmp_path: Path) -> None:
+    # scrub writes non-ASCII back literally, so a tool output can hold U+2028, U+2029 or U+0085.
+    path = tmp_path / "events.jsonl"
+    output = {"seq": 0, "type": "tool_end", "output": "a\u2028b\u2029c\u0085d"}
+    path.write_text(json.dumps(output, ensure_ascii=False) + "\n" + json.dumps(result(0.1)) + "\n")
+    proc = spend(tmp_path, "1")
+    assert proc.returncode == 0, proc.stderr
+    assert "0.10" in proc.stdout
+
+
 def test_spend_refuses_result_events_without_a_cost(tmp_path: Path) -> None:
     write_events(tmp_path / "events.jsonl", {"seq": 1, "type": "result", "cost_usd": None})
     assert spend(tmp_path, "100").returncode == 2

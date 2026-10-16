@@ -33,7 +33,8 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
 
 def file_spend(path: Path) -> Decimal:
     total = Decimal(0)
-    for number, line in enumerate(path.read_text().splitlines(), start=1):
+    # Only "\n" ends a JSONL line; splitlines() would also split at U+2028 inside a string.
+    for number, line in enumerate(path.read_text().split("\n"), start=1):
         if not line.strip():
             continue
         try:

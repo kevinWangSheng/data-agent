@@ -3,9 +3,9 @@
 Rewrites every file under DIR in place (plan §7: published trajectories leak nothing). In `.json`
 and `.jsonl` files it scrubs the decoded strings and re-serializes, so JSON escapes neither hide a
 secret nor get broken by a redaction; other files, and lines that do not parse, are scrubbed as
-text.
-Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks) is
-listed and the command fails.
+text. JSON nested in a string (a tool that printed JSON) is decoded and scrubbed the same way.
+Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks, a
+`\\uXXXX` escape outside parseable JSON) is listed and the command fails.
 """
 
 import argparse
@@ -37,9 +37,15 @@ KEY_SHAPE = re.compile(
 )
 OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 IPV4 = re.compile(rf"(?<![\d.]){OCTET}(?:\.{OCTET}){{3}}(?!\.?\d)")
+# Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
+UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
 
 # (marker kind, pattern): matches become "[redacted-<kind>]".
 type Rules = list[tuple[str, re.Pattern[str]]]
+
+
+class Unchecked(Exception):
+    pass
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -84,9 +90,27 @@ def scrub_text(text: str, rules: Rules, counts: Counter[str]) -> str:
     return text
 
 
+def scrub_plain(text: str, rules: Rules, counts: Counter[str]) -> str:
+    text = scrub_text(text, rules, counts)
+    if UNICODE_ESCAPE.search(text):
+        raise Unchecked("a \\uXXXX escape outside JSON could hide a name")
+    return text
+
+
+def scrub_string(text: str, rules: Rules, counts: Counter[str]) -> str:
+    """Text that may hold JSON or JSONL: decoded first when a \\uXXXX escape could hide a name."""
+    if not UNICODE_ESCAPE.search(text):
+        return scrub_text(text, rules, counts)
+    if (scrubbed := scrub_document(text, rules, counts)) is not None:
+        return scrubbed
+    if "\n" in text:
+        return scrub_lines(text, rules, counts)
+    return scrub_plain(text, rules, counts)
+
+
 def scrub_value(value: Any, rules: Rules, counts: Counter[str]) -> Any:
     if isinstance(value, str):
-        return scrub_text(value, rules, counts)
+        return scrub_string(value, rules, counts)
     if isinstance(value, list):
         return [scrub_value(v, rules, counts) for v in value]
     if isinstance(value, dict):
@@ -96,12 +120,12 @@ def scrub_value(value: Any, rules: Rules, counts: Counter[str]) -> Any:
     return value
 
 
-def scrub_json(text: str, rules: Rules, counts: Counter[str]) -> str:
-    """One JSON document; kept byte for byte unless a string in it changed."""
+def scrub_document(text: str, rules: Rules, counts: Counter[str]) -> str | None:
+    """One JSON document, kept byte for byte unless a string in it changed; None if not JSON."""
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
-        return scrub_text(text, rules, counts)
+        return None
     before = counts.total()
     value = scrub_value(value, rules, counts)
     if counts.total() == before:
@@ -110,15 +134,23 @@ def scrub_json(text: str, rules: Rules, counts: Counter[str]) -> str:
     return json.dumps(value, indent=indent, ensure_ascii=False) + text[len(text.rstrip()) :]
 
 
+def scrub_json(text: str, rules: Rules, counts: Counter[str]) -> str:
+    if (scrubbed := scrub_document(text, rules, counts)) is not None:
+        return scrubbed
+    return scrub_plain(text, rules, counts)
+
+
+def scrub_lines(text: str, rules: Rules, counts: Counter[str]) -> str:
+    lines = text.split("\n")
+    return "\n".join(scrub_json(line, rules, counts) if line.strip() else line for line in lines)
+
+
 def scrub_file(path: Path, text: str, rules: Rules, counts: Counter[str]) -> str:
     if path.suffix == ".json":
         return scrub_json(text, rules, counts)
     if path.suffix == ".jsonl":
-        lines = text.split("\n")
-        return "\n".join(
-            scrub_json(line, rules, counts) if line.strip() else line for line in lines
-        )
-    return scrub_text(text, rules, counts)
+        return scrub_lines(text, rules, counts)
+    return scrub_string(text, rules, counts)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -136,7 +168,13 @@ def run(args: argparse.Namespace) -> int:
         except (OSError, UnicodeDecodeError) as e:
             unchecked.append(f"{path}: {e}")
             continue
-        scrubbed = scrub_file(path, text, rules, counts)
+        file_counts: Counter[str] = Counter()
+        try:
+            scrubbed = scrub_file(path, text, rules, file_counts)
+        except Unchecked as e:
+            unchecked.append(f"{path}: {e}")
+            continue
+        counts.update(file_counts)
         if scrubbed != text:
             path.write_bytes(scrubbed.encode("utf-8"))
             changed += 1
