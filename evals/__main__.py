@@ -8,7 +8,7 @@ from typing import Any
 
 from evals.compare import paired_bootstrap
 from evals.harbor import by_task, load_trials
-from evals.report import score, write_report
+from evals.report import TRIALS_PER_TASK, check_complete, score, write_report
 from evals.sample import read_task_list, sample, task_difficulty
 
 
@@ -31,18 +31,18 @@ def cmd_score(args: argparse.Namespace) -> None:
 
 
 def cmd_compare(args: argparse.Namespace) -> None:
+    baseline, candidate = load_trials(args.baseline), load_trials(args.candidate)
+    check_complete(baseline, "baseline", args.trials)
+    check_complete(candidate, "candidate", args.trials)
     result = paired_bootstrap(
-        by_task(load_trials(args.baseline)),
-        by_task(load_trials(args.candidate)),
-        seed=args.seed,
-        n_boot=args.n_boot,
+        by_task(baseline), by_task(candidate), seed=args.seed, n_boot=args.n_boot
     )
     _print(result, args.json)
 
 
 def cmd_report(args: argparse.Namespace) -> None:
     manifest = json.loads(args.manifest.read_text())
-    report = write_report(load_trials(args.job_dir), manifest, args.split, args.out)
+    report = write_report(load_trials(args.job_dir), manifest, args.split, args.out, args.trials)
     print(
         f"{args.split}: accuracy {report['accuracy']:.1f}% ± {report['accuracy_stderr']:.1f}% "
         f"over {report['n_trials']} trials -> {args.out}"
@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--candidate", type=Path, required=True)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--n-boot", type=int, default=10000)
+    p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_compare)
 
@@ -79,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--split", choices=("dev", "holdout"), required=True)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
     p.set_defaults(func=cmd_report)
     return parser
 

@@ -99,14 +99,41 @@ def _trial_rows(trials: list[Trial]) -> list[dict[str, Any]]:
     return rows
 
 
+# Trials per task: the leaderboard's k, used for the holdout and dev sets alike (ADR-0004).
+TRIALS_PER_TASK = 3
+
+
+def check_complete(trials: list[Trial], label: str, trials_per_task: int) -> None:
+    """Refuse trials that are not ready to score: some task without exactly `trials_per_task`
+    trials (an interrupted job; pass@k would silently drop or zero it) or an infrastructure
+    error (to be rerun, never scored). Errors give counts only, so they name no holdout task.
+    """
+    counts = Counter(t.task for t in trials)
+    off = sum(1 for n in counts.values() if n != trials_per_task)
+    if off:
+        raise ValueError(
+            f"{off} of {len(counts)} {label} tasks do not have exactly {trials_per_task} "
+            "trials; rerun the interrupted trials"
+        )
+    infra = sum(1 for t in trials if is_infra_error(t))
+    if infra:
+        noun = "error" if infra == 1 else "errors"
+        raise ValueError(
+            f"{infra} infrastructure {noun} in the {label} trials; rerun those trials first"
+        )
+
+
 def write_report(
-    trials: list[Trial], manifest: dict[str, Any], split: str, out_dir: Path
+    trials: list[Trial],
+    manifest: dict[str, Any],
+    split: str,
+    out_dir: Path,
+    trials_per_task: int = TRIALS_PER_TASK,
 ) -> dict[str, Any]:
     """Write `out_dir/report.json` for one split of the manifest; dev also gets `trials.json`.
 
-    Refuses a split that is incomplete: a task without results, uneven trial counts (an
-    interrupted job; pass@k would silently skip the short task) or an infrastructure error
-    (to be rerun). Errors give counts only, so they name no holdout task.
+    Refuses a split that is incomplete: a task without results, or a split `check_complete`
+    rejects. Errors give counts only, so they name no holdout task.
     """
     tasks: list[str] = manifest[split]
     in_split = [t for t in trials if t.task in set(tasks)]
@@ -117,20 +144,7 @@ def write_report(
             f"no trial results for {len(missing)} of {len(tasks)} {split} tasks in this job; "
             "a report needs every task in the split"
         )
-    counts = Counter(t.task for t in in_split)
-    most = max(counts.values())
-    short = sum(1 for n in counts.values() if n < most)
-    if short:
-        raise ValueError(
-            f"{short} of {len(tasks)} {split} tasks have fewer than {most} trials; "
-            "rerun the interrupted trials"
-        )
-    infra = sum(1 for t in in_split if is_infra_error(t))
-    if infra:
-        noun = "error" if infra == 1 else "errors"
-        raise ValueError(
-            f"{infra} infrastructure {noun} in the {split} split; rerun those trials first"
-        )
+    check_complete(in_split, split, trials_per_task)
     report: dict[str, Any] = {"split": split, **summary(in_split)}
     out_dir.mkdir(parents=True, exist_ok=True)
     if split == "dev":
