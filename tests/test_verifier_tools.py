@@ -1,5 +1,6 @@
 """Verifier tools beyond the acceptance tests, driven over stdio like seam B."""
 
+import json
 import os
 import shutil
 import sys
@@ -772,3 +773,152 @@ def test_a_cte_named_after_its_table_is_read_through(tmp_path: Path) -> None:
     text = verify(db, "m", ["orders"], sql)
     assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions")
     assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
+
+
+def aliased_project(tmp_path: Path, model_sql: str, *files: tuple[str, str]) -> Path:
+    """A dbt project whose model `m` is `model_sql`, plus the (relative path, text) files."""
+    project = tmp_path / "aliased"
+    (project / "models").mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: aliased\nversion: '1.0'\n")
+    (project / "models" / "m.sql").write_text(model_sql)
+    for relative, text in files:
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return project
+
+
+ALIASED_COUNT = (
+    "SELECT customer_id, count(DISTINCT region) AS regions,"
+    " count(*) FILTER (WHERE o.status = 'placed') AS placed"
+    " FROM {relation} AS o GROUP BY o.customer_id"
+)
+
+
+async def test_verify_model_values_reads_a_ref_through_the_model_alias(tmp_path: Path) -> None:
+    plain = ALIASED_COUNT.format(relation="orders_2024")
+    db = make_db(
+        tmp_path / "alias.duckdb",
+        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m_final AS {plain};",
+    )
+    project = aliased_project(
+        tmp_path,
+        ALIASED_COUNT.format(relation="{{ ref('stg_orders') }}"),
+        (
+            "models/stg_orders.sql",
+            "{{ config(materialized='table', alias='orders_2024') }}\nSELECT * FROM raw",
+        ),
+        (
+            "models/schema.yml",
+            "version: 2\nmodels:\n  - name: m\n    config:\n"
+            "      alias: m_final\n    columns:\n      - name: customer_id\n",
+        ),
+    )
+    result = await call(
+        db,
+        "verify_model_values",
+        model_name="m_final",
+        source_tables="orders_2024",
+        project_dir=str(project),
+    )
+    text = text_of(result)
+    assert "Model SQL read" in text, text
+    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions")
+    assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
+
+
+async def test_verify_model_values_reads_a_source_through_its_identifier(tmp_path: Path) -> None:
+    plain = ALIASED_COUNT.format(relation="orders_2024")
+    db = make_db(
+        tmp_path / "ident.duckdb",
+        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m AS {plain};",
+    )
+    project = aliased_project(
+        tmp_path,
+        ALIASED_COUNT.format(relation="{{ source('shop', 'orders') }}"),
+        (
+            "models/sources.yml",
+            "version: 2\nsources:\n  - name: shop\n    schema: main\n"
+            "    tables:\n      - name: orders\n        identifier: orders_2024\n",
+        ),
+    )
+    result = await call(
+        db,
+        "verify_model_values",
+        model_name="m",
+        source_tables="orders_2024",
+        project_dir=str(project),
+    )
+    text = text_of(result)
+    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions"), text
+    assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
+
+
+async def test_verify_model_values_prefers_the_manifests_relation_names(tmp_path: Path) -> None:
+    plain = ALIASED_COUNT.format(relation="orders_2024")
+    db = make_db(
+        tmp_path / "manifest.duckdb",
+        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m AS {plain};",
+    )
+    manifest = {
+        "nodes": {
+            "model.aliased.stg_orders": {
+                "resource_type": "model",
+                "name": "stg_orders",
+                "alias": "orders_2024",
+                "schema": "main",
+            },
+            "model.aliased.m": {
+                "resource_type": "model",
+                "name": "m",
+                "alias": "m",
+                "schema": "main",
+            },
+        },
+        "sources": {},
+    }
+    project = aliased_project(
+        tmp_path,
+        ALIASED_COUNT.format(relation="{{ ref('stg_orders') }}"),
+        # The SQL file's alias is stale; the manifest is what dbt last compiled.
+        ("models/stg_orders.sql", "{{ config(alias='orders_old') }}\nSELECT * FROM raw"),
+        ("target/manifest.json", json.dumps(manifest)),
+    )
+    result = await call(
+        db,
+        "verify_model_values",
+        model_name="m",
+        source_tables="orders_2024",
+        project_dir=str(project),
+    )
+    text = text_of(result)
+    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions"), text
+
+
+async def test_check_model_schema_compares_nested_types_by_their_element_types(
+    tmp_path: Path,
+) -> None:
+    db = make_db(
+        tmp_path / "nested.duckdb",
+        "CREATE TABLE m (ids INTEGER[], tags VARCHAR[], attrs MAP(VARCHAR, INTEGER),"
+        " point STRUCT(x DOUBLE, y DOUBLE))",
+    )
+    result = await call(
+        db,
+        "check_model_schema",
+        model_name="m",
+        yml_columns=(
+            "ids:int4[], tags:integer[], attrs:map(text, int), point:struct(x double, y int)"
+        ),
+    )
+    text = text_of(result)
+    assert not result.is_error, text
+    mismatched = text.split("Type mismatch")[1]
+    assert "tags (" in mismatched and "point (" in mismatched
+    assert "ids (" not in mismatched and "attrs (" not in mismatched
+
+
+def test_an_array_without_element_types_matches_any_array() -> None:
+    assert verifier_tools.same_type("integer[]", "ARRAY")
+    assert verifier_tools.same_type("LIST(INTEGER)", "INTEGER[]")
+    assert not verifier_tools.same_type("integer[]", "VARCHAR[]")

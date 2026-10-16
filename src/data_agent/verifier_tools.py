@@ -36,18 +36,22 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   count's columns are traced to the upstream columns they read (sqlglot qualify against the
   catalog); one the SQL computes, renames out of reach or takes from another table, or rows of
   an aggregated CTE, make it inconclusive, as does a computed GROUP BY expression for the slice.
+  ref() and source() resolve to the relations dbt builds and reads (a model's `alias`, a
+  source's `schema` and `identifier`; from target/manifest.json when dbt has compiled the
+  project), and an aliased model's SQL is found under its model name.
   Without the SQL, or when it does not
   parse (the output says so), dimensions come from column types and an integer named as a
   count (n_*, num_*, count_*, *_count) is held exactly against COUNT(*). Upstream also held
   sums up against row counts.
 - check_model_schema also takes `name:data_type` pairs and compares the types by kind, DuckDB
-  and Postgres aliases folded.
+  and Postgres aliases folded, nested types by their element and field types too.
 - A table profiled over a sample says so, its NULL shares are of the sample, and a column that
   looks unique in the sample is counted over the whole table before it is called the grain; the
   grain key is looked for in every scanned column.
 """
 
 import contextlib
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -101,6 +105,9 @@ SLICE_TABLES = 50
 
 REF_RE = re.compile(r"\{\{\s*ref\(\s*['\"](\w+)['\"]\s*\)\s*\}\}")
 SOURCE_RE = re.compile(r"\{\{\s*source\(\s*['\"](\w+)['\"]\s*,\s*['\"](\w+)['\"]\s*\)\s*\}\}")
+CONFIG_ALIAS_RE = re.compile(
+    r"\{\{\s*config\((?:[^()]|\([^()]*\))*?\balias\s*=\s*['\"](\w+)['\"]", re.DOTALL
+)
 NAME_LINE_RE = re.compile(r"-\s*name:\s*['\"]?([^'\"\s]+)")
 # The gateway's dialect: model SQL is parsed in it and rewritten counts are run in it.
 DIALECT = "duckdb"
@@ -360,6 +367,81 @@ def source_relations(project: Path) -> dict[tuple[str, str], tuple[str, str]]:
     return relations
 
 
+def model_aliases(project: Path) -> dict[str, str]:
+    """model -> alias from the `models:` blocks' `alias:` (under `config:` or not), then from the
+    model SQL's `{{ config(alias=...) }}`, which dbt lets override the YAML."""
+    aliases: dict[str, str] = {}
+    for path in project_files(project, "*.yml", "*.yaml"):
+        in_models = False
+        model: str | None = None
+        model_indent: int | None = None
+        for line in read_text(path).splitlines():
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+            if not stripped or stripped.startswith("#"):
+                continue
+            if indent == 0 and not stripped.startswith("-"):
+                in_models, model, model_indent = stripped.startswith("models:"), None, None
+                continue
+            name = NAME_LINE_RE.match(stripped)
+            if not in_models:
+                continue
+            if name and indent == (model_indent if model_indent is not None else indent):
+                model, model_indent = name.group(1), indent
+            elif model and stripped.startswith("alias:"):
+                aliases[model] = stripped.split(":", 1)[1].split("#", 1)[0].strip().strip("'\"")
+    model_dirs = [project / name for name in model_paths(project)]
+    for path in project_files(project, "*.sql"):
+        if any(path.is_relative_to(model_dir) for model_dir in model_dirs):
+            config = CONFIG_ALIAS_RE.search(read_text(path))
+            if config:
+                aliases[path.stem] = config.group(1)
+    return aliases
+
+
+@dataclass(frozen=True)
+class Relations:
+    """The relation names a dbt project builds its refs and reads its sources from."""
+
+    models: dict[str, str]  # model -> alias, the table or view name in the database
+    sources: dict[tuple[str, str], tuple[str, str]]  # (source, table) -> (schema, identifier)
+
+    def model(self, name: str) -> str:
+        return self.models.get(name, name)
+
+    def source(self, source: str, table: str) -> tuple[str, str]:
+        return self.sources.get((source, table), (source, table))
+
+    def models_named(self, relation: str) -> list[str]:
+        """The models built as `relation`, the model of that name first."""
+        aliased = [m for m, alias in self.models.items() if alias.lower() == relation.lower()]
+        return [relation, *(m for m in aliased if m != relation)]
+
+
+def dbt_relations(project: Path) -> Relations:
+    """From `target/manifest.json` when dbt has compiled the project, as it holds what dbt
+    resolved; else from the project's YAML and model SQL."""
+    manifest = project / "target" / "manifest.json"
+    if manifest.is_file():
+        with contextlib.suppress(ValueError, AttributeError, TypeError):
+            data = json.loads(read_text(manifest))
+            models = {
+                str(node["name"]): str(node.get("alias") or node["name"])
+                for node in data.get("nodes", {}).values()
+                if node.get("resource_type") == "model" and node.get("name")
+            }
+            sources = {
+                (str(node["source_name"]), str(node["name"])): (
+                    str(node.get("schema") or node["source_name"]),
+                    str(node.get("identifier") or node["name"]),
+                )
+                for node in data.get("sources", {}).values()
+                if node.get("source_name") and node.get("name")
+            }
+            return Relations(models, sources)
+    return Relations(model_aliases(project), source_relations(project))
+
+
 def select_lists(sql: str) -> list[list[str]]:
     """The items of every SELECT list in the SQL, in order, Jinja and comments removed."""
     clean = re.sub(r"\{\{.*?\}\}", "___REF___", sql)
@@ -452,12 +534,12 @@ def map_model(
     contract = yml_columns(project, model_name)
     mapped = {column.lower() for column in contract}
     catalog = load_catalog(run)
-    sources = source_relations(project)
+    relations = dbt_relations(project)
     upstreams: list[tuple[str, list[Table], str]] = []  # (label, catalog hits, name)
     for ref in sorted(set(REF_RE.findall(sql))):
-        upstreams.append((f"ref('{ref}')", find(catalog, ref), ref))
+        upstreams.append((f"ref('{ref}')", find(catalog, relations.model(ref)), ref))
     for source, table in sorted(set(SOURCE_RE.findall(sql))):
-        schema, identifier = sources.get((source, table), (source, table))
+        schema, identifier = relations.source(source, table)
         hits = find(catalog, f"{schema}.{identifier}") or find(catalog, identifier)
         upstreams.append((f"source('{source}', '{table}')", hits, identifier))
 
@@ -703,13 +785,16 @@ class Parsed:
         return next((s for s in self.root.traverse() if s.expression is query), None)
 
 
-def parse_model(sql: str, catalog: list[Table]) -> Parsed | None:
-    """The model's SQL with Jinja rendered away (ref and source become table names), its columns
-    qualified with their tables from the catalog where it can tell; None when it does not parse
-    to one SELECT."""
+def parse_model(
+    sql: str, catalog: list[Table], relations: Relations | None = None
+) -> Parsed | None:
+    """The model's SQL with Jinja rendered away (ref and source become the relations dbt builds
+    and reads, by `relations`), its columns qualified with their tables from the catalog where
+    it can tell; None when it does not parse to one SELECT."""
+    relations = relations or Relations({}, {})
     plain = re.sub(r"\{#.*?#\}", "", sql, flags=re.DOTALL)
-    plain = REF_RE.sub(lambda match: match.group(1), plain)
-    plain = SOURCE_RE.sub(lambda match: f"{match.group(1)}.{match.group(2)}", plain)
+    plain = REF_RE.sub(lambda match: relations.model(match.group(1)), plain)
+    plain = SOURCE_RE.sub(lambda match: ".".join(relations.source(*match.groups())), plain)
     plain = re.sub(r"\{%.*?%\}|\{\{.*?\}\}", "", plain, flags=re.DOTALL)
     try:
         tree = sqlglot.parse_one(plain, dialect=DIALECT)
@@ -953,9 +1038,11 @@ class Roles:
     opaque: dict[str, str]  # count metric -> why no upstream count is its baseline
 
 
-def column_roles(model: Table, sql: str | None, catalog: list[Table]) -> tuple[Roles, str]:
+def column_roles(
+    model: Table, sql: str | None, catalog: list[Table], relations: Relations | None = None
+) -> tuple[Roles, str]:
     """The roles and a note on how they were read."""
-    parsed = parse_model(sql, catalog) if sql is not None else None
+    parsed = parse_model(sql, catalog, relations) if sql is not None else None
     if sql is None:
         note = "Model SQL not read: only metrics named as counts are held against COUNT(*)"
     elif parsed is None:
@@ -1041,10 +1128,14 @@ def measure(
 
 
 def verify_values(
-    run: RunQuery, model: Table, sources: list[str], sql: str | None = None
+    run: RunQuery,
+    model: Table,
+    sources: list[str],
+    sql: str | None = None,
+    relations: Relations | None = None,
 ) -> list[str]:
     catalog = load_catalog(run)
-    roles, note = column_roles(model, sql, catalog)
+    roles, note = column_roles(model, sql, catalog, relations)
     metrics = roles.metrics
     if not metrics:
         return [f"No numeric metric columns in '{model.ref}'; nothing to verify."]
@@ -1165,10 +1256,11 @@ def verify_values(
 # --- check_model_schema ----------------------------------------------------------------------
 
 # Kinds the gateway's database treats as one type: DuckDB's VARCHAR is also TEXT and STRING, and
-# its TIMESTAMP is Postgres' timestamp without time zone.
+# its TIMESTAMP is Postgres' timestamp without time zone, and its LIST(INTEGER) is INTEGER[].
 SAME_KIND: dict[str, str] = {
     **dict.fromkeys(("TEXT", "CHAR", "NCHAR", "NVARCHAR", "BPCHAR", "NAME"), "VARCHAR"),
     **dict.fromkeys(("TIMESTAMPNTZ", "DATETIME"), "TIMESTAMP"),
+    "LIST": "ARRAY",
 }
 
 
@@ -1180,14 +1272,36 @@ def declared_columns(text: str) -> list[tuple[str, str]]:
 
 
 def normalized_type(data_type: str) -> str:
-    """The type's kind, aliases folded: int4, int and integer are INT."""
+    """The type's kind, aliases folded (int4, int and integer are INT), with a nested type's
+    element and field types folded the same way: INTEGER[] is ARRAY(INT), VARCHAR[] is
+    ARRAY(VARCHAR)."""
     try:
-        kind = str(exp.DataType.build(data_type, dialect=DIALECT).this.name)
+        return folded_type(exp.DataType.build(data_type, dialect=DIALECT))
     except SqlglotError:
         return base_type(data_type)
+
+
+def folded_type(data_type: exp.DataType) -> str:
+    kind = str(data_type.this.name)
     if kind == "USERDEFINED":
-        return base_type(data_type)
-    return SAME_KIND.get(kind, kind)
+        return base_type(data_type.sql(dialect=DIALECT))
+    inner: list[str] = []
+    for item in data_type.expressions:
+        if isinstance(item, exp.DataType):
+            inner.append(folded_type(item))
+        elif isinstance(item, exp.ColumnDef) and isinstance(field := item.kind, exp.DataType):
+            inner.append(f"{item.name.lower()} {folded_type(field)}")
+    kind = SAME_KIND.get(kind, kind)
+    return f"{kind}({', '.join(inner)})" if inner else kind
+
+
+def same_type(declared: str, actual: str) -> bool:
+    """Whether the types are of one kind; a nested type named without its element types (as
+    Postgres' information_schema names every array ARRAY) matches any of its kind."""
+    expected, found = normalized_type(declared), normalized_type(actual)
+    if "(" not in expected or "(" not in found:
+        return expected.partition("(")[0] == found.partition("(")[0]
+    return expected == found
 
 
 def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | None) -> None:
@@ -1239,7 +1353,7 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
             for name, data_type in declared
             if data_type
             and name.lower() in actual_types
-            and normalized_type(data_type) != normalized_type(actual_types[name.lower()])
+            and not same_type(data_type, actual_types[name.lower()])
         ]
         actual = [column for column, _ in model.columns]
         expected_lower = {column.lower(): column for column in expected}
@@ -1297,7 +1411,12 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
         """
         model = resolve(load_catalog(run), model_name)
         sql = None
+        relations = None
         if project_dir:
-            path = model_sql(dbt_project(project_dir), model.name)
+            project = dbt_project(project_dir)
+            relations = dbt_relations(project)
+            # The model may be built under an alias: its SQL file has the model's name.
+            paths = (model_sql(project, name) for name in relations.models_named(model.name))
+            path = next((path for path in paths if path), None)
             sql = read_text(path) if path else None
-        return "\n".join(verify_values(run, model, split_names(source_tables), sql))
+        return "\n".join(verify_values(run, model, split_names(source_tables), sql, relations))

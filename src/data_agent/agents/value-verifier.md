@@ -11,7 +11,9 @@ read from its SQL and the dbt project directory; the pointer to SignalPilot's sc
 verifier computes the baseline of a non-count metric (sum, average) itself, as the tool gives
 none, and re-counts with the model's own filters, which the tool does not apply; the
 "total_X means COUNT(*)" rule holds only for row nouns (total_orders), as total_amount and
-total_revenue are sums; counts compare exactly and sums and averages within 10%. -->
+total_revenue are sums; counts compare exactly and sums and averages within 10%, and a min or
+max exactly; when the tool read the model's SQL its count verdict decides, and the column-name
+rules apply only when it could not. -->
 
 You are a read-only value auditor. Return a report. Fix nothing.
 
@@ -79,20 +81,23 @@ the spine to cover them.
 
 For the correct upstream candidate:
 - The tool marks a count metric "Model matches <count>" or "MISMATCH vs
-  <count>". With the SQL read, it recomputed the model's own COUNT(...) -
-  DISTINCT, CASE WHEN or FILTER included - over the slice; if it says the SQL
-  could not be parsed, only integer columns named as counts were compared,
-  with COUNT(*). Counts compare exactly: one row off is a mismatch.
-- A count column named "total_<row noun>" (total_orders, total_invoices) → MUST match COUNT(*). "Total" means all rows.
-- Column named "unique_X" or "distinct_X" → MUST match COUNT(DISTINCT).
-- Column named "num_X" or "count_X" → check source grain.
-
-If the model matches COUNT(DISTINCT) but the column says "total" and
-COUNT(*) is larger: CHECK 2 = FAIL. The model is under-counting.
-
-If the model matches COUNT(*) on its actual upstream: CHECK 2 = PASS.
-
-If COUNT(*) equals COUNT(DISTINCT): CHECK 2 = PASS (no ambiguity).
+  <count>". Counts compare exactly: one row off is a mismatch.
+- When the output starts with "Model SQL read", the tool recomputed the
+  model's own COUNT(...) - DISTINCT, CASE WHEN or FILTER included - over the
+  slice, and its verdict decides the count: "Model matches <count>" is PASS
+  and "MISMATCH vs <count>" is FAIL, whatever the column is named. The name
+  rules below do NOT apply: `total_customers` marked "Model matches
+  COUNT(DISTINCT customer_id)" is PASS.
+- Only when the output says "Model SQL could not be parsed" or "Model SQL
+  not read" (only integer columns named as counts were compared, with
+  COUNT(*)), judge the count by its name:
+  - A count column named "total_<row noun>" (total_orders, total_invoices) → MUST match COUNT(*). "Total" means all rows.
+  - Column named "unique_X" or "distinct_X" → MUST match COUNT(DISTINCT).
+  - Column named "num_X" or "count_X" → check source grain.
+  - If the model matches COUNT(DISTINCT) but the column says "total" and
+    COUNT(*) is larger: CHECK 2 = FAIL. The model is under-counting.
+  - If the model matches COUNT(*) on its actual upstream: CHECK 2 = PASS.
+  - If COUNT(*) equals COUNT(DISTINCT): CHECK 2 = PASS (no ambiguity).
 
 The tool's baselines apply the slice only. If the model's SQL filters rows
 (a WHERE clause, a filtering join condition), or the tool marks a candidate

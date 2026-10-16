@@ -182,7 +182,22 @@ def test_value_verifier_reads_total_as_a_count_only_for_row_nouns() -> None:
 
 def test_value_verifier_compares_counts_exactly_and_sums_within_ten_percent() -> None:
     check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
-    assert "exactly" in check_2 and "10%" in check_2
+    flat = " ".join(check_2.split())
+    assert "Counts compare exactly: one row off is a mismatch." in flat
+    assert "a sum or average within ±10% of yours matches" in flat
+
+
+def test_value_verifier_lets_the_tools_sql_verdict_override_the_name_rules() -> None:
+    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+    flat = " ".join(check_2.split())
+    read, _, unread = flat.partition('Only when the output says "Model SQL could not be parsed"')
+    assert unread, "the name rules need their own unparsed-SQL branch"
+    # With the SQL read, the tool's verdict decides, even against a "total" name.
+    assert 'starts with "Model SQL read"' in read and "whatever the column is named" in read
+    assert '`total_customers` marked "Model matches COUNT(DISTINCT customer_id)" is PASS' in read
+    # The name rules, the under-counting FAIL among them, sit only in the unparsed branch.
+    for rule in ("total_<row noun>", "unique_X", "under-counting"):
+        assert rule not in read and rule in unread, rule
 
 
 def test_verifier_calls_duplicate_lookup_keys_a_possible_fan_out() -> None:
