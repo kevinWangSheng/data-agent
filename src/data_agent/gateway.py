@@ -44,8 +44,13 @@ class DuckDBGateway:
         governed = inject_limit(sql, max_rows=limit, dialect=self.dialect)
         # A connection per statement: DuckDB lets one process hold the write lock, and holding a
         # read-only connection open would keep `dbt run` (the only write path) from writing.
+        # External access off: a file or network reader the denylist misses still cannot run.
         try:
-            con = duckdb.connect(str(self.path), read_only=True)
+            con = duckdb.connect(
+                str(self.path),
+                read_only=True,
+                config={"enable_external_access": False, "lock_configuration": True},
+            )
         except duckdb.Error as exc:
             raise QueryFailed(str(exc)) from exc
         try:

@@ -1,3 +1,5 @@
+# Copied from SignalPilot (Apache-2.0) signalpilot/gateway/gateway/engine/denylists.py at f5eee22;
+# see NOTICE. Modified: DuckDB denylist adds query and query_table (marked "data-agent").
 """Dangerous-function and statement-type denylist data + AST checker."""
 
 from __future__ import annotations
@@ -206,6 +208,9 @@ _DANGEROUS_FUNCTIONS: dict[str, frozenset[str]] = {
             # Extension loading
             "load_extension",
             "install_extension",
+            # data-agent: run SQL or a file path hidden in a string, out of the AST check's sight
+            "query",
+            "query_table",
         }
     ),
     "sqlite": frozenset(

@@ -9,7 +9,8 @@ Source: https://github.com/SignalPilot-Labs/SignalPilot, commit f5eee229fe01bac5
 License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-file copyright header.
 
 - src/data_agent/engine/ (__init__.py, _sqlglot.py, denylists.py, dialects.py, transforms.py,
-  validation.py) <- signalpilot/gateway/gateway/engine/, unmodified.
+  validation.py) <- signalpilot/gateway/gateway/engine/; denylists.py is modified as noted at its
+  top, the rest are unmodified.
 - tests/engine/ (test_sql_engine.py, test_sql_governance_dialects.py, test_limit_enforcement.py,
   test_validate_sql_dialect_contract.py) <- signalpilot/gateway/tests/, modified as noted at the
   top of each file.

@@ -10,7 +10,7 @@ from pathlib import Path
 import duckdb
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
+from mcp.types import CallToolResult, TextContent
 
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
 
@@ -75,6 +75,40 @@ async def test_database_stays_writable_between_queries(tmp_path: Path) -> None:
     text = "\n".join(item.text for item in result.content if isinstance(item, TextContent))
     assert not result.is_error, text
     assert "1" in text
+
+
+def text_of(result: CallToolResult) -> str:
+    return "\n".join(item.text for item in result.content if isinstance(item, TextContent))
+
+
+async def test_dynamic_query_functions_are_blocked(tmp_path: Path) -> None:
+    """`query()` / `query_table()` run SQL hidden in a string, out of the AST check's sight."""
+    db = make_db(tmp_path / "x.duckdb")
+    secret = tmp_path / "secret.csv"
+    secret.write_text("token\nsecret-marker\n")
+    statements = [
+        f"SELECT * FROM query('SELECT * FROM read_csv(''{secret}'')')",
+        f"SELECT * FROM query_table('{secret}')",
+    ]
+    async with mcp_server("--config", "full", "--duckdb", str(db)) as session:
+        for sql in statements:
+            result = await session.call_tool("query_database", {"sql": sql})
+            assert result.is_error, f"not blocked: {sql}"
+            assert "blocked" in text_of(result).lower(), text_of(result)
+            assert "secret-marker" not in text_of(result)
+
+
+async def test_file_readers_missed_by_the_denylist_cannot_read_files(tmp_path: Path) -> None:
+    """Defense in depth: the connection itself has external access off."""
+    db = make_db(tmp_path / "x.duckdb")
+    secret = tmp_path / "secret.csv"
+    secret.write_text("token\nsecret-marker\n")
+    async with mcp_server("--config", "full", "--duckdb", str(db)) as session:
+        result = await session.call_tool(
+            "query_database", {"sql": f"SELECT * FROM sniff_csv('{secret}')"}
+        )
+    assert result.is_error, text_of(result)
+    assert "secret-marker" not in text_of(result)
 
 
 async def test_row_limit_caps_rows(tmp_path: Path) -> None:
