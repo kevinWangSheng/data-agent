@@ -1,6 +1,6 @@
 # 14 — 失败归因报告
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 03, 10
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -71,3 +71,15 @@ attribute: 1 of 1 dev failures attributed, $0.0189 spent -> runs/14/report
 **不修的理由**：模块约 570 行，各节独立，拆分会打散一个功能；`mask` 不复用私有的 `EventLog._mask`；测试里 `sys.path` 插入（假 judge 无法经子进程注入，`pyproject` 不在 Authority）；`check_reply` 返回元组与重复的 entry dict 属小问题；名称检查不拦 Skill 也用的单词表名或只以裸名出现的表名——Skill 词汇按政策是通用的，其余靠提示规则与人审。
 
 **已知限制**：引用对照当前 Skill（运行用的版本不同时报告会注明）；预算在重试中途耗尽时丢弃首次回复；真实开发集报告要等有 Harbor 开发集 job（09/12 之后）。
+
+### 2026-10-16 第 7 步：PR #7 退回第 1 轮（主会话）
+
+退回：原因如下，在原分支 `worktree-14-failure-attribution` 上修，修完提交，不 push。
+
+1. **CI 失败（合并后）**：PR 的 merge 检查 basedpyright 报 `evals/attribute.py:422:26 Argument missing for parameter "skills_dir"`。工单 05（PR #6）已合并，`skill_version()` 现在要 `skills_dir`。先 `git rebase origin/main`，再按 05 的运行配置取 Skill 目录。
+2. **Codex P1（`evals/attribute.py:222`）属实**：`specific_names` 把 Skill 里出现过的词从全部名字里减掉，连运行 SQL 和 schema 输出里观测到的表名、列名也一起放行（例：Skill 含 `orders`，"always query orders" 不会被拦）。改为：从 SQL 与 schema 工具输出观测到的源标识符一律拦，不受 Skill 词表豁免；Skill 词表只豁免从自由文本里正则抓到的 snake_case。配一个修复前会失败的测试。
+3. **Codex P1（`evals/attribute.py:329`）属实**：运行的版本头 `skill_version` 与当前 Skill 不同时，judge 看到的、引用核对用的都是当前 Skill。改为：版本不一致且拿不到该版本 Skill 时拒绝归因（记 error，不出标签），不只是报告里加提示。配测试。
+4. **Codex P2（`evals/attribute.py:363`）属实**：最后一次重试后引用仍未逐字核对通过（`verified` 为假、`problems` 为空）时，条目被当成完成的归因保存。改为：最终仍未核实的引用使该条归因无效（`failure_mode=None` 并写 error）。配测试。
+5. **Codex P2（`evals/attribute.py:301`）属实**：预算表只在调用前看已花费，单次调用不受剩余额度约束（两次 $1.20 在 $2 预算下都放行），SDK judge 还拿到整笔预算当单次上限。改为把剩余额度作为每次调用的上限传给 judge。配测试。
+
+修完重跑 `make check`、真实运行一次 `python -m evals attribute`（同之前的夹具 job），再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。
