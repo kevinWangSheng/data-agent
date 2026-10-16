@@ -719,3 +719,56 @@ def test_a_computed_non_count_ignores_its_count_like_name(tmp_path: Path) -> Non
     )
     block = metric_block(verify(model_db(tmp_path, sql), "m", ["orders"], sql), "n_amount")
     assert "→" not in block
+
+
+LOOKUP_SQL = """
+CREATE TABLE customers (customer_id VARCHAR, status VARCHAR);
+INSERT INTO customers VALUES ('c1', 'active');
+CREATE TABLE orders (order_id INT, customer_id VARCHAR, status VARCHAR, other_status VARCHAR,
+  year INT);
+INSERT INTO orders VALUES (1, 'c1', 'inactive', 'active', 2024),
+  (2, 'c2', 'inactive', 'active', 2024);
+"""
+
+
+def test_a_count_keeps_its_columns_table(tmp_path: Path) -> None:
+    sql = (
+        "SELECT o.customer_id, COUNT(*) FILTER (WHERE customers.status = 'active') AS n_active"
+        " FROM orders AS o JOIN customers USING (customer_id) GROUP BY o.customer_id"
+    )
+    db = make_db(tmp_path / "bind.duckdb", f"{LOOKUP_SQL}CREATE TABLE m AS {sql};")
+    block = metric_block(verify(db, "m", ["orders", "customers"], sql), "n_active")
+    assert "MISMATCH" not in block
+    assert "Model matches" in block.split("main.customers")[1]
+
+
+def test_a_count_follows_a_renamed_cte_column(tmp_path: Path) -> None:
+    sql = (
+        "WITH o AS (SELECT customer_id, other_status AS status FROM orders)"
+        " SELECT customer_id, COUNT(CASE WHEN status = 'active' THEN 1 END) AS n_active"
+        " FROM o GROUP BY customer_id"
+    )
+    db = make_db(tmp_path / "rename.duckdb", f"{LOOKUP_SQL}CREATE TABLE m AS {sql};")
+    block = metric_block(verify(db, "m", ["orders"], sql), "n_active")
+    assert "other_status = 'active'" in block and "Model matches" in block
+
+
+def test_a_computed_grouping_expression_is_not_sliced_as_its_column(tmp_path: Path) -> None:
+    sql = "SELECT year % 10 AS year, count(*) AS n_orders FROM orders GROUP BY year % 10"
+    db = make_db(tmp_path / "computed.duckdb", f"{LOOKUP_SQL}CREATE TABLE m AS {sql};")
+    block = metric_block(verify(db, "m", ["orders"], sql), "n_orders")
+    assert "MISMATCH" not in block and "inconclusive" in block
+
+
+def test_a_cte_named_after_its_table_is_read_through(tmp_path: Path) -> None:
+    sql = (
+        "WITH orders AS (SELECT * FROM {{ ref('orders') }}),"
+        " per_customer AS (SELECT customer_id, count(DISTINCT region) AS regions,"
+        " count(*) FILTER (WHERE status = 'placed') AS placed FROM orders GROUP BY customer_id)"
+        " SELECT * FROM per_customer"
+    )
+    plain = sql.replace("{{ ref('orders') }}", "main.orders")
+    db = make_db(tmp_path / "idiom.duckdb", f"{ORDERS_SQL}CREATE TABLE m AS {plain};")
+    text = verify(db, "m", ["orders"], sql)
+    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions")
+    assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
