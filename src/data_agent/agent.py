@@ -268,9 +268,10 @@ class Spend:
     would understate the spend, so the run ends through the SDK, under the SDK's cap, and its
     result prices the SDK's `model_usage` (`result_fields`), as every run the SDK ends does.
 
-    The cap is checked only between two main-thread calls, after a call that used tools, and not
-    while a subagent runs: a run may pass it by its last main call and the subagents it started
-    (human decision 2026-10-16), and a final answer that passes it is kept.
+    The cap is checked only between two main-thread calls, after a call that used tools or hit
+    its output limit, and not while a subagent runs: a run may pass it by its last main call and
+    the subagents it started (human decision 2026-10-16), and a final answer that passes it is
+    kept.
     """
 
     price: Price
@@ -279,7 +280,8 @@ class Spend:
     subagents: dict[str, Tokens] = field(default_factory=dict)  # from transcripts
     transcript_failed: bool = False
     running: set[str] = field(default_factory=set)  # subagents started and not yet stopped
-    # After a main call that used tools, until the next starts: the cap may be checked then.
+    # After a main call that used tools or hit its output limit, until the next starts: the cap
+    # may be checked then.
     between_calls: bool = False
     stopped: bool = False
     # The main call in progress: its id, its usage at message_start, whether it used tools.
@@ -300,7 +302,9 @@ class Spend:
             elif event.get("type") == "message_delta" and self._call is not None:
                 final = {k: v for k, v in (event.get("usage") or {}).items() if v is not None}
                 self.main[self._call] = usage_tokens(self._call_start | final)
-                self.between_calls = self._call_uses_tools
+                # A response cut at its output limit is no final answer: the CLI calls again.
+                cut = (event.get("delta") or {}).get("stop_reason") == "max_tokens"
+                self.between_calls = self._call_uses_tools or cut
         elif isinstance(message, AssistantMessage) and message.parent_tool_use_id is None:
             if any(isinstance(block, ToolUseBlock) for block in message.content):
                 self._call_uses_tools = True

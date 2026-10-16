@@ -199,6 +199,7 @@ def call(
     input_tokens: int = 0,
     tool: bool = True,
     text: str = "...",
+    stop_reason: str | None = None,
 ) -> list[Any]:
     """One main-thread model call as the CLI streams it with partial messages: message_start
     (usage before any output), one message per content block (the same usage), message_delta
@@ -221,7 +222,7 @@ def call(
         stream_event(
             {
                 "type": "message_delta",
-                "delta": {"stop_reason": "tool_use" if tool else "end_turn"},
+                "delta": {"stop_reason": stop_reason or ("tool_use" if tool else "end_turn")},
                 "usage": usage(input_tokens, output_tokens),
             }
         ),
@@ -353,6 +354,22 @@ async def test_final_answer_that_passes_the_cap_still_ends_the_run(
     outcome, events = await run_with(monkeypatch, tmp_path, fake)
     assert (outcome.finished, outcome.answer) == (True, "42")
     assert events[-1]["subtype"] == "success"
+
+
+async def test_response_cut_at_its_output_limit_is_not_a_final_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A response that hit max_tokens without a tool call is followed by the CLI's recovery call;
+    the cap is checked before it."""
+    fake = capped_script(
+        *call("m1", 10_000, tool=False, stop_reason="max_tokens"),
+        *call("m2", 1, tool=False, text="never reached"),
+        result(),
+    )
+    outcome, events = await run_with(monkeypatch, tmp_path, fake, config=budget(0.01))
+    assert not outcome.finished
+    assert "never reached" not in outcome.events_path.read_text()
+    assert events[-1]["terminal_reason"] == "budget_exhausted"
 
 
 async def test_verifier_spend_is_read_from_its_transcript(
