@@ -288,14 +288,14 @@ async def run_once(
     # settings) identical to `data-agent run`; the task's DuckDB file is unused, DAB's server
     # replaces the DuckDB one.
     task = Task(text="", type="query", workspace=workspace, duckdb=dab_query.db_config)
-    options = replace(
-        build_options(task, config, settings, stderr),
-        system_prompt=system_prompt(dab_query, config),
-        mcp_servers={MCP_SERVER: server},
-        max_turns=turns,
-    )
     final: ResultMessage | None = None
     with EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log:
+        options = replace(
+            build_options(task, config, settings, stderr, log.emit),
+            system_prompt=system_prompt(dab_query, config),
+            mcp_servers={MCP_SERVER: server},
+            max_turns=turns,
+        )
         log.emit(
             "version",
             git_commit=git_commit(),
