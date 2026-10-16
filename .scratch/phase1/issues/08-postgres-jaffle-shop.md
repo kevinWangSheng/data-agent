@@ -1,6 +1,6 @@
 # 08 — Postgres 支持与 jaffle-shop 用例
 
-Status: in-review
+Status: done
 Blocked by: 06, 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5), worktree 08-postgres-jaffle-shop
@@ -200,3 +200,7 @@ customers_plus FAIL {'missing_columns': [], 'extra_columns': ['debug_flag'], 'ro
 - **Calling the SDK in `run()`:** `build_options(task, config, settings, stderr, log.emit, spend, database_env=database_env)`, and the message loop uses ticket 15's `aclosing(capped(stream, spend))`.
 
 **Checks.** `make check` after the merge: ruff All checks passed; 115 files already formatted; basedpyright 0 errors, 0 warnings, 0 notes; pytest 942 passed, 24 deselected (full output in `runs/08-merge-check.txt`). Pre-commit all Passed. As the ticket says, I did no real runs and no reviews this round. I did not push.
+
+### 2026-10-16 第 7 步：PR #14 合并（主会话）
+
+`7496256` CI 两次全绿。Codex 2 条 P2 与退回第 2 轮后记的已知限制相同（URL 省略字段时 dbt profile 不用 libpq 默认值；判分出错时丢失已花费用），不新增；合并。本地容器 `da-08-postgres` 合并后删除。worktree 保留（`runs/08/` 有实测证据），人看过后删。
