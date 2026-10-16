@@ -562,9 +562,15 @@ def sdk_judge(env: Mapping[str, str]) -> Judge:
             stderr=stderr.append,
         )
         final: ResultMessage | None = None
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, ResultMessage):
-                final = message
+        try:
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, ResultMessage):
+                    final = message
+        except Exception:
+            # A failed call (e.g. over its budget) ends with a ResultMessage and then a
+            # ResultError; the result still holds the charge (as in data_agent.agent.run).
+            if final is None:
+                raise
         if final is None:
             raise RuntimeError(f"the judge returned no result: {''.join(stderr[-5:])}")
         cost = float(result_fields(final, settings.model)["cost_usd"])

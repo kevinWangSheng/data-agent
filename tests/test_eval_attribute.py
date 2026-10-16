@@ -7,15 +7,20 @@ import asyncio
 import json
 import subprocess
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+
+import pytest
+from claude_agent_sdk import ResultError, ResultMessage
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # `evals/` sits beside the package rather than in it; the CLI runs from the repo root.
 sys.path.insert(0, str(REPO_ROOT))
 
 from data_agent.agent import SKILLS_DIR, skill_version  # noqa: E402
-from evals.attribute import JudgeReply, attribute, load_skills  # noqa: E402
+from evals import attribute as attribute_module  # noqa: E402
+from evals.attribute import JudgeReply, attribute, load_skills, sdk_judge  # noqa: E402
 
 MANIFEST: dict[str, Any] = {"seed": 0, "dev": ["dev-task"], "holdout": ["held-task"]}
 SKILLS = load_skills()
@@ -393,3 +398,30 @@ def test_names_in_a_listing_given_as_sdk_text_blocks_are_specific(tmp_path: Path
 
     assert len(judge.prompts) == 2
     assert "(orders, status)" in judge.prompts[1]
+
+
+async def test_sdk_judge_keeps_the_cost_of_a_result_followed_by_an_sdk_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final = ResultMessage(
+        subtype="error_max_budget_usd",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=True,
+        num_turns=1,
+        session_id="s",
+        usage={"input_tokens": 3, "cache_read_input_tokens": 0, "output_tokens": 7},
+        total_cost_usd=0.25,
+    )
+
+    async def fake_query(**_: Any) -> AsyncIterator[Any]:
+        yield final
+        raise ResultError("budget", data={"subtype": "error_max_budget_usd"})
+
+    monkeypatch.setattr(attribute_module, "query", fake_query)
+    judge = sdk_judge({"DATA_AGENT_API_KEY": "sk-test", "DATA_AGENT_MODEL": "unpriced-model"})
+
+    reply = await judge("prompt", 0.3)
+
+    assert reply.text == ""
+    assert reply.cost_usd == 0.25
