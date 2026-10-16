@@ -26,18 +26,25 @@ def score(trials: list[Trial]) -> dict[str, Any]:
 
 
 def summary(trials: list[Trial], expected_tasks: list[str]) -> dict[str, Any]:
-    """Aggregate scores plus outcome counts; infrastructure errors are kept apart from agent
-    failures (a trial that errored has no reward, a failed one ran and scored 0)."""
-    errored = sum(1 for t in trials if t.exception_type is not None)
-    succeeded = sum(1 for t in trials if is_success(t.reward))
+    """Aggregate scores, outcome counts and usage totals.
+
+    Outcomes are disjoint: a passing trial counts as succeeded even if Harbor also recorded an
+    error (the verifier still runs after an agent timeout); among the rest, errored trials are
+    kept apart from agent failures that ran to the end and scored 0.
+    """
+    succeeded = [t for t in trials if is_success(t.reward)]
+    errored = [t for t in trials if not is_success(t.reward) and t.exception_type is not None]
     present = {t.task for t in trials}
     return {
         **score(trials),
         "n_tasks": len(present),
         "n_tasks_missing": len(set(expected_tasks) - present),
-        "n_succeeded": succeeded,
-        "n_failed": len(trials) - succeeded - errored,
-        "n_errored": errored,
+        "n_succeeded": len(succeeded),
+        "n_failed": len(trials) - len(succeeded) - len(errored),
+        "n_errored": len(errored),
+        "uncached_input_tokens": sum(t.uncached_input_tokens for t in trials),
+        "cached_input_tokens": sum(t.cached_input_tokens for t in trials),
+        "output_tokens": sum(t.output_tokens for t in trials),
         "cost_usd": sum(t.cost_usd for t in trials),
     }
 
@@ -59,6 +66,9 @@ def _trial_rows(trials: list[Trial]) -> list[dict[str, Any]]:
                 "trial": t.name,
                 "reward": t.reward,
                 "exception_type": t.exception_type,
+                "uncached_input_tokens": t.uncached_input_tokens,
+                "cached_input_tokens": t.cached_input_tokens,
+                "output_tokens": t.output_tokens,
                 "cost_usd": t.cost_usd,
                 "events": str(events) if events.exists() else None,
             }
@@ -72,6 +82,8 @@ def write_report(
     """Write `out_dir/report.json` for one split of the manifest; dev also gets `trials.json`."""
     tasks: list[str] = manifest[split]
     in_split = [t for t in trials if t.task in set(tasks)]
+    if not in_split:
+        raise ValueError(f"no trial results for the {split} split in this job")
     report: dict[str, Any] = {"split": split, **summary(in_split, tasks)}
     out_dir.mkdir(parents=True, exist_ok=True)
     if split == "dev":

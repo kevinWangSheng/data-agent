@@ -13,6 +13,9 @@ class Trial:
     name: str
     reward: float | None  # None: the verifier never produced a reward
     exception_type: str | None  # set when Harbor recorded an error for the trial
+    uncached_input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
     cost_usd: float
     dir: Path
 
@@ -29,22 +32,33 @@ def _reward(result: dict[str, Any]) -> float | None:
 
 
 def load_trials(job_dir: Path) -> list[Trial]:
-    """Every trial in the job, sorted by trial name. The job-level result.json is skipped."""
+    """Every trial in the job, sorted by trial name. The job-level result.json is skipped.
+
+    Raises ValueError when the job has no trial results, so a mistyped path never scores 0.
+    """
     trials: list[Trial] = []
     for path in sorted(job_dir.glob("*/result.json")):
         result = json.loads(path.read_text())
         exception = result.get("exception_info") or {}
         agent_result = result.get("agent_result") or {}
+        # Harbor's n_input_tokens includes the cached tokens (data-eng-bench metrics.py).
+        input_tokens = int(agent_result.get("n_input_tokens") or 0)
+        cached = int(agent_result.get("n_cache_tokens") or 0)
         trials.append(
             Trial(
                 task=task_id(result["task_name"]),
                 name=result.get("trial_name") or path.parent.name,
                 reward=_reward(result),
                 exception_type=exception.get("exception_type"),
+                uncached_input_tokens=max(input_tokens - cached, 0),
+                cached_input_tokens=cached,
+                output_tokens=int(agent_result.get("n_output_tokens") or 0),
                 cost_usd=float(agent_result.get("cost_usd") or 0.0),
                 dir=path.parent,
             )
         )
+    if not trials:
+        raise ValueError(f"no trial results (<trial>/result.json) under {job_dir}")
     return trials
 
 
