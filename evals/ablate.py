@@ -3,21 +3,24 @@
 Each run config is one Harbor job on the manifest's holdout tasks, k trials per task:
 
     OUT/jobs/<config>/        the Harbor job (resumed when it exists)
+    OUT/dropped/<config>/     event files of trials a resume deleted, kept for the spend guard
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
     OUT/reports/<UTC time>/   new on every invocation:
         <config>/report.json  `evals report` (holdout: aggregates only)
         ablation.json, ablation.md
 
-Before each job the spend guard (`evals spend` on OUT/jobs) stops the batch at 80% of --budget; a
-job runs to its end once started, so the overshoot is at most one job. A finished job is not rerun;
-an interrupted one, or one with infrastructure errors, is resumed with `harbor job resume`, which
-drops the errored trials and runs what is missing (plan §7: infrastructure errors are rerun, never
-scored). A config error (the model's key, name or parameters) stops the batch for a human: Harbor
-does not retry it and a report would score it as a real 0. Once every job is complete, `evals
-scrub` cleans the jobs in place, `evals report` writes each config's report and `evals compare
---manifest --split holdout` gives each layer's contribution: full minus the config without the
-layer, in accuracy points, with a paired bootstrap 95% interval. Per-task holdout results are never
-printed or written (ADR-0004); the guards' and Harbor's own output, which name tasks, go to logs.
+Before each job the spend guard (`evals spend` on OUT) stops the batch at 80% of --budget; a job
+runs to its end once started, so the overshoot is at most one job. A finished job is not rerun; an
+interrupted one, or one with infrastructure errors, is resumed with `harbor job resume`, which
+deletes the errored trials and runs what is missing (plan §7: infrastructure errors are rerun,
+never scored). An existing job is reused only from a clean checkout at the commit and Skill version
+its trials recorded, and the table needs one commit and one model across its configs. A config
+error (the model's key, name or parameters) stops the batch for a human: Harbor does not retry it
+and a report would score it as a real 0. Once every job is complete, `evals scrub` cleans this
+table's jobs in place, `evals report` writes each config's report and `evals compare --manifest
+--split holdout` gives each layer's contribution: full minus the config without the layer, in
+accuracy points, with a paired bootstrap 95% interval. Per-task holdout results are never printed
+or written (ADR-0004); the guards' and Harbor's own output, which name tasks, go to logs.
 
 Run from the repo root with the DATA_AGENT_* variables set, as for `harbor run`:
 
@@ -34,6 +37,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -42,7 +46,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from data_agent.run_config import REPO_ROOT
+from data_agent.agent import git_commit, skill_version
+from data_agent.run_config import REPO_ROOT, load_config
 from evals.harbor import Trial, load_trials
 from evals.report import TRIALS_PER_TASK, check_complete, is_infra_error, split_trials
 
@@ -138,26 +143,70 @@ def check_config_errors(config: str, job: Path, trials: list[Trial]) -> None:
         )
 
 
-def guard_spend(jobs: Path, budget: str, logs: Path) -> None:
-    code, out, err = evals_cli(["spend", str(jobs), "--budget", budget])
-    _log(logs / "guards.log", out, err)
+def conditions(config: str) -> dict[str, str]:
+    """What this checkout would run the config with, as its trials' version headers record it."""
+    run_config = load_config(config)
+    return {
+        "git_commit": git_commit(),
+        "skill_version": skill_version(run_config.skills_dir) if run_config.skill else "none",
+    }
+
+
+def check_conditions(config: str, job: Path, trials: list[Trial]) -> None:
+    """A job is reused (skipped or resumed) only under the code and Skills it was made with."""
+    now = conditions(config)
+    if now["git_commit"].endswith("-dirty"):
+        raise Stop(
+            f"this checkout has uncommitted changes, so it cannot be matched to the existing "
+            f"{config} job; commit them, or use another --out"
+        )
+    found = versions(trials)
+    changed = [
+        f"{key} {found[key]} there, {value!r} now"
+        for key, value in now.items()
+        if found[key] and found[key] != [value]
+    ]
+    if changed:
+        raise Stop(
+            f"the {config} job was run under other conditions ({'; '.join(changed)}); "
+            "use another --out"
+        )
+
+
+def guard_spend(out: Path, budget: str) -> None:
+    """Spend under OUT: the jobs plus the event files of trials a resume dropped."""
+    code, printed, err = evals_cli(["spend", str(out), "--budget", budget])
+    _log(out / "logs" / "guards.log", printed, err)
     if code == 1:
         raise Stop(err.strip(), code=1)
     if code != 0:
-        raise Stop(f"the spend guard cannot total the spend; see {logs / 'guards.log'}")
-    print(out.strip())
+        raise Stop(f"the spend guard cannot total the spend; see {out / 'logs' / 'guards.log'}")
+    print(printed.strip(), flush=True)
+
+
+def keep_spend(out: Path, config: str, trials: list[Trial]) -> None:
+    """Copy the event files of the trials a resume will delete to OUT/dropped/, where the spend
+    guard still counts what they cost."""
+    for trial in trials:
+        for events in sorted((trial.dir / "agent" / "events").glob("*.jsonl")):
+            kept = out / "dropped" / config / trial.dir.name / events.name
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(events, kept)
 
 
 def ensure_job(config: str, args: argparse.Namespace, tasks: list[str]) -> None:
     """Run the config's job, or resume it when it exists and is not ready to score."""
     jobs, logs = args.out / "jobs", args.out / "logs"
     job = jobs / config
+    dropped: list[Trial] = []
     if (job / "config.json").is_file():
         trials = load_trials(job) if any(job.glob("*/result.json")) else []
         check_config_errors(config, job, trials)
+        check_conditions(config, job, trials)
         if problem(trials, tasks, args.trials) is None:
             return
-        infra = sorted({str(t.exception_type) for t in trials if is_infra_error(t)})
+        dropped = [t for t in trials if is_infra_error(t)]
+        infra = sorted({str(t.exception_type) for t in dropped})
         harbor_args = ["job", "resume", "-p", str(job), *(a for e in infra for a in ("-f", e))]
     else:
         harbor_args = [
@@ -168,9 +217,10 @@ def ensure_job(config: str, args: argparse.Namespace, tasks: list[str]) -> None:
             *(("-m", args.model) if args.model else ()),
             *(a for task in tasks for a in ("-i", task)),
         ]
-    guard_spend(jobs, args.budget, logs)
+    guard_spend(args.out, args.budget)
+    keep_spend(args.out, config, dropped)  # after the guard, which would count them twice
     log = logs / f"{config}.log"
-    print(f"{config}: harbor {' '.join(harbor_args[:2])} -> {log}")
+    print(f"{config}: harbor {' '.join(harbor_args[:2])} -> {log}", flush=True)
     code = run_harbor(harbor_args, log)
     if code != 0:
         raise Stop(f"harbor exited {code} on the {config} job; see {log}")
@@ -196,6 +246,11 @@ def versions(trials: list[Trial]) -> dict[str, list[str]]:
 
 def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]) -> Path:
     jobs = args.out / "jobs"
+    ran_with = {config: versions(load_trials(jobs / config)) for config in configs}
+    for key in ("git_commit", "model"):
+        values = sorted({value for found in ran_with.values() for value in found[key]})
+        if len(values) > 1:
+            raise Stop(f"the configs ran with different values of {key} ({values}); no table")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     reports = args.out / "reports" / stamp
     reports.mkdir(parents=True)  # never an earlier report's directory
@@ -207,7 +262,7 @@ def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]
         if code != 0:
             raise Stop(f"report on the {config} job: {err.strip()}")
         report = json.loads((reports / config / "report.json").read_text())
-        rows.append({"config": config, **report, **versions(load_trials(jobs / config))})
+        rows.append({"config": config, **report, **ran_with[config]})
     contributions: list[dict[str, Any]] = []
     for config in configs:
         if config == REFERENCE:
@@ -299,13 +354,16 @@ def run(args: argparse.Namespace) -> int:
         if left:
             details = "; ".join(f"{config}: {reason}" for config, reason in left.items())
             raise Stop(f"not ready to score ({details}). rerun with the same --out to redo them")
-        code, out, err = evals_cli(["scrub", str(args.out / "jobs")])
-        _log(args.out / "logs" / "guards.log", out, err)
-        if code != 0:
-            raise Stop(
-                "scrub could not check every file, so no report; "
-                f"see {args.out / 'logs' / 'guards.log'}"
-            )
+        # Only this table's jobs, all finished: scrub redacts the paths in a job's Harbor config,
+        # so another config's unfinished job would no longer resume.
+        for config in configs:
+            code, out, err = evals_cli(["scrub", str(args.out / "jobs" / config)])
+            _log(args.out / "logs" / "guards.log", out, err)
+            if code != 0:
+                raise Stop(
+                    f"scrub could not check every file of the {config} job, so no report; "
+                    f"see {args.out / 'logs' / 'guards.log'}"
+                )
         reports = write_reports(args, configs, tasks)
     except Stop as exc:
         print(f"ablate: {exc}", file=sys.stderr)

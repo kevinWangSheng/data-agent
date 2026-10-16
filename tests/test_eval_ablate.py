@@ -43,6 +43,7 @@ class FakeHarbor:
         self.outcome = outcome
         self.cost = cost
         self.calls: list[list[str]] = []
+        self.model: dict[str, str] = {}  # per config; deepseek-flash otherwise
 
     def __call__(self, args: list[str], log: Path) -> int:
         self.calls.append(args)
@@ -69,6 +70,8 @@ class FakeHarbor:
                 "run_config": run_config,
                 "tasks": tasks,
                 "k": int(args[args.index("-k") + 1]),
+                # Harbor keeps absolute paths here, which scrub would redact.
+                "path": str(Path.home() / "tasks"),
             }
             (job / "config.json").write_text(json.dumps(config))
         self.fill(job, config)
@@ -86,7 +89,12 @@ class FakeHarbor:
                 reward, error = self.outcome(config["run_config"], task, attempt)
                 trial = job / f"{task}__a{attempt}c{len(self.calls)}"
                 (trial / "agent" / "events").mkdir(parents=True)
-                header = {"type": "version", "config": config["run_config"], "git_commit": "abc"}
+                header = {
+                    "type": "version",
+                    "config": config["run_config"],
+                    **ablate.conditions(config["run_config"]),
+                    "model": self.model.get(config["run_config"], "deepseek-flash"),
+                }
                 result_event = {"type": "result", "cost_usd": self.cost}
                 event_lines = [json.dumps(header), json.dumps(result_event)]
                 # A key the model echoed into a tool result: scrub must remove it.
@@ -105,6 +113,12 @@ class FakeHarbor:
                     },
                 }
                 (trial / "result.json").write_text(json.dumps(result))
+
+
+@pytest.fixture(autouse=True)
+def commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clean commit, whatever state this checkout is in while the tests run."""
+    monkeypatch.setattr(ablate, "git_commit", lambda: "c0ffee")
 
 
 @pytest.fixture
@@ -381,3 +395,89 @@ def test_a_failed_harbor_run_stops_the_batch(
     assert evals_main(ablate_args(manifest, out)) == 2
     assert len(calls) == 1
     assert "harbor" in capsys.readouterr().err
+
+
+def test_spend_of_trials_a_resume_drops_still_counts(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Harbor deletes the errored trials it reruns; what they cost was still paid."""
+    broken = {"flaky": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if config == "no-skill" and attempt == 0 and broken["flaky"]:
+            return None, "ApiInternalServerError"
+        return by_pass_rate(config, task, attempt)
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out) == 2
+    broken["flaky"] = False
+    assert run(monkeypatch, harbor, manifest, out) == 0
+    assert list((out / "dropped" / "no-skill").rglob("*.jsonl"))
+    code, printed, _ = ablate.evals_cli(["spend", str(out), "--budget", "100"])
+    # 6 configs x 2 tasks x 3 trials, plus the 2 dropped ones, at $0.01 each.
+    assert code == 0 and "$0.3800 over 38 event file(s)" in printed
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"git_commit": "beef"}, "other conditions"),
+        ({"skill_version": "0ld5k1ll"}, "other conditions"),
+        ({"git_commit": "c0ffee-dirty"}, "uncommitted"),
+    ],
+)
+def test_jobs_from_other_conditions_are_not_reused(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    change: dict[str, str],
+    message: str,
+) -> None:
+    """A finished job made by other code or Skills must not join this table (ADR-0004: a Skill
+    change means rerunning the configs it affects)."""
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    if "git_commit" in change:
+        monkeypatch.setattr(ablate, "git_commit", lambda: change["git_commit"])
+    else:
+        monkeypatch.setattr(ablate, "skill_version", lambda _dir: change["skill_version"])
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 2
+    assert message in capsys.readouterr().err
+    assert len(harbor.calls) == 1
+    assert len(report_dirs(out)) == 1
+
+
+def test_configs_run_with_different_models_are_not_compared(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harbor = FakeHarbor()
+    harbor.model["baseline"] = "deepseek-pro"
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--config", "baseline") == 2
+    assert "model" in capsys.readouterr().err
+    assert report_dirs(out) == []
+
+
+def test_scrub_leaves_jobs_outside_this_table_alone(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """An unfinished job of a config left out this time must stay resumable: scrub would redact
+    the paths in its Harbor config."""
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if config == "baseline":
+            return None, "ApiInternalServerError"
+        return by_pass_rate(config, task, attempt)
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--config", "baseline") == 2
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    assert str(Path.home()) in (out / "jobs" / "baseline" / "config.json").read_text()
+    assert str(Path.home()) not in (out / "jobs" / "full" / "config.json").read_text()
