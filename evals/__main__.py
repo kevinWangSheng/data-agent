@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from evals import attribute, dab, jaffle, scrub, spend
+from evals import ablate, attribute, dab, jaffle, scrub, spend
 from evals.compare import paired_bootstrap
 from evals.harbor import by_task, load_trials
 from evals.report import TRIALS_PER_TASK, check_complete, score, split_trials, write_report
@@ -90,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
     p.set_defaults(func=cmd_report)
 
-    for module in (scrub, spend, attribute, dab, jaffle):
+    for module in (scrub, spend, attribute, dab, jaffle, ablate):
         module.add_parser(commands)
     return parser
 
