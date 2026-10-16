@@ -222,6 +222,23 @@ def dbt_profile(url: str, schema: str) -> tuple[str, dict[str, str]]:
     return PROFILE.format(schema=schema), env
 
 
+def case_env(
+    base: Mapping[str, str], profile_env: Mapping[str, str], workspace: Path
+) -> dict[str, str]:
+    """The environment for the case's dbt setup and its agent run. dbt reads DBT_PROJECT_DIR,
+    DBT_PROFILES_DIR, DBT_PROFILE and DBT_TARGET before its working directory, so inherited ones
+    could build another project or write to another database: pin them to the case."""
+    root = str(workspace.resolve())
+    return {
+        **base,
+        **profile_env,
+        "DBT_PROJECT_DIR": root,
+        "DBT_PROFILES_DIR": root,
+        "DBT_PROFILE": "jaffle_shop",
+        "DBT_TARGET": "dev",
+    }
+
+
 def apply_edits(root: Path, edits: Sequence[Mapping[str, str]]) -> None:
     for edit in edits:
         path = root / edit["file"]
@@ -304,7 +321,7 @@ def run_case(
     profile, profile_env = dbt_profile(url, schema)
     (workspace / "profiles.yml").write_text(profile)
     apply_edits(workspace, case.get("setup", {}).get("edits", []))
-    env = {**os.environ, **profile_env}
+    env = case_env(os.environ, profile_env, workspace)
     reset_schemas(url)
     dbt(workspace, env, "seed")
     dbt(workspace, env, "run")

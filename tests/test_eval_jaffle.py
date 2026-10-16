@@ -140,6 +140,30 @@ def test_profile_reads_credentials_from_the_environment() -> None:
         assert f"env_var('{name}')" in profile
 
 
+def test_case_env_pins_dbt_to_the_case_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Inherited DBT_* settings must not send setup or the agent to another project or database.
+    monkeypatch.chdir(tmp_path)
+    base = {
+        "PATH": "/bin",
+        "DBT_PROJECT_DIR": "/elsewhere",
+        "DBT_PROFILES_DIR": "/elsewhere",
+        "DBT_PROFILE": "prod",
+        "DBT_TARGET": "prod",
+    }
+    env = jaffle.case_env(base, {"DA_JAFFLE_PORT": "6543"}, Path("out/q1/jaffle_shop"))
+    workspace = str(tmp_path / "out" / "q1" / "jaffle_shop")
+    assert env == {
+        "PATH": "/bin",
+        "DA_JAFFLE_PORT": "6543",
+        "DBT_PROJECT_DIR": workspace,
+        "DBT_PROFILES_DIR": workspace,
+        "DBT_PROFILE": "jaffle_shop",
+        "DBT_TARGET": "dev",
+    }
+
+
 def test_setup_edit_must_match_once(tmp_path: Path) -> None:
     (tmp_path / "m.sql").write_text("group by a\n")
     jaffle.apply_edits(tmp_path, [{"file": "m.sql", "old": "group by a\n", "new": "group by b\n"}])
