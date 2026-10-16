@@ -1,6 +1,6 @@
 # 09 — Harbor 适配器
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 04
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -47,10 +47,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 4（第 1 次交回 2 轮；退回后 da-review 2 轮）
-- Model spend: $0.35（本轮 2 次 Harbor 实测 $0.035 + $0.032）
-- Outcome: 退回第 1 轮 2 条 P1 已修，另修 da-review 2 条
+- Attempts: 3
+- Review rounds: 5
+- Model spend: $0.35（本轮无新 Harbor 运行）
+- Outcome: 退回第 2 轮 2 条 P1 已修；da-review 无新问题
 - Human review minutes: —
 
 ## Comments
@@ -136,3 +136,31 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 2. **[P1] `evals/scrub.py:117`**：`--user` 只清路径段里的用户名，JSON 值或普通文本里的用户名（`{"worker": "ci-runner"}`、`running as ci-runner`）留下且 scrub 成功退出；验收要求上传的轨迹不含用户名。清理 JSON 字符串值和普通文本里作为完整单词出现的用户名（JSON 键保持不变，避免第 2 轮那种改坏键的问题）；之后残留检查也查用户名，有残留退出码非 0。
 
 这是最后一轮；之后的新意见记为已知限制。修完 `make check`，对复制的真实 job 用 `--user` 跑一次 scrub 展示结果，再跑一轮 `da-review main`（新意见只记录）。不需要新的 Harbor 真实运行。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
+
+### 2026-10-16 Return round 2 fixes (commit `c418f9c`)
+
+- **P1: timeouts were retried** (`evals/harbor_agent.py`, `src/data_agent/agent.py`)
+  - **Evidence.** I searched the bundled Claude CLI binary for its error-message formatter.
+    - A request that times out ends with a result message `API Error: Request timed out…`, or `API Error: No response from API (waited …)`.
+    - A dropped connection ends with `Connection dropped (ECONNRESET)`, `Connection closed before the response finished`, `Unable to connect to API…` or `Connection error.`.
+    - Harbor's exception text truncates output, so the adapter can't reliably see the message there.
+  - **Event change.** The `result` event gains an `api_error` field: the CLI's message when `terminal_reason == "api_error"`, otherwise `null`. Final answers are never copied into it.
+  - **Adapter change.** A failure with no HTTP status is turned into `ApiConnectionClosedError` (retried) only when `api_error` matches the dropped-connection pattern (`DISCONNECTED`). Everything else keeps Harbor's own classification and is not retried. That covers timeouts, SSL errors, and older event files that have no `api_error` field.
+  - **Tests.** 4 dropped-connection messages are retried; 5 cases are not (2 timeout wordings, no-response, SSL, missing message). The result event records the message and does not copy an answer. Before the fix, 6 of these tests failed.
+- **P1: `--user` only removed the name inside paths** (`evals/scrub.py`)
+  - **Scrubbing.** The user name is now also removed as a whole word, case-insensitive, in JSON string values and plain text. `ci-runners` and `xci-runner` are left alone. JSON keys are still never rewritten (the earlier bug where keys were broken).
+  - **Leftover check.** After scrubbing, the check also looks for the name as a whole word outside JSON keys. If it finds one it lists `file[:line]: name` and exits with code 1. Markers like `[redacted-user]` are ignored by the check.
+  - **Tests.** Value and plain-text removal; a name left as a key inside JSON that a tool printed is reported and fails the run; a top-level JSON key is neither reported nor changed.
+  - **Existing test changed.** `test_scrub_keeps_json_keys_that_spell_the_user_name` used to expect the value `"name": "agent"` to stay. It now expects `[redacted-user]` while the key `agent` stays, because the ticket requires values to be scrubbed. This is not an acceptance test.
+  - Before the fix, 3 tests failed.
+- **Real scrub run.** I copied the real job `runs/09/jobs-r1c` to `runs/09/scrub-r2`.
+  - **Setup.** I replaced the local home with `/home/ci-runner` and the local user name with `ci-runner`. The real job only contains the name inside paths, so I also added Codex's two examples: `"worker": "ci-runner"` in `result.json` and the line `running as ci-runner` in `trial.log`. That gives 9 occurrences of `ci-runner`.
+  - **Command.** `uv run python -m evals scrub runs/09/scrub-r2 --home /home/ci-runner --user ci-runner`
+  - **Output.** `changed 6 file(s) of 14; redactions: ... home=7 user=2`, exit code 0.
+  - **Result.** Afterwards, 0 occurrences of `ci-runner` and 0 of the local user name. The log line reads `running as [redacted-user]`, the field reads `"worker": "[redacted-user]"`, and every `.json` file still parses.
+  - **Speed.** On the larger `jobs-5` copy (44 files, 956 KB) the scrub took 0.75 s.
+- **Checks.** `make check`: ruff passes, basedpyright 0 errors, `869 passed, 15 deselected`. Pre-commit passes. As the ticket said, no new Harbor run was done.
+- **Review.** `da-review main` round 5 (Codex): "No actionable defects introduced by this diff were found". No new findings to record.
+- **Known limits, not fixed:**
+  - A user name that appears as a JSON key is kept and not reported, as the ticket requires.
+  - Harbor's own pattern for `Stream idle timeout` / `Response stalled mid-stream` still maps to `ApiResponseStalledError`, which stays in `TRANSIENT_ERRORS` and is retried. This is unchanged from before. I didn't find the current CLI producing these messages for our runs (not confirmed).
