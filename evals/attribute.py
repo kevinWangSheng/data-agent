@@ -205,6 +205,23 @@ DOTTED = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
 # One `list_tables` line: `schema.table (kind): col, col` (data_agent.mcp_server).
 LISTED_TABLE = re.compile(r"^\w+\.(\w+) \([^)]*\): (.*)$", re.MULTILINE)
 LIST_TABLES_TOOL = "mcp__data__list_tables"
+READ_TOOL = "Read"
+# The Read tool puts each line behind its number and a tab (or an arrow).
+LINE_NUMBER = re.compile(r"^ *\d+[\t→]", re.MULTILINE)
+IDENTIFIER = r"[A-Za-z_][\w.\"]*"
+CREATED = re.compile(
+    rf"\bcreate\s+(?:or\s+replace\s+)?(?:temp\w*\s+)?(?:table|view)\s+(?:if\s+not\s+exists\s+)?"
+    rf"({IDENTIFIER})",
+    re.IGNORECASE,
+)
+FROM_JOIN = re.compile(rf"\b(?:from|join)\s+({IDENTIFIER})", re.IGNORECASE)
+# In prose "from" is mostly English ("from the"); only the SQL keyword's capitals count there.
+FROM_JOIN_UPPER = re.compile(rf"\b(?:FROM|JOIN)\s+({IDENTIFIER})")
+DBT_REF = re.compile(r"\b(?:ref|source)\(([^)]*)\)")
+QUOTED = re.compile(r"['\"](\w+)['\"]")
+YAML_NAME = re.compile(r"^\s*(?:-\s*)?name:\s*['\"]?(\w+)", re.MULTILINE)
+BACKTICKED = re.compile(rf"`({IDENTIFIER})`")
+CODE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 
 
 def sql_names(sql: str) -> set[str]:
@@ -240,21 +257,68 @@ def listed_names(content: Any) -> set[str]:
     return {n for n in names if n}
 
 
+def _parts(names: Iterable[str]) -> set[str]:
+    """Each part of a possibly dotted, quoted name: `raw."orders"` gives raw and orders."""
+    return {p for n in names for p in (q.strip('"') for q in n.split(".")) if p}
+
+
+def sql_text_names(code: str) -> set[str]:
+    """Names SQL or dbt model text creates or reads: after CREATE TABLE/VIEW, FROM or JOIN, and
+    inside ref()/source()."""
+    names = _parts(CREATED.findall(code)) | _parts(FROM_JOIN.findall(code))
+    return names | {q for args in DBT_REF.findall(code) for q in QUOTED.findall(args)}
+
+
+def read_file_names(path: Any, content: Any) -> set[str]:
+    """Names in a schema file the agent read: `name:` entries of dbt YAML, and a `.sql` file's
+    own name and the relations it creates or reads."""
+    if not isinstance(path, str):
+        return set()
+    if isinstance(content, list):  # SDK text blocks
+        content = "\n".join(b["text"] for b in content if isinstance(b, dict) and "text" in b)
+    text = LINE_NUMBER.sub("", _as_text(content))
+    suffix = Path(path).suffix.lower()
+    if suffix in (".yml", ".yaml"):
+        return set(YAML_NAME.findall(text))
+    if suffix == ".sql":
+        return {Path(path).stem, *sql_text_names(text)}
+    return set()
+
+
+def prose_names(text: str) -> set[str]:
+    """Names in a task instruction or verifier output: backticked identifiers, CREATE
+    TABLE/VIEW targets, names after capitalized FROM/JOIN, and SQL inside code spans."""
+    names = _parts(BACKTICKED.findall(text)) | _parts(CREATED.findall(text))
+    names |= _parts(FROM_JOIN_UPPER.findall(text))
+    return names | {n for code in CODE.findall(text) for n in sql_text_names(code.strip("`"))}
+
+
 def specific_names(
     manifest: Mapping[str, Any], events: list[dict[str, Any]], context: str, skills: dict[str, str]
 ) -> set[str]:
-    """Names a generic suggestion must not use. Always: every task id in the manifest and every
-    table and column the run's SQL touched or `list_tables` showed, even a word a Skill also uses.
-    Also every `schema.table` part and snake_case identifier anywhere in the trace, the task
-    instruction or the verifier output, unless a Skill uses it: guessed from free text, so a word
-    the Skills use is taken as general.
+    """Names a generic suggestion must not use. Always, even a word a Skill also uses: every
+    task id in the manifest; every table and column the run's SQL touched or `list_tables`
+    showed; names in dbt YAML or `.sql` files the agent read (`read_file_names`); and names in
+    schema-shaped parts of the task instruction and verifier output (`prose_names`). Also every
+    `schema.table` part and snake_case identifier anywhere in the trace, the instruction or the
+    verifier output, unless a Skill uses it: guessed from free text, so a word the Skills use is
+    taken as general.
     """
     observed = {*manifest.get("dev", []), *manifest.get("holdout", [])}
+    read_paths: dict[Any, Any] = {}
     for event in events:
         if event.get("type") == "sql" and isinstance(event.get("sql"), str):
             observed |= sql_names(event["sql"])
+        elif event.get("type") == "tool_start" and event.get("tool") == READ_TOOL:
+            read_input = event.get("input")
+            if isinstance(read_input, dict):
+                read_paths[event.get("tool_use_id")] = read_input.get("file_path")
         elif event.get("type") == "tool_end" and event.get("tool") == LIST_TABLES_TOOL:
             observed |= listed_names(event.get("content", event.get("output")))
+        elif event.get("type") == "tool_end" and event.get("tool") == READ_TOOL:
+            path = read_paths.get(event.get("tool_use_id"))
+            observed |= read_file_names(path, event.get("content", event.get("output")))
+    observed |= prose_names(context)
     text = f"{json.dumps(events, ensure_ascii=False)}\n{context}"
     guessed = set(SNAKE_CASE.findall(text))
     guessed |= {part for dotted in DOTTED.findall(text) for part in dotted}
@@ -592,7 +656,6 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
 
 
 def run(args: argparse.Namespace) -> int:
-    manifest = json.loads(args.manifest.read_text())
     # Built on first use, so a job without dev failures needs no model settings.
     make_judge = functools.cache(lambda: sdk_judge(os.environ))
 
@@ -600,6 +663,9 @@ def run(args: argparse.Namespace) -> int:
         return await make_judge()(prompt, max_budget_usd)
 
     try:
+        manifest = json.loads(args.manifest.read_text())  # a JSONDecodeError is a ValueError
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("dev"), list):
+            raise ValueError(f"{args.manifest} is not a split manifest with a dev list")
         report = asyncio.run(
             attribute(
                 args.job_dir,
@@ -612,7 +678,7 @@ def run(args: argparse.Namespace) -> int:
                 known_secrets(os.environ),
             )
         )
-    except (ValueError, ConfigError) as exc:
+    except (OSError, ValueError, ConfigError) as exc:
         print(f"attribute: {exc}", file=sys.stderr)
         return 2
     done = sum(1 for e in report["failures"] if e.get("failure_mode"))

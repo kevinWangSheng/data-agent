@@ -425,3 +425,94 @@ async def test_sdk_judge_keeps_the_cost_of_a_result_followed_by_an_sdk_error(
 
     assert reply.text == ""
     assert reply.cost_usd == 0.25
+
+
+def add_events(trial: Path, *events: dict[str, Any]) -> None:
+    with (trial / "agent" / "events.jsonl").open("a") as f:
+        f.writelines(json.dumps(e) + "\n" for e in events)
+
+
+def read_file(trial: Path, seq: int, path: str, content: str) -> None:
+    add_events(
+        trial,
+        event(seq, "tool_start", tool="Read", tool_use_id=f"r{seq}", input={"file_path": path}),
+        event(seq + 1, "tool_end", tool="Read", tool_use_id=f"r{seq}", content=content),
+    )
+
+
+def test_names_in_a_dbt_yaml_the_agent_read_are_specific(tmp_path: Path) -> None:
+    assert "orders" in SKILLS["sql-workflow"]  # a plain word the Skills use
+    job = tmp_path / "job"
+    trial = write_trial(job, "dev-task__a", "dev-task", 0.0)
+    # As the Read tool returns it: each line behind its number and a tab.
+    schema = (
+        "1\tversion: 2\n2\tmodels:\n3\t  - name: orders\n4\t    columns:\n5\t      - name: status\n"
+    )
+    read_file(trial, 10, "/ws/models/schema.yml", schema)
+    judge = FakeJudge(reply(suggestion="Inspect orders and their status first."), reply())
+
+    run(job, tmp_path / "out", judge)
+
+    assert len(judge.prompts) == 2
+    assert "(orders, status)" in judge.prompts[1]
+
+
+def test_names_in_a_sql_file_the_agent_read_are_specific(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    trial = write_trial(job, "dev-task__a", "dev-task", 0.0)
+    model = (
+        "create view revenue as\nselect * from orders o\n"
+        "join {{ ref('customers') }} c on o.customer = c.id"
+    )
+    read_file(trial, 10, "/ws/models/revenue.sql", model)
+    judge = FakeJudge(reply(suggestion="Check revenue against orders and customers."), reply())
+
+    run(job, tmp_path / "out", judge)
+
+    assert len(judge.prompts) == 2
+    assert "(customers, orders, revenue)" in judge.prompts[1]
+
+
+def test_names_the_instruction_and_verifier_show_are_specific(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    trial = write_trial(job, "dev-task__a", "dev-task", 0.0)
+    tasks = tmp_path / "tasks"
+    (tasks / "dev-task").mkdir(parents=True)
+    (tasks / "dev-task" / "instruction.md").write_text(
+        "Use the `orders` table. Revenue comes from the order lines:\n"
+        "```sql\nCREATE TABLE totals AS SELECT 1\n```\n"
+        "Check it with SELECT count(*) FROM customers JOIN refunds USING (id)."
+    )
+    (trial / "verifier").mkdir()
+    (trial / "verifier" / "test-stdout.txt").write_text("FAILED: expected `revenue` to be 7")
+    judge = FakeJudge(
+        reply(suggestion="Read the orders, totals, customers, refunds and revenue first."),
+        reply(),
+    )
+
+    run(job, tmp_path / "out", judge, tasks_dir=tasks)
+
+    assert len(judge.prompts) == 2
+    # Prose after "from" ("the") is not taken as a name.
+    assert "(customers, orders, refunds, revenue, totals)" in judge.prompts[1]
+
+
+def test_cli_reports_an_unreadable_manifest_without_a_traceback(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 1.0)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{not json")
+
+    command = ["attribute", str(job), "--manifest", str(manifest), "--out", str(tmp_path / "o")]
+    proc = subprocess.run(
+        [sys.executable, "-m", "evals", *command],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+
+    assert proc.returncode == 2
+    assert proc.stderr.startswith("attribute: ")
+    assert "Traceback" not in proc.stderr
