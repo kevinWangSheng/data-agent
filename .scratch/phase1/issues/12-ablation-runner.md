@@ -1,6 +1,6 @@
 # 12 — 消融运行器
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 06, 07, 09, 10, 11, 15, 16
 Spec: ../spec.md
 Claimed by: Claude Code (claude-opus-5-5) 2026-10-16
@@ -48,7 +48,7 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 ## Ledger
 
 - Attempts: 1
-- Review rounds: 2
+- Review rounds: 2（另 PR #17 退回 1 轮）
 - Model spend: 约 $0.76（消融 $0.7269 + DAB $0.0212；中止的第 1 次运行有 1 个 trial 没记，估计 < $0.15），在 $3 上限内
 - Outcome: 验收项全部完成；NOTICE 由主会话补
 - Human review minutes: —
@@ -99,3 +99,10 @@ CI 绿（cc19f4b）。Codex 两条，对照代码核实都属实：
 
 - 退回：`evals/ablate.py:167` `check_conditions` 里 `if found[key] and ...`：事件文件缺失/为空或版本头缺 `git_commit`/`skill_version` 时 `versions()` 给空列表，比较被跳过，于是没有版本的 trial 会被复用、或和新续跑的 trial 混在一张表里。缺任何必需版本字段应算条件不符（Stop）。配一个修复前会失败的测试。
 - 退回：`evals/dab.py` `dab_commit()`：只因路径带 `filter=lfs` 就当干净，下载后被改过的数据库文件不会被发现，续跑可能混用不同数据。改成：有改动的 LFS 路径要对照 DAB 自带的 `dataset_manifest.tsv`（sha256）校验，不一致或不在清单里就算 dirty（只读清单和文件，不复制 DAB 代码——DAB 无许可证）。配测试。
+
+### 2026-10-16 工单 agent：PR #17 第 1 轮退回修复（531c92e，主会话抄录）
+
+- 已修：`evals/ablate.py` `check_conditions`：要保留的 trial 只要没记版本（无事件文件、事件文件为空、版本头缺 `git_commit` 或 `skill_version`）就停止复用（新增 `has_versions()`，共用 `header()`）。基础设施错误的 trial 例外：续跑本来就丢掉它们，它们可能在 agent 写事件文件前就坏了，拦住会让 job 永远续不上。新测试 `tests/test_eval_ablate.py::test_jobs_whose_trials_lack_versions_are_not_reused`（4 例）修复前 4/4 失败，修复后通过；`test_an_infrastructure_error_without_events_is_still_redone` 覆盖例外。
+- 已修：`evals/dab.py` `dab_commit()`：有改动的 LFS 路径必须在 DAB 自带 `dataset_manifest.tsv` 里且 size 与 sha256 一致，否则（不在清单、size 不对、哈希不对、已删除、没有清单）算 dirty。先比 size；每个 (path, size, mtime_ns) 每进程最多算一次 sha256。只读清单和数据文件，没复制 DAB 代码。本工单自己写的 `test_dab_commit_ignores_its_lfs_data_files` 改成 `test_dab_commit_accepts_lfs_data_that_matches_its_manifest`（现在需要清单条目）；新测试 `test_dab_commit_marks_lfs_data_that_differs_from_its_manifest`（4 例：下载后被改 / 同 size 不同字节 / 不在清单 / 已删除）修复前 4/4 失败，修复后通过。
+- 对真实 DAB clone（只读；前后 `git status --short` 一致，只有两个 stockindex `.db` 改动）：`dab.dab_commit(...)` → `6ad9d689393ff13b51a6bdcc0b98d1d4d8209f36`（等于 HEAD，无 `-dirty`，0.50s）。
+- `make check`：1016 passed，24 deselected；basedpyright 0 errors。这轮修复没再跑两道本地审查（PR 上 Codex 会再审）。
