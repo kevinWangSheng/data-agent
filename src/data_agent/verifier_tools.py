@@ -21,10 +21,12 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   the model's SQL. Without them it compares against the nearest finer-grained table that has the
   slice column, instead of upstream's three largest tables, which on a project with a fanned-out
   sibling model put that sibling's doubled counts next to a correct model. The slice is every
-  text, date or `id` / `*_id` column of the top row, NULLs matched with IS NULL (upstream: the
-  first), and a join to reach it goes only through a named upstream whose join column is unique
-  (upstream: any table sharing a column); a candidate it cannot slice on every column is marked
-  inconclusive, and the output says the baselines do not apply the model's own filters.
+  text, date, timestamp or `id` / `*_id` column of the top row, NULLs matched with IS NULL
+  (upstream: the first), and a join to reach it goes only through a named upstream on a shared
+  `*_id` column unique there (upstream: any table sharing a column); a candidate it cannot
+  slice on every grouping column is marked inconclusive, a one-row model without dimensions is
+  compared with whole upstreams, and the output says the baselines do not apply the model's
+  own filters.
   It marks a COUNT(*) match or mismatch only for integer metrics; upstream also held sums up
   against row counts.
 - A table profiled over a sample says so, its NULL shares are of the sample, and a column that
@@ -55,6 +57,7 @@ INTEGER_TYPES = frozenset(
 NUMERIC_TYPES = INTEGER_TYPES | {
     *("DECIMAL", "NUMERIC", "DOUBLE", "DOUBLE PRECISION", "FLOAT", "REAL", "FLOAT4", "FLOAT8"),
 }
+SLICE_TYPES = frozenset({"DATE", "TIME", "TIMETZ", "DATETIME", "BOOLEAN", "BOOL", "UUID"})
 MAX_SOURCES = 10
 # Upstream's profiling bounds: aggregates per statement, and cells (rows x columns) above which a
 # table is profiled over a sample.
@@ -102,8 +105,15 @@ def is_identifier(column: str) -> bool:
 
 
 def is_dimension(column: str, data_type: str) -> bool:
-    """A grouping column: text, a date, or an identifier such as an integer customer_id."""
-    return is_text(data_type) or base_type(data_type) == "DATE" or is_identifier(column)
+    """A grouping column the slice can match: text, a date or time, a boolean, a UUID, or an
+    identifier such as an integer customer_id."""
+    kind = base_type(data_type)
+    return (
+        is_text(data_type)
+        or kind in SLICE_TYPES
+        or kind.startswith(("TIMESTAMP", "TIME "))
+        or is_identifier(column)
+    )
 
 
 def equals(column_sql: str, value: Any) -> str:
@@ -274,11 +284,12 @@ def source_relations(project: Path) -> dict[tuple[str, str], tuple[str, str]]:
     defaults to the source name and the identifier to the table name, as in dbt."""
     relations: dict[tuple[str, str], tuple[str, str]] = {}
     for path in project_files(project, "*.yml", "*.yaml"):
+        identifiers: dict[tuple[str, str], str] = {}
+        schemas: dict[str, str] = {}  # a source's `schema:`, before or after its `tables:`
         in_sources = False
         source: str | None = None
-        schema: str | None = None
         table: str | None = None
-        source_indent = table_indent = 0
+        source_indent = table_indent = key_indent = 0
         for line in read_text(path).splitlines():
             stripped = line.lstrip()
             indent = len(line) - len(stripped)
@@ -292,18 +303,23 @@ def source_relations(project: Path) -> dict[tuple[str, str], tuple[str, str]]:
             name = NAME_LINE_RE.match(stripped)
             value = stripped.split(":", 1)[-1].strip().strip("'\"")
             if name and (source is None or indent <= source_indent):
-                source, schema, table = name.group(1), None, None
+                source, table = name.group(1), None
+                # The source's own keys line up with `name` after the `- `.
                 source_indent = indent
+                key_indent = indent + len(stripped) - len(stripped[1:].lstrip())
             elif source is None:
                 continue
+            elif stripped.startswith("schema:") and indent == key_indent:
+                schemas[source] = value
             elif name and (table is None or indent == table_indent):
                 # Deeper `- name:` lines under a table are its columns.
                 table, table_indent = str(name.group(1)), indent
-                relations[(source, table)] = (schema or source, table)
-            elif stripped.startswith("schema:") and table is None:
-                schema = value
+                identifiers[(source, table)] = table
             elif table and indent > table_indent and stripped.startswith("identifier:"):
-                relations[(source, table)] = (relations[(source, table)][0], value)
+                identifiers[(source, table)] = value
+        for (source_name, table_name), identifier in identifiers.items():
+            schema = schemas.get(source_name, source_name)
+            relations[(source_name, table_name)] = (schema, identifier)
     return relations
 
 
@@ -529,11 +545,12 @@ def column_map(table: Table) -> dict[str, str]:
 
 
 def unique_key(run: RunQuery, candidate: Table, bridge: Table) -> str | None:
-    """A column the candidate shares with `bridge` that is unique in `bridge`, so joining on it
-    cannot multiply the candidate's rows."""
+    """A `*_id` column the candidate shares with `bridge` that is unique in `bridge`, so joining
+    on it cannot multiply the candidate's rows. A shared bare `id` is each table's own key, not a
+    link between them, and other shared columns need not be keys at all."""
     bridge_keys = column_map(bridge)
     for key in column_map(candidate):
-        if key in bridge_keys:
+        if key in bridge_keys and key.endswith("_id"):
             column = quote(bridge_keys[key])
             sql = f"SELECT count(*), count(DISTINCT {column}) FROM {bridge.sql_name}"
             rows, distinct = run(sql, 1).rows[0]
@@ -612,17 +629,23 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
     # Every text, date or identifier column of the top row, NULLs included: the model's full
     # grouping grain, as far as it shows in its columns.
     slice_values = {name: row[name] for name, t in model.columns if is_dimension(name, t)}
+    # A grouping column the slice cannot match (a blob, a list) leaves every slice too wide.
+    unsliceable = [
+        name for name, t in model.columns if name not in slice_values and not is_numeric(t)
+    ]
+    # A one-row model without dimensions is a scalar aggregate over its whole upstreams.
+    whole_table = not slice_values and bool(sources) and row_count(run, model) == 1
     shown = ", ".join(
         f"{name} IS NULL" if value is None else f"{name} = '{value}'"
         for name, value in slice_values.items()
     )
-    lines = [
-        f"## Value Verification: {model.ref}",
-        f"Top row (by {metrics[0]}) slice: {shown}"
-        if slice_values
-        else "No dimension column for slicing; candidates skipped",
-    ]
-    if not slice_values:
+    lines = [f"## Value Verification: {model.ref}"]
+    if slice_values:
+        lines.append(f"Top row (by {metrics[0]}) slice: {shown}")
+    elif whole_table:
+        lines.append("One-row model with no dimension column: compared with whole upstreams")
+    else:
+        lines.append("No dimension column for slicing; candidates skipped")
         return lines
     candidates: list[Table] = []
     if sources:
@@ -643,7 +666,11 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
     measured: list[tuple[Table, str, list[str], int | None, list[tuple[str, int]], int]] = []
     for candidate in candidates:
         rows = row_count(run, candidate)
-        found = slice_filter(run, candidate, slice_values, bridges)
+        found = (
+            ("", "the whole table", [])
+            if whole_table
+            else slice_filter(run, candidate, slice_values, bridges)
+        )
         if found is None:
             measured.append((candidate, "", [], None, [], rows))
             continue
@@ -677,10 +704,15 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
                     f"    not sliced on {', '.join(missing)} (no such column or safe join): "
                     "a wider slice than the model row; inconclusive"
                 )
+            if unsliceable:
+                lines.append(
+                    f"    not sliced on {', '.join(unsliceable)} (a type the slice cannot "
+                    "match): a wider slice than the model row; inconclusive"
+                )
             lines.append(f"    COUNT(*): {count}")
             lines.extend(f"    COUNT(DISTINCT {name}): {n}" for name, n in distinct)
             model_value = float(value)
-            if is_count and not missing and model_value > 0 and count > 0:
+            if is_count and not missing and not unsliceable and model_value > 0 and count > 0:
                 ratio = count / model_value
                 lines.append(
                     "    → Model matches COUNT(*)"
@@ -767,10 +799,11 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
         Takes the model's top row by its first numeric non-id column and slices on every text,
         date or id column of that row (NULLs included), then counts COUNT(*) and
         COUNT(DISTINCT <_id column>) for the same slice in each upstream table; a candidate it
-        cannot slice on every column is marked inconclusive. The counts skip the model's own
-        filters. Pass the model's upstreams (the tables in its FROM / ref() / source(),
-        comma-separated) as `source_tables`; without them the nearest finer-grained table that
-        has the first slice column stands in.
+        cannot slice on every column is marked inconclusive, and a one-row model with no
+        dimension is compared with the whole upstreams. The counts skip the model's own filters.
+        Pass the model's upstreams (the tables in its FROM / ref() / source(), comma-separated)
+        as `source_tables`; without them the nearest finer-grained table that has the first
+        slice column stands in.
         """
         model = resolve(load_catalog(run), model_name)
         return "\n".join(verify_values(run, model, split_names(source_tables)))

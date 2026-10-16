@@ -398,3 +398,83 @@ def test_audit_finds_a_grain_key_past_the_fifth_column(tmp_path: Path) -> None:
     model = verifier_tools.resolve(verifier_tools.load_catalog(run), "m")
     text = "\n".join(verifier_tools.audit(run, model, ["m"], sample_nulls=True))
     assert "Grain key: row_id (3 distinct = row count, unique)" in text
+
+
+async def test_verify_model_values_does_not_bridge_on_a_bare_id(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "bare_id.duckdb",
+        "CREATE TABLE orders (id INT, customer_id INT);"
+        "INSERT INTO orders VALUES (1, 2), (2, 2), (3, 1);"
+        "CREATE TABLE customers (id INT, name VARCHAR);"
+        "INSERT INTO customers VALUES (1, 'ann'), (2, 'bob');"
+        "CREATE TABLE by_name AS SELECT c.name, count(*) AS n_orders "
+        "FROM orders o JOIN customers c ON o.customer_id = c.id GROUP BY c.name",
+    )
+    result = await call(
+        db, "verify_model_values", model_name="by_name", source_tables="orders, customers"
+    )
+    block = metric_block(text_of(result), "n_orders")
+    # orders.id and customers.id are different entities' keys; joining on them proves nothing.
+    assert "main.orders (3 rows) — no slice column and no safe join" in block
+    assert "via main.customers.id" not in block
+
+
+async def test_verify_model_values_slices_on_a_timestamp(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "hourly.duckdb",
+        "CREATE TABLE events (event_id INT, region VARCHAR, hour TIMESTAMP);"
+        "INSERT INTO events VALUES (1, 'north', TIMESTAMP '2025-01-01 10:00:00'),"
+        " (2, 'north', TIMESTAMP '2025-01-01 10:00:00'),"
+        " (3, 'north', TIMESTAMP '2025-01-01 11:00:00');"
+        "CREATE TABLE hourly AS SELECT region, hour, count(*) AS n_events "
+        "FROM events GROUP BY region, hour",
+    )
+    result = await call(db, "verify_model_values", model_name="hourly", source_tables="events")
+    block = metric_block(text_of(result), "n_events")
+    assert "sliced on region, hour" in block
+    assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
+
+
+async def test_verify_model_values_marks_an_unsliceable_grouping_column_inconclusive(
+    tmp_path: Path,
+) -> None:
+    db = make_db(
+        tmp_path / "blob.duckdb",
+        "CREATE TABLE events (event_id INT, region VARCHAR, tag BLOB);"
+        "INSERT INTO events VALUES (1, 'north', 'a'::BLOB), (2, 'north', 'a'::BLOB),"
+        " (3, 'north', 'b'::BLOB);"
+        "CREATE TABLE by_tag AS SELECT region, tag, count(*) AS n_events "
+        "FROM events GROUP BY region, tag",
+    )
+    result = await call(db, "verify_model_values", model_name="by_tag", source_tables="events")
+    block = metric_block(text_of(result), "n_events")
+    assert "not sliced on tag" in block and "inconclusive" in block
+    assert "→" not in block
+
+
+async def test_verify_model_values_compares_a_scalar_aggregate_with_the_whole_table(
+    tmp_path: Path,
+) -> None:
+    db = make_db(
+        tmp_path / "scalar.duckdb",
+        "CREATE TABLE events (event_id INT);"
+        "INSERT INTO events VALUES (1), (2), (3);"
+        "CREATE TABLE totals AS SELECT count(*) AS n_events FROM events",
+    )
+    result = await call(db, "verify_model_values", model_name="totals", source_tables="events")
+    block = metric_block(text_of(result), "n_events")
+    assert "Model value: 3" in block
+    assert "COUNT(*): 3" in block and "Model matches COUNT(*)" in block
+
+
+def test_source_relations_reads_a_schema_after_the_tables(tmp_path: Path) -> None:
+    (tmp_path / "sources.yml").write_text(
+        "version: 2\nsources:\n"
+        "  - name: shop\n    tables:\n      - name: orders\n        columns:\n"
+        "          - name: order_id\n    schema: raw\n"
+        "  - name: other\n    tables:\n      - name: t\n"
+    )
+    assert source_relations(tmp_path) == {
+        ("shop", "orders"): ("raw", "orders"),
+        ("other", "t"): ("other", "t"),
+    }
