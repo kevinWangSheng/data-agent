@@ -31,6 +31,7 @@ plan §5 Harbor 与 dbt 版本、§7 运行时注意事项（报错记 0、只�
 - [ ] workspace guard 拒绝读 workspace 内的 `.env*` 等凭据文件（工单 03 已知限制）
 - [ ] 没装 `git` 的环境里也能构建 wheel：`hatch_build.py` 捕获 `OSError` 回落 `unknown`（工单 03 已知限制）
 - [ ] 5 题真实运行的单次平均成本写进 Comments，并更新 plan §7 的推算
+- [ ] 5 题每题的峰值内存（`docker stats`）与用时写进 Comments，并更新 plan §7"服务器与并发"的并发推算（不改 `task.toml` 资源）
 
 ## Evidence required
 
