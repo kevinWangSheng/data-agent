@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Key-shaped values are assembled here so the repository never contains a literal one.
 FAKE_KEY = "sk-" + "ab12" * 8
@@ -81,6 +83,31 @@ def test_scrub_fails_on_files_it_cannot_read_as_text(tmp_path: Path) -> None:
     proc = scrub(tmp_path)
     assert proc.returncode != 0
     assert "warehouse.duckdb" in proc.stderr
+
+
+def test_scrub_removes_secrets_right_after_json_escapes(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    output = f"ok\n{FAKE_KEY}\nbuild-box-7\tdone ébuild-box-7"
+    events.write_text(json.dumps({"seq": 1, "type": "tool_end", "output": output}) + "\n")
+    proc = scrub(tmp_path, "--hostname", "build-box-7")
+    assert proc.returncode == 0, proc.stderr
+    text = events.read_text()
+    assert FAKE_KEY not in text and "build-box-7" not in text
+    assert json.loads(text)["output"].startswith("ok\n")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read any directory")
+def test_scrub_fails_when_a_subdirectory_cannot_be_read(tmp_path: Path) -> None:
+    locked = tmp_path / "trial" / "agent"
+    locked.mkdir(parents=True)
+    (locked / "events.jsonl").write_text(FAKE_KEY + "\n")
+    locked.chmod(0)
+    try:
+        proc = scrub(tmp_path)
+    finally:
+        locked.chmod(0o755)
+    assert proc.returncode != 0
+    assert "agent" in proc.stderr
 
 
 def test_scrub_fails_on_missing_directory(tmp_path: Path) -> None:

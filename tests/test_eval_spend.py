@@ -1,9 +1,12 @@
 """Edge cases for `python -m evals spend` beyond the seam C acceptance test (ticket 11)."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,6 +59,19 @@ def test_spend_refuses_unreadable_event_files(tmp_path: Path) -> None:
 def test_spend_refuses_result_events_without_a_cost(tmp_path: Path) -> None:
     write_events(tmp_path / "events.jsonl", {"seq": 1, "type": "result", "cost_usd": None})
     assert spend(tmp_path, "100").returncode == 2
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read any directory")
+def test_spend_refuses_when_a_subdirectory_cannot_be_read(tmp_path: Path) -> None:
+    locked = tmp_path / "trial"
+    write_events(locked / "events.jsonl", result(5.0))
+    locked.chmod(0)
+    try:
+        proc = spend(tmp_path, "100")
+    finally:
+        locked.chmod(0o755)
+    assert proc.returncode == 2
+    assert "trial" in proc.stderr
 
 
 def test_spend_refuses_missing_directory_and_bad_budget(tmp_path: Path) -> None:

@@ -2,7 +2,8 @@
 
 Sums `cost_usd` over the result events of every `*.jsonl` event file under RUNS_DIR. Exit 0 below
 80% of the budget; exit 1 at or above it, so a batch runner stops and a human decides; exit 2 when
-the spend cannot be known (unreadable event file, result without a cost, bad arguments).
+the spend cannot be known (unreadable directory or event file, a symlink, a result without a
+cost, bad arguments).
 Amounts are Decimal so "exactly 80%" is exact.
 """
 
@@ -11,6 +12,8 @@ import json
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+
+from evals.walk import walk_files
 
 STOP_FRACTION = Decimal("0.8")
 
@@ -56,7 +59,13 @@ def run(args: argparse.Namespace) -> int:
     if not runs_dir.is_dir():
         print(f"spend: {runs_dir} is not a directory", file=sys.stderr)
         return 2
-    files = sorted(p for p in runs_dir.rglob("*.jsonl") if p.is_file())
+    found, missed = walk_files(runs_dir)
+    if missed:
+        print("spend: cannot see every event file, stopping:", file=sys.stderr)
+        for problem in missed:
+            print(f"  {problem}", file=sys.stderr)
+        return 2
+    files = [p for p in found if p.suffix == ".jsonl"]
     try:
         spent = sum((file_spend(p) for p in files), Decimal(0))
     except (SpendUnknown, OSError, UnicodeDecodeError) as e:
