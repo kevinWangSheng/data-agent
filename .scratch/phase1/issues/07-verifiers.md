@@ -1,6 +1,6 @@
 # 07 — 验证子 agent 与 6 个验证工具
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 04, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 07-verifiers)
@@ -41,10 +41,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 3（Codex 2 + eng:code-review 1）
-- Model spend: ~$0.22（DeepSeek 价格估算；5 次真实 dbt 运行，每次约 $0.034，首次未记录；外加 2 个接缝 A 测试）
-- Outcome: 验收达成
+- Attempts: 2
+- Review rounds: 5（Codex 4 + eng:code-review 1）
+- Model spend: ~$0.29（之前 ~$0.22 + 两次真实运行 $0.034 + $0.030）
+- Outcome: 退回 4 条全修，另修 da-review 4 条；第 2 轮 da-review 4 条 P2 记为已知限制
 - Human review minutes: —
 
 ## Comments
@@ -131,3 +131,33 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-07-verifiers` �
 4. **Codex P2（grain key，约 :442）**：只在前 5 个扫描列里找唯一列，唯一键在第 6 列以后就误报"composite key or fan-out"。在全部已扫描列里找。
 
 修完 `make check`、full 配置真实 dbt 运行一次（看 verifier 事件），再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。
+
+### 2026-10-16 PR #12 return round 1 handled (commits `8577810`, `733319e`)
+
+**The four returned items** (`8577810`), each with a test that failed before the fix:
+1. **Integer keys:** `id` and `*_id` columns now slice the comparison instead of counting as metrics, so a model grouped only by an integer `customer_id` is checked (`test_verify_model_values_slices_on_an_integer_key`). A numeric slice value is written unquoted.
+2. **NULL dimensions:** a NULL dimension stays in the slice as `IS NULL`. That also covers a model whose only dimension is NULL (`test_verify_model_values_keeps_a_null_dimension_in_the_slice`).
+3. **`model_sql`:** it now looks only under the project's `model-paths`. It falls back to `source-paths`, then to `models`, following the same rule as `scan_project.py`. An analysis with the same name is no longer taken for the model (`test_model_sql_looks_only_under_the_model_paths`).
+4. **Grain key:** it is now searched across all scanned columns, not just the first 5 (`test_audit_finds_a_grain_key_past_the_fifth_column`).
+
+**`da-review main` round 1** (on `8577810`) found 4 P2s. All are fixed with tests in `733319e`:
+- **Joins:** tables are joined only on a shared `*_id` column that is unique in the table joined to. A shared bare `id` no longer links two tables.
+- **Timestamp/time/boolean/UUID columns** are now part of the slice. A grouping column the slice can't match, such as a BLOB, marks the candidate inconclusive.
+- **Scalar aggregates:** a one-row model with no dimension columns, given `source_tables`, is compared against each whole upstream table.
+- **Source schema:** a source's `schema:` is read even when it comes after `tables:`.
+
+**`da-review main` round 2** (on `733319e`) found 4 P2s. None are fixed; all predate this return:
+- **A numeric grouping column (e.g. `year INT`) counts as a metric.** Telling a numeric dimension from a metric needs the model's GROUP BY, which the tool doesn't parse. The tool output already says the baselines skip the model's filters, and the value-verifier re-counts.
+- **An integer `SUM` is checked as a row count.** The same limit: telling the two apart needs the SQL. The MISMATCH line is something the value-verifier re-checks, not a final verdict.
+- **The ±10% match tolerance hides small count errors.** This is the original port's threshold (whether upstream uses it too is 未确认). Exact equality is a small change but changes what "match" means; left for the main session to decide.
+- **`agents/verifier.md` lines 62–66 call a fan-out PASS when the lookup rows' labels differ.** This text was copied from the signalpilot-plugin prompt and is a change to verifier judgement, beyond this return.
+
+**`make check`:** `743 passed, 15 deselected` (`runs/retry1/check2.txt`).
+
+**Real runs** with `sh runs/manual07/run.sh full <dir>`:
+- **At `8577810`** (`runs/retry1/real`): exit 0. `verifier_start`/`verifier_end` for both verifiers. verifier: CHECK 1–4 PASS, CHECK 5 N/A. value-verifier: CHECK 1–2 PASS, CHECK 3 N/A. `num_turns` 22, `cost_usd` 0.0340, no REDACTED strings in the event file. `verify_model_values` sliced on `customer_id = 'C0001'`.
+- **At `733319e`** (`runs/retry1/real2`): exit 0. `customer_ltv rows 12 [('C0001', 6, 285.25), ('C0002', 4, 232.50), ('C0003', 2, 98.75)]`. verifier: CHECK 1–4 PASS. value-verifier: CHECK 1–3 PASS. `num_turns` 22, `cost_usd` 0.0303, no REDACTED strings.
+
+**Not run this round:** `eng:code-review main` (the return note asked only for `da-review`).
+
+**主会话**：第 2 轮 da-review 的 4 条 P2 都早于本轮，记为已知限制。数值分组列与整数 SUM 的区分要解析模型 SQL，属于启发式工具的边界；±10% 容差与 `agents/verifier.md` 的 fan-out 判定改的是验证口径，留给失败归因（工单 14）出数据后再定。
