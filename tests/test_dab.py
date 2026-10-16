@@ -607,6 +607,24 @@ def test_dab_commit_marks_a_dirty_checkout(tmp_path: Path) -> None:
     assert dab.dab_commit(repo) == f"{head}-dirty"
 
 
+def test_dab_commit_ignores_its_lfs_data_files(tmp_path: Path) -> None:
+    """DAB keeps its databases in Git LFS; without git-lfs, data put in place by DAB's download.sh
+    (which checks it against DAB's sha256 manifest) differs from the committed pointer stubs."""
+    repo = tmp_path / "dab"
+    (repo / "query_x").mkdir(parents=True)
+    git(repo, "init", "-q")
+    (repo / ".gitattributes").write_text("*.db filter=lfs diff=lfs merge=lfs -text\n")
+    (repo / "query_x" / "data.db").write_text("version https://git-lfs.github.com/spec/v1\n")
+    (repo / "query_x" / "query.json").write_text('"How many?"\n')
+    git(repo, "add", ".")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+    head = git(repo, "rev-parse", "HEAD")
+    (repo / "query_x" / "data.db").write_bytes(b"SQLite format 3\x00 real data")
+    assert dab.dab_commit(repo) == head
+    (repo / "query_x" / "query.json").write_text('"How many, edited?"\n')
+    assert dab.dab_commit(repo) == f"{head}-dirty"
+
+
 async def test_configs_with_context_tools_are_refused(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:

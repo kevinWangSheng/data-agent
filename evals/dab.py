@@ -261,12 +261,28 @@ def _git(dab_root: Path, *args: str) -> str | None:
 
 def dab_commit(dab_root: Path) -> str:
     """DAB's HEAD, with `-dirty` when tracked files have uncommitted changes (as `git describe
-    --dirty`; untracked output such as DAB's own results does not count)."""
+    --dirty`; untracked output such as DAB's own results does not count).
+
+    DAB's databases are Git LFS files. Without git-lfs, the data DAB's download.sh puts in place
+    (checked against DAB's sha256 manifest) differs from the committed pointer stubs, so changes to
+    LFS files are left out: they would mark every prepared checkout dirty.
+    """
     head = _git(dab_root, "rev-parse", "HEAD")
     if not head:
         return "unknown"
-    changes = _git(dab_root, "status", "--porcelain", "--untracked-files=no")
-    return head if changes == "" else f"{head}-dirty"
+    changed = _git(dab_root, "diff", "--name-only", "-z", "HEAD")
+    if changed is None:
+        return f"{head}-dirty"  # changes that cannot be listed count as changes
+    paths = [p for p in changed.split("\0") if p]
+    if paths:
+        attrs = _git(dab_root, "check-attr", "-z", "filter", "--", *paths)
+        fields = (attrs or "").split("\0")
+        lfs = {
+            path for path, value in zip(fields[::3], fields[2::3], strict=False) if value == "lfs"
+        }
+        if attrs is None or set(paths) - lfs:
+            return f"{head}-dirty"
+    return head
 
 
 async def run_once(
