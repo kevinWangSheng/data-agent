@@ -14,6 +14,8 @@
 # resolves inside the given directory (a symlink leading out is not followed).
 # YML names are compared without the single or double quotes YAML allows around them.
 # Parentheses inside SQL string literals and comments do not make a model a stub.
+# A dbt_project.yml that resolves outside the given directory is not read.
+# Only a model's own description is shown, not one of its columns'.
 # The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
 # The snapshots hint says `dbt snapshot` cannot run here (data-agent's Bash allows no snapshot).
 """Pre-scan a dbt project and emit a structured context block.
@@ -90,6 +92,12 @@ def _inside(path: Path, work_dir: Path) -> bool:
     return path.resolve().is_relative_to(work_dir.resolve())
 
 
+def _has_project(project: Path, root: Path) -> bool:
+    """`project` holds a dbt_project.yml, and both resolve inside `root`."""
+    config = project / "dbt_project.yml"
+    return config.exists() and _inside(project, root) and _inside(config, root)
+
+
 def _model_sql_files(work_dir: Path) -> list[Path]:
     """The model SQL files: `*.sql` under the model-paths, minus skipped directories and anything
     (a model path, a symlinked file) that resolves outside the project."""
@@ -164,14 +172,17 @@ def _extract_descriptions(yml_text: str) -> dict[str, str]:
     """Extract model descriptions from YML."""
     result: dict[str, str] = {}
     current_model = None
+    model_indent = 0
     for line in yml_text.splitlines():
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
         m = _yml_name(stripped)
         if m and 1 <= indent <= 4:
             current_model = m
+            model_indent = indent
             continue
-        if current_model and stripped.startswith("description:"):
+        # Only the model's own key: a column's description sits deeper.
+        if current_model and indent == model_indent + 2 and stripped.startswith("description:"):
             desc = stripped[len("description:"):].strip().strip("'\"")
             if desc:
                 result[current_model] = desc[:200].replace("\n", " ")
@@ -400,14 +411,10 @@ def main():
     work_dir = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
 
     # Look for dbt_project.yml to confirm we're in a dbt project
-    if not (work_dir / "dbt_project.yml").exists():
+    if not _has_project(work_dir, work_dir):
         # Try common subdirectories
         for subdir in work_dir.iterdir():
-            if (
-                subdir.is_dir()
-                and _inside(subdir, work_dir)
-                and (subdir / "dbt_project.yml").exists()
-            ):
+            if subdir.is_dir() and _has_project(subdir, work_dir):
                 work_dir = subdir
                 break
         else:

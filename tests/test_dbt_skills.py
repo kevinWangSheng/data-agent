@@ -262,3 +262,35 @@ def test_current_date_fix_keeps_a_real_today() -> None:
     """Anchoring `current_date` to the data's last date is conditional, not a blanket rewrite."""
     fix = body("dbt-debugging").split("## 4.", 1)[1].split("## 5.", 1)[0]
     assert "real current date" in fix, fix
+
+
+def test_scan_shows_the_model_description_not_a_column_one(tmp_path: Path) -> None:
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    (project / "models" / "marts" / "customer_orders.sql").unlink()  # a model to build shows DESC
+    schema = project / "models" / "schema.yml"
+    schema.write_text(
+        schema.read_text().replace(
+            "      - name: customer_id\n",
+            "      - name: customer_id\n        description: Column text\n",
+        )
+    )
+    output = scan(project)
+    assert "One row per customer." in output, output
+    assert "Column text" not in output, output
+
+
+def test_scan_does_not_read_a_project_config_outside_the_workspace(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "dbt_project.yml").write_text(
+        (DBT_SHOP / "dbt_project.yml").read_text()
+        + "vars:\n  shop:\n    secret_alias: \"{{ ref('secret_model') }}\"\n"
+    )
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    (project / "dbt_project.yml").unlink()
+    (project / "dbt_project.yml").symlink_to(outside / "dbt_project.yml")
+    output = scan(project)
+    assert "secret" not in output, output
+    assert "no dbt_project.yml found" in output, output
