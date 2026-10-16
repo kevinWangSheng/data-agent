@@ -18,11 +18,19 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from claude_agent_sdk import ResultMessage, SystemMessage
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    StreamEvent,
+    SystemMessage,
+    TextBlock,
+    ToolUseBlock,
+)
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult, TextContent
 
+from data_agent import agent
 from data_agent.run_config import load_config
 from evals import dab
 from evals.__main__ import main as evals_main
@@ -486,7 +494,8 @@ async def test_the_agent_gets_the_task_and_dab_tools_but_no_answer(
     assert server["env"] == dab.server_env()
     assert server["args"][-2:] == ["--workspace", str(workspace)]
     assert options.max_turns == 50
-    assert options.max_budget_usd == 1.0
+    # The price-table cap holds the configured $1; the SDK gets its backstop.
+    assert options.max_budget_usd == agent.sdk_budget_usd(1.0, agent.DEFAULT_MODEL)
 
 
 async def test_skills_follow_the_run_config(
@@ -852,3 +861,55 @@ def test_cli_rejects_a_missing_dab_root(tmp_path: Path, capsys: pytest.CaptureFi
     )
     assert code == 2
     assert "none" in capsys.readouterr().err
+
+
+def main_call(message_id: str, output_tokens: int) -> list[Any]:
+    """One main-thread model call that used a tool, as streamed with partial messages."""
+
+    def event(event: dict[str, Any]) -> StreamEvent:
+        return StreamEvent(uuid="u", session_id="s", event=event)
+
+    return [
+        event({"type": "message_start", "message": {"id": message_id, "usage": {}}}),
+        AssistantMessage(
+            content=[ToolUseBlock(id=f"toolu_{message_id}", name="query_database", input={})],
+            model="deepseek-flash",
+            message_id=message_id,
+        ),
+        event(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use"},
+                "usage": {"input_tokens": 0, "output_tokens": output_tokens},
+            }
+        ),
+    ]
+
+
+async def test_dab_runs_have_the_same_price_table_cap(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    """Two deepseek-flash calls of $0.60 pass the full config's $1: the session stops before a
+    third, the run is unfinished with an empty answer, and the SDK got the backstop cap."""
+    seen: list[Any] = []
+
+    async def fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        seen.append(options)
+        for message in (*main_call("m1", 500_000), *main_call("m2", 500_000)):
+            yield message
+        yield AssistantMessage(content=[TextBlock(text="never reached")], model="deepseek-flash")
+        yield result("never reached")
+
+    monkeypatch.setattr(dab, "query", fake_query)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    assert await dab.run_query(dab_root, query, load_config("full"), out, 1, ENV) == 0
+    events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
+    assert "never reached" not in json.dumps(events)
+    assert events[-1]["terminal_reason"] == "budget_exhausted"
+    assert events[-1]["cost_usd"] == pytest.approx(1.20)
+    submission = json.loads((out / "submission.json").read_text())
+    assert submission == [{"dataset": "toyset", "query": "1", "run": "0", "answer": ""}]
+    assert seen[0].max_budget_usd == agent.sdk_budget_usd(1.0, agent.DEFAULT_MODEL)
+    assert seen[0].include_partial_messages
+    assert "SubagentStop" in seen[0].hooks

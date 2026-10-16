@@ -4,6 +4,7 @@ The SDK's `query()` is replaced by a scripted stream, so these run without a mod
 is covered by seam A with a real model.
 """
 
+import asyncio
 import dataclasses
 import json
 from collections.abc import AsyncIterator, Callable
@@ -12,7 +13,16 @@ from typing import Any
 
 import duckdb
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultError, ResultMessage, TextBlock, UserMessage
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultError,
+    ResultMessage,
+    StreamEvent,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
 
 from data_agent import agent
 from data_agent.agent import Outcome, Task
@@ -173,44 +183,126 @@ async def test_tokens_and_cost_cover_the_subagents(
     assert events[-1]["cost_usd"] == pytest.approx(0.30 + 2 * 0.006 + 1.20)
 
 
-def turn(
-    message_id: str, output_tokens: int, parent: str | None = None, text: str = "..."
-) -> AssistantMessage:
-    """One model call; deepseek-flash output costs $1.20 per 1M tokens."""
-    return AssistantMessage(
-        content=[TextBlock(text=text)],
-        model="deepseek-flash",
-        parent_tool_use_id=parent,
-        usage={"input_tokens": 0, "output_tokens": output_tokens},
-        message_id=message_id,
-    )
+def usage(input_tokens: int = 0, output_tokens: int = 0) -> dict[str, int]:
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
+def stream_event(event: dict[str, Any], parent: str | None = None) -> StreamEvent:
+    return StreamEvent(uuid="u", session_id="s", event=event, parent_tool_use_id=parent)
+
+
+def call(
+    message_id: str,
+    output_tokens: int,
+    *,
+    input_tokens: int = 0,
+    tool: bool = True,
+    text: str = "...",
+) -> list[Any]:
+    """One main-thread model call as the CLI streams it with partial messages: message_start
+    (usage before any output), one message per content block (the same usage), message_delta
+    (the final usage). deepseek-flash costs $0.30 input and $1.20 output per 1M tokens."""
+    blocks: list[Any] = [TextBlock(text=text)]
+    if tool:
+        blocks.append(ToolUseBlock(id=f"toolu_{message_id}", name="Agent", input={}))
+    start = usage(input_tokens)
+    return [
+        stream_event({"type": "message_start", "message": {"id": message_id, "usage": start}}),
+        *(
+            AssistantMessage(
+                content=[block],
+                model="deepseek-flash",
+                usage=start,
+                message_id=message_id,
+            )
+            for block in blocks
+        ),
+        stream_event(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use" if tool else "end_turn"},
+                "usage": usage(input_tokens, output_tokens),
+            }
+        ),
+    ]
 
 
 TOOL_RESULT = UserMessage(content=[])
+TRANSCRIPT = Path(__file__).parent / "fixtures" / "subagent_transcript.jsonl"
+# The fixture is a real verifier transcript (CLI 2.1.301, scrubbed): 4 calls, 9678 uncached
+# input, 26112 cache-read and 7201 output tokens.
+TRANSCRIPT_USD = (9678 * 0.30 + 26112 * 0.006 + 7201 * 1.2) / 1e6
 
 
-async def test_priced_model_stops_once_price_table_spend_passes_the_cap(
+@dataclasses.dataclass
+class SubagentStart:
+    """In a scripted stream: the CLI calls the SubagentStart hooks for a new subagent."""
+
+    agent_id: str = "a1"
+
+
+@dataclasses.dataclass
+class SubagentStop:
+    """In a scripted stream: the CLI calls the SubagentStop hooks for a finished subagent."""
+
+    transcript: Path
+    agent_id: str = "a1"
+
+
+async def call_hooks(options: Any, event: str, **fields: Any) -> None:
+    hook_input = {"hook_event_name": event, "agent_type": "verifier", **fields}
+    for matcher in options.hooks.get(event, []):
+        for hook in matcher.hooks:
+            await hook(hook_input, None, {"signal": None})
+
+
+async def stop_subagent(options: Any, transcript: Path, agent_id: str = "a1") -> None:
+    """What the CLI does when a subagent ends: call the SubagentStop hooks."""
+    await call_hooks(
+        options, "SubagentStop", agent_id=agent_id, agent_transcript_path=str(transcript)
+    )
+
+
+def capped_script(
+    *steps: Any, closed: list[bool] | None = None
+) -> Callable[..., AsyncIterator[Any]]:
+    async def fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        try:
+            for step in steps:
+                if isinstance(step, SubagentStart):
+                    await call_hooks(options, "SubagentStart", agent_id=step.agent_id)
+                elif isinstance(step, SubagentStop):
+                    await stop_subagent(options, step.transcript, step.agent_id)
+                else:
+                    yield step
+        finally:
+            if closed is not None:
+                closed.append(True)
+
+    return fake_query
+
+
+def budget(usd: float) -> RunConfig:
+    return dataclasses.replace(load_config("full"), max_budget_usd=usd)
+
+
+async def test_run_stops_after_the_main_call_whose_output_passes_the_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """$0.60 on the main thread plus $0.60 in a verifier passes the $1 cap; the run stops before
-    the next model call, so the SDK's own result never comes."""
+    """Output is billed from message_delta: the per-block messages carry the usage from the start
+    of the response, with no output. Two calls of $0.60 pass the $1 cap; the SDK stream is closed
+    before the tools of the second run or a third call is made."""
     closed: list[bool] = []
-
-    async def fake_query(**_: Any) -> AsyncIterator[Any]:
-        try:
-            for message in (
-                turn("m1", 500_000),
-                TOOL_RESULT,
-                turn("s1", 500_000, parent="toolu_verifier"),
-                TOOL_RESULT,
-                turn("m2", 500_000, text="never reached"),
-                result(),
-            ):
-                yield message
-        finally:
-            closed.append(True)
-
-    outcome, events = await run_with(monkeypatch, tmp_path, fake_query)
+    fake = capped_script(
+        *call("m1", 500_000),
+        TOOL_RESULT,
+        *call("m2", 500_000),
+        UserMessage(content=[ToolResultBlock(tool_use_id="toolu_m2", content="never reached")]),
+        *call("m3", 1, text="never reached"),
+        result(),
+        closed=closed,
+    )
+    outcome, events = await run_with(monkeypatch, tmp_path, fake)
     assert (outcome.finished, outcome.infra_error) == (False, False)
     assert closed == [True]
     assert "never reached" not in outcome.events_path.read_text()
@@ -221,50 +313,204 @@ async def test_priced_model_stops_once_price_table_spend_passes_the_cap(
     assert last["cost_usd"] == pytest.approx(1.20)
     assert last["cost_basis"] == "price_table"
     assert last["output_tokens"] == 1_000_000
-    assert last["num_turns"] == 1
+    assert last["num_turns"] == 2
     assert outcome.errors == last["errors"]
     assert len(outcome.errors) == 1
 
 
-async def test_a_model_call_split_into_several_messages_is_counted_once(
+async def test_cap_is_checked_only_between_main_calls(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The CLI sends each content block of one response as its own message, all with the same
-    id and usage: three blocks of $0.60 are one $0.60 call, under the $1 cap."""
-    fake = scripted(turn("m1", 500_000), turn("m1", 500_000), turn("m1", 500_000), result())
-    outcome, events = await run_with(monkeypatch, tmp_path, fake)
-    assert outcome.finished
-    assert events[-1]["terminal_reason"] is None
+    """A call whose input already passes the cap still runs to its end: every content block of
+    it is recorded before the run stops."""
+    fake = capped_script(*call("m1", 1_000, input_tokens=100_000, text="first block"), result())
+    outcome, events = await run_with(monkeypatch, tmp_path, fake, config=budget(0.005))
+    assert not outcome.finished
+    assert [e["type"] for e in events if e["type"] in ("text", "tool_start")] == [
+        "text",
+        "tool_start",
+    ]
+    assert events[-1]["terminal_reason"] == "budget_exhausted"
+    assert events[-1]["cost_usd"] == pytest.approx((100_000 * 0.30 + 1_000 * 1.2) / 1e6)
 
 
 async def test_final_answer_that_passes_the_cap_still_ends_the_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Only a further model call is stopped; the answer that crossed the cap is kept."""
-    fake = scripted(turn("m1", 1_000_000, text="the answer"), result())
+    fake = capped_script(*call("m1", 1_000_000, tool=False, text="the answer"), result())
     outcome, events = await run_with(monkeypatch, tmp_path, fake)
     assert (outcome.finished, outcome.answer) == (True, "42")
     assert events[-1]["subtype"] == "success"
+
+
+async def test_verifier_spend_is_read_from_its_transcript(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The verifier's calls are counted when it stops, from the transcript the CLI wrote; the run
+    stops on the next message instead of making another main call."""
+    fake = capped_script(
+        *call("m1", 1_000),
+        SubagentStop(TRANSCRIPT),
+        TOOL_RESULT,
+        *call("m2", 1, text="never reached"),
+        result(),
+    )
+    outcome, events = await run_with(monkeypatch, tmp_path, fake, config=budget(0.01))
+    assert not outcome.finished
+    assert "never reached" not in outcome.events_path.read_text()
+    last = events[-1]
+    assert last["terminal_reason"] == "budget_exhausted"
+    assert last["cost_usd"] == pytest.approx(1_000 * 1.2 / 1e6 + TRANSCRIPT_USD)
+    assert (last["uncached_input_tokens"], last["cached_input_tokens"]) == (9678, 26112)
+    assert last["output_tokens"] == 1_000 + 7201
+    assert last["num_turns"] == 1
+
+
+async def test_subagents_still_running_are_let_finish(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two verifiers run side by side; the first to stop passes the cap. The run stops only once
+    the second has stopped too, so both are counted from their transcripts."""
+    second = tmp_path / "agent-a2.jsonl"  # the same calls under other message ids
+    second.write_text(TRANSCRIPT.read_text().replace('"message":{"id":"', '"message":{"id":"a2-'))
+    fake = capped_script(
+        *call("m1", 1_000),
+        SubagentStart("a1"),
+        SubagentStart("a2"),
+        SubagentStop(TRANSCRIPT, "a1"),
+        TOOL_RESULT,
+        AssistantMessage(
+            content=[TextBlock(text="second verifier still at work")],
+            model="deepseek-flash",
+            parent_tool_use_id="toolu_m1",
+        ),
+        SubagentStop(second, "a2"),
+        TOOL_RESULT,
+        *call("m2", 1, text="never reached"),
+        result(),
+    )
+    outcome, events = await run_with(monkeypatch, tmp_path, fake, config=budget(0.01))
+    text = outcome.events_path.read_text()
+    assert "second verifier still at work" in text
+    assert "never reached" not in text
+    assert events[-1]["terminal_reason"] == "budget_exhausted"
+    assert events[-1]["output_tokens"] == 1_000 + 2 * 7201
+
+
+def test_transcript_usage_reads_the_clis_line_format() -> None:
+    """Each content block of a call is its own line; the call's last line has its final usage.
+    If the CLI changes the format, this fails rather than the cap counting nothing."""
+    calls = agent.transcript_usage(TRANSCRIPT)
+    assert len(calls) == 4
+    assert tuple(map(sum, zip(*calls.values(), strict=True))) == (9678, 26112, 7201)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not json\n",
+        '{"type": "assistant", "message": {"id": "x"}}\n',
+        '{"type": "user", "message": {"role": "user"}}\n',
+    ],
+    ids=["not-json", "no-usage", "no-calls"],
+)
+def test_transcript_in_another_format_is_an_error(tmp_path: Path, content: str) -> None:
+    path = tmp_path / "agent.jsonl"
+    path.write_text(content)
+    with pytest.raises(agent.TranscriptError):
+        agent.transcript_usage(path)
+
+
+def without_last_usage() -> tuple[str, str]:
+    """The fixture split before the line with the last call's final usage, as the CLI may still
+    be writing it when SubagentStop comes."""
+    lines = TRANSCRIPT.read_text().splitlines(keepends=True)
+    final = max(i for i, line in enumerate(lines) if '"stop_reason":"end_turn"' in line)
+    return "".join(lines[:final]), "".join(lines[final:])
+
+
+async def test_transcript_still_being_written_is_waited_for(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The subagent's last call gets its final usage line only after SubagentStop; the hook waits
+    for it instead of counting that call without its output."""
+    path = tmp_path / "agent.jsonl"
+    head, tail = without_last_usage()
+    path.write_text(head)
+
+    async def finish_writing() -> None:
+        await asyncio.sleep(0.05)
+        with path.open("a") as f:
+            f.write(tail)
+
+    async def fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        for message in call("m1", 1_000):
+            yield message
+        writer = asyncio.create_task(finish_writing())
+        await stop_subagent(options, path)
+        await writer
+        yield TOOL_RESULT
+        yield result()
+
+    _, events = await run_with(monkeypatch, tmp_path, fake_query, config=budget(0.01))
+    assert events[-1]["terminal_reason"] == "budget_exhausted"
+    assert events[-1]["output_tokens"] == 1_000 + 7201
+
+
+async def test_transcript_never_finished_is_an_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(agent, "TRANSCRIPT_WAIT_S", 0.05)
+    path = tmp_path / "agent.jsonl"
+    path.write_text(without_last_usage()[0])
+    fake = capped_script(*call("m1", 1_000), SubagentStop(path), TOOL_RESULT, result())
+    _, events = await run_with(monkeypatch, tmp_path, fake)
+    errors = [e for e in events if e["type"] == "error"]
+    assert [e["source"] for e in errors] == ["spend"]
+    assert "unfinished" in errors[0]["error"]
+
+
+async def test_unreadable_transcript_is_recorded_and_streamed_usage_counts_instead(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The verifier's calls the SDK streamed (input known, output not) are what is left to count;
+    the failure is an event, never a silent zero."""
+    verifier_call = AssistantMessage(
+        content=[TextBlock(text="checking")],
+        model="deepseek-flash",
+        parent_tool_use_id="toolu_m1",
+        usage=usage(20_000),
+        message_id="s1",
+    )
+    missing = tmp_path / "gone.jsonl"
+    fake = capped_script(
+        *call("m1", 0),
+        verifier_call,
+        SubagentStop(missing),
+        TOOL_RESULT,
+        *call("m2", 1, text="never reached"),
+        result(),
+    )
+    outcome, events = await run_with(monkeypatch, tmp_path, fake, config=budget(0.005))
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1
+    assert errors[0]["source"] == "spend"
+    assert str(missing) in errors[0]["error"]
+    assert not outcome.finished
+    assert events[-1]["terminal_reason"] == "budget_exhausted"
+    assert events[-1]["cost_usd"] == pytest.approx(20_000 * 0.30 / 1e6)
 
 
 async def test_unpriced_model_is_not_stopped_by_the_price_table(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Without a price, the SDK's own cap (set to the configured value) is the only one."""
-    fake = scripted(turn("m1", 5_000_000), TOOL_RESULT, turn("m2", 5_000_000), result())
+    fake = capped_script(*call("m1", 5_000_000), TOOL_RESULT, *call("m2", 5_000_000), result())
     env = ENV | {"DATA_AGENT_MODEL": "some-unpriced-model"}
     outcome, events = await run_with(monkeypatch, tmp_path, fake, env)
     assert outcome.finished
     assert events[-1]["cost_basis"] == "sdk"
-
-
-async def test_cap_follows_the_run_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    config = dataclasses.replace(load_config("full"), max_budget_usd=0.005)
-    fake = scripted(turn("m1", 5_000), TOOL_RESULT, turn("m2", 5_000), result())
-    outcome, events = await run_with(monkeypatch, tmp_path, fake, config=config)
-    assert not outcome.finished
-    assert events[-1]["terminal_reason"] == "budget_exhausted"
-    assert events[-1]["cost_usd"] == pytest.approx(0.006)
 
 
 async def sdk_cap(

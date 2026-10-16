@@ -29,11 +29,13 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import claude_agent_sdk
@@ -49,11 +51,13 @@ from data_agent.agent import (
     ModelSettings,
     Task,
     build_options,
+    capped,
     git_commit,
     load_skills,
     record_message,
     result_fields,
     skill_version,
+    spend_cap,
 )
 from data_agent.events import REDACTED, EventLog, known_secrets
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT, RunConfig, load_config
@@ -289,9 +293,11 @@ async def run_once(
     # replaces the DuckDB one.
     task = Task(text="", type="query", workspace=workspace, duckdb=dab_query.db_config)
     final: ResultMessage | None = None
+    # The same price-table cap as `data-agent run`; the session's turns follow `max_turns` here.
+    cap = spend_cap(settings.model, config.max_budget_usd)
     with EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log:
         options = replace(
-            build_options(task, config, settings, stderr, log.emit),
+            build_options(task, config, settings, stderr, log.emit, cap),
             system_prompt=system_prompt(dab_query, config),
             mcp_servers={MCP_SERVER: server},
             max_turns=turns,
@@ -319,25 +325,32 @@ async def run_once(
         tools: dict[str, str] = {}
         server_up = True
         try:
-            async for message in query(prompt=task_prompt(dab_query, workspace), options=options):
-                if isinstance(message, ResultMessage):
-                    final = message
-                    continue
-                record_message(log, message, tools)
-                if isinstance(message, SystemMessage) and message.subtype == "init":
-                    # Without DAB's tools the agent can only say the data is unreachable; that
-                    # is an outage, not an answer.
-                    server_status = mcp_status(message.data.get("mcp_servers"))
-                    if server_status != "connected":
-                        server_up = False
-                        log.emit("error", source="mcp", error=f"DAB tool server {server_status}")
+            stream = query(prompt=task_prompt(dab_query, workspace), options=options)
+            async with aclosing(capped(cast(AsyncGenerator[Any], stream), cap)) as messages:
+                async for message in messages:
+                    if isinstance(message, ResultMessage):
+                        final = message
+                        continue
+                    record_message(log, message, tools)
+                    if isinstance(message, SystemMessage) and message.subtype == "init":
+                        # Without DAB's tools the agent can only say the data is unreachable;
+                        # that is an outage, not an answer.
+                        server_status = mcp_status(message.data.get("mcp_servers"))
+                        if server_status != "connected":
+                            server_up = False
+                            log.emit(
+                                "error", source="mcp", error=f"DAB tool server {server_status}"
+                            )
         except Exception as exc:
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
         finally:  # also when the run is interrupted
             remove_exec_containers(workspace)
             mask_dab_logs(directory, secrets_of(env))
-        log.emit("result", **result_fields(final, settings.model))
+        stopped = cap.result_fields() if cap is not None and cap.stopped else None
+        log.emit("result", **(stopped or result_fields(final, settings.model)))
+    if stopped is not None and server_up:
+        return "", "unfinished"
     if (
         not server_up
         or final is None
