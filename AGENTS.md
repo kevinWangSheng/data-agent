@@ -45,6 +45,7 @@ runs/             运行产出，不进 git
 4. 提交到本工单分支。先提交再审查：两道审查都只看已提交的 diff。
 5. 两道审查：先 `da-review main`（Codex，只读，换模型找 bug）；再开新上下文跑 `eng:code-review main`（点名这个，不用内置的 `code-review`；Standards、Spec 两个子 agent，对照本工单验收标准）。每条结果要么修（修完提交），要么在工单 Comments 写明不修的理由；修复最多 2 轮，还不过就停下。
 6. 填工单 `## Ledger`，`Status:` 改成 `in-review`。合并由人做（GitHub PR，squash）。
+7. 合并前（主会话做）：PR 的 CI 绿后，读 Codex GitHub app 在 PR 上的意见（每次 push 自动审查；新提交没出审查时评论 `@codex review`），逐条对照代码核实。属实的写成"退回：原因"交回原工单，不属实的在工单 Comments 写理由。每个 PR 最多退回 2 轮；之后的新意见记成已知限制，属于后续工单的写进那个工单的验收标准。
 
 停下交回时：`Status: ready-for-human`，Comment 写清试了什么、哪里失败、分支名。被退回时（Comments 里有"退回：原因"，Status 回到 `ready-for-agent`）在原分支上接着修。工单格式见 `docs/agents/ticket-template.md`。
 
