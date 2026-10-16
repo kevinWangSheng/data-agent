@@ -1,10 +1,10 @@
 # 12 — 消融运行器
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 06, 07, 09, 10, 11, 15, 16
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (claude-opus-5-5) 2026-10-16
+Branch: worktree-12-ablation-runner
 
 ## Goal
 
@@ -23,14 +23,14 @@ ADR-0004（6 配置 × 3 次 = 540 次）；plan §7 降级顺序与护栏。
 
 ## Acceptance
 
-- [ ] 本地 1 题 × 6 配置跑通并出消融表
-- [ ] 留出集结果只以汇总形式出现
-- [ ] 调 `compare` 时传 `--manifest`/`--split`（工单 10 的 compare 不强制，见 10 的 Comments）
-- [ ] 每次报告用新的空 `--out` 目录；遇到配置类报错（`AgentAuthenticationError`、`ModelNotFoundError`、`UnsupportedModelParametersError`）停下找人，不出报告（工单 10 已知限制）
-- [ ] 冻结旧版 Skill 到独立目录，`full-old-skill` 配置指向它（工单 05 留的缺口；目前等于 `full`）；该目录加进 `pyproject.toml` 的 force-include
-- [ ] DAB runner 接上 context 层开关（工单 13 已知限制：DAB server 不注册 context tools，`full` 与 `no-context` 在 DAB 上行为相同）：把开关传给 `evals/dab_server.py` 并注册对应工具，或拒绝在 DAB 上跑 `context = true` 的配置
-- [ ] DAB 续跑核对加上 `git_commit` 与 `skill_version`（工单 13 已知限制：`evals/dab.py` 的续跑检查只比 config、model、hints、DAB commit）
-- [ ] DAB 续跑可靠性（工单 13 已知限制）：`submission.json` 先写临时文件再原子替换；运行条件里 DAB commit 带脏工作区标记，脏 checkout 拒绝续跑
+- [x] 本地 1 题 × 6 配置跑通并出消融表
+- [x] 留出集结果只以汇总形式出现
+- [x] 调 `compare` 时传 `--manifest`/`--split`（工单 10 的 compare 不强制，见 10 的 Comments）
+- [x] 每次报告用新的空 `--out` 目录；遇到配置类报错（`AgentAuthenticationError`、`ModelNotFoundError`、`UnsupportedModelParametersError`）停下找人，不出报告（工单 10 已知限制）
+- [x] 冻结旧版 Skill 到独立目录，`full-old-skill` 配置指向它（工单 05 留的缺口；目前等于 `full`）；该目录加进 `pyproject.toml` 的 force-include
+- [x] DAB runner 接上 context 层开关（工单 13 已知限制：DAB server 不注册 context tools，`full` 与 `no-context` 在 DAB 上行为相同）：把开关传给 `evals/dab_server.py` 并注册对应工具，或拒绝在 DAB 上跑 `context = true` 的配置
+- [x] DAB 续跑核对加上 `git_commit` 与 `skill_version`（工单 13 已知限制：`evals/dab.py` 的续跑检查只比 config、model、hints、DAB commit）
+- [x] DAB 续跑可靠性（工单 13 已知限制）：`submission.json` 先写临时文件再原子替换；运行条件里 DAB commit 带脏工作区标记，脏 checkout 拒绝续跑
 - [ ] `make check` 通过
 
 ## Evidence required
@@ -47,10 +47,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: 约 $0.76（消融 $0.7269 + DAB $0.0212；中止的第 1 次运行有 1 个 trial 没记，估计 < $0.15），在 $3 上限内
+- Outcome: 验收项全部完成；NOTICE 由主会话补
 - Human review minutes: —
 
 ## Comments
@@ -58,3 +58,37 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 ### 2026-10-16 主会话：派工前修正 Authority
 
 验收标准里"冻结旧版 Skill、`full-old-skill` 指向它、加进 force-include"是主会话从工单 05 转来的，但 Authority 原来只有 `evals/`、`tests/`，自相矛盾；已把对应的三处加进 May edit。"旧版"取当前 main 上的 `skills/`（工单 14 的失败归因还没改过 Skill）。本工单只做本地 1 题 × 6 配置验证；全量等 `da-remote` 与服务器升配，不在本工单内。
+
+### 2026-10-16 工单 agent：实现与验证（主会话抄录）
+
+改动：新命令 `python -m evals ablate`（`evals/ablate.py`）：每个配置先过花费护栏再跑一个 Harbor job；三类配置错误停下找人、不出报告；未完成或有基础设施错误的 job 续跑；全部完成后 scrub、每个配置报告写进新的空目录，`full` 对每个配置跑 `compare --manifest --split holdout`，写 `ablation.json` / `ablation.md`（只有汇总）。旧 Skill 冻结为 `skills-frozen/fa6028eef62b/`（`skills/` 原样副本，以 Skill 版本哈希命名），`full-old-skill` 指向它并 force-include；`skills-frozen/ruff.toml` 让 ruff 不查上游脚本。DAB：拒绝 context 打开的配置；续跑核对 git commit、Skill 版本，两个 checkout 有未提交改动时拒绝；`submission.json` 临时文件 + 原子替换。
+
+本地真实运行（1 题 × 6 配置）：临时 manifest 的 holdout 只放一道 dev 题（`{"holdout": ["dbt-fix-division-by-zero"]}`），没看真实留出集题目。commit fa23851，colima m1-kind，`deepseek-flash`：
+
+```
+runs/12/run-ablate.sh --manifest runs/12/manifest-1.json --out runs/12/ablation-2 --budget 2.5 --trials 1 --n-concurrent 1   → exit 0
+| config | accuracy (%) | ± stderr | trials | cost (USD) | input tokens (uncached / cached) | output tokens |
+| full           |   0.0 | 0.0 | 1 | 0.1227 | 101,445 / 1,835,648 | 67,725 |
+| baseline       | 100.0 | 0.0 | 1 | 0.1031 |  46,119 / 2,256,256 | 63,128 |
+| no-skill       |   0.0 | 0.0 | 1 | 0.1375 |  74,636 / 1,990,144 | 85,941 |
+| no-verifiers   |   0.0 | 0.0 | 1 | 0.0941 |  49,127 / 2,453,248 | 53,865 |
+| no-context     | 100.0 | 0.0 | 1 | 0.1733 | 132,222 / 2,928,896 | 96,707 |
+| full-old-skill |   0.0 | 0.0 | 1 | 0.0962 |  88,502 / 1,394,688 | 51,040 |
+| all layers | baseline | -100.0 | [-100.0, -100.0] | yes |   (Skill / verifiers / attribution loop: +0.0, no; context: -100.0, yes)
+```
+
+1 题 1 次是噪声，只证明流水线能跑。每个 job 前护栏都跑了，6 次后读数 $0.7269；scrub 后 job 里没有 home 路径，报告目录只有 `report.json`、`ablation.json`、`ablation.md`；6 个 job 都记录 commit fa23851、`deepseek-flash` 和预期 Skill 版本；同一 `--out` 再跑不启动 Harbor job、写出新的报告目录（exit 0）。第 1 次运行故意中止（会混 commit，第 1 轮修复后会拒绝），残留的任务容器已删。
+
+DAB 真实运行（stockindex query 1）：`--config full` → exit 2（"turns on the context layer, but DAB's tool server has no context tools"）；`--config no-context --runs 1` 完成，同目录 `--runs 2` 只跑 run1；旧 commit 的 out 目录 → exit 2，点名 DAB commit（当时 `…-dirty`）和我们的 git commit。
+
+审查：
+- `da-review` 第 1 轮 3 条全修并配测试：P1 续跑删掉的 trial 丢花费 → 事件文件复制到 `OUT/dropped/`，护栏统计 OUT 下全部；P2 复用旧 job 不核对条件 → 只复用同 commit、同 Skill 版本、干净 checkout 的 job，表要求所有配置同一 commit 与模型；P2 scrub 改写别的配置的未完成 job → 只 scrub 本表已完成的 job。
+- `eng:code-review` 第 2 轮已修：DAB 续跑拒绝脏的 data-agent checkout（配测试）；`event_files` helper、`check-attr` 解析注释；DAB 测试固定干净 commit。
+- 不修及理由：`--model` 改了要到建表时才发现（记录的模型名无法可靠对上 Harbor 的 `-m`），已知限制；`evals_cli` 故意走 CLI（验收点名 `--manifest`/`--split`）；`skill_version(...) if skill else "none"` 重复 4 处，挪进 `RunConfig` 超出 Authority；"原子写没有测试"不属实（`test_an_interrupted_submission_write_keeps_the_old_file`）；`OUT/logs/` 下 Harbor 与护栏/scrub 日志含留出集题名，与 Harbor 自身 job 目录同等暴露、不打印，接受。
+- 两轮修复用完，第 2 轮后没再跑 `da-review`。
+
+已知限制：护栏在 job 之间检查，超支最多一个 job（全量时 90 次运行）；DAB 脏检查忽略 LFS 数据文件（本机没装 git-lfs，`download.sh` 放好数据后 git 永远报这些文件已修改，否则每次续跑都被拒；代价是 DAB 数据库文件被改不会被发现）；DAB 只能跑 `no-context`，`full` 上 DAB 需要后续工单做多库 context tools。
+
+### 2026-10-16 主会话
+
+NOTICE 超出本工单 Authority，主会话在分支上补了一行（cc19f4b：`skills-frozen/fa6028eef62b/` 是 `skills/` 原样副本，沿用同样上游与声明）。
