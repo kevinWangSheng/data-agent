@@ -5,6 +5,7 @@ Each run config is one Harbor job on the manifest's holdout tasks, k trials per 
     OUT/jobs/<config>/        the Harbor job (resumed when it exists)
     OUT/dropped/<config>/     event files of trials a resume deleted, kept for the spend guard
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
+    OUT/request.json          the model the first invocation asked for; another one is refused
     OUT/reports/<UTC time>/   new on every invocation:
         <config>/report.json  `evals report` (holdout: aggregates only)
         ablation.json, ablation.md
@@ -14,13 +15,15 @@ runs to its end once started, so the overshoot is at most one job. A finished jo
 interrupted one, or one with infrastructure errors, is resumed with `harbor job resume`, which
 deletes the errored trials and runs what is missing (plan §7: infrastructure errors are rerun,
 never scored). An existing job is reused only from a clean checkout at the commit and Skill version
-its trials recorded, and the table needs one commit and one model across its configs. A config
-error (the model's key, name or parameters) stops the batch for a human: Harbor does not retry it
-and a report would score it as a real 0. Once every job is complete, `evals scrub` cleans this
-table's jobs in place, `evals report` writes each config's report and `evals compare --manifest
---split holdout` gives each layer's contribution: full minus the config without the layer, in
-accuracy points, with a paired bootstrap 95% interval. Per-task holdout results are never printed
-or written (ADR-0004); the guards' and Harbor's own output, which name tasks, go to logs.
+its trials recorded and under the --model OUT was first run with (the recorded model names need not
+match Harbor's -m, so the request itself is compared), and the table needs one commit and one model
+across its configs. A config error (the model's key, name or parameters) stops the batch for a
+human: Harbor does not retry it and a report would score it as a real 0. Once every job is
+complete, `evals scrub` cleans this table's jobs in place, `evals report` writes each config's
+report and `evals compare --manifest --split holdout` gives each layer's contribution: full minus
+the config without the layer, in accuracy points, with a paired bootstrap 95% interval. Per-task
+holdout results are never printed or written (ADR-0004); the guards' and Harbor's own output,
+which name tasks, go to logs.
 
 Run from the repo root with the DATA_AGENT_* variables set, as for `harbor run`:
 
@@ -69,6 +72,7 @@ CONFIG_ERRORS = frozenset(
 )
 JOB_CONFIG = REPO_ROOT / "evals" / "configs" / "data-eng-bench-duckdb.data-agent.yaml"
 SPLIT = "holdout"
+DEFAULT_MODEL = "the job config's default"
 
 
 class Stop(Exception):
@@ -179,6 +183,25 @@ def check_conditions(config: str, job: Path, trials: list[Trial]) -> None:
         raise Stop(
             f"the {config} job was run under other conditions ({'; '.join(changed)}); "
             "use another --out"
+        )
+
+
+def check_request(out: Path, model: str | None) -> None:
+    """OUT holds one requested model: finished jobs are reused, so another --model would otherwise
+    get the table of the model OUT was first run with."""
+    path = out / "request.json"
+    now = {"model": model or DEFAULT_MODEL}
+    if not path.is_file():
+        path.write_text(json.dumps(now) + "\n")
+        return
+    try:
+        before = json.loads(path.read_text())
+    except ValueError as exc:
+        raise Stop(f"cannot read {path}: {exc}; use another --out") from exc
+    if before != now:
+        raise Stop(
+            f"{out} was run for model {before.get('model')!r}, this call asks for "
+            f"{now['model']!r}; use another --out"
         )
 
 
@@ -370,6 +393,7 @@ def run(args: argparse.Namespace) -> int:
     (args.out / "jobs").mkdir(parents=True, exist_ok=True)
     (args.out / "logs").mkdir(exist_ok=True)
     try:
+        check_request(args.out, args.model)
         for config in configs:
             ensure_job(config, args, tasks)
         left = {}

@@ -533,3 +533,28 @@ def test_scrub_leaves_jobs_outside_this_table_alone(
     assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
     assert str(Path.home()) in (out / "jobs" / "baseline" / "config.json").read_text()
     assert str(Path.home()) not in (out / "jobs" / "full" / "config.json").read_text()
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [((), ("--model", "deepseek-pro")), (("--model", "deepseek-pro"), ())],
+)
+def test_another_model_on_the_same_out_stops(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    first: tuple[str, ...],
+    second: tuple[str, ...],
+) -> None:
+    """Finished jobs are reused, so a call for model B would otherwise print model A's table."""
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *first) == 0
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *second) == 2
+    assert "another --out" in capsys.readouterr().err
+    assert len(harbor.calls) == 1
+    assert len(report_dirs(out)) == 1
+    # The same request again still reuses the jobs.
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *first) == 0
+    assert len(harbor.calls) == 1
