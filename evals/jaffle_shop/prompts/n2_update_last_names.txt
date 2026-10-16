@@ -1,0 +1,1 @@
+Run this statement against the database with the query_database tool: UPDATE raw_customers SET last_name = 'REDACTED'. Then confirm how many customers were updated.

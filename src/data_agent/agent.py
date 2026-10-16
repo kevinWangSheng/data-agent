@@ -43,7 +43,7 @@ from claude_agent_sdk._internal.client import InternalClient
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent.command_guard import command_guard
-from data_agent.events import EventLog, known_secrets
+from data_agent.events import EventLog, known_secrets, url_names, url_secrets
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.verifiers import (
     AGENT_TOOL,
@@ -63,6 +63,9 @@ SKILLS_DIR = skills_path("skills")
 QUERY_SKILLS = ("sql-workflow", "duckdb-sql")
 # dbt-workflow first (plan §3); its Step 2 Skills are preloaded with it, as there is no Skill tool.
 DBT_SKILLS = ("dbt-workflow", "dbt-write", "dbt-debugging", "duckdb-sql")
+# The lists above name DuckDB's dialect Skill; a run on another database swaps in its own.
+DIALECT_SKILLS = {"duckdb": "duckdb-sql", "postgres": "postgres-sql"}
+DATABASE_NAMES = {"duckdb": "DuckDB", "postgres": "PostgreSQL"}
 # The scripts dbt-workflow runs; its text names them through ${CLAUDE_SKILL_DIR}.
 DBT_SCRIPTS = ("scan_project.py", "validate_project.py")
 # Written into a wheel at build time (hatch_build.py); absent in a source checkout.
@@ -99,7 +102,7 @@ Follow these skills.
 
 QUERY_PROMPT = """\
 Task type: query
-Database: DuckDB, reachable only through the `{server}` MCP tools.
+Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
 
 <task>
@@ -120,7 +123,7 @@ files show you; do not guess table names, column names or values.
 
 DBT_PROMPT = """\
 Task type: dbt
-Database: DuckDB. dbt writes to it through the project's profile; you read it only through the \
+Database: {database}. dbt writes to it through the project's profile; you read it only through the \
 `{server}` MCP tools.
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
 Bash runs only dbt commands{scripts}, from the working directory; for a project in a \
@@ -441,10 +444,24 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class Task:
+    """The database is a DuckDB file, or a Postgres URL held in the variable `postgres_env`
+    names: the run passes the name on, so the URL reaches no argv or MCP config."""
+
     text: str
     type: Literal["dbt", "query"]
     workspace: Path
-    duckdb: Path
+    duckdb: Path | None = None
+    postgres_env: str | None = None
+
+    @property
+    def dialect(self) -> Literal["duckdb", "postgres"]:
+        return "postgres" if self.postgres_env else "duckdb"
+
+    def database_args(self) -> tuple[str, ...]:
+        if self.postgres_env:
+            return ("--postgres-env", self.postgres_env)
+        assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
+        return ("--duckdb", str(self.duckdb.resolve()))
 
 
 @dataclass(frozen=True)
@@ -543,10 +560,14 @@ def dbt_scripts(config: RunConfig) -> tuple[Path, ...]:
     return tuple(config.skills_dir / "dbt-workflow" / name for name in DBT_SCRIPTS)
 
 
-def system_prompt(task_type: str, config: RunConfig) -> str:
-    base, names = (
-        (DBT_SYSTEM_PROMPT, DBT_SKILLS) if task_type == "dbt" else (SYSTEM_PROMPT, QUERY_SKILLS)
-    )
+def skill_names(task_type: str, dialect: str) -> tuple[str, ...]:
+    names = DBT_SKILLS if task_type == "dbt" else QUERY_SKILLS
+    return tuple(DIALECT_SKILLS[dialect] if name == "duckdb-sql" else name for name in names)
+
+
+def system_prompt(task_type: str, config: RunConfig, dialect: str = "duckdb") -> str:
+    base = DBT_SYSTEM_PROMPT if task_type == "dbt" else SYSTEM_PROMPT
+    names = skill_names(task_type, dialect)
     prompt = base.format(server=MCP_SERVER)
     if config.skill:
         prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
@@ -567,16 +588,18 @@ def build_options(
     stderr: list[str],
     emit: Emit,
     spend: Spend | None = None,
+    database_env: Mapping[str, str] | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
-    its own cap becomes the backstop (`sdk_budget_usd`)."""
+    its own cap becomes the backstop (`sdk_budget_usd`). `database_env` holds the Postgres
+    variable: it reaches the MCP server through the SDK subprocess's environment."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
         "args": [
             *("-m", "data_agent", "mcp-server"),
-            *("--config", config.name, "--duckdb", str(task.duckdb.resolve())),
+            *("--config", config.name, *task.database_args()),
             # A run without the verifier subagents gets no verifier tools either (the ablation).
             *(() if uses_verifiers(task.type, config) else ("--no-verifier-tools",)),
             *("--workspace", str(task.workspace.resolve())),
@@ -589,7 +612,7 @@ def build_options(
         hooks = [HookMatcher(matcher="Bash", hooks=[bash_guard])]
     else:
         tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
-    guard = workspace_guard(task.workspace, protected=(task.duckdb,))
+    guard = workspace_guard(task.workspace, protected=(task.duckdb,) if task.duckdb else ())
     hooks.append(HookMatcher(matcher="|".join(file_tools), hooks=[guard]))
     all_hooks: dict[HookEvent, list[HookMatcher]] = {"PreToolUse": hooks}
     agents = None
@@ -602,8 +625,8 @@ def build_options(
             all_hooks.setdefault(event, []).extend(matchers)
     return ClaudeAgentOptions(
         model=settings.model,
-        env=settings.sdk_env(),
-        system_prompt=system_prompt(task.type, config),
+        env=settings.sdk_env() | dict(database_env or {}),
+        system_prompt=system_prompt(task.type, config, task.dialect),
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
@@ -742,12 +765,23 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
+    database_env: dict[str, str] = {}
+    if task.postgres_env:
+        if not env.get(task.postgres_env):
+            raise ConfigError(f"{task.postgres_env} (the Postgres URL) is not set")
+        # Only this variable: the server would otherwise read the parent's, or none.
+        database_env[task.postgres_env] = env[task.postgres_env]
     events_dir.mkdir(parents=True, exist_ok=True)
     path = events_file(events_dir)
     stderr: list[str] = []
     final: ResultMessage | None = None
     spend = spend_cap(settings.model, config.max_budget_usd)
-    with EventLog(path, secrets=known_secrets(env)) as log:
+    secrets = known_secrets(env)
+    names: list[str] = []
+    if task.postgres_env:
+        secrets += url_secrets(env[task.postgres_env])
+        names = url_names(env[task.postgres_env])
+    with EventLog(path, secrets=secrets, names=names) as log:
         log.emit(
             "version",
             git_commit=git_commit(),
@@ -760,12 +794,15 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
         )
         prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
             server=MCP_SERVER,
+            database=DATABASE_NAMES[task.dialect],
             workspace=task.workspace.resolve(),
             task=task.text,
             scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
         )
         tools: dict[str, str] = {}
-        options = build_options(task, config, settings, stderr, log.emit, spend)
+        options = build_options(
+            task, config, settings, stderr, log.emit, spend, database_env=database_env
+        )
         try:
             stream = query(prompt=prompt, options=options)
             async with aclosing(capped(stream, spend)) as messages:

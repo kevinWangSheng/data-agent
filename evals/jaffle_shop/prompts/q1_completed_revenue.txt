@@ -1,0 +1,1 @@
+What is the total payment amount, in dollars, of all orders whose status is completed? Answer with a single number.

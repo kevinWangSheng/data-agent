@@ -103,7 +103,7 @@ def assert_readable_block(result: Any, sql: str) -> None:
 # The Postgres variant carries its own xfail: ticket 08 removes it once the Postgres dialect works.
 POSTGRES = pytest.param(
     "postgres",
-    marks=[pytest.mark.integration, pytest.mark.xfail(strict=True, reason="ticket 08")],
+    marks=[pytest.mark.integration],
 )
 
 

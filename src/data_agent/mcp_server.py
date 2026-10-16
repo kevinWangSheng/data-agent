@@ -7,7 +7,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.context_tools import register_context_tools
-from data_agent.gateway import MAX_ROWS, DuckDBGateway, QueryBlocked, QueryFailed, QueryResult
+from data_agent.gateway import MAX_ROWS, Gateway, QueryBlocked, QueryFailed, QueryResult
 from data_agent.run_config import RunConfig
 from data_agent.verifier_tools import register_verifier_tools
 
@@ -26,7 +26,7 @@ ORDER BY t.table_schema, t.table_name
 """
 
 
-def run_query(gateway: DuckDBGateway, sql: str, row_limit: int) -> QueryResult:
+def run_query(gateway: Gateway, sql: str, row_limit: int) -> QueryResult:
     """Run through the gateway; blocks and database errors become readable tool errors."""
     try:
         return gateway.query(sql, row_limit)
@@ -47,7 +47,7 @@ def format_rows(result: QueryResult) -> str:
 
 
 def build_server(
-    gateway: DuckDBGateway,
+    gateway: Gateway,
     config: RunConfig,
     workspace: Path | None = None,
     verifier_tools: bool = True,

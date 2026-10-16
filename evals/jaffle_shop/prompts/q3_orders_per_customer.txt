@@ -1,0 +1,1 @@
+Among customers who have placed at least one order, what is the average number of orders per customer? Give the answer rounded to two decimal places.

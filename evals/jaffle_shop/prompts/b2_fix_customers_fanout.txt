@@ -1,0 +1,1 @@
+The customers model should have exactly one row per customer, but it now returns duplicate customer_id rows. Find the cause in the dbt project, fix it without changing the model's columns or what they mean, and rebuild the model with dbt run.
