@@ -1,6 +1,6 @@
 # 04 — dbt 任务端到端
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 03
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -157,3 +157,12 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-04-run-dbt-task
 - 三次的前三行都是 C0001 6 285.25、C0002 4 232.50、C0003 2 98.75；`grep REDACTED` 都是 0。
 - 每次 agent 都试了一次 `ls`/`find`，被 guard 拒绝后改用 Glob。
 - 工具顺序：scan → validate → `dbt run --select customer_ltv 2>&1 | tail` → 只读核对。
+
+### 2026-10-16 第 7 步：PR #9 退回第 2 轮（主会话；最后一轮）
+
+`cf7859c` CI 两次全绿。退回：原因如下，在原分支上修，修完提交，不 push、不 rebase。
+
+1. **Codex P1（`skills/dbt-workflow/scan_project.py` `main()` 找子目录的回落）属实**：workspace 根没有 `dbt_project.yml` 时，遍历子目录用 `is_dir()` 跟随符号链接，指向 workspace 外的子目录会成为新的可信根，之后的 `_inside()` 都按它判断，外部 YAML 和宏全文会进模型上下文。改为：候选子目录先 `resolve()`，确认仍在原 workspace 内才选。配修复前会失败的测试。
+2. **Codex P2（`scan_project.py` 解析 `- name:` 的正则）属实**：`- name: "stg_customers"` 会连引号一起存，现有的 `stg_customers.sql` 匹配不上，被报成缺失和孤儿，workflow 还会让 agent 按这个名字新建模型。去掉 YAML 标量两侧的单、双引号再比较（之前"带引号的名字会保留引号"不修的理由作废）。配测试。
+
+这是第 2 轮（最后一轮）；之后的新意见记成已知限制。修完 `make check`、full 配置真实 dbt 运行一次、再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 3）。
