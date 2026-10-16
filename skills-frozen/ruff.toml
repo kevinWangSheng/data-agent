@@ -1,0 +1,4 @@
+# Frozen Skill versions (ADR-0004) are verbatim copies of skills/, named by their skill_version.
+# Their scripts are upstream copies that pyproject keeps out of ruff under skills/; same here.
+extend = "../pyproject.toml"
+extend-exclude = ["*/dbt-workflow/*.py"]

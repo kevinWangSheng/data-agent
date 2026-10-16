@@ -16,14 +16,17 @@ DAB's Dockerfile: `docker build -t python-data:3.12 ../DataAgentBench`; the Dock
 daemon through DOCKER_HOST). Run it as
 
     uv run --with-requirements evals/dab-requirements.txt python -m evals dab \
-        --dab-root ../DataAgentBench --dataset stockindex --query 1 --config full --out runs/dab
+        --dab-root ../DataAgentBench --dataset stockindex --query 1 --config no-context \
+        --out runs/dab
 
-Exit 0 when every run ended; 1 when `--budget` stopped the batch; 2 on a config error or when a
-run broke on infrastructure (left out of the submission, to be redone).
+DAB's tool server has no context tools, so configs with the context layer on are refused. Exit 0
+when every run ended; 1 when `--budget` stopped the batch; 2 on a config error or when a run broke
+on infrastructure (left out of the submission, to be redone).
 """
 
 import argparse
 import asyncio
+import hashlib
 import importlib
 import json
 import os
@@ -247,17 +250,79 @@ def task_prompt(dab_query: DabQuery, workspace: Path) -> str:
     )
 
 
-def dab_commit(dab_root: Path) -> str:
+def _git(dab_root: Path, *args: str) -> str | None:
     try:
         proc = subprocess.run(
-            ["git", "-C", str(dab_root), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            ["git", "-C", str(dab_root), *args], capture_output=True, text=True, timeout=10
         )
     except OSError:
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def dab_commit(dab_root: Path) -> str:
+    """DAB's HEAD, with `-dirty` when tracked files have uncommitted changes (as `git describe
+    --dirty`; untracked output such as DAB's own results does not count).
+
+    DAB's databases are Git LFS files. Without git-lfs, the data DAB's download.sh puts in place
+    differs from the committed pointer stubs, so a changed LFS file counts as clean when it matches
+    its size and sha256 in DAB's `dataset_manifest.tsv` (what download.sh checks it against).
+    """
+    head = _git(dab_root, "rev-parse", "HEAD")
+    if not head:
         return "unknown"
-    return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else "unknown"
+    changed = _git(dab_root, "diff", "--name-only", "-z", "HEAD")
+    if changed is None:
+        return f"{head}-dirty"  # changes that cannot be listed count as changes
+    paths = [p for p in changed.split("\0") if p]
+    if paths:
+        attrs = _git(dab_root, "check-attr", "-z", "filter", "--", *paths)
+        # `check-attr -z` prints <path> NUL <attribute> NUL <value> NUL per path.
+        fields = (attrs or "").split("\0")
+        lfs = {
+            path for path, value in zip(fields[::3], fields[2::3], strict=False) if value == "lfs"
+        }
+        if attrs is None or set(paths) - lfs:
+            return f"{head}-dirty"
+        manifest = dataset_manifest(dab_root)
+        if not all(path in manifest and _matches(dab_root / path, *manifest[path]) for path in lfs):
+            return f"{head}-dirty"
+    return head
+
+
+def dataset_manifest(dab_root: Path) -> dict[str, tuple[str, int]]:
+    """DAB's `dataset_manifest.tsv`: path <TAB> sha256 <TAB> size per data file; empty if absent."""
+    manifest: dict[str, tuple[str, int]] = {}
+    try:
+        lines = (dab_root / "dataset_manifest.tsv").read_text().splitlines()
+    except OSError:
+        return manifest
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[2].isdigit():
+            manifest[fields[0]] = (fields[1].lower(), int(fields[2]))
+    return manifest
+
+
+_HASHED: dict[tuple[Path, int, int], str] = {}  # (path, size, mtime_ns) -> sha256, per process
+
+
+def _matches(path: Path, sha256: str, size: int) -> bool:
+    """The file has the manifest's size and sha256 (hashed once per process while unchanged)."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    if stat.st_size != size:
+        return False
+    key = (path, stat.st_size, stat.st_mtime_ns)
+    if key not in _HASHED:
+        digest = hashlib.sha256()
+        with path.open("rb") as f:
+            while chunk := f.read(1 << 20):
+                digest.update(chunk)
+        _HASHED[key] = digest.hexdigest()
+    return _HASHED[key] == sha256
 
 
 async def run_once(
@@ -439,6 +504,8 @@ def conditions(header: dict[str, Any]) -> dict[str, Any]:
         "model": header.get("model"),
         "hints": dab.get("hints"),
         "DAB commit": dab.get("commit"),
+        "git commit": header.get("git_commit"),
+        "Skill version": header.get("skill_version"),
     }
 
 
@@ -475,7 +542,13 @@ def write_submission(path: Path, entries: list[dict[str, str]]) -> None:
         merged = {(e["dataset"], e["query"], e["run"]): e for e in json.loads(path.read_text())}
     merged |= {(e["dataset"], e["query"], e["run"]): e for e in entries}
     ordered = sorted(merged.values(), key=lambda e: (e["dataset"], int(e["query"]), int(e["run"])))
-    path.write_text(json.dumps(ordered, indent=2, ensure_ascii=False) + "\n")
+    # Written aside and swapped in, so an interrupted write never leaves a cut-off submission.
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        tmp.write_text(json.dumps(ordered, indent=2, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 async def run_query(
@@ -494,20 +567,39 @@ async def run_query(
     trace stays for a look) and is counted in the return value, so the caller can fail and the
     run be redone after removing its directory. Runs already in the submission are skipped, so a
     rerun only redoes what is missing, and only under the conditions (config, model, hints, DAB
-    commit) of every run already in the submission; otherwise it raises ConditionsChanged before
-    running anything.
+    commit, our commit, Skill version) of every run already in the submission, from a clean DAB
+    checkout; otherwise it raises ConditionsChanged before running anything.
     """
+    if config.context:
+        raise ValueError(
+            f"run config {config.name!r} turns on the context layer, but DAB's tool server has no "
+            "context tools; use a config with context = false (no-context, baseline, ...)"
+        )
     out.mkdir(parents=True, exist_ok=True)
     submission = out / "submission.json"
     done = set()
     if submission.exists():
         done = {(e["dataset"], e["query"], e["run"]) for e in json.loads(submission.read_text())}
     if done:  # every run in the submission, of any query: the file is one experiment
+        commit = dab_commit(dab_root)
+        if commit.endswith("-dirty"):
+            raise ConditionsChanged(
+                f"the DAB checkout {dab_root} has uncommitted changes, so its runs cannot be "
+                "matched to the finished ones; commit or revert them, or use another --out"
+            )
+        ours = git_commit()
+        if ours.endswith("-dirty"):
+            raise ConditionsChanged(
+                "this checkout has uncommitted changes, so its runs cannot be matched to the "
+                "finished ones; commit them, or use another --out"
+            )
         expected = {
             "config": config.name,
             "model": ModelSettings.from_env(env).model,
             "hints": dab_query.hints,
-            "DAB commit": dab_commit(dab_root),
+            "DAB commit": commit,
+            "git commit": ours,
+            "Skill version": skill_version(config.skills_dir) if config.skill else "none",
         }
         for dataset, query_id, run in sorted(done):
             check_finished_run(run_dir(out, dataset, query_id, int(run)), expected)

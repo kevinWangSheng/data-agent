@@ -52,6 +52,15 @@ def test_full_loads_the_current_skills() -> None:
     assert load_config("full").skills_dir == SKILLS_DIR
 
 
+def test_full_old_skill_loads_a_frozen_skill_version() -> None:
+    """The old Skills are a frozen copy named by its own skill_version, so an edit to the copy (or
+    a copy that drifted from what was frozen) shows as a name/hash mismatch."""
+    skills_dir = load_config("full-old-skill").skills_dir
+    assert skills_dir != SKILLS_DIR
+    assert skills_dir.parent.name == "skills-frozen"
+    assert agent.skill_version(skills_dir) == skills_dir.name
+
+
 def test_config_naming_a_missing_skill_directory_is_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

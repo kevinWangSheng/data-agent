@@ -40,6 +40,7 @@ packages = ["src/data_agent"]
 # Skills live at the repo root (AGENTS.md); an installed agent finds them inside its package.
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "data_agent/skills"
+"skills-frozen" = "data_agent/skills-frozen"
 
 # Writes the source commit into the wheel (hatch_build.py).
 [tool.hatch.build.targets.wheel.hooks.custom]
