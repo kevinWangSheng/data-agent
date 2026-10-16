@@ -1,6 +1,6 @@
 # 15 — 单次花费上限按本项目价目表计
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude (worktree 15-budget-at-our-prices)
@@ -48,10 +48,10 @@ SDK 拿不到运行中的逐轮用量、无法在运行中停止（要写明查�
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2
-- Model spend: ~$0.41（第 1 次 ~$0.11；第 2 次 21 次真实运行 ~$0.30）
-- Outcome: 实现完成
+- Attempts: 3
+- Review rounds: 3
+- Model spend: ~$0.44（之前 ~$0.41；本轮真实运行 $0.029）
+- Outcome: PR #16 退回第 1 轮已修
 - Human review minutes: —
 
 ## Comments
@@ -124,3 +124,38 @@ SDK 拿不到运行中的逐轮用量、无法在运行中停止（要写明查�
 1. **`src/data_agent/agent.py:319`**：计费用的 `SubagentStop` hook 不过滤子 agent 类型；CLI 的内部活动/压缩摘要子 agent 也会触发 `SubagentStop`（上游 issue anthropics/claude-code#91910），读不到记录文件就把 `transcript_failed` 置位，本次运行余下部分价目表上限失效。照旁边 `verifier_hooks` 的做法，只对 `agent_type in VERIFIER_NAMES` 读记录文件；其他子 agent 的用量不在这里计（由结束时的 SDK `model_usage` 对账，若对账出差额写进结果事件）。配修复前会失败的测试。
 
 在原分支上修，修完提交，不 push、不 rebase。修完 `make check`、默认 $1 真实 dbt 运行一次，再跑一轮 `da-review main`。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
+
+#### 2026-10-16 Ticket agent: PR #16 return round 1 (branch `worktree-15-budget-at-our-prices`, commits `355330f`, `cb60043`; not pushed)
+
+**The Codex P1 fix** (`355330f`, `src/data_agent/agent.py`, `evals/dab.py`)
+- The spend hooks now only act on `agent_type in VERIFIER_NAMES`, the same check `verifier_hooks` uses.
+  - Only verifiers are added to `running` at `SubagentStart`.
+  - At `SubagentStop`, any other subagent returns straight away. Its transcript is not read, `transcript_failed` is not set, and no `error` event is written.
+- Reconciling with `model_usage`: when the SDK ends a run on a model in the price table, the new `ended_by_sdk` → `Spend.unmetered` compares the cap's own count with the tokens in `model_usage`.
+  - If they differ, the result event gets an extra `unmetered_cost_usd` field: the difference priced from the price table.
+  - If they match, the field is left out.
+  - After a transcript read failure the field is also left out, because that case already has its own `error` event.
+  - `evals/dab.py` uses the same function.
+- New tests, both of which failed before the fix:
+  - `test_other_subagents_leave_the_cap_on`: before the fix the run was not stopped (`finished=True`).
+  - `test_spend_the_cap_did_not_count_is_in_the_result`: before the fix, `KeyError: 'unmetered_cost_usd'`.
+  - `test_result_has_no_gap_when_the_cap_counted_everything` is the matching case where the counts agree.
+
+**Checks**: `make check` passes: 826 passed, 15 deselected; basedpyright 0 errors.
+
+**Real run** (seam A's DBT_TASK, full config, default $1; run on `355330f`)
+- Command: `zsh /tmp/t15/run.sh <worktree> r3-default-1 1`
+- Result event:
+  `{"subtype": "success", "is_error": false, "num_turns": 21, "terminal_reason": "completed", "uncached_input_tokens": 44736, "cached_input_tokens": 303872, "output_tokens": 11385, "cost_usd": 0.028906032, "sdk_cost_usd": 0.660241, "cost_basis": "price_table", "errors": []}`
+- The cap's own count, `Tokens(44736, 303872, 11385)` (11 main-thread calls, 10 verifier calls, `transcript_failed False`), equals the SDK's `model_usage`, so there is no `unmetered_cost_usd`.
+- Both verifiers started and finished, and there was no `error` event.
+- `cb60043` only changes behaviour when a response ends with `max_tokens`. This run had none (every main-thread `message_delta` was `tool_use` or `end_turn`), so I did not run it again.
+
+**Review**
+- **First `da-review main`**, one P2, valid, fixed in `cb60043`.
+  - The problem: a main-thread response cut off at `max_tokens` without a tool call was treated as a final answer. The cap was then not checked before the CLI's automatic follow-up call, so spend could keep going past the cap.
+  - The fix: a `message_delta` with `stop_reason == "max_tokens"` also marks the point between two calls where the cap is checked.
+  - Test: `test_response_cut_at_its_output_limit_is_not_a_final_answer`, which failed before the fix with `finished=True`.
+- **Second `da-review main`** (on `cb60043`): "No actionable regressions were identified."
+
+**Known limitation (not fixed)**: if the cap stops the run while one of the CLI's own subagents has spent tokens, that spend is missing from the reported `cost_usd`. The SDK never sends its own result in that case, so there is no `model_usage` to compare against. Only runs the SDK ends get `unmetered_cost_usd`.
