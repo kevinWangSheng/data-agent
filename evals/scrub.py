@@ -23,10 +23,23 @@ from evals.walk import walk_files
 # Not preceded by a name character, except as the last character of a JSON escape: tool output is
 # often JSON serialized into a string, and in '{"output": "ok\nbuild-box-7"}' the host follows "n".
 NAME_START = r"(?:(?<![A-Za-z0-9_-])|(?<=\\[bfnrt])|(?<=\\u[0-9A-Fa-f]{4}))"
-# DeepSeek, OpenAI and Anthropic keys start with sk-; 20+ characters keeps "task-sk-x" prose out.
-KEY_SHAPE = re.compile(rf"{NAME_START}sk-[A-Za-z0-9_-]{{20,}}")
+KEY_SHAPE = re.compile(
+    "|".join(
+        [
+            # DeepSeek, OpenAI and Anthropic keys; 20+ characters keeps "task-sk-x" prose out.
+            rf"{NAME_START}sk-[A-Za-z0-9_-]{{20,}}",
+            r"\b[Bb]earer\s+[A-Za-z0-9._~+/=-]{20,}",
+            rf"{NAME_START}eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",  # JWT
+            rf"{NAME_START}gh[pousr]_[A-Za-z0-9]{{36,}}",  # GitHub token
+            rf"{NAME_START}AKIA[0-9A-Z]{{16}}(?![0-9A-Z])",  # AWS access key id
+        ]
+    )
+)
 OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 IPV4 = re.compile(rf"(?<![\d.]){OCTET}(?:\.{OCTET}){{3}}(?!\.?\d)")
+
+# (marker kind, pattern): matches become "[redacted-<kind>]".
+type Rules = list[tuple[str, re.Pattern[str]]]
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -47,9 +60,9 @@ def hostname(value: str) -> re.Pattern[str]:
     return re.compile(rf"{NAME_START}{re.escape(value)}(?![A-Za-z0-9_-])", re.IGNORECASE)
 
 
-def build_rules(hostnames: list[str]) -> list[tuple[str, re.Pattern[str]]]:
+def build_rules(hostnames: list[str]) -> Rules:
     """(marker kind, pattern) in apply order: keys first, a whole endpoint before its host."""
-    rules: list[tuple[str, re.Pattern[str]]] = []
+    rules: Rules = []
     if key := os.environ.get("DATA_AGENT_API_KEY", "").strip():
         rules.append(("key", literal(key)))
     rules.append(("key", KEY_SHAPE))
@@ -64,14 +77,14 @@ def build_rules(hostnames: list[str]) -> list[tuple[str, re.Pattern[str]]]:
     return rules
 
 
-def scrub_text(text: str, rules: list[tuple[str, re.Pattern[str]]], counts: Counter[str]) -> str:
+def scrub_text(text: str, rules: Rules, counts: Counter[str]) -> str:
     for kind, pattern in rules:
         text, n = pattern.subn(f"[redacted-{kind}]", text)
         counts[kind] += n
     return text
 
 
-def scrub_value(value: Any, rules: list[tuple[str, re.Pattern[str]]], counts: Counter[str]) -> Any:
+def scrub_value(value: Any, rules: Rules, counts: Counter[str]) -> Any:
     if isinstance(value, str):
         return scrub_text(value, rules, counts)
     if isinstance(value, list):
@@ -83,7 +96,7 @@ def scrub_value(value: Any, rules: list[tuple[str, re.Pattern[str]]], counts: Co
     return value
 
 
-def scrub_json(text: str, rules: list[tuple[str, re.Pattern[str]]], counts: Counter[str]) -> str:
+def scrub_json(text: str, rules: Rules, counts: Counter[str]) -> str:
     """One JSON document; kept byte for byte unless a string in it changed."""
     try:
         value = json.loads(text)
@@ -94,12 +107,10 @@ def scrub_json(text: str, rules: list[tuple[str, re.Pattern[str]]], counts: Coun
     if counts.total() == before:
         return text
     indent = 2 if "\n" in text.strip() else None
-    return json.dumps(value, indent=indent) + text[len(text.rstrip()) :]
+    return json.dumps(value, indent=indent, ensure_ascii=False) + text[len(text.rstrip()) :]
 
 
-def scrub_file(
-    path: Path, text: str, rules: list[tuple[str, re.Pattern[str]]], counts: Counter[str]
-) -> str:
+def scrub_file(path: Path, text: str, rules: Rules, counts: Counter[str]) -> str:
     if path.suffix == ".json":
         return scrub_json(text, rules, counts)
     if path.suffix == ".jsonl":

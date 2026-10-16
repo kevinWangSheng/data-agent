@@ -16,6 +16,7 @@ from pathlib import Path
 from evals.walk import walk_files
 
 STOP_FRACTION = Decimal("0.8")
+STOP_PERCENT = f"{STOP_FRACTION:.0%}"
 
 
 class SpendUnknown(Exception):
@@ -23,7 +24,8 @@ class SpendUnknown(Exception):
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
-    parser = commands.add_parser("spend", help="exit non-zero once spend reaches 80%% of budget")
+    stop = STOP_PERCENT.replace("%", "%%")  # argparse formats help with %
+    parser = commands.add_parser("spend", help=f"exit non-zero once spend reaches {stop} of budget")
     parser.add_argument("runs_dir", type=Path)
     parser.add_argument("--budget", required=True, help="total budget in USD")
     parser.set_defaults(run=run)
@@ -52,17 +54,17 @@ def run(args: argparse.Namespace) -> int:
     try:
         budget = Decimal(args.budget)
     except InvalidOperation:
-        budget = Decimal(0)
-    if not budget.is_finite() or budget <= 0:
+        budget = None
+    if budget is None or not budget.is_finite() or budget <= 0:
         print(f"spend: budget must be a positive number, got {args.budget!r}", file=sys.stderr)
         return 2
     if not runs_dir.is_dir():
         print(f"spend: {runs_dir} is not a directory", file=sys.stderr)
         return 2
-    found, missed = walk_files(runs_dir)
-    if missed:
+    found, unchecked = walk_files(runs_dir)
+    if unchecked:
         print("spend: cannot see every event file, stopping:", file=sys.stderr)
-        for problem in missed:
+        for problem in unchecked:
             print(f"  {problem}", file=sys.stderr)
         return 2
     files = [p for p in found if p.suffix == ".jsonl"]
@@ -74,9 +76,12 @@ def run(args: argparse.Namespace) -> int:
     limit = budget * STOP_FRACTION
     print(
         f"spend: ${spent:.4f} over {len(files)} event file(s); "
-        f"budget ${budget}, stop at 80% = ${limit:.4f}"
+        f"budget ${budget}, stop at {STOP_PERCENT} = ${limit:.4f}"
     )
     if spent >= limit:
-        print("spend: reached 80% of the budget; stop the batch and ask a human", file=sys.stderr)
+        print(
+            f"spend: reached {STOP_PERCENT} of the budget; stop the batch and ask a human",
+            file=sys.stderr,
+        )
         return 1
     return 0

@@ -96,6 +96,24 @@ def test_scrub_removes_secrets_right_after_json_escapes(tmp_path: Path) -> None:
     assert json.loads(text)["output"].startswith("ok\n")
 
 
+def test_scrub_removes_other_common_token_shapes(tmp_path: Path) -> None:
+    # Assembled at runtime so the repository never contains a literal token.
+    tokens = [
+        "Bearer " + "q7Zx" * 8,
+        "eyJhbGciOiJIUzI1NiJ9." + "eyJzdWIiOiIxIn0" + "." + "c2lnbmF0dXJl" * 3,
+        "ghp_" + "a1B2" * 9,
+        "AKIA" + "Q7ZX" * 4,
+    ]
+    events = tmp_path / "events.jsonl"
+    events.write_text(json.dumps({"output": "; ".join(tokens) + "; café"}) + "\n")
+    proc = scrub(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    text = events.read_text()
+    for token in tokens:
+        assert token.split()[-1] not in text
+    assert "café" in text
+
+
 def test_scrub_sees_through_json_escapes_without_breaking_them(tmp_path: Path) -> None:
     events = tmp_path / "events.jsonl"
     events.write_text('{"output": "build\\u002dbox-7 up"}\n{"output": "ok\\node-1 up"}\n')
