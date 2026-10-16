@@ -1,6 +1,6 @@
 # 14 — 失败归因报告
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 03, 10
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -115,3 +115,12 @@ attribute: 1 of 1 dev failures attributed, $0.0189 spent -> runs/14/report
 - Observed column names that are common words (e.g. `status`, `amount`) are now always blocked, so the judge often needs one retry to reword. The run on `742f761` took 2 attempts.
 
 **主会话**：分支已 rebase，推原 PR #7 需要 force push（AGENTS.md 禁止），改推 `worktree-14-failure-attribution-r1` 开新 PR，关闭 #7。
+
+### 2026-10-16 第 7 步：PR #10 退回第 2 轮（主会话；最后一轮）
+
+CI 两次全绿。退回：原因如下，在分支 `worktree-14-failure-attribution` 上修，修完提交，不 push、不 rebase（需要同步 main 时用 `git merge origin/main`）。主会话推到 `worktree-14-failure-attribution-r1`（PR #10）。
+
+1. **Codex P2（`evals/attribute.py:262`）属实**：只经题面、验证输出或读本地 schema 文件（`Read` 结果）见到的表，若名字是普通单词（如 `orders`），既非 snake_case 也非带点名，不进 `guessed`，"Inspect orders first" 能通过；FM1 类失败常常没跑 SQL、没调 `list_tables`。改为：从 schema/DDL 形状的内容里收集标识符并一律拦（不受 Skill 词表豁免）——`Read` 到的 dbt YAML 里 `name:` 条目、`.sql` 文件与题面里 `CREATE TABLE/VIEW`、`from`/`join` 后的名字、题面与验证输出里反引号包起来的标识符。配修复前会失败的测试。
+2. **Codex P2（`evals/attribute.py:595`）属实**：`--manifest` 是坏 JSON 时 `json.loads` 在 `try` 外抛出，CLI 打 traceback 而不是 `attribute: ...` 加退出码 2。把读 manifest 挪进受保护的段。配测试。
+
+这是第 2 轮（最后一轮）。修完后名称过滤若还有启发式漏洞，记成已知限制：报告是草稿，每条建议由人审，工具不自动改 Skill。修完 `make check`、真实运行一次 `python -m evals attribute`（同夹具 job），再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 3）。
