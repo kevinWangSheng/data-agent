@@ -40,6 +40,8 @@ Apache License 2.0, commit a3278ad102829a6084dde086244a0ef665a8011c
 
 - evals/metrics.py  <- leaderboard/src/leaderboard/core/metrics.py
   (modified: only the pure scoring functions are kept)
+- evals/configs/data-eng-bench-duckdb.data-agent.yaml <- configs/data-eng-bench-duckdb.claude-code.yaml
+  (modified: the agent, retries and setup timeout are this repo's)
 
 From the upstream NOTICE:
 
