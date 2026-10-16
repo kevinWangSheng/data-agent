@@ -20,7 +20,9 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   slice column, instead of upstream's three largest tables, which on a project with a fanned-out
   sibling model put that sibling's doubled counts next to a correct model. The slice is every
   text or date column of the top row (upstream: the first), and a join to reach it goes only
-  through a named upstream whose join column is unique (upstream: any table sharing a column).
+  through a named upstream whose join column is unique (upstream: any table sharing a column);
+  a candidate it cannot slice on every column is marked inconclusive, and the output says the
+  baselines do not apply the model's own filters.
   It marks a COUNT(*) match or mismatch only for integer metrics; upstream also held sums up
   against row counts.
 - A table profiled over a sample says so, its NULL shares are of the sample, and a column that
@@ -184,7 +186,7 @@ def yml_columns(project: Path, model_name: str) -> list[str]:
             indent = len(line) - len(stripped)
             if not stripped or stripped.startswith("#"):
                 continue
-            if indent == 0:
+            if indent == 0 and not stripped.startswith("-"):
                 in_models, model, model_indent = stripped.startswith("models:"), None, None
                 continue
             name = NAME_LINE_RE.match(stripped)
@@ -221,7 +223,7 @@ def source_relations(project: Path) -> dict[tuple[str, str], tuple[str, str]]:
             indent = len(line) - len(stripped)
             if not stripped or stripped.startswith("#"):
                 continue
-            if indent == 0:
+            if indent == 0 and not stripped.startswith("-"):
                 in_sources, source, table = stripped.startswith("sources:"), None, None
                 continue
             if not in_sources:
@@ -465,41 +467,51 @@ def column_map(table: Table) -> dict[str, str]:
     return {name.lower(): name for name, _ in table.columns}
 
 
+def unique_key(run: RunQuery, candidate: Table, bridge: Table) -> str | None:
+    """A column the candidate shares with `bridge` that is unique in `bridge`, so joining on it
+    cannot multiply the candidate's rows."""
+    bridge_keys = column_map(bridge)
+    for key in column_map(candidate):
+        if key in bridge_keys:
+            column = quote(bridge_keys[key])
+            sql = f"SELECT count(*), count(DISTINCT {column}) FROM {bridge.sql_name}"
+            rows, distinct = run(sql, 1).rows[0]
+            if rows == distinct:
+                return key
+    return None
+
+
 def slice_filter(
     run: RunQuery, candidate: Table, slice_values: dict[str, Any], bridges: list[Table]
-) -> tuple[str, str] | None:
-    """(FROM-clause tail limiting `candidate`, aliased c, to the slice; what it slices on).
-    Directly on every slice column the candidate has; else through a named upstream that has
-    slice columns and shares a column with the candidate that is unique in it, so the join
-    cannot multiply rows. None when neither works."""
+) -> tuple[str, str, list[str]] | None:
+    """(FROM-clause tail limiting `candidate`, aliased c, to the slice; what it slices on; the
+    slice columns it could not apply). Slice columns the candidate has apply directly; the rest
+    through one named upstream that has them and a unique join column. None when no slice column
+    applies at all."""
     keys = column_map(candidate)
-    direct = [column for column in slice_values if column.lower() in keys]
-    if direct:
-        tests = [f"c.{quote(keys[c.lower()])} = {literal(str(slice_values[c]))}" for c in direct]
-        return f"WHERE {' AND '.join(tests)}", ", ".join(direct)
-    for bridge in bridges:
+    applied = [column for column in slice_values if column.lower() in keys]
+    tests = [f"c.{quote(keys[c.lower()])} = {literal(str(slice_values[c]))}" for c in applied]
+    described = [", ".join(applied)] if applied else []
+    missing = [column for column in slice_values if column not in applied]
+    join = ""
+    for bridge in bridges if missing else []:
         bridge_keys = column_map(bridge)
-        sliced = [column for column in slice_values if column.lower() in bridge_keys]
-        shared = [key for key in keys if key in bridge_keys]
-        if bridge == candidate or not sliced:
+        covered = [column for column in missing if column.lower() in bridge_keys]
+        if bridge == candidate or not covered:
             continue
-        for key in shared:
-            unique_sql = (
-                f"SELECT count(*), count(DISTINCT {quote(bridge_keys[key])}) FROM {bridge.sql_name}"
-            )
-            rows, distinct = run(unique_sql, 1).rows[0]
-            if rows != distinct:
-                continue
-            tests = [
-                f"d.{quote(bridge_keys[c.lower()])} = {literal(str(slice_values[c]))}"
-                for c in sliced
-            ]
-            return (
-                f"JOIN {bridge.sql_name} AS d ON c.{quote(keys[key])} = "
-                f"d.{quote(bridge_keys[key])} WHERE {' AND '.join(tests)}",
-                f"{', '.join(sliced)} via {bridge.ref}.{bridge_keys[key]}",
-            )
-    return None
+        key = unique_key(run, candidate, bridge)
+        if key is None:
+            continue
+        join = f"JOIN {bridge.sql_name} AS d ON c.{quote(keys[key])} = d.{quote(bridge_keys[key])} "
+        tests += [
+            f"d.{quote(bridge_keys[c.lower()])} = {literal(str(slice_values[c]))}" for c in covered
+        ]
+        described.append(f"{', '.join(covered)} via {bridge.ref}.{bridge_keys[key]}")
+        missing = [column for column in missing if column not in covered]
+        break
+    if not tests:
+        return None
+    return f"{join}WHERE {' AND '.join(tests)}", "; ".join(described), missing
 
 
 def nearest_finer_table(
@@ -569,16 +581,21 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
     # Bridges only between the named upstreams: a join the model's lineage does not show could
     # put unrelated rows into the count.
     bridges = candidates if sources else []
-    measured: list[tuple[Table, str, int | None, list[tuple[str, int]], int]] = []
+    measured: list[tuple[Table, str, list[str], int | None, list[tuple[str, int]], int]] = []
     for candidate in candidates:
         rows = row_count(run, candidate)
         found = slice_filter(run, candidate, slice_values, bridges)
         if found is None:
-            measured.append((candidate, "", None, [], rows))
+            measured.append((candidate, "", [], None, [], rows))
             continue
-        tail, sliced_on = found
+        tail, sliced_on, missing = found
         count, distinct = candidate_counts(run, candidate, tail)
-        measured.append((candidate, sliced_on, count, distinct, rows))
+        measured.append((candidate, sliced_on, missing, count, distinct, rows))
+    lines += [
+        "Baselines apply the slice only, not the model's own filters (WHERE, join conditions);",
+        "for a model that filters rows, count with those filters before calling a mismatch.",
+        "",
+    ]
 
     types = dict(model.columns)
     for metric in metrics:
@@ -588,7 +605,7 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
         lines += [f"### Metric: {metric}", f"  Model value: {value}"]
         # Only an integer can be a row count; a sum or average is compared by the verifier.
         is_count = base_type(types[metric]) in INTEGER_TYPES
-        for candidate, sliced_on, count, distinct, rows in measured:
+        for candidate, sliced_on, missing, count, distinct, rows in measured:
             if count is None:
                 lines.append(
                     f"  Candidate: {candidate.ref} ({rows} rows) — no slice column and no "
@@ -596,10 +613,15 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
                 )
                 continue
             lines.append(f"  Candidate: {candidate.ref} ({rows} rows), sliced on {sliced_on}")
+            if missing:
+                lines.append(
+                    f"    not sliced on {', '.join(missing)} (no such column or safe join): "
+                    "a wider slice than the model row; inconclusive"
+                )
             lines.append(f"    COUNT(*): {count}")
             lines.extend(f"    COUNT(DISTINCT {name}): {n}" for name, n in distinct)
             model_value = float(value)
-            if is_count and model_value > 0 and count > 0:
+            if is_count and not missing and model_value > 0 and count > 0:
                 ratio = count / model_value
                 lines.append(
                     "    → Model matches COUNT(*)"

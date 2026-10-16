@@ -67,21 +67,40 @@ def metric_block(text: str, metric: str) -> str:
     return text.split(f"### Metric: {metric}")[1].split("### Metric:")[0]
 
 
+UPSTREAMS = "stg_customers, stg_orders"
+
+
 async def test_verify_model_values_compares_against_named_upstreams(shop: Path) -> None:
     result = await call(
-        shop, "verify_model_values", model_name="customer_orders", source_tables="stg_orders, nope"
+        shop,
+        "verify_model_values",
+        model_name="customer_orders",
+        source_tables=f"{UPSTREAMS}, nope",
     )
     text = text_of(result)
     assert not result.is_error, text
-    assert "Candidates (named upstreams): main.stg_orders" in text
+    assert "Candidates (named upstreams): main.stg_customers, main.stg_orders" in text
     assert "Source nope: Error: no table or view 'nope'" in text
-    assert "Model matches COUNT(*)" in metric_block(text, "n_orders")
+    block = metric_block(text, "n_orders")
+    # customer_name is not in stg_orders; it is reached through stg_customers' unique key.
+    assert "sliced on customer_id; customer_name via main.stg_customers.customer_id" in block
+    assert "Model matches COUNT(*)" in block
+    assert "own filters" in text
+
+
+async def test_verify_model_values_calls_a_partial_slice_inconclusive(shop: Path) -> None:
+    result = await call(shop, "verify_model_values", model_name="customer_orders_fanout")
+    block = metric_block(text_of(result), "n_orders")
+    assert "not sliced on customer_name" in block and "inconclusive" in block
+    assert "→" not in block
 
 
 async def test_verify_model_values_holds_only_integer_metrics_against_row_counts(
     shop: Path,
 ) -> None:
-    result = await call(shop, "verify_model_values", model_name="customer_orders_fanout")
+    result = await call(
+        shop, "verify_model_values", model_name="customer_orders_fanout", source_tables=UPSTREAMS
+    )
     text = text_of(result)
     assert "MISMATCH vs COUNT(*) (0.5x)" in metric_block(text, "n_orders")
     total_amount = metric_block(text, "total_amount")
@@ -281,3 +300,30 @@ def test_yml_columns_reads_a_column_list_at_the_key_indent(tmp_path: Path) -> No
         "  - name: other\n    columns:\n      - name: nope\n"
     )
     assert yml_columns(tmp_path, "m") == ["customer_id", "total_orders"]
+
+
+def test_project_yaml_may_start_sequences_at_column_zero(tmp_path: Path) -> None:
+    (tmp_path / "schema.yml").write_text(
+        "models:\n- name: m\n  columns:\n  - name: a\n  - name: b\n"
+        "sources:\n- name: src\n  schema: landing\n  tables:\n  - name: t\n"
+    )
+    assert yml_columns(tmp_path, "m") == ["a", "b"]
+    assert source_relations(tmp_path) == {("src", "t"): ("landing", "t")}
+
+
+async def test_verify_model_values_slices_across_upstreams(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "across.duckdb",
+        "CREATE TABLE customers (customer_id VARCHAR, segment VARCHAR);"
+        "INSERT INTO customers VALUES ('c1', 'retail'), ('c2', 'wholesale');"
+        "CREATE TABLE orders (order_id INT, customer_id VARCHAR, region VARCHAR);"
+        "INSERT INTO orders VALUES (1, 'c1', 'north'), (2, 'c1', 'north'), (3, 'c2', 'north');"
+        "CREATE TABLE by_region_segment AS SELECT o.region, c.segment, count(*) AS n_orders "
+        "FROM orders o JOIN customers c USING (customer_id) GROUP BY o.region, c.segment",
+    )
+    result = await call(
+        db, "verify_model_values", model_name="by_region_segment", source_tables="orders, customers"
+    )
+    block = metric_block(text_of(result), "n_orders")
+    assert "main.orders (3 rows), sliced on region; segment via main.customers.customer_id" in block
+    assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
