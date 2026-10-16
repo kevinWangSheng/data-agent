@@ -91,3 +91,16 @@ def test_database_url_hosts_are_masked_even_as_bare_names(tmp_path: Path) -> Non
 )
 def test_url_names_are_the_single_label_hosts(url: str, names: list[str]) -> None:
     assert url_names(url) == names
+
+
+def test_libpq_server_address_is_masked(tmp_path: Path) -> None:
+    # libpq names the resolved address next to the host, and the address is in no URL.
+    path = tmp_path / "run.jsonl"
+    with EventLog(path, secrets=url_secrets("postgresql://u@db.example/shop")) as log:
+        log.emit(
+            "tool_end",
+            content='connection to server at "db.example" (192.0.2.123), port 5432 failed: refused',
+        )
+    assert read(path)[0]["content"] == (
+        f"connection to server at {REDACTED}, port 5432 failed: refused"
+    )

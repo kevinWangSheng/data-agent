@@ -128,13 +128,16 @@ def test_profile_reads_credentials_from_the_environment() -> None:
     assert "s3cret-pw" not in profile
     assert "db.example" not in profile
     assert "schema: jaffle_x" in profile
+    # dbt scrubs only DBT_ENV_SECRET_* values from its logs, which `dbt debug` fills with the host.
     assert env == {
-        "DA_JAFFLE_HOST": "db.example",
+        "DBT_ENV_SECRET_DA_JAFFLE_HOST": "db.example",
         "DA_JAFFLE_PORT": "6543",
         "DA_JAFFLE_USER": "user",
-        "DA_JAFFLE_PASSWORD": "s3cret-pw",
+        "DBT_ENV_SECRET_DA_JAFFLE_PASSWORD": "s3cret-pw",
         "DA_JAFFLE_DBNAME": "shop",
     }
+    for name in env:
+        assert f"env_var('{name}')" in profile
 
 
 def test_setup_edit_must_match_once(tmp_path: Path) -> None:
@@ -194,7 +197,7 @@ def test_case_failures_are_recorded_without_credentials(
     result = json.loads((tmp_path / "out" / "q2_repeat_customers" / "result.json").read_text())
     assert result["passed"] is False
     assert result["error"]
-    for secret in ("s3cret-pw", "db.example"):
+    for secret in ("s3cret-pw", "db.example", "10.1.2.3"):
         assert secret not in summary
 
 

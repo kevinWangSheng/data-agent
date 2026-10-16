@@ -18,6 +18,8 @@ from psycopg.conninfo import conninfo_to_dict
 
 REDACTED = "[REDACTED]"
 HOST_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+# libpq names the server and the address it resolved to: `connection to server at "db" (10.0.0.5)`.
+LIBPQ_SERVER = re.compile(r'(?<=server at )"[^"]*" \([^)]*\)')
 LOOPBACK_NAMES = frozenset({"localhost", "ip6-localhost", "ip6-loopback"})
 
 # Environment variables whose values must never reach an event file; DATA_AGENT_ANTHROPIC_API_KEY
@@ -69,8 +71,10 @@ def url_names(url: str) -> list[str]:
 
 
 def mask(text: str, secrets: Iterable[str], names: Iterable[str] = ()) -> str:
-    """`text` with every secret replaced wherever it appears and every name replaced as a whole
-    word. Longest first, so a URL is masked whole before its host would be."""
+    """`text` with every secret replaced wherever it appears, every name replaced as a whole word,
+    and libpq's server address replaced. Longest first, so a URL is masked whole before its host
+    would be."""
+    text = LIBPQ_SERVER.sub(REDACTED, text)
     for secret in sorted({s for s in secrets if s}, key=len, reverse=True):
         text = text.replace(secret, REDACTED)
     for name in sorted({n for n in names if n}, key=len, reverse=True):

@@ -55,10 +55,10 @@ jaffle_shop:
   outputs:
     dev:
       type: postgres
-      host: "{{{{ env_var('DA_JAFFLE_HOST') }}}}"
+      host: "{{{{ env_var('DBT_ENV_SECRET_DA_JAFFLE_HOST') }}}}"
       port: "{{{{ env_var('DA_JAFFLE_PORT') | as_number }}}}"
       user: "{{{{ env_var('DA_JAFFLE_USER') }}}}"
-      password: "{{{{ env_var('DA_JAFFLE_PASSWORD') }}}}"
+      password: "{{{{ env_var('DBT_ENV_SECRET_DA_JAFFLE_PASSWORD') }}}}"
       dbname: "{{{{ env_var('DA_JAFFLE_DBNAME') }}}}"
       schema: {schema}
       threads: 1
@@ -207,13 +207,16 @@ def redact(text: str, url: str) -> str:
 
 def dbt_profile(url: str, schema: str) -> tuple[str, dict[str, str]]:
     """profiles.yml for the case's schema, and the variables it reads its credentials from: the
-    workspace the agent can read holds no password or host."""
+    workspace the agent can read holds no password or host. Host and password are
+    DBT_ENV_SECRET_* variables, the only ones dbt scrubs from its logs (`dbt debug` prints them).
+    The user stays plain: dbt masks a secret wherever its text appears, and a short user name
+    would garble the output the agent reads."""
     params = conninfo_to_dict(url)
     env = {
-        "DA_JAFFLE_HOST": str(params.get("host") or "localhost"),
+        "DBT_ENV_SECRET_DA_JAFFLE_HOST": str(params.get("host") or "localhost"),
         "DA_JAFFLE_PORT": str(params.get("port") or "5432"),
         "DA_JAFFLE_USER": str(params.get("user") or ""),
-        "DA_JAFFLE_PASSWORD": str(params.get("password") or ""),
+        "DBT_ENV_SECRET_DA_JAFFLE_PASSWORD": str(params.get("password") or ""),
         "DA_JAFFLE_DBNAME": str(params.get("dbname") or ""),
     }
     return PROFILE.format(schema=schema), env
