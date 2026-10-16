@@ -284,3 +284,18 @@ def test_scrub_does_not_report_host_paths_it_removed(tmp_path: Path) -> None:
     proc = scrub(tmp_path, "--user", "ci-runner")
     assert proc.returncode == 0, proc.stderr
     assert "/home/[redacted-user]/jobs/x" in log.read_text()
+
+
+def test_scrub_fails_on_host_paths_hidden_by_json_escapes(tmp_path: Path) -> None:
+    """A JSON escape (`\\/`, `\\u002f`) must not hide a host path from the check."""
+    result = tmp_path / "result.json"
+    result.write_text(
+        '{"a": "\\/home\\/remote-user\\/job", "b": "\\u002fUsers\\u002fdave\\u002fx"}'
+    )
+    nested = json.dumps({"output": '{"path": "\\/home\\/erin\\/jobs"}'})
+    (tmp_path / "events.jsonl").write_text(nested + "\n")
+    proc = scrub(tmp_path)
+    assert proc.returncode != 0
+    assert "/home/remote-user" in proc.stderr
+    assert "/Users/dave" in proc.stderr
+    assert "/home/erin" in proc.stderr

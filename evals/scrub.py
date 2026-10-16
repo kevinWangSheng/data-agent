@@ -19,6 +19,7 @@ import os
 import re
 import sys
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -117,13 +118,41 @@ def build_rules(
     return rules
 
 
+def json_strings(text: str) -> Iterator[str]:
+    """The decoded strings of text read as JSON or JSONL, and of JSON nested in them."""
+    for document in {text, *text.split("\n")}:
+        try:
+            value = json.loads(document)
+        except json.JSONDecodeError:
+            continue
+        yield from value_strings(value)
+
+
+def value_strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+        yield from json_strings(value)
+    elif isinstance(value, list):
+        for v in value:
+            yield from value_strings(v)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            yield k
+            yield from value_strings(v)
+
+
 def host_paths(path: Path, text: str) -> list[str]:
-    """`file:line: path` for each host home path in scrubbed text."""
-    return [
-        f"{path}:{number}: {match.group()}"
+    """`file:line: path` for each host home path in scrubbed text, then `file: path` for those
+    only a JSON escape (`\\/`, `\\u002f`) kept out of sight."""
+    found = [
+        (f"{path}:{number}", match.group())
         for number, line in enumerate(text.splitlines(), start=1)
         for match in HOST_PATH.finditer(line)
     ]
+    seen = {host_path for _, host_path in found}
+    escaped = {m.group() for s in json_strings(text) for m in HOST_PATH.finditer(s)} - seen
+    found.extend((str(path), host_path) for host_path in sorted(escaped))
+    return [f"{where}: {host_path}" for where, host_path in found]
 
 
 def scrub_text(text: str, rules: Rules, counts: Counter[str]) -> str:
