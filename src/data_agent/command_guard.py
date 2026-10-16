@@ -31,12 +31,14 @@ OPERATOR_CHARS = frozenset("();<>|&")
 # `#`, which shlex reads as a comment mid-word where Bash does not. Quoting would make some of them
 # literal, but shlex drops the quotes, so they are refused everywhere.
 FORBIDDEN_CHARS = frozenset("$`#{}*?[]\n\r")
+# {scripts} names the dbt-workflow scripts only when the run offers them (the Skill layer is on).
 RULE = (
     "Bash may only run one dbt command, subcommand first (run, build, test, seed, snapshot, "
-    "compile, parse, ls, deps, debug), or the dbt-workflow scan/validate script, from the "
-    "workspace, optionally followed by 2>&1 and a pipe into tail or head; no braces, globs, $ "
-    "or #. Query data with the query_database tool."
+    "compile, parse, ls, deps, debug){scripts}, from the workspace, optionally followed by 2>&1 "
+    "and a pipe into tail or head; no braces, globs, $ or #. Query data with the query_database "
+    "tool."
 )
+SCRIPTS_RULE = ", or the dbt-workflow scan/validate script"
 
 
 def _is_operator(token: str) -> bool:
@@ -96,7 +98,7 @@ def denial(command: str, workspace: Path, scripts: Sequence[Path]) -> str | None
             return f"only tail or head with a line count may follow a pipe, not {pager!r}"
     if program == "dbt":
         return _dbt_denial(args, workspace)
-    if program == "python3" and args:
+    if program == "python3" and args and scripts:
         allowed = {script.resolve() for script in scripts}
         if resolve(workspace, args[0]) not in allowed:
             return f"python3 may only run {', '.join(sorted(s.name for s in allowed))}"
@@ -110,6 +112,7 @@ def denial(command: str, workspace: Path, scripts: Sequence[Path]) -> str | None
 
 def command_guard(workspace: Path, scripts: Sequence[Path]) -> HookCallback:
     root = workspace.resolve()
+    rule = RULE.format(scripts=SCRIPTS_RULE if scripts else "")
 
     async def guard(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
@@ -123,7 +126,7 @@ def command_guard(workspace: Path, scripts: Sequence[Path]) -> HookCallback:
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": f"{RULE} Denied: {reason}.",
+                "permissionDecisionReason": f"{rule} Denied: {reason}.",
             }
         }
 

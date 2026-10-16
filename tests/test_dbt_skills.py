@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from data_agent.agent import DBT_SCRIPTS, DBT_SKILLS, SKILLS_DIR, load_skills
+from data_agent.agent import DBT_SKILLS, SKILLS_DIR, dbt_scripts, load_skills
+from data_agent.run_config import load_config
 
 DBT_SHOP = Path(__file__).parent / "fixtures" / "dbt_shop"
 SCAN = SKILLS_DIR / "dbt-workflow" / "scan_project.py"
@@ -66,9 +67,11 @@ def test_dbt_skills_load_in_workflow_order() -> None:
 
 
 def test_loaded_skills_point_at_the_real_scripts() -> None:
-    text = load_skills(DBT_SKILLS)
+    text = load_skills(DBT_SKILLS, SKILLS_DIR)
     assert "${CLAUDE_SKILL_DIR}" not in text
-    for script in DBT_SCRIPTS:
+    scripts = dbt_scripts(load_config("full"))
+    assert len(scripts) == 2
+    for script in scripts:
         assert script.is_file()
         assert f'python3 "{script}"' in text
 

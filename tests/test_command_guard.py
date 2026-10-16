@@ -12,8 +12,10 @@ SCRIPTS_DIR = Path("/opt/skills/dbt-workflow")
 SCRIPTS = (SCRIPTS_DIR / "scan_project.py", SCRIPTS_DIR / "validate_project.py")
 
 
-async def decide(workspace: Path, command: str, tool: str = "Bash") -> tuple[str, str]:
-    guard = command_guard(workspace, SCRIPTS)
+async def decide(
+    workspace: Path, command: str, tool: str = "Bash", scripts: tuple[Path, ...] = SCRIPTS
+) -> tuple[str, str]:
+    guard = command_guard(workspace, scripts)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
         "session_id": "s",
@@ -104,6 +106,16 @@ async def test_everything_else_is_denied_with_a_reason(tmp_path: Path, command: 
     decision, reason = await decide(tmp_path, command)
     assert decision == "deny"
     assert "dbt" in reason
+
+
+async def test_without_the_skill_layer_no_script_runs_or_is_named(tmp_path: Path) -> None:
+    """With the Skill layer off the scripts are not offered, and the denial must not mention them
+    (a layer that is off leaves no trace)."""
+    decision, reason = await decide(tmp_path, f"python3 {SCRIPTS[0]} .", scripts=())
+    assert decision == "deny"
+    assert "dbt" in reason
+    assert "script" not in reason.lower()
+    assert "dbt-workflow" not in reason
 
 
 async def test_other_tools_are_left_alone(tmp_path: Path) -> None:
