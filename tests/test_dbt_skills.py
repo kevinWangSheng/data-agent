@@ -29,17 +29,26 @@ SIGNALPILOT_ONLY = {
 }
 
 
-def test_scan_finds_the_models_wherever_the_project_lives(tmp_path: Path) -> None:
-    """Directories the scan skips (target, macros, .claude) only count inside the project."""
-    project = tmp_path / ".claude" / "target" / "macros" / "dbt_shop"
-    shutil.copytree(DBT_SHOP, project)
+def scan(project: Path) -> str:
     proc = subprocess.run(
         [sys.executable, str(SCAN), str(project)], capture_output=True, text=True, timeout=60
     )
     assert proc.returncode == 0, proc.stderr
-    complete = proc.stdout.split("COMPLETE MODELS", 1)[1].split("\n\n", 1)[0]
+    return proc.stdout
+
+
+def section(output: str, heading: str) -> str:
+    return output.split(heading, 1)[1].split("\n\n", 1)[0]
+
+
+def test_scan_finds_the_models_wherever_the_project_lives(tmp_path: Path) -> None:
+    """Directories the scan skips (target, macros, .claude) only count inside the project."""
+    project = tmp_path / ".claude" / "target" / "macros" / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    output = scan(project)
+    complete = section(output, "COMPLETE MODELS")
     for model in ("stg_customers", "stg_orders", "customer_orders"):
-        assert model in complete, proc.stdout
+        assert model in complete, output
 
 
 def test_scan_counts_select_star_models_as_complete(tmp_path: Path) -> None:
@@ -52,12 +61,10 @@ def test_scan_counts_select_star_models_as_complete(tmp_path: Path) -> None:
         "select * from {{ source('raw', 'orders') }} where status <> 'returned'\n"
     )
     (staging / "stg_items.sql").write_text("-- TODO: write this model\n")
-    proc = subprocess.run(
-        [sys.executable, str(SCAN), str(project)], capture_output=True, text=True, timeout=60
-    )
-    stubs = proc.stdout.split("STUBS TO REWRITE", 1)[1].split("\n\n", 1)[0]
-    assert "stg_items" in stubs, proc.stdout
-    assert "stg_customers" not in stubs and "stg_orders" not in stubs, proc.stdout
+    output = scan(project)
+    stubs = section(output, "STUBS TO REWRITE")
+    assert "stg_items" in stubs, output
+    assert "stg_customers" not in stubs and "stg_orders" not in stubs, output
 
 
 def test_dbt_skills_load_in_workflow_order() -> None:
@@ -115,6 +122,9 @@ PROJECT_SPECIFIC = (
     "guide per day",
     "extract_hour",
     "multiple-choice",
+    "driver",
+    "is_won",
+    "converted_date",
     "guaranteed fail",
 )
 
@@ -135,16 +145,14 @@ def test_workflow_never_skips_building_a_model_the_task_asks_for() -> None:
     assert "create" in skip_rule
 
 
-def scan(project: Path) -> str:
-    proc = subprocess.run(
-        [sys.executable, str(SCAN), str(project)], capture_output=True, text=True, timeout=60
-    )
-    assert proc.returncode == 0, proc.stderr
-    return proc.stdout
-
-
-def section(output: str, heading: str) -> str:
-    return output.split(heading, 1)[1].split("\n\n", 1)[0]
+def test_scan_does_not_point_at_snapshots_to_run(tmp_path: Path) -> None:
+    """Bash cannot run `dbt snapshot`, so the scan must not suggest it."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    (project / "snapshots").mkdir()
+    (project / "snapshots" / "orders_snapshot.sql").write_text("select 1\n")
+    snapshots = section(scan(project), "SNAPSHOTS DIRECTORY")
+    assert "cannot" in snapshots and "dbt snapshot" in snapshots, snapshots
 
 
 def test_scan_counts_only_sql_under_the_model_paths(tmp_path: Path) -> None:
@@ -164,7 +172,13 @@ def test_scan_counts_only_sql_under_the_model_paths(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "setting",
-    ['model-paths: ["transform"]', "model-paths:\n  - transform\n", "model-paths: [transform]"],
+    [
+        'model-paths: ["transform"]',
+        "model-paths:\n  - transform\n",
+        "model-paths: [transform]",
+        'model-paths: [\n  "models",\n  "transform"\n]',
+        'source-paths: ["transform"]',
+    ],
 )
 def test_scan_reads_models_from_the_configured_model_paths(tmp_path: Path, setting: str) -> None:
     project = tmp_path / "dbt_shop"
@@ -172,6 +186,7 @@ def test_scan_reads_models_from_the_configured_model_paths(tmp_path: Path, setti
     (project / "models").rename(project / "transform")
     config = project / "dbt_project.yml"
     config.write_text(config.read_text().replace('model-paths: ["models"]', setting))
+    (project / "models").mkdir()  # an unlisted default directory is not scanned
     complete = section(scan(project), "COMPLETE MODELS")
     for model in ("stg_customers", "stg_orders", "customer_orders"):
         assert model in complete, complete

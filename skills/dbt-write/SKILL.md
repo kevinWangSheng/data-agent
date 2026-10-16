@@ -293,4 +293,4 @@ If a YML column name contains `pct`, `percent`, `percentage`, or `rate`, use the
 
 ## 14. Boolean Flag Columns
 
-When counting events by date (e.g., conversions by converted_date, closings by closed_date), check for a boolean flag column (is_converted, is_deleted, is_closed, is_won). A non-null date does NOT confirm the event occurred - CRM and SaaS systems populate date fields speculatively. Filter on the boolean flag, not the date column.
+When counting events by date (`<event>_date`), check for a boolean flag column for the same event (`is_<event>`). A non-null date does NOT confirm the event occurred - source systems can fill date fields ahead of the event. Filter on the boolean flag, not the date column.

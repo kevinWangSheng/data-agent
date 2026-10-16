@@ -5,8 +5,8 @@ gateway or leave the workspace, so a `PreToolUse` hook denies it. Allowed: one c
 `2>&1` and a pipe into `tail` or `head`, in the foreground. dbt subcommands that run ad-hoc SQL
 (`show`, `--inline`, `run-operation`) are denied too, so ad-hoc reads go through the gateway, and
 so are those that write anything but the project's models (`build`, `seed`, `snapshot`,
-`test --store-failures`, `--record-timing-info`): the only write is `dbt run` of the edited
-project.
+`test --store-failures`, `--record-timing-info`, `--partial-parse-file-path`): the only write is
+`dbt run` of the edited project.
 
 Known limit: dbt itself runs whatever the project holds. A model, a Python model, an `on-run-start`
 hook, a profile or a `store_failures` test config the agent edits can run any SQL or code under
@@ -30,7 +30,7 @@ STORE_FAILURES_FLAGS = ("--store-failures", "--store-failures-as")
 FILE_WRITING_FLAGS = ("--record-timing-info", "--partial-parse-file-path")
 # Short form of --record-timing-info; click also takes it bundled (`-xr f`) or with the value
 # attached (`-rf`), so any single-dash word holding an `r` is refused.
-FILE_WRITING_SHORT = "r"
+RECORD_TIMING_SHORT = "r"
 # Flags naming a directory dbt reads from or writes to; each must stay inside the workspace.
 DIR_FLAGS = ("--project-dir", "--profiles-dir", "--target-path", "--log-path")
 PAGERS = frozenset({"tail", "head"})
@@ -90,7 +90,7 @@ def _dbt_denial(args: list[str], workspace: Path) -> str | None:
         if flag in STORE_FAILURES_FLAGS:
             return f"{flag} writes test failures into the database"
         if flag in FILE_WRITING_FLAGS or (
-            arg.startswith("-") and not arg.startswith("--") and FILE_WRITING_SHORT in arg
+            arg.startswith("-") and not arg.startswith("--") and RECORD_TIMING_SHORT in arg
         ):
             return f"{flag} writes a file outside the project's models"
         if flag in DIR_FLAGS:
@@ -134,8 +134,9 @@ def command_guard(workspace: Path, scripts: Sequence[Path]) -> HookCallback:
         if hook_input["hook_event_name"] != "PreToolUse" or hook_input["tool_name"] != "Bash":
             return {}
         tool_input = hook_input["tool_input"]
+        reason: str | None
         if tool_input.get("run_in_background"):
-            reason: str | None = "Bash may not run in the background"
+            reason = "Bash may not run in the background"
         else:
             reason = denial(str(tool_input.get("command", "")), root, scripts)
         if reason is None:

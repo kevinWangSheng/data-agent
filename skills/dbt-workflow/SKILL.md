@@ -251,8 +251,8 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
 ## Output Shape - Read YML Description BEFORE Writing SQL
 
 Extract from `description:` field:
-- **ENTITY**: "for each customer/driver/order" → one row per qualifying entity
-- **QUALIFIER**: "due to returned items" / "with at least one order" → filter or INNER JOIN
+- **ENTITY**: "for each <entity>" → one row per qualifying entity
+- **QUALIFIER**: "due to <reason>" / "with at least one <child>" → filter or INNER JOIN
 - **RANK CONSTRAINT**: "top N" / "ranks the top N" → exactly N output rows. Filter
   with `ROW_NUMBER() ... <= N` using a deterministic tiebreaker (add primary key to
   ORDER BY). Do NOT use DENSE_RANK for filtering - it can return more than N rows.

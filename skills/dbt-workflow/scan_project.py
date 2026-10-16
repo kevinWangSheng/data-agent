@@ -7,8 +7,10 @@
 # A model starting with `select * from` is no longer classed as a stub: passthrough and filtered
 # models are complete SQL.
 # Model SQL is read only from the project's model-paths (dbt_project.yml, default `models`), so a
-# data test, analysis or snapshot named like a missing model does not count as that model.
+# data test, analysis or snapshot named like a missing model does not count as that model; the older
+# `source-paths` key is read when `model-paths` is absent, as dbt does.
 # The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
+# The snapshots hint says `dbt snapshot` cannot run here (data-agent's Bash allows no snapshot).
 """Pre-scan a dbt project and emit a structured context block.
 
 Used by the dbt-workflow SKILL.md via !`python3 scan_project.py` to inject
@@ -48,17 +50,27 @@ def _read_text(path: Path) -> str:
 
 
 def _model_paths(work_dir: Path) -> list[str]:
-    """`model-paths` from dbt_project.yml, inline (`[a, b]`) or block list; default `models`."""
+    """`model-paths` (or the older `source-paths`) from dbt_project.yml, as a flow list
+    (`[a, b]`, possibly over several lines) or a block list; default `models`."""
     config = work_dir / "dbt_project.yml"
     text = _read_text(config) if config.exists() else ""
-    m = re.search(r"^model-paths:[ \t]*(.*)$", text, re.MULTILINE)
+    m = re.search(r"^model-paths:[ \t]*(.*)$", text, re.MULTILINE) or re.search(
+        r"^source-paths:[ \t]*(.*)$", text, re.MULTILINE
+    )
     names: list[str] = []
     if m:
+        rest = text[m.end():].splitlines()[1:]
         inline = m.group(1).split("#", 1)[0].strip()
-        if inline:
+        if inline.startswith("["):
+            for line in rest:
+                if "]" in inline:
+                    break
+                inline += line.split("#", 1)[0].strip()
             names = inline.strip("[]").split(",")
+        elif inline:
+            names = [inline]
         else:
-            for line in text[m.end():].splitlines()[1:]:
+            for line in rest:
                 item = re.match(r"\s*-\s*(.+)", line)
                 if not item:
                     if line.strip() and not line.lstrip().startswith("#"):
@@ -576,7 +588,7 @@ def main():
     if snapshots_dir.exists():
         snap_files = list(snapshots_dir.rglob("*.sql"))
         print(f"SNAPSHOTS DIRECTORY: {len(snap_files)} snapshot file(s) in snapshots/")
-        print("  Read the snapshot files. Run DESCRIBE on source tables (query_database) for exact column casing.")
+        print("  Read them for context only: you cannot run `dbt snapshot` here, so snapshot tables stay as they are.")
         print()
 
     # Database-derived hints (lookup joins, staging-vs-raw gaps, parent-child
