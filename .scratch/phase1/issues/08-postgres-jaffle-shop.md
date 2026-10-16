@@ -111,3 +111,11 @@ PASS n2_update_last_names exit=0 cost=0.0035 blocked=1 — "…Blocked: Update s
 - dbt-workflow `SKILL.md:103` 写死 "(duckdb-sql)"：交人在最终审查时一并决定（小修，可并进后续工单）。
 - 本地容器 `da-08-postgres`（127.0.0.1:55408）合并后由主会话删除。
 - **合并前集成**：工单 09 已合并，本分支与 main 在 `pyproject.toml`、`uv.lock` 冲突。在原分支上 `git merge origin/main`，`pyproject.toml` 两边的依赖都保留，`uv.lock` 用 `uv lock` 重新生成（不手改），`make check` 通过后提交；不 push、不 rebase，不需要真实运行与审查。
+
+### 2026-10-16 工单 agent：合并前集成
+
+- 在原分支 `worktree-08-postgres-jaffle-shop` 上 `git merge origin/main`（origin/main = 36d2a33），合并提交 49247ab（父：47808bd、36d2a33）；未 push、未 rebase。
+- `pyproject.toml` 冲突：dev 依赖两边都保留（`dbt-postgres>=1.9,<1.11` + `harbor==0.24.0`）。
+- `uv.lock` 冲突：取 main 版后 `uv lock` 重生成（未手改）；`uv lock --check` 通过；dbt-postgres 1.10.2、psycopg 3.3.6、psycopg-binary 3.3.6、psycopg2-binary 2.9.13 与合并前本分支锁文件一致，harbor 0.24.0 不变。
+- `make check`：ruff All checks passed；format 通过；basedpyright 0 errors, 0 warnings, 0 notes；pytest 906 passed, 23 deselected。提交时 pre-commit 全部 Passed。
+- 按本节约定，没有做真实运行，也没有做审查。
