@@ -327,3 +327,74 @@ async def test_verify_model_values_slices_across_upstreams(tmp_path: Path) -> No
     block = metric_block(text_of(result), "n_orders")
     assert "main.orders (3 rows), sliced on region; segment via main.customers.customer_id" in block
     assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
+
+
+async def test_verify_model_values_slices_on_an_integer_key(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "intkey.duckdb",
+        "CREATE TABLE orders (order_id INT, customer_id INT);"
+        "INSERT INTO orders VALUES (1, 7), (2, 7), (3, 8);"
+        "CREATE TABLE per_customer AS SELECT customer_id, count(*) AS n_orders "
+        "FROM orders GROUP BY customer_id",
+    )
+    result = await call(
+        db, "verify_model_values", model_name="per_customer", source_tables="orders"
+    )
+    text = text_of(result)
+    assert "### Metric: customer_id" not in text
+    block = metric_block(text, "n_orders")
+    assert "sliced on customer_id" in block
+    assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
+
+
+async def test_verify_model_values_keeps_a_null_dimension_in_the_slice(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "nulldim.duckdb",
+        "CREATE TABLE orders (order_id INT, region VARCHAR, channel VARCHAR);"
+        "INSERT INTO orders VALUES (1, 'north', NULL), (2, 'north', NULL), (3, 'north', NULL),"
+        " (4, 'north', 'web');"
+        "CREATE TABLE by_channel AS SELECT region, channel, count(*) AS n_orders "
+        "FROM orders GROUP BY region, channel;"
+        "CREATE TABLE by_channel_only AS SELECT channel, count(*) AS n_orders "
+        "FROM orders GROUP BY channel",
+    )
+    result = await call(db, "verify_model_values", model_name="by_channel", source_tables="orders")
+    text = text_of(result)
+    assert "channel IS NULL" in text
+    block = metric_block(text, "n_orders")
+    assert "sliced on region, channel" in block
+    assert "COUNT(*): 3" in block and "Model matches COUNT(*)" in block
+    only = await call(
+        db, "verify_model_values", model_name="by_channel_only", source_tables="orders"
+    )
+    assert "Model matches COUNT(*)" in metric_block(text_of(only), "n_orders")
+
+
+def test_model_sql_looks_only_under_the_model_paths(project: Path) -> None:
+    (project / "analyses").mkdir()
+    (project / "analyses" / "stg_orders.sql").write_text("SELECT 1 AS wrong")
+    (project / "analyses" / "only_analysis.sql").write_text("SELECT 1 AS wrong")
+    found = verifier_tools.model_sql(project, "stg_orders")
+    assert found == project / "models" / "staging" / "stg_orders.sql"
+    assert verifier_tools.model_sql(project, "only_analysis") is None
+    (project / "dbt_project.yml").write_text("name: shop\nmodel-paths:\n  - transforms\n")
+    (project / "transforms").mkdir()
+    (project / "transforms" / "t.sql").write_text("SELECT 1 AS x")
+    assert verifier_tools.model_sql(project, "t") == project / "transforms" / "t.sql"
+    assert verifier_tools.model_sql(project, "stg_orders") is None
+
+
+def test_audit_finds_a_grain_key_past_the_fifth_column(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "late_key.duckdb",
+        "CREATE TABLE m AS SELECT 'a' AS c1, 'a' AS c2, 'a' AS c3, 'a' AS c4, 'a' AS c5, "
+        "range AS row_id FROM range(3)",
+    )
+    gateway = DuckDBGateway(db)
+
+    def run(sql: str, row_limit: int) -> QueryResult:
+        return run_query(gateway, sql, row_limit)
+
+    model = verifier_tools.resolve(verifier_tools.load_catalog(run), "m")
+    text = "\n".join(verifier_tools.audit(run, model, ["m"], sample_nulls=True))
+    assert "Grain key: row_id (3 distinct = row count, unique)" in text

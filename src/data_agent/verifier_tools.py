@@ -15,23 +15,27 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   obt_/dim_ lookup and system-column rules, and the domain-prefix list (vendor names tuned to one
   benchmark's projects). Sources resolve through their `schema:`; the YAML scan follows
   indentation instead of upstream's fixed 1-4 spaces for model names.
+  A model's SQL is looked up only under the project's model-paths, so an analysis or snapshot
+  with the model's name is not taken for it.
 - verify_model_values takes the model's upstreams as `source_tables`, read by the verifier from
   the model's SQL. Without them it compares against the nearest finer-grained table that has the
   slice column, instead of upstream's three largest tables, which on a project with a fanned-out
   sibling model put that sibling's doubled counts next to a correct model. The slice is every
-  text or date column of the top row (upstream: the first), and a join to reach it goes only
-  through a named upstream whose join column is unique (upstream: any table sharing a column);
-  a candidate it cannot slice on every column is marked inconclusive, and the output says the
-  baselines do not apply the model's own filters.
+  text, date or `id` / `*_id` column of the top row, NULLs matched with IS NULL (upstream: the
+  first), and a join to reach it goes only through a named upstream whose join column is unique
+  (upstream: any table sharing a column); a candidate it cannot slice on every column is marked
+  inconclusive, and the output says the baselines do not apply the model's own filters.
   It marks a COUNT(*) match or mismatch only for integer metrics; upstream also held sums up
   against row counts.
 - A table profiled over a sample says so, its NULL shares are of the sample, and a column that
-  looks unique in the sample is counted over the whole table before it is called the grain.
+  looks unique in the sample is counted over the whole table before it is called the grain; the
+  grain key is looked for in every scanned column.
 """
 
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -92,8 +96,23 @@ def is_numeric(data_type: str) -> bool:
     return base_type(data_type) in NUMERIC_TYPES
 
 
-def is_dimension(data_type: str) -> bool:
-    return is_text(data_type) or base_type(data_type) == "DATE"
+def is_identifier(column: str) -> bool:
+    low = column.lower()
+    return low == "id" or low.endswith("_id")
+
+
+def is_dimension(column: str, data_type: str) -> bool:
+    """A grouping column: text, a date, or an identifier such as an integer customer_id."""
+    return is_text(data_type) or base_type(data_type) == "DATE" or is_identifier(column)
+
+
+def equals(column_sql: str, value: Any) -> str:
+    """A predicate matching `value`; NULL matches through IS NULL, numbers stay unquoted."""
+    if value is None:
+        return f"{column_sql} IS NULL"
+    if isinstance(value, int | float | Decimal) and not isinstance(value, bool):
+        return f"{column_sql} = {value}"
+    return f"{column_sql} = {literal(str(value))}"
 
 
 def find(catalog: list[Table], name: str) -> list[Table]:
@@ -165,8 +184,50 @@ def project_files(project: Path, *patterns: str) -> list[Path]:
     )
 
 
+def model_paths(project: Path) -> list[str]:
+    """`model-paths` (or the older `source-paths`) from dbt_project.yml, as a flow list, a block
+    list or a scalar; default `models`. The same rule as the dbt-workflow Skill's scan_project."""
+    config = project / "dbt_project.yml"
+    text = read_text(config) if config.is_file() else ""
+    match = re.search(r"^model-paths:[ \t]*(.*)$", text, re.MULTILINE) or re.search(
+        r"^source-paths:[ \t]*(.*)$", text, re.MULTILINE
+    )
+    names: list[str] = []
+    if match:
+        rest = text[match.end() :].splitlines()[1:]
+        inline = match.group(1).split("#", 1)[0].strip()
+        if inline.startswith("["):
+            for line in rest:
+                if "]" in inline:
+                    break
+                inline += line.split("#", 1)[0].strip()
+            names = inline.strip("[]").split(",")
+        elif inline:
+            names = [inline]
+        else:
+            for line in rest:
+                item = re.match(r"\s*-\s*(.+)", line)
+                if item:
+                    names.append(item.group(1).split("#", 1)[0])
+                elif line.strip() and not line.lstrip().startswith("#"):
+                    break
+    names = [name.strip().strip("'\"") for name in names]
+    return [name for name in names if name] or ["models"]
+
+
 def model_sql(project: Path, model_name: str) -> Path | None:
-    return next((p for p in project_files(project, "*.sql") if p.stem == model_name), None)
+    """The model's SQL file under the project's model-paths; an analysis, data test or snapshot
+    with the same name is not the model."""
+    root = project.resolve()
+    files = [path for path in project_files(project, "*.sql") if path.stem == model_name]
+    for name in model_paths(project):
+        model_dir = project / name
+        if not model_dir.is_dir() or not model_dir.resolve().is_relative_to(root):
+            continue
+        found = next((path for path in files if path.is_relative_to(model_dir)), None)
+        if found:
+            return found
+    return None
 
 
 def yml_columns(project: Path, model_name: str) -> list[str]:
@@ -439,7 +500,7 @@ def audit(run: RunQuery, model: Table, sources: list[str], sample_nulls: bool) -
             )
             values = [str(row[0]) for row in run(sql, LOW_CARDINALITY).rows]
             lines.append(f"  {column}: [{', '.join(values)}]")
-    grain = next((c for c in scanned[:5] if is_unique(run, model, c, stats[c], model_rows)), None)
+    grain = next((c for c in scanned if is_unique(run, model, c, stats[c], model_rows)), None)
     lines.append(
         f"Grain key: {grain} ({model_rows} distinct = row count, unique)"
         if grain
@@ -490,7 +551,7 @@ def slice_filter(
     applies at all."""
     keys = column_map(candidate)
     applied = [column for column in slice_values if column.lower() in keys]
-    tests = [f"c.{quote(keys[c.lower()])} = {literal(str(slice_values[c]))}" for c in applied]
+    tests = [equals(f"c.{quote(keys[c.lower()])}", slice_values[c]) for c in applied]
     described = [", ".join(applied)] if applied else []
     missing = [column for column in slice_values if column not in applied]
     join = ""
@@ -503,9 +564,7 @@ def slice_filter(
         if key is None:
             continue
         join = f"JOIN {bridge.sql_name} AS d ON c.{quote(keys[key])} = d.{quote(bridge_keys[key])} "
-        tests += [
-            f"d.{quote(bridge_keys[c.lower()])} = {literal(str(slice_values[c]))}" for c in covered
-        ]
+        tests += [equals(f"d.{quote(bridge_keys[c.lower()])}", slice_values[c]) for c in covered]
         described.append(f"{', '.join(covered)} via {bridge.ref}.{bridge_keys[key]}")
         missing = [column for column in missing if column not in covered]
         break
@@ -530,9 +589,7 @@ def candidate_counts(
     run: RunQuery, candidate: Table, tail: str
 ) -> tuple[int, list[tuple[str, int]]]:
     """COUNT(*) and COUNT(DISTINCT) of the first `_id` columns over the slice."""
-    ids = [name for name, _ in candidate.columns if name.lower().endswith("_id") or name == "id"][
-        :ID_COLUMNS
-    ]
+    ids = [name for name, _ in candidate.columns if is_identifier(name)][:ID_COLUMNS]
     parts = ["count(*)", *(f"count(DISTINCT c.{quote(name)})" for name in ids)]
     values = run(f"SELECT {', '.join(parts)} FROM {candidate.sql_name} AS c {tail}", 1).rows[0]
     return int(values[0]), [(name, int(v)) for name, v in zip(ids, values[1:], strict=True)]
@@ -540,21 +597,25 @@ def candidate_counts(
 
 def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
     catalog = load_catalog(run)
-    metrics = [name for name, data_type in model.columns if is_numeric(data_type)]
+    # An identifier is part of the grain even when it is a number, so it slices, not measures.
+    metrics = [
+        name
+        for name, data_type in model.columns
+        if is_numeric(data_type) and not is_identifier(name)
+    ]
     if not metrics:
         return [f"No numeric columns in '{model.ref}'; nothing to verify."]
     top = run(f"SELECT * FROM {model.sql_name} ORDER BY {quote(metrics[0])} DESC NULLS LAST", 1)
     if not top.rows:
         return [f"No rows in '{model.ref}'."]
     row = dict(zip(top.columns, top.rows[0], strict=True))
-    # Every text or date column of the top row: the model's full grouping grain, as far as it
-    # shows in its columns.
-    slice_values = {
-        name: row[name]
-        for name, t in model.columns
-        if is_dimension(t) and row.get(name) is not None
-    }
-    shown = ", ".join(f"{name} = '{value}'" for name, value in slice_values.items())
+    # Every text, date or identifier column of the top row, NULLs included: the model's full
+    # grouping grain, as far as it shows in its columns.
+    slice_values = {name: row[name] for name, t in model.columns if is_dimension(name, t)}
+    shown = ", ".join(
+        f"{name} IS NULL" if value is None else f"{name} = '{value}'"
+        for name, value in slice_values.items()
+    )
     lines = [
         f"## Value Verification: {model.ref}",
         f"Top row (by {metrics[0]}) slice: {shown}"
@@ -703,12 +764,13 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
     def verify_model_values(model_name: str, source_tables: str = "") -> str:
         """Cross-check a model's metric values against its upstream data.
 
-        Takes the model's top row by its first numeric column and slices on every text or date
-        column of that row, then counts COUNT(*) and COUNT(DISTINCT <_id column>) for the same
-        slice in each upstream table; a candidate it cannot slice on every column is marked
-        inconclusive. The counts skip the model's own filters. Pass the model's upstreams (the
-        tables in its FROM / ref() / source(), comma-separated) as `source_tables`; without them
-        the nearest finer-grained table that has the first slice column stands in.
+        Takes the model's top row by its first numeric non-id column and slices on every text,
+        date or id column of that row (NULLs included), then counts COUNT(*) and
+        COUNT(DISTINCT <_id column>) for the same slice in each upstream table; a candidate it
+        cannot slice on every column is marked inconclusive. The counts skip the model's own
+        filters. Pass the model's upstreams (the tables in its FROM / ref() / source(),
+        comma-separated) as `source_tables`; without them the nearest finer-grained table that
+        has the first slice column stands in.
         """
         model = resolve(load_catalog(run), model_name)
         return "\n".join(verify_values(run, model, split_names(source_tables)))
