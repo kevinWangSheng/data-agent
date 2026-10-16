@@ -24,6 +24,14 @@ def main(argv: list[str] | None = None) -> None:
     serve = commands.add_parser("mcp-server", help="serve the data tools over MCP stdio")
     serve.add_argument("--config", required=True, choices=CONFIG_NAMES)
     serve.add_argument("--duckdb", required=True, type=Path, help="DuckDB file to query")
+    serve.add_argument(
+        "--workspace", type=Path, help="keep the tools' file reads inside this directory"
+    )
+    serve.add_argument(
+        "--no-verifier-tools",
+        action="store_true",
+        help="leave out the verifier tools (for a run without the verifier subagents)",
+    )
 
     run_cmd = commands.add_parser("run", help="run the agent on one task")
     task_arg = run_cmd.add_mutually_exclusive_group(required=True)
@@ -44,7 +52,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "mcp-server":
         if not args.duckdb.is_file():
             serve.error(f"DuckDB file not found: {args.duckdb}")
-        build_server(DuckDBGateway(args.duckdb), config).run("stdio")
+        if args.workspace is not None and not args.workspace.is_dir():
+            serve.error(f"workspace directory not found: {args.workspace}")
+        gateway = DuckDBGateway(args.duckdb)
+        build_server(gateway, config, args.workspace, not args.no_verifier_tools).run("stdio")
         return
 
     if not args.duckdb.is_file():

@@ -148,11 +148,11 @@ CONTEXT_CASES = [
 ]
 VERIFIER_CASES = [
     pytest.param("baseline", False),
-    pytest.param("full", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
-    pytest.param("no-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
+    pytest.param("full", True),
+    pytest.param("no-skill", True),
     pytest.param("no-verifiers", False),
-    pytest.param("no-context", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
-    pytest.param("full-old-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 07")),
+    pytest.param("no-context", True),
+    pytest.param("full-old-skill", True),
 ]
 
 
@@ -336,7 +336,6 @@ async def test_query_database(db_args: list[str]) -> None:
     assert "Traceback" not in text_of(bad)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 07")
 async def test_map_columns(db_args: list[str], tmp_path: Path) -> None:
     project = tmp_path / "dbt_shop"
     shutil.copytree(DBT_SHOP, project)
@@ -354,7 +353,6 @@ async def test_map_columns(db_args: list[str], tmp_path: Path) -> None:
     assert "no_such_model" in text_of(bad)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 07")
 async def test_check_model_schema(db_args: list[str]) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         ok = await call(
@@ -380,7 +378,6 @@ async def test_check_model_schema(db_args: list[str]) -> None:
     assert "lifetime_value" in text_of(bad)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 07")
 async def test_audit_model_sources(db_args: list[str]) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         ok = await call(
@@ -400,7 +397,6 @@ async def test_audit_model_sources(db_args: list[str]) -> None:
     assert "74" in text_of(bad) and "37" in text_of(bad)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 07")
 async def test_verify_model_values(db_args: list[str]) -> None:
     async with mcp_server("--config", "full", *db_args) as session:
         ok = await call(session, "verify_model_values", {"model_name": "customer_orders"})

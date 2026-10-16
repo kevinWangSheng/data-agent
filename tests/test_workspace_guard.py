@@ -89,7 +89,7 @@ async def test_paths_outside_the_workspace_are_denied(
 def test_query_runs_install_the_guard_for_every_file_tool(tmp_path: Path) -> None:
     task = Task(text="q", type="query", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
     settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
-    options = agent.build_options(task, load_config("full"), settings, [])
+    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
     matchers = (options.hooks or {}).get("PreToolUse", [])
     guarded = {name for m in matchers if m.matcher for name in m.matcher.split("|")}
     assert set(agent.QUERY_BUILTIN_TOOLS) <= guarded
@@ -123,11 +123,14 @@ async def test_writes_stay_inside_the_workspace_and_off_the_database(
 def test_dbt_runs_guard_file_writes_and_bash(tmp_path: Path) -> None:
     task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
     settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
-    options = agent.build_options(task, load_config("full"), settings, [])
+    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
     matchers = (options.hooks or {}).get("PreToolUse", [])
     guarded = {name for m in matchers if m.matcher for name in m.matcher.split("|")}
     assert {"Read", "Glob", "Grep", "Write", "Edit", "Bash"} <= guarded
     assert {"Write", "Edit", "Bash"} <= set(options.tools or [])
     query = Task(text="q", type="query", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
-    query_tools = agent.build_options(query, load_config("full"), settings, []).tools or []
+    query_tools = (
+        agent.build_options(query, load_config("full"), settings, [], lambda *_, **__: None).tools
+        or []
+    )
     assert not {"Write", "Edit", "Bash"} & set(query_tools)

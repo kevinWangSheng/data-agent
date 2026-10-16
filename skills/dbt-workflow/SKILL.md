@@ -16,7 +16,8 @@ limited rolling/period-over-period models to the latest date with NULL compariso
 general ones (one date only when the description asks; comparisons from the source history). The
 rule for skipping Steps 4-7 also keeps them when the task asks for a new model. Examples carrying
 specific macro, column or entity names were made generic; the rule for review tasks no longer
-names a task format. -->
+names a task format. Step 8 uses the verifiers' four verdicts (PASS, FAIL, NEEDS_INFO, N/A) and
+verify_model_values takes the model's upstream tables and the project directory; map_columns adds no domain prefix. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -50,15 +51,15 @@ row gaps, and parent-child driving tables. Run alongside scan_project.py in Step
 Call `map_columns(model_name, project_dir)`.
 Queries each upstream table's columns and maps them
 against the YML contract. Outputs every column as MAPPED, UNMAPPED-INCLUDE,
-or UNMAPPED-EXCLUDE with the recommended output alias (including domain prefix).
+or UNMAPPED-EXCLUDE with the recommended output alias.
 Run this BEFORE writing each model's SQL. Include all UNMAPPED-INCLUDE columns; skip UNMAPPED-EXCLUDE columns (see dbt-write §1).
 
 ### verify_model_values - Aggregate cross-validator (MCP tool, Step 8) (a verification tool: use it only if it is in your tool list)
-Call `verify_model_values(model_name)`.
-Queries the model output, finds the upstream fact table, picks the largest
-slice, and compares the model's metric values against both COUNT(*) and
-COUNT(DISTINCT <key>) from the raw source. Reports MATCH, MISMATCH, or
-WARNING (model uses DISTINCT when COUNT(*) is larger). Used by the
+Call `verify_model_values(model_name, source_tables, project_dir)`, with the
+tables in the model's FROM / ref() / source() as `source_tables`.
+Queries the model output, picks the top row's slice, and compares the model's
+metric values against both COUNT(*) and COUNT(DISTINCT <key>) from the upstream.
+Marks each count metric as matching COUNT(*) or a MISMATCH. Used by the
 value-verifier subagent in Step 8.
 
 ## The 8-Step Workflow
@@ -223,8 +224,9 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
    task; CHECK 3 its row count matches the grain (`COUNT(*)` vs
    `COUNT(DISTINCT <key>)`, against the driving table); value CHECK 2 its
    metric totals match the same aggregates computed from the sources.
-3. Read BOTH reports. Only act on checks the verifiers marked FAIL.
-   If a check is PASS or INFO, accept it - do NOT override the verifier
+3. Read BOTH reports. Every check is PASS, FAIL, NEEDS_INFO or N/A. Only act on
+   checks the verifiers marked FAIL or NEEDS_INFO (give the verifier what it asks for).
+   If a check is PASS or N/A, accept it - do NOT override the verifier
    or "fix" something it approved. If the model's row count differs from
    your technical spec but the verifier says CHECK 3 PASS, update your
    spec to match reality - the verifier has already diagnosed whether
@@ -244,7 +246,7 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
      as intentional. The verifier's numbers are measured from source data.
    For ANY fix, update `technical_spec.md` FIRST, then rewrite the SQL
    from the updated spec. Rebuild.
-4. STOP when both reports show all checks PASS. Once verification passes, do NOT modify any model files - the task is complete. No further investigation, no "what if" queries, no source table changes. The verifiers are the final authority.
+4. STOP when both reports show every check PASS or N/A. Once verification passes, do NOT modify any model files - the task is complete. No further investigation, no "what if" queries, no source table changes. The verifiers are the final authority.
 
 ---
 
