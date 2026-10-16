@@ -184,11 +184,16 @@ def guard_spend(out: Path, budget: str) -> None:
     print(printed.strip(), flush=True)
 
 
+def event_files(trial: Trial) -> list[Path]:
+    """The trial's event files, where the agent writes them in Harbor's agent logs directory."""
+    return sorted((trial.dir / "agent" / "events").glob("*.jsonl"))
+
+
 def keep_spend(out: Path, config: str, trials: list[Trial]) -> None:
     """Copy the event files of the trials a resume will delete to OUT/dropped/, where the spend
     guard still counts what they cost."""
     for trial in trials:
-        for events in sorted((trial.dir / "agent" / "events").glob("*.jsonl")):
+        for events in event_files(trial):
             kept = out / "dropped" / config / trial.dir.name / events.name
             kept.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(events, kept)
@@ -235,7 +240,7 @@ def versions(trials: list[Trial]) -> dict[str, list[str]]:
     """The code, Skill version and model the trials ran with, from their event files' headers."""
     seen: dict[str, set[str]] = {"git_commit": set(), "skill_version": set(), "model": set()}
     for trial in trials:
-        for events in sorted((trial.dir / "agent" / "events").glob("*.jsonl")):
+        for events in event_files(trial):
             with events.open() as f:
                 header = json.loads(f.readline() or "{}")
             for key, values in seen.items():

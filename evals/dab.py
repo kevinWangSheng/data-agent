@@ -276,6 +276,7 @@ def dab_commit(dab_root: Path) -> str:
     paths = [p for p in changed.split("\0") if p]
     if paths:
         attrs = _git(dab_root, "check-attr", "-z", "filter", "--", *paths)
+        # `check-attr -z` prints <path> NUL <attribute> NUL <value> NUL per path.
         fields = (attrs or "").split("\0")
         lfs = {
             path for path, value in zip(fields[::3], fields[2::3], strict=False) if value == "lfs"
@@ -547,12 +548,18 @@ async def run_query(
                 f"the DAB checkout {dab_root} has uncommitted changes, so its runs cannot be "
                 "matched to the finished ones; commit or revert them, or use another --out"
             )
+        ours = git_commit()
+        if ours.endswith("-dirty"):
+            raise ConditionsChanged(
+                "this checkout has uncommitted changes, so its runs cannot be matched to the "
+                "finished ones; commit them, or use another --out"
+            )
         expected = {
             "config": config.name,
             "model": ModelSettings.from_env(env).model,
             "hints": dab_query.hints,
             "DAB commit": commit,
-            "git commit": git_commit(),
+            "git commit": ours,
             "Skill version": skill_version(config.skills_dir) if config.skill else "none",
         }
         for dataset, query_id, run in sorted(done):

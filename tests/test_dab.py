@@ -74,6 +74,13 @@ def make_dab(root: Path, question: Any = "Which index is most volatile?") -> Pat
     return root
 
 
+@pytest.fixture(autouse=True)
+def clean_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clean commit, whatever state this checkout is in while the tests run: a dirty one is
+    refused on rerun."""
+    monkeypatch.setattr(dab, "git_commit", lambda: "c0ffee")
+
+
 @pytest.fixture
 def dab_root(tmp_path: Path) -> Path:
     return make_dab(tmp_path / "dab")
@@ -545,7 +552,7 @@ async def test_rerun_skips_finished_runs_and_redoes_removed_ones(
         ({"env": {**ENV, "DATA_AGENT_MODEL": "other-model"}}, "model"),
         ({"hints": False}, "hints"),
         ({"commit": "f00d"}, "DAB commit"),
-        ({"git_commit": "c0ffee"}, "git commit"),
+        ({"git_commit": "beef"}, "git commit"),
         ({"skill_version": "0ld5k1ll"}, "Skill version"),
     ],
 )
@@ -582,6 +589,18 @@ async def test_rerun_refuses_a_dirty_dab_checkout(
     out = tmp_path / "out"
     await run_dab(monkeypatch, dab_root, out, runs=1)
     with pytest.raises(dab.ConditionsChanged, match="dirty"):
+        await run_dab(monkeypatch, dab_root, out, runs=2)
+    assert len(json.loads((out / "submission.json").read_text())) == 1
+
+
+async def test_rerun_refuses_a_dirty_data_agent_checkout(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    """`<sha>-dirty` matches any other uncommitted edits at that commit, so it proves nothing."""
+    monkeypatch.setattr(dab, "git_commit", lambda: "c0ffee-dirty")
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=1)
+    with pytest.raises(dab.ConditionsChanged, match="uncommitted"):
         await run_dab(monkeypatch, dab_root, out, runs=2)
     assert len(json.loads((out / "submission.json").read_text())) == 1
 
