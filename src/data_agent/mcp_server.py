@@ -1,8 +1,11 @@
 """The data agent's MCP server (stdio). Every tool reaches the database through the gateway."""
 
+from functools import partial
+
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from data_agent.context_tools import register_context_tools
 from data_agent.gateway import MAX_ROWS, DuckDBGateway, QueryBlocked, QueryFailed, QueryResult
 from data_agent.run_config import RunConfig
 
@@ -42,9 +45,8 @@ def format_rows(result: QueryResult) -> str:
 
 
 def build_server(gateway: DuckDBGateway, config: RunConfig) -> MCPServer:
-    """The base tools are served in every config. A layer's tools (context strategy: ticket 06,
-    verifiers: ticket 07) are to be registered only when `config` turns that layer on, so a run
-    with it off cannot see them; no layer tools exist yet."""
+    """The base tools are served in every config. A layer's tools are registered only when
+    `config` turns that layer on, so a run with it off cannot see them (verifiers: ticket 07)."""
     server = MCPServer("data-agent")
 
     @server.tool()
@@ -73,4 +75,6 @@ def build_server(gateway: DuckDBGateway, config: RunConfig) -> MCPServer:
             return f"No tables found whose name contains {needle!r}" if needle else "No tables"
         return "\n".join(lines)
 
+    if config.context:
+        register_context_tools(server, partial(run_query, gateway))
     return server
