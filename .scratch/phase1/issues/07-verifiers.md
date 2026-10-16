@@ -1,6 +1,6 @@
 # 07 — 验证子 agent 与 6 个验证工具
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 04, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 07-verifiers)
@@ -229,3 +229,9 @@ What the run shows for the fixes:
 - [P2] `agents/verifier.md:53` 声称核对列类型，但 `check_model_schema` 只比列名。
 
 最终回复给出 Comments 和 `Status: in-review`。
+
+### 2026-10-16 合并前集成修复（commits `251636f`、`dec491e`）
+
+- `git merge origin/main`（无冲突）。`evals/dab.py` 的 `build_options(...)` 调用补传 `log.emit`（调用挪进 `EventLog` 块，同 `agent.py:440`），其余 DAB 文件不动。DAB 任务是 `type="query"`，验证 hook 不会注册。
+- 测试：已有的 `tests/test_dab.py` 覆盖该调用；修复前 23 个失败（`TypeError: build_options() missing ... 'emit'`），修复后 57 个全过。
+- `make check`：basedpyright 0 errors，805 passed, 15 deselected。没有真实运行（按要求只跑不经模型的 DAB 测试）。
