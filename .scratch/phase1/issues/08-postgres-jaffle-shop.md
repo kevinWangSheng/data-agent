@@ -1,6 +1,6 @@
 # 08 — Postgres 支持与 jaffle-shop 用例
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 06, 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5), worktree 08-postgres-jaffle-shop
@@ -41,10 +41,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
-- Model spend: ≈ $0.4（jaffle 实测 $0.19；2 次 `make test-integration` 估约 $0.2，未单独测量）
-- Outcome: 接缝 B Postgres 转绿；jaffle-shop 7/7；make check 通过
+- Attempts: 2
+- Review rounds: 4
+- Model spend: ≈ $0.47（之前 ≈ $0.4 + 本轮 4 次真实运行 $0.0732）
+- Outcome: PR #14 退回 3 条全修，另修 da-review 3 条；make check 通过；真实重跑通过
 - Human review minutes: —
 
 ## Comments
@@ -129,3 +129,30 @@ PASS n2_update_last_names exit=0 cost=0.0035 blocked=1 — "…Blocked: Update s
 3. **`skills/postgres-sql/SKILL.md:35`**：建议的正则只核形状，`2026-99-31` 仍会让 `col::date` 报 out of range。改成能核日历有效性的写法（在 PG16 上实测，照本 Skill 的规矩）。
 
 修完 `make check`；第 2 条用 jaffle runner 不经模型或只跑一个用例演示重跑；再跑一轮 `da-review main`。最终回复给出 Comments、Ledger（Attempts 2）和 `Status: in-review`。
+
+### 2026-10-16 ticket agent: PR #14 return round 1
+
+**Fixes (`d91b72d`)** — each test below failed before its fix:
+1. **Bare host names now masked.** New `url_names()` returns hosts that are a single name such as `postgres` or `prod-db`. They are masked only as whole words (lookarounds `(?<![\w-])…(?![\w-])`), so `prod-dbx`, `prod-db-replica` and `dbt` are left alone. `localhost` and similar loopback names, and socket paths, are not masked. All masking goes through one shared `mask()` in `events.py`, used by `EventLog` and `jaffle.redact`. `agent.run` passes the bare host names into `EventLog`. Tests: `test_database_url_hosts_are_masked_even_as_bare_names`, `test_url_names_are_the_single_label_hosts` (6 cases), `test_bare_host_name_is_masked_in_events` (through `agent.run`), `test_redact_masks_a_single_label_host`.
+2. **Reruns into the same `--out` no longer fail.** New `prepare_case_dir()` deletes the whole case directory first, then copies the project. This also clears the old event file, which would otherwise make `read_events` see two files and return nothing. Test: `test_rerun_replaces_the_case_directory`.
+3. **Date guard in postgres-sql now checks the calendar.** The rule is now `CASE WHEN col ~ '^\d{4}-\d{2}-\d{2}$' AND pg_input_is_valid(col, 'date') THEN col::date END`. Measured on PG 16.15: `2026-99-31`, `2026-02-30` and `2025-02-29` give NULL; `2024-02-29` converts. The pattern is still needed because `pg_input_is_valid` also accepts `03/04/2026` under the session's DateStyle. Integration test `test_postgres_skill_date_guard_rejects_impossible_dates` runs the Skill's exact text through the gateway.
+
+**`da-review` round 1 (two new P2s, both true, fixed in `2c911b0`):**
+- **dbt's own log kept the host.** I reproduced it: with the old profile, `dbt debug` writes `host: 127.0.0.1` into the case workspace's `logs/dbt.log`. Host and password now come from `DBT_ENV_SECRET_*` variables, the only ones dbt scrubs. After the change the log shows `host: *****`, the connection test passes, and the log has 0 hits for the host. The user stays a plain variable: dbt masks a secret wherever its text appears, so a short name like `da` would garble the dbt output the agent reads.
+- **libpq's resolved IP leaked.** `mask()` now also replaces libpq's `server at "host" (addr)`. Tests: `test_libpq_server_address_is_masked`, and `test_case_failures_are_recorded_without_credentials` now also asserts that `10.1.2.3` does not appear.
+
+**`da-review` round 2 (one P1, true, fixed in `55dd68e`):**
+- **Inherited dbt settings could reach another database.** `DBT_PROJECT_DIR`, `DBT_PROFILES_DIR`, `DBT_PROFILE` or `DBT_TARGET` set in the caller's environment would send dbt to another project or database. New `case_env()` pins them to the case workspace (absolute path), profile `jaffle_shop` and target `dev`, for both the setup commands and the agent run. This code predates this return. Test: `test_case_env_pins_dbt_to_the_case_workspace`.
+- I did not run a third `da-review`, because 2 fix rounds is the limit. The main session can decide whether 55dd68e needs one more review.
+
+**Checks**
+- `make check` (55dd68e): ruff All checks passed; basedpyright 0 errors, 0 warnings, 0 notes; pytest 918 passed, 24 deselected.
+- Integration, against this worktree's local `da08` database (`tests/test_postgres.py`, `tests/test_eval_jaffle.py`, `tests/acceptance/test_seam_b_mcp_server.py`, run at 2c911b0): 19 passed. The full `make test-integration` was not rerun.
+
+**Real runs** — command: `python -m evals jaffle --postgres-env DA_JAFFLE_URL --out runs/08/rerun-demo --case …`, with `DATA_AGENT_*` loaded the way `make test-integration` loads them:
+- At d91b72d, q2 twice into the same `--out`: `PASS q2_repeat_customers exit=0 cost=0.0045`, then `PASS q2_repeat_customers exit=0 cost=0.0032`. The second attempt really ran, and the case's events directory holds only the new file.
+- At 2c911b0, q2 and b1 rerun into the same directory: `2/2 passed, cost $0.0351`. b1 got 4 rows, `order_month` unique, `n_orders` sum 99, revenue sum 1672.
+- At 55dd68e, b1 with hostile settings exported (`DBT_PROJECT_DIR=/nonexistent DBT_PROFILES_DIR=/nonexistent DBT_PROFILE=prod DBT_TARGET=prod`): `PASS b1_monthly_revenue exit=0 cost=0.0310`. The version header in the event file is the commit with no `-dirty`.
+- After every run I grepped all outputs (case workspaces included, the clone excluded) for the password, `127.0.0.1` and `55408`: 0 hits.
+
+**Not fixed, with reasons:** none; every finding is fixed.
