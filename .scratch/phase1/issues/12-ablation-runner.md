@@ -1,6 +1,6 @@
 # 12 — 消融运行器
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 06, 07, 09, 10, 11, 15, 16
 Spec: ../spec.md
 Claimed by: Claude Code (claude-opus-5-5) 2026-10-16
@@ -48,7 +48,7 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 ## Ledger
 
 - Attempts: 1
-- Review rounds: 2（另 PR #17 退回 1 轮）
+- Review rounds: 2（另 PR #17 退回 2 轮）
 - Model spend: 约 $0.76（消融 $0.7269 + DAB $0.0212；中止的第 1 次运行有 1 个 trial 没记，估计 < $0.15），在 $3 上限内
 - Outcome: 验收项全部完成；NOTICE 由主会话补
 - Human review minutes: —
@@ -114,3 +114,10 @@ CI 绿（531c92e）。Codex 一条，核实属实：
 - 退回：`evals/ablate.py:221` 附近：`--out` 里 job 都已完成时，换一个 `--model` 重跑会直接复用旧 job（`check_conditions()` 只比 commit 与 Skill 版本），复用的 job 模型彼此一致，跨配置模型检查也过，于是按模型 B 调用却出模型 A 的表。这是第一轮自评里"`--model` 改了要到建表时才发现"的已知限制，实际上建表时也发现不了。不需要把记录的模型名对上 Harbor 的 `-m`：把本次调用请求的模型（`--model` 原值，没给就记"job config 默认"）写进 OUT 下的运行条件文件，再跑时请求不同就 Stop（"use another --out"）。配一个修复前会失败的测试。
 
 这是本 PR 最后一轮退回；之后 Codex 的新意见记成已知限制。
+
+### 2026-10-16 工单 agent：PR #17 第 2 轮退回修复（6da173d，主会话抄录）
+
+- 已修：`evals/ablate.py` 新增 `check_request()`，在任何 job 之前执行：OUT 第一次运行把请求的模型写进 `OUT/request.json`（`--model` 原值；没给记 `"the job config's default"`）；之后请求不同即 Stop（exit 2，"use another --out"），不跑 Harbor、不出表；文件读不了也 Stop。只比请求本身，不和 Harbor `-m` 对名字。
+- 测试：`tests/test_eval_ablate.py::test_another_model_on_the_same_out_stops`（默认→`deepseek-pro`、`deepseek-pro`→默认）修复前两例都失败（`assert 0 == 2`），修复后通过；同一请求再跑仍复用 job。
+- `make check`：1018 passed，24 deselected；basedpyright 0 errors。本轮未真实跑模型，未跑两道本地审查。
+- 已知限制：本修复之前建的 OUT 没有 `request.json`，新代码第一次运行时记下当次请求，无法回溯旧 job 的请求。
