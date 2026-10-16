@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from evals import scrub, spend
 from evals.compare import paired_bootstrap
 from evals.harbor import by_task, load_trials
 from evals.report import TRIALS_PER_TASK, check_complete, score, split_trials, write_report
@@ -88,6 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
     p.set_defaults(func=cmd_report)
+
+    for module in (scrub, spend):
+        module.add_parser(commands)
     return parser
 
 
@@ -96,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "compare" and (args.manifest is None) != (args.split is None):
         parser.error("compare: --manifest and --split go together")
+    if hasattr(args, "run"):
+        return args.run(args)
     try:
         args.func(args)
     except ValueError as exc:

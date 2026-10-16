@@ -222,7 +222,6 @@ def test_dev_report_has_per_task_outcomes(tmp_path: Path) -> None:
 # --- Scrub ----------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 11")
 def test_scrub_removes_keys_endpoints_ips_and_hostnames(tmp_path: Path) -> None:
     job = tmp_path / "job"
     shutil.copytree(HARBOR_JOB, job)
@@ -277,7 +276,6 @@ def test_scrub_removes_keys_endpoints_ips_and_hostnames(tmp_path: Path) -> None:
 # --- Cumulative spend guard -----------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 11")
 def test_spend_stops_at_80_percent_of_budget() -> None:
     # The fixture's event files record 19 finished runs at $0.125 each: $2.375 in total.
     assert evals("spend", str(HARBOR_JOB), "--budget", "3.5").returncode == 0
