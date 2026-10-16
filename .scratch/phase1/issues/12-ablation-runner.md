@@ -1,6 +1,6 @@
 # 12 — 消融运行器
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 06, 07, 09, 10, 11, 15, 16
 Spec: ../spec.md
 Claimed by: Claude Code (claude-opus-5-5) 2026-10-16
@@ -106,3 +106,11 @@ CI 绿（cc19f4b）。Codex 两条，对照代码核实都属实：
 - 已修：`evals/dab.py` `dab_commit()`：有改动的 LFS 路径必须在 DAB 自带 `dataset_manifest.tsv` 里且 size 与 sha256 一致，否则（不在清单、size 不对、哈希不对、已删除、没有清单）算 dirty。先比 size；每个 (path, size, mtime_ns) 每进程最多算一次 sha256。只读清单和数据文件，没复制 DAB 代码。本工单自己写的 `test_dab_commit_ignores_its_lfs_data_files` 改成 `test_dab_commit_accepts_lfs_data_that_matches_its_manifest`（现在需要清单条目）；新测试 `test_dab_commit_marks_lfs_data_that_differs_from_its_manifest`（4 例：下载后被改 / 同 size 不同字节 / 不在清单 / 已删除）修复前 4/4 失败，修复后通过。
 - 对真实 DAB clone（只读；前后 `git status --short` 一致，只有两个 stockindex `.db` 改动）：`dab.dab_commit(...)` → `6ad9d689393ff13b51a6bdcc0b98d1d4d8209f36`（等于 HEAD，无 `-dirty`，0.50s）。
 - `make check`：1016 passed，24 deselected；basedpyright 0 errors。这轮修复没再跑两道本地审查（PR 上 Codex 会再审）。
+
+### 2026-10-16 主会话：PR #17 第 2 轮退回（最后一轮）
+
+CI 绿（531c92e）。Codex 一条，核实属实：
+
+- 退回：`evals/ablate.py:221` 附近：`--out` 里 job 都已完成时，换一个 `--model` 重跑会直接复用旧 job（`check_conditions()` 只比 commit 与 Skill 版本），复用的 job 模型彼此一致，跨配置模型检查也过，于是按模型 B 调用却出模型 A 的表。这是第一轮自评里"`--model` 改了要到建表时才发现"的已知限制，实际上建表时也发现不了。不需要把记录的模型名对上 Harbor 的 `-m`：把本次调用请求的模型（`--model` 原值，没给就记"job config 默认"）写进 OUT 下的运行条件文件，再跑时请求不同就 Stop（"use another --out"）。配一个修复前会失败的测试。
+
+这是本 PR 最后一轮退回；之后 Codex 的新意见记成已知限制。
