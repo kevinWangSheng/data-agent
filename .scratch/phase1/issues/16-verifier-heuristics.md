@@ -1,6 +1,6 @@
 # 16 — 验证工具与验证提示的口径修正
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5) 2026-10-16
@@ -123,3 +123,13 @@ Spec 自相矛盾或验收测试看起来有错；需要人做决定；花费到
   These are refactor-level points with no behaviour impact, out of scope for this ticket.
 
 **主会话**：名称规则与工具结论冲突那一处，并进 PR 第 1 轮退回一起修。`DIALECT = "duckdb"` 写死，Postgres 运行时 sqlglot 方言不对——等工单 08 合并后在集成时处理。
+
+### 2026-10-16 第 7 步：PR #15 退回第 1 轮（主会话）
+
+`39338b6` CI 两次全绿。在原分支上修，修完提交，不 push、不 rebase；各配修复前会失败的测试。
+
+1. **Codex P2（`verifier_tools.py:712`）**：`ref()`/`source()` 替换成逻辑名，source 有 `identifier` 覆盖或模型配了 `alias` 时与 catalog 的物理表名对不上，正确的计数被报成缺失/inconclusive。按项目的 dbt 元数据解析成物理关系名（source YAML 的 `identifier`、模型 `config(alias=...)`/YAML `alias`；有 `target/manifest.json` 时优先用它）。
+2. **Codex P2（`verifier_tools.py:1185`）**：嵌套类型只取外层名，`INTEGER[]` 与 `VARCHAR[]` 都归一成 `ARRAY`；`MAP`/`STRUCT` 同理。递归归一嵌套类型参数。
+3. **工单 agent 自己建议的提示修正（`agents/value-verifier.md`）**：名称规则（`total_<行名词>` 必须等于 COUNT(*)、"total" 列等于 COUNT(DISTINCT) 判 FAIL）会推翻工具已基于 SQL 判为匹配的 `total_customers = COUNT(DISTINCT customer_id)`。改为：工具给出基于 SQL 的结论时以它为准，名称规则只用于"Model SQL could not be parsed"的情况。顺带把 prompt 测试从"出现某些词"改成断言这条优先级。
+
+修完 `make check`、full 配置真实 dbt 运行一次，再跑一轮 `da-review main`。最终回复给出 Comments、Ledger（Attempts 2）和 `Status: in-review`。
