@@ -1,6 +1,7 @@
 """An installed agent (a wheel, as Harbor installs it) must find its Skills without the checkout."""
 
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -11,14 +12,18 @@ from data_agent.agent import QUERY_SKILLS
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def build_and_extract_wheel(tmp_path: Path) -> Path:
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(tmp_path / "dist")],
+def build_and_extract_wheel(tmp_path: Path, env: dict[str, str] | None = None) -> Path:
+    uv = shutil.which("uv")
+    assert uv is not None
+    proc = subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(tmp_path / "dist")],
         cwd=REPO_ROOT,
-        check=True,
+        env=env,
         capture_output=True,
+        text=True,
         timeout=120,
     )
+    assert proc.returncode == 0, proc.stderr
     (wheel,) = (tmp_path / "dist").glob("*.whl")
     site = tmp_path / "site"
     with zipfile.ZipFile(wheel) as archive:
@@ -77,3 +82,11 @@ def test_installed_wheel_reports_the_commit_it_was_built_from(tmp_path: Path) ->
         check=True,
     ).stdout.strip()
     assert proc.stdout.strip() == built_from
+
+
+def test_wheel_builds_without_git_and_reports_an_unknown_commit(tmp_path: Path) -> None:
+    """An environment without git (a slim image) still builds the wheel."""
+    no_git = tmp_path / "bin"
+    no_git.mkdir()
+    site = build_and_extract_wheel(tmp_path, env=os.environ | {"PATH": str(no_git)})
+    assert (site / "data_agent" / "BUILD_COMMIT").read_text() == "unknown"

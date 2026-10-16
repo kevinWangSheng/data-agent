@@ -1,4 +1,5 @@
-"""`scrub DIR`: remove API keys, the model endpoint, IPv4 addresses and hostnames before upload.
+"""`scrub DIR`: remove API keys, the model endpoint, IPv4 addresses, hostnames, and the local home
+directory and user name before upload.
 
 Rewrites every file under DIR in place (plan §7: published trajectories leak nothing). In `.json`
 and `.jsonl` files it scrubs the decoded strings and re-serializes, so JSON escapes neither hide a
@@ -9,6 +10,7 @@ Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories,
 """
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -80,6 +82,12 @@ def build_rules(hostnames: list[str]) -> Rules:
             hosts.append(host)
     rules.extend(("host", hostname(h)) for h in sorted(set(hosts), key=len, reverse=True))
     rules.append(("ip", IPV4))
+    # Harbor records host paths (job, task, logs) under the home directory; the whole home path
+    # goes before the user name inside it. root names no person, and is a common word.
+    if (home := str(Path.home())) != "/":
+        rules.append(("home", re.compile(rf"{re.escape(home)}(?![A-Za-z0-9_.-])")))
+    if (user := getpass.getuser()) != "root":
+        rules.append(("user", hostname(user)))
     return rules
 
 
@@ -186,7 +194,8 @@ def run(args: argparse.Namespace) -> int:
         if scrubbed != text:
             path.write_bytes(scrubbed.encode("utf-8"))
             changed += 1
-    summary = " ".join(f"{kind}={counts[kind]}" for kind in ("key", "endpoint", "host", "ip"))
+    kinds = ("key", "endpoint", "host", "ip", "home", "user")
+    summary = " ".join(f"{kind}={counts[kind]}" for kind in kinds)
     print(f"scrub: changed {changed} file(s) of {len(files)}; redactions: {summary}")
     if unchecked:
         print("scrub: cannot check these; remove or scrub by hand before upload:", file=sys.stderr)

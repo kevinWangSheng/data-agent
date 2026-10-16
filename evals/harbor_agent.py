@@ -1,0 +1,271 @@
+"""Harbor agent adapter (ADR-0001): runs `data-agent run` in a data-eng-bench task container.
+
+`install()` puts this checkout's wheel and its locked dependencies into a virtualenv of its own,
+so dbt stays the image's (plan §5). `run()` gives the task instruction to `data-agent run` as a dbt
+task on the image's dbt project and DuckDB file, with the event file in the agent logs directory.
+After the trial Harbor calls `populate_context_post_run()`, which fills tokens and cost back into
+the trial result from the event file's `result` event.
+
+Errors (plan §7): an agent that stops early (turn or spend cap) is an agent failure the verifier
+scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status, so the
+job config's retry list (`TRANSIENT_ERRORS`) retries rate limits and server errors only.
+
+Run from the repo root, with the `DATA_AGENT_*` variables in the environment:
+
+    PYTHONPATH=. uv run harbor run --config evals/configs/data-eng-bench-duckdb.data-agent.yaml \\
+        --path <data-eng-bench>/tasks -m deepseek/deepseek-flash -i dbt-fix-division-by-zero
+"""
+
+import asyncio
+import json
+import shlex
+import subprocess
+import tempfile
+import threading
+from collections.abc import Iterator
+from pathlib import Path, PurePosixPath
+from typing import Any, ClassVar, override
+
+from harbor.agents.installed.base import (
+    AgentAuthenticationError,
+    ApiInternalServerError,
+    ApiOverloadedError,
+    ApiRateLimitError,
+    ApiUsageLimitError,
+    BaseInstalledAgent,
+    ModelNotFoundError,
+    NonZeroAgentExitCodeError,
+    with_prompt_template,
+)
+from harbor.agents.options import InstalledAgentOptions
+from harbor.environments.base import BaseEnvironment
+from harbor.models.agent.context import AgentContext, ModelUsage
+from pydantic import Field, field_validator
+
+from data_agent.run_config import CONFIG_NAMES, REPO_ROOT
+
+# Harbor error types worth retrying: rate limits, server errors and dropped connections. The job
+# config retries exactly these; Harbor's default exclusions (timeouts, refusals, auth, usage
+# limits) stay excluded.
+TRANSIENT_ERRORS = (
+    "ApiRateLimitError",
+    "ApiInternalServerError",
+    "ApiOverloadedError",
+    "ApiConnectionClosedError",
+    "ApiResponseStalledError",
+)
+STATUS_ERRORS: dict[int, type[NonZeroAgentExitCodeError]] = {
+    401: AgentAuthenticationError,
+    402: ApiUsageLimitError,  # DeepSeek: insufficient balance
+    403: AgentAuthenticationError,
+    404: ModelNotFoundError,
+    429: ApiRateLimitError,
+    503: ApiOverloadedError,
+    529: ApiOverloadedError,
+}
+# The variables `data-agent run` reads its model from (agent.ModelSettings).
+MODEL_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_BASE_URL", "DATA_AGENT_MODEL")
+# Pinned like the other tools; installs uv inside the container, which has none.
+UV_VERSION = "0.10.8"
+
+_build_lock = threading.Lock()
+_built: tuple[Path, Path] | None = None
+
+
+def status_error(status: int | None) -> type[NonZeroAgentExitCodeError] | None:
+    """Harbor's error type for a failed model call's HTTP status; None leaves Harbor's own
+    classification of the output in place."""
+    if status is None:
+        return None
+    if status in STATUS_ERRORS:
+        return STATUS_ERRORS[status]
+    return ApiInternalServerError if 500 <= status < 600 else None
+
+
+def read_events(path: Path) -> Iterator[dict[str, Any]]:
+    """The events of one event file; a line cut short by a killed run is skipped."""
+    for line in path.read_text().splitlines():
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+
+def build_artifacts() -> tuple[Path, Path]:
+    """This checkout's wheel and its locked runtime requirements, built once per process."""
+    global _built
+    with _build_lock:
+        if _built is None:
+            out = Path(tempfile.mkdtemp(prefix="data-agent-harbor-"))
+            uv = ["uv", "--directory", str(REPO_ROOT)]
+            subprocess.run([*uv, "build", "--wheel", "--out-dir", str(out)], check=True)
+            requirements = out / "requirements.txt"
+            subprocess.run(
+                [
+                    *uv,
+                    *("export", "--frozen", "--no-dev", "--no-emit-project"),
+                    *("--format", "requirements.txt", "--output-file", str(requirements)),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            (wheel,) = out.glob("*.whl")
+            _built = (wheel, requirements)
+        return _built
+
+
+class DataAgentOptions(InstalledAgentOptions):
+    run_config: str = Field(
+        default="full", description="Run config name, from src/data_agent/configs."
+    )
+
+    @field_validator("run_config")
+    @classmethod
+    def _known_config(cls, value: str) -> str:
+        if value not in CONFIG_NAMES:
+            raise ValueError(f"unknown run config {value!r}; choose from {', '.join(CONFIG_NAMES)}")
+        return value
+
+
+class DataAgent(BaseInstalledAgent):
+    options_model = DataAgentOptions
+    # Where the agent's virtualenv lives in the container.
+    AGENT_DIR: ClassVar[PurePosixPath] = PurePosixPath("/installed-agent")
+    # Under the agent logs directory, which Harbor copies back to the trial directory.
+    EVENTS_DIR: ClassVar[str] = "events"
+    OUTPUT_FILE: ClassVar[str] = "data-agent.txt"
+
+    @staticmethod
+    @override
+    def name() -> str:
+        return "data-agent"
+
+    @property
+    def venv(self) -> PurePosixPath:
+        return self.AGENT_DIR / "venv"
+
+    @override
+    def get_version_command(self) -> str | None:
+        # The commit the wheel was built from (agent.git_commit): Harbor records it as the version.
+        python = shlex.quote(str(self.venv / "bin" / "python"))
+        return f"{python} -c 'from data_agent.agent import git_commit; print(git_commit())'"
+
+    @override
+    async def install(self, environment: BaseEnvironment) -> None:
+        await self.ensure_system_dependencies(environment, ("curl",))
+        wheel, requirements = await asyncio.to_thread(build_artifacts)
+        remote_wheel = self.AGENT_DIR / wheel.name
+        remote_requirements = self.AGENT_DIR / "requirements.txt"
+        await environment.upload_file(wheel, str(remote_wheel))
+        await environment.upload_file(requirements, str(remote_requirements))
+        uv_dir = self.AGENT_DIR / "uv"
+        uv = shlex.quote(str(uv_dir / "uv"))
+        python = shlex.quote(str(self.venv / "bin" / "python"))
+        await self.exec_as_root(
+            environment,
+            command=(
+                "set -euo pipefail; "
+                f"curl -LsSf https://astral.sh/uv/{UV_VERSION}/install.sh "
+                f"| env UV_UNMANAGED_INSTALL={shlex.quote(str(uv_dir))} sh; "
+                # The image's Python, never a downloaded one.
+                f'{uv} venv --no-python-downloads --python "$(command -v python3)" '
+                f"{shlex.quote(str(self.venv))}; "
+                f"{uv} pip install --python {python} --require-hashes "
+                f"-r {shlex.quote(str(remote_requirements))}; "
+                f"{uv} pip install --python {python} --no-deps {shlex.quote(str(remote_wheel))}; "
+                f"{shlex.quote(str(self.venv / 'bin' / 'data-agent'))} --help > /dev/null"
+            ),
+        )
+
+    def _model_env(self) -> dict[str, str]:
+        env = {name: value for name in MODEL_ENV if (value := self._get_env(name))}
+        if self._parsed_model_name:
+            env["DATA_AGENT_MODEL"] = self._parsed_model_name
+        return env
+
+    def _run_command(self, instruction: str) -> str:
+        assert isinstance(self.options, DataAgentOptions)
+        logs = self.environment_logs_dir
+        return (
+            # data-eng-bench's Snowflake variant needs a Snowflake gateway, which there is not.
+            'if [ "$DB_TYPE" != duckdb ]; then '
+            'echo "data-agent runs only DB_TYPE=duckdb, got DB_TYPE=$DB_TYPE" >&2; exit 2; fi; '
+            f"{shlex.quote(str(self.venv / 'bin' / 'data-agent'))} run --type dbt "
+            # The image's dbt project and database (data-eng-bench base-image/Dockerfile).
+            '--workspace "${DBT_PROJECT_DIR_DUCKDB:-/app/dbt_models_duckdb}" '
+            '--duckdb "${DUCKDB_PATH:-/app/database/retail.duckdb}" '
+            f"--config {shlex.quote(self.options.run_config)} "
+            f"--events-dir {shlex.quote(str(logs / self.EVENTS_DIR))} "
+            f"--task {shlex.quote(instruction)} "
+            f"2>&1 | tee {shlex.quote(str(logs / self.OUTPUT_FILE))}; "
+            # Exit 1 is an agent that did not finish: the verifier scores it like any attempt.
+            'rc=$?; if [ "$rc" -eq 1 ]; then exit 0; fi; exit "$rc"'
+        )
+
+    async def _last_result(self, environment: BaseEnvironment) -> dict[str, Any] | None:
+        events = shlex.quote(str(self.environment_logs_dir / self.EVENTS_DIR))
+        found = await environment.exec(command=f"cat {events}/*.jsonl")
+        if found.return_code != 0 or not found.stdout:
+            return None
+        results = [
+            event
+            for line in found.stdout.splitlines()
+            if line.strip().startswith("{")
+            for event in [json.loads(line)]
+            if event.get("type") == "result"
+        ]
+        return results[-1] if results else None
+
+    @override
+    @with_prompt_template
+    async def run(
+        self, instruction: str, environment: BaseEnvironment, context: AgentContext
+    ) -> None:
+        try:
+            await self.exec_as_agent(
+                environment, command=self._run_command(instruction), env=self._model_env()
+            )
+        except NonZeroAgentExitCodeError as exc:
+            result = await self._last_result(environment)
+            error = status_error(result.get("api_error_status")) if result else None
+            if error is None:
+                raise
+            raise error(str(exc)) from exc
+
+    @override
+    def populate_context_post_run(self, context: AgentContext) -> None:
+        version: dict[str, Any] = {}
+        result: dict[str, Any] | None = None
+        for path in sorted((self.logs_dir / self.EVENTS_DIR).glob("*.jsonl")):
+            for event in read_events(path):
+                if event.get("type") == "version":
+                    version = event
+                elif event.get("type") == "result":
+                    result = event
+        if result is None:
+            return
+        cached = int(result.get("cached_input_tokens") or 0)
+        # Harbor's n_input_tokens includes the cached tokens.
+        total_input = int(result.get("uncached_input_tokens") or 0) + cached
+        output = int(result.get("output_tokens") or 0)
+        cost = float(result.get("cost_usd") or 0.0)
+        context.n_input_tokens = total_input
+        context.n_cache_tokens = cached
+        context.n_output_tokens = output
+        context.cost_usd = cost
+        model = version.get("model") or self._parsed_model_name or "unknown"
+        context.model_usage = {
+            model: ModelUsage(
+                n_input_tokens=total_input,
+                n_cache_tokens=cached,
+                n_output_tokens=output,
+                cost_usd=cost,
+            )
+        }
+        context.metadata = {
+            **{key: version.get(key) for key in ("git_commit", "skill_version", "config")},
+            **{
+                key: result.get(key)
+                for key in ("subtype", "num_turns", "terminal_reason", "cost_basis", "sdk_cost_usd")
+            },
+        }

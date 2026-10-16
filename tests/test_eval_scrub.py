@@ -199,6 +199,30 @@ def test_scrub_fails_when_a_subdirectory_cannot_be_read(tmp_path: Path) -> None:
     assert "agent" in proc.stderr
 
 
+def test_scrub_removes_the_local_home_directory_and_user_name(tmp_path: Path) -> None:
+    """Harbor results record host paths (the job and task directories) under the user's home."""
+    result = tmp_path / "trial" / "result.json"
+    result.parent.mkdir()
+    result.write_text(
+        json.dumps(
+            {
+                "trial_uri": "file:///home/alice-dev/jobs/2026-10-16/trial",
+                "task": {"path": "/home/alice-dev/data-eng-bench/tasks/dbt-x"},
+                "note": "run by alice-dev; alice-developer is someone else",
+            },
+            indent=2,
+        )
+    )
+    proc = scrub(tmp_path, HOME="/home/alice-dev", USER="alice-dev", LOGNAME="alice-dev")
+    assert proc.returncode == 0, proc.stderr
+    text = result.read_text()
+    assert "/home/alice-dev" not in text
+    data = json.loads(text)
+    assert "alice-dev;" not in data["note"]
+    assert "alice-developer" in data["note"]
+    assert data["task"]["path"].endswith("/data-eng-bench/tasks/dbt-x")
+
+
 def test_scrub_fails_on_missing_directory(tmp_path: Path) -> None:
     proc = scrub(tmp_path / "nope")
     assert proc.returncode != 0

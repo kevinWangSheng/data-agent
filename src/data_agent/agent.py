@@ -62,6 +62,9 @@ QUERY_BUILTIN_TOOLS: list[str] = list(GUARDED_TOOLS)
 # and Edit in the workspace and off the database file; the command guard lets Bash run only dbt and
 # the dbt-workflow scripts, so reads still go through the gateway.
 DBT_BUILTIN_TOOLS: list[str] = [*GUARDED_TOOLS, *WRITE_TOOLS, "Bash"]
+# Denied outright as well as left out of the tools: benchmark solutions are public, and the official
+# data-eng-bench configs turn web lookup off the same way (`disallowed_tools: WebSearch,WebFetch`).
+WEB_TOOLS: list[str] = ["WebSearch", "WebFetch"]
 
 SYSTEM_PROMPT = """\
 You are a data agent. You answer questions about a user's data by exploring the database and \
@@ -275,6 +278,7 @@ def build_options(
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
+        disallowed_tools=WEB_TOOLS,
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
         hooks={"PreToolUse": hooks},
@@ -344,6 +348,7 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
             "is_error": True,
             "num_turns": 0,
             "terminal_reason": None,
+            "api_error_status": None,
             "uncached_input_tokens": 0,
             "cached_input_tokens": 0,
             "output_tokens": 0,
@@ -370,6 +375,8 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
         "is_error": message.is_error,
         "num_turns": message.num_turns,
         "terminal_reason": message.terminal_reason,
+        # HTTP status of a failed model call; the Harbor adapter retries by it (evals.harbor_agent).
+        "api_error_status": message.api_error_status,
         "uncached_input_tokens": uncached,
         "cached_input_tokens": cached,
         "output_tokens": output,

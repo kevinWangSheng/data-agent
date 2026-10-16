@@ -131,3 +131,68 @@ def test_dbt_runs_guard_file_writes_and_bash(tmp_path: Path) -> None:
     query = Task(text="q", type="query", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
     query_tools = agent.build_options(query, load_config("full"), settings, []).tools or []
     assert not {"Write", "Edit", "Bash"} & set(query_tools)
+
+
+async def test_denial_does_not_write_the_workspace_path(workspace: Path) -> None:
+    """The reason reaches the event file, which is published; it names no absolute path."""
+    guard = workspace_guard(workspace)
+    hook_input: Any = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s",
+        "transcript_path": "t",
+        "cwd": str(workspace),
+        "tool_name": "Read",
+        "tool_input": {"file_path": "../secret.env"},
+        "tool_use_id": "u",
+    }
+    output: Any = await guard(hook_input, "u", {"signal": None})
+    reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "../secret.env" in reason
+    assert str(workspace.resolve().parent) not in reason
+
+
+@pytest.fixture
+def with_credentials(workspace: Path) -> Path:
+    (workspace / ".env").write_text("DATA_AGENT_API_KEY=x")
+    (workspace / "config").mkdir()
+    (workspace / "config" / ".env.local").write_text("PGPASSWORD=x")
+    (workspace / "config" / "server.pem").write_text("-----BEGIN-----")
+    (workspace / "models" / "env_link.sql").symlink_to(workspace / ".env")
+    return workspace
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Read", {"file_path": ".env"}),
+        ("Read", {"file_path": "{ws}/config/.env.local"}),
+        ("Read", {"file_path": "config/server.pem"}),
+        ("Read", {"file_path": "models/env_link.sql"}),
+        ("Grep", {"pattern": "KEY", "path": ".env"}),
+        ("Grep", {"pattern": "KEY"}),
+        ("Grep", {"pattern": "KEY", "path": "config", "glob": "*.local"}),
+        ("Write", {"file_path": ".env", "content": "x"}),
+        ("Edit", {"file_path": "config/.env.local", "old_string": "x", "new_string": "y"}),
+    ],
+)
+async def test_credential_files_inside_the_workspace_are_denied(
+    with_credentials: Path, tool: str, tool_input: dict[str, Any]
+) -> None:
+    filled = {k: v.format(ws=with_credentials) for k, v in tool_input.items()}
+    assert await decide(with_credentials, tool, filled) == "deny"
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("Read", {"file_path": "models/orders.sql"}),
+        ("Grep", {"pattern": "select", "path": "models", "glob": "*.sql"}),
+        # Glob lists names, not contents.
+        ("Glob", {"pattern": "**/*"}),
+    ],
+)
+async def test_files_beside_credentials_stay_readable(
+    with_credentials: Path, tool: str, tool_input: dict[str, Any]
+) -> None:
+    (with_credentials / "models" / "env_link.sql").unlink()
+    assert await decide(with_credentials, tool, tool_input) == "none"

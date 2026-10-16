@@ -1,0 +1,43 @@
+# data-eng-bench — DuckDB (hermetic) — data-agent (evals/harbor_agent.py)
+#
+# Same shape as data-eng-bench's configs/data-eng-bench-duckdb.claude-code.yaml; the agent comes
+# from this repo by import path, so run from the repo root (PYTHONPATH=. puts evals/ on the import
+# path) with the DATA_AGENT_* variables set:
+#
+#   PYTHONPATH=. uv run harbor run --config evals/configs/data-eng-bench-duckdb.data-agent.yaml \
+#     --path <data-eng-bench>/tasks -i dbt-fix-division-by-zero
+#
+# Another run config (ablations): --ak run_config=baseline. Another model: -m deepseek/<model>.
+
+name: data-eng-bench-duckdb
+
+n_attempts: 3          # leaderboard requires >= 3 trials per task
+n_concurrent_trials: 4
+quiet: true
+
+# plan §7: errored trials score 0 and Harbor retries nothing by default. Retry the model API's
+# transient errors only (evals.harbor_agent.TRANSIENT_ERRORS); exclude_exceptions is left out so
+# Harbor's default exclusions (timeouts, refusals, auth, usage limits) apply.
+retry:
+  max_retries: 3
+  include_exceptions:
+    - ApiRateLimitError
+    - ApiInternalServerError
+    - ApiOverloadedError
+    - ApiConnectionClosedError
+    - ApiResponseStalledError
+
+environment:
+  type: docker         # builds each task's environment/Dockerfile (FROM ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0)
+  env:
+    DB_TYPE: duckdb
+
+agents:
+  - import_path: evals.harbor_agent:DataAgent
+    model_name: deepseek/deepseek-flash
+    # install() downloads the locked dependencies (the SDK wheel alone is ~110 MB): a local run
+    # took ~6 min, right at Harbor's 360 s default. data-eng-bench's job-config.yaml uses 1500.
+    override_setup_timeout_sec: 1500.0
+    kwargs:
+      run_config: full
+    # Web search and fetch are off in every data-agent run (data_agent.agent.WEB_TOOLS).
