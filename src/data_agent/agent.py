@@ -4,40 +4,55 @@ The model is whatever `DATA_AGENT_*` names; those values go only to the SDK's su
 the `ANTHROPIC_*` variables it reads, so the user's own Claude Code setup is untouched.
 """
 
+import asyncio
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
+import time
 import uuid
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import aclosing
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple, cast
 
 import claude_agent_sdk
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    HookContext,
+    HookInput,
+    HookJSONOutput,
     HookMatcher,
     ResultMessage,
+    StreamEvent,
     SystemMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
-    query,
 )
 
-# Not re-exported by the SDK; the pinned SDK version fixes where it lives.
+# Not re-exported by the SDK; the pinned SDK version fixes where they live.
 from claude_agent_sdk._cli_version import __cli_version__
+from claude_agent_sdk._internal.client import InternalClient
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent.command_guard import command_guard
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
-from data_agent.verifiers import AGENT_TOOL, VERIFIERS_PROMPT, Emit, verifier_agents, verifier_hooks
+from data_agent.verifiers import (
+    AGENT_TOOL,
+    VERIFIER_NAMES,
+    VERIFIERS_PROMPT,
+    Emit,
+    verifier_agents,
+    verifier_hooks,
+)
 from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -140,6 +155,287 @@ PRICES = {
     "deepseek-flash": Price(input=0.30, cached_input=0.006, output=1.2),
     "deepseek-v4-pro": Price(input=1.32, cached_input=1.32, output=3.96),
 }
+
+# What the bundled CLI charges a model it has no price for: its fallback table ($5 input, $25
+# output, $6.25 5-minute cache write, $0.50 cache read per 1M, in the CLI's own source; ticket 09
+# measured SDK ~$1 for ~$0.035 at PRICES). Uncached input takes the cache-write rate, the higher
+# of the two rates it covers.
+SDK_UNKNOWN_MODEL_PRICE = Price(input=6.25, cached_input=0.5, output=25)
+
+
+def priced_usd(price: Price, uncached: int, cached: int, output: int) -> float:
+    return (uncached * price.input + cached * price.cached_input + output * price.output) / 1e6
+
+
+def sdk_budget_usd(budget: float, model: str) -> float:
+    """The cap handed to the SDK. A priced model is capped by `Spend` at our prices; the SDK's cap
+    is then a backstop, scaled by the largest ratio of the SDK's rate to ours, so the SDK's figure
+    cannot reach it while ours is under `budget`. A model without a price keeps the SDK's cap."""
+    price = PRICES.get(model)
+    if price is None:
+        return budget
+    sdk = SDK_UNKNOWN_MODEL_PRICE
+    return budget * max(
+        sdk.input / price.input, sdk.cached_input / price.cached_input, sdk.output / price.output
+    )
+
+
+class Tokens(NamedTuple):
+    """Tokens of one model call, or of several summed."""
+
+    uncached: int  # input, including tokens written to the cache (billed as fresh input)
+    cached: int
+    output: int
+
+
+def usage_tokens(usage: Mapping[str, Any]) -> Tokens:
+    """Uncached input counts the tokens written to the cache too, billed as fresh input."""
+    return Tokens(
+        int(usage.get("input_tokens") or 0) + int(usage.get("cache_creation_input_tokens") or 0),
+        int(usage.get("cache_read_input_tokens") or 0),
+        int(usage.get("output_tokens") or 0),
+    )
+
+
+class TranscriptError(Exception):
+    """A subagent transcript is missing or not in the line format `transcript_usage` reads."""
+
+
+class TranscriptUnfinished(TranscriptError):
+    """The transcript's last call has no final usage yet: the CLI is still writing it."""
+
+
+# How long the SubagentStop hook waits for the CLI to finish writing the transcript; the final
+# usage line of the subagent's last call is written after the hook is called (ticket 15 run).
+TRANSCRIPT_WAIT_S = 5.0
+
+
+def transcript_usage(path: Path) -> dict[str, Tokens]:
+    """The model calls in a subagent's transcript (the CLI's `subagents/agent-<id>.jsonl`), by
+    message id.
+
+    The format is the CLI's own and undocumented (CLI 2.1.301; a real sample is
+    tests/fixtures/subagent_transcript.jsonl): one JSON object per line; a model call is one
+    `"type": "assistant"` line per content block, each with `message.id` and `message.usage`, the
+    last with the call's final usage and its `message.stop_reason` (the earlier ones have no
+    output yet and a null stop_reason).
+    """
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as exc:
+        raise TranscriptError(f"cannot read the subagent transcript {path}: {exc}") from exc
+    calls: dict[str, Tokens] = {}
+    finished: dict[str, bool] = {}
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            if entry.get("type") != "assistant":
+                continue
+            message = entry["message"]
+            usage = message["usage"]
+            if not {"input_tokens", "output_tokens"} <= usage.keys():
+                raise KeyError("input_tokens/output_tokens")
+            calls[str(message["id"])] = usage_tokens(usage)
+            finished[str(message["id"])] = message.get("stop_reason") is not None
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise TranscriptError(f"subagent transcript {path} line {number}: {exc!r}") from exc
+    if not calls:
+        raise TranscriptError(f"no model calls in the subagent transcript {path}")
+    if not all(finished.values()):
+        raise TranscriptUnfinished(f"the subagent transcript {path} has an unfinished call")
+    return calls
+
+
+async def finished_transcript_usage(path: Path) -> dict[str, Tokens]:
+    """`transcript_usage` once the CLI has finished writing the transcript."""
+    deadline = time.monotonic() + TRANSCRIPT_WAIT_S
+    while True:
+        try:
+            return transcript_usage(path)
+        except TranscriptUnfinished:
+            if time.monotonic() >= deadline:
+                raise
+        await asyncio.sleep(0.05)
+
+
+@dataclass
+class Spend:
+    """A run's spend at PRICES while it runs, capped at the run config's `max_budget_usd`.
+
+    Main-thread calls are priced from the SDK's partial messages (`include_partial_messages`):
+    message_start, then message_delta with the call's final usage. The per-block
+    AssistantMessages carry the usage from the start of the response, with no output.
+
+    The verifiers stream no partial messages and only some of their calls, so each is priced
+    when it stops, from the transcript the CLI wrote (`hooks`). The CLI's own subagents
+    (activity summaries, compaction) are not counted here: a run the SDK ends prices them from
+    `model_usage`, and its result says what this cap missed (`unmetered`). A transcript that
+    cannot be read is recorded as an error event and turns this cap off: what is left to count
+    would understate the spend, so the run ends through the SDK, under the SDK's cap, and its
+    result prices the SDK's `model_usage` (`result_fields`), as every run the SDK ends does.
+
+    The cap is checked only between two main-thread calls, after a call that used tools or hit
+    its output limit, and not while a subagent runs: a run may pass it by its last main call and
+    the subagents it started (human decision 2026-10-16), and a final answer that passes it is
+    kept.
+    """
+
+    price: Price
+    budget: float
+    main: dict[str, Tokens] = field(default_factory=dict)
+    subagents: dict[str, Tokens] = field(default_factory=dict)  # from transcripts
+    transcript_failed: bool = False
+    running: set[str] = field(default_factory=set)  # subagents started and not yet stopped
+    # After a main call that used tools or hit its output limit, until the next starts: the cap
+    # may be checked then.
+    between_calls: bool = False
+    stopped: bool = False
+    # The main call in progress: its id, its usage at message_start, whether it used tools.
+    _call: str | None = None
+    _call_start: dict[str, Any] = field(default_factory=dict)
+    _call_uses_tools: bool = False
+
+    def observe(self, message: Any) -> None:
+        if isinstance(message, StreamEvent) and message.parent_tool_use_id is None:
+            event = message.event
+            if event.get("type") == "message_start":
+                self._call = str(event["message"]["id"])
+                self._call_start = dict(event["message"].get("usage") or {})
+                self._call_uses_tools = False
+                self.between_calls = False
+                self.running.clear()  # the main thread waits for its subagents
+                self.main[self._call] = usage_tokens(self._call_start)
+            elif event.get("type") == "message_delta" and self._call is not None:
+                final = {k: v for k, v in (event.get("usage") or {}).items() if v is not None}
+                self.main[self._call] = usage_tokens(self._call_start | final)
+                # A response cut at its output limit is no final answer: the CLI calls again.
+                cut = (event.get("delta") or {}).get("stop_reason") == "max_tokens"
+                self.between_calls = self._call_uses_tools or cut
+        elif isinstance(message, AssistantMessage) and message.parent_tool_use_id is None:
+            if any(isinstance(block, ToolUseBlock) for block in message.content):
+                self._call_uses_tools = True
+
+    def hooks(self, emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
+        """Hooks that follow the verifiers and price each one from its transcript when it
+        stops."""
+
+        async def start(
+            hook_input: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            fields = dict(hook_input)
+            if fields.get("agent_type") in VERIFIER_NAMES:
+                self.running.add(str(fields.get("agent_id")))
+            return {}
+
+        async def stop(
+            hook_input: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            fields = dict(hook_input)
+            if fields.get("agent_type") not in VERIFIER_NAMES:
+                return {}
+            path = fields.get("agent_transcript_path")
+            try:
+                if not isinstance(path, str) or not path:
+                    raise TranscriptError("SubagentStop gave no agent_transcript_path")
+                self.subagents |= await finished_transcript_usage(Path(path))
+            except TranscriptError as exc:
+                self.transcript_failed = True
+                emit(
+                    "error",
+                    source="spend",
+                    error=f"{exc}; the price-table cap is off for the rest of the run, which "
+                    "ends through the SDK (its cap still on) and is priced from its model_usage",
+                )
+            finally:
+                self.running.discard(str(fields.get("agent_id")))
+            return {}
+
+        return {
+            "SubagentStart": [HookMatcher(hooks=[start])],
+            "SubagentStop": [HookMatcher(hooks=[stop])],
+        }
+
+    def tokens(self) -> Tokens:
+        calls = (self.subagents | self.main).values()
+        return Tokens(
+            sum(c.uncached for c in calls),
+            sum(c.cached for c in calls),
+            sum(c.output for c in calls),
+        )
+
+    def cost_usd(self) -> float:
+        return priced_usd(self.price, *self.tokens())
+
+    def check(self) -> bool:
+        """Whether the run is to stop now: the cap may be checked and spend is over it."""
+        if self.transcript_failed or self.running or not self.between_calls:
+            return False
+        self.stopped = self.cost_usd() > self.budget
+        return self.stopped
+
+    def unmetered(self, result: dict[str, Any]) -> dict[str, Any]:
+        """For a run the SDK ended: `unmetered_cost_usd`, the spend in the result (the SDK's
+        `model_usage`, every subagent included) that this cap did not count, if there is any.
+        After a failed transcript the gap is expected and already an error event."""
+        if self.transcript_failed or result["cost_basis"] != "price_table":
+            return {}
+        counted = self.tokens()
+        reported = Tokens(
+            result["uncached_input_tokens"], result["cached_input_tokens"], result["output_tokens"]
+        )
+        if reported == counted:
+            return {}
+        gap = (r - c for r, c in zip(reported, counted, strict=True))
+        return {"unmetered_cost_usd": priced_usd(self.price, *gap)}
+
+    def result_fields(self) -> dict[str, Any]:
+        """The result event of a run this cap stopped; the SDK never sent its own."""
+        uncached, cached, output = self.tokens()
+        cost = self.cost_usd()
+        return {
+            "subtype": "error_max_budget_usd",
+            "is_error": True,
+            "num_turns": len(self.main),
+            "terminal_reason": "budget_exhausted",
+            "uncached_input_tokens": uncached,
+            "cached_input_tokens": cached,
+            "output_tokens": output,
+            "cost_usd": cost,
+            "sdk_cost_usd": None,
+            "cost_basis": "price_table",
+            "errors": [f"spend ${cost:.4f} at the price table passed the ${self.budget} budget"],
+        }
+
+
+def spend_cap(model: str, budget: float) -> Spend | None:
+    """The price-table cap for a priced model; a model without a price keeps the SDK's cap."""
+    price = PRICES.get(model)
+    return None if price is None else Spend(price, budget)
+
+
+async def query(*, prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[Any]:
+    """`claude_agent_sdk.query`, except that closing it closes the SDK session (and its CLI
+    subprocess) before `aclose` returns. The SDK's own `query` does not close the session's
+    generator, which leaves that to the event loop's async-generator finalizer, later."""
+    session = InternalClient().process_query(prompt=prompt, options=options)
+    async with aclosing(cast(AsyncGenerator[Any], session)) as messages:
+        async for message in messages:
+            yield message
+
+
+async def capped(messages: AsyncGenerator[Any], spend: Spend | None) -> AsyncGenerator[Any]:
+    """The SDK's messages, ending early (`spend.stopped`) once `spend` passes its cap. Each check
+    comes after the caller has handled the message. Closing the SDK's stream ends its
+    subprocess, so nothing more is spent."""
+    async with aclosing(messages) as stream:
+        async for message in stream:
+            if spend is not None:
+                spend.observe(message)
+            yield message
+            if spend is not None and not isinstance(message, ResultMessage) and spend.check():
+                return
 
 
 class ConfigError(Exception):
@@ -291,10 +587,13 @@ def build_options(
     settings: ModelSettings,
     stderr: list[str],
     emit: Emit,
+    spend: Spend | None = None,
     database_env: Mapping[str, str] | None = None,
 ) -> ClaudeAgentOptions:
-    """`emit` records events from hooks (the verifiers' start and end). `database_env` holds the
-    Postgres variable: it reaches the MCP server through the SDK subprocess's environment."""
+    """`emit` records events from hooks (the verifiers' start and end). With `spend` (the
+    price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
+    its own cap becomes the backstop (`sdk_budget_usd`). `database_env` holds the Postgres
+    variable: it reaches the MCP server through the SDK subprocess's environment."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
@@ -321,6 +620,9 @@ def build_options(
         tools = [*tools, AGENT_TOOL]
         agents = verifier_agents(MCP_SERVER)
         all_hooks |= verifier_hooks(emit)
+    if spend is not None:
+        for event, matchers in spend.hooks(emit).items():
+            all_hooks.setdefault(event, []).extend(matchers)
     return ClaudeAgentOptions(
         model=settings.model,
         env=settings.sdk_env() | dict(database_env or {}),
@@ -339,7 +641,12 @@ def build_options(
         setting_sources=["user"],
         skills=[],
         max_turns=config.max_turns[task.type],
-        max_budget_usd=config.max_budget_usd,
+        max_budget_usd=(
+            config.max_budget_usd
+            if spend is None
+            else sdk_budget_usd(config.max_budget_usd, settings.model)
+        ),
+        include_partial_messages=spend is not None,
         stderr=stderr.append,
     )
 
@@ -391,7 +698,7 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
     The SDK's own `total_cost_usd` (kept as `sdk_cost_usd`) is priced at Claude rates even for a
     non-Claude model, so `cost_usd` prices the tokens from PRICES instead. A model missing there
     (Claude among them, which the SDK prices correctly) falls back to the SDK figure, and
-    `cost_basis` says which one was used. `max_budget_usd` still caps the SDK figure.
+    `cost_basis` says which one was used. `max_budget_usd` caps `cost_usd` (`Spend`).
     """
     if message is None:
         return {
@@ -427,8 +734,7 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
     if price is None:
         cost, basis = sdk_cost, "sdk"
     else:
-        tokens = uncached * price.input + cached * price.cached_input + output * price.output
-        cost, basis = tokens / 1_000_000, "price_table"
+        cost, basis = priced_usd(price, uncached, cached, output), "price_table"
     return {
         "subtype": message.subtype,
         "is_error": message.is_error,
@@ -449,6 +755,12 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
     }
 
 
+def ended_by_sdk(message: ResultMessage | None, model: str, spend: Spend | None) -> dict[str, Any]:
+    """The result event of a run the SDK ended: `result_fields`, and what `spend` missed."""
+    fields = result_fields(message, model)
+    return fields if spend is None else fields | spend.unmetered(fields)
+
+
 async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str, str]) -> Outcome:
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
@@ -463,6 +775,7 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     path = events_file(events_dir)
     stderr: list[str] = []
     final: ResultMessage | None = None
+    spend = spend_cap(settings.model, config.max_budget_usd)
     secrets = known_secrets(env)
     names: list[str] = []
     if task.postgres_env:
@@ -487,20 +800,29 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
             scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
         )
         tools: dict[str, str] = {}
-        options = build_options(task, config, settings, stderr, log.emit, database_env)
+        options = build_options(
+            task, config, settings, stderr, log.emit, spend, database_env=database_env
+        )
         try:
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage):
-                    final = message
-                else:
-                    record_message(log, message, tools)
+            stream = query(prompt=prompt, options=options)
+            async with aclosing(capped(stream, spend)) as messages:
+                async for message in messages:
+                    if isinstance(message, ResultMessage):
+                        final = message
+                    else:
+                        record_message(log, message, tools)
         except Exception as exc:
             # A failed run ends with a ResultMessage and then a ResultError, whose details the
             # result event already holds. Anything else (the SDK also raises plain Exceptions,
             # e.g. an `initialize` timeout) means the run itself broke.
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
-        log.emit("result", **result_fields(final, settings.model))
+        stopped = spend.result_fields() if spend is not None and spend.stopped else None
+        log.emit("result", **(stopped or ended_by_sdk(final, settings.model, spend)))
+    if stopped is not None:
+        return Outcome(
+            answer="", finished=False, infra_error=False, errors=stopped["errors"], events_path=path
+        )
     # Connection failures and timeouts end with an api_error that has no HTTP status.
     infra_error = (
         final is None or final.api_error_status is not None or final.terminal_reason == "api_error"

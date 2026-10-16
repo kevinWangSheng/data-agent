@@ -1,6 +1,6 @@
 # 08 — Postgres 支持与 jaffle-shop 用例
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 06, 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5), worktree 08-postgres-jaffle-shop
@@ -41,10 +41,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
-- Model spend: ≈ $0.4（jaffle 实测 $0.19；2 次 `make test-integration` 估约 $0.2，未单独测量）
-- Outcome: 接缝 B Postgres 转绿；jaffle-shop 7/7；make check 通过
+- Attempts: 3
+- Review rounds: 5
+- Model spend: ≈ $0.47（本轮无模型运行）
+- Outcome: PR #14 退回第 2 轮两条已修；da-review 新 P2 记为已知限制
 - Human review minutes: —
 
 ## Comments
@@ -111,3 +111,83 @@ PASS n2_update_last_names exit=0 cost=0.0035 blocked=1 — "…Blocked: Update s
 - dbt-workflow `SKILL.md:103` 写死 "(duckdb-sql)"：交人在最终审查时一并决定（小修，可并进后续工单）。
 - 本地容器 `da-08-postgres`（127.0.0.1:55408）合并后由主会话删除。
 - **合并前集成**：工单 09 已合并，本分支与 main 在 `pyproject.toml`、`uv.lock` 冲突。在原分支上 `git merge origin/main`，`pyproject.toml` 两边的依赖都保留，`uv.lock` 用 `uv lock` 重新生成（不手改），`make check` 通过后提交；不 push、不 rebase，不需要真实运行与审查。
+
+### 2026-10-16 工单 agent：合并前集成
+
+- 在原分支 `worktree-08-postgres-jaffle-shop` 上 `git merge origin/main`（origin/main = 36d2a33），合并提交 49247ab（父：47808bd、36d2a33）；未 push、未 rebase。
+- `pyproject.toml` 冲突：dev 依赖两边都保留（`dbt-postgres>=1.9,<1.11` + `harbor==0.24.0`）。
+- `uv.lock` 冲突：取 main 版后 `uv lock` 重生成（未手改）；`uv lock --check` 通过；dbt-postgres 1.10.2、psycopg 3.3.6、psycopg-binary 3.3.6、psycopg2-binary 2.9.13 与合并前本分支锁文件一致，harbor 0.24.0 不变。
+- `make check`：ruff All checks passed；format 通过；basedpyright 0 errors, 0 warnings, 0 notes；pytest 906 passed, 23 deselected。提交时 pre-commit 全部 Passed。
+- 按本节约定，没有做真实运行，也没有做审查。
+
+### 2026-10-16 第 7 步：PR #14 退回第 1 轮（主会话）
+
+`49247ab` CI 两次全绿。Codex 3 条 P2，属实。在原分支上修，修完提交，不 push、不 rebase；各配修复前会失败的测试。
+
+1. **`src/data_agent/events.py:48`**：URL 的主机是单标签名（`postgres`、`prod-db`，Docker/K8s 常见）时不进遮盖列表，驱动报错和工具输出里单独出现的主机名会留在事件文件和 jaffle 结果里。单标签主机也遮盖（整词匹配；`localhost` 这类回环名可以不遮）。
+2. **`evals/jaffle.py:294`**：用例失败或超时后，用同一个 `--out` 重跑会因 workspace 已存在报 `FileExistsError`，用例记为失败但没真正执行。重跑时先删掉并重建该用例的 workspace（或每次尝试用新目录）。
+3. **`skills/postgres-sql/SKILL.md:35`**：建议的正则只核形状，`2026-99-31` 仍会让 `col::date` 报 out of range。改成能核日历有效性的写法（在 PG16 上实测，照本 Skill 的规矩）。
+
+修完 `make check`；第 2 条用 jaffle runner 不经模型或只跑一个用例演示重跑；再跑一轮 `da-review main`。最终回复给出 Comments、Ledger（Attempts 2）和 `Status: in-review`。
+
+### 2026-10-16 ticket agent: PR #14 return round 1
+
+**Fixes (`d91b72d`)** — each test below failed before its fix:
+1. **Bare host names now masked.** New `url_names()` returns hosts that are a single name such as `postgres` or `prod-db`. They are masked only as whole words (lookarounds `(?<![\w-])…(?![\w-])`), so `prod-dbx`, `prod-db-replica` and `dbt` are left alone. `localhost` and similar loopback names, and socket paths, are not masked. All masking goes through one shared `mask()` in `events.py`, used by `EventLog` and `jaffle.redact`. `agent.run` passes the bare host names into `EventLog`. Tests: `test_database_url_hosts_are_masked_even_as_bare_names`, `test_url_names_are_the_single_label_hosts` (6 cases), `test_bare_host_name_is_masked_in_events` (through `agent.run`), `test_redact_masks_a_single_label_host`.
+2. **Reruns into the same `--out` no longer fail.** New `prepare_case_dir()` deletes the whole case directory first, then copies the project. This also clears the old event file, which would otherwise make `read_events` see two files and return nothing. Test: `test_rerun_replaces_the_case_directory`.
+3. **Date guard in postgres-sql now checks the calendar.** The rule is now `CASE WHEN col ~ '^\d{4}-\d{2}-\d{2}$' AND pg_input_is_valid(col, 'date') THEN col::date END`. Measured on PG 16.15: `2026-99-31`, `2026-02-30` and `2025-02-29` give NULL; `2024-02-29` converts. The pattern is still needed because `pg_input_is_valid` also accepts `03/04/2026` under the session's DateStyle. Integration test `test_postgres_skill_date_guard_rejects_impossible_dates` runs the Skill's exact text through the gateway.
+
+**`da-review` round 1 (two new P2s, both true, fixed in `2c911b0`):**
+- **dbt's own log kept the host.** I reproduced it: with the old profile, `dbt debug` writes `host: 127.0.0.1` into the case workspace's `logs/dbt.log`. Host and password now come from `DBT_ENV_SECRET_*` variables, the only ones dbt scrubs. After the change the log shows `host: *****`, the connection test passes, and the log has 0 hits for the host. The user stays a plain variable: dbt masks a secret wherever its text appears, so a short name like `da` would garble the dbt output the agent reads.
+- **libpq's resolved IP leaked.** `mask()` now also replaces libpq's `server at "host" (addr)`. Tests: `test_libpq_server_address_is_masked`, and `test_case_failures_are_recorded_without_credentials` now also asserts that `10.1.2.3` does not appear.
+
+**`da-review` round 2 (one P1, true, fixed in `55dd68e`):**
+- **Inherited dbt settings could reach another database.** `DBT_PROJECT_DIR`, `DBT_PROFILES_DIR`, `DBT_PROFILE` or `DBT_TARGET` set in the caller's environment would send dbt to another project or database. New `case_env()` pins them to the case workspace (absolute path), profile `jaffle_shop` and target `dev`, for both the setup commands and the agent run. This code predates this return. Test: `test_case_env_pins_dbt_to_the_case_workspace`.
+- I did not run a third `da-review`, because 2 fix rounds is the limit. The main session can decide whether 55dd68e needs one more review.
+
+**Checks**
+- `make check` (55dd68e): ruff All checks passed; basedpyright 0 errors, 0 warnings, 0 notes; pytest 918 passed, 24 deselected.
+- Integration, against this worktree's local `da08` database (`tests/test_postgres.py`, `tests/test_eval_jaffle.py`, `tests/acceptance/test_seam_b_mcp_server.py`, run at 2c911b0): 19 passed. The full `make test-integration` was not rerun.
+
+**Real runs** — command: `python -m evals jaffle --postgres-env DA_JAFFLE_URL --out runs/08/rerun-demo --case …`, with `DATA_AGENT_*` loaded the way `make test-integration` loads them:
+- At d91b72d, q2 twice into the same `--out`: `PASS q2_repeat_customers exit=0 cost=0.0045`, then `PASS q2_repeat_customers exit=0 cost=0.0032`. The second attempt really ran, and the case's events directory holds only the new file.
+- At 2c911b0, q2 and b1 rerun into the same directory: `2/2 passed, cost $0.0351`. b1 got 4 rows, `order_month` unique, `n_orders` sum 99, revenue sum 1672.
+- At 55dd68e, b1 with hostile settings exported (`DBT_PROJECT_DIR=/nonexistent DBT_PROFILES_DIR=/nonexistent DBT_PROFILE=prod DBT_TARGET=prod`): `PASS b1_monthly_revenue exit=0 cost=0.0310`. The version header in the event file is the commit with no `-dirty`.
+- After every run I grepped all outputs (case workspaces included, the clone excluded) for the password, `127.0.0.1` and `55408`: 0 hits.
+
+**Not fixed, with reasons:** none; every finding is fixed.
+
+### 2026-10-16 第 7 步：PR #14 退回第 2 轮（主会话；最后一轮）
+
+`55dd68e` CI 两次全绿。Codex 2 条 P2，属实。在原分支上修，修完提交，不 push、不 rebase；各配修复前会失败的测试。
+
+1. **`src/data_agent/agent.py:297`**：经 Python API 调 `run()`、URL 只在 `env` 映射里时，MCP argv 只带变量名，`ClaudeAgentOptions.env` 仍是 `settings.sdk_env()`，子进程读的是父进程环境：变量不在就起不来，值不同就连错库。把所选变量从 `run()` 的 `env` 传进 SDK 子进程环境（只传这一个，不扩散其他变量）。
+2. **`evals/jaffle.py:132`**：dbt 用例判分只查缺列，多出列也算过；`b2_fix_customers_fanout` 要求不改列。改为比较完整列集合（多列、缺列都判失败）。
+
+这是最后一轮；之后的新意见记为已知限制。修完 `make check`；第 1 条配一个经 `run()` 的测试；第 2 条不经模型演示判分；再跑一轮 `da-review main`（新意见只记录）。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
+
+### 2026-10-16 ticket agent: PR #14 return round 2
+
+**Fixes (`ecf7ef5`).** Each test below failed before its fix.
+1. **`run()` now passes the Postgres variable from its `env` to the SDK subprocess** (`src/data_agent/agent.py`). `build_options` takes a new optional `database_env`, and `ClaudeAgentOptions.env` is `sdk_env() | database_env`. Only that one variable is passed; the URL still never reaches the argv or the MCP config. If the variable is not in `run()`'s `env`, `run()` now raises `ConfigError` before it creates the event directory, instead of quietly falling back to the parent environment. `evals/dab.py` uses the default (`None`), so it is unchanged. Tests (in `tests/test_postgres.py`, both through `run()`):
+   - `test_run_hands_the_database_variable_from_its_env_to_the_sdk`: the parent process sets a different URL, but `options.env` holds the one from `env`. Its keys are exactly `sdk_env()` plus that one variable.
+   - `test_run_without_the_database_variable_in_its_env_is_a_config_error`.
+2. **dbt grading compares the exact set of columns** (`evals/jaffle.py` `grade_model`). Both missing and extra columns now fail the check, and both are written into the details (`missing_columns` / `extra_columns`). In the test, the fixture `EXPECT` now lists the table's full column set, and a new case checks that an extra column fails (`test_model_check_catches_defects[...-name]`).
+
+**Grading shown without a model.** Command: `PYTHONPATH=. uv run python runs/08/grade-demo/demo.py runs/08/grade-demo/w.duckdb`. It grades the real `expect` of `b2_fix_customers_fanout` from `eval.json`; sums are left out because the data is made up.
+```
+customers PASS {'missing_columns': [], 'extra_columns': [], 'row_count': {'want': 100, 'got': 100}}
+customers_plus FAIL {'missing_columns': [], 'extra_columns': ['debug_flag'], 'row_count': {'want': 100, 'got': 100}}
+```
+
+**Checks.** `make check` at `ecf7ef5`: ruff All checks passed; basedpyright 0 errors, 0 warnings, 0 notes; pytest 921 passed, 24 deselected. Pre-commit all Passed. I did not rerun `make test-integration` or the real jaffle runs this round.
+
+**`da-review main` (this round, record only).** Output is in `runs/08/da-review-r2-return.txt`. There are two new P2s. I checked both against the code and both are true. They are not fixed because this was the last round, so they are known limitations:
+- `evals/jaffle.py:217-223`: if the URL leaves out the port, the dbt profile uses 5432. The gateway and the schema reset use libpq defaults (`PGPORT`) instead, so with `PGPORT` set, dbt could connect to a different instance. Possible fix in a later ticket: resolve libpq defaults the same way for both, or reject a URL without a port.
+- `evals/jaffle.py:393-398`: if grading raises after the agent has finished (for example `sum()` on a text column), the `except` branch replaces the whole result. The cost of that paid run is lost, and the summary undercounts spend. Possible fix in a later ticket: keep the result fields that were already collected (cost and events) when grading fails.
+
+**During development.** Before I guarded it, one of my new tests called the real SDK, because `query` was not stubbed. It started a CLI process using the test key `sk-test` and the default base URL. I stopped the test and killed that process (pid 46595). The test now stubs `query` and fails if the run starts. No model call was billed: the key was not a real one.
+
+### 2026-10-16 主会话：合并前集成
+
+工单 15（PR #16）已合并，本分支与 main 在 `src/data_agent/agent.py` 冲突（`git merge-tree` 实测）。在原分支上 `git merge origin/main` 解决：两边都保留（15 的价目表上限与 `include_partial_messages`、本分支的 `database_env` 传进 SDK 子进程环境）；`build_options` 若两边都改了签名，合并成一个并更新所有调用（含 `evals/dab.py` 与测试）。`make check` 通过后提交；不 push、不 rebase；不需要真实运行与审查。
