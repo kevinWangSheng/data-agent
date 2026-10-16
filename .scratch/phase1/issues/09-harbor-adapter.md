@@ -1,6 +1,6 @@
 # 09 — Harbor 适配器
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 04
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -127,3 +127,12 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 - `tests/test_packaging.py` 冲突：两边的测试都保留（本分支 `test_wheel_builds_without_git_and_reports_an_unknown_commit`，main 的 `test_installed_wheel_loads_the_verifier_agents`），共用 `build_and_extract_wheel`，不用改。
 - 合并没报冲突但类型检查不过：工单 07 给 `build_options` 加了必填参数 `emit`，本分支的 `test_web_search_and_fetch_are_never_available`（`tests/test_agent_outcomes.py:148`）没传，basedpyright 报 `Argument missing for parameter "emit"`。照 main 测试的写法补上空的 `emit`（`lambda *_, **__: None`）。合并后的 `agent.py` 两边的改动都在（`disallowed_tools=WEB_TOOLS`、`api_error_status` 和 verifier 的 hooks/agents）；`evals/dab.py` 也调 `build_options`，所以 DAB 运行同样禁用 web 工具。
 - `make check`：ruff、format 通过，basedpyright 0 errors，`858 passed, 15 deselected in 98.92s`；pre-commit 通过。按工单要求没有做真实运行，也没有审查。
+
+### 2026-10-16 第 7 步：PR #13 退回第 2 轮（主会话；最后一轮）
+
+`9770e34` CI 两次全绿。Codex 2 条 P1，都对应本工单验收标准。在原分支上修，修完提交，不 push、不 rebase；各配修复前会失败的测试。
+
+1. **[P1] `evals/harbor_agent.py:110`**：`terminal_reason == "api_error"` 且没有 HTTP 状态时一律转成 `ApiConnectionClosedError` 并重试，模型请求超时也被重试；验收要求"只对模型接口临时错误重试"，plan §7 明确排除超时。区分超时与断连（看 SDK/CLI 给出的错误信息或类型），超时不重试。
+2. **[P1] `evals/scrub.py:117`**：`--user` 只清路径段里的用户名，JSON 值或普通文本里的用户名（`{"worker": "ci-runner"}`、`running as ci-runner`）留下且 scrub 成功退出；验收要求上传的轨迹不含用户名。清理 JSON 字符串值和普通文本里作为完整单词出现的用户名（JSON 键保持不变，避免第 2 轮那种改坏键的问题）；之后残留检查也查用户名，有残留退出码非 0。
+
+这是最后一轮；之后的新意见记为已知限制。修完 `make check`，对复制的真实 job 用 `--user` 跑一次 scrub 展示结果，再跑一轮 `da-review main`（新意见只记录）。不需要新的 Harbor 真实运行。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
