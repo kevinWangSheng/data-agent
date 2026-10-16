@@ -1,6 +1,6 @@
 # 15 — 单次花费上限按本项目价目表计
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude (worktree 15-budget-at-our-prices)
@@ -48,10 +48,10 @@ SDK 拿不到运行中的逐轮用量、无法在运行中停止（要写明查�
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 0
-- Model spend: ~$0.11（5 次真实运行）
-- Outcome: —
+- Attempts: 2
+- Review rounds: 2
+- Model spend: ~$0.41（第 1 次 ~$0.11；第 2 次 21 次真实运行 ~$0.30）
+- Outcome: 实现完成
 - Human review minutes: —
 
 ## Comments
@@ -73,3 +73,46 @@ SDK 拿不到运行中的逐轮用量、无法在运行中停止（要写明查�
 ### 2026-10-16 主会话：人的决定，继续第 2 次尝试
 
 人决定（2026-10-16）：上限允许超出"最后一次主线程调用 + 当时在跑的验证子 agent"，可以依赖子 agent 记录文件格式；DAB runner 并入本工单（Authority 已加 `evals/dab.py`）。验收标准已按此更新。在原分支上接着做（4e90e26 的输出计 0、调用中途停两个缺陷一并修），不 push、不 rebase（需要同步 main 时 `git merge origin/main`）。完成后照工作流程跑 `make check`、真实运行（$0.005 上限一次、默认 $1 一次；DAB stockindex 一题一次）、两道审查。
+
+### 2026-10-16 工单 agent 第 2 次尝试（分支 `worktree-15-budget-at-our-prices`，提交 `2cd6e66`、`4453652`、`cfa3f2f`；已 `git merge origin/main`，未 push）
+
+**做法**（`src/data_agent/agent.py`、`evals/dab.py`）
+- **主线程计量**：开 `include_partial_messages`，按 `message_start` / `message_delta` 精确计量，output 计入（修掉第 1 次"输出计 0"）。
+- **验证子 agent 计量**：在 `SubagentStop` 时读 `agent_transcript_path`。实测发现 hook 触发时，CLI 还没写完子 agent 最后一次调用的最终用量行；现在等到每次调用的最终行（带 `stop_reason`）出现再读，最多等 5 s。修复前 $1 运行少计 2662 个 output token，正好是两个验证子 agent 最后一次调用（1269 + 1393）。修复后运行中的计数与 SDK 的 `model_usage` 逐项相等。
+- **检查时机**：只在一次用了工具的主线程调用结束之后、且没有子 agent 在跑时检查上限（修掉第 1 次"调用中途停"）。最终答案即使越过上限也保留；并行的两个验证子 agent 都跑完才停。
+- **SDK 上限**：价目表内的模型，传给 SDK 的是后备值（flash 为上限 × 0.50/0.006）；不在价目表的模型仍用配置值。
+- **记录文件格式**：解析失败（缺文件、非 JSON、缺 usage、没有调用、等不到最终行）时写一条 `error`（`source: spend`）事件；本次运行余下部分关掉价目表上限，由 SDK 结束运行，结果按 SDK 的 `model_usage` 计价。测试用真实格式样本 `tests/fixtures/subagent_transcript.jsonl`：CLI 2.1.301 的真实记录，路径和长文本已脱敏。
+- **DAB runner**：用同一套上限与后备值，被截停的运行记为 `unfinished`，答案为空。
+- **停止时关闭 SDK 会话**：`agent.query` 在返回前关掉 SDK 会话。SDK 自带的 `query()` 不关内层 generator，要等事件循环的终结器去关。
+
+**检查**：`make check` 通过：822 passed, 15 deselected，basedpyright 0 errors。
+
+**真实运行**：dbt 用接缝 A 的 DBT_TASK、full 配置，上限只在内存里替换，不改提交的配置文件。命令为 `zsh /tmp/t15/run.sh <worktree> <name> <budget>`，它像 `make test-integration` 那样加载 env，再调用 `agent.run`。
+- **上限 $0.005**（提交 `4453652`）：
+  `{"subtype": "error_max_budget_usd", "is_error": true, "num_turns": 1, "terminal_reason": "budget_exhausted", "uncached_input_tokens": 19753, "cached_input_tokens": 0, "output_tokens": 176, "cost_usd": 0.0061371, "sdk_cost_usd": null, "cost_basis": "price_table", "errors": ["spend $0.0061 at the price table passed the $0.005 budget"]}`
+- **默认 $1**（提交 `4453652`）：正常跑完，不再在约 40 轮截停：
+  `{"subtype": "success", "is_error": false, "num_turns": 22, "terminal_reason": "completed", "uncached_input_tokens": 47645, "cached_input_tokens": 303488, "output_tokens": 15366, "cost_usd": 0.034553628, "sdk_cost_usd": 0.774119, "cost_basis": "price_table", "errors": []}`
+  运行中的计数为 (47645, 303488, 15366)，与上面的结果事件一致。
+- **上限 $0.02**（提交 `cfa3f2f`）：两个验证子 agent 都结束后才停：`budget_exhausted`，`cost_usd` 0.02832，`num_turns` 11。
+- **DAB stockindex query 2，默认上限**：
+  `DOCKER_HOST=unix://$HOME/.colima/m1-kind/docker.sock uv run --env-file ~/.config/data-agent/env --with-requirements evals/dab-requirements.txt python -m evals dab --dab-root <13 的 clone> --dataset stockindex --query 2 --runs 1 --config full --out runs/ticket-15-a2/dab-out2 --budget 1`
+  结果：`finished`，exit 0，`cost_usd` 0.009443，`sdk_cost_usd` 0.217442。
+- **DAB 上限 $0.002**（`/tmp/t15/dab_cap.py`，内存里替换上限）：`unfinished`，`budget_exhausted`，`cost_usd` 0.00234，提交文件里 answer 为 `""`，没有残留容器。DAB clone 未改动（数据库文件的修改时间仍是工单 13 下载时的 07:14）。
+
+**审查**
+- **第 1 轮 `da-review main`（Codex）**，两条 P2 都属实，已在 `4453652` 修：
+  - 停止时没等 SDK 关闭。改为 `agent.query` 在返回前关掉会话，配了测试。
+  - 记录文件解析失败后，截停结果会低报花费。改为读取失败即交给 SDK 结束，按 `model_usage` 计价。
+- **第 2 轮 `eng:code-review main`**，在 `cfa3f2f` 修了三处：`Tokens` 改为带字段名的 NamedTuple；`Spend.check()` 自己置位停止标记，不再由 `capped` 从外面改；`between_calls` 补了注释。不修的几条及理由：
+  - dbt 与 DAB 的消息循环有重复：DAB 早就有意照搬 `run`，合并它们是本工单之外的重构。
+  - `agent.py` 涨到约 740 行，`Spend` 一套可以拆成独立模块：同属重构，建议另开工单。
+  - `Spend.result_fields` 与 `result_fields` 手写了同一组键：只有两处，暂不抽象。
+  - 停止时的 `num_turns` 计的是主线程调用次数，SDK 的计法约为它的 2 倍；`sdk_cost_usd` 为 null，因为 SDK 没有出结果。记为已知限制。
+  - `_internal.client.InternalClient` 是 SDK 私有接口：SDK 版本已固定，行为有测试，升级 SDK 时要复查。
+  - 审查者说 $0.02 运行里有一个验证子 agent 被中途截掉：那次运行在"子 agent 在跑时不检查"的修复之前；在 `cfa3f2f` 上重跑，两个都跑完了。
+  - `cap-1` 那次运行计数与 SDK 不一致：就是上面说的记录文件写入竞争，已修。
+- **已知限制（不修）**：被截停时，Python 退出阶段会往 stderr 打一段 `Exception ignored ... Event loop is closed`。原因是 SDK 0.2.168 终止 CLI（退出码 143）之后，把它的 stdout 管道留给垃圾回收，回收发生在事件循环关闭之后。SDK 自带的 `query()` 也一样；进程已经结束，事件和结果都正常。
+
+**待人决定**：记录文件读取失败后，价目表上限会在本次运行余下部分关掉，只剩 SDK 后备上限。flash 的后备是 $1 × 83.3；按实测 SDK 与价目表约 17–23 倍的比例，相当于价目表价格下的约 $3.6–5。另一种做法是保持价目表上限，但截停时花费会少报，Codex 已把这种做法判为问题。现在照人的原话"退回到 SDK 的 model_usage"实现。是否接受这个更松的上限，需要人确认。
+
+**主会话判断（待人决定那条）**：接受"记录文件读取失败后本次运行退回 SDK 后备上限"。理由：只在 CLI 改记录格式时发生、每次都写 `error` 事件、批量花费跟踪（工单 11）在总预算 80% 时停整批，单次放松的风险有界；另一种做法会少报花费。交人在最终审查时复核。
