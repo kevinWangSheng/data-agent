@@ -1,6 +1,6 @@
 # 07 — 验证子 agent 与 6 个验证工具
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 04, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 07-verifiers)
@@ -216,3 +216,16 @@ What the run shows for the fixes:
 - **Conditional counts are compared with every row of the slice.** `COUNT(CASE WHEN q > 10 THEN 1 END)` gets a false MISMATCH. The output's warning covers the model's WHERE and joins, not a predicate inside the aggregate. The value-verifier re-counts in this case, as it did in the real run.
 
 **Not run this round:** `eng:code-review main` (the return note asked only for `da-review`).
+
+### 2026-10-16 第 7 步：PR #12 复审与合并前集成（主会话）
+
+**CI 失败（与 main 合并后）**：工单 13（PR #11）已合并，basedpyright 报 `evals/dab.py:292:9 Argument missing for parameter "emit"`——本分支改了被 DAB runner 调用的函数签名。这是集成问题，不算退回：在原分支上 `git merge origin/main`，按本分支的新签名修 `evals/dab.py` 的调用（只改这一处调用，其余 DAB 文件不动；本次 Authority 视为含这一处），配一个能覆盖该调用的测试（若已有测试能覆盖就说明是哪个）。修完 `make check`；DAB 调用路径不经模型跑一次（如 `tests/test_dab.py`）即可，不需要真实运行。不 push、不 rebase。
+
+**Codex 复审（`1249d9f`）3 P1 + 2 P2**：退回已用满 2 轮，记为已知限制，交给失败归因（工单 14）出数据后再改 verifier 口径：
+- [P1] `verifier_tools.py:753` `COUNT(DISTINCT x)` 被当成 row count，与 `COUNT(*)` 比会误报 MISMATCH。
+- [P1] `agents/verifier.md:78` lookup 表同键多行时，只要非键字段不同就判 PASS（上游原文），真实 fan-out 可能被放过。
+- [P1] `agents/value-verifier.md:79` `total_X` 命名规则把 `total_amount` 等加和指标也当计数，与同文件后文矛盾。
+- [P2] `agents/verifier.md:37` CHECK 1 硬编码 `models/` 与顶层 YAML，不读 `model-paths`、不递归找 YAML。
+- [P2] `agents/verifier.md:53` 声称核对列类型，但 `check_model_schema` 只比列名。
+
+最终回复给出 Comments 和 `Status: in-review`。
