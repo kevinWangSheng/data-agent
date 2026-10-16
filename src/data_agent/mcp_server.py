@@ -42,8 +42,9 @@ def format_rows(result: QueryResult) -> str:
 
 
 def build_server(gateway: DuckDBGateway, config: RunConfig) -> MCPServer:
-    """The base tools are served in every config. A layer's tools (context strategy, verifiers)
-    are registered only when `config` turns that layer on, so a run with it off cannot see them."""
+    """The base tools are served in every config. A layer's tools (context strategy: ticket 06,
+    verifiers: ticket 07) are to be registered only when `config` turns that layer on, so a run
+    with it off cannot see them; no layer tools exist yet."""
     server = MCPServer("data-agent")
 
     @server.tool()

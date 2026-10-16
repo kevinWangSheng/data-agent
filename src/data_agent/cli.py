@@ -36,10 +36,15 @@ def main(argv: list[str] | None = None) -> None:
     run_cmd.add_argument("--events-dir", required=True, type=Path, help="where the event file goes")
 
     args = parser.parse_args(argv)
+    command = serve if args.command == "mcp-server" else run_cmd
+    try:
+        config = load_config(args.config)
+    except ValueError as exc:
+        command.error(str(exc))
     if args.command == "mcp-server":
         if not args.duckdb.is_file():
             serve.error(f"DuckDB file not found: {args.duckdb}")
-        build_server(DuckDBGateway(args.duckdb), load_config(args.config)).run("stdio")
+        build_server(DuckDBGateway(args.duckdb), config).run("stdio")
         return
 
     if not args.duckdb.is_file():
@@ -53,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
         text = args.task_file.read_text()
     task = Task(text=text, type=args.type, workspace=args.workspace, duckdb=args.duckdb)
     try:
-        outcome = asyncio.run(run(task, load_config(args.config), args.events_dir, os.environ))
+        outcome = asyncio.run(run(task, config, args.events_dir, os.environ))
     except ConfigError as exc:
         run_cmd.error(str(exc))
     print(outcome.answer)

@@ -42,12 +42,15 @@ def load_config(name: str) -> RunConfig:
     if name not in CONFIG_NAMES:
         raise ValueError(f"unknown run config {name!r}; choose from {', '.join(CONFIG_NAMES)}")
     data = tomllib.loads((CONFIGS_DIR / f"{name}.toml").read_text())
+    skills_dir = skills_path(data["skills_dir"])
+    if not skills_dir.is_dir():
+        raise ValueError(f"run config {name!r} names a missing Skill directory: {skills_dir}")
     return RunConfig(
         name=name,
         skill=data["skill"],
         verifiers=data["verifiers"],
         context=data["context"],
-        skills_dir=skills_path(data["skills_dir"]),
+        skills_dir=skills_dir,
         max_turns=data["max_turns"],
         max_budget_usd=data["max_budget_usd"],
     )

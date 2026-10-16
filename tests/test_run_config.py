@@ -9,7 +9,7 @@ import duckdb
 import pytest
 from claude_agent_sdk import ResultMessage
 
-from data_agent import agent
+from data_agent import agent, cli, run_config
 from data_agent.agent import QUERY_SKILLS, SKILLS_DIR, Task
 from data_agent.run_config import CONFIG_NAMES, load_config
 
@@ -18,8 +18,7 @@ ALL_ON = {"skill": True, "verifiers": True, "context": True}
 
 
 def layers(name: str) -> dict[str, bool]:
-    config = load_config(name)
-    return {"skill": config.skill, "verifiers": config.verifiers, "context": config.context}
+    return load_config(name).layers()
 
 
 def test_the_six_adr_configs_exist() -> None:
@@ -51,6 +50,18 @@ def test_every_config_has_the_same_turns_and_budget() -> None:
 
 def test_full_loads_the_current_skills() -> None:
     assert load_config("full").skills_dir == SKILLS_DIR
+
+
+def test_config_naming_a_missing_skill_directory_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Skill version absent from this install (e.g. not packaged into the wheel) must not run
+    silently with no Skills."""
+    text = (run_config.CONFIGS_DIR / "full.toml").read_text()
+    (tmp_path / "full.toml").write_text(text.replace('"skills"', '"skills-v0"'))
+    monkeypatch.setattr(run_config, "CONFIGS_DIR", tmp_path)
+    with pytest.raises(ValueError, match="skills-v0"):
+        load_config("full")
 
 
 @pytest.mark.parametrize("name", ["nope", "FULL", "../full"])
@@ -131,3 +142,23 @@ async def test_every_config_gets_the_same_turns_budget_and_mcp_server(
     assert (options.max_turns, options.max_budget_usd) == (50, 1.0)
     args = options.mcp_servers[agent.MCP_SERVER]["args"]
     assert args[args.index("--config") + 1] == config
+
+
+@pytest.mark.parametrize("command", ["run", "mcp-server"])
+def test_cli_reports_a_broken_config_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    text = (run_config.CONFIGS_DIR / "full.toml").read_text()
+    (tmp_path / "full.toml").write_text(text.replace('"skills"', '"skills-v0"'))
+    monkeypatch.setattr(run_config, "CONFIGS_DIR", tmp_path)
+    args = [command, "--config", "full", "--duckdb", str(tmp_path / "x.duckdb")]
+    if command == "run":
+        args += ["--task", "q", "--type", "query", "--workspace", str(tmp_path)]
+        args += ["--events-dir", str(tmp_path / "events")]
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(args)
+    assert exit_info.value.code == 2
+    assert "skills-v0" in capsys.readouterr().err
