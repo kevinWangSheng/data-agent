@@ -108,8 +108,8 @@ def scalar(gateway: Gateway, sql: str) -> Any:
 def grade_model(
     gateway: Gateway, schema: str, model: str, expect: Mapping[str, Any]
 ) -> tuple[bool, dict[str, Any]]:
-    """The model as built in `schema`: row count, no duplicate grain keys, the expected columns,
-    and the expected column sums (within the default tolerance of 0.01)."""
+    """The model as built in `schema`: row count, no duplicate grain keys, exactly the expected
+    columns, and the expected column sums (within the default tolerance of 0.01)."""
     columns = [
         row[0]
         for row in gateway.query(
@@ -127,9 +127,12 @@ def grade_model(
         got = int(scalar(gateway, f"SELECT count(*) FROM {table}"))
         details["row_count"] = {"want": expect["row_count"], "got": got}
         checks.append(got == expect["row_count"])
-    missing = [column for column in expect.get("columns", []) if column not in columns]
-    details["missing_columns"] = missing
-    checks.append(not missing)
+    if "columns" in expect:
+        # The exact set: a model that must keep its columns may neither drop nor add one.
+        missing = [column for column in expect["columns"] if column not in columns]
+        extra = [column for column in columns if column not in expect["columns"]]
+        details["missing_columns"], details["extra_columns"] = missing, extra
+        checks.append(not missing and not extra)
     grain = [column for column in expect.get("grain", []) if column in columns]
     if grain and grain == list(expect["grain"]):
         keys = ", ".join(quote(column) for column in grain)

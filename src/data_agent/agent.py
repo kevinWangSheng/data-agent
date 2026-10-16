@@ -286,9 +286,15 @@ def uses_verifiers(task_type: str, config: RunConfig) -> bool:
 
 
 def build_options(
-    task: Task, config: RunConfig, settings: ModelSettings, stderr: list[str], emit: Emit
+    task: Task,
+    config: RunConfig,
+    settings: ModelSettings,
+    stderr: list[str],
+    emit: Emit,
+    database_env: Mapping[str, str] | None = None,
 ) -> ClaudeAgentOptions:
-    """`emit` records events from hooks (the verifiers' start and end)."""
+    """`emit` records events from hooks (the verifiers' start and end). `database_env` holds the
+    Postgres variable: it reaches the MCP server through the SDK subprocess's environment."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
@@ -317,7 +323,7 @@ def build_options(
         all_hooks |= verifier_hooks(emit)
     return ClaudeAgentOptions(
         model=settings.model,
-        env=settings.sdk_env(),
+        env=settings.sdk_env() | dict(database_env or {}),
         system_prompt=system_prompt(task.type, config, task.dialect),
         cwd=str(task.workspace.resolve()),
         tools=tools,
@@ -447,6 +453,12 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
+    database_env: dict[str, str] = {}
+    if task.postgres_env:
+        if not env.get(task.postgres_env):
+            raise ConfigError(f"{task.postgres_env} (the Postgres URL) is not set")
+        # Only this variable: the server would otherwise read the parent's, or none.
+        database_env[task.postgres_env] = env[task.postgres_env]
     events_dir.mkdir(parents=True, exist_ok=True)
     path = events_file(events_dir)
     stderr: list[str] = []
@@ -454,8 +466,8 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     secrets = known_secrets(env)
     names: list[str] = []
     if task.postgres_env:
-        secrets += url_secrets(env.get(task.postgres_env, ""))
-        names = url_names(env.get(task.postgres_env, ""))
+        secrets += url_secrets(env[task.postgres_env])
+        names = url_names(env[task.postgres_env])
     with EventLog(path, secrets=secrets, names=names) as log:
         log.emit(
             "version",
@@ -475,10 +487,9 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
             scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
         )
         tools: dict[str, str] = {}
+        options = build_options(task, config, settings, stderr, log.emit, database_env)
         try:
-            async for message in query(
-                prompt=prompt, options=build_options(task, config, settings, stderr, log.emit)
-            ):
+            async for message in query(prompt=prompt, options=options):
                 if isinstance(message, ResultMessage):
                     final = message
                 else:

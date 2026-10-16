@@ -15,7 +15,7 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
 from data_agent import agent
-from data_agent.agent import DBT_SKILLS, QUERY_SKILLS, SKILLS_DIR, Task
+from data_agent.agent import DBT_SKILLS, QUERY_SKILLS, SKILLS_DIR, ConfigError, Task
 from data_agent.gateway import PostgresGateway, QueryBlocked, QueryFailed
 from data_agent.run_config import load_config
 
@@ -118,7 +118,7 @@ async def test_postgres_run_serves_the_database_by_variable_name(
     args = options.mcp_servers[agent.MCP_SERVER]["args"]
     assert args[args.index("--postgres-env") + 1] == "DA_TEST_URL"
     assert "--duckdb" not in args
-    # The URL reaches the server through the inherited environment, never through the config.
+    # The URL reaches the server through the SDK subprocess's environment, never the config.
     assert "hunter2-secret" not in json.dumps(options.mcp_servers)
     assert "Database: PostgreSQL" in options.user_prompt
 
@@ -154,6 +154,34 @@ async def test_bare_host_name_is_masked_in_events(
         monkeypatch, tmp_path, "query", said='host name "prod-db" not known', url=url
     )
     assert "prod-db" not in json.dumps(events)
+
+
+async def test_run_hands_the_database_variable_from_its_env_to_the_sdk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The MCP server reads the URL from the SDK subprocess's environment. Through the Python
+    API, `run()`'s `env` is the source: the variable goes over from it, and nothing else does."""
+    url = "postgresql://someone:hunter2-secret@from-env:5432/right"
+    monkeypatch.setenv("DA_TEST_URL", "postgresql://someone@parent:5432/wrong")
+    options, _ = await run_postgres(monkeypatch, tmp_path, "query", url=url)
+    assert options.env["DA_TEST_URL"] == url
+    settings = agent.ModelSettings.from_env({"DATA_AGENT_API_KEY": "sk-test"})
+    assert set(options.env) == {*settings.sdk_env(), "DA_TEST_URL"}
+
+
+async def test_run_without_the_database_variable_in_its_env_is_a_config_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def no_query(**_: Any) -> AsyncIterator[Any]:
+        raise AssertionError("the run must not start")
+
+    monkeypatch.setattr(agent, "query", no_query)
+    task = Task(text="q", type="query", workspace=tmp_path, postgres_env="DA_TEST_URL")
+    with pytest.raises(ConfigError, match="DA_TEST_URL"):
+        await agent.run(
+            task, load_config("full"), tmp_path / "events", {"DATA_AGENT_API_KEY": "sk-test"}
+        )
+    assert not (tmp_path / "events").exists()
 
 
 def test_postgres_skill_names_only_real_tools_and_no_scoring() -> None:

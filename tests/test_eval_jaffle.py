@@ -74,7 +74,7 @@ def gateway(tmp_path: Path) -> DuckDBGateway:
     return DuckDBGateway(db)
 
 
-EXPECT = {"row_count": 2, "grain": ["customer_id"], "columns": ["customer_id", "value"]}
+EXPECT = {"row_count": 2, "grain": ["customer_id"], "columns": ["customer_id", "name", "value"]}
 
 
 def test_model_check_passes_a_correct_model(gateway: DuckDBGateway) -> None:
@@ -88,7 +88,9 @@ def test_model_check_passes_a_correct_model(gateway: DuckDBGateway) -> None:
         ("missing", EXPECT, "does not exist"),
         ("fanned", EXPECT, "row_count"),
         ("fanned", EXPECT | {"row_count": 4}, "grain"),
-        ("good", EXPECT | {"columns": ["customer_id", "ltv"]}, "ltv"),
+        ("good", EXPECT | {"columns": ["customer_id", "name", "value", "ltv"]}, "ltv"),
+        # An extra column fails too: a fix that must keep the columns may not add one.
+        ("good", EXPECT | {"columns": ["customer_id", "value"]}, "name"),
         ("good", EXPECT | {"sums": {"value": 99}}, "value"),
     ],
 )
