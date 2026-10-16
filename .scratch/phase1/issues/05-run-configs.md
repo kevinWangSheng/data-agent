@@ -82,3 +82,7 @@ verifier events (both): none
 
 - CI：`check` 两次全绿。
 - P1「`full-old-skill` 应指向冻结的旧版 Skill 目录」（`src/data_agent/configs/full-old-skill.toml:5`）：属实，但不退回。本工单还没有旧版 Skill 可冻结，缺口已写进工单 12 的验收标准；工单 14 只起草报告、不自动改 Skill，按失败归因改 Skill 发生在 12 之后，冻结时机来得及。记为已知限制。
+
+### 2026-10-16 主会话：遗留验收项
+
+接缝 A `test_baseline_leaves_no_verifier_or_context_trace` 在工单 04 分支上去掉 xfail 并通过（`make test-integration` @ `d4ab9c6`：5 passed），随 04 的 PR 合并。

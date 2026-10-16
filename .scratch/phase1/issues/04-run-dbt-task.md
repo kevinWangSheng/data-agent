@@ -1,6 +1,6 @@
 # 04 — dbt 任务端到端
 
-Status: in-progress
+Status: in-review
 Blocked by: 03
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -42,8 +42,8 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 ## Ledger
 
 - Attempts: 1
-- Review rounds: 2（da-review；eng:code-review）
-- Model spend: ~$0.06（手动 dbt 运行 $0.0139、$0.0137；一次 `make test-integration` 约 4 次真实运行约 $0.03，未确认：事件文件在 pytest 临时目录未保留）
+- Review rounds: 3（da-review；eng:code-review；集成后 da-review 1 轮）
+- Model spend: ~$0.12（之前 ~$0.06；集成 3 次手动运行 $0.0138 + $0.0063 + $0.0131；一次 `make test-integration` 约 $0.03，未确认：事件文件在 pytest 临时目录未保留）
 - Outcome: —
 - Human review minutes: —
 
@@ -73,3 +73,20 @@ main.customer_ltv: rows 12 (expected 12), one row per customer True, values matc
 ### 2026-10-16 主会话：开 PR 前集成
 
 分支基于 `b1fda51`，工单 05（PR #6）已合并，`src/data_agent/agent.py` 冲突（`git merge-tree` 实测）。在原分支上 `git rebase origin/main` 并解决：dbt Skill 从 `config.skills_dir` 加载，Skill 层关（baseline、no-skill）时不载入；05 的基线测试 `test_baseline_leaves_no_verifier_or_context_trace` 去 xfail 后在 dbt 运行下须通过。之后 `make check` + `make test-integration` + baseline 与 full 各一次真实 dbt 运行，再跑一轮 `da-review main`。
+
+### 2026-10-16 主会话：开 PR 前集成（完成）
+
+**Rebase**：`git rebase origin/main`（origin/main = `cd9f635`），只有第 1 个提交冲突（`src/data_agent/agent.py`），后两个提交自动重放。现在提交依次是 `e09bb86`、`6cc5b6a`、`e27ee05`（原 f1ec627、fee1d94、f3cd4b9），另加 `d4ab9c6`、`268ac11`。
+冲突这样解：dbt 的 system prompt 和 query 一样拆成基础段加 `SKILLS_PROMPT`；`system_prompt(task_type, config)` 只在 `config.skill` 为真时按 `config.skills_dir` 载入 dbt-workflow、dbt-write、dbt-debugging、duckdb-sql；`DBT_SCRIPTS` 改为 `dbt_scripts(config)`，也从 `config.skills_dir` 取，Skill 层关时返回空；最大轮数用 `config.max_turns`，`skill_version` 和 `layers` 沿用 05 的写法。
+`d4ab9c6` 处理 Skill 层关时的痕迹：dbt 任务提示里不写 "and the dbt-workflow scripts"；command guard 拿到空脚本列表时，拒绝原因不提脚本，`python3` 一律拒绝。另补测试：full 跑 dbt 时按配置载入 dbt Skill、轮数 200；baseline 和 no-skill 跑 dbt 时没有 Skill 文本、没有脚本、任务提示不提 dbt-workflow、`skill_version` 为 `none`；guard 无脚本时的拒绝措辞。
+
+**检查**：`make check`（`268ac11`）613 passed, 15 deselected, 15 xfailed（rebase 后集成前的 `d4ab9c6` 是 612 passed）。`make test-integration`（`d4ab9c6`）5 passed, 627 deselected, 10 xfailed，含去了 xfail 的 `test_dbt_model_built_with_correct_values` 和 `test_baseline_leaves_no_verifier_or_context_trace`。输出在 `runs/integ04/`（make-check*.txt、test-integration.txt）。
+
+**真实运行**（`runs/integ04/run.sh <out> <config>`，题面为接缝 A 的 DBT_TASK，用 `runs/integ04/inspect.py` 对照 raw.orders 核对）：
+- full @ `d4ab9c6`：exit=0；main.customer_ltv 12 行，每客户一行 True，数值一致 True（C0001 6 285.25、C0002 4 232.50、C0003 2 98.75）；`skill_version` a3ae586fc400，`layers` 全开；25 轮，$0.013840；REDACTED 0。
+- baseline @ `d4ab9c6`：exit=0；12 行，数值一致；`skill_version` "none"，`layers` 全关；18 轮，$0.006315；没调用 scan/validate 脚本，事件文件里 "dbt-workflow"、"scan_project" 出现 0 次；一次 `find` 被拒，拒绝原因不提脚本，之后 agent 改用 Glob。
+- full @ `268ac11`（Skill 改动后重跑）：exit=0；12 行，数值一致；`skill_version` 430f0a60e55a；26 轮，$0.013055。
+
+**da-review（集成轮，`runs/integ04/da-review.txt`）**：2 个 P2。
+- 修了（`268ac11`，配一个修复前失败的测试）：dbt-workflow 跳过 Steps 4–7 的条件只看扫描结果，扫描看不到 YAML 里没声明的新模型，"新建模型"的任务按字面会被跳过。现在条件里加了"任务要求新建尚不存在的模型"，文件头的修改说明一并更新。
+- 不修：`scan_project.py` 用正则解析 YAML，遇到 indentless 序列（`models:\n- name: x`）会把列名当成模型，带引号的名字会保留引号。这是上游刻意不依赖 PyYAML 的设计：脚本跑在环境自带的 python3 下，不保证有 yaml。扫描结果只是提示，Step 3 里 agent 会自己读 YAML。真实失败出现时交给 14 做失败归因，再决定是否改成结构化解析。
