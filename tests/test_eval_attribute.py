@@ -14,10 +14,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # `evals/` sits beside the package rather than in it; the CLI runs from the repo root.
 sys.path.insert(0, str(REPO_ROOT))
 
+from data_agent.agent import SKILLS_DIR, skill_version  # noqa: E402
 from evals.attribute import JudgeReply, attribute, load_skills  # noqa: E402
 
 MANIFEST: dict[str, Any] = {"seed": 0, "dev": ["dev-task"], "holdout": ["held-task"]}
 SKILLS = load_skills()
+VERSION = skill_version(SKILLS_DIR)
 QUOTE = "Stop exploring after 3-5 tool calls."  # sql-workflow, section 1
 
 
@@ -26,7 +28,13 @@ def event(seq: int, type: str, **fields: Any) -> dict[str, Any]:
 
 
 def write_trial(
-    job: Path, name: str, task: str, reward: float, sql: str = "SELECT 1", tables: str = "42"
+    job: Path,
+    name: str,
+    task: str,
+    reward: float,
+    sql: str = "SELECT 1",
+    tables: str = "42",
+    version: str = VERSION,
 ) -> Path:
     trial = job / name
     (trial / "agent").mkdir(parents=True)
@@ -37,7 +45,7 @@ def write_trial(
     }
     (trial / "result.json").write_text(json.dumps(result))
     events = [
-        event(0, "version", skill_version="abc123", config="full", model="m"),
+        event(0, "version", skill_version=version, config="full", model="m"),
         event(1, "tool_start", tool="mcp__data__list_tables", input={}),
         event(2, "tool_end", tool="mcp__data__list_tables", is_error=False, content=tables),
         event(3, "tool_start", tool="mcp__data__query_database", input={"sql": sql}),
@@ -66,17 +74,20 @@ class FakeJudge:
     def __init__(self, *replies: str | Exception) -> None:
         self.replies = list(replies)
         self.prompts: list[str] = []
+        self.caps: list[float] = []
+        self.cost_usd = 0.02
 
-    async def __call__(self, prompt: str) -> JudgeReply:
+    async def __call__(self, prompt: str, max_budget_usd: float) -> JudgeReply:
         self.prompts.append(prompt)
+        self.caps.append(max_budget_usd)
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return JudgeReply(text=reply, cost_usd=0.02)
+        return JudgeReply(text=reply, cost_usd=self.cost_usd)
 
 
 def run(job: Path, out: Path, judge: FakeJudge, **kwargs: Any) -> dict[str, Any]:
-    return asyncio.run(attribute(job, MANIFEST, out, judge, skills=SKILLS, **kwargs))
+    return asyncio.run(attribute(job, MANIFEST, out, judge, skills={VERSION: SKILLS}, **kwargs))
 
 
 def test_report_labels_each_dev_failure_and_quotes_the_skill(tmp_path: Path) -> None:
@@ -96,7 +107,6 @@ def test_report_labels_each_dev_failure_and_quotes_the_skill(tmp_path: Path) -> 
     assert entry["failure_mode"] == "FM3"
     assert entry["skill"] == "sql-workflow"
     assert entry["skill_quote"] == QUOTE
-    assert entry["quote_verified"] is True
     assert report["cost_usd"] == 0.02
     saved = json.loads((tmp_path / "out" / "attribution.json").read_text())
     assert saved == report
@@ -149,7 +159,7 @@ def test_a_corrected_retry_is_kept(tmp_path: Path) -> None:
     assert entry["attempts"] == 2
 
 
-def test_quote_not_in_the_skill_is_flagged(tmp_path: Path) -> None:
+def test_quote_never_found_in_the_skill_voids_the_attribution(tmp_path: Path) -> None:
     job = tmp_path / "job"
     write_trial(job, "dev-task__a", "dev-task", 0.0)
     made_up = "Always trust the first table you find."
@@ -158,7 +168,9 @@ def test_quote_not_in_the_skill_is_flagged(tmp_path: Path) -> None:
     [entry] = run(job, tmp_path / "out", judge)["failures"]
 
     assert "not verbatim" in judge.prompts[1]
-    assert entry["quote_verified"] is False
+    assert entry["failure_mode"] is None
+    assert "not verbatim" in entry["error"]
+    assert made_up not in (tmp_path / "out" / "report.md").read_text()
 
 
 def test_no_rule_covered_it(tmp_path: Path) -> None:
@@ -170,7 +182,6 @@ def test_no_rule_covered_it(tmp_path: Path) -> None:
 
     assert len(judge.prompts) == 1
     assert entry["skill"] == "none"
-    assert entry["quote_verified"] is True
 
 
 def test_unusable_reply_is_recorded_not_guessed(tmp_path: Path) -> None:
@@ -294,3 +305,75 @@ def test_secrets_in_errors_are_masked(tmp_path: Path) -> None:
     assert "sk-test-123" not in out_text
     assert "llm.internal.example" not in out_text
     assert "[REDACTED]" in out_text
+
+
+def test_names_the_run_observed_are_specific_even_if_a_skill_uses_them(tmp_path: Path) -> None:
+    assert "orders" in SKILLS["sql-workflow"]  # a word the Skills use
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 0.0, sql="SELECT status FROM orders")
+    write_trial(job, "dev-task__b", "dev-task", 0.0, tables="main.customers (base table): id")
+    judge = FakeJudge(
+        reply(suggestion="Always query orders."),
+        reply(),
+        reply(suggestion="Count customers first."),
+        reply(),
+    )
+
+    run(job, tmp_path / "out", judge)
+
+    assert len(judge.prompts) == 4
+    assert "(orders)" in judge.prompts[1]
+    assert "(customers)" in judge.prompts[3]
+
+
+def test_a_skill_word_seen_only_in_free_text_is_allowed(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 0.0)
+    judge = FakeJudge(reply(suggestion="Check how many orders each step keeps."))
+
+    [entry] = run(job, tmp_path / "out", judge)["failures"]
+
+    assert len(judge.prompts) == 1
+    assert entry["suggestion"] == "Check how many orders each step keeps."
+
+
+def test_a_run_on_an_unavailable_skill_version_is_not_attributed(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 0.0, version="0123456789ab")
+    judge = FakeJudge(reply())
+
+    report = run(job, tmp_path / "out", judge)
+
+    assert judge.prompts == []
+    [entry] = report["failures"]
+    assert entry["failure_mode"] is None
+    assert "0123456789ab" in entry["error"]
+
+
+def test_the_judge_sees_and_quotes_the_skills_of_the_run_version(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 0.0, version="old000000000")
+    old = {"sql-workflow": "Old rule: read every table before querying."}
+    judge = FakeJudge(reply(skill_quote="Old rule: read every table before querying."))
+
+    report = asyncio.run(
+        attribute(
+            job, MANIFEST, tmp_path / "out", judge, skills={VERSION: SKILLS, "old000000000": old}
+        )
+    )
+
+    assert QUOTE not in judge.prompts[0]
+    assert "Old rule" in judge.prompts[0]
+    assert report["failures"][0]["failure_mode"] == "FM3"
+
+
+def test_each_call_is_capped_at_the_remaining_budget(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task__a", "dev-task", 0.0)
+    write_trial(job, "dev-task__b", "dev-task", 0.0)
+    judge = FakeJudge(reply(), reply())
+    judge.cost_usd = 1.2
+
+    run(job, tmp_path / "out", judge, budget_usd=2.0)
+
+    assert judge.caps == [2.0, 0.8]

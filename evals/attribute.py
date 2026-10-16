@@ -9,10 +9,14 @@ task instruction and verifier output, and drafts one FM1-FM4 label
 (CONTEXT: Failure mode), a verbatim quote of the Skill text involved and a generic Skill edit.
 Nothing is applied: a human reviews the report before any Skill changes.
 
+The judge reads, and quotes are checked against, the Skills the run used: its version header's
+`skill_version` is looked up among the Skill directories the run configs name. A run on a version
+no longer available is not attributed.
+
 Each reply is checked before it is kept: the label is one of FM1-FM4, the quote appears verbatim
 in the named Skill, and the suggestion names no task id, table or other identifier taken from the
-benchmark (ADR-0005). A rejected reply is retried once with the problems listed; a suggestion
-that still names one is withheld.
+benchmark (ADR-0005). A rejected reply is retried once with the problems listed; a quote still not
+verbatim leaves the failure unattributed, a suggestion that still names one is withheld.
 
 The judge prompt is our own (ADR-0005 Update: DAB's `failure_analysis/` text is not copied).
 """
@@ -36,6 +40,7 @@ from sqlglot.errors import SqlglotError
 
 from data_agent.agent import SKILLS_DIR, ConfigError, ModelSettings, result_fields, skill_version
 from data_agent.events import REDACTED, known_secrets
+from data_agent.run_config import CONFIG_NAMES, load_config
 from evals.harbor import Trial, load_trials
 from evals.metrics import is_success
 from evals.report import is_infra_error
@@ -49,6 +54,8 @@ FAILURE_MODES = {
     "FM4": "right plan and data, wrong implementation: formula, join or parsing was wrong",
 }
 NO_SKILL = "none"
+# The version header of a run without Skills (data_agent.agent.run).
+NO_SKILL_VERSION = "none"
 MAX_ATTEMPTS = 2
 DEFAULT_BUDGET_USD = 2.0
 # A trace longer than this keeps its start and its end: the plan and the final answer.
@@ -126,12 +133,20 @@ class JudgeReply:
     cost_usd: float
 
 
-Judge = Callable[[str], Awaitable[JudgeReply]]
+# (prompt, the most this call may spend in USD) -> reply.
+Judge = Callable[[str, float], Awaitable[JudgeReply]]
 
 
 def load_skills(skills_dir: Path = SKILLS_DIR) -> dict[str, str]:
-    """{Skill name: SKILL.md text} for every Skill in the repo."""
+    """{Skill name: SKILL.md text} for every Skill in a Skill directory."""
     return {p.parent.name: p.read_text() for p in sorted(skills_dir.glob("*/SKILL.md"))}
+
+
+def skill_sets() -> dict[str, dict[str, str]]:
+    """{Skill version: Skills} for the current Skills and every run config's Skill directory,
+    plus no Skills for runs that had none."""
+    dirs = {SKILLS_DIR, *(load_config(name).skills_dir for name in CONFIG_NAMES)}
+    return {NO_SKILL_VERSION: {}, **{skill_version(d): load_skills(d) for d in sorted(dirs)}}
 
 
 def _cut(text: str, limit: int) -> str:
@@ -187,6 +202,9 @@ def render_trace(events: list[dict[str, Any]]) -> str:
 SNAKE_CASE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b")
 WORD = re.compile(r"[\w-]+")
 DOTTED = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
+# One `list_tables` line: `schema.table (kind): col, col` (data_agent.mcp_server).
+LISTED_TABLE = re.compile(r"^\w+\.(\w+) \([^)]*\): (.*)$", re.MULTILINE)
+LIST_TABLES_TOOL = "mcp__data__list_tables"
 
 
 def sql_names(sql: str) -> set[str]:
@@ -203,23 +221,41 @@ def sql_names(sql: str) -> set[str]:
     return {n for n in names if n}
 
 
+def listed_names(content: Any) -> set[str]:
+    """Table and column names in a `list_tables` result, plain or wrapped as {"result": ...}."""
+    text = _as_text(content)
+    try:
+        wrapped = json.loads(text)
+    except ValueError:
+        wrapped = None
+    if isinstance(wrapped, dict) and isinstance(wrapped.get("result"), str):
+        text = wrapped["result"]
+    names: set[str] = set()
+    for table, columns in LISTED_TABLE.findall(text):
+        names |= {table, *(c.strip() for c in columns.split(","))}
+    return {n for n in names if n}
+
+
 def specific_names(
     manifest: Mapping[str, Any], events: list[dict[str, Any]], context: str, skills: dict[str, str]
 ) -> set[str]:
-    """Names a generic suggestion must not use: every task id in the manifest, every table and
-    column the run's SQL touched, every `schema.table` name and snake_case identifier anywhere in
-    the trace (schema tools list tables the SQL may never touch), the task instruction or the
-    verifier output. Words the Skills use are general by policy, so they are allowed.
+    """Names a generic suggestion must not use. Always: every task id in the manifest and every
+    table and column the run's SQL touched or `list_tables` showed, even a word a Skill also uses.
+    Also every `schema.table` part and snake_case identifier anywhere in the trace, the task
+    instruction or the verifier output, unless a Skill uses it: guessed from free text, so a word
+    the Skills use is taken as general.
     """
-    names = {*manifest.get("dev", []), *manifest.get("holdout", [])}
+    observed = {*manifest.get("dev", []), *manifest.get("holdout", [])}
     for event in events:
         if event.get("type") == "sql" and isinstance(event.get("sql"), str):
-            names |= sql_names(event["sql"])
+            observed |= sql_names(event["sql"])
+        elif event.get("type") == "tool_end" and event.get("tool") == LIST_TABLES_TOOL:
+            observed |= listed_names(event.get("content", event.get("output")))
     text = f"{json.dumps(events, ensure_ascii=False)}\n{context}"
-    names |= set(SNAKE_CASE.findall(text))
-    names |= {part for dotted in DOTTED.findall(text) for part in dotted}
+    guessed = set(SNAKE_CASE.findall(text))
+    guessed |= {part for dotted in DOTTED.findall(text) for part in dotted}
     allowed = {w.lower() for text in skills.values() for w in WORD.findall(text)}
-    return {n for n in names if n.lower() not in allowed}
+    return observed | {n for n in guessed if n.lower() not in allowed}
 
 
 def named_in(text: str, names: set[str]) -> list[str]:
@@ -286,8 +322,9 @@ class BudgetReached(Exception):
 
 
 class Meter:
-    """Counts every judge call's cost as it happens and refuses a call once spend reaches the
-    budget, so retries stay under it and a later failure never hides an earlier charge."""
+    """Counts every judge call's cost as it happens, caps each call at what is left of the
+    budget and refuses a call once nothing is left, so retries stay under it and a later failure
+    never hides an earlier charge."""
 
     def __init__(self, judge: Judge, budget_usd: float) -> None:
         self._judge = judge
@@ -295,9 +332,10 @@ class Meter:
         self.spent = 0.0
 
     async def __call__(self, prompt: str) -> JudgeReply:
-        if self.spent >= self.budget_usd:
+        remaining = self.budget_usd - self.spent
+        if remaining <= 0:
             raise BudgetReached(f"not attributed: spend reached the ${self.budget_usd} budget")
-        reply = await self._judge(prompt)
+        reply = await self._judge(prompt, remaining)
         self.spent += reply.cost_usd
         return reply
 
@@ -313,24 +351,12 @@ async def attribute_one(
     trial: Trial,
     events_path: Path,
     manifest: Mapping[str, Any],
-    judge: Judge,
-    skills: dict[str, str],
+    judge: Callable[[str], Awaitable[JudgeReply]],
+    skill_sets: Mapping[str, dict[str, str]],
     tasks_dir: Path | None,
 ) -> dict[str, Any]:
     events = read_events(events_path)
     header = events[0] if events and events[0].get("type") == "version" else {}
-    instruction = _read_optional(
-        tasks_dir / trial.task / "instruction.md" if tasks_dir else None, MAX_INSTRUCTION_CHARS
-    )
-    verifier = _read_optional(trial.dir / "verifier" / "test-stdout.txt", MAX_VERIFIER_CHARS)
-    names = specific_names(manifest, events, f"{instruction or ''}\n{verifier or ''}", skills)
-    prompt = JUDGE_PROMPT.format(
-        modes="\n".join(f"- {k}: {v}" for k, v in FAILURE_MODES.items()),
-        skills="\n\n".join(f'<skill name="{n}">\n{t}\n</skill>' for n, t in skills.items()),
-        instruction=instruction or "(not available)",
-        verifier=verifier or "(not available)",
-        trace=render_trace(events),
-    )
     entry: dict[str, Any] = {
         "task": trial.task,
         "trial": trial.name,
@@ -338,6 +364,27 @@ async def attribute_one(
         "run_skill_version": header.get("skill_version"),
         "run_config": header.get("config"),
     }
+    skills = skill_sets.get(entry["run_skill_version"] or "")
+    if skills is None:
+        entry.update(
+            failure_mode=None,
+            error=f"the run used Skill version {entry['run_skill_version']!r}, which no Skill "
+            "directory here has; its quotes could not be checked",
+        )
+        return entry
+    instruction = _read_optional(
+        tasks_dir / trial.task / "instruction.md" if tasks_dir else None, MAX_INSTRUCTION_CHARS
+    )
+    verifier = _read_optional(trial.dir / "verifier" / "test-stdout.txt", MAX_VERIFIER_CHARS)
+    names = specific_names(manifest, events, f"{instruction or ''}\n{verifier or ''}", skills)
+    prompt = JUDGE_PROMPT.format(
+        modes="\n".join(f"- {k}: {v}" for k, v in FAILURE_MODES.items()),
+        skills="\n\n".join(f'<skill name="{n}">\n{t}\n</skill>' for n, t in skills.items())
+        or "(none: this run had no Skills)",
+        instruction=instruction or "(not available)",
+        verifier=verifier or "(not available)",
+        trace=render_trace(events),
+    )
     attempt_prompt = prompt
     fields: dict[str, Any] = {}
     problems: list[str] = []
@@ -358,6 +405,8 @@ async def attribute_one(
             previous=_cut(reply.text, MAX_PREVIOUS_REPLY_CHARS),
             problems="\n".join(f"- {p}" for p in feedback),
         )
+    if not problems and not verified:
+        problems = _feedback([], verified, [], fields.get("skill"))
     if problems:
         entry.update(failure_mode=None, error="; ".join(problems))
         return entry
@@ -366,7 +415,6 @@ async def attribute_one(
         evidence=fields["evidence"],
         skill=fields["skill"],
         skill_quote=fields["skill_quote"],
-        quote_verified=verified,
         suggestion=None if named else fields["suggestion"],
         specific_names=named,
         error=None,
@@ -387,12 +435,13 @@ async def attribute(
     manifest: Mapping[str, Any],
     out_dir: Path,
     judge: Judge,
-    skills: dict[str, str],
+    skills: Mapping[str, dict[str, str]],
     tasks_dir: Path | None = None,
     budget_usd: float = DEFAULT_BUDGET_USD,
     secrets: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Attribute every failed dev trial in the job; write `attribution.json` and `report.md`.
+    `skills` maps each available Skill version to its Skills (`skill_sets`).
 
     Infrastructure errors are rerun, not attributed. Stops calling the judge once spend
     reaches `budget_usd`; the rest are listed as not attributed. `secrets` are masked in
@@ -419,7 +468,6 @@ async def attribute(
         entries.append({**entry, "cost_usd": round(meter.spent - before, 6)})
     spent = meter.spent
     report = {
-        "skill_version": skill_version(),
         "n_failures": len(failures),
         "infra_errors": infra,
         "skipped_non_dev_trials": skipped,
@@ -456,7 +504,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Dev failures: {report['n_failures']} (infrastructure errors, not attributed: "
         f"{report['infra_errors']})",
-        f"- Skill version now: `{report['skill_version']}`; quotes are checked against it",
+        "- Each failure is judged against, and its quote checked in, the Skills its run used",
         f"- Judge spend: ${report['cost_usd']:.4f}",
         "",
         "Nothing here has been applied. Review each suggestion before editing a Skill.",
@@ -472,15 +520,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         if entry.get("error"):
             lines.append(f"Not attributed: {entry['error']}")
             continue
-        version = entry.get("run_skill_version")
-        if version and version != report["skill_version"]:
-            lines += [f"The run used Skill version `{version}`, not the current one.", ""]
+        lines += [f"Skill version `{entry['run_skill_version']}`.", ""]
         lines += [f"**{entry['failure_mode']}** — {entry['evidence']}", ""]
         if entry["skill"] == NO_SKILL:
             lines.append("Skill: none covered this.")
         else:
-            check = "" if entry["quote_verified"] else " (NOT found verbatim in the Skill)"
-            lines += [f"Skill `{entry['skill']}`{check}:", "", _quote_block(entry["skill_quote"])]
+            lines += [f"Skill `{entry['skill']}`:", "", _quote_block(entry["skill_quote"])]
         lines.append("")
         if entry["suggestion"] is None:
             lines.append(
@@ -492,11 +537,11 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def sdk_judge(env: Mapping[str, str], max_budget_usd: float) -> Judge:
+def sdk_judge(env: Mapping[str, str]) -> Judge:
     """The judge as one tool-less Claude Agent SDK turn on the `DATA_AGENT_*` model."""
     settings = ModelSettings.from_env(env)
 
-    async def judge(prompt: str) -> JudgeReply:
+    async def judge(prompt: str, max_budget_usd: float) -> JudgeReply:
         stderr: list[str] = []
         options = ClaudeAgentOptions(
             model=settings.model,
@@ -539,10 +584,10 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
 def run(args: argparse.Namespace) -> int:
     manifest = json.loads(args.manifest.read_text())
     # Built on first use, so a job without dev failures needs no model settings.
-    make_judge = functools.cache(lambda: sdk_judge(os.environ, max_budget_usd=args.budget))
+    make_judge = functools.cache(lambda: sdk_judge(os.environ))
 
-    async def judge(prompt: str) -> JudgeReply:
-        return await make_judge()(prompt)
+    async def judge(prompt: str, max_budget_usd: float) -> JudgeReply:
+        return await make_judge()(prompt, max_budget_usd)
 
     try:
         report = asyncio.run(
@@ -551,7 +596,7 @@ def run(args: argparse.Namespace) -> int:
                 manifest,
                 args.out,
                 judge,
-                load_skills(),
+                skill_sets(),
                 args.tasks_dir,
                 args.budget,
                 known_secrets(os.environ),
