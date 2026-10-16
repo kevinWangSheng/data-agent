@@ -95,3 +95,11 @@ def test_dbt_skills_say_nothing_about_how_results_are_graded(name: str) -> None:
     text = body(name).lower()
     for term in ("benchmark", "evaluat", "equality test", "tolerance", "sandbox", "result.csv"):
         assert term not in text, (name, term)
+
+
+def test_workflow_never_skips_building_a_model_the_task_asks_for() -> None:
+    """The scan only sees models already declared in YAML; a task that asks for a new model must
+    still run the build steps."""
+    skip_rule = body("dbt-workflow").split("## The 8-Step Workflow", 1)[1].split("\n\n", 2)[1]
+    assert "skip Steps 4-7" in skip_rule
+    assert "create" in skip_rule

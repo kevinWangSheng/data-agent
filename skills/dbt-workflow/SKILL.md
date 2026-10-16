@@ -13,7 +13,8 @@ versioning skills (data-agent does not ship them; dbt-write, dbt-debugging and d
 loaded with this one), and the knowledge-base skill in Step 6 (its spec fields are inlined). Two
 remarks about how results are graded were reworded as plain dbt reasons (ADR-0005). The rules that
 limited rolling/period-over-period models to the latest date with NULL comparisons were replaced by
-general ones (one date only when the description asks; comparisons from the source history). -->
+general ones (one date only when the description asks; comparisons from the source history). The
+rule for skipping Steps 4-7 also keeps them when the task asks for a new model. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -63,8 +64,10 @@ value-verifier subagent in Step 8.
 ALWAYS run Steps 1, 2, 3, and 8. Steps 4-7 are ONLY for projects
 with stubs to rewrite or models to build (from the Step 1 scan).
 If the scan shows 0 stubs and 0 missing models AND the task does NOT
-ask to edit, fix, remove, or modify existing files, skip Steps 4-7
-entirely - go from Step 3 straight to Step 8.
+ask to create a model that does not exist yet or to edit, fix, remove,
+or modify existing files, skip Steps 4-7 entirely - go from Step 3
+straight to Step 8. The scan only knows models declared in YAML, so a
+new model the task asks for counts as a model to build.
 
 If the task edits existing models (edit, fix, remove a variable, refactor),
 do NOT skip Steps 4-7 even if the scan shows nothing to build. Edit the
