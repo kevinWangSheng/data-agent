@@ -1,10 +1,10 @@
 # 15 — 单次花费上限按本项目价目表计
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 07
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 15-budget-at-our-prices)
+Branch: worktree-15-budget-at-our-prices
 
 ## Goal
 
