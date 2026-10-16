@@ -1,6 +1,6 @@
 # 07 — 验证子 agent 与 6 个验证工具
 
-Status: in-review
+Status: done
 Blocked by: 04, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 07-verifiers)
@@ -235,3 +235,7 @@ What the run shows for the fixes:
 - `git merge origin/main`（无冲突）。`evals/dab.py` 的 `build_options(...)` 调用补传 `log.emit`（调用挪进 `EventLog` 块，同 `agent.py:440`），其余 DAB 文件不动。DAB 任务是 `type="query"`，验证 hook 不会注册。
 - 测试：已有的 `tests/test_dab.py` 覆盖该调用；修复前 23 个失败（`TypeError: build_options() missing ... 'emit'`），修复后 57 个全过。
 - `make check`：basedpyright 0 errors，805 passed, 15 deselected。没有真实运行（按要求只跑不经模型的 DAB 测试）。
+
+### 2026-10-16 第 7 步：PR #12 合并（主会话）
+
+`dec491e` CI 两次全绿。Codex 复审 4 条 P1，都是已记的 verifier 启发式限制（聚合输出当切片维度、`count(` 出现在表达式里即当计数、条件计数、±10% 容差），不新增；合并。
