@@ -13,7 +13,9 @@ that path, and the agent sees a preview. `execute_python` runs in DAB's Docker i
 
 Every SQL statement passes the read-only gateway's AST check and row cap before it reaches DAB's
 tool (CODING_STANDARDS "Never bypass the read-only gateway"). MongoDB queries are DAB's JSON `find`
-requests, not SQL, and go to DAB's tool as given.
+requests, not SQL, and go to DAB's tool as given. For the same reason `list_tables` lists a SQL
+database's tables with a query of ours through the gateway and DAB's query tool (DAB's list tool
+would send its own SQL); only MongoDB collections are listed by DAB's list tool.
 
     python -m evals.dab_server --dab-root DAB --db-config DAB/query_x/db_config.yaml --log LOG \
         --workspace WORKSPACE
@@ -39,6 +41,12 @@ from evals.dab import scaffold
 # refused, since the gateway could not check it.
 SQL_DIALECTS = {"sqlite": "sqlite", "duckdb": "duckdb", "postgres": "postgres"}
 NOT_SQL = frozenset({"mongo"})
+# The tables DAB's list tool returns for each SQL type, as a query whose first column is the name.
+LIST_TABLES = {
+    "sqlite": "SELECT name FROM sqlite_master WHERE type = 'table'",
+    "duckdb": "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'",
+    "postgres": "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
+}
 # Tool results longer than this are saved to a file and previewed, as in DAB's own agent (its
 # PREVIEW_LENGTH); failures longer than this are cut.
 RESULT_CHARS = 10_000
@@ -136,16 +144,22 @@ def build_server(
     results = Results(workspace)
     server = MCPServer("dab")
 
+    def checkable(db_name: str) -> str | None:
+        """`db_name`'s type, None if DAB does not know it; a type the gateway cannot check is
+        refused."""
+        db_type = db_types.get(db_name)
+        if db_type is not None and db_type not in SQL_DIALECTS and db_type not in NOT_SQL:
+            raise ToolError(f"Query blocked: the read-only gateway cannot check {db_type} queries")
+        return db_type
+
     @server.tool(name="query_database", description=query_spec["description"])
     def query_database(
         db_name: Annotated[str, Field(description=query_args["db_name"].get("description"))],
         sql: Annotated[str, Field(description=query_args["query"].get("description"))],
     ) -> str:
-        db_type = db_types.get(db_name)
+        db_type = checkable(db_name)
         if db_type in SQL_DIALECTS:
             sql = governed(sql, SQL_DIALECTS[db_type])
-        elif db_type is not None and db_type not in NOT_SQL:
-            raise ToolError(f"Query blocked: the read-only gateway cannot check {db_type} queries")
         # An unknown db_name goes on to DAB's tool, which rejects it without running anything.
         with results.lock:
             return results.reply(query_tool.exec({"db_name": db_name, "query": sql}))
@@ -154,8 +168,17 @@ def build_server(
     def list_tables(
         db_name: Annotated[str, Field(description=list_args["db_name"].get("description"))],
     ) -> str:
+        db_type = checkable(db_name)
+        if db_type not in SQL_DIALECTS:
+            with results.lock:
+                return results.reply(list_tool.exec({"db_name": db_name}))
+        sql = governed(LIST_TABLES[db_type], SQL_DIALECTS[db_type])
         with results.lock:
-            return results.reply(list_tool.exec({"db_name": db_name}))
+            outcome = query_tool.exec({"db_name": db_name, "query": sql})
+            if outcome["success"]:
+                # Rows to names, as DAB's list tool returns them.
+                outcome["result"] = [next(iter(row.values())) for row in outcome["result"]]
+            return results.reply(outcome)
 
     exec_description = f"{exec_spec['description']}\n\n{PRINT_NOTE.format(marker=marker)}"
 

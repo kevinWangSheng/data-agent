@@ -35,6 +35,8 @@ class ListDBTool:
         with open(self.log_path, "a") as f:
             f.write(json.dumps({"tool_name": self.name, "args": args}) + "\n")
         client = self.db_clients[args["db_name"]]
+        if client["db_type"] == "mongo":
+            return {"success": True, "result": [client["db_name"]]}
         with sqlite3.connect(f"file:{client['db_path']}?mode=ro", uri=True) as conn:
             names = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         return {"success": True, "result": [name for (name,) in names]}

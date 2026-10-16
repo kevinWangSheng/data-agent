@@ -135,7 +135,38 @@ async def test_query_runs_through_the_dab_tool(dab_root: Path, tmp_path: Path) -
     assert not result.is_error
     assert data_of(result) == [{"ticker": "T002"}]
     assert data_of(tables) == ["prices"]
-    assert [call["tool_name"] for call in logged_calls(log)] == ["query_db", "list_db"]
+    assert [call["tool_name"] for call in logged_calls(log)] == ["query_db", "query_db"]
+
+
+async def test_sql_tables_are_listed_through_the_gateway(dab_root: Path, tmp_path: Path) -> None:
+    # DAB's ListDBTool sends its own SQL to the database; ours goes through the gateway and DAB's
+    # query tool like any other query.
+    log = tmp_path / "tools.jsonl"
+    async with dab_server(dab_root, log) as session:
+        tables = await session.call_tool("list_tables", {"db_name": "prices_db"})
+    assert data_of(tables) == ["prices"]
+    [call] = logged_calls(log)
+    assert call["tool_name"] == "query_db"
+    assert "LIMIT 10000" in call["args"]["query"].upper()
+
+
+async def test_mongo_collections_are_listed_by_dab(dab_root: Path, tmp_path: Path) -> None:
+    log = tmp_path / "tools.jsonl"
+    async with dab_server(dab_root, log) as session:
+        collections = await session.call_tool("list_tables", {"db_name": "articles_db"})
+    assert data_of(collections) == ["articles"]
+    assert [call["tool_name"] for call in logged_calls(log)] == ["list_db"]
+
+
+async def test_listing_tables_the_gateway_cannot_check_is_refused(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    log = tmp_path / "tools.jsonl"
+    async with dab_server(dab_root, log) as session:
+        result = await session.call_tool("list_tables", {"db_name": "other_db"})
+    assert result.is_error
+    assert "mysql" in text_of(result)
+    assert logged_calls(log) == []
 
 
 @pytest.mark.parametrize(
