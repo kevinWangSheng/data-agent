@@ -1,6 +1,6 @@
 # 14 — 失败归因报告
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 03, 10
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -42,10 +42,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2（本轮 da-review × 2）
-- Model spend: $0.1281（之前 $0.078；本轮 judge $0.0248 + $0.0253）
-- Outcome: 退回 5 条全修，另修 da-review 2 条；夹具 job 出真实报告；`make check` 绿
+- Attempts: 3
+- Review rounds: 3（本轮 da-review × 1，无意见）
+- Model spend: $0.1468（之前 $0.1281；本轮 judge $0.0187）
+- Outcome: 退回第 2 轮 2 条全修，各配修复前会失败的测试；夹具 job 出真实报告；`make check` 绿；da-review 无意见
 - Human review minutes: —
 
 ## Comments
@@ -124,3 +124,48 @@ CI 两次全绿。退回：原因如下，在分支 `worktree-14-failure-attribu
 2. **Codex P2（`evals/attribute.py:595`）属实**：`--manifest` 是坏 JSON 时 `json.loads` 在 `try` 外抛出，CLI 打 traceback 而不是 `attribute: ...` 加退出码 2。把读 manifest 挪进受保护的段。配测试。
 
 这是第 2 轮（最后一轮）。修完后名称过滤若还有启发式漏洞，记成已知限制：报告是草稿，每条建议由人审，工具不自动改 Skill。修完 `make check`、真实运行一次 `python -m evals attribute`（同夹具 job），再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 3）。
+
+### 2026-10-16 工单 agent：退回第 2 轮已修（commit `c56dd0e`，未 rebase、未 push）
+
+**修复（每条都配了修复前会失败的测试，4 个新测试在修复前全红）：**
+
+1. **名称过滤漏掉只在 schema 内容里出现的普通单词**（`evals/attribute.py` 的 `specific_names`）。下面这些名字现在一律拦，Skill 也用这个词也不放行：
+   - **Agent 用 `Read` 读到的 schema 文件**：`tool_end` 用 `tool_use_id` 对回 `tool_start` 的 `file_path`，先去掉 Read 输出里的行号前缀。
+     - `.yml`/`.yaml`：取所有 `name:` 条目，包括模型和列。
+     - `.sql`：取文件名本身、`CREATE TABLE/VIEW` 后的名字、`from`/`join` 后的名字、`ref()`/`source()` 里的名字。
+   - **题面与验证输出**（`prose_names`）：
+     - 反引号包起来的标识符；
+     - `CREATE TABLE/VIEW` 后的名字；
+     - 大写 `FROM`/`JOIN` 后的名字；
+     - 代码块和行内代码里 SQL 形状的名字。
+   - **不照工单字面做的一处**：普通文字里小写的 `from` 是英文介词（"comes from the …"），照字面取会把 "the" 当名字拦掉。所以普通文字里只认大写的 `FROM`/`JOIN`，小写的只在代码里认。测试里有断言确认 "the" 不会被拦。
+   - 测试：
+     - `test_names_in_a_dbt_yaml_the_agent_read_are_specific`（用真实 Read 输出的 `N\t` 行号格式）
+     - `test_names_in_a_sql_file_the_agent_read_are_specific`
+     - `test_names_the_instruction_and_verifier_show_are_specific`
+2. **`--manifest` 是坏 JSON 时 CLI 打出 traceback**：读 manifest 挪进受保护的 `try` 段。另外顺手兜住两种情况，同样输出 `attribute: …` 并退出码 2：
+   - 文件不存在（捕获 `OSError`）；
+   - manifest 不是带 `dev` 列表的对象。
+
+   测试：`test_cli_reports_an_unreadable_manifest_without_a_traceback`（真子进程，断言退出码 2、stderr 以 `attribute: ` 开头、没有 `Traceback`）。
+
+**检查**：`make check` → `558 passed, 15 deselected, 15 xfailed`（输出存在 `runs/14/check-r2.txt`）。`tests/test_eval_attribute.py` 共 26 个测试全过。
+
+**真实运行**（同一个夹具 job，脚本 `runs/14/attr3.sh`）：
+```
+$ python -m evals attribute runs/14/job --manifest runs/14/manifest.json --tasks-dir runs/14/tasks --out runs/14/report4
+attribute: 1 of 1 dev failures attributed, $0.0187 spent -> runs/14/report4
+exit=0
+```
+- 结果：repeat-buyers 这题这次标 FM2，前两次分别是 FM4、FM3，judge 在这道边界题上仍然摇摆。
+- 证据找到了真实原因：状态列同一个值有多种大小写写法，agent 自己算出了两种结果，最后交了 10。
+- 引用逐字核对通过：`sql-workflow` 的 "Metrics match the question's definition …"。
+- judge 调了 2 次（第一次回复被拒后重试），最终建议没有点名任何名字（`specific_names` 为空）。
+- `grep -c HOLDOUT runs/14/report4/*` 两个文件都是 0。
+
+**审查**：`da-review main` 跑了 1 轮（输出在 `runs/14/da-review-4.txt`），结论 "No actionable regressions were found"，没有要修的。这一轮没跑 `eng:code-review`，因为退回只要求 `da-review`。
+
+**已知限制**（工单要求记录；报告是草稿，每条建议由人审，工具不自动改 Skill）：
+- 只解析 `Read` 读到的 `.yml`/`.yaml`/`.sql` 文件。经 `Bash`（如 `cat`）、`Grep` 或其他文件类型看到的普通单词表名不会进入一律拦截的名单。
+- 题面普通文字里，小写 `from`/`join` 后面没加反引号的普通单词表名不会被拦。
+- 正则只认 `name:` 形式的 YAML 条目和常见的 DDL、ref/source 写法。
