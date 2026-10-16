@@ -4,7 +4,8 @@
 # (http://www.apache.org/licenses/LICENSE-2.0).
 # Modified: kept the pure scoring functions (is_success, compute_metrics, compute_pass_at_k)
 # unchanged; dropped the hub-backed submission, resource and display helpers, the
-# `leaderboard.core.hub` import they need, and the module docstring that described them.
+# `leaderboard.core.hub` import they need, and the module docstring that described them;
+# completed the type annotations (`reward: float | None`, element types of the lists and dicts).
 """metrics: leaderboard metric computation over per-task reward lists."""
 
 from __future__ import annotations
@@ -13,12 +14,12 @@ from __future__ import annotations
 PASS_AT_KS = (2, 3)
 
 
-def is_success(reward) -> bool:
+def is_success(reward: float | None) -> bool:
     """A trial succeeds iff reward > 0 (errored trials have none -> failure)."""
     return bool(reward) and float(reward) > 0
 
 
-def compute_metrics(by_task: dict[str, list]) -> tuple[float, float]:
+def compute_metrics(by_task: dict[str, list[float | None]]) -> tuple[float, float]:
     """Return (accuracy, accuracy_stderr) as percentages.
 
     accuracy = successful / total trials, matching the Harbor importer;
@@ -41,15 +42,17 @@ def compute_metrics(by_task: dict[str, list]) -> tuple[float, float]:
     return accuracy, 100.0 * variance**0.5
 
 
-def compute_pass_at_k(by_task: dict[str, list], ks: tuple[int, ...] = PASS_AT_KS) -> dict:
+def compute_pass_at_k(
+    by_task: dict[str, list[float | None]], ks: tuple[int, ...] = PASS_AT_KS
+) -> dict[str, float]:
     """{pass_at_k: value} -- the unbiased per-task estimator
     1 - C(n-c, k)/C(n, k), averaged over tasks.
 
     A task with fewer than k trials is skipped for that k (the trial-count
     check requires >= 3 per task, so normally none are)."""
-    out: dict = {}
+    out: dict[str, float] = {}
     for k in ks:
-        vals = []
+        vals: list[float] = []
         for rs in by_task.values():
             n = len(rs)
             if n < k:

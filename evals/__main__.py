@@ -45,8 +45,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     report = write_report(load_trials(args.job_dir), manifest, args.split, args.out)
     print(
         f"{args.split}: accuracy {report['accuracy']:.1f}% ± {report['accuracy_stderr']:.1f}% "
-        f"over {report['n_trials']} trials ({report['n_infra_errors']} infrastructure errors) "
-        f"-> {args.out}"
+        f"over {report['n_trials']} trials -> {args.out}"
     )
 
 

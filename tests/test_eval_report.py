@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -35,7 +37,7 @@ def report(job: Path, tmp_path: Path) -> dict[str, Any]:
     return json.loads((out / "report.json").read_text())
 
 
-def test_outcomes_separate_infrastructure_errors_from_agent_failures(tmp_path: Path) -> None:
+def test_outcomes_are_disjoint(tmp_path: Path) -> None:
     job = tmp_path / "job"
     # Harbor still runs the verifier after an agent timeout, so a trial can pass and error.
     write_trial(
@@ -47,14 +49,48 @@ def test_outcomes_separate_infrastructure_errors_from_agent_failures(tmp_path: P
         },
     )
     write_trial(job, "t1__b", {"verifier_result": {"rewards": {"reward": 0.0}}})
-    # Harbor does not retry a timeout: it is the agent's failure.
+    # Harbor does not retry a timeout: it is the agent's failure and scores 0.
     write_trial(job, "t1__c", {"exception_info": {"exception_type": "AgentTimeoutError"}})
-    # Harbor retries a provider 5xx: it is infrastructure.
-    write_trial(job, "t1__d", {"exception_info": {"exception_type": "ApiInternalServerError"}})
     summary = report(job, tmp_path)
-    counts = (summary["n_succeeded"], summary["n_failed"], summary["n_infra_errors"])
-    assert counts == (1, 2, 1)
-    assert summary["accuracy"] == 25.0
+    assert (summary["n_succeeded"], summary["n_failed"]) == (1, 2)
+    assert summary["accuracy"] == pytest.approx(100 / 3)
+
+
+def holdout_report(
+    job: Path, tmp_path: Path, holdout: list[str]
+) -> subprocess.CompletedProcess[str]:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"seed": 0, "dev": [], "holdout": holdout}))
+    return evals(
+        *("report", str(job), "--manifest", str(manifest)),
+        *("--split", "holdout", "--out", str(tmp_path / "report")),
+    )
+
+
+def test_report_refuses_infrastructure_errors(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    # Harbor retries a provider 5xx: infrastructure, to be rerun rather than scored.
+    write_trial(job, "t1__b", {"exception_info": {"exception_type": "ApiInternalServerError"}})
+    proc = holdout_report(job, tmp_path, ["t1"])
+    assert proc.returncode != 0
+    assert "1 infrastructure error" in proc.stderr
+    assert "t1" not in proc.stderr
+    assert not (tmp_path / "report" / "report.json").exists()
+
+
+def test_report_refuses_uneven_trial_counts(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    passed = {"verifier_result": {"rewards": {"reward": 1.0}}}
+    for name in ("t-secret__a", "t-secret__b"):
+        (job / name).mkdir(parents=True)
+        (job / name / "result.json").write_text(json.dumps({"task_name": "t-secret", **passed}))
+    write_trial(job, "t1__a", passed)
+    proc = holdout_report(job, tmp_path, ["t1", "t-secret"])
+    assert proc.returncode != 0
+    assert "1 of 2 holdout tasks" in proc.stderr
+    assert "t-secret" not in proc.stderr
+    assert not (tmp_path / "report" / "report.json").exists()
 
 
 def test_report_totals_tokens_and_cost(tmp_path: Path) -> None:
