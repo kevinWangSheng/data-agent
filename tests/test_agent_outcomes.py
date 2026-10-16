@@ -145,3 +145,27 @@ async def test_error_text_is_masked(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     text = outcome.events_path.read_text()
     assert "sk-test-secret" not in text
     assert "llm.example" not in text
+
+
+async def test_tokens_and_cost_cover_the_subagents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`usage` counts the main thread only; `model_usage` covers the session, verifiers included."""
+    model_usage = {
+        "deepseek-flash": {
+            "inputTokens": 600_000,
+            "cacheCreationInputTokens": 400_000,
+            "cacheReadInputTokens": 2_000_000,
+            "outputTokens": 1_000_000,
+            "webSearchRequests": 0,
+            "costUSD": 9.9,
+            "contextWindow": 0,
+            "maxOutputTokens": 0,
+        }
+    }
+    final = result(model_usage=model_usage, total_cost_usd=9.9)
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert events[-1]["uncached_input_tokens"] == 1_000_000
+    assert events[-1]["cached_input_tokens"] == 2_000_000
+    assert events[-1]["output_tokens"] == 1_000_000
+    assert events[-1]["cost_usd"] == pytest.approx(0.30 + 2 * 0.006 + 1.20)

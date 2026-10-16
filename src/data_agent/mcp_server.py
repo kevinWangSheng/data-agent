@@ -1,6 +1,7 @@
 """The data agent's MCP server (stdio). Every tool reaches the database through the gateway."""
 
 from functools import partial
+from pathlib import Path
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -45,9 +46,12 @@ def format_rows(result: QueryResult) -> str:
     return "\n".join(lines)
 
 
-def build_server(gateway: DuckDBGateway, config: RunConfig) -> MCPServer:
+def build_server(
+    gateway: DuckDBGateway, config: RunConfig, workspace: Path | None = None
+) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
-    `config` turns that layer on, so a run with it off cannot see them."""
+    `config` turns that layer on, so a run with it off cannot see them. `workspace` bounds the
+    files a tool may read (map_columns)."""
     server = MCPServer("data-agent")
 
     @server.tool()
@@ -79,5 +83,5 @@ def build_server(gateway: DuckDBGateway, config: RunConfig) -> MCPServer:
     if config.context:
         register_context_tools(server, partial(run_query, gateway))
     if config.verifiers:
-        register_verifier_tools(server, partial(run_query, gateway))
+        register_verifier_tools(server, partial(run_query, gateway), workspace)
     return server

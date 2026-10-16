@@ -49,6 +49,9 @@ def test_dbt_runs_offer_both_read_only_verifiers(tmp_path: Path) -> None:
         # A background verifier ends the main turn early and splits the run into several results.
         assert definition.background is False
     assert {"SubagentStart", "SubagentStop"} <= set(built.hooks or {})
+    servers: Any = built.mcp_servers
+    server = servers["data"]
+    assert server["args"][-2:] == ["--workspace", str(tmp_path.resolve())]
     assert VERIFIERS_PROMPT in str(built.system_prompt)
 
 

@@ -13,7 +13,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult, TextContent
 
-from data_agent.verifier_tools import source_relations
+from data_agent import verifier_tools
+from data_agent.gateway import DuckDBGateway, QueryResult
+from data_agent.mcp_server import run_query
+from data_agent.verifier_tools import source_relations, yml_columns
 
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -38,10 +41,10 @@ def project(tmp_path: Path) -> Path:
 
 
 @asynccontextmanager
-async def mcp_server(db: Path) -> AsyncIterator[ClientSession]:
+async def mcp_server(db: Path, *extra: str) -> AsyncIterator[ClientSession]:
     params = StdioServerParameters(
         command=str(DATA_AGENT),
-        args=["mcp-server", "--config", "full", "--duckdb", str(db)],
+        args=["mcp-server", "--config", "full", "--duckdb", str(db), *extra],
         env=dict(os.environ),
     )
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
@@ -53,8 +56,10 @@ def text_of(result: CallToolResult) -> str:
     return "\n".join(item.text for item in result.content if isinstance(item, TextContent))
 
 
-async def call(db: Path, tool: str, **arguments: str) -> CallToolResult:
-    async with mcp_server(db) as session:
+async def call(
+    db: Path, tool: str, server_args: tuple[str, ...] = (), **arguments: str
+) -> CallToolResult:
+    async with mcp_server(db, *server_args) as session:
         return await session.call_tool(tool, arguments)
 
 
@@ -154,3 +159,125 @@ def test_source_relations_reads_each_source_block(tmp_path: Path) -> None:
         ("one", "b"): ("one", "b_v2"),
         ("two", "c"): ("landing", "c"),
     }
+
+
+def make_db(path: Path, sql: str) -> Path:
+    con = duckdb.connect(str(path))
+    try:
+        con.execute(sql)
+    finally:
+        con.close()
+    return path
+
+
+async def test_verify_model_values_slices_on_the_whole_grouping_grain(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "grain.duckdb",
+        "CREATE TABLE orders (order_id INT, region VARCHAR, channel VARCHAR);"
+        "INSERT INTO orders VALUES (1, 'north', 'web'), (2, 'north', 'web'), (3, 'north', 'store');"
+        "CREATE TABLE by_channel AS SELECT region, channel, count(*) AS n_orders "
+        "FROM orders GROUP BY region, channel",
+    )
+    result = await call(db, "verify_model_values", model_name="by_channel", source_tables="orders")
+    block = metric_block(text_of(result), "n_orders")
+    assert "sliced on region, channel" in block
+    assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
+
+
+BRIDGE_SQL = """
+CREATE TABLE customers (customer_id VARCHAR, segment VARCHAR);
+INSERT INTO customers VALUES ('c1', 'retail'), ('c2', 'retail');
+CREATE TABLE crm_notes (customer_id VARCHAR, segment VARCHAR);
+INSERT INTO crm_notes VALUES ('c1', 'retail'), ('c1', 'retail');
+CREATE TABLE orders (order_id INT, customer_id VARCHAR);
+INSERT INTO orders VALUES (1, 'c1'), (2, 'c1');
+CREATE TABLE by_segment AS SELECT 'retail' AS segment, 2 AS n_orders;
+"""
+
+
+async def test_verify_model_values_joins_only_through_a_unique_named_upstream(
+    tmp_path: Path,
+) -> None:
+    db = make_db(tmp_path / "bridge.duckdb", BRIDGE_SQL)
+    safe = await call(
+        db, "verify_model_values", model_name="by_segment", source_tables="orders, customers"
+    )
+    block = metric_block(text_of(safe), "n_orders")
+    assert "sliced on segment via main.customers.customer_id" in block
+    assert "COUNT(*): 2" in block
+    # crm_notes repeats customer c1, so joining through it would double the count.
+    unsafe = await call(
+        db, "verify_model_values", model_name="by_segment", source_tables="orders, crm_notes"
+    )
+    block = metric_block(text_of(unsafe), "n_orders")
+    assert "main.orders (2 rows) — no slice column and no safe join" in block
+    assert "COUNT(*): 4" not in block
+
+
+def test_audit_reports_sampled_statistics_as_a_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = make_db(
+        tmp_path / "wide.duckdb",
+        "CREATE TABLE m AS SELECT range AS id, NULL::VARCHAR AS empty FROM range(10)",
+    )
+    monkeypatch.setattr(verifier_tools, "SAMPLE_CELLS", 5)
+    monkeypatch.setattr(verifier_tools, "SAMPLE_ROWS", 4)
+    gateway = DuckDBGateway(db)
+
+    def run(sql: str, row_limit: int) -> QueryResult:
+        return run_query(gateway, sql, row_limit)
+
+    model = verifier_tools.resolve(verifier_tools.load_catalog(run), "m")
+    text = "\n".join(verifier_tools.audit(run, model, ["m"], sample_nulls=True))
+    assert "over a sample of the first 4 rows" in text
+    assert "empty: 0 distinct, 4 nulls (100.0%)" in text
+    assert "Grain key: id (10 distinct = row count, unique)" in text
+
+
+async def test_map_columns_stays_inside_the_workspace(
+    shop: Path, project: Path, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = await call(
+        shop,
+        "map_columns",
+        ("--workspace", str(workspace)),
+        model_name="customer_orders",
+        project_dir=str(project),
+    )
+    assert outside.is_error
+    assert "outside the workspace" in text_of(outside)
+    inner = workspace / "dbt_shop"
+    shutil.copytree(project, inner)
+    (inner / "models" / "marts" / "customer_orders.sql").unlink()
+    (inner / "models" / "marts" / "customer_orders.sql").symlink_to(
+        project / "models" / "marts" / "customer_orders.sql"
+    )
+    linked_out = await call(
+        shop,
+        "map_columns",
+        ("--workspace", str(workspace)),
+        model_name="customer_orders",
+        project_dir=str(inner),
+    )
+    assert linked_out.is_error
+    assert "no SQL file for model 'customer_orders'" in text_of(linked_out)
+    inside = await call(
+        shop,
+        "map_columns",
+        ("--workspace", str(workspace)),
+        model_name="stg_orders",
+        project_dir=str(inner),
+    )
+    assert not inside.is_error, text_of(inside)
+
+
+def test_yml_columns_reads_a_column_list_at_the_key_indent(tmp_path: Path) -> None:
+    (tmp_path / "schema.yml").write_text(
+        "version: 2\nmodels:\n  - name: m\n    columns:\n    - name: customer_id\n"
+        "      tests:\n        - unique\n    - name: total_orders\n    description: x\n"
+        "  - name: other\n    columns:\n      - name: nope\n"
+    )
+    assert yml_columns(tmp_path, "m") == ["customer_id", "total_orders"]

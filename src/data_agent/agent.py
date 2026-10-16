@@ -266,6 +266,7 @@ def build_options(
         "args": [
             *("-m", "data_agent", "mcp-server"),
             *("--config", config.name, "--duckdb", str(task.duckdb.resolve())),
+            *("--workspace", str(task.workspace.resolve())),
         ],
     }
     if task.type == "dbt":
@@ -368,12 +369,19 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
             "cost_basis": "sdk",
             "errors": [],
         }
-    usage = message.usage or {}
-    uncached = int(usage.get("input_tokens") or 0) + int(
-        usage.get("cache_creation_input_tokens") or 0
-    )
-    cached = int(usage.get("cache_read_input_tokens") or 0)
-    output = int(usage.get("output_tokens") or 0)
+    if message.model_usage:
+        # Per model, for the whole session: subagents (the verifiers) included, unlike `usage`.
+        models = message.model_usage.values()
+        uncached = sum(m["inputTokens"] + m["cacheCreationInputTokens"] for m in models)
+        cached = sum(m["cacheReadInputTokens"] for m in models)
+        output = sum(m["outputTokens"] for m in models)
+    else:
+        usage = message.usage or {}
+        uncached = int(usage.get("input_tokens") or 0) + int(
+            usage.get("cache_creation_input_tokens") or 0
+        )
+        cached = int(usage.get("cache_read_input_tokens") or 0)
+        output = int(usage.get("output_tokens") or 0)
     sdk_cost = message.total_cost_usd or 0.0
     price = PRICES.get(model)
     if price is None:

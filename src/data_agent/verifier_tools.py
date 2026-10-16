@@ -9,15 +9,22 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   quoted from there, so names are never pasted into SQL unchecked.
 - Portable SQL instead of DuckDB-only forms: no `SHOW TABLES` or `PRAGMA table_info`, no
   `COUNT(*) FILTER`; one profiling statement per table instead of one per column.
-- map_columns keeps upstream's lineage mode and its MAPPED / UNMAPPED-INCLUDE / UNMAPPED-EXCLUDE
-  labels (the ones the copied Skill and verifier prompts use). Dropped: the pre-write
-  `upstream_tables` mode, the obt_/dim_ lookup and system-column rules, and the domain-prefix list
-  (vendor names tuned to one benchmark's projects). Sources resolve through their `schema:`.
+- map_columns reads only inside the run's workspace when the server is given one. It keeps
+  upstream's lineage mode and its MAPPED / UNMAPPED-INCLUDE / UNMAPPED-EXCLUDE labels (the ones
+  the copied Skill and verifier prompts use). Dropped: the pre-write `upstream_tables` mode, the
+  obt_/dim_ lookup and system-column rules, and the domain-prefix list (vendor names tuned to one
+  benchmark's projects). Sources resolve through their `schema:`; the YAML scan follows
+  indentation instead of upstream's fixed 1-4 spaces for model names.
 - verify_model_values takes the model's upstreams as `source_tables`, read by the verifier from
   the model's SQL. Without them it compares against the nearest finer-grained table that has the
   slice column, instead of upstream's three largest tables, which on a project with a fanned-out
-  sibling model put that sibling's doubled counts next to a correct model. It marks a COUNT(*)
-  match or mismatch only for integer metrics; upstream also held sums up against row counts.
+  sibling model put that sibling's doubled counts next to a correct model. The slice is every
+  text or date column of the top row (upstream: the first), and a join to reach it goes only
+  through a named upstream whose join column is unique (upstream: any table sharing a column).
+  It marks a COUNT(*) match or mismatch only for integer metrics; upstream also held sums up
+  against row counts.
+- A table profiled over a sample says so, its NULL shares are of the sample, and a column that
+  looks unique in the sample is counted over the whole table before it is called the grain.
 """
 
 import re
@@ -67,9 +74,12 @@ SQL_KEYWORDS = frozenset(
 
 @dataclass(frozen=True)
 class Profile:
+    """Counts over `total` rows: the whole table, or its first SAMPLE_ROWS when `sampled`."""
+
     total: int
     nulls: int
     distinct: int
+    sampled: bool
 
 
 def base_type(data_type: str) -> str:
@@ -119,7 +129,8 @@ def profile(run: RunQuery, table: Table, columns: Sequence[str], rows: int) -> d
     for start in range(0, len(columns), DISTINCTS_PER_STATEMENT):
         chunk = columns[start : start + DISTINCTS_PER_STATEMENT]
         source = table.sql_name
-        if rows * len(columns) > SAMPLE_CELLS:
+        sampled = rows * len(columns) > SAMPLE_CELLS
+        if sampled:
             picked = ", ".join(quote(column) for column in chunk)
             source = f"(SELECT {picked} FROM {table.sql_name} LIMIT {SAMPLE_ROWS}) AS s"
         parts = ["count(*)"]
@@ -129,7 +140,7 @@ def profile(run: RunQuery, table: Table, columns: Sequence[str], rows: int) -> d
         total = int(values[0])
         for index, column in enumerate(chunk):
             non_null, distinct = values[1 + 2 * index], values[2 + 2 * index]
-            result[column] = Profile(total, total - int(non_null), int(distinct))
+            result[column] = Profile(total, total - int(non_null), int(distinct), sampled)
     return result
 
 
@@ -141,11 +152,14 @@ def read_text(path: Path) -> str:
 
 
 def project_files(project: Path, *patterns: str) -> list[Path]:
+    """Project files matching the patterns; a symlink that leads out of the project is skipped."""
+    root = project.resolve()
     return sorted(
         path
         for pattern in patterns
         for path in project.rglob(pattern)
         if not SKIP_DIRS & set(path.relative_to(project).parts)
+        and path.resolve().is_relative_to(root)
     )
 
 
@@ -154,21 +168,40 @@ def model_sql(project: Path, model_name: str) -> Path | None:
 
 
 def yml_columns(project: Path, model_name: str) -> list[str]:
-    """Column names a YAML file declares for the model, in order (upstream's line scan)."""
+    """Column names the project's `models:` blocks declare for the model, in order. A line scan
+    (no YAML dependency) that follows indentation: models are the `- name:` entries at the first
+    entry's indent, columns the `- name:` entries at the first column's indent under `columns:`,
+    which YAML allows at the same indent as `columns:` itself."""
     columns: list[str] = []
     for path in project_files(project, "*.yml", "*.yaml"):
-        current, in_columns = None, False
+        in_models = False
+        model: str | None = None
+        model_indent: int | None = None
+        columns_indent: int | None = None  # of the `columns:` key while inside its list
+        column_indent: int | None = None
         for line in read_text(path).splitlines():
             stripped = line.lstrip()
             indent = len(line) - len(stripped)
+            if not stripped or stripped.startswith("#"):
+                continue
+            if indent == 0:
+                in_models, model, model_indent = stripped.startswith("models:"), None, None
+                continue
             name = NAME_LINE_RE.match(stripped)
-            if name and 1 <= indent <= 4:
-                current, in_columns = name.group(1), False
-            elif current == model_name and stripped.startswith("columns:"):
-                in_columns = True
-            elif in_columns and indent <= 4 and stripped and not stripped.startswith("-"):
-                in_columns = False
-            elif in_columns and current == model_name and name:
+            if not in_models:
+                continue
+            if name and indent == (model_indent if model_indent is not None else indent):
+                model, model_indent, columns_indent = name.group(1), indent, None
+            elif model != model_name:
+                continue
+            elif stripped.startswith("columns:"):
+                columns_indent, column_indent = indent, None
+            elif columns_indent is None:
+                continue
+            elif indent <= columns_indent and not stripped.startswith("-"):
+                columns_indent = None
+            elif name and indent == (column_indent if column_indent is not None else indent):
+                column_indent = indent
                 columns.append(name.group(1))
     return columns
 
@@ -387,10 +420,12 @@ def audit(run: RunQuery, model: Table, sources: list[str], sample_nulls: bool) -
     scanned = columns[:SCANNED_COLUMNS]
     stats = profile(run, model, scanned, model_rows)
     shown = f"first {len(scanned)} of {len(columns)}" if len(columns) > len(scanned) else "all"
-    lines += ["", f"Column scan ({shown} columns):"]
+    sampled = any(s.sampled for s in stats.values())
+    over = f", over a sample of the first {SAMPLE_ROWS} rows" if sampled else ""
+    lines += ["", f"Column scan ({shown} columns{over}):"]
     for column in scanned:
         s = stats[column]
-        share = f" ({100 * s.nulls / model_rows:.1f}%)" if s.nulls else ""
+        share = f" ({100 * s.nulls / s.total:.1f}%)" if s.nulls else ""
         lines.append(f"  [OBS] {column}: {s.distinct} distinct, {s.nulls} nulls{share}")
     low = [c for c in scanned if 2 <= stats[c].distinct <= LOW_CARDINALITY][:LISTED_COLUMNS]
     if low:
@@ -402,9 +437,7 @@ def audit(run: RunQuery, model: Table, sources: list[str], sample_nulls: bool) -
             )
             values = [str(row[0]) for row in run(sql, LOW_CARDINALITY).rows]
             lines.append(f"  {column}: [{', '.join(values)}]")
-    grain = next(
-        (c for c in scanned[:5] if stats[c].distinct == model_rows and stats[c].nulls == 0), None
-    )
+    grain = next((c for c in scanned[:5] if is_unique(run, model, c, stats[c], model_rows)), None)
     lines.append(
         f"Grain key: {grain} ({model_rows} distinct = row count, unique)"
         if grain
@@ -413,29 +446,58 @@ def audit(run: RunQuery, model: Table, sources: list[str], sample_nulls: bool) -
     return lines
 
 
+def is_unique(run: RunQuery, table: Table, column: str, stats: Profile, rows: int) -> bool:
+    """Whether the column has no NULLs and a distinct value per row. A sample cannot tell, so a
+    sampled column that looks unique is counted over the whole table."""
+    if stats.nulls or stats.distinct != stats.total:
+        return False
+    if not stats.sampled:
+        return True
+    sql = f"SELECT count(DISTINCT {quote(column)}), count({quote(column)}) FROM {table.sql_name}"
+    distinct, non_null = run(sql, 1).rows[0]
+    return int(distinct) == int(non_null) == rows
+
+
 # --- verify_model_values (ported from model_verify.py) ---------------------------------------
 
 
+def column_map(table: Table) -> dict[str, str]:
+    return {name.lower(): name for name, _ in table.columns}
+
+
 def slice_filter(
-    catalog: list[Table], model: Table, candidate: Table, column: str, value: Any
-) -> str | None:
-    """FROM-clause tail that limits `candidate` (aliased c) to the slice: directly when it has the
-    slice column, else through a table that has it and shares another column with it."""
-    keys = {name.lower(): name for name, _ in candidate.columns}
-    if column.lower() in keys:
-        return f"WHERE c.{quote(keys[column.lower()])} = {literal(str(value))}"
-    for other in catalog:
-        if other in (model, candidate):
+    run: RunQuery, candidate: Table, slice_values: dict[str, Any], bridges: list[Table]
+) -> tuple[str, str] | None:
+    """(FROM-clause tail limiting `candidate`, aliased c, to the slice; what it slices on).
+    Directly on every slice column the candidate has; else through a named upstream that has
+    slice columns and shares a column with the candidate that is unique in it, so the join
+    cannot multiply rows. None when neither works."""
+    keys = column_map(candidate)
+    direct = [column for column in slice_values if column.lower() in keys]
+    if direct:
+        tests = [f"c.{quote(keys[c.lower()])} = {literal(str(slice_values[c]))}" for c in direct]
+        return f"WHERE {' AND '.join(tests)}", ", ".join(direct)
+    for bridge in bridges:
+        bridge_keys = column_map(bridge)
+        sliced = [column for column in slice_values if column.lower() in bridge_keys]
+        shared = [key for key in keys if key in bridge_keys]
+        if bridge == candidate or not sliced:
             continue
-        other_keys = {name.lower(): name for name, _ in other.columns}
-        if column.lower() not in other_keys:
-            continue
-        shared = [key for key in keys if key in other_keys and key != column.lower()]
-        if shared:
+        for key in shared:
+            unique_sql = (
+                f"SELECT count(*), count(DISTINCT {quote(bridge_keys[key])}) FROM {bridge.sql_name}"
+            )
+            rows, distinct = run(unique_sql, 1).rows[0]
+            if rows != distinct:
+                continue
+            tests = [
+                f"d.{quote(bridge_keys[c.lower()])} = {literal(str(slice_values[c]))}"
+                for c in sliced
+            ]
             return (
-                f"JOIN {other.sql_name} AS d ON c.{quote(keys[shared[0]])} = "
-                f"d.{quote(other_keys[shared[0]])} "
-                f"WHERE d.{quote(other_keys[column.lower()])} = {literal(str(value))}"
+                f"JOIN {bridge.sql_name} AS d ON c.{quote(keys[key])} = "
+                f"d.{quote(bridge_keys[key])} WHERE {' AND '.join(tests)}",
+                f"{', '.join(sliced)} via {bridge.ref}.{bridge_keys[key]}",
             )
     return None
 
@@ -475,19 +537,24 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
     if not top.rows:
         return [f"No rows in '{model.ref}'."]
     row = dict(zip(top.columns, top.rows[0], strict=True))
-    dimension = next(
-        (n for n, t in model.columns if is_dimension(t) and row.get(n) is not None), None
-    )
+    # Every text or date column of the top row: the model's full grouping grain, as far as it
+    # shows in its columns.
+    slice_values = {
+        name: row[name]
+        for name, t in model.columns
+        if is_dimension(t) and row.get(name) is not None
+    }
+    shown = ", ".join(f"{name} = '{value}'" for name, value in slice_values.items())
     lines = [
         f"## Value Verification: {model.ref}",
-        f"Top row (by {metrics[0]}) slice: {dimension} = '{row[dimension]}'"
-        if dimension
+        f"Top row (by {metrics[0]}) slice: {shown}"
+        if slice_values
         else "No dimension column for slicing; candidates skipped",
     ]
-    if dimension is None:
+    if not slice_values:
         return lines
+    candidates: list[Table] = []
     if sources:
-        candidates: list[Table] = []
         for name in sources[:MAX_SOURCES]:
             try:
                 candidates.append(resolve(catalog, name))
@@ -495,18 +562,23 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
                 lines.append(f"Source {name}: {exc}")
         basis = "named upstreams"
     else:
-        candidates = nearest_finer_table(run, catalog, model, dimension)
+        candidates = nearest_finer_table(run, catalog, model, next(iter(slice_values)))
         basis = "no source_tables given; nearest finer-grained table with the slice column"
     lines += [f"Candidates ({basis}): {', '.join(t.ref for t in candidates) or 'none'}", ""]
 
-    measured: list[tuple[Table, int | None, list[tuple[str, int]], int]] = []
+    # Bridges only between the named upstreams: a join the model's lineage does not show could
+    # put unrelated rows into the count.
+    bridges = candidates if sources else []
+    measured: list[tuple[Table, str, int | None, list[tuple[str, int]], int]] = []
     for candidate in candidates:
-        tail = slice_filter(catalog, model, candidate, dimension, row[dimension])
-        if tail is None:
-            measured.append((candidate, None, [], row_count(run, candidate)))
+        rows = row_count(run, candidate)
+        found = slice_filter(run, candidate, slice_values, bridges)
+        if found is None:
+            measured.append((candidate, "", None, [], rows))
             continue
+        tail, sliced_on = found
         count, distinct = candidate_counts(run, candidate, tail)
-        measured.append((candidate, count, distinct, row_count(run, candidate)))
+        measured.append((candidate, sliced_on, count, distinct, rows))
 
     types = dict(model.columns)
     for metric in metrics:
@@ -516,13 +588,14 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
         lines += [f"### Metric: {metric}", f"  Model value: {value}"]
         # Only an integer can be a row count; a sum or average is compared by the verifier.
         is_count = base_type(types[metric]) in INTEGER_TYPES
-        for candidate, count, distinct, rows in measured:
+        for candidate, sliced_on, count, distinct, rows in measured:
             if count is None:
                 lines.append(
-                    f"  Candidate: {candidate.ref} ({rows} rows) — no slice filter, skipped"
+                    f"  Candidate: {candidate.ref} ({rows} rows) — no slice column and no "
+                    "safe join to one; inconclusive, skipped"
                 )
                 continue
-            lines.append(f"  Candidate: {candidate.ref} ({rows} rows)")
+            lines.append(f"  Candidate: {candidate.ref} ({rows} rows), sliced on {sliced_on}")
             lines.append(f"    COUNT(*): {count}")
             lines.extend(f"    COUNT(DISTINCT {name}): {n}" for name, n in distinct)
             model_value = float(value)
@@ -537,9 +610,10 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
     return lines
 
 
-def register_verifier_tools(server: MCPServer, run: RunQuery) -> None:
+def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | None) -> None:
     """Add the verification tools to `server`; called only when the run config turns the verifier
-    layer on."""
+    layer on. With a `workspace`, map_columns reads only dbt projects inside it."""
+    root = workspace.resolve() if workspace else None
 
     @server.tool()
     def map_columns(model_name: str, project_dir: str, exclude: str = "") -> str:
@@ -551,6 +625,8 @@ def register_verifier_tools(server: MCPServer, run: RunQuery) -> None:
         `exclude` is a comma-separated list of column names to mark UNMAPPED-EXCLUDE.
         """
         project = Path(project_dir).expanduser()
+        if root and not project.resolve().is_relative_to(root):
+            raise ToolError(f"Error: {project_dir!r} is outside the workspace {root}")
         if not (project / "dbt_project.yml").is_file():
             raise ToolError(f"Error: {project_dir!r} is not a dbt project (no dbt_project.yml)")
         sql_path = model_sql(project, model_name)

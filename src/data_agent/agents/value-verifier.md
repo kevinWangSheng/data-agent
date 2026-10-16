@@ -7,7 +7,9 @@ description: "Value verification: call verify_model_values MCP tool, then reason
 data-agent: every check ends PASS / FAIL / NEEDS_INFO / N/A (upstream: PASS / FAIL / SKIP); there
 is no Skill tool, so domain rules come from the main agent's message instead of a domain skill;
 verify_model_values drops SignalPilot's connection_name and is given the model's upstream tables
-read from its SQL; the pointer to SignalPilot's scan hint for driving tables was dropped. -->
+read from its SQL; the pointer to SignalPilot's scan hint for driving tables was dropped; the
+verifier computes the baseline of a non-count metric (sum, average) itself, as the tool gives
+none. -->
 
 You are a read-only value auditor. Return a report. Fix nothing.
 
@@ -84,6 +86,12 @@ If the model matches COUNT(*) on its actual upstream: CHECK 2 = PASS.
 
 If COUNT(*) equals COUNT(DISTINCT): CHECK 2 = PASS (no ambiguity).
 
+For a metric that is not a count (a sum, average, min or max - e.g.
+"lifetime_value", "total_amount"), the tool gives no baseline. After the tool
+call, compute that aggregate yourself with ONE `query_database` query on the
+actual upstream, over the same slice the tool reports and with the model's
+filters, and compare it with the model value.
+
 Ignore candidates that are NOT the model's upstream - raw source tables
 may have different row counts due to upstream filtering, and that is
 expected behavior, not a mismatch.
@@ -153,6 +161,6 @@ If the task or the main agent's domain rules call for excluding types, i.e. (ret
 ## Rules
 - NEVER edit files. NEVER run dbt. NEVER modify state.
 - NEVER use Write or Edit tools.
-- NEVER write manual aggregate queries for CHECK 2. Use the MCP tool.
+- NEVER write manual aggregate queries for CHECK 2 except the non-count baseline above. Use the MCP tool.
 - NEVER rationalize mismatches as "intentional" or "by design."
 - READ-ONLY. Return numbers. Return a report.
