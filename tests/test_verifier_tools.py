@@ -922,3 +922,24 @@ def test_an_array_without_element_types_matches_any_array() -> None:
     assert verifier_tools.same_type("integer[]", "ARRAY")
     assert verifier_tools.same_type("LIST(INTEGER)", "INTEGER[]")
     assert not verifier_tools.same_type("integer[]", "VARCHAR[]")
+
+
+def test_a_count_named_column_the_sql_does_not_show_is_inconclusive(tmp_path: Path) -> None:
+    sql = (
+        "WITH both_years AS (SELECT customer_id, amount FROM orders WHERE year = 2024"
+        " UNION ALL SELECT customer_id, amount FROM orders WHERE year = 2025),"
+        " per_customer AS (SELECT customer_id, SUM(amount)::BIGINT AS n_units FROM both_years"
+        " GROUP BY customer_id)"
+        " SELECT u.customer_id, u.n_units FROM (SELECT * FROM per_customer UNION ALL"
+        " SELECT * FROM per_customer WHERE false) AS u"
+    )
+    text = verify(model_db(tmp_path, sql), "m", ["orders"], sql)
+    assert "Model SQL read" in text
+    block = metric_block(text, "n_units")
+    assert "inconclusive" in block and "→" not in block
+
+
+def test_declared_columns_split_only_at_top_level_commas() -> None:
+    assert verifier_tools.declared_columns(
+        "payload:STRUCT(id INT, amount DECIMAL(10,2)), flag:BOOLEAN, id"
+    ) == [("payload", "STRUCT(id INT, amount DECIMAL(10,2))"), ("flag", "BOOLEAN"), ("id", "")]

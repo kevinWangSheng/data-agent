@@ -41,8 +41,9 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   project), and an aliased model's SQL is found under its model name.
   Without the SQL, or when it does not
   parse (the output says so), dimensions come from column types and an integer named as a
-  count (n_*, num_*, count_*, *_count) is held exactly against COUNT(*). Upstream also held
-  sums up against row counts.
+  count (n_*, num_*, count_*, *_count) is held exactly against COUNT(*); with the SQL read,
+  such a column whose aggregate the SQL does not show (a UNION) is inconclusive. Upstream also
+  held sums up against row counts.
 - check_model_schema also takes `name:data_type` pairs and compares the types by kind, DuckDB
   and Postgres aliases folded, nested types by their element and field types too.
 - A table profiled over a sample says so, its NULL shares are of the sample, and a column that
@@ -1029,7 +1030,7 @@ class Roles:
     """The model's columns by role. From its SQL when it parses: a GROUP BY output is a
     dimension, a numeric aggregate a metric and a count when its outermost aggregate is COUNT;
     other columns, and every column without the SQL, by type and name (text, date and `*_id` are
-    dimensions; an integer named as a count is COUNT(*))."""
+    dimensions; an integer named as a count is COUNT(*), inconclusive when the SQL parsed)."""
 
     dimensions: list[str]
     unsliceable: list[str]  # grouping columns the slice cannot match: every slice is too wide
@@ -1092,6 +1093,12 @@ def column_roles(
             named = output is None or isinstance(output.expression, exp.Column)
             if named and base_type(data_type) in INTEGER_TYPES and COUNT_NAME_RE.match(name):
                 roles.counts[name] = ROW_COUNT
+                if parsed:
+                    # Parsed SQL that does not show the column's aggregate (a UNION, a table's
+                    # star) gives the name no say.
+                    roles.opaque[name] = (
+                        "named as a count, but the model's SQL does not show how it is computed"
+                    )
         else:
             roles.unsliceable.append(name)
     return roles, note
@@ -1267,7 +1274,15 @@ SAME_KIND: dict[str, str] = {
 def declared_columns(text: str) -> list[tuple[str, str]]:
     """(name, data type or "") per comma-separated `name[:data_type]`; a comma inside a type's
     parentheses, as in numeric(10,2), does not split."""
-    pairs = [item.partition(":") for item in re.split(r",(?![^()]*\))", text)]
+    items = [""]
+    depth = 0
+    for char in text:
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if char == "," and depth <= 0:
+            items.append("")
+        else:
+            items[-1] += char
+    pairs = [item.partition(":") for item in items]
     return [(name.strip(), data_type.strip()) for name, _, data_type in pairs if name.strip()]
 
 
