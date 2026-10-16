@@ -1,6 +1,6 @@
 # 06 — 上下文策略工具
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 02, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 06-context-tools)
@@ -92,3 +92,11 @@ raw.customers.tier: 'Gold' (2), 'GOLD' (1), 'gold_tier' (1)
 **不修的理由**：多 catalog 下同名表合并列表（现在每次只连一个 DuckDB 文件，问题是潜在的）；hydrate 每次 count(*)（行数属于对象全文，DuckDB 代价低）；discover 的 limit 参数（照 ktx discover_data）；每次调用重读 catalog（dbt run 会改 schema，缓存会过期）；CATALOG_SQL 与 LIST_TABLES_SQL 形状不同，不合并。
 
 **已知限制**：dictionary_search 每次扫所有文本列，超大库靠 50 列早停与网关超时兜底，没像 ktx 那样只对类别列预采样；Postgres 方言未测（SQL 只用 information_schema、strpos、CAST AS VARCHAR、窗口函数），由工单 08 覆盖。
+
+### 2026-10-16 第 7 步：PR #8 退回第 1 轮（主会话）
+
+CI 两次全绿。退回：原因如下，在原分支 `worktree-06-context-tools` 上修，修完提交，不 push、不 rebase（需要同步 main 时用 `git merge origin/main`）。
+
+1. **Codex P2（`src/data_agent/context_tools.py:134` `find_table`）属实**：先 `strip().lower()` 再匹配，discover 返回的带首尾空格的带引号标识符（如 DuckDB 表 `"events "`）在 hydrate 里找不到；大小写折叠会让 Postgres 里只差大小写的带引号标识符变成歧义。改为：先按 ref 原样精确匹配限定名，命中即返回；没命中再做现在的规范化与裸名查找。配一个修复前会失败的测试（带空格的表名、只差大小写的两张表）。
+
+修完 `make check`，跑一次修复相关的真实 MCP 调用，再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。
