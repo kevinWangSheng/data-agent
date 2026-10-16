@@ -5,6 +5,7 @@ the `ANTHROPIC_*` variables it reads, so the user's own Claude Code setup is unt
 """
 
 import hashlib
+import shutil
 import subprocess
 import sys
 import uuid
@@ -33,9 +34,10 @@ from claude_agent_sdk import (
 from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import McpStdioServerConfig
 
+from data_agent.command_guard import command_guard
 from data_agent.events import EventLog, known_secrets
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
-from data_agent.workspace_guard import GUARDED_TOOLS, workspace_guard
+from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_MODEL = "deepseek-flash"
@@ -43,6 +45,10 @@ DEFAULT_MODEL = "deepseek-flash"
 # The current Skills; a run config may name another version (RunConfig.skills_dir).
 SKILLS_DIR = skills_path("skills")
 QUERY_SKILLS = ("sql-workflow", "duckdb-sql")
+# dbt-workflow first (plan §3); its Step 2 Skills are preloaded with it, as there is no Skill tool.
+DBT_SKILLS = ("dbt-workflow", "dbt-write", "dbt-debugging", "duckdb-sql")
+# The scripts dbt-workflow runs; its text names them through ${CLAUDE_SKILL_DIR}.
+DBT_SCRIPTS = ("scan_project.py", "validate_project.py")
 # Written into a wheel at build time (hatch_build.py); absent in a source checkout.
 BUILD_COMMIT = Path(__file__).resolve().parent / "BUILD_COMMIT"
 
@@ -52,6 +58,10 @@ QUERY_TOOL = f"mcp__{MCP_SERVER}__query_database"
 # Query tasks only read: the data tools plus reading the workspace. No Bash, Write or Edit, so the
 # read-only gateway is the only way to the data; the workspace guard keeps the file tools in it.
 QUERY_BUILTIN_TOOLS: list[str] = list(GUARDED_TOOLS)
+# dbt tasks also edit the project and run dbt (CONTEXT: dbt write). The workspace guard keeps Write
+# and Edit in the workspace and off the database file; the command guard lets Bash run only dbt and
+# the dbt-workflow scripts, so reads still go through the gateway.
+DBT_BUILTIN_TOOLS: list[str] = [*GUARDED_TOOLS, *WRITE_TOOLS, "Bash"]
 
 SYSTEM_PROMPT = """\
 You are a data agent. You answer questions about a user's data by exploring the database and \
@@ -78,6 +88,30 @@ Workspace (your working directory): {workspace}
 </task>
 
 End with a final message that gives the answer first, then the assumptions you made.
+"""
+
+DBT_SYSTEM_PROMPT = """\
+You are a data agent. You build and fix the models of a user's dbt project, materialize them with \
+`dbt run`, and check the results.
+
+All database access goes through the `{server}` MCP tools, which are read-only. The only way to \
+change data is to edit the dbt project and run dbt. Work only from what the tools and the project \
+files show you; do not guess table names, column names or values.
+"""
+
+DBT_PROMPT = """\
+Task type: dbt
+Database: DuckDB. dbt writes to it through the project's profile; you read it only through the \
+`{server}` MCP tools.
+dbt project (your working directory): {workspace}
+Bash runs only dbt commands{scripts}, from the working directory.
+
+<task>
+{task}
+</task>
+
+End with a final message that lists the models you created or changed, how the last dbt run went, \
+then the assumptions you made.
 """
 
 
@@ -187,14 +221,30 @@ def git_commit() -> str:
 
 def load_skills(names: tuple[str, ...], skills_dir: Path) -> str:
     """Skills go into the system prompt, so the workflow is loaded before the first turn instead
-    of depending on the model choosing to call a Skill tool."""
-    return "\n\n".join((skills_dir / name / "SKILL.md").read_text() for name in names)
+    of depending on the model choosing to call a Skill tool. `${CLAUDE_SKILL_DIR}` becomes the
+    Skill's own directory, as the Skill tool would set it."""
+    return "\n\n".join(
+        (skills_dir / name / "SKILL.md")
+        .read_text()
+        .replace("${CLAUDE_SKILL_DIR}", str(skills_dir / name))
+        for name in names
+    )
 
 
-def system_prompt(config: RunConfig) -> str:
-    prompt = SYSTEM_PROMPT.format(server=MCP_SERVER)
+def dbt_scripts(config: RunConfig) -> tuple[Path, ...]:
+    """The dbt-workflow scripts Bash may run: part of the Skill layer, so none when it is off."""
+    if not config.skill:
+        return ()
+    return tuple(config.skills_dir / "dbt-workflow" / name for name in DBT_SCRIPTS)
+
+
+def system_prompt(task_type: str, config: RunConfig) -> str:
+    base, names = (
+        (DBT_SYSTEM_PROMPT, DBT_SKILLS) if task_type == "dbt" else (SYSTEM_PROMPT, QUERY_SKILLS)
+    )
+    prompt = base.format(server=MCP_SERVER)
     if config.skill:
-        prompt += SKILLS_PROMPT.format(skills=load_skills(QUERY_SKILLS, config.skills_dir))
+        prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
     return prompt
 
 
@@ -209,17 +259,25 @@ def build_options(
             *("--config", config.name, "--duckdb", str(task.duckdb.resolve())),
         ],
     }
-    guard = workspace_guard(task.workspace)
+    if task.type == "dbt":
+        tools = DBT_BUILTIN_TOOLS
+        file_tools = (*GUARDED_TOOLS, *WRITE_TOOLS)
+        bash_guard = command_guard(task.workspace, dbt_scripts(config))
+        hooks = [HookMatcher(matcher="Bash", hooks=[bash_guard])]
+    else:
+        tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
+    guard = workspace_guard(task.workspace, protected=(task.duckdb,))
+    hooks.append(HookMatcher(matcher="|".join(file_tools), hooks=[guard]))
     return ClaudeAgentOptions(
         model=settings.model,
         env=settings.sdk_env(),
-        system_prompt=system_prompt(config),
+        system_prompt=system_prompt(task.type, config),
         cwd=str(task.workspace.resolve()),
-        tools=QUERY_BUILTIN_TOOLS,
-        allowed_tools=[*QUERY_BUILTIN_TOOLS, f"mcp__{MCP_SERVER}"],
+        tools=tools,
+        allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
-        hooks={"PreToolUse": [HookMatcher(matcher="|".join(GUARDED_TOOLS), hooks=[guard])]},
+        hooks={"PreToolUse": hooks},
         mcp_servers={MCP_SERVER: server},
         strict_mcp_config=True,
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.
@@ -323,8 +381,8 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
 
 
 async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str, str]) -> Outcome:
-    if task.type != "query":
-        raise ConfigError(f"task type {task.type!r} is not supported yet; only 'query' runs")
+    if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
+        raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
     events_dir.mkdir(parents=True, exist_ok=True)
     path = events_file(events_dir)
@@ -341,8 +399,11 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
             sdk_version=claude_agent_sdk.__version__,
             cli_version=__cli_version__,
         )
-        prompt = QUERY_PROMPT.format(
-            server=MCP_SERVER, workspace=task.workspace.resolve(), task=task.text
+        prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
+            server=MCP_SERVER,
+            workspace=task.workspace.resolve(),
+            task=task.text,
+            scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
         )
         tools: dict[str, str] = {}
         try:
