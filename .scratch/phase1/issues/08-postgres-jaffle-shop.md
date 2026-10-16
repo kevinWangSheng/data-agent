@@ -1,6 +1,6 @@
 # 08 — Postgres 支持与 jaffle-shop 用例
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 06, 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5), worktree 08-postgres-jaffle-shop
@@ -191,3 +191,12 @@ customers_plus FAIL {'missing_columns': [], 'extra_columns': ['debug_flag'], 'ro
 ### 2026-10-16 主会话：合并前集成
 
 工单 15（PR #16）已合并，本分支与 main 在 `src/data_agent/agent.py` 冲突（`git merge-tree` 实测）。在原分支上 `git merge origin/main` 解决：两边都保留（15 的价目表上限与 `include_partial_messages`、本分支的 `database_env` 传进 SDK 子进程环境）；`build_options` 若两边都改了签名，合并成一个并更新所有调用（含 `evals/dab.py` 与测试）。`make check` 通过后提交；不 push、不 rebase；不需要真实运行与审查。
+
+### 2026-10-16 ticket agent: integration before merge
+
+**Merge (`7496256`).** `git merge origin/main` (not a rebase). The only conflict was `src/data_agent/agent.py`, with three hunks. Both sides are kept:
+- **`build_options` signature:** both sides added a sixth parameter, so they are merged into one: `..., emit, spend: Spend | None = None, database_env: Mapping[str, str] | None = None`. `spend` stays in sixth position, so the call in `evals/dab.py` (`..., log.emit, cap`) and every test call work without changes. The docstring covers both parameters. `env=settings.sdk_env() | dict(database_env or {})` and ticket 15's `spend.hooks` merge sit side by side.
+- **Before `EventLog` in `run()`:** this branch's `url_secrets` / `url_names` masking is kept, and ticket 15's `spend = spend_cap(settings.model, config.max_budget_usd)` is added before it.
+- **Calling the SDK in `run()`:** `build_options(task, config, settings, stderr, log.emit, spend, database_env=database_env)`, and the message loop uses ticket 15's `aclosing(capped(stream, spend))`.
+
+**Checks.** `make check` after the merge: ruff All checks passed; 115 files already formatted; basedpyright 0 errors, 0 warnings, 0 notes; pytest 942 passed, 24 deselected (full output in `runs/08-merge-check.txt`). Pre-commit all Passed. As the ticket says, I did no real runs and no reviews this round. I did not push.
