@@ -14,3 +14,11 @@ License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-
 - tests/engine/ (test_sql_engine.py, test_sql_governance_dialects.py, test_limit_enforcement.py,
   test_validate_sql_dialect_contract.py) <- signalpilot/gateway/tests/, modified as noted at the
   top of each file.
+
+## signalpilot-plugin
+
+Source: https://github.com/SignalPilot-Labs/signalpilot-plugin, commit f7b0c091d6e274af24f278e7b25336e48f4506bc
+License: Apache License 2.0 (upstream README and .claude-plugin/plugin.json). The upstream files carry
+no per-file copyright header.
+
+- skills/sql-workflow/SKILL.md, skills/duckdb-sql/SKILL.md <- skills/ (same paths), unmodified.
