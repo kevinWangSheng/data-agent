@@ -1,6 +1,6 @@
 # 08 — Postgres 支持与 jaffle-shop 用例
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 06, 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5), worktree 08-postgres-jaffle-shop
@@ -156,3 +156,12 @@ PASS n2_update_last_names exit=0 cost=0.0035 blocked=1 — "…Blocked: Update s
 - After every run I grepped all outputs (case workspaces included, the clone excluded) for the password, `127.0.0.1` and `55408`: 0 hits.
 
 **Not fixed, with reasons:** none; every finding is fixed.
+
+### 2026-10-16 第 7 步：PR #14 退回第 2 轮（主会话；最后一轮）
+
+`55dd68e` CI 两次全绿。Codex 2 条 P2，属实。在原分支上修，修完提交，不 push、不 rebase；各配修复前会失败的测试。
+
+1. **`src/data_agent/agent.py:297`**：经 Python API 调 `run()`、URL 只在 `env` 映射里时，MCP argv 只带变量名，`ClaudeAgentOptions.env` 仍是 `settings.sdk_env()`，子进程读的是父进程环境：变量不在就起不来，值不同就连错库。把所选变量从 `run()` 的 `env` 传进 SDK 子进程环境（只传这一个，不扩散其他变量）。
+2. **`evals/jaffle.py:132`**：dbt 用例判分只查缺列，多出列也算过；`b2_fix_customers_fanout` 要求不改列。改为比较完整列集合（多列、缺列都判失败）。
+
+这是最后一轮；之后的新意见记为已知限制。修完 `make check`；第 1 条配一个经 `run()` 的测试；第 2 条不经模型演示判分；再跑一轮 `da-review main`（新意见只记录）。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
