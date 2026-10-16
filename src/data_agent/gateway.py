@@ -5,6 +5,7 @@ and caps the row count. Only then does the statement reach the database, over a 
 connection.
 """
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import duckdb
 from data_agent.engine import inject_limit, validate_sql
 
 MAX_ROWS = 10_000
+TIMEOUT_SECONDS = 150  # upstream query_database's timeout_seconds
 
 
 class QueryBlocked(Exception):
@@ -33,8 +35,9 @@ class QueryResult:
 class DuckDBGateway:
     dialect = "duckdb"
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, timeout_seconds: float = TIMEOUT_SECONDS) -> None:
         self.path = path
+        self.timeout_seconds = timeout_seconds
 
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
         verdict = validate_sql(sql, dialect=self.dialect)
@@ -53,11 +56,17 @@ class DuckDBGateway:
             )
         except duckdb.Error as exc:
             raise QueryFailed(str(exc)) from exc
+        # DuckDB has no statement timeout; interrupt the connection from a timer thread instead.
+        timer = threading.Timer(self.timeout_seconds, con.interrupt)
+        timer.start()
         try:
             cursor = con.execute(governed)
             columns = [column[0] for column in cursor.description or []]
             return QueryResult(columns=columns, rows=cursor.fetchall())
+        except duckdb.InterruptException as exc:
+            raise QueryFailed(f"Query timed out after {self.timeout_seconds}s") from exc
         except duckdb.Error as exc:
             raise QueryFailed(str(exc)) from exc
         finally:
+            timer.cancel()
             con.close()

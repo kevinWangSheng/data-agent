@@ -3,7 +3,7 @@
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from data_agent.gateway import DuckDBGateway, QueryBlocked, QueryFailed, QueryResult
+from data_agent.gateway import MAX_ROWS, DuckDBGateway, QueryBlocked, QueryFailed, QueryResult
 
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
 LIST_TABLES_SQL = """
@@ -58,7 +58,7 @@ def build_server(gateway: DuckDBGateway) -> MCPServer:
 
         Pass `name_contains` to keep only tables whose name contains that text (ignores case).
         """
-        tables = run_query(gateway, LIST_TABLES_SQL, row_limit=10_000).rows
+        tables = run_query(gateway, LIST_TABLES_SQL, row_limit=MAX_ROWS).rows
         needle = (name_contains or "").strip().lower()
         lines = [
             f"{schema}.{name} ({kind.lower()}): {columns}"

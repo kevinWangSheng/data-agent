@@ -32,7 +32,8 @@ packages = ["src/data_agent"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Copied verbatim from SignalPilot (NOTICE); keep upstream's style so diffs against it stay clean.
+# Copied from SignalPilot (NOTICE; modifications noted per file); keep upstream's style so diffs
+# against it stay clean.
 extend-exclude = ["src/data_agent/engine", "tests/engine"]
 force-exclude = true
 
@@ -41,7 +42,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.basedpyright]
 include = ["src", "tests"]
-# Verbatim SignalPilot copies (see [tool.ruff]); their annotations predate sqlglot 30's stubs.
+# SignalPilot copies (see [tool.ruff]); their annotations predate sqlglot 30's stubs.
 exclude = ["src/data_agent/engine", "tests/engine"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
