@@ -1,12 +1,14 @@
-"""`scrub DIR`: remove API keys, the model endpoint, IPv4 addresses, hostnames, and the local home
-directory and user name before upload.
+"""`scrub DIR`: remove API keys, the model endpoint, IPv4 addresses, hostnames, and the home
+directories and user names of this machine and of the machine that ran the job before upload.
 
 Rewrites every file under DIR in place (plan §7: published trajectories leak nothing). In `.json`
 and `.jsonl` files it scrubs the decoded strings and re-serializes, so JSON escapes neither hide a
 secret nor get broken by a redaction; other files, and lines that do not parse, are scrubbed as
 text. JSON nested in a string (a tool that printed JSON) is decoded and scrubbed the same way.
 Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks, a
-`\\uXXXX` escape outside parseable JSON, a repeated JSON key) is listed and the command fails.
+`\\uXXXX` escape outside parseable JSON, a repeated JSON key) is listed and the command fails, and
+so is any host path left under a home directory (`/home/<x>`, `/Users/<x>`, `/root/`) that no
+rule removed; container paths such as `/app` and `/logs` are not host paths.
 """
 
 import argparse
@@ -39,6 +41,11 @@ KEY_SHAPE = re.compile(
 )
 OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 IPV4 = re.compile(rf"(?<![\d.]){OCTET}(?:\.{OCTET}){{3}}(?!\.?\d)")
+# A home directory path on a host; `[redacted-...]` is what a rule left in place of one.
+HOST_PATH = re.compile(
+    r"(?:(?<![A-Za-z0-9_.-])|(?<=\\[bfnrt]))"
+    r"(?:/(?:home|Users)/(?!\[redacted-)[^/\s\"'\\]+|/root/)"
+)
 # Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
 UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
 
@@ -56,6 +63,18 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.add_argument(
         "--hostname", action="append", default=[], help="extra hostname to remove (repeatable)"
     )
+    parser.add_argument(
+        "--home",
+        action="append",
+        default=[],
+        help="home directory of the machine that ran the job (repeatable; this one's is included)",
+    )
+    parser.add_argument(
+        "--user",
+        action="append",
+        default=[],
+        help="user name of the machine that ran the job (repeatable; this one's is included)",
+    )
     parser.set_defaults(run=run)
 
 
@@ -68,7 +87,9 @@ def hostname(value: str) -> re.Pattern[str]:
     return re.compile(rf"{NAME_START}{re.escape(value)}(?![A-Za-z0-9_-])", re.IGNORECASE)
 
 
-def build_rules(hostnames: list[str]) -> Rules:
+def build_rules(
+    hostnames: list[str], homes: list[str] | None = None, users: list[str] | None = None
+) -> Rules:
     """(marker kind, pattern) in apply order: keys first, a whole endpoint before its host."""
     rules: Rules = []
     if key := os.environ.get("DATA_AGENT_API_KEY", "").strip():
@@ -82,15 +103,26 @@ def build_rules(hostnames: list[str]) -> Rules:
             hosts.append(host)
     rules.extend(("host", hostname(h)) for h in sorted(set(hosts), key=len, reverse=True))
     rules.append(("ip", IPV4))
-    # Harbor records host paths (job, task, logs) under the home directory; the whole home path
-    # goes before the user name inside it. The user name is removed as a path segment only, so a
-    # name that is also a word or a Harbor field (`agent`) leaves prose and structure alone; root
-    # names no person.
-    if (home := str(Path.home())) != "/":
+    # Harbor records host paths (job, task, logs) under the home directory of the machine that
+    # ran the job, which may not be this one; whole home paths go before the user names inside
+    # them. A user name is removed as a path segment only, so a name that is also a word or a
+    # Harbor field (`agent`) leaves prose and structure alone; root names no person.
+    all_homes = {str(Path.home()), *(h.rstrip("/") for h in homes or [])} - {"", "/"}
+    for home in sorted(all_homes, key=len, reverse=True):
         rules.append(("home", re.compile(rf"{re.escape(home)}(?![A-Za-z0-9_.-])")))
-    if (user := getpass.getuser()) != "root":
+    all_users = {getpass.getuser(), *(users or [])} - {"", "root"}
+    for user in sorted(all_users, key=len, reverse=True):
         rules.append(("user", re.compile(rf"(?<=/){re.escape(user)}(?![A-Za-z0-9_.-])")))
     return rules
+
+
+def host_paths(path: Path, text: str) -> list[str]:
+    """`file:line: path` for each host home path in scrubbed text."""
+    return [
+        f"{path}:{number}: {match.group()}"
+        for number, line in enumerate(text.splitlines(), start=1)
+        for match in HOST_PATH.finditer(line)
+    ]
 
 
 def scrub_text(text: str, rules: Rules, counts: Counter[str]) -> str:
@@ -176,10 +208,11 @@ def run(args: argparse.Namespace) -> int:
     if not root.is_dir():
         print(f"scrub: {root} is not a directory", file=sys.stderr)
         return 2
-    rules = build_rules(args.hostname)
+    rules = build_rules(args.hostname, args.home, args.user)
     counts: Counter[str] = Counter()
     files, unchecked = walk_files(root)
     changed = 0
+    left: list[str] = []
     for path in files:
         try:
             text = path.read_bytes().decode("utf-8")
@@ -193,6 +226,7 @@ def run(args: argparse.Namespace) -> int:
             unchecked.append(f"{path}: {e}")
             continue
         counts.update(file_counts)
+        left.extend(host_paths(path, scrubbed))
         if scrubbed != text:
             path.write_bytes(scrubbed.encode("utf-8"))
             changed += 1
@@ -203,5 +237,11 @@ def run(args: argparse.Namespace) -> int:
         print("scrub: cannot check these; remove or scrub by hand before upload:", file=sys.stderr)
         for problem in unchecked:
             print(f"  {problem}", file=sys.stderr)
-        return 1
-    return 0
+    if left:
+        print(
+            "scrub: host paths left; rerun with --home/--user of the machine that ran the job:",
+            file=sys.stderr,
+        )
+        for problem in left:
+            print(f"  {problem}", file=sys.stderr)
+    return 1 if unchecked or left else 0

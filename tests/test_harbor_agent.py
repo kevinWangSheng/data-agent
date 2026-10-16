@@ -6,6 +6,7 @@ Harbor is in the ticket's Comments (spec: the adapter is proved by a real run).
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -320,12 +321,52 @@ def test_client_errors_are_never_retried(status: int) -> None:
     assert error is None or error.__name__ not in harbor_agent.TRANSIENT_ERRORS
 
 
-def test_install_puts_the_locked_agent_in_its_own_virtualenv(tmp_path: Path) -> None:
+@pytest.fixture
+def fake_uv(monkeypatch: pytest.MonkeyPatch) -> bytes:
+    """uv's release archive, served without the network, with its checksum pinned."""
+    archive = b"uv for aarch64"
+    urls: list[str] = []
+
+    def download(url: str, dest: Path) -> None:
+        urls.append(url)
+        dest.write_bytes(archive)
+
+    monkeypatch.setattr(harbor_agent, "download", download)
+    monkeypatch.setattr(harbor_agent, "_uv_archives", {})
+    name, _ = harbor_agent.UV_ARCHIVES["aarch64"]
+    digest = hashlib.sha256(archive).hexdigest()
+    monkeypatch.setitem(harbor_agent.UV_ARCHIVES, "aarch64", (name, digest))
+    return archive
+
+
+def test_uv_archive_is_the_pinned_release_for_the_container_architecture(fake_uv: bytes) -> None:
+    path = harbor_agent.uv_archive("aarch64")
+    assert path.read_bytes() == fake_uv
+    assert harbor_agent.uv_archive("aarch64") == path  # fetched once per process
+
+
+def test_uv_archive_rejects_a_checksum_mismatch(
+    fake_uv: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(harbor_agent.UV_ARCHIVES, "aarch64", ("uv-x", "0" * 64))
+    with pytest.raises(RuntimeError, match="sha256"):
+        harbor_agent.uv_archive("aarch64")
+
+
+def test_uv_archive_rejects_an_unknown_architecture(fake_uv: bytes) -> None:
+    with pytest.raises(RuntimeError, match="riscv64"):
+        harbor_agent.uv_archive("riscv64")
+
+
+def test_install_puts_the_locked_agent_in_its_own_virtualenv(
+    tmp_path: Path, fake_uv: bytes
+) -> None:
     recorded = LocalEnvironment({})
 
     async def no_exec(command: str, **_: Any) -> ExecResult:
         recorded.commands.append(command)
-        return ExecResult(stdout="", stderr="", return_code=0)
+        stdout = "aarch64\n" if command == "uname -m" else ""
+        return ExecResult(stdout=stdout, stderr="", return_code=0)
 
     recorded.exec = no_exec  # type: ignore[method-assign]
     agent = DataAgent(logs_dir=tmp_path, model_name="deepseek/deepseek-flash")
@@ -344,3 +385,8 @@ def test_install_puts_the_locked_agent_in_its_own_virtualenv(tmp_path: Path) -> 
     script = "\n".join(recorded.commands)
     assert f"{DataAgent.AGENT_DIR}/venv" in script
     assert wheel in script
+    # uv is the pinned release archive, uploaded; nothing goes through pip (AGENTS.md).
+    uv = next(path for path in seen if path.endswith(".tar.gz"))
+    assert seen[uv] == fake_uv.decode()
+    assert uv in script
+    assert "-m pip" not in script and "pip install uv" not in script

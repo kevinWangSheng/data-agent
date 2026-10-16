@@ -18,6 +18,7 @@ Run from the repo root, with the `DATA_AGENT_*` variables in the environment:
 """
 
 import asyncio
+import hashlib
 import json
 import shlex
 import subprocess
@@ -67,11 +68,26 @@ STATUS_ERRORS: dict[int, type[NonZeroAgentExitCodeError]] = {
 }
 # The variables `data-agent run` reads its model from (agent.ModelSettings).
 MODEL_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_BASE_URL", "DATA_AGENT_MODEL")
-# Pinned like the other tools; the container has no uv of its own.
+# Pinned like the other tools; the container has no uv of its own. install() uploads uv's static
+# Linux build for the container's `uname -m`, fetched here and checked against the release's
+# `<archive>.sha256`.
 UV_VERSION = "0.10.8"
+UV_URL = "https://github.com/astral-sh/uv/releases/download/{version}/{name}.tar.gz"
+UV_ARCHIVES: dict[str, tuple[str, str]] = {
+    "aarch64": (
+        "uv-aarch64-unknown-linux-musl",
+        "2ef0d0489e9e2a32f134ca80097fa36be4b486c4ab004706a1d6d0d57980ff07",
+    ),
+    "x86_64": (
+        "uv-x86_64-unknown-linux-musl",
+        "a4e6ad1aecac61077de548d2cc9ccf2c2f1848863312b3b59fb0d2eb8d8a043c",
+    ),
+}
 
 _build_lock = threading.Lock()
 _built: tuple[Path, Path] | None = None
+_uv_lock = threading.Lock()
+_uv_archives: dict[str, Path] = {}
 
 
 def status_error(status: int | None) -> type[NonZeroAgentExitCodeError] | None:
@@ -127,6 +143,28 @@ def build_artifacts() -> tuple[Path, Path]:
         return _built
 
 
+def download(url: str, dest: Path) -> None:
+    # Retries every error: a TLS handshake to GitHub's release host failed intermittently here.
+    subprocess.run(
+        ["curl", "-sSfL", "--retry", "5", "--retry-all-errors", "-o", str(dest), url], check=True
+    )
+
+
+def uv_archive(arch: str) -> Path:
+    """uv's release archive for a container architecture (`uname -m`), fetched once per process."""
+    with _uv_lock:
+        if arch not in _uv_archives:
+            if arch not in UV_ARCHIVES:
+                raise RuntimeError(f"no uv build for container architecture {arch!r}")
+            name, sha256 = UV_ARCHIVES[arch]
+            path = Path(tempfile.mkdtemp(prefix="data-agent-uv-")) / f"{name}.tar.gz"
+            download(UV_URL.format(version=UV_VERSION, name=name), path)
+            if (digest := hashlib.sha256(path.read_bytes()).hexdigest()) != sha256:
+                raise RuntimeError(f"{path.name}: sha256 {digest}, expected {sha256}")
+            _uv_archives[arch] = path
+        return _uv_archives[arch]
+
+
 class DataAgentOptions(InstalledAgentOptions):
     run_config: str = Field(
         default="full", description="Run config name, from src/data_agent/configs."
@@ -168,21 +206,26 @@ class DataAgent(BaseInstalledAgent):
     @override
     async def install(self, environment: BaseEnvironment) -> None:
         wheel, requirements = await asyncio.to_thread(build_artifacts)
+        arch = (await environment.exec(command="uname -m")).stdout or ""
+        archive = await asyncio.to_thread(uv_archive, arch.strip())
         remote_wheel = self.AGENT_DIR / wheel.name
         remote_requirements = self.AGENT_DIR / "requirements.txt"
+        remote_archive = self.AGENT_DIR / archive.name
         await environment.upload_file(wheel, str(remote_wheel))
         await environment.upload_file(requirements, str(remote_requirements))
-        bin_dir = self.venv / "bin"
-        uv = shlex.quote(str(bin_dir / "uv"))
-        python = shlex.quote(str(bin_dir / "python"))
+        await environment.upload_file(archive, str(remote_archive))
+        uv = shlex.quote(str(self.AGENT_DIR / "uv"))
+        python = shlex.quote(str(self.venv / "bin" / "python"))
         await self.exec_as_root(
             environment,
             command=(
                 "set -euo pipefail; "
-                # The image's Python. uv comes from PyPI through the venv's own pip: fetching it
-                # from astral.sh or GitHub failed the TLS handshake in 2 of 5 local trials.
-                f"python3 -m venv {shlex.quote(str(self.venv))}; "
-                f"{python} -m pip install --quiet --retries 5 uv=={UV_VERSION}; "
+                # uv from the uploaded archive: fetching it inside the container from astral.sh
+                # or GitHub failed the TLS handshake in 2 of 5 local trials.
+                f"tar -xzf {shlex.quote(str(remote_archive))} --strip-components 1 "
+                f"-C {shlex.quote(str(self.AGENT_DIR))}; "
+                # The image's Python; uv installs into the venv, so the venv needs no pip.
+                f"python3 -m venv --without-pip {shlex.quote(str(self.venv))}; "
                 # uv's defaults (3 retries, 30 s) lost a PyPI fetch in 1 of 5 local trials.
                 "export UV_HTTP_RETRIES=10 UV_HTTP_TIMEOUT=120; "
                 f"{uv} pip install --python {python} --require-hashes "

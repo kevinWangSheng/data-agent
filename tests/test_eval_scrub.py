@@ -238,3 +238,49 @@ def test_scrub_fails_on_missing_directory(tmp_path: Path) -> None:
     proc = scrub(tmp_path / "nope")
     assert proc.returncode != 0
     assert "nope" in proc.stderr
+
+
+def test_scrub_removes_the_homes_and_users_of_the_machine_that_ran_the_job(tmp_path: Path) -> None:
+    """A job run on a server and scrubbed elsewhere holds the server's paths, not this machine's."""
+    result = tmp_path / "trial" / "result.json"
+    result.parent.mkdir()
+    result.write_text(
+        json.dumps(
+            {
+                "trial_uri": "file:///home/ci-runner/jobs/2026-10-16/trial",
+                "task": {"path": "/srv/bench/tasks/dbt-x", "owner": "/data/bob/tasks"},
+            },
+            indent=2,
+        )
+    )
+    proc = scrub(tmp_path, "--home", "/home/ci-runner", "--user", "ci-runner", "--user", "bob")
+    assert proc.returncode == 0, proc.stderr
+    text = result.read_text()
+    assert "ci-runner" not in text and "/bob/" not in text
+    assert json.loads(text)["task"]["path"] == "/srv/bench/tasks/dbt-x"
+
+
+def test_scrub_fails_on_host_paths_left_after_scrubbing(tmp_path: Path) -> None:
+    """Paths under another machine's home that no rule removed are listed, and the command fails."""
+    log = tmp_path / "trial" / "trial.log"
+    log.parent.mkdir()
+    log.write_text(
+        "job dir /home/ci-runner/jobs/x\n"
+        "mounted /Users/carol/data-eng-bench\n"
+        "cache /root/.cache/uv\n"
+        "container /app/home/x/models and /logs/agent; /homeless/x/ and /usr/home/y/ are fine\n"
+    )
+    proc = scrub(tmp_path)
+    assert proc.returncode != 0
+    assert "trial.log:1" in proc.stderr and "/home/ci-runner" in proc.stderr
+    assert "trial.log:2" in proc.stderr and "/Users/carol" in proc.stderr
+    assert "trial.log:3" in proc.stderr and "/root/" in proc.stderr
+    assert "trial.log:4" not in proc.stderr
+
+
+def test_scrub_does_not_report_host_paths_it_removed(tmp_path: Path) -> None:
+    log = tmp_path / "trial.log"
+    log.write_text("job dir /home/ci-runner/jobs/x and /home/ci-runner\n")
+    proc = scrub(tmp_path, "--user", "ci-runner")
+    assert proc.returncode == 0, proc.stderr
+    assert "/home/[redacted-user]/jobs/x" in log.read_text()
