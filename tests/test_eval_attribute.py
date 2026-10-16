@@ -377,3 +377,19 @@ def test_each_call_is_capped_at_the_remaining_budget(tmp_path: Path) -> None:
     run(job, tmp_path / "out", judge, budget_usd=2.0)
 
     assert judge.caps == [2.0, 0.8]
+
+
+def test_names_in_a_listing_given_as_sdk_text_blocks_are_specific(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    trial = write_trial(job, "dev-task__a", "dev-task", 0.0)
+    path = trial / "agent" / "events.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    blocks = [{"type": "text", "text": "main.orders (base table): status, amount"}]
+    events[2]["content"] = blocks  # list_tables' tool_end
+    path.write_text("".join(json.dumps(e) + "\n" for e in events))
+    judge = FakeJudge(reply(suggestion="Always query orders and filter status."), reply())
+
+    run(job, tmp_path / "out", judge)
+
+    assert len(judge.prompts) == 2
+    assert "(orders, status)" in judge.prompts[1]

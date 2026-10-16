@@ -222,7 +222,11 @@ def sql_names(sql: str) -> set[str]:
 
 
 def listed_names(content: Any) -> set[str]:
-    """Table and column names in a `list_tables` result, plain or wrapped as {"result": ...}."""
+    """Table and column names in a `list_tables` result: plain, wrapped as {"result": ...}, or a
+    list of SDK text blocks."""
+    if isinstance(content, list):
+        blocks = [b.get("text") for b in content if isinstance(b, dict)]
+        content = "\n".join(b for b in blocks if isinstance(b, str))
     text = _as_text(content)
     try:
         wrapped = json.loads(text)
