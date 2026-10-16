@@ -83,11 +83,13 @@ def build_rules(hostnames: list[str]) -> Rules:
     rules.extend(("host", hostname(h)) for h in sorted(set(hosts), key=len, reverse=True))
     rules.append(("ip", IPV4))
     # Harbor records host paths (job, task, logs) under the home directory; the whole home path
-    # goes before the user name inside it. root names no person, and is a common word.
+    # goes before the user name inside it. The user name is removed as a path segment only, so a
+    # name that is also a word or a Harbor field (`agent`) leaves prose and structure alone; root
+    # names no person.
     if (home := str(Path.home())) != "/":
         rules.append(("home", re.compile(rf"{re.escape(home)}(?![A-Za-z0-9_.-])")))
     if (user := getpass.getuser()) != "root":
-        rules.append(("user", hostname(user)))
+        rules.append(("user", re.compile(rf"(?<=/){re.escape(user)}(?![A-Za-z0-9_.-])")))
     return rules
 
 

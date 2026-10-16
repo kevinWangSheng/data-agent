@@ -208,7 +208,7 @@ def test_scrub_removes_the_local_home_directory_and_user_name(tmp_path: Path) ->
             {
                 "trial_uri": "file:///home/alice-dev/jobs/2026-10-16/trial",
                 "task": {"path": "/home/alice-dev/data-eng-bench/tasks/dbt-x"},
-                "note": "run by alice-dev; alice-developer is someone else",
+                "mount": "/Volumes/alice-dev/jobs; /Volumes/alice-developer is someone else",
             },
             indent=2,
         )
@@ -218,9 +218,20 @@ def test_scrub_removes_the_local_home_directory_and_user_name(tmp_path: Path) ->
     text = result.read_text()
     assert "/home/alice-dev" not in text
     data = json.loads(text)
-    assert "alice-dev;" not in data["note"]
-    assert "alice-developer" in data["note"]
+    assert "/alice-dev/" not in data["mount"]
+    assert "/alice-developer " in data["mount"]
     assert data["task"]["path"].endswith("/data-eng-bench/tasks/dbt-x")
+
+
+def test_scrub_keeps_json_keys_that_spell_the_user_name(tmp_path: Path) -> None:
+    """A user named like a Harbor field (`agent`) must not rename that field."""
+    config = tmp_path / "trial" / "config.json"
+    config.parent.mkdir()
+    original = {"agent": {"import_path": "evals.harbor_agent:DataAgent", "name": "agent"}}
+    config.write_text(json.dumps(original, indent=2))
+    proc = scrub(tmp_path, HOME="/home/agent", USER="agent", LOGNAME="agent")
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(config.read_text()) == original
 
 
 def test_scrub_fails_on_missing_directory(tmp_path: Path) -> None:
