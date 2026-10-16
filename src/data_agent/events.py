@@ -14,7 +14,8 @@ from urllib.parse import urlsplit
 
 REDACTED = "[REDACTED]"
 
-# Environment variables whose values must never reach an event file.
+# Environment variables whose values must never reach an event file; DATA_AGENT_ANTHROPIC_API_KEY
+# is the optional Claude key from .env.example, masked whether or not this run uses it.
 SECRET_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_ANTHROPIC_API_KEY", "DATA_AGENT_BASE_URL")
 
 

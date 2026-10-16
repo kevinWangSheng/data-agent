@@ -27,7 +27,10 @@ from claude_agent_sdk import (
     UserMessage,
     query,
 )
+
+# Not re-exported by the SDK; the pinned SDK version fixes where it lives.
 from claude_agent_sdk._cli_version import __cli_version__
+from claude_agent_sdk.types import McpStdioServerConfig
 
 from data_agent.events import EventLog, known_secrets
 from data_agent.run_config import MAX_TURNS, RunConfig
@@ -167,7 +170,7 @@ def load_skills(names: tuple[str, ...]) -> str:
 def build_options(
     task: Task, config: RunConfig, settings: ModelSettings, stderr: list[str]
 ) -> ClaudeAgentOptions:
-    server = {
+    server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
         "args": [
@@ -184,7 +187,7 @@ def build_options(
         allowed_tools=[*QUERY_BUILTIN_TOOLS, f"mcp__{MCP_SERVER}"],
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
-        mcp_servers={MCP_SERVER: server},  # pyright: ignore[reportArgumentType]
+        mcp_servers={MCP_SERVER: server},
         strict_mcp_config=True,
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.
         setting_sources=["user"],
@@ -237,19 +240,35 @@ def record_message(log: EventLog, message: Any, tools: dict[str, str]) -> None:
 
 def result_fields(message: ResultMessage | None) -> dict[str, Any]:
     """Token counts and cost from the SDK's ResultMessage. Uncached input counts the tokens
-    written to the cache too, since those are billed as fresh input."""
-    usage = (message.usage if message else None) or {}
+    written to the cache too, since those are billed as fresh input.
+
+    `cost_usd` is the SDK's own figure, which its bundled CLI prices at Claude rates even for a
+    non-Claude model; `max_budget_usd` caps that same figure.
+    """
+    if message is None:
+        return {
+            "subtype": None,
+            "is_error": True,
+            "num_turns": 0,
+            "terminal_reason": None,
+            "uncached_input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0.0,
+            "errors": [],
+        }
+    usage = message.usage or {}
     return {
-        "subtype": message.subtype if message else None,
-        "is_error": message.is_error if message else True,
-        "num_turns": message.num_turns if message else 0,
-        "terminal_reason": message.terminal_reason if message else None,
+        "subtype": message.subtype,
+        "is_error": message.is_error,
+        "num_turns": message.num_turns,
+        "terminal_reason": message.terminal_reason,
         "uncached_input_tokens": int(usage.get("input_tokens") or 0)
         + int(usage.get("cache_creation_input_tokens") or 0),
         "cached_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
         "output_tokens": int(usage.get("output_tokens") or 0),
-        "cost_usd": (message.total_cost_usd or 0.0) if message else 0.0,
-        "errors": (message.errors or []) if message else [],
+        "cost_usd": message.total_cost_usd or 0.0,
+        "errors": message.errors or [],
     }
 
 
