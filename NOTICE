@@ -14,3 +14,23 @@ License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-
 - tests/engine/ (test_sql_engine.py, test_sql_governance_dialects.py, test_limit_enforcement.py,
   test_validate_sql_dialect_contract.py) <- signalpilot/gateway/tests/, modified as noted at the
   top of each file.
+
+------------------------------------------------------------------------------
+data-eng-bench (https://github.com/Snowflake-Labs/data-eng-bench)
+Apache License 2.0, commit a3278ad102829a6084dde086244a0ef665a8011c
+------------------------------------------------------------------------------
+
+- evals/metrics.py  <- leaderboard/src/leaderboard/core/metrics.py
+  (modified: only the pure scoring functions are kept)
+
+From the upstream NOTICE:
+
+  data-eng-bench
+  Copyright 2026 Snowflake Inc.
+
+  This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+  The repository layout, the `leaderboard/` tooling, and the
+  `.github/workflows/leaderboard-*.yml` workflows are adapted from the
+  Harbor Terminal-Bench 2.1 reference repository
+  (https://github.com/harbor-framework/terminal-bench-2-1), also Apache-2.0.
