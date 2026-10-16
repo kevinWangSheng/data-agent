@@ -1,6 +1,6 @@
 # 07 — 验证子 agent 与 6 个验证工具
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 04, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 07-verifiers)
@@ -120,3 +120,14 @@ One SDK turn, no REDACTED strings in the event file.
 **Known limits:**
 - The model label in parsed verdicts is the report's heading text as written; in the last run it included the file path.
 - Postgres variants of the verifier tests stay xfail for ticket 08.
+
+### 2026-10-16 第 7 步：PR #12 退回第 1 轮（主会话）
+
+CI 两次全绿。退回：原因如下，在原分支 `worktree-07-verifiers` 上修，修完提交，不 push、不 rebase（需要同步 main 时用 `git merge origin/main`）。四条都在 `src/data_agent/verifier_tools.py`，主会话已对照代码核实；各配一个修复前会失败的测试。
+
+1. **Codex P1（`verify_values`，约 :555）**：只按数值/非数值区分维度和指标，`customer_id`（整数）、`count(*) AS n_orders` 这类只按数值键分组的模型，所有列都被当成指标，`slice_values` 为空，直接跳过、不做任何值核对。把 `id`、`*_id` 这类标识/粒度列当切片维度，不当指标。
+2. **Codex P1（同处）**：顶行某个文本/日期维度为 NULL 时被丢掉，切片变宽，可能误报不一致；唯一维度为 NULL 时整个跳过。保留 NULL 维度，生成 `IS NULL` 谓词。
+3. **Codex P2（`model_sql`，约 :169）**：全仓库按文件名找模型，`analyses/customer_orders.sql` 可能被当成 `models/customer_orders.sql`。只在 `dbt_project.yml` 的 `model-paths`（缺省 `models`）下找（工单 04 的 `scan_project.py` 已有同样的规则，可参照）。
+4. **Codex P2（grain key，约 :442）**：只在前 5 个扫描列里找唯一列，唯一键在第 6 列以后就误报"composite key or fan-out"。在全部已扫描列里找。
+
+修完 `make check`、full 配置真实 dbt 运行一次（看 verifier 事件），再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。
