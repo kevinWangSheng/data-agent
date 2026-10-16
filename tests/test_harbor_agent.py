@@ -56,6 +56,7 @@ def result_event(**overrides: Any) -> dict[str, Any]:
         "num_turns": 4,
         "terminal_reason": "completed",
         "api_error_status": None,
+        "api_error": None,
         "uncached_input_tokens": 1_000,
         "cached_input_tokens": 9_000,
         "output_tokens": 500,
@@ -225,14 +226,46 @@ def test_a_failed_model_call_raises_harbors_error_for_its_status(
         run(make_agent(cls, tmp_path), env)
 
 
-def test_a_model_call_that_lost_its_connection_is_retried(local: Local) -> None:
-    """No HTTP status: the connection dropped (agent.run's api_error without a status)."""
+@pytest.mark.parametrize(
+    "message",
+    [
+        "API Error: Connection dropped (ECONNRESET)",
+        "API Error: Connection closed before the response finished",
+        "API Error: Unable to connect to API (ECONNREFUSED)",
+        "API Error: Connection error.",
+    ],
+)
+def test_a_model_call_that_lost_its_connection_is_retried(local: Local, message: str) -> None:
+    """No HTTP status, and the CLI's message says the connection dropped."""
     cls, tmp_path = local
-    final = result_event(is_error=True, terminal_reason="api_error")
+    final = result_event(is_error=True, terminal_reason="api_error", api_error=message)
     env = LocalEnvironment(container_env(tmp_path, 2, jsonl(final), STUB_STDERR="Connection"))
     with pytest.raises(NonZeroAgentExitCodeError) as raised:
         run(make_agent(cls, tmp_path), env)
     assert type(raised.value).__name__ in harbor_agent.TRANSIENT_ERRORS
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "API Error: Request timed out. Check your internet connection and proxy settings",
+        "API Error: Request timed out.",
+        "API Error: No response from API (waited 5m)",
+        "API Error: Unable to connect to API: SSL certificate has expired",
+        None,
+    ],
+)
+def test_a_model_call_that_timed_out_or_failed_otherwise_is_not_retried(
+    local: Local, message: str | None
+) -> None:
+    """Plan §7: timeouts are not retried, and neither is a failure the message does not show to
+    be a dropped connection (or an event file from before the message was recorded)."""
+    cls, tmp_path = local
+    final = result_event(is_error=True, terminal_reason="api_error", api_error=message)
+    env = LocalEnvironment(container_env(tmp_path, 2, jsonl(final), STUB_STDERR="API Error"))
+    with pytest.raises(NonZeroAgentExitCodeError) as raised:
+        run(make_agent(cls, tmp_path), env)
+    assert type(raised.value).__name__ not in harbor_agent.TRANSIENT_ERRORS
 
 
 def test_a_cut_short_event_line_does_not_hide_the_status(local: Local) -> None:

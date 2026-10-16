@@ -7,9 +7,10 @@ secret nor get broken by a redaction; other files, and lines that do not parse, 
 text. JSON nested in a string (a tool that printed JSON) is decoded and scrubbed the same way.
 Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks, a
 `\\uXXXX` escape outside parseable JSON, a repeated JSON key) is listed and the command fails, and
-so is any path left under a user's home directory (`/home/<x>`, `/Users/<x>`) that no rule
-removed. Container paths such as `/app`, `/logs` and `/root` (the agent runs as root in the task
-container, and the SDK saves long tool output under /root/.claude) are not host paths.
+so is any path left under a user's home directory (`/home/<x>`, `/Users/<x>`), or user name left
+as a word outside JSON keys, that no rule removed. Container paths such as `/app`, `/logs` and
+`/root` (the agent runs as root in the task container, and the SDK saves long tool output under
+/root/.claude) are not host paths.
 """
 
 import argparse
@@ -51,8 +52,11 @@ HOST_PATH = re.compile(
 # Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
 UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
 
-# (marker kind, pattern): matches become "[redacted-<kind>]".
-type Rules = list[tuple[str, re.Pattern[str]]]
+# The marker a rule leaves, so a user name inside one ("[redacted-user]") is not a leftover.
+MARKER = re.compile(r"\[redacted-[a-z]+\]")
+
+# (marker kind, pattern, applies to JSON keys): matches become "[redacted-<kind>]".
+type Rules = list[tuple[str, re.Pattern[str], bool]]
 
 
 class Unchecked(Exception):
@@ -89,32 +93,44 @@ def hostname(value: str) -> re.Pattern[str]:
     return re.compile(rf"{NAME_START}{re.escape(value)}(?![A-Za-z0-9_-])", re.IGNORECASE)
 
 
+def user_names(users: list[str] | None = None) -> list[str]:
+    """This machine's user name and those given, longest first; root names no person."""
+    names = {getpass.getuser(), *(users or [])} - {"", "root"}
+    return sorted(names, key=len, reverse=True)
+
+
+def user_word(user: str) -> re.Pattern[str]:
+    """A user name as a whole word, so "ci-runner" does not hit "ci-runners" or "xci-runner"."""
+    return hostname(user)
+
+
 def build_rules(
     hostnames: list[str], homes: list[str] | None = None, users: list[str] | None = None
 ) -> Rules:
-    """(marker kind, pattern) in apply order: keys first, a whole endpoint before its host."""
+    """(marker kind, pattern, applies to JSON keys) in apply order: keys first, a whole endpoint
+    before its host."""
     rules: Rules = []
     if key := os.environ.get("DATA_AGENT_API_KEY", "").strip():
-        rules.append(("key", literal(key)))
-    rules.append(("key", KEY_SHAPE))
+        rules.append(("key", literal(key), True))
+    rules.append(("key", KEY_SHAPE, True))
     hosts = [h for h in hostnames if h]
     if base_url := os.environ.get("DATA_AGENT_BASE_URL", "").strip():
-        rules.append(("endpoint", literal(base_url.rstrip("/"))))
+        rules.append(("endpoint", literal(base_url.rstrip("/")), True))
         netloc = base_url if "://" in base_url else f"//{base_url}"
         if host := urlsplit(netloc).hostname:
             hosts.append(host)
-    rules.extend(("host", hostname(h)) for h in sorted(set(hosts), key=len, reverse=True))
-    rules.append(("ip", IPV4))
+    rules.extend(("host", hostname(h), True) for h in sorted(set(hosts), key=len, reverse=True))
+    rules.append(("ip", IPV4, True))
     # Harbor records host paths (job, task, logs) under the home directory of the machine that
     # ran the job, which may not be this one; whole home paths go before the user names inside
-    # them. A user name is removed as a path segment only, so a name that is also a word or a
-    # Harbor field (`agent`) leaves prose and structure alone; root names no person.
+    # them. A user name is removed as a path segment everywhere, and as a word everywhere but
+    # JSON keys, so a name that is also a Harbor field (`agent`) leaves the structure alone.
     all_homes = {str(Path.home()), *(h.rstrip("/") for h in homes or [])} - {"", "/"}
     for home in sorted(all_homes, key=len, reverse=True):
-        rules.append(("home", re.compile(rf"{re.escape(home)}(?![A-Za-z0-9_.-])")))
-    all_users = {getpass.getuser(), *(users or [])} - {"", "root"}
-    for user in sorted(all_users, key=len, reverse=True):
-        rules.append(("user", re.compile(rf"(?<=/){re.escape(user)}(?![A-Za-z0-9_.-])")))
+        rules.append(("home", re.compile(rf"{re.escape(home)}(?![A-Za-z0-9_.-])"), True))
+    for user in user_names(users):
+        rules.append(("user", re.compile(rf"(?<=/){re.escape(user)}(?![A-Za-z0-9_.-])"), True))
+        rules.append(("user", user_word(user), False))
     return rules
 
 
@@ -141,6 +157,48 @@ def value_strings(value: Any) -> Iterator[str]:
             yield from value_strings(v)
 
 
+def value_texts(value: Any) -> Iterator[str]:
+    """The strings of a JSON value other than object keys, and those of JSON nested in them."""
+    if isinstance(value, str):
+        yield value
+        for document in {value, *value.split("\n")}:
+            try:
+                yield from value_texts(json.loads(document))
+            except json.JSONDecodeError:
+                continue
+    elif isinstance(value, list):
+        for v in value:
+            yield from value_texts(v)
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from value_texts(v)
+
+
+def names_left(path: Path, text: str, users: list[str]) -> list[str]:
+    """`file:line: name` for each user name left as a word in scrubbed text, JSON keys aside
+    (`file: name` for a JSON file read whole)."""
+    if not users:
+        return []
+    word = re.compile("|".join(user_word(u).pattern for u in users), re.IGNORECASE)
+    try:
+        documents = [(str(path), [*value_texts(json.loads(text))])]
+    except json.JSONDecodeError:
+        documents = []
+        for number, line in enumerate(text.splitlines(), start=1):
+            try:
+                texts = [*value_texts(json.loads(line))]
+            except json.JSONDecodeError:
+                texts = [line]
+            documents.append((f"{path}:{number}", texts))
+    found = {
+        (where, match.group())
+        for where, texts in documents
+        for t in texts
+        for match in word.finditer(MARKER.sub(" ", t))
+    }
+    return [f"{where}: {name}" for where, name in sorted(found)]
+
+
 def host_paths(path: Path, text: str) -> list[str]:
     """`file:line: path` for each host home path in scrubbed text, then `file: path` for those
     only a JSON escape (`\\/`, `\\u002f`) kept out of sight."""
@@ -156,7 +214,7 @@ def host_paths(path: Path, text: str) -> list[str]:
 
 
 def scrub_text(text: str, rules: Rules, counts: Counter[str]) -> str:
-    for kind, pattern in rules:
+    for kind, pattern, _ in rules:
         text, n = pattern.subn(f"[redacted-{kind}]", text)
         counts[kind] += n
     return text
@@ -194,8 +252,10 @@ def scrub_value(value: Any, rules: Rules, counts: Counter[str]) -> Any:
     if isinstance(value, list):
         return [scrub_value(v, rules, counts) for v in value]
     if isinstance(value, dict):
+        key_rules = [rule for rule in rules if rule[2]]
         return {
-            scrub_string(k, rules, counts): scrub_value(v, rules, counts) for k, v in value.items()
+            scrub_string(k, key_rules, counts): scrub_value(v, rules, counts)
+            for k, v in value.items()
         }
     return value
 
@@ -239,6 +299,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"scrub: {root} is not a directory", file=sys.stderr)
         return 2
     rules = build_rules(args.hostname, args.home, args.user)
+    users = user_names(args.user)
     counts: Counter[str] = Counter()
     files, unchecked = walk_files(root)
     changed = 0
@@ -257,6 +318,7 @@ def run(args: argparse.Namespace) -> int:
             continue
         counts.update(file_counts)
         left.extend(host_paths(path, scrubbed))
+        left.extend(names_left(path, scrubbed, users))
         if scrubbed != text:
             path.write_bytes(scrubbed.encode("utf-8"))
             changed += 1
@@ -269,7 +331,8 @@ def run(args: argparse.Namespace) -> int:
             print(f"  {problem}", file=sys.stderr)
     if left:
         print(
-            "scrub: host paths left; rerun with --home/--user of the machine that ran the job:",
+            "scrub: host paths or user names left; rerun with --home/--user of the machine that"
+            " ran the job, or remove them by hand:",
             file=sys.stderr,
         )
         for problem in left:

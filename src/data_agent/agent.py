@@ -373,6 +373,7 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
             "num_turns": 0,
             "terminal_reason": None,
             "api_error_status": None,
+            "api_error": None,
             "uncached_input_tokens": 0,
             "cached_input_tokens": 0,
             "output_tokens": 0,
@@ -408,6 +409,9 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
         "terminal_reason": message.terminal_reason,
         # HTTP status of a failed model call; the Harbor adapter retries by it (evals.harbor_agent).
         "api_error_status": message.api_error_status,
+        # The CLI's message for a failed model call ("API Error: Request timed out", ...): without
+        # an HTTP status it is what tells a timeout from a dropped connection.
+        "api_error": message.result if message.terminal_reason == "api_error" else None,
         "uncached_input_tokens": uncached,
         "cached_input_tokens": cached,
         "output_tokens": output,

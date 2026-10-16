@@ -7,9 +7,10 @@ After the trial Harbor calls `populate_context_post_run()`, which fills tokens a
 the trial result from the event file's `result` event.
 
 Errors (plan §7): an agent that stops early (turn or spend cap) is an agent failure the verifier
-scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status (or a
-dropped connection when it has none), so the job config's retry list (`TRANSIENT_ERRORS`) retries
-rate limits, server errors and disconnects only.
+scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status, or for a
+dropped connection when it has none and the CLI's message says so, so the job config's retry list
+(`TRANSIENT_ERRORS`) retries rate limits, server errors and disconnects only; a timed-out request
+keeps Harbor's own classification, which is not retried.
 
 Run from the repo root, with the `DATA_AGENT_*` variables in the environment:
 
@@ -20,6 +21,7 @@ Run from the repo root, with the `DATA_AGENT_*` variables in the environment:
 import asyncio
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import tempfile
@@ -66,6 +68,12 @@ STATUS_ERRORS: dict[int, type[NonZeroAgentExitCodeError]] = {
     503: ApiOverloadedError,
     529: ApiOverloadedError,
 }
+# The CLI's messages for a model call that lost its connection (its connection-error formatter);
+# "Request timed out" and "No response from API" are timeouts, and SSL errors do not pass on retry.
+DISCONNECTED = re.compile(
+    r"^API Error: (?:Connection (?:dropped|lost|closed|refused|error\.|to the API was lost)"
+    r"|Unable to connect to API(?!: SSL)|Can't reach the API server|No internet route)"
+)
 # The variables `data-agent run` reads its model from (agent.ModelSettings).
 MODEL_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_BASE_URL", "DATA_AGENT_MODEL")
 # Pinned like the other tools; the container has no uv of its own. install() uploads uv's static
@@ -102,11 +110,12 @@ def status_error(status: int | None) -> type[NonZeroAgentExitCodeError] | None:
 
 def result_error(result: dict[str, Any]) -> type[NonZeroAgentExitCodeError] | None:
     """Harbor's error type for a run's `result` event. A model call that failed with no HTTP
-    status lost its connection or timed out on the request (agent.run): a dropped connection,
-    retried. Harbor's own agent timeout is a different error and stays unretried."""
+    status lost its connection or timed out on the request (agent.run); only the first, told by
+    the CLI's message, is a dropped connection and retried."""
     if (status := result.get("api_error_status")) is not None:
         return status_error(status)
-    if result.get("terminal_reason") == "api_error":
+    message = result.get("api_error") or ""
+    if result.get("terminal_reason") == "api_error" and DISCONNECTED.match(message):
         return ApiConnectionClosedError
     return None
 

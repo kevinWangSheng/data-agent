@@ -140,6 +140,19 @@ async def test_result_event_keeps_the_http_status_of_a_failed_api_call(
     assert events[-1]["api_error_status"] is None
 
 
+async def test_result_event_keeps_the_message_of_a_failed_api_call_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without an HTTP status the CLI's message is what tells a timeout from a dropped
+    connection (the Harbor adapter retries only the latter); an answer is never copied."""
+    message = "API Error: Request timed out. Check your internet connection and proxy settings"
+    final = result(is_error=True, terminal_reason="api_error", result=message)
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert events[-1]["api_error"] == message
+    _, events = await run_with(monkeypatch, tmp_path, scripted(result()))
+    assert events[-1]["api_error"] is None
+
+
 @pytest.mark.parametrize("task_type", ["dbt", "query"])
 def test_web_search_and_fetch_are_never_available(tmp_path: Path, task_type: str) -> None:
     """Benchmark integrity (data-eng-bench README): no looking up published solutions."""

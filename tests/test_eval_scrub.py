@@ -224,14 +224,17 @@ def test_scrub_removes_the_local_home_directory_and_user_name(tmp_path: Path) ->
 
 
 def test_scrub_keeps_json_keys_that_spell_the_user_name(tmp_path: Path) -> None:
-    """A user named like a Harbor field (`agent`) must not rename that field."""
+    """A user named like a Harbor field (`agent`) must not rename that field; values that are the
+    name are still removed."""
     config = tmp_path / "trial" / "config.json"
     config.parent.mkdir()
     original = {"agent": {"import_path": "evals.harbor_agent:DataAgent", "name": "agent"}}
     config.write_text(json.dumps(original, indent=2))
     proc = scrub(tmp_path, HOME="/home/agent", USER="agent", LOGNAME="agent")
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(config.read_text()) == original
+    assert json.loads(config.read_text()) == {
+        "agent": {"import_path": "evals.harbor_agent:DataAgent", "name": "[redacted-user]"}
+    }
 
 
 def test_scrub_fails_on_missing_directory(tmp_path: Path) -> None:
@@ -299,3 +302,35 @@ def test_scrub_fails_on_host_paths_hidden_by_json_escapes(tmp_path: Path) -> Non
     assert "/home/remote-user" in proc.stderr
     assert "/Users/dave" in proc.stderr
     assert "/home/erin" in proc.stderr
+
+
+def test_scrub_removes_the_user_name_as_a_word_in_values_and_text(tmp_path: Path) -> None:
+    """Not only as a path segment: a JSON value or a log line can name the user outright."""
+    events = tmp_path / "trial" / "events.jsonl"
+    events.parent.mkdir()
+    events.write_text(
+        json.dumps({"worker": "ci-runner", "ci-runner": 1, "note": "running as CI-Runner."}) + "\n"
+    )
+    log = tmp_path / "trial" / "trial.log"
+    log.write_text("running as ci-runner on ci-runners and xci-runner\n")
+    proc = scrub(tmp_path, "--user", "ci-runner")
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(events.read_text()) == {
+        "worker": "[redacted-user]",
+        "ci-runner": 1,
+        "note": "running as [redacted-user].",
+    }
+    assert log.read_text() == "running as [redacted-user] on ci-runners and xci-runner\n"
+
+
+def test_scrub_fails_on_user_names_left_after_scrubbing(tmp_path: Path) -> None:
+    """Keys are kept, so a tool's JSON output keyed by the name keeps it: listed, and the command
+    fails. A key of the file's own JSON that spells the name is not listed."""
+    events = tmp_path / "events.jsonl"
+    events.write_text(json.dumps({"ci-runner": 1}) + "\n")
+    output = tmp_path / "output.jsonl"
+    output.write_text(json.dumps({"output": '{"ci-runner": "caf\\u00e9"}'}) + "\n")
+    proc = scrub(tmp_path, "--user", "ci-runner")
+    assert proc.returncode != 0
+    assert "output.jsonl" in proc.stderr and "ci-runner" in proc.stderr
+    assert "events.jsonl" not in proc.stderr
