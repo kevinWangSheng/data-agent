@@ -9,11 +9,12 @@ import shutil
 import subprocess
 import sys
 import uuid
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import aclosing
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import claude_agent_sdk
 from claude_agent_sdk import (
@@ -132,6 +133,79 @@ PRICES = {
     "deepseek-flash": Price(input=0.30, cached_input=0.006, output=1.2),
     "deepseek-v4-pro": Price(input=1.32, cached_input=1.32, output=3.96),
 }
+
+# What the bundled CLI charges a model it has no price for: its fallback table ($5 input, $25
+# output, $6.25 5-minute cache write, $0.50 cache read per 1M, in the CLI's own source; ticket 09
+# measured SDK ~$1 for ~$0.035 at PRICES). Uncached input takes the cache-write rate, the higher
+# of the two rates it covers.
+SDK_UNKNOWN_MODEL_PRICE = Price(input=6.25, cached_input=0.5, output=25)
+
+
+def priced_usd(price: Price, uncached: int, cached: int, output: int) -> float:
+    return (uncached * price.input + cached * price.cached_input + output * price.output) / 1e6
+
+
+def sdk_budget_usd(budget: float, model: str) -> float:
+    """The cap handed to the SDK. A priced model is capped by `Spend` at our prices; the SDK's cap
+    is then a backstop, scaled by the largest ratio of the SDK's rate to ours, so the SDK's figure
+    cannot reach it while ours is under `budget`. A model without a price keeps the SDK's cap."""
+    price = PRICES.get(model)
+    if price is None:
+        return budget
+    sdk = SDK_UNKNOWN_MODEL_PRICE
+    return budget * max(
+        sdk.input / price.input, sdk.cached_input / price.cached_input, sdk.output / price.output
+    )
+
+
+@dataclass
+class Spend:
+    """Spend so far at PRICES, from the usage on each model call the SDK streams: the main
+    thread's and the subagents' (the verifiers'). The CLI sends each content block of a response
+    as its own message with the same id, so usage is kept per message id."""
+
+    price: Price
+    calls: dict[str, tuple[bool, int, int, int]] = field(default_factory=dict)
+
+    def add(self, message: AssistantMessage) -> None:
+        usage = message.usage or {}
+        key = message.message_id or message.uuid or str(len(self.calls))
+        self.calls[key] = (
+            message.parent_tool_use_id is None,
+            int(usage.get("input_tokens") or 0)
+            + int(usage.get("cache_creation_input_tokens") or 0),
+            int(usage.get("cache_read_input_tokens") or 0),
+            int(usage.get("output_tokens") or 0),
+        )
+
+    def tokens(self) -> tuple[int, int, int]:
+        """Uncached input, cached input and output tokens."""
+        return (
+            sum(c[1] for c in self.calls.values()),
+            sum(c[2] for c in self.calls.values()),
+            sum(c[3] for c in self.calls.values()),
+        )
+
+    def cost_usd(self) -> float:
+        return priced_usd(self.price, *self.tokens())
+
+    def result_fields(self, budget: float) -> dict[str, Any]:
+        """The result event of a run this cap stopped; the SDK never sent its own."""
+        uncached, cached, output = self.tokens()
+        cost = self.cost_usd()
+        return {
+            "subtype": "error_max_budget_usd",
+            "is_error": True,
+            "num_turns": sum(main for main, *_ in self.calls.values()),
+            "terminal_reason": "budget_exhausted",
+            "uncached_input_tokens": uncached,
+            "cached_input_tokens": cached,
+            "output_tokens": output,
+            "cost_usd": cost,
+            "sdk_cost_usd": None,
+            "cost_basis": "price_table",
+            "errors": [f"spend ${cost:.4f} at the price table passed the ${budget} budget"],
+        }
 
 
 class ConfigError(Exception):
@@ -358,7 +432,7 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
     The SDK's own `total_cost_usd` (kept as `sdk_cost_usd`) is priced at Claude rates even for a
     non-Claude model, so `cost_usd` prices the tokens from PRICES instead. A model missing there
     (Claude among them, which the SDK prices correctly) falls back to the SDK figure, and
-    `cost_basis` says which one was used. `max_budget_usd` still caps the SDK figure.
+    `cost_basis` says which one was used. `max_budget_usd` caps `cost_usd` (`Spend`).
     """
     if message is None:
         return {
@@ -392,8 +466,7 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
     if price is None:
         cost, basis = sdk_cost, "sdk"
     else:
-        tokens = uncached * price.input + cached * price.cached_input + output * price.output
-        cost, basis = tokens / 1_000_000, "price_table"
+        cost, basis = priced_usd(price, uncached, cached, output), "price_table"
     return {
         "subtype": message.subtype,
         "is_error": message.is_error,
@@ -417,6 +490,10 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     path = events_file(events_dir)
     stderr: list[str] = []
     final: ResultMessage | None = None
+    price = PRICES.get(settings.model)
+    spend = Spend(price) if price is not None else None
+    # The result event of a run the price-table cap stopped.
+    stopped: dict[str, Any] | None = None
     with EventLog(path, secrets=known_secrets(env)) as log:
         log.emit(
             "version",
@@ -435,21 +512,38 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
             scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
         )
         tools: dict[str, str] = {}
+        options = build_options(task, config, settings, stderr, log.emit)
+        # The backstop goes only with the `Spend` cap below; a caller with its own message loop
+        # keeps the SDK's cap at the configured value.
+        options.max_budget_usd = sdk_budget_usd(config.max_budget_usd, settings.model)
         try:
-            async for message in query(
-                prompt=prompt, options=build_options(task, config, settings, stderr, log.emit)
-            ):
-                if isinstance(message, ResultMessage):
-                    final = message
-                else:
+            # Closing the stream ends the SDK's subprocess, so a stop here spends nothing more.
+            stream = cast(AsyncGenerator[Any], query(prompt=prompt, options=options))
+            async with aclosing(stream) as messages:
+                async for message in messages:
+                    if isinstance(message, ResultMessage):
+                        final = message
+                        continue
+                    # Checked on the message after the one that passed the cap: a final answer
+                    # is followed by the SDK's result and kept; anything else leads to another
+                    # model call, which is not made.
+                    if spend is not None and spend.cost_usd() > config.max_budget_usd:
+                        stopped = spend.result_fields(config.max_budget_usd)
+                        break
                     record_message(log, message, tools)
+                    if spend is not None and isinstance(message, AssistantMessage):
+                        spend.add(message)
         except Exception as exc:
             # A failed run ends with a ResultMessage and then a ResultError, whose details the
             # result event already holds. Anything else (the SDK also raises plain Exceptions,
             # e.g. an `initialize` timeout) means the run itself broke.
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
-        log.emit("result", **result_fields(final, settings.model))
+        log.emit("result", **(stopped or result_fields(final, settings.model)))
+    if stopped is not None:
+        return Outcome(
+            answer="", finished=False, infra_error=False, errors=stopped["errors"], events_path=path
+        )
     # Connection failures and timeouts end with an api_error that has no HTTP status.
     infra_error = (
         final is None or final.api_error_status is not None or final.terminal_reason == "api_error"
