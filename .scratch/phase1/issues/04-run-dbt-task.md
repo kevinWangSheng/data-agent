@@ -1,6 +1,6 @@
 # 04 — dbt 任务端到端
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 03
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -41,9 +41,9 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 6（之前 3；本轮 da-review ×2、eng:code-review ×1）
-- Model spend: ~$0.22（之前 ~$0.12；本轮 3 次真实运行 $0.0424，两次 `make test-integration` 约 $0.06，未确认：事件文件未保留）
+- Attempts: 3
+- Review rounds: 8（之前 6；本轮 da-review ×2）
+- Model spend: ~$0.28（之前 ~$0.22；本轮 4 次真实运行 $0.0552）
 - Outcome: —
 - Human review minutes: —
 
@@ -166,3 +166,43 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-04-run-dbt-task
 2. **Codex P2（`scan_project.py` 解析 `- name:` 的正则）属实**：`- name: "stg_customers"` 会连引号一起存，现有的 `stg_customers.sql` 匹配不上，被报成缺失和孤儿，workflow 还会让 agent 按这个名字新建模型。去掉 YAML 标量两侧的单、双引号再比较（之前"带引号的名字会保留引号"不修的理由作废）。配测试。
 
 这是第 2 轮（最后一轮）；之后的新意见记成已知限制。修完 `make check`、full 配置真实 dbt 运行一次、再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 3）。
+
+### 2026-10-16 工单 agent：PR #9 退回第 2 轮处理完（commits `1801df0`、`1a27e21`、`bcd5313`，接在 `cf7859c` 后）
+
+**退回 2 条，全部修了（`1801df0`，各配一个修复前会失败的测试）：**
+1. **符号链接子目录**：workspace 根没有 `dbt_project.yml` 时，候选子目录要先 `resolve()`，仍在 workspace 内才会被选中。
+   - 测试 `test_scan_does_not_follow_a_symlink_out_of_the_workspace`：子目录是指向外部 dbt 项目的符号链接时，输出 "no dbt_project.yml found"，外部模型名不出现。
+   - 同一个测试里，真实子目录仍能找到。
+2. **带引号的 YML 名字**：新增 `_yml_name()`，取 `- name:` 的值时去掉两侧的单、双引号。模型、列、描述、物化方式、source 和 source 表 7 处解析都改用它。
+   - 测试 `test_scan_strips_quotes_from_yml_names`：`"stg_customers"`、`'stg_orders'` 记为已完成模型，不报缺失，也不报孤儿。
+
+**审查：**
+- **da-review 第 1 轮**（`runs/return04b/da-review.txt`）：2 个 P2，修了（`1a27e21`，各配修复前会失败的测试）：
+  - `classify_sql_models` 把字符串和注释里的 `(` 也算进括号数，能跑的模型会被当成桩。现在计数前先去掉 SQL 字符串和 `--`、`/* */` 注释。
+  - dbt-debugging §4 无条件把 `current_date` 换成数据的最大日期。现在任务或 YML 要求真实的今天（如账龄、逾期），或者数据一直到今天时，保留 `current_date`。只有数据早已停更、又没有要求真实今天时才替换。dbt-workflow Step 3 只重建被标出的模型、不改写，不用动。
+- **da-review 第 2 轮**（`runs/return04b/da-review-2.txt`）：2 个 P2，修了（`bcd5313`，各配修复前会失败的测试）：
+  - `dbt_project.yml` 是指向 workspace 外的符号链接时，`_model_paths` 和 VAR ALIASES 会读到外部配置。现在新增 `_has_project()`，配置文件解析到外面的不当项目，根目录和子目录都按这条判断。
+  - `_extract_descriptions` 让列的 `description:` 覆盖了模型的描述，REQUIRED COLUMNS 的 DESC 显示错。现在只取模型这一层缩进的 `description:`。对照修复前的脚本：旧版输出 `DESC: Column text`，新版输出 `DESC: One row per customer.`。
+- 修复已到第 2 轮（上限），之后没再跑审查。按 AGENTS.md 本该再跑一次 `eng:code-review`，本轮没跑；本轮的改动只在 `scan_project.py`、dbt-debugging §4 和测试。
+- 文件头的修改说明已同步（`scan_project.py`、dbt-debugging）。
+
+**检查：**
+- `make check`：`1801df0` 641 passed；`1a27e21` 643 passed；`bcd5313` 645 passed, 15 deselected, 15 xfailed。
+- 输出在 `runs/return04b/make-check*.txt`。
+- 本轮没跑 `make test-integration`（退回说明没要求）。
+
+**真实运行**（`runs/return04/run.sh <out> full`，题面为接缝 A 的 DBT_TASK，用 `inspect.py` 核对）：
+
+| commit | exit | `customer_ltv` | 轮数 | 花费 |
+|---|---|---|---|---|
+| `1801df0` | 0 | 12 行，每客户一行 True，数值一致 True | 20 | $0.013669 |
+| `1a27e21` | 0 | 12 行，数值一致 | 23 | $0.011532 |
+| `bcd5313` | 0 | 12 行，数值一致 | 24 | $0.014914 |
+
+- 三次的前三行都是 C0001 6 285.25、C0002 4 232.50、C0003 2 98.75。
+- `REDACTED` 出现 0 次；`skill_version` 依次是 a06152622117、23d69e72ed3c、dc527e75ba75。
+- 每次 agent 都试了一次 `ls`/`find`，被 guard 拒绝后改用 Glob 或 Grep。
+- 工具顺序：scan → validate → Write → `dbt run --select customer_ltv` → 只读核对。
+- 另有一次在未提交改动上的运行（`runs/return04/full6` 的首次，$0.015075）作废，已用 `bcd5313` 重跑覆盖。
+
+**已知限制（第 2 轮之后，不再修）：** 无新增。本轮审查意见都已修复。
