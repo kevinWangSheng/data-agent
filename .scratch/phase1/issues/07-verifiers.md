@@ -1,6 +1,6 @@
 # 07 — 验证子 agent 与 6 个验证工具
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 04, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 07-verifiers)
@@ -161,3 +161,15 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-07-verifiers` �
 **Not run this round:** `eng:code-review main` (the return note asked only for `da-review`).
 
 **主会话**：第 2 轮 da-review 的 4 条 P2 都早于本轮，记为已知限制。数值分组列与整数 SUM 的区分要解析模型 SQL，属于启发式工具的边界；±10% 容差与 `agents/verifier.md` 的 fan-out 判定改的是验证口径，留给失败归因（工单 14）出数据后再定。
+
+### 2026-10-16 第 7 步：PR #12 退回第 2 轮（主会话；最后一轮）
+
+`733319e` CI 两次全绿。Codex 复审 2 P1 + 3 P2，主会话已对照代码核实。在原分支上修，修完提交，不 push、不 rebase；各配修复前会失败的测试。
+
+1. **[P1] `verifier_tools.py:693`**：结果类型是整数就当 row count，`SUM(quantity)`、`SUM(total_cents)` 在 DuckDB/PG 里也是 BIGINT，会报 `MISMATCH vs COUNT(*)`，主 agent 可能改坏正确的聚合。改为：只有模型 SQL 里该列的表达式是 `count(...)`（或列名明确是计数，如 `n_*`、`*_count`、`num_*`、`count_*`）才按 row count 比；其余整数指标按 sum 处理或只列出不判。
+2. **[P1] `agents/verifier.md:57`**：Ratio < 0.9 判为 over-filtering，正常的分组聚合（每客户一行 vs 订单表）会被误判。改为：比例低只是观察，先对照模型粒度（GROUP BY / grain key）和过滤条件，确认行数少于预期粒度才报 FAIL。
+3. **[P2] `agents/verifier.md:38`**：`materialized: ephemeral`（含 `dbt_project.yml` 里按目录配的）与 `enabled: false` 的模型不应要求存在对应表/视图。
+4. **[P2] `mcp_server.py:86`**：`--type query --config full` 时验证子 agent 和提示都被去掉，但 MCP 子进程仍注册四个验证工具，查数任务能调用，影响消融。改为：验证工具只在 dbt 任务且验证层开时注册（给 `mcp-server` 传任务类型或显式开关）。
+5. **[P2] `verifier_tools.py:170`**：PG 的 `json` 列做 `count(DISTINCT ...)` 会报错，一个列让整个 `audit_model_sources` 失败。跳过不可比较的类型（`json`、BLOB 等）。
+
+这是最后一轮；之后的新意见记为已知限制。修完 `make check`、full 配置真实 dbt 运行一次，再跑一轮 `da-review main`（新意见只记录）；最终回复给出 Comments 与 Ledger（Attempts 3）和 `Status: in-review`。
