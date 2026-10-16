@@ -1,10 +1,10 @@
 # 16 — 验证工具与验证提示的口径修正
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 07
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (opus-5-5) 2026-10-16
+Branch: worktree-16-verifier-heuristics
 
 ## Goal
 
@@ -51,10 +51,75 @@ Spec 自相矛盾或验收测试看起来有错；需要人做决定；花费到
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 3（da-review 2 + eng:code-review 1，后者未修）
+- Model spend: ~$0.3（估算；两次 `make test-integration` 各 5 次 agent 运行，dbt 运行 $0.032、$0.029）
+- Outcome: 验收达成；value-verifier 名称规则与工具结论冲突一处，建议合并前修
 - Human review minutes: —
 
 ## Comments
+
+### 2026-10-16 工单 agent 交回（commits `670f1e8`、`9a95b83`、`39338b6`）
+
+#### What changed
+- **`verify_model_values`** now reads the model's SQL with sqlglot (`qualify` plus scopes against the catalog, through CTEs and subqueries):
+  - The slice is the GROUP BY output columns, including numeric ones like `year`. `MAX(ordered_at)` is never a slice column.
+  - A metric counts as a count only when its outermost aggregate is COUNT (CAST and COALESCE wrappers allowed).
+  - The model's own COUNT, including DISTINCT, CASE WHEN or FILTER, is re-run over each upstream and compared exactly.
+  - It reports "inconclusive" instead of MISMATCH when that count can't be rebuilt over an upstream: a column the SQL computes, renames or takes from another table, rows of an aggregated CTE, or a computed GROUP BY expression.
+  - If the SQL doesn't parse, it falls back to the old column-name rules and says "Model SQL could not be parsed".
+- **`check_model_schema`** accepts `name:data_type` pairs and compares types with DuckDB/Postgres aliases folded (int4 = INTEGER, text = VARCHAR); precision and length are not compared.
+- **Prompts:**
+  - `verifier.md` CHECK 1 finds models under `model-paths`.
+  - CHECK 2 passes `name:data_type` pairs to `check_model_schema`.
+  - CHECK 3 reports a repeated lookup key as possible fan-out, and differing non-key columns are never a reason to PASS.
+  - `value-verifier.md`: `total_X` means COUNT(*) only for row nouns (`total_amount` and `total_revenue` are sums), counts must match exactly, and sums/averages match within ±10%.
+  - The SKILL.md tool description is updated.
+- 22 new tests; each failed before its fix.
+
+#### Evidence
+- `make check`: ruff clean, basedpyright 0 errors, `827 passed, 15 deselected`.
+- **Real dbt run** (`make test-integration`, full config, seam A DBT_TASK) at clean commit `39338b6`: `5 passed, 10 xfailed`. Run result: 21 turns, `cost_usd` 0.0289. The agent's model counts `COUNT(CASE WHEN lower(trim(o.status)) IN (...) THEN o.order_id END)` over `stg_customers LEFT JOIN stg_orders`. The tool output:
+  - `stg_orders`: `COUNT(CASE WHEN LOWER(TRIM(status)) IN ('completed', 'complete') THEN order_id END): 6 → Model matches …`
+  - `stg_customers`: `uses stg_orders.status, stg_orders.order_id, not in main.stg_customers; no baseline, inconclusive`
+- The two `verifier_end` events:
+  ```
+  {"seq": 127, "type": "verifier_end", "verifier": "verifier", "checks": [CHECK 1 PASS, CHECK 2 PASS, CHECK 3 PASS, CHECK 4 PASS, CHECK 5 N/A] (model customer_ltv)}
+  {"seq": 129, "type": "verifier_end", "verifier": "value-verifier", "checks": [CHECK 1 PASS, CHECK 2 PASS, CHECK 3 PASS] (model customer_ltv)}
+  ```
+  The full lines are in `runs/16/real2_events.txt`.
+- **Direct call** (`runs/16/evidence.py`, real MCP server over stdio, no model). The model uses `COUNT(DISTINCT)`, a CASE count, a FILTER count and a `MAX(ordered_at)` column, inside dbt Jinja with `with orders as (select * from {{ ref('orders') }})`. Output:
+  ```
+  Top row (by n_orders) slice: region = 'north'
+  n_orders   → Model matches COUNT(*)
+  customers  → Model matches COUNT(DISTINCT customer_id)
+  returns    COUNT(CASE WHEN status = 'returned' THEN 1 END): 1 → Model matches …
+  placed     COUNT(*) FILTER(WHERE status = 'placed'): 2 → Model matches …
+  ```
+  `last_ordered_at` is not in the slice. Full output is in `runs/16/evidence.txt`.
+
+**Review: `da-review main` (Codex), 2 fix rounds, all findings fixed**
+- **Round 1, three P2s, fixed in `9a95b83`:**
+  - A count over a column the CTE transformed produced a false MISMATCH.
+  - `COALESCE(placed, 0)` around a CTE's count wasn't followed.
+  - A window `SUM` named `n_*` was compared as a count.
+- **Round 2, three P2s, fixed in `39338b6`:**
+  - Table qualifiers were dropped in joins.
+  - CTE renames weren't followed.
+  - A computed GROUP BY expression was sliced as the raw column.
+- My own evidence run also caught a regression from round 2: a CTE named after its table (the dbt idiom) resolved to itself. Fixed in the same commit with a test.
+
+**Review: `eng:code-review main`.** That was my last allowed fix round, so I left everything below unfixed:
+- **Spec, implemented but possibly wrong (judgement call):** the `value-verifier.md` name rules ("`total_<row noun>` MUST match COUNT(*)", and FAIL when a "total" column matches COUNT(DISTINCT)) can still fail a correct `total_customers = COUNT(DISTINCT customer_id)` that the tool marked as matching. Not fixed only because of the round limit. I'd fix it before merge: let the tool's SQL-based verdict override the name rules, and keep the name rules only for the "could not be parsed" case. It's a prompt-only change.
+- **Spec, not asked for:** "a min or max must match exactly" in `value-verifier.md`. It's consistent with the ticket's wording (±10% only for sums and averages); the header note doesn't mention it.
+- **Spec, weak test:** the prompt test only checks that "exactly" and "10%" appear. Not fixed because of the round limit.
+- **Standards:** no hard violations. Judgement calls I didn't act on:
+  - `verifier_tools.py` is now about 1300 lines; the sqlglot lineage code could move to its own module.
+  - `DIALECT = "duckdb"` duplicates `DuckDBGateway.dialect`. It's a known limitation for ticket 08: the Postgres gateway must supply its dialect.
+  - Duplicated depth guards and the `trace` loop.
+  - `Roles.counts` and `Roles.opaque` are parallel dicts, and string error returns stand in for a type.
+  - Names: `derived`, `portable`, `origin`.
+
+  These are refactor-level points with no behaviour impact, out of scope for this ticket.
+
+**主会话**：名称规则与工具结论冲突那一处，并进 PR 第 1 轮退回一起修。`DIALECT = "duckdb"` 写死，Postgres 运行时 sqlglot 方言不对——等工单 08 合并后在集成时处理。
