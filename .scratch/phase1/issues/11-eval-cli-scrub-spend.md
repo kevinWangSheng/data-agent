@@ -1,6 +1,6 @@
 # 11 — 评测 CLI：scrub 与累计花费
 
-Status: ready-for-agent
+Status: done
 Blocked by: 01
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 11-eval-cli-scrub-spend)
@@ -40,10 +40,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 2（第 2 次是退回返工）
-- Review rounds: da-review 4 次（修了 3 轮，第 3 轮是人批准的返工），eng:code-review 1 轮（已修）
-- Model spend: $0（没有调模型；只有审查本身的花费）
-- Outcome: 退回的 2 条 P2 已修（abb147d）；第 4 次 da-review 又报 2 条新 P2，照退回要求只记录不修，待人决定
+- Attempts: 3 (the 2nd and 3rd were send-backs)
+- Review rounds: da-review 4 times (3 rounds fixed; round 3 was a rework the human approved); eng:code-review 1 round (fixed); Codex on PR #5: 1 round, 3 items fixed (842ca7f)
+- Model spend: $0 (no model calls; only the reviews themselves cost anything)
+- Outcome: accepted (PR #5, squash 6a62aa6)
 - Human review minutes: —
 
 ## Comments
@@ -166,3 +166,39 @@ rebase 时 `evals/__main__.py` 冲突：保留工单 10 的 `build_parser`，把
 1. `evals/scrub.py:126`：重复键。用 `object_pairs_hook` 检出重复键，判为检查不了（列出文件，退出 1）。
 2. `evals/scrub.py:119`：对象的键也走与字符串值相同的清理（嵌套 JSON 解码、残留 `\uXXXX` 判为检查不了）。
 3. `evals/spend.py:49`：负的 `cost_usd` 判为花费算不清（退出 2）。
+
+### 2026-10-16 claude-opus-5-5: second rework done, the 3 Codex items from PR #5 are fixed (842ca7f)
+
+Branch `worktree-11-eval-cli-scrub-spend`, commit 842ca7f.
+
+**What changed**
+1. `evals/scrub.py` — repeated keys. `json.loads` now runs with `object_pairs_hook=unique_keys`. A repeated key, in the outer JSON or in JSON nested inside a string, makes the file "cannot check": scrub lists the file, leaves it unchanged and exits 1.
+   - Test that failed before the fix: `test_scrub_fails_on_duplicate_json_keys`. Before the fix scrub exited 0 and changed nothing.
+2. `evals/scrub.py` — object keys. Keys now go through `scrub_string`, the same as values: JSON nested in a key is decoded, and a leftover `\uXXXX` makes the file "cannot check".
+   - Test that failed before the fix: `test_scrub_treats_object_keys_like_string_values`. Before the fix the host inside the nested JSON key was missed, and the `\uXXXX` key passed with exit 0.
+3. `evals/spend.py` — a negative `cost_usd` now means the spend cannot be known, so it exits 2.
+   - Test that failed before the fix: `test_spend_refuses_negative_costs`. Before the fix `5.0 + (-5.0)` totalled $0 and exited 0.
+
+`make check`: 458 passed, 15 deselected, 15 xfailed; basedpyright 0 errors (output saved in `runs/make-check.txt`).
+
+**Real run (fake data):** I copied the harbor_job fixture, added `dup.jsonl` (a repeated key) and `keys.jsonl` (nested JSON and a hostname used as keys), and appended a result with a negative cost to one event file.
+
+```
+$ python -m evals scrub $D --hostname build-box-7
+scrub: cannot check these; remove or scrub by hand before upload:
+  .../job/dup.jsonl: a repeated JSON key hides a value from the check
+scrub: changed 1 file(s) of 45; redactions: key=0 endpoint=0 host=2 ip=0     exit=1
+< {"{\"h\": \"build\\u002dbox-7\"}": 1, "build-box-7": 2}
+> {"{\"h\": \"[redacted-host]\"}": 1, "[redacted-host]": 2}
+$ python -m evals spend $D --budget 3.5
+spend: cannot total spend, stopping: .../dbt-charlie__Lp8vR2c/agent/events.jsonl line 5: result event has a negative cost_usd   exit=2
+```
+
+**Review:** per the send-back, no new round was run.
+
+**Known limitation (not fixed, out of scope):** now that keys are scrubbed, two different keys can become the same key after redaction, for example two hostnames that both turn into `[redacted-host]`. When that happens the dict keeps only one value. Data is lost, but nothing secret leaks, so I didn't extend this rework to cover it.
+
+### 2026-10-16 主会话：Codex 对 751f710 的 2 条记为已知限制，合并
+
+1. `evals/scrub.py:126`：两个不同的键清理后变成同一个标记时，前一个值被丢掉（数据损坏，不泄露）。
+2. `evals/spend.py:41`：spend 解析时不拒绝重复键，畸形事件文件里重复的 `cost_usd` 只算最后一个。我们的事件文件由 `json.dumps` 写，不会出现。
