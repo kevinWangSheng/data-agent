@@ -35,9 +35,9 @@ environment:
 agents:
   - import_path: evals.harbor_agent:DataAgent
     model_name: deepseek/deepseek-flash
-    # install() downloads the locked dependencies (the SDK wheel alone is ~110 MB): a local run
-    # took ~6 min, right at Harbor's 360 s default. data-eng-bench's job-config.yaml uses 1500.
-    override_setup_timeout_sec: 1500.0
+    # No timeout or resource overrides: the leaderboard's static checks reject them
+    # (data-eng-bench leaderboard/src/leaderboard/ci/static_analysis.py). install() took 62-135 s
+    # in local runs, inside Harbor's 360 s setup default.
     kwargs:
       run_config: full
     # Web search and fetch are off in every data-agent run (data_agent.agent.WEB_TOOLS).

@@ -305,8 +305,20 @@ def test_job_config_retries_only_transient_model_errors() -> None:
     assert not set(harbor_agent.TRANSIENT_ERRORS) & excluded
     (agent,) = config.agents
     assert agent.import_path == "evals.harbor_agent:DataAgent"
-    assert (agent.override_setup_timeout_sec or 0) > DataAgent.DEFAULT_SETUP_TIMEOUT_SEC
     assert config.environment.env == {"DB_TYPE": "duckdb"}
+
+
+def test_job_config_sets_no_override_the_leaderboard_rejects() -> None:
+    """data-eng-bench leaderboard/src/leaderboard/ci/static_analysis.py fails a submission whose
+    job config sets any of these."""
+    config = JobConfig.model_validate(yaml.safe_load(JOB_CONFIG.read_text()))
+    (agent,) = config.agents
+    for key in ("override_timeout_sec", "override_setup_timeout_sec", "max_timeout_sec"):
+        assert getattr(agent, key) is None, key
+    for key in ("override_timeout_sec", "max_timeout_sec"):
+        assert getattr(config.verifier, key) is None, key
+    for key in ("override_cpus", "override_gpus", "override_memory_mb", "override_storage_mb"):
+        assert getattr(config.environment, key) is None, key
 
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 529])
