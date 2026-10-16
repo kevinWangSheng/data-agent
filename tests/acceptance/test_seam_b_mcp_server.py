@@ -140,11 +140,11 @@ async def test_base_tools_in_every_config(config: str, shop_duckdb: Path) -> Non
 # the others wait for the ticket that adds the layer's tools. Each case carries its own xfail.
 CONTEXT_CASES = [
     pytest.param("baseline", False),
-    pytest.param("full", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
-    pytest.param("no-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
-    pytest.param("no-verifiers", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
+    pytest.param("full", True),
+    pytest.param("no-skill", True),
+    pytest.param("no-verifiers", True),
     pytest.param("no-context", False),
-    pytest.param("full-old-skill", True, marks=pytest.mark.xfail(strict=True, reason="ticket 06")),
+    pytest.param("full-old-skill", True),
 ]
 VERIFIER_CASES = [
     pytest.param("baseline", False),
@@ -276,7 +276,6 @@ async def discover_web_events(session: Any) -> tuple[Any, str]:
     return result, matches[0]
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 06")
 async def test_discover_returns_refs_and_short_summaries(shop_duckdb: Path) -> None:
     async with mcp_server("--config", "full", "--duckdb", str(shop_duckdb)) as session:
         result, _ = await discover_web_events(session)
@@ -291,7 +290,6 @@ async def test_discover_returns_refs_and_short_summaries(shop_duckdb: Path) -> N
     assert not all(column in text for column in columns), "discover dumped the full schema"
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 06")
 async def test_hydrate_returns_full_object(shop_duckdb: Path) -> None:
     async with mcp_server("--config", "full", "--duckdb", str(shop_duckdb)) as session:
         _, ref = await discover_web_events(session)
@@ -302,7 +300,6 @@ async def test_hydrate_returns_full_object(shop_duckdb: Path) -> None:
     assert not missing, f"hydrate left out columns: {missing}"
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 06")
 async def test_dictionary_search_returns_real_values(shop_duckdb: Path) -> None:
     async with mcp_server("--config", "full", "--duckdb", str(shop_duckdb)) as session:
         result = await call(session, "dictionary_search", {"keyword": "gold"})

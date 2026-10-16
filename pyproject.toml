@@ -17,6 +17,10 @@ data-agent = "data_agent.cli:main"
 [dependency-groups]
 dev = [
   "basedpyright>=1.31",
+  # dbt for local dbt runs and seam A, pinned like the data-eng-bench image (plan §5). Not a runtime
+  # dependency: an installed agent uses the environment's dbt (Harbor: the image's).
+  "dbt-core>=1.10,<1.11",
+  "dbt-duckdb==1.10.0",
   "pre-commit>=4.2",
   "pytest>=8.4",
   "pytest-asyncio>=1.2",
@@ -42,7 +46,7 @@ line-length = 100
 target-version = "py312"
 # Copied from SignalPilot (NOTICE; modifications noted per file); keep upstream's style so diffs
 # against it stay clean.
-extend-exclude = ["src/data_agent/engine", "tests/engine"]
+extend-exclude = ["src/data_agent/engine", "tests/engine", "skills/dbt-workflow/*.py"]
 force-exclude = true
 
 [tool.ruff.lint]

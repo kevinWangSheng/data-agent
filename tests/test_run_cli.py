@@ -89,8 +89,8 @@ def test_missing_task_file_is_rejected(tmp_path: Path) -> None:
     assert_config_error(proc, tmp_path, str(missing))
 
 
-def test_dbt_tasks_are_not_supported_yet(tmp_path: Path) -> None:
-    """Ticket 04 adds dbt tasks; until then the CLI says so instead of running half a workflow."""
+def test_dbt_task_without_dbt_on_path_is_rejected(tmp_path: Path) -> None:
+    """dbt tasks use the dbt the environment provides (Harbor: the image's), so none is an error."""
     make_db(tmp_path / "x.duckdb")
-    proc = run(tmp_path, *run_args(tmp_path, **{"--type": "dbt"}))
-    assert_config_error(proc, tmp_path, "dbt")
+    proc = run(tmp_path, *run_args(tmp_path, **{"--type": "dbt"}), env={"PATH": "/usr/bin:/bin"})
+    assert_config_error(proc, tmp_path, "dbt is not on PATH")

@@ -1,0 +1,650 @@
+#!/usr/bin/env python3
+# Copied from signalpilot-plugin (see NOTICE). Modified for data-agent: the printed hints name this
+# agent's tools (list_tables, query_database) instead of SignalPilot's analyze_project_db,
+# fix_date_spine_hazards and the dbt-snapshots skill, which data-agent does not have.
+# Skipped directories (SKIP_DIRS) are matched against path parts inside the project, not as
+# substrings of the absolute path, so a project under e.g. .claude/ or target/ is still scanned.
+# A model starting with `select * from` is no longer classed as a stub: passthrough and filtered
+# models are complete SQL.
+# Model SQL is read only from the project's model-paths (dbt_project.yml, default `models`), so a
+# data test, analysis or snapshot named like a missing model does not count as that model; the older
+# `source-paths` key is read when `model-paths` is absent, as dbt does.
+# Model paths, SQL, YAML and macro files that resolve outside the project are not read.
+# Without a dbt_project.yml at the root, a subdirectory is taken as the project only if it
+# resolves inside the given directory (a symlink leading out is not followed).
+# YML names are compared without the single or double quotes YAML allows around them.
+# Parentheses inside SQL string literals and comments do not make a model a stub.
+# A dbt_project.yml that resolves outside the given directory is not read.
+# Only a model's own description is shown, not one of its columns'.
+# The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
+# The snapshots hint says `dbt snapshot` cannot run here (data-agent's Bash allows no snapshot).
+"""Pre-scan a dbt project and emit a structured context block.
+
+Used by the dbt-workflow SKILL.md via !`python3 scan_project.py` to inject
+project state into the skill prompt before Claude starts working.
+
+Filesystem-only scan: YML models, SQL stubs, dependencies, required columns,
+sources, macros, and current_date hazards. Database-derived hints (lookup joins,
+staging gaps, parent-child driving tables, materialization) come from the
+analyze_project_db / list_tables MCP tools.
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import re
+import sys
+from pathlib import Path
+
+# Force UTF-8 output on Windows (prevents mojibake on em dashes, arrows, etc.)
+if sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+SKIP_DIRS = (".claude", "dbt_packages", "target", "macros", "__pycache__")
+
+
+def _skipped(path: Path, work_dir: Path) -> bool:
+    return any(part in SKIP_DIRS for part in path.relative_to(work_dir).parts)
+
+
+def _read_text(path: Path) -> str:
+    """Read a text file, stripping UTF-8 BOM if present."""
+    raw = path.read_bytes()
+    if raw[:3] == b'\xef\xbb\xbf':
+        raw = raw[3:]
+    return raw.decode("utf-8", errors="replace")
+
+
+def _model_paths(work_dir: Path) -> list[str]:
+    """`model-paths` (or the older `source-paths`) from dbt_project.yml, as a flow list
+    (`[a, b]`, possibly over several lines) or a block list; default `models`."""
+    config = work_dir / "dbt_project.yml"
+    text = _read_text(config) if config.exists() else ""
+    m = re.search(r"^model-paths:[ \t]*(.*)$", text, re.MULTILINE) or re.search(
+        r"^source-paths:[ \t]*(.*)$", text, re.MULTILINE
+    )
+    names: list[str] = []
+    if m:
+        rest = text[m.end():].splitlines()[1:]
+        inline = m.group(1).split("#", 1)[0].strip()
+        if inline.startswith("["):
+            for line in rest:
+                if "]" in inline:
+                    break
+                inline += line.split("#", 1)[0].strip()
+            names = inline.strip("[]").split(",")
+        elif inline:
+            names = [inline]
+        else:
+            for line in rest:
+                item = re.match(r"\s*-\s*(.+)", line)
+                if not item:
+                    if line.strip() and not line.lstrip().startswith("#"):
+                        break
+                    continue
+                names.append(item.group(1).split("#", 1)[0])
+    names = [n.strip().strip("'\"") for n in names]
+    return [n for n in names if n] or ["models"]
+
+
+def _inside(path: Path, work_dir: Path) -> bool:
+    return path.resolve().is_relative_to(work_dir.resolve())
+
+
+def _has_project(project: Path, root: Path) -> bool:
+    """`project` holds a dbt_project.yml, and both resolve inside `root`."""
+    config = project / "dbt_project.yml"
+    return config.exists() and _inside(project, root) and _inside(config, root)
+
+
+def _model_sql_files(work_dir: Path) -> list[Path]:
+    """The model SQL files: `*.sql` under the model-paths, minus skipped directories and anything
+    (a model path, a symlinked file) that resolves outside the project."""
+    files: list[Path] = []
+    for name in _model_paths(work_dir):
+        model_dir = work_dir / name
+        if model_dir.is_dir() and _inside(model_dir, work_dir):
+            files.extend(
+                f
+                for f in model_dir.rglob("*.sql")
+                if _inside(f, work_dir) and not _skipped(f, work_dir)
+            )
+    return files
+
+
+# ── YML parsing (no PyYAML dependency — regex-based) ──────────────────────
+
+def _yml_name(stripped: str) -> str | None:
+    """The value of a `- name:` item, without the quotes YAML allows around a scalar."""
+    m = re.match(r'-\s*name:\s*(\S+)', stripped)
+    return m.group(1).strip("'\"") if m else None
+
+
+def _extract_model_names(yml_text: str) -> set[str]:
+    names: set[str] = set()
+    in_models = False
+    for line in yml_text.splitlines():
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if stripped.startswith("models:") and indent <= 2:
+            in_models = True
+            continue
+        if in_models and indent <= 0 and stripped and not stripped.startswith("#"):
+            if not stripped.startswith("-"):
+                in_models = False
+                continue
+        if in_models and 1 <= indent <= 4:
+            m = _yml_name(stripped)
+            if m:
+                names.add(m)
+    return names
+
+
+def _extract_columns(yml_text: str) -> dict[str, list[str]]:
+    """Extract column names per model from YML. Simple regex parser."""
+    result: dict[str, list[str]] = {}
+    current_model = None
+    in_columns = False
+    for line in yml_text.splitlines():
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        # Model name
+        m = _yml_name(stripped)
+        if m and 1 <= indent <= 4:
+            current_model = m
+            in_columns = False
+            continue
+        if current_model and stripped.startswith("columns:"):
+            in_columns = True
+            continue
+        if in_columns and indent <= 4 and stripped and not stripped.startswith("-"):
+            in_columns = False
+            continue
+        if in_columns:
+            cm = _yml_name(stripped)
+            if cm:
+                result.setdefault(current_model, []).append(cm)
+    return result
+
+
+def _extract_descriptions(yml_text: str) -> dict[str, str]:
+    """Extract model descriptions from YML."""
+    result: dict[str, str] = {}
+    current_model = None
+    model_indent = 0
+    for line in yml_text.splitlines():
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        m = _yml_name(stripped)
+        if m and 1 <= indent <= 4:
+            current_model = m
+            model_indent = indent
+            continue
+        # Only the model's own key: a column's description sits deeper.
+        if current_model and indent == model_indent + 2 and stripped.startswith("description:"):
+            desc = stripped[len("description:"):].strip().strip("'\"")
+            if desc:
+                result[current_model] = desc[:200].replace("\n", " ")
+    return result
+
+
+def _extract_materializations(yml_text: str) -> dict[str, str]:
+    """Extract model materializations from YML config blocks."""
+    result: dict[str, str] = {}
+    current_model = None
+    in_config = False
+    for line in yml_text.splitlines():
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        m = _yml_name(stripped)
+        if m and 1 <= indent <= 4:
+            current_model = m
+            in_config = False
+            continue
+        if current_model and stripped.startswith("config:"):
+            in_config = True
+            continue
+        if in_config and indent <= 4 and stripped and not stripped.startswith("materialized"):
+            if not stripped.startswith(" ") and not stripped.startswith("-"):
+                in_config = False
+                continue
+        if in_config and current_model:
+            mat = re.match(r'materialized:\s*(\S+)', stripped)
+            if mat:
+                result[current_model] = mat.group(1).strip("'\"")
+                in_config = False
+    return result
+
+
+def _extract_sources(yml_text: str) -> list[str]:
+    """Extract source definitions from YML."""
+    sources: list[str] = []
+    in_sources = False
+    current_source = None
+    in_tables = False
+    table_names: list[str] = []
+    for line in yml_text.splitlines():
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if stripped.startswith("sources:"):
+            in_sources = True
+            continue
+        if in_sources and indent <= 0 and stripped and not stripped.startswith("#") and not stripped.startswith("-"):
+            # Flush last source
+            if current_source and table_names:
+                sources.append(f"  source('{current_source}', '<table>') — tables: {', '.join(table_names)}")
+            in_sources = False
+            continue
+        if in_sources:
+            m = _yml_name(stripped)
+            if m and indent <= 4:
+                # Flush previous source
+                if current_source and table_names:
+                    sources.append(f"  source('{current_source}', '<table>') — tables: {', '.join(table_names)}")
+                current_source = m
+                table_names = []
+                in_tables = False
+                continue
+            if stripped.startswith("tables:"):
+                in_tables = True
+                continue
+            if in_tables:
+                tm = _yml_name(stripped)
+                if tm:
+                    table_names.append(tm)
+    # Flush final
+    if current_source and table_names:
+        sources.append(f"  source('{current_source}', '<table>') — tables: {', '.join(table_names)}")
+    return sources
+
+
+def _extract_deps_from_sql(work_dir: Path) -> dict[str, list[str]]:
+    """Extract ref() dependencies from SQL files."""
+    deps: dict[str, list[str]] = {}
+    ref_pat = re.compile(r"\{\{\s*ref\(['\"](\w+)['\"]\)\s*\}\}")
+    for sql_file in _model_sql_files(work_dir):
+        try:
+            content = _read_text(sql_file)
+            refs = ref_pat.findall(content)
+            if refs:
+                deps[sql_file.stem] = sorted(set(refs))
+        except Exception:
+            pass
+    return deps
+
+
+# ── SQL classification ────────────────────────────────────────────────────
+
+# String literals ('' escapes a quote) and comments, removed before counting parentheses.
+SQL_LITERALS_AND_COMMENTS = re.compile(r"'(?:[^']|'')*'|--[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
+def classify_sql_models(work_dir: Path) -> tuple[set[str], set[str]]:
+    complete: set[str] = set()
+    stubs: set[str] = set()
+    for sql_file in _model_sql_files(work_dir):
+        try:
+            content = _read_text(sql_file).strip()
+        except Exception:
+            continue
+        code = SQL_LITERALS_AND_COMMENTS.sub(" ", content).strip()
+        is_stub = (
+            len(content) < 5
+            or code.endswith(",")
+            or code.endswith("(")
+            or (code.count("(") > code.count(")"))
+            or re.search(r'(?i)\bREPLACE\b.*\bENTIRE\b.*\bFILE\b', content)
+            or re.match(r'^--\s*(TODO|FIXME|PLACEHOLDER)', content, re.IGNORECASE)
+        )
+        if is_stub:
+            stubs.add(sql_file.stem)
+        else:
+            complete.add(sql_file.stem)
+    return complete, stubs
+
+
+# ── Macro scanner ─────────────────────────────────────────────────────────
+
+def scan_macros(work_dir: Path) -> list[tuple[str, str]]:
+    """Return list of (macro_name, full_body) tuples from the macros/ directory."""
+    macros_dir = work_dir / "macros"
+    if not macros_dir.exists():
+        return []
+    pat = re.compile(r'\{%-?\s*macro\s+(\w+)\s*\(', re.IGNORECASE)
+    result: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for sql_file in macros_dir.rglob("*.sql"):
+        if not _inside(sql_file, work_dir):
+            continue
+        try:
+            body = _read_text(sql_file).strip()
+            for m in pat.finditer(body):
+                name = m.group(1)
+                if name not in seen:
+                    seen.add(name)
+                    result.append((name, body))
+        except Exception:
+            pass
+    return sorted(result, key=lambda x: x[0])
+
+
+# ── current_date scanner ─────────────────────────────────────────────────
+
+def scan_current_date(work_dir: Path) -> list[str]:
+    pat = re.compile(
+        r'\bcurrent_date\b|\bnow\(\)|\bcurrent_timestamp\b|\bgetdate\(\)',
+        re.IGNORECASE,
+    )
+    hits: list[str] = []
+    for sql_file in _model_sql_files(work_dir):
+        try:
+            for i, line in enumerate(_read_text(sql_file).splitlines(), 1):
+                if pat.search(line):
+                    rel = str(sql_file.relative_to(work_dir))
+                    hits.append(f"  {rel}:{i}: {line.strip()}")
+        except Exception:
+            pass
+    return hits
+
+
+# ── Package scanner ───────────────────────────────────────────────────────
+
+def _find_sibling_patterns(
+    work_dir: Path,
+    work_models: set[str],
+    complete_models: set[str],
+    all_columns: dict[str, list[str]],
+) -> dict[str, list[tuple[str, int]]]:
+    """For each stub/missing model, find complete siblings in the same directory."""
+    sql_dirs: dict[str, Path] = {}
+    for sql_file in _model_sql_files(work_dir):
+        sql_dirs[sql_file.stem] = sql_file.parent
+
+    result: dict[str, list[tuple[str, int]]] = {}
+    for model in sorted(work_models):
+        target_dir = sql_dirs.get(model)
+        if not target_dir:
+            continue
+        siblings = []
+        for sql_file in target_dir.glob("*.sql"):
+            sib = sql_file.stem
+            if sib == model or sib not in complete_models:
+                continue
+            cols = all_columns.get(sib, [])
+            siblings.append((sib, len(cols) if cols else 0))
+        if siblings:
+            result[model] = siblings
+    return result
+
+
+def scan_packages(work_dir: Path) -> str:
+    if not (work_dir / "packages.yml").exists():
+        return ""
+    lines: list[str] = []
+    pkg_dir = work_dir / "dbt_packages"
+    if pkg_dir.exists():
+        pkg_models: list[str] = []
+        for sql_file in pkg_dir.rglob("*.sql"):
+            if sql_file.stem.startswith("stg_") or sql_file.stem.startswith("int_"):
+                pkg_models.append(sql_file.stem)
+        if pkg_models:
+            lines.append(f"Package staging/intermediate models available: {', '.join(sorted(set(pkg_models))[:20])}")
+
+    # Check for dbt.* namespace usage in existing SQL
+    for sql_file in work_dir.rglob("*.sql"):
+        if _skipped(sql_file, work_dir) or not _inside(sql_file, work_dir):
+            continue
+        try:
+            if "dbt." in _read_text(sql_file):
+                lines.append("dbt.* cross-adapter macros ARE available: dbt.date_trunc(), dbt.length(), dbt.replace(), etc.")
+                break
+        except Exception:
+            pass
+    return "\n".join(lines)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────
+
+def main():
+    # Find the dbt project directory
+    work_dir = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
+
+    # Look for dbt_project.yml to confirm we're in a dbt project
+    if not _has_project(work_dir, work_dir):
+        # Try common subdirectories
+        for subdir in work_dir.iterdir():
+            if subdir.is_dir() and _has_project(subdir, work_dir):
+                work_dir = subdir
+                break
+        else:
+            print("(no dbt_project.yml found — skip project scan)")
+            return
+
+    # Scan YML
+    yml_models: set[str] = set()
+    all_columns: dict[str, list[str]] = {}
+    all_descriptions: dict[str, str] = {}
+    all_materializations: dict[str, str] = {}
+    all_sources: list[str] = []
+
+    for ext in ("*.yml", "*.yaml"):
+        for yml_file in work_dir.rglob(ext):
+            if _skipped(yml_file, work_dir) or not _inside(yml_file, work_dir):
+                continue
+            try:
+                text = _read_text(yml_file)
+                yml_models.update(_extract_model_names(text))
+                all_columns.update(_extract_columns(text))
+                all_descriptions.update(_extract_descriptions(text))
+                all_materializations.update(_extract_materializations(text))
+                all_sources.extend(_extract_sources(text))
+            except Exception:
+                pass
+
+    # Classify SQL
+    complete_models, stub_models = classify_sql_models(work_dir)
+    sql_models = complete_models | stub_models
+    missing_models = yml_models - sql_models
+
+    # Complete models = those with a non-stub SQL file. Materialization status
+    # (which exist as tables) and other DB-derived hints come from the
+    # analyze_project_db MCP tool, not this filesystem scanner.
+    complete = yml_models & complete_models
+
+    # Dependencies
+    deps = _extract_deps_from_sql(work_dir)
+
+    # Packages
+    has_packages = (work_dir / "packages.yml").exists()
+
+    # ── Output ────────────────────────────────────────────────────────────
+
+    print(f"## dbt Project Scan: {work_dir.name}")
+    print()
+
+    if has_packages:
+        print("Run `dbt deps` first — this project has a packages.yml.")
+    else:
+        print("Do NOT run `dbt deps` — packages are pre-installed.")
+    print()
+
+    print("MODELS TO BUILD (defined in YML but no SQL file — create EXACT filenames):")
+    if missing_models:
+        for m in sorted(missing_models):
+            mat = all_materializations.get(m, "table")
+            # Find which YML file defines this model and list sibling models
+            yml_file = ""
+            siblings_in_yml = []
+            for yf in (work_dir / "models").rglob("*.yml"):
+                if "dbt_packages" in str(yf) or not _inside(yf, work_dir):
+                    continue
+                try:
+                    import yaml
+                    with open(yf) as f:
+                        data = yaml.safe_load(f)
+                    if data and "models" in data:
+                        names = [md.get("name", "") for md in data["models"]]
+                        if m in names:
+                            yml_file = str(yf.relative_to(work_dir))
+                            siblings_in_yml = [n for n in names if n != m]
+                except Exception:
+                    pass
+            sib_str = f"  siblings: {', '.join(siblings_in_yml)}" if siblings_in_yml else ""
+            yml_str = f"  YML: {yml_file}" if yml_file else ""
+            print(f"  → {m}.sql  (materialized={mat}){yml_str}")
+            if sib_str:
+                print(f"    Read sibling YML descriptions for column vocabulary hints")
+    else:
+        print("  none")
+    print()
+
+    # Detect var() reference conventions from dbt_project.yml
+    dbt_project_yml = work_dir / "dbt_project.yml"
+    if dbt_project_yml.exists():
+        try:
+            import yaml
+            with open(dbt_project_yml) as f:
+                proj_cfg = yaml.safe_load(f) or {}
+            all_vars = proj_cfg.get("vars", {})
+            var_refs: list[str] = []
+            for section_key, section_val in all_vars.items():
+                if isinstance(section_val, dict):
+                    for var_name, var_val in section_val.items():
+                        if isinstance(var_val, str) and "ref(" in var_val:
+                            var_refs.append(
+                                f"  var('{var_name}') → {var_val}"
+                            )
+            if var_refs:
+                print("VAR ALIASES (use var() instead of ref() in new models — project convention):")
+                for vr in var_refs:
+                    print(vr)
+                print()
+        except Exception:
+            pass
+
+    print("STUBS TO REWRITE (SQL file exists but is incomplete):")
+    print(f"  {', '.join(sorted(stub_models)) if stub_models else 'none'}")
+    print()
+
+    print("COMPLETE MODELS (have a non-stub SQL file — call list_tables to confirm which are materialized):")
+    print(f"  {', '.join(sorted(complete)) if complete else 'none'}")
+    if complete:
+        print("  ⚠ These SQL files already exist and compile. Do NOT delete or recreate them.")
+
+    # Orphan SQL files (SQL exists but no YML model)
+    orphans = sql_models - yml_models
+    if orphans:
+        print()
+        print("SQL FILES WITHOUT YML (usable as ref() targets — prefer ref() over source()):")
+        for o in sorted(orphans):
+            if missing_models:
+                for m in sorted(missing_models):
+                    if o in m or m in o or (len(o) > 5 and o[:5] == m[:5]):
+                        print(f"  {o}.sql — possible match: {m} (defined in YML)")
+                        break
+                else:
+                    print(f"  {o}.sql — no YML definition found")
+            else:
+                print(f"  {o}.sql — no YML definition found")
+    print()
+
+    # Sibling patterns for ALL yml models (helps with column conventions)
+    all_work = yml_models  # Show siblings for every model, not just stubs/missing
+    sibling_info = _find_sibling_patterns(work_dir, all_work, complete_models | stub_models, all_columns)
+    if sibling_info:
+        print("SIBLING PATTERNS (complete models in same directory — read for column conventions):")
+        for model, siblings in sorted(sibling_info.items()):
+            sib_strs = [f"{s} ({c} cols)" if c else f"{s} (? cols)" for s, c in siblings]
+            print(f"  {model}: {', '.join(sib_strs)}")
+        print()
+
+    # Reverse dependencies — models that ref() other models
+    work_models = missing_models | stub_models
+    reverse_deps: dict[str, list[str]] = {}
+    for src_model, ref_list in deps.items():
+        for ref_name in ref_list:
+            if ref_name in yml_models and src_model != ref_name:
+                reverse_deps.setdefault(ref_name, []).append(src_model)
+    if reverse_deps:
+        print("REFERENCING MODELS (models that ref() these — read for column conventions):")
+        for model, consumers in sorted(reverse_deps.items()):
+            print(f"  {model} is referenced by: {', '.join(sorted(consumers))}")
+        print()
+
+    # Dependencies for models to build/rewrite
+    dep_lines = []
+    for model in sorted(work_models):
+        if model in deps:
+            dep_lines.append(f"  {model} depends on: {', '.join(deps[model])}")
+    if dep_lines:
+        print("DEPENDENCIES (build in this order):")
+        print("\n".join(dep_lines))
+    else:
+        print("DEPENDENCIES: (check YML refs and existing SQL for dependency info)")
+    print()
+
+    # Required columns
+    col_lines = []
+    for model in sorted(work_models):
+        desc = all_descriptions.get(model, "")
+        desc_str = f" | DESC: {desc}" if desc else ""
+        if model in all_columns:
+            col_lines.append(f"  {model}: {', '.join(all_columns[model])}{desc_str}")
+    if col_lines:
+        print("REQUIRED COLUMNS (the YML contract — match these names exactly):")
+        print("\n".join(col_lines))
+    else:
+        print("REQUIRED COLUMNS: (read YML files for column specs)")
+    print()
+
+    # Sources
+    if all_sources:
+        print("AVAILABLE SOURCES:")
+        print("\n".join(all_sources))
+        print()
+
+    # Macros — include full definitions so the agent knows what they do
+    macros = scan_macros(work_dir)
+    if macros:
+        print("AVAILABLE MACROS (use these in your models — they exist for a reason):")
+        for name, body in macros:
+            print(f"\n  ### {name}")
+            for line in body.splitlines():
+                print(f"  {line}")
+        print()
+
+    # Packages
+    pkg_info = scan_packages(work_dir)
+    if pkg_info:
+        print("PACKAGES:")
+        print(f"  {pkg_info}")
+        print()
+
+    # Snapshot detection
+    snapshots_dir = work_dir / "snapshots"
+    if snapshots_dir.exists():
+        snap_files = list(snapshots_dir.rglob("*.sql"))
+        print(f"SNAPSHOTS DIRECTORY: {len(snap_files)} snapshot file(s) in snapshots/")
+        print("  Read them for context only: you cannot run `dbt snapshot` here, so snapshot tables stay as they are.")
+        print()
+
+    # Database-derived hints (lookup joins, staging-vs-raw gaps, parent-child
+    # driving tables) come from the database, not this scanner.
+    print("DB HINTS: use list_tables and query_database to check lookup joins, "
+          "staging-vs-raw gaps, and parent-child driving tables.")
+    print()
+
+    # current_date warnings
+    cd_hits = scan_current_date(work_dir)
+    if cd_hits:
+        print("WARNING — FILES USING current_date (rebuild or fix them, see dbt-workflow Step 3 and dbt-debugging §4):")
+        print("\n".join(cd_hits))
+        print()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"(project scan error: {e})")

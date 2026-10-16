@@ -10,7 +10,7 @@ import pytest
 from claude_agent_sdk import ResultMessage
 
 from data_agent import agent, cli, run_config
-from data_agent.agent import QUERY_SKILLS, SKILLS_DIR, Task
+from data_agent.agent import DBT_SKILLS, QUERY_SKILLS, SKILLS_DIR, Task
 from data_agent.run_config import CONFIG_NAMES, load_config
 
 ADR_CONFIGS = {"baseline", "full", "no-skill", "no-verifiers", "no-context", "full-old-skill"}
@@ -83,12 +83,14 @@ def test_skill_version_is_a_hash_of_the_skill_directory(tmp_path: Path) -> None:
 
 
 async def run_scripted(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config: str, task_type: str = "query"
 ) -> tuple[Any, list[dict[str, Any]]]:
     """One run with the SDK replaced; returns the options it was given and the events."""
     seen: list[Any] = []
 
     async def fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        # Kept on the options so tests can check the task prompt too.
+        options.user_prompt = prompt
         seen.append(options)
         yield ResultMessage(
             subtype="success",
@@ -103,7 +105,7 @@ async def run_scripted(
     monkeypatch.setattr(agent, "query", fake_query)
     db = tmp_path / "x.duckdb"
     duckdb.connect(str(db)).close()
-    task = Task(text="q", type="query", workspace=tmp_path, duckdb=db)
+    task = Task(text="q", type=task_type, workspace=tmp_path, duckdb=db)  # type: ignore[arg-type]
     env = {"DATA_AGENT_API_KEY": "sk-test"}
     outcome = await agent.run(task, load_config(config), tmp_path / "events", env)
     events = [json.loads(line) for line in outcome.events_path.read_text().splitlines()]
@@ -132,6 +134,29 @@ async def test_skill_off_loads_no_skill_text(
     assert "skill" not in options.system_prompt.lower()
     assert events[0]["skill_version"] == "none"
     assert events[0]["layers"] == layers(config)
+
+
+async def test_full_dbt_run_loads_the_dbt_skills_from_the_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    options, events = await run_scripted(monkeypatch, tmp_path, "full", "dbt")
+    config = load_config("full")
+    assert agent.load_skills(DBT_SKILLS, config.skills_dir) in options.system_prompt
+    assert options.max_turns == 200
+    assert events[0]["skill_version"] == agent.skill_version(config.skills_dir)
+
+
+@pytest.mark.parametrize("config", ["baseline", "no-skill"])
+async def test_skill_off_dbt_run_loads_no_skill_text_or_scripts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config: str
+) -> None:
+    options, events = await run_scripted(monkeypatch, tmp_path, config, "dbt")
+    for name in DBT_SKILLS:
+        assert f"name: {name}" not in options.system_prompt, name
+    assert "skill" not in options.system_prompt.lower()
+    assert events[0]["skill_version"] == "none"
+    assert agent.dbt_scripts(load_config(config)) == ()
+    assert "dbt-workflow" not in options.user_prompt
 
 
 @pytest.mark.parametrize("config", sorted(ADR_CONFIGS))
