@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# The only way agents reach the eval server (AGENTS.md): fixed subcommands over the SSH host alias.
+# Source of truth lives in the repo; the installed copy at ~/.local/bin/da-remote is what agents run.
+# Output never shows the server address: IPv4/IPv6 addresses are replaced with <server>.
+#
+# Usage: da-remote check
+# Env:   DA_REMOTE_HOST (default: da-server), DA_REMOTE_DIR (repo path on the server, default: ~/data-agent)
+set -euo pipefail
+
+host="${DA_REMOTE_HOST:-da-server}"
+dir="${DA_REMOTE_DIR:-~/data-agent}"
+
+mask() {
+  sed -E \
+    -e 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<server>/g' \
+    -e 's/([0-9A-Fa-f]{1,4}:){5,7}[0-9A-Fa-f]{1,4}/<server>/g' \
+    -e 's/[0-9A-Fa-f:]*::[0-9A-Fa-f:]*[0-9A-Fa-f]/<server>/g'
+}
+
+remote() {
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "$@" 2>&1 | mask
+  return "${PIPESTATUS[0]}"
+}
+
+check() {
+  # Reports facts only; never prints the env file's contents or the hostname.
+  remote "DIR=$dir bash -s" <<'EOF'
+ok() { printf '  ok    %s\n' "$1"; }
+bad() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+fails=0
+
+arch=$(uname -m)
+[ "$arch" = x86_64 ] && ok "arch $arch" || bad "arch $arch (need x86_64)"
+cores=$(nproc)
+[ "$cores" -ge 8 ] && ok "cores $cores" || bad "cores $cores (want >= 8)"
+mem=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+[ "$mem" -ge 30 ] && ok "memory ${mem} GB" || bad "memory ${mem} GB (want >= 32)"
+disk=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc 0-9)
+[ "$disk" -ge 100 ] && ok "free disk ${disk} GB" || bad "free disk ${disk} GB (want >= 100)"
+. /etc/os-release 2>/dev/null && ok "os $PRETTY_NAME"
+
+export PATH="$HOME/.local/bin:$PATH"
+for t in docker uv git git-lfs; do
+  command -v "$t" >/dev/null && ok "$t installed" || bad "$t missing"
+done
+docker info >/dev/null 2>&1 && ok "docker runs without sudo" || bad "docker info failed (daemon down or user not in docker group)"
+
+if [ -d "$DIR/.git" ]; then
+  ok "repo at $DIR ($(git -C "$DIR" log --oneline -1))"
+  git -C "$DIR" ls-remote --exit-code origin HEAD >/dev/null 2>&1 && ok "repo can reach GitHub" || bad "git ls-remote origin failed"
+else
+  bad "no git repo at $DIR (set DA_REMOTE_DIR)"
+fi
+
+envf="$HOME/.config/data-agent/env"
+if [ -f "$envf" ]; then
+  perm=$(stat -c %a "$envf")
+  [ "$perm" = 600 ] && ok "env file present, mode 600" || bad "env file mode $perm (want 600)"
+else
+  bad "env file missing"
+fi
+
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.deepseek.com/ || echo 000)
+[ "$code" != 000 ] && ok "DeepSeek API reachable (HTTP $code)" || bad "DeepSeek API unreachable"
+
+echo "$fails failure(s)"
+[ "$fails" -eq 0 ]
+EOF
+}
+
+case "${1:-}" in
+  check) check ;;
+  *)
+    echo "usage: da-remote check" >&2
+    exit 2
+    ;;
+esac
