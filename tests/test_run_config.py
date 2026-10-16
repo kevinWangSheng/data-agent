@@ -44,7 +44,7 @@ def test_every_config_has_the_same_turns_and_budget() -> None:
     """An ablation changes one layer; model, tools and budget stay equal (CONTEXT: Ablation)."""
     configs = [load_config(name) for name in CONFIG_NAMES]
     assert {(tuple(sorted(c.max_turns.items())), c.max_budget_usd) for c in configs} == {
-        ((("dbt", 200), ("query", 50)), 1.0)
+        ((("dbt", 200), ("large", 75), ("query", 50)), 1.0)
     }
 
 

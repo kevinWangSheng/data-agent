@@ -9,3 +9,5 @@ max_budget_usd = 1.0
 [max_turns]
 dbt = 200
 query = 50
+# A query on a large database (SignalPilot's 75); evals/dab.py says what is large.
+large = 75
