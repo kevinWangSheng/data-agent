@@ -41,7 +41,7 @@ force-exclude = true
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.basedpyright]
-include = ["src", "tests"]
+include = ["src", "tests", "evals"]
 # SignalPilot copies (see [tool.ruff]); their annotations predate sqlglot 30's stubs.
 exclude = ["src/data_agent/engine", "tests/engine"]
 pythonVersion = "3.12"
