@@ -1,6 +1,6 @@
 # 12 — 消融运行器
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 06, 07, 09, 10, 11, 15, 16
 Spec: ../spec.md
 Claimed by: Claude Code (claude-opus-5-5) 2026-10-16
@@ -31,7 +31,7 @@ ADR-0004（6 配置 × 3 次 = 540 次）；plan §7 降级顺序与护栏。
 - [x] DAB runner 接上 context 层开关（工单 13 已知限制：DAB server 不注册 context tools，`full` 与 `no-context` 在 DAB 上行为相同）：把开关传给 `evals/dab_server.py` 并注册对应工具，或拒绝在 DAB 上跑 `context = true` 的配置
 - [x] DAB 续跑核对加上 `git_commit` 与 `skill_version`（工单 13 已知限制：`evals/dab.py` 的续跑检查只比 config、model、hints、DAB commit）
 - [x] DAB 续跑可靠性（工单 13 已知限制）：`submission.json` 先写临时文件再原子替换；运行条件里 DAB commit 带脏工作区标记，脏 checkout 拒绝续跑
-- [ ] `make check` 通过
+- [x] `make check` 通过
 
 ## Evidence required
 
@@ -92,3 +92,10 @@ DAB 真实运行（stockindex query 1）：`--config full` → exit 2（"turns o
 ### 2026-10-16 主会话
 
 NOTICE 超出本工单 Authority，主会话在分支上补了一行（cc19f4b：`skills-frozen/fa6028eef62b/` 是 `skills/` 原样副本，沿用同样上游与声明）。
+
+### 2026-10-16 主会话：PR #17 第 1 轮退回
+
+CI 绿（cc19f4b）。Codex 两条，对照代码核实都属实：
+
+- 退回：`evals/ablate.py:167` `check_conditions` 里 `if found[key] and ...`：事件文件缺失/为空或版本头缺 `git_commit`/`skill_version` 时 `versions()` 给空列表，比较被跳过，于是没有版本的 trial 会被复用、或和新续跑的 trial 混在一张表里。缺任何必需版本字段应算条件不符（Stop）。配一个修复前会失败的测试。
+- 退回：`evals/dab.py` `dab_commit()`：只因路径带 `filter=lfs` 就当干净，下载后被改过的数据库文件不会被发现，续跑可能混用不同数据。改成：有改动的 LFS 路径要对照 DAB 自带的 `dataset_manifest.tsv`（sha256）校验，不一致或不在清单里就算 dirty（只读清单和文件，不复制 DAB 代码——DAB 无许可证）。配测试。
