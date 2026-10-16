@@ -1,6 +1,6 @@
 # 13 — DAB runner
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 03, 05
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -42,10 +42,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 6（da-review 5 轮：首次 2 + 本次 3；code-review 1 轮）
-- Model spend: ~$0.09（首次 ~$0.050；本次 3 次真实运行 $0.0352；另一次 SIGINT/SIGTERM 探针花费未记录）
-- Outcome: 退回第 1 轮两项已修并经真实运行验证；第 3 轮 da-review 2 P1 + 1 P2 未修
+- Attempts: 3
+- Review rounds: 7（da-review 6 轮；code-review 1 轮）
+- Model spend: ~$0.095（之前 ~$0.09；本轮真实运行 $0.0046）
+- Outcome: 退回第 2 轮 4 项完成并经真实运行验证；da-review 第 4 轮 2 P1 + 1 P2 记为已知限制
 - Human review minutes: —
 
 ## Comments
@@ -191,3 +191,56 @@ stockindex query2 run0: finished   exit=0
 4. [P2] `Results.reply` 存值前把 NaN/inf 转成 `None`，后续 `execute_python` 不再因 `nan` 未定义而失败。配测试。
 
 修完 `make check`、真实运行 stockindex 一题一次，再跑一轮 `da-review main`；之后的新意见记为已知限制，不再停下。最终回复给出要追加的 Comments 与 Ledger（Attempts 3）和 `Status: in-review`。
+
+### 2026-10-16 工单 agent：退回第 2 轮交回（commits `7ac5948` merge、`8670498`）
+
+**1. 合并 main**
+- 执行了 `git merge origin/main`。`evals/__main__.py` 的冲突已解决：`attribute` 和 `dab` 两个命令都保留，import 为 `from evals import attribute, dab, scrub, spend`。
+- 合并后跑全部测试：748 passed, 15 deselected, 8 xfailed。
+
+**2. [P1] 密钥经 JSON 转义后遮不住**
+- `dab.mask` 对每个密钥依次替换：`ensure_ascii` 转义的形式、非 ASCII 原样的转义形式、原文。
+- 测试 `test_dab_logs_mask_secrets_in_their_json_escaped_form`：`PG_PASSWORD='pa"ss\wörd'`，两种编码的日志行解码后都是 `[REDACTED]`。
+
+**3. [P1] 中断时日志不遮盖**
+- 遮盖抽成 `mask_dab_logs`，放进 `run_once` 的 `finally`，在 `remove_exec_containers` 之后执行。
+- 测试 `test_dab_logs_are_masked_when_the_run_is_interrupted`：会话抛出 `CancelledError` 后，日志已遮盖。
+
+**4. [P2] NaN/inf 结果会弄坏后续 `execute_python`**
+- `dab_server.finite` 在 `Results.reply` 存值前，把 dict、list、tuple 里的非有限浮点数递归转成 `None`。
+- 测试 `test_non_finite_numbers_are_kept_as_null`：第一次返回 `[None, {"x": None}, None, 1.5]`，下一次 `execute_python` 使用 `var_1` 成功。
+
+三个测试在修复前都失败，失败原因正是目标问题：`NameError: name 'nan' is not defined`、转义后的密钥残留、中断后日志未遮盖。
+
+**检查**：`make check` 结果为 All checks passed、basedpyright 0 errors、751 passed, 15 deselected, 8 xfailed。`tests/test_dab.py` 共 54 个测试。
+
+**真实运行**（DAB `6ad9d68`，stockindex，SQLite × DuckDB 跨库）：
+```
+DOCKER_HOST=unix://$HOME/.colima/m1-kind/docker.sock uv run --env-file ~/.config/data-agent/env \
+  --with-requirements evals/dab-requirements.txt python -m evals dab --dab-root runs/13/DataAgentBench \
+  --dataset stockindex --query 2 --runs 1 --config full --out runs/13/out-r2 --budget 3
+stockindex query2 run0: finished   exit=0
+```
+- 7 轮，$0.0046，通过 DAB 的 `validate.py`（只看了通过与否）。
+- 共 13 次 `query_database` 调用。
+- 跑完后残留的 `python-data:3.12` 容器为 0。
+- 提交 JSON 片段：`{"dataset": "stockindex", "query": "2", "run": "0", "answer": "**Answer: Only the NASDAQ Composite (IXIC).**\n\nAmong the three North American indices in the data, 2018 up-day vs down-day counts …"}`
+
+**`da-review main`（第 4 轮）的新意见，按退回要求记为已知限制，未修**
+- **[P1] `execute_python` 的代码文件可能被符号链接劫持。**
+  - autogen 0.7.5 在 workspace 里用 `Path.open("w")` 写 `tmp_code_<sha256>.py`，容器内的代码可以先在这个位置放一个符号链接，下次执行时就会覆盖 workspace 外的宿主文件。
+  - 建议：让执行器的代码目录不在容器可写的路径下，或在写入前做不跟随链接的检查（后续工单）。
+- **[P1] DAB 日志里嵌套的 JSON 预览遮不全。**
+  - DAB 的 `BaseTool.exec` 日志里，`result.preview` 已经是 JSON 字符串，外层再编码一次，密钥中的特殊字符会被转义两次。现在只覆盖原文和一次转义。
+  - 现有的 API key 和 host 不含特殊字符，不受影响；含引号、反斜杠或非 ASCII 的 `PG_PASSWORD` 会受影响。
+  - 建议：在 `mask` 里再加一层编码形式，或者解码 preview 后再遮盖（几行改动）。
+- **[P2] DAB runner 忽略 context 层开关。**
+  - 已核实：`src/data_agent/mcp_server.py:78` 在 `config.context` 为真时注册 context tools，而 DAB server 替换了这个 MCP server，没有接这个开关。
+  - 后果：`full` 和 `no-context` 在 DAB 上实际行为相同，但版本头里记录的启用层不同，这两个配置的 DAB 对比不成立。
+  - 建议：把 context 开关传给 `dab_server` 并注册对应工具，或者在 DAB runner 里拒绝 `context = true` 的配置（后续工单，或放进 DAB 消融实验之前要做的事）。
+
+**其他**
+- 本轮按退回要求只跑了 `da-review main`，没有跑 `eng:code-review main`。
+- 上一轮的已知限制保持不变，比如只在 DAB 自己 `.env` 里设置的连接值不会被遮盖。
+
+**主会话**：第 4 轮的 context 开关问题影响 DAB 消融的有效性，已写进工单 12 验收标准；另两条（autogen 代码文件可被符号链接劫持、嵌套 JSON 预览的二次转义遮盖）交人在最终审查时决定是否开后续工单。
