@@ -1,6 +1,6 @@
 # 12 — 消融运行器
 
-Status: in-review
+Status: done
 Blocked by: 06, 07, 09, 10, 11, 15, 16
 Spec: ../spec.md
 Claimed by: Claude Code (claude-opus-5-5) 2026-10-16
@@ -50,7 +50,7 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 - Attempts: 1
 - Review rounds: 2（另 PR #17 退回 2 轮）
 - Model spend: 约 $0.76（消融 $0.7269 + DAB $0.0212；中止的第 1 次运行有 1 个 trial 没记，估计 < $0.15），在 $3 上限内
-- Outcome: 验收项全部完成；NOTICE 由主会话补
+- Outcome: done，PR #17 squash 合并（2 轮退回）
 - Human review minutes: —
 
 ## Comments
@@ -121,3 +121,11 @@ CI 绿（531c92e）。Codex 一条，核实属实：
 - 测试：`tests/test_eval_ablate.py::test_another_model_on_the_same_out_stops`（默认→`deepseek-pro`、`deepseek-pro`→默认）修复前两例都失败（`assert 0 == 2`），修复后通过；同一请求再跑仍复用 job。
 - `make check`：1018 passed，24 deselected；basedpyright 0 errors。本轮未真实跑模型，未跑两道本地审查。
 - 已知限制：本修复之前建的 OUT 没有 `request.json`，新代码第一次运行时记下当次请求，无法回溯旧 job 的请求。
+
+### 2026-10-16 主会话：合并 PR #17
+
+CI 绿（6da173d）。Codex 新意见一条，退回轮数已用完，记成已知限制：
+
+- 已知限制（属实，偏安全方向）：`evals/ablate.py:258` 续跑前把将被删的 trial 事件文件复制到 `OUT/dropped/`；若 `harbor job resume` 在删掉原 trial 目录前非零退出，`dropped/` 副本与 `jobs/` 原件都在，下次花费护栏重复计数，可能误触 80% 上限挡住重试（只会多算，不会少算）。遇到时手动删 `OUT/dropped/` 里对应副本或换 `--out`；后续工单可在 resume 失败时回滚副本或按 trial 去重。
+
+已 `gh pr merge 17 --squash`。
