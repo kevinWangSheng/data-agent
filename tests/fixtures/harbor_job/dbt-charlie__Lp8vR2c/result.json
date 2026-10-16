@@ -1,0 +1,28 @@
+{
+  "id": "ae5836f0-ce20-5d4a-a9f6-a953b1bac860",
+  "task_name": "dbt-charlie",
+  "trial_name": "dbt-charlie__Lp8vR2c",
+  "trial_uri": "file:///jobs/fixture-job/dbt-charlie__Lp8vR2c",
+  "agent_info": {
+    "name": "data-agent",
+    "version": "0.0.0",
+    "model_info": {
+      "name": "deepseek-flash",
+      "provider": "deepseek"
+    }
+  },
+  "agent_result": {
+    "n_input_tokens": 120000,
+    "n_cache_tokens": 100000,
+    "n_output_tokens": 4000,
+    "cost_usd": 0.125
+  },
+  "verifier_result": {
+    "rewards": {
+      "reward": 0.0
+    }
+  },
+  "exception_info": null,
+  "started_at": "2026-10-14T09:08:00Z",
+  "finished_at": "2026-10-14T09:08:45Z"
+}

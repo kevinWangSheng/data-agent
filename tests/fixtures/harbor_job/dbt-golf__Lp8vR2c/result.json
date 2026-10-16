@@ -1,0 +1,28 @@
+{
+  "id": "c7c061e9-44a5-5da8-9c54-5676c787526a",
+  "task_name": "dbt-golf",
+  "trial_name": "dbt-golf__Lp8vR2c",
+  "trial_uri": "file:///jobs/fixture-job/dbt-golf__Lp8vR2c",
+  "agent_info": {
+    "name": "data-agent",
+    "version": "0.0.0",
+    "model_info": {
+      "name": "deepseek-flash",
+      "provider": "deepseek"
+    }
+  },
+  "agent_result": {
+    "n_input_tokens": 120000,
+    "n_cache_tokens": 100000,
+    "n_output_tokens": 4000,
+    "cost_usd": 0.125
+  },
+  "verifier_result": {
+    "rewards": {
+      "reward": 0.0
+    }
+  },
+  "exception_info": null,
+  "started_at": "2026-10-14T09:20:00Z",
+  "finished_at": "2026-10-14T09:20:45Z"
+}

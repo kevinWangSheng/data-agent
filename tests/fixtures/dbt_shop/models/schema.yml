@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: stg_customers
+    columns:
+      - name: customer_id
+      - name: customer_name
+      - name: tier
+      - name: signup_date
+  - name: stg_orders
+    columns:
+      - name: order_id
+      - name: customer_id
+      - name: status
+      - name: amount
+      - name: order_date
+  - name: customer_orders
+    description: One row per customer.
+    columns:
+      - name: customer_id
+      - name: customer_name
+      - name: n_orders
+      - name: total_amount
