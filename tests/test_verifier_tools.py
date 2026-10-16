@@ -674,3 +674,48 @@ async def test_check_model_schema_compares_declared_types(tmp_path: Path) -> Non
     assert "[OK] Matching: id, name, amount, at" in text
     assert "[X] Type mismatch: at (expected varchar, actual TIMESTAMP)" in text
     assert "id (" not in text.split("Type mismatch")[1]
+
+
+def test_a_count_over_a_column_the_sql_transforms_is_inconclusive(tmp_path: Path) -> None:
+    sql = (
+        "WITH o AS (SELECT customer_id, COALESCE(status, 'unknown') AS status FROM orders)"
+        " SELECT customer_id, COUNT(status) AS n_statuses FROM o GROUP BY customer_id"
+    )
+    db = make_db(
+        tmp_path / "derived.duckdb",
+        "CREATE TABLE orders (customer_id VARCHAR, status VARCHAR);"
+        "INSERT INTO orders VALUES ('c1', NULL), ('c1', 'ok');"
+        f"CREATE TABLE m AS {sql};",
+    )
+    block = metric_block(verify(db, "m", ["orders"], sql), "n_statuses")
+    assert "inconclusive" in block and "→" not in block
+
+
+def test_a_count_of_an_aggregated_ctes_rows_is_inconclusive(tmp_path: Path) -> None:
+    sql = (
+        "WITH per_customer AS (SELECT region, customer_id FROM orders GROUP BY region, customer_id)"
+        " SELECT region, count(*) AS n_customers FROM per_customer GROUP BY region"
+    )
+    block = metric_block(verify(model_db(tmp_path, sql), "m", ["orders"], sql), "n_customers")
+    assert "inconclusive" in block and "→" not in block
+
+
+def test_a_wrapped_cte_count_is_still_a_count(tmp_path: Path) -> None:
+    sql = (
+        "WITH o AS (SELECT customer_id, count(*) AS placed FROM orders GROUP BY customer_id)"
+        " SELECT customer_id, COALESCE(placed, 0) AS placed FROM o"
+    )
+    db = model_db(tmp_path, sql)
+    con = duckdb.connect(str(db))
+    con.execute("UPDATE m SET placed = 20")
+    con.close()
+    assert "MISMATCH vs COUNT(*)" in metric_block(verify(db, "m", ["orders"], sql), "placed")
+
+
+def test_a_computed_non_count_ignores_its_count_like_name(tmp_path: Path) -> None:
+    sql = (
+        "SELECT customer_id, CAST(SUM(amount) OVER (PARTITION BY customer_id) AS BIGINT)"
+        " AS n_amount FROM orders"
+    )
+    block = metric_block(verify(model_db(tmp_path, sql), "m", ["orders"], sql), "n_amount")
+    assert "→" not in block

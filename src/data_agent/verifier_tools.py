@@ -684,9 +684,10 @@ class Output:
     expression: exp.Expr
     grouped: bool  # a GROUP BY expression of that SELECT: a dimension, whatever its type
     aggregate: bool  # an aggregate outside a window: a metric, never a dimension
+    select: exp.Select
 
 
-def parse_model(sql: str) -> tuple[exp.Select, dict[str, exp.Select]] | None:
+def parse_model(sql: str) -> tuple[exp.Select, dict[str, exp.Expr]] | None:
     """(outermost SELECT, CTEs by lowercase name) of the model's SQL with Jinja rendered away
     (ref and source become table names); None when it does not parse to one SELECT."""
     plain = re.sub(r"\{#.*?#\}", "", sql, flags=re.DOTALL)
@@ -699,12 +700,7 @@ def parse_model(sql: str) -> tuple[exp.Select, dict[str, exp.Select]] | None:
         return None
     if not isinstance(tree, exp.Select):
         return None
-    ctes = {
-        cte.alias.lower(): cte.this
-        for cte in tree.find_all(exp.CTE)
-        if isinstance(cte.this, exp.Select)
-    }
-    return tree, ctes
+    return tree, {cte.alias.lower(): cte.this for cte in tree.find_all(exp.CTE)}
 
 
 def has_aggregate(expression: exp.Expr) -> bool:
@@ -741,10 +737,10 @@ def in_group_by(select: exp.Select, projection: exp.Expr) -> bool:
     return False
 
 
-def derived(select: exp.Select, ctes: dict[str, exp.Select]) -> dict[str, exp.Select | None]:
-    """The SELECT's FROM and JOIN sources by lowercase alias: a CTE's or subquery's SELECT, or
-    None for a table."""
-    sources: dict[str, exp.Select | None] = {}
+def derived(select: exp.Select, ctes: dict[str, exp.Expr]) -> dict[str, exp.Expr | None]:
+    """The SELECT's FROM and JOIN sources by lowercase alias: a CTE's or subquery's query (a
+    SELECT, or a set operation), or None for a table."""
+    sources: dict[str, exp.Expr | None] = {}
     from_ = select.args.get("from_")
     for source in [
         from_.this if from_ else None,
@@ -753,17 +749,17 @@ def derived(select: exp.Select, ctes: dict[str, exp.Select]) -> dict[str, exp.Se
         if isinstance(source, exp.Table):
             sources[source.alias_or_name.lower()] = ctes.get(source.name.lower())
         elif isinstance(source, exp.Subquery):
-            body = source.this
-            sources[source.alias_or_name.lower()] = body if isinstance(body, exp.Select) else None
+            sources[source.alias_or_name.lower()] = source.this
     return sources
 
 
 def trace(
-    select: exp.Select, name: str, ctes: dict[str, exp.Select], depth: int = 0
+    select: exp.Select, name: str, ctes: dict[str, exp.Expr], depth: int = 0
 ) -> Output | None:
-    """How `select` computes output column `name`: a plain column taken from a CTE or subquery
-    is followed into it, a star expanded through them. None when the column comes from a table's
-    star or the SQL nests deeper than the CTEs plausibly do."""
+    """How `select` computes output column `name`: a column taken from a CTE or subquery is
+    followed into it (under CAST, COALESCE or parentheses too, when it is grouped or aggregated
+    there), a star expanded through them. None when the column comes from a table's star or the
+    SQL nests deeper than the CTEs plausibly do."""
     if depth > len(ctes) + 10:
         return None
     sources = derived(select, ctes)
@@ -774,7 +770,7 @@ def trace(
         if star is not None:
             table = star.table.lower() if isinstance(star, exp.Column) else ""
             for alias, body in sources.items():
-                if body is not None and table in ("", alias):
+                if isinstance(body, exp.Select) and table in ("", alias):
                     found = trace(body, name, ctes, depth + 1)
                     if found:
                         return found
@@ -784,14 +780,18 @@ def trace(
         expression = projection.unalias()
         grouped = in_group_by(select, projection)
         aggregate = not grouped and has_aggregate(expression)
-        if not grouped and not aggregate and isinstance(expression, exp.Column):
-            table = expression.table.lower()
+        inner = expression
+        while isinstance(inner, exp.Paren | exp.Cast | exp.Coalesce):
+            inner = inner.this
+        if not grouped and not aggregate and isinstance(inner, exp.Column):
+            table = inner.table.lower()
             for alias, body in sources.items():
-                if body is not None and table in ("", alias):
-                    found = trace(body, expression.name, ctes, depth + 1)
-                    if found:
+                if isinstance(body, exp.Select) and table in ("", alias):
+                    found = trace(body, inner.name, ctes, depth + 1)
+                    # A wrapped pass-through column is computed here, not taken from there.
+                    if found and (inner is expression or found.grouped or found.aggregate):
                         return found
-        return Output(expression, grouped, aggregate)
+        return Output(expression, grouped, aggregate, select)
     return None
 
 
@@ -804,6 +804,38 @@ def count_of(output: Output) -> exp.Expr | None:
     if isinstance(node, exp.Filter) and isinstance(node.this, exp.Count):
         return node
     return node if isinstance(node, exp.Count) else None
+
+
+def keeps_rows(query: exp.Expr, ctes: dict[str, exp.Expr], depth: int = 0) -> bool:
+    """Whether a CTE's or subquery's rows are its tables' rows, filtered at most: a single
+    SELECT without GROUP BY, aggregate or DISTINCT, down to the tables."""
+    if not isinstance(query, exp.Select) or depth > len(ctes) + 10:
+        return False
+    if query.args.get("group") or query.args.get("distinct"):
+        return False
+    if any(has_aggregate(projection) for projection in query.expressions):
+        return False
+    sources = derived(query, ctes).values()
+    return all(body is None or keeps_rows(body, ctes, depth + 1) for body in sources)
+
+
+def lineage_problem(count: exp.Expr, select: exp.Select, ctes: dict[str, exp.Expr]) -> str:
+    """Why the count, recomputed over an upstream table, would not be the model's count: it
+    counts the rows of an aggregated CTE, or reads a column the SQL computes. "" when neither."""
+    sources = derived(select, ctes)
+    for alias, body in sources.items():
+        if body is not None and not keeps_rows(body, ctes):
+            return f"counts the rows of {alias}, which are not upstream rows"
+    for column in count.find_all(exp.Column):
+        table = column.table.lower()
+        for alias, body in sources.items():
+            if not isinstance(body, exp.Select) or table not in ("", alias):
+                continue
+            found = trace(body, column.name, ctes)
+            if found and not isinstance(found.expression, exp.Column):
+                computed = found.expression.sql(dialect=DIALECT)
+                return f"{column.name} is computed in the model's SQL ({computed})"
+    return ""
 
 
 def counts_all_rows(count: exp.Expr) -> bool:
@@ -861,6 +893,7 @@ class Roles:
     unsliceable: list[str]  # grouping columns the slice cannot match: every slice is too wide
     metrics: list[str]
     counts: dict[str, exp.Expr]  # metric -> the COUNT(...) to recompute over each candidate
+    opaque: dict[str, str]  # count metric -> why no upstream count is its baseline
 
 
 def column_roles(model: Table, sql: str | None) -> tuple[Roles, str]:
@@ -878,7 +911,7 @@ def column_roles(model: Table, sql: str | None) -> tuple[Roles, str]:
             "Model SQL read: the slice is its GROUP BY columns, and a COUNT(...) metric is held "
             "against the same COUNT over each candidate"
         )
-    roles = Roles([], [], [], {})
+    roles = Roles([], [], [], {}, {})
     for name, data_type in model.columns:
         output = trace(parsed[0], name, parsed[1]) if parsed else None
         if output and output.grouped:
@@ -887,14 +920,18 @@ def column_roles(model: Table, sql: str | None) -> tuple[Roles, str]:
             if is_numeric(data_type):
                 roles.metrics.append(name)
                 count = count_of(output)
-                if count is not None:
+                if count is not None and parsed:
                     roles.counts[name] = count
+                    if problem := lineage_problem(count, output.select, parsed[1]):
+                        roles.opaque[name] = problem
         elif is_dimension(name, data_type):
             roles.dimensions.append(name)
         elif is_numeric(data_type):
             # A sum, even of integers, or an average is compared by the verifier, not here.
             roles.metrics.append(name)
-            if base_type(data_type) in INTEGER_TYPES and COUNT_NAME_RE.match(name):
+            # The name speaks only for a column the SQL does not compute (a window, arithmetic).
+            named = output is None or isinstance(output.expression, exp.Column)
+            if named and base_type(data_type) in INTEGER_TYPES and COUNT_NAME_RE.match(name):
                 roles.counts[name] = ROW_COUNT
         else:
             roles.unsliceable.append(name)
@@ -983,7 +1020,7 @@ def verify_values(
             Slice("", "the whole table", [], None)
             if whole_table
             else slice_filter(run, candidate, slice_values, bridges),
-            roles.counts,
+            {m: count for m, count in roles.counts.items() if m not in roles.opaque},
         )
         for candidate in candidates
     ]
@@ -1024,6 +1061,11 @@ def verify_values(
             counted += [f"    COUNT(DISTINCT {name}): {n}" for name, n in m.distinct]
             lines += counted
             if count is None:
+                continue
+            if metric in roles.opaque:
+                lines.append(
+                    f"    {label(count)}: {roles.opaque[metric]}; no baseline, inconclusive"
+                )
                 continue
             baseline: int | list[str] = dict(m.baselines).get(metric, m.count)
             if isinstance(baseline, list):
