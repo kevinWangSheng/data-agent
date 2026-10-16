@@ -4,6 +4,11 @@ description: "Use this skill before writing any SQL query. Covers: output shape 
 type: skill
 ---
 
+<!-- Copied from signalpilot-plugin (see NOTICE). Modified for data-agent: tool calls use this
+agent's `mcp__data__` tools (query_database, list_tables); steps that used SignalPilot-only tools
+(describe_table, explore_column, find_join_path, validate_sql, debug_cte_query, schema_overview)
+now use query_database or were removed; a benchmark-specific example in section 8 was replaced. -->
+
 # SQL Workflow Skill
 
 ## 1. Schema Exploration - Do This First
@@ -15,10 +20,8 @@ Before writing any SQL, understand the data:
  - `schema/{table_name}.json` - column names, types, descriptions, sample values
    Reading these files costs zero tool calls and gives you table structure + sample data.
    Only call MCP tools for information not in the local files (e.g., row counts, live data exploration).
-1. Call `list_tables` to get all schemas and tables - only if no local schema files exist or you need row counts.
-2. Call `describe_table` on the tables that seem relevant to the question (only if JSON files lack detail)
-3. Call `explore_column` on categorical columns to see distinct values (for filtering/grouping)
-4. Call `find_join_path` if you need to join tables and the relationship is unclear
+1. Call `list_tables` to get all schemas, tables and their columns - only if no local schema files exist.
+2. Run `SELECT DISTINCT col, COUNT(*) ... GROUP BY col` with `query_database` on categorical columns to see their values (for filtering/grouping)
 
 Stop exploring after 3-5 tool calls. Write SQL based on what you've found.
 
@@ -73,9 +76,9 @@ SELECT COUNT(*), COUNT(DISTINCT customer_id) FROM order_totals;
 ## 4. Execution and Structured Verification
 
 ```
-mcp__signalpilot__query_database
-  connection_name="<task_connection_name>"
+mcp__data__query_database
   sql="SELECT ..."
+  row_limit=1000
 ```
 
 After executing, run these checks IN ORDER before saving:
@@ -96,7 +99,7 @@ After executing, run these checks IN ORDER before saving:
 
 ## 5. Error Recovery Protocol
 
-- **Syntax error**: Use `validate_sql` before `query_database` to catch errors without burning a query turn
+- **Syntax error**: Read the error message, fix the reported part, and re-run
 - **Wrong results**: Do NOT just re-run the same query. Diagnose: which JOIN is wrong? Which filter is too aggressive?
 - **Zero rows**: Binary-search your WHERE conditions - remove them one at a time to find the culprit:
   ```sql
@@ -104,7 +107,7 @@ After executing, run these checks IN ORDER before saving:
   SELECT COUNT(*) FROM table WHERE cond_1 AND cond_2;  -- drops? cond_2 is culprit
   ```
 - **Too many rows**: Check for fan-out (duplicate join keys) or missing GROUP BY
-- **CTE debugging**: Use `debug_cte_query` to run each CTE independently and find which step breaks
+- **CTE debugging**: Run each CTE on its own with `query_database` to find which step breaks
 
 ## 6. Saving Output
 
@@ -125,7 +128,7 @@ Once you have the correct result:
 
 ## 7. Turn Budget Management
 
-- **First 3 turns**: Schema exploration only (`schema_overview`, `describe_table` on 2-3 tables, `explore_column` on key categorical columns). STOP exploring.
+- **First 3 turns**: Schema exploration only (`list_tables`, distinct values of key categorical columns). STOP exploring.
 - **Turns 4 through (N-3)**: Write query iteratively - execute and verify each step.
 - **Last 3 turns**: Finalize `result.sql` and `result.csv`. If you have a working query, SAVE IT NOW - do not keep iterating.
 
@@ -141,9 +144,9 @@ If your query works and passes all verification checks, SAVE IMMEDIATELY - do no
 - **String case in CSV**: Preserve the case from the database - do not uppercase/lowercase unless the question explicitly asks.
 - **Fan-out from JOINs**: Always check `COUNT(*) vs COUNT(DISTINCT key)` after every JOIN
 - **Wrong NULL handling**: Use `IS NULL` / `IS NOT NULL`, not `= NULL`
-- **Date format mismatch**: Check the actual format stored in the column with `explore_column`
+- **Date format mismatch**: Check the actual format stored in the column by sampling its values
 - **Case sensitivity**: Use the correct case-insensitive function for your backend
 - **Interpretation errors**: Before saving, re-read the original question. Verify:
-  * Filter conditions match domain values (check with explore_column if unsure)
+  * Filter conditions match domain values (check the column's distinct values if unsure)
   * "Excluding X" means the right thing (NOT IN vs EXCEPT vs WHERE NOT)
-  * Metrics match domain definitions (e.g., "scored points" in F1 = points > 0, not just participated)
+  * Metrics match the question's definition (e.g., "customers who ordered" means at least one order, not every customer row)

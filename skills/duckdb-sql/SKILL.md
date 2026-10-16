@@ -4,6 +4,9 @@ description: "Load when hitting DuckDB syntax errors or writing DuckDB-specific 
 type: skill
 ---
 
+<!-- Copied from signalpilot-plugin (see NOTICE). Modified for data-agent: the date-spine step
+queries MIN/MAX with query_database instead of SignalPilot's get_date_boundaries tool. -->
+
 # DuckDB SQL - Key Differences from PostgreSQL/MySQL
 
 ## Gotchas
@@ -38,7 +41,7 @@ QUALIFY rn <= 10
 ```sql
 SELECT UNNEST(GENERATE_SERIES(min_date::DATE, max_date::DATE, INTERVAL '1' DAY)) AS date_day
 ```
-Always use the primary fact table's max date as endpoint - call `get_date_boundaries` first.
+Always use the primary fact table's max date as endpoint - query its `MIN`/`MAX` first.
 
 ## Type Casting
 

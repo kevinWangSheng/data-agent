@@ -11,7 +11,7 @@ from data_agent.agent import QUERY_SKILLS
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_installed_wheel_loads_its_skills(tmp_path: Path) -> None:
+def build_and_extract_wheel(tmp_path: Path) -> Path:
     subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(tmp_path / "dist")],
         cwd=REPO_ROOT,
@@ -23,14 +23,12 @@ def test_installed_wheel_loads_its_skills(tmp_path: Path) -> None:
     site = tmp_path / "site"
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(site)
+    return site
 
-    # The extracted package shadows the editable checkout; dependencies still come from the venv.
-    probe = (
-        "from data_agent import agent; "
-        "print(agent.SKILLS_DIR); "
-        f"assert agent.load_skills({QUERY_SKILLS!r})"
-    )
-    proc = subprocess.run(
+
+def run_installed(tmp_path: Path, site: Path, probe: str) -> subprocess.CompletedProcess[str]:
+    """The extracted package shadows the editable checkout; dependencies come from the venv."""
+    return subprocess.run(
         [sys.executable, "-c", probe],
         cwd=tmp_path,
         env=os.environ | {"PYTHONPATH": str(site)},
@@ -38,5 +36,31 @@ def test_installed_wheel_loads_its_skills(tmp_path: Path) -> None:
         text=True,
         timeout=60,
     )
+
+
+def test_installed_wheel_loads_its_skills(tmp_path: Path) -> None:
+    site = build_and_extract_wheel(tmp_path)
+    # The extracted package shadows the editable checkout; dependencies still come from the venv.
+    probe = (
+        "from data_agent import agent; "
+        "print(agent.SKILLS_DIR); "
+        f"assert agent.load_skills({QUERY_SKILLS!r})"
+    )
+    proc = run_installed(tmp_path, site, probe)
     assert proc.returncode == 0, proc.stderr
     assert Path(proc.stdout.strip()).is_relative_to(site)
+
+
+def test_installed_wheel_reports_the_commit_it_was_built_from(tmp_path: Path) -> None:
+    """Away from the checkout there is no git to ask, so the commit is written in at build time."""
+    site = build_and_extract_wheel(tmp_path)
+    proc = run_installed(tmp_path, site, "from data_agent import agent; print(agent.git_commit())")
+    assert proc.returncode == 0, proc.stderr
+    built_from = subprocess.run(
+        ["git", "describe", "--always", "--dirty", "--abbrev=40"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert proc.stdout.strip() == built_from

@@ -44,6 +44,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGED_SKILLS = Path(__file__).resolve().parent / "skills"
 SKILLS_DIR = PACKAGED_SKILLS if PACKAGED_SKILLS.is_dir() else REPO_ROOT / "skills"
 QUERY_SKILLS = ("sql-workflow", "duckdb-sql")
+# Written into a wheel at build time (hatch_build.py); absent in a source checkout.
+BUILD_COMMIT = Path(__file__).resolve().parent / "BUILD_COMMIT"
 
 # The MCP server's name in the SDK session; its tools appear as mcp__data__<tool>.
 MCP_SERVER = "data"
@@ -76,6 +78,24 @@ Workspace (your working directory): {workspace}
 This run has no file-writing tools, so do not save result.sql or result.csv. End with a final \
 message that gives the answer first, then the assumptions you made.
 """
+
+
+@dataclass(frozen=True)
+class Price:
+    """US dollars per million tokens."""
+
+    input: float
+    cached_input: float
+    output: float
+
+
+# ADR-0001 Update (official pages, 2026-10-05), upper end of each range so spend is never
+# understated. DeepSeek bills cache writes as plain input. deepseek-v4-pro has no published
+# cache-read price there, so cache reads are charged at its input price.
+PRICES = {
+    "deepseek-flash": Price(input=0.30, cached_input=0.006, output=1.2),
+    "deepseek-v4-pro": Price(input=1.32, cached_input=1.32, output=3.96),
+}
 
 
 class ConfigError(Exception):
@@ -148,7 +168,10 @@ def skill_version() -> str:
 
 
 def git_commit() -> str:
-    """The agent's own commit, with `-dirty` when the checkout has uncommitted changes."""
+    """The agent's own commit, with `-dirty` when the checkout had uncommitted changes. A wheel
+    carries the commit it was built from; a source checkout asks git."""
+    if BUILD_COMMIT.is_file():
+        return BUILD_COMMIT.read_text().strip() or "unknown"
     try:
         proc = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "describe", "--always", "--dirty", "--abbrev=40"],
@@ -238,12 +261,14 @@ def record_message(log: EventLog, message: Any, tools: dict[str, str]) -> None:
                 )
 
 
-def result_fields(message: ResultMessage | None) -> dict[str, Any]:
+def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
     """Token counts and cost from the SDK's ResultMessage. Uncached input counts the tokens
     written to the cache too, since those are billed as fresh input.
 
-    `cost_usd` is the SDK's own figure, which its bundled CLI prices at Claude rates even for a
-    non-Claude model; `max_budget_usd` caps that same figure.
+    The SDK's own `total_cost_usd` (kept as `sdk_cost_usd`) is priced at Claude rates even for a
+    non-Claude model, so `cost_usd` prices the tokens from PRICES instead. A model missing there
+    (Claude among them, which the SDK prices correctly) falls back to the SDK figure, and
+    `cost_basis` says which one was used. `max_budget_usd` still caps the SDK figure.
     """
     if message is None:
         return {
@@ -255,19 +280,34 @@ def result_fields(message: ResultMessage | None) -> dict[str, Any]:
             "cached_input_tokens": 0,
             "output_tokens": 0,
             "cost_usd": 0.0,
+            "sdk_cost_usd": 0.0,
+            "cost_basis": "sdk",
             "errors": [],
         }
     usage = message.usage or {}
+    uncached = int(usage.get("input_tokens") or 0) + int(
+        usage.get("cache_creation_input_tokens") or 0
+    )
+    cached = int(usage.get("cache_read_input_tokens") or 0)
+    output = int(usage.get("output_tokens") or 0)
+    sdk_cost = message.total_cost_usd or 0.0
+    price = PRICES.get(model)
+    if price is None:
+        cost, basis = sdk_cost, "sdk"
+    else:
+        tokens = uncached * price.input + cached * price.cached_input + output * price.output
+        cost, basis = tokens / 1_000_000, "price_table"
     return {
         "subtype": message.subtype,
         "is_error": message.is_error,
         "num_turns": message.num_turns,
         "terminal_reason": message.terminal_reason,
-        "uncached_input_tokens": int(usage.get("input_tokens") or 0)
-        + int(usage.get("cache_creation_input_tokens") or 0),
-        "cached_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
-        "output_tokens": int(usage.get("output_tokens") or 0),
-        "cost_usd": message.total_cost_usd or 0.0,
+        "uncached_input_tokens": uncached,
+        "cached_input_tokens": cached,
+        "output_tokens": output,
+        "cost_usd": cost,
+        "sdk_cost_usd": sdk_cost,
+        "cost_basis": basis,
         "errors": message.errors or [],
     }
 
@@ -308,7 +348,7 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
             # e.g. an `initialize` timeout) means the run itself broke.
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
-        log.emit("result", **result_fields(final))
+        log.emit("result", **result_fields(final, settings.model))
     # Connection failures and timeouts end with an api_error that has no HTTP status.
     infra_error = (
         final is None or final.api_error_status is not None or final.terminal_reason == "api_error"

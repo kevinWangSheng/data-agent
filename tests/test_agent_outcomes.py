@@ -48,13 +48,16 @@ def scripted(
 
 
 async def run_with(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake: Callable[..., AsyncIterator[Any]]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake: Callable[..., AsyncIterator[Any]],
+    env: dict[str, str] = ENV,
 ) -> tuple[Outcome, list[dict[str, Any]]]:
     monkeypatch.setattr(agent, "query", fake)
     db = tmp_path / "x.duckdb"
     duckdb.connect(str(db)).close()
     task = Task(text="q", type="query", workspace=tmp_path, duckdb=db)
-    outcome = await agent.run(task, load_config("full"), tmp_path / "events", ENV)
+    outcome = await agent.run(task, load_config("full"), tmp_path / "events", env)
     lines = outcome.events_path.read_text().splitlines()
     return outcome, [json.loads(line) for line in lines]
 
@@ -65,6 +68,35 @@ async def test_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert events[-1]["type"] == "result"
     assert events[-1]["uncached_input_tokens"] == 3
     assert events[-1]["cached_input_tokens"] == 5
+
+
+MILLION_TOKENS = {
+    "input_tokens": 600_000,
+    "cache_creation_input_tokens": 400_000,
+    "cache_read_input_tokens": 2_000_000,
+    "output_tokens": 1_000_000,
+}
+
+
+async def test_cost_is_priced_from_tokens_at_the_models_upper_list_price(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """deepseek-flash at its upper prices: $0.30 input, $0.006 cache read, $1.20 output per 1M."""
+    final = result(usage=MILLION_TOKENS, total_cost_usd=9.9)
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert events[-1]["cost_usd"] == pytest.approx(0.30 + 2 * 0.006 + 1.20)
+    assert events[-1]["sdk_cost_usd"] == 9.9
+    assert events[-1]["cost_basis"] == "price_table"
+
+
+async def test_cost_of_a_model_without_a_price_is_the_sdk_figure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    final = result(usage=MILLION_TOKENS, total_cost_usd=9.9)
+    env = ENV | {"DATA_AGENT_MODEL": "some-unpriced-model"}
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final), env)
+    assert (events[-1]["cost_usd"], events[-1]["sdk_cost_usd"]) == (9.9, 9.9)
+    assert events[-1]["cost_basis"] == "sdk"
 
 
 async def test_turn_limit_is_an_unfinished_agent_with_its_errors_kept(

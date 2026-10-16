@@ -21,4 +21,5 @@ Source: https://github.com/SignalPilot-Labs/signalpilot-plugin, commit f7b0c091d
 License: Apache License 2.0 (upstream README and .claude-plugin/plugin.json). The upstream files carry
 no per-file copyright header.
 
-- skills/sql-workflow/SKILL.md, skills/duckdb-sql/SKILL.md <- skills/ (same paths), unmodified.
+- skills/sql-workflow/SKILL.md, skills/duckdb-sql/SKILL.md <- skills/ (same paths), modified as
+  noted at the top of each file.
