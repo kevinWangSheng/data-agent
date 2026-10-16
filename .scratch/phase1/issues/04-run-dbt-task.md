@@ -1,6 +1,6 @@
 # 04 — dbt 任务端到端
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 03
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -90,3 +90,14 @@ main.customer_ltv: rows 12 (expected 12), one row per customer True, values matc
 **da-review（集成轮，`runs/integ04/da-review.txt`）**：2 个 P2。
 - 修了（`268ac11`，配一个修复前失败的测试）：dbt-workflow 跳过 Steps 4–7 的条件只看扫描结果，扫描看不到 YAML 里没声明的新模型，"新建模型"的任务按字面会被跳过。现在条件里加了"任务要求新建尚不存在的模型"，文件头的修改说明一并更新。
 - 不修：`scan_project.py` 用正则解析 YAML，遇到 indentless 序列（`models:\n- name: x`）会把列名当成模型，带引号的名字会保留引号。这是上游刻意不依赖 PyYAML 的设计：脚本跑在环境自带的 python3 下，不保证有 yaml。扫描结果只是提示，Step 3 里 agent 会自己读 YAML。真实失败出现时交给 14 做失败归因，再决定是否改成结构化解析。
+
+### 2026-10-16 第 7 步：PR #9 退回第 1 轮（主会话）
+
+CI 两次全绿。退回：原因如下，在原分支 `worktree-04-run-dbt-task` 上修，修完提交，不 push、不 rebase（需要同步 main 时用 `git merge origin/main`）。
+
+1. **Codex P1（`skills/dbt-debugging/SKILL.md:35`）属实，违反 ADR-0005**：Skill 里写了 `circuits.sql`、`results.sql`（Spider2-DBT 的表名）。改成通用规则：模型名与 source 表同名、且落在同一 schema 时会覆盖源数据，先查清 source 的 schema 再定模型名或在 YML 里给 source 指定 schema；不同 schema 的同名是合法的，不要拒绝。另外把三个 dbt Skill 和两个脚本整体过一遍，删掉其余榜单形状的具体名字或数值。
+2. **Codex P1（`src/data_agent/command_guard.py:23`）属实，违反"唯一的写方式是改 dbt 项目后 `dbt run`"**：从允许的子命令里去掉 `build`、`seed`、`snapshot`；`test` 拒绝 `--store-failures`（及 `--store-failures-as`）。同步改 Skill 里提到这些子命令的地方。配测试。
+3. **Codex P2（`src/data_agent/command_guard.py:122`）属实**：guard 只看 `command`，`run_in_background: true` 能通过。拒绝后台 Bash。配测试。
+4. **Codex P2（`skills/dbt-workflow/scan_project.py:207`）属实**：`classify_sql_models` 把项目下所有 `.sql`（含 `tests/`、`analyses/`、`snapshots/`）当模型，同名时会把缺失的模型算成已完成。只扫 `dbt_project.yml` 的 `model-paths`（缺省 `models`）。配测试；文件头修改说明一并更新。
+
+修完 `make check`、`make test-integration`、full 配置真实 dbt 运行一次，再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。
