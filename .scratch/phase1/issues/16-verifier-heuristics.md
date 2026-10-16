@@ -1,6 +1,6 @@
 # 16 — 验证工具与验证提示的口径修正
 
-Status: in-review
+Status: done
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5) 2026-10-16
@@ -230,3 +230,7 @@ Spec 自相矛盾或验收测试看起来有错；需要人做决定；花费到
 - `verifier_tools.py:1091`: a positional key such as `ROLLUP(1)` is not recognised as a subtotal key.
 
 Full output is in `runs/16/da-review-6.txt`.
+
+### 2026-10-16 第 7 步：PR #15 合并（主会话）
+
+`64ee041` CI 两次全绿（PR 的合并检查已含工单 08）；Codex 复审没有针对 `64ee041` 的新意见（未解决线程是已修的旧意见）。合并。已知限制 3 条见上（切片维度丢所属表、CTE 分组列外的 COALESCE/CAST、`ROLLUP(1)` 位置键）。worktree 保留（`runs/16/` 有实测证据），人看过后删。
