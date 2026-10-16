@@ -168,4 +168,4 @@
 - [x] 5. 第 8 节：`/to-spec` 写一期 spec，人确认验收的测试接缝；分几次讨论。
 - [x] 6. 第 8 节：`/to-tickets` 拆工单与依赖图，改掉 `docs/setup.md` 与第 7 节的旧工单编号。
 - [x] 7. 用工单 01 端到端试跑流水线（依赖 4、6）：PR #1 squash 合并、CI 绿（2026-10-15）。
-- [ ] 8. `da-remote`（等服务器就绪）。
+- [ ] 8. `da-remote`：`check` 子命令已写并实测（`7b9ebcd`，2026-10-16）；服务器 6 核 / 7 GB，内存不够跑单题容器（8 GB），仓库也未 clone。**延后**：开发在 Mac 上，服务器到工单 12 全量、13 DAB 前再升配（≥32 GB）；那时补 start-eval / status / pull-results。
