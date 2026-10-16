@@ -14,6 +14,9 @@ License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-
 - tests/engine/ (test_sql_engine.py, test_sql_governance_dialects.py, test_limit_enforcement.py,
   test_validate_sql_dialect_contract.py) <- signalpilot/gateway/tests/, modified as noted at the
   top of each file.
+- src/data_agent/verifier_tools.py <- signalpilot/gateway/gateway/mcp/tools/model_map.py and
+  model_verify.py (map_columns, check_model_schema, audit_model_sources, verify_model_values),
+  ported to this server's gateway and modified as noted at its top.
 
 ## signalpilot-plugin
 
@@ -27,6 +30,8 @@ no per-file copyright header.
   (same paths), modified as noted at the top of each file.
 - skills/dbt-workflow/scan_project.py <- skills/dbt-workflow/scan_project.py, modified as noted at
   its top; skills/dbt-workflow/validate_project.py <- same path, unmodified.
+- src/data_agent/agents/verifier.md, src/data_agent/agents/value-verifier.md <- agents/ (same
+  names), modified as noted at the top of each file.
 
 ------------------------------------------------------------------------------
 data-eng-bench (https://github.com/Snowflake-Labs/data-eng-bench)

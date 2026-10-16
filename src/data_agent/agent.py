@@ -32,11 +32,12 @@ from claude_agent_sdk import (
 
 # Not re-exported by the SDK; the pinned SDK version fixes where it lives.
 from claude_agent_sdk._cli_version import __cli_version__
-from claude_agent_sdk.types import McpStdioServerConfig
+from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent.command_guard import command_guard
 from data_agent.events import EventLog, known_secrets
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
+from data_agent.verifiers import AGENT_TOOL, VERIFIERS_PROMPT, Emit, verifier_agents, verifier_hooks
 from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -194,6 +195,9 @@ class ModelSettings:
             "ANTHROPIC_DEFAULT_OPUS_MODEL": self.model,
             "CLAUDE_CODE_SUBAGENT_MODEL": self.model,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            # Subagents (the verifiers) run in the foreground. Launched in the background, they
+            # end the main turn before their reports are in and split the run into several results.
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
         }
 
 
@@ -250,18 +254,29 @@ def system_prompt(task_type: str, config: RunConfig) -> str:
     prompt = base.format(server=MCP_SERVER)
     if config.skill:
         prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
+    if uses_verifiers(task_type, config):
+        prompt += VERIFIERS_PROMPT
     return prompt
 
 
+def uses_verifiers(task_type: str, config: RunConfig) -> bool:
+    """The verifier subagents check dbt work only; query runs use sql-workflow's own checks."""
+    return task_type == "dbt" and config.verifiers
+
+
 def build_options(
-    task: Task, config: RunConfig, settings: ModelSettings, stderr: list[str]
+    task: Task, config: RunConfig, settings: ModelSettings, stderr: list[str], emit: Emit
 ) -> ClaudeAgentOptions:
+    """`emit` records events from hooks (the verifiers' start and end)."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
         "args": [
             *("-m", "data_agent", "mcp-server"),
             *("--config", config.name, "--duckdb", str(task.duckdb.resolve())),
+            # A run without the verifier subagents gets no verifier tools either (the ablation).
+            *(() if uses_verifiers(task.type, config) else ("--no-verifier-tools",)),
+            *("--workspace", str(task.workspace.resolve())),
         ],
     }
     if task.type == "dbt":
@@ -273,6 +288,12 @@ def build_options(
         tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
     guard = workspace_guard(task.workspace, protected=(task.duckdb,))
     hooks.append(HookMatcher(matcher="|".join(file_tools), hooks=[guard]))
+    all_hooks: dict[HookEvent, list[HookMatcher]] = {"PreToolUse": hooks}
+    agents = None
+    if uses_verifiers(task.type, config):
+        tools = [*tools, AGENT_TOOL]
+        agents = verifier_agents(MCP_SERVER)
+        all_hooks |= verifier_hooks(emit)
     return ClaudeAgentOptions(
         model=settings.model,
         env=settings.sdk_env(),
@@ -283,7 +304,8 @@ def build_options(
         disallowed_tools=WEB_TOOLS,
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
-        hooks={"PreToolUse": hooks},
+        hooks=all_hooks,
+        agents=agents,
         mcp_servers={MCP_SERVER: server},
         strict_mcp_config=True,
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.
@@ -359,12 +381,19 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
             "cost_basis": "sdk",
             "errors": [],
         }
-    usage = message.usage or {}
-    uncached = int(usage.get("input_tokens") or 0) + int(
-        usage.get("cache_creation_input_tokens") or 0
-    )
-    cached = int(usage.get("cache_read_input_tokens") or 0)
-    output = int(usage.get("output_tokens") or 0)
+    if message.model_usage:
+        # Per model, for the whole session: subagents (the verifiers) included, unlike `usage`.
+        models = message.model_usage.values()
+        uncached = sum(m["inputTokens"] + m["cacheCreationInputTokens"] for m in models)
+        cached = sum(m["cacheReadInputTokens"] for m in models)
+        output = sum(m["outputTokens"] for m in models)
+    else:
+        usage = message.usage or {}
+        uncached = int(usage.get("input_tokens") or 0) + int(
+            usage.get("cache_creation_input_tokens") or 0
+        )
+        cached = int(usage.get("cache_read_input_tokens") or 0)
+        output = int(usage.get("output_tokens") or 0)
     sdk_cost = message.total_cost_usd or 0.0
     price = PRICES.get(model)
     if price is None:
@@ -417,7 +446,7 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
         tools: dict[str, str] = {}
         try:
             async for message in query(
-                prompt=prompt, options=build_options(task, config, settings, stderr)
+                prompt=prompt, options=build_options(task, config, settings, stderr, log.emit)
             ):
                 if isinstance(message, ResultMessage):
                     final = message

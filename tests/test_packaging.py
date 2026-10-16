@@ -90,3 +90,16 @@ def test_wheel_builds_without_git_and_reports_an_unknown_commit(tmp_path: Path) 
     no_git.mkdir()
     site = build_and_extract_wheel(tmp_path, env=os.environ | {"PATH": str(no_git)})
     assert (site / "data_agent" / "BUILD_COMMIT").read_text() == "unknown"
+
+
+def test_installed_wheel_loads_the_verifier_agents(tmp_path: Path) -> None:
+    site = build_and_extract_wheel(tmp_path)
+    probe = (
+        "from data_agent import verifiers; "
+        "agents = verifiers.verifier_agents('data'); "
+        "assert set(agents) == {'verifier', 'value-verifier'}; "
+        "print(verifiers.AGENTS_DIR)"
+    )
+    proc = run_installed(tmp_path, site, probe)
+    assert proc.returncode == 0, proc.stderr
+    assert Path(proc.stdout.strip()).is_relative_to(site)

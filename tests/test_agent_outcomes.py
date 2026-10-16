@@ -145,7 +145,7 @@ def test_web_search_and_fetch_are_never_available(tmp_path: Path, task_type: str
     """Benchmark integrity (data-eng-bench README): no looking up published solutions."""
     task = Task(text="t", type=task_type, workspace=tmp_path, duckdb=tmp_path / "x.duckdb")  # type: ignore[arg-type]
     settings = agent.ModelSettings.from_env(ENV)
-    options = agent.build_options(task, load_config("full"), settings, [])
+    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
     assert {"WebSearch", "WebFetch"} <= set(options.disallowed_tools)
     assert not {"WebSearch", "WebFetch"} & set(options.tools or [])
     assert not {"WebSearch", "WebFetch"} & set(options.allowed_tools)
@@ -168,3 +168,27 @@ async def test_error_text_is_masked(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     text = outcome.events_path.read_text()
     assert "sk-test-secret" not in text
     assert "llm.example" not in text
+
+
+async def test_tokens_and_cost_cover_the_subagents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`usage` counts the main thread only; `model_usage` covers the session, verifiers included."""
+    model_usage = {
+        "deepseek-flash": {
+            "inputTokens": 600_000,
+            "cacheCreationInputTokens": 400_000,
+            "cacheReadInputTokens": 2_000_000,
+            "outputTokens": 1_000_000,
+            "webSearchRequests": 0,
+            "costUSD": 9.9,
+            "contextWindow": 0,
+            "maxOutputTokens": 0,
+        }
+    }
+    final = result(model_usage=model_usage, total_cost_usd=9.9)
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert events[-1]["uncached_input_tokens"] == 1_000_000
+    assert events[-1]["cached_input_tokens"] == 2_000_000
+    assert events[-1]["output_tokens"] == 1_000_000
+    assert events[-1]["cost_usd"] == pytest.approx(0.30 + 2 * 0.006 + 1.20)
