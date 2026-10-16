@@ -15,6 +15,9 @@ DAB's tools need extra packages, so run it as
 
     uv run --with-requirements evals/dab-requirements.txt python -m evals dab \
         --dab-root ../DataAgentBench --dataset stockindex --query 1 --config full --out runs/dab
+
+Exit 0 when every run ended; 1 when `--budget` stopped the batch; 2 on a config error or when a
+run broke on infrastructure (left out of the submission, to be redone).
 """
 
 import argparse
@@ -49,7 +52,7 @@ from data_agent.agent import (
     result_fields,
     skill_version,
 )
-from data_agent.events import EventLog, known_secrets
+from data_agent.events import REDACTED, EventLog, known_secrets
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT, RunConfig, load_config
 from evals import spend
 from evals.walk import walk_files
@@ -341,14 +344,29 @@ async def run_query(
     runs: int,
     env: dict[str, str],
     budget: Decimal | None = None,
-) -> None:
+) -> int:
     """`runs` sessions on one query, one after another (DAB loads its Postgres and MongoDB
-    databases per session under fixed names, so sessions on a dataset cannot overlap)."""
+    databases per session under fixed names, so sessions on a dataset cannot overlap).
+
+    A session that broke on infrastructure is not an answer: it stays out of the submission (its
+    trace stays for a look) and is counted in the return value, so the caller can fail and the
+    run be redone after removing its directory.
+    """
     out.mkdir(parents=True, exist_ok=True)
+    secrets = sorted(set(known_secrets(env)), key=len, reverse=True)
+    infra_errors = 0
     for run in range(runs):
         if budget is not None and spent(out) >= budget * spend.STOP_FRACTION:
             raise BudgetReached(f"spend under {out} reached {spend.STOP_PERCENT} of ${budget}")
         answer, status = await run_once(dab_root, dab_query, config, out, run, env)
+        print(f"{dab_query.dataset} query{dab_query.query_id} run{run}: {status}")
+        if status == "infra_error":
+            infra_errors += 1
+            write_submission(out / "submission.json", [])
+            continue
+        # Masked like the trace, so the answer in the submission matches the one in the trace.
+        for secret in secrets:
+            answer = answer.replace(secret, REDACTED)
         entry = {
             "dataset": dab_query.dataset,
             "query": dab_query.query_id,
@@ -356,7 +374,7 @@ async def run_query(
             "answer": answer,
         }
         write_submission(out / "submission.json", [entry])
-        print(f"{dab_query.dataset} query{dab_query.query_id} run{run}: {status}")
+    return infra_errors
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -396,9 +414,10 @@ def run_cli(args: argparse.Namespace) -> int:
     except (ValueError, OSError) as exc:
         return _error(str(exc))
     env = dict(os.environ)
+    infra_errors = 0
     try:
         for dab_query in queries:
-            asyncio.run(
+            infra_errors += asyncio.run(
                 run_query(args.dab_root, dab_query, config, args.out, args.runs, env, budget)
             )
     except BudgetReached as exc:
@@ -406,4 +425,8 @@ def run_cli(args: argparse.Namespace) -> int:
         return 1
     except (ConfigError, FileExistsError, ValueError) as exc:
         return _error(str(exc))
+    if infra_errors:
+        return _error(
+            f"{infra_errors} run(s) broke on infrastructure; remove their run directories and rerun"
+        )
     return 0

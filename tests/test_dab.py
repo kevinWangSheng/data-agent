@@ -361,6 +361,40 @@ async def test_budget_guard_stops_before_the_next_run(
     assert not dab.run_dir(tmp_path / "out2", "toyset", "1", 1).exists()
 
 
+async def test_answers_are_masked_like_the_trace(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["key sk-test-secret here"], seen))
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, ENV)
+    submission = (tmp_path / "out" / "submission.json").read_text()
+    assert "sk-test-secret" not in submission
+    assert "key [REDACTED] here" in submission
+
+
+def test_infra_errors_are_left_out_of_the_submission_and_fail_the_cli(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    async def broken_query(**_: Any) -> AsyncIterator[Any]:
+        raise RuntimeError("endpoint unreachable")
+        yield  # an async generator that ends before any ResultMessage
+
+    monkeypatch.setattr(dab, "query", broken_query)
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test-secret")
+    out = tmp_path / "out"
+    code = evals_main(
+        [
+            *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+            *("--runs", "2", "--config", "full", "--out", str(out)),
+        ]
+    )
+    assert code == 2
+    assert json.loads((out / "submission.json").read_text()) == []
+    # The traces stay, so the failure can be looked at before the runs are redone.
+    assert (dab.run_dir(out, "toyset", "1", 1) / "events.jsonl").is_file()
+
+
 def test_cli_runs_the_requested_queries(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:
