@@ -11,13 +11,11 @@
       "Bash(git log *)",
       "Bash(git show *)",
       "Bash(git branch *)",
-      "Bash(git worktree list *)"
+      "Bash(git worktree list *)",
+      "Bash(gh pr merge *)",
+      "Bash(git push *)"
     ],
-    "ask": [
-      "Bash(git push)",
-      "Bash(git push *)",
-      "Bash(gh pr merge *)"
-    ],
+    "ask": [],
     "deny": [
       "Read(./.env)",
       "Read(./.env.local)",
