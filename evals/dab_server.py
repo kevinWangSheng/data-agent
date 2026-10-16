@@ -23,10 +23,14 @@ from pydantic import Field
 
 from data_agent.engine import inject_limit, validate_sql
 from data_agent.gateway import MAX_ROWS
-from evals.dab import RESULT_CHARS, scaffold
+from evals.dab import scaffold
 
-# DAB db_type -> sqlglot dialect; any other type (mongo) is not SQL.
+# DAB db_type -> sqlglot dialect. MongoDB is the one type that is not SQL; any other type is
+# refused, since the gateway could not check it.
 SQL_DIALECTS = {"sqlite": "sqlite", "duckdb": "duckdb", "postgres": "postgres"}
+NOT_SQL = frozenset({"mongo"})
+# Tool results longer than this are cut, as DAB's own agent previews them (its PREVIEW_LENGTH).
+RESULT_CHARS = 10_000
 
 
 def governed(sql: str, dialect: str) -> str:
@@ -61,9 +65,12 @@ def build_server(query_tool: Any, list_tool: Any) -> MCPServer:
         db_name: Annotated[str, Field(description=query_args["db_name"].get("description"))],
         sql: Annotated[str, Field(description=query_args["query"].get("description"))],
     ) -> str:
-        dialect = SQL_DIALECTS.get(db_types.get(db_name, ""))
-        if dialect is not None:
-            sql = governed(sql, dialect)
+        db_type = db_types.get(db_name)
+        if db_type in SQL_DIALECTS:
+            sql = governed(sql, SQL_DIALECTS[db_type])
+        elif db_type is not None and db_type not in NOT_SQL:
+            raise ToolError(f"Query blocked: the read-only gateway cannot check {db_type} queries")
+        # An unknown db_name goes on to DAB's tool, which rejects it without running anything.
         return reply(query_tool.exec({"db_name": db_name, "query": sql}))
 
     @server.tool(name="list_tables", description=list_spec["description"])

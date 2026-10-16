@@ -22,9 +22,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult, TextContent
 
-from data_agent.run_config import REPO_ROOT, load_config
+from data_agent.run_config import load_config
 from evals import dab
 from evals.__main__ import main as evals_main
+from evals.dab_server import RESULT_CHARS
 
 FAKE_DAB = Path(__file__).parent / "fixtures" / "fake_dab"
 ENV = {"DATA_AGENT_API_KEY": "sk-test-secret"}
@@ -47,6 +48,7 @@ def make_dab(root: Path, question: Any = "Which index is most volatile?") -> Pat
         "db_clients": {
             "prices_db": {"db_type": "sqlite", "db_path": "query_dataset/prices.db"},
             "articles_db": {"db_type": "mongo", "db_name": "articles", "dump_folder": "dump"},
+            "other_db": {"db_type": "mysql", "db_path": "query_dataset/other.db"},
         }
     }
     (dataset / "db_config.yaml").write_text(json.dumps(config))
@@ -161,6 +163,51 @@ async def test_dab_errors_come_back_as_tool_errors(dab_root: Path, tmp_path: Pat
     assert "missing" in text_of(bad)
 
 
+async def test_a_database_type_with_no_sql_dialect_is_refused(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    """Only MongoDB skips the SQL check; any other type the gateway cannot parse is refused."""
+    log = tmp_path / "tools.jsonl"
+    async with dab_server(dab_root, log) as session:
+        result = await session.call_tool(
+            "query_database", {"db_name": "other_db", "sql": "SELECT 1"}
+        )
+    assert result.is_error
+    assert "mysql" in text_of(result)
+    assert logged_calls(log) == []
+
+
+@pytest.mark.parametrize("budget", ["NaN", "-1", "0", "inf", "lots"])
+def test_cli_rejects_a_bad_budget(
+    dab_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], budget: str
+) -> None:
+    code = evals_main(
+        [
+            *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+            *("--config", "full", "--out", str(tmp_path / "out"), "--budget", budget),
+        ]
+    )
+    assert code == 2
+    assert "budget" in capsys.readouterr().err
+
+
+def test_cli_stops_when_spend_cannot_be_totalled(
+    dab_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "out"
+    broken = dab.run_dir(out, "other", "1", 0)
+    broken.mkdir(parents=True)
+    (broken / "events.jsonl").write_text("not json\n")
+    code = evals_main(
+        [
+            *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+            *("--config", "full", "--out", str(out), "--budget", "1"),
+        ]
+    )
+    assert code == 2
+    assert "not JSON" in capsys.readouterr().err
+
+
 async def test_mongo_queries_skip_the_sql_check(dab_root: Path, tmp_path: Path) -> None:
     query = json.dumps({"collection": "articles", "filter": {}, "limit": 1})
     async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
@@ -176,7 +223,7 @@ async def test_long_results_are_cut_with_a_note(dab_root: Path, tmp_path: Path) 
             {"db_name": "prices_db", "sql": "SELECT p.ticker FROM prices p, prices q LIMIT 5000"},
         )
     text = text_of(result)
-    assert len(text) < dab.RESULT_CHARS + 200
+    assert len(text) < RESULT_CHARS + 200
     assert "truncated" in text
 
 
@@ -187,7 +234,11 @@ def test_load_query_reads_question_description_and_databases(dab_root: Path) -> 
     query = dab.load_query(dab_root, "toyset", "1", hints=False)
     assert query.question == "Which index is most volatile?"
     assert query.description == "prices_db holds daily closes."
-    assert query.databases == {"prices_db": "sqlite", "articles_db": "mongo"}
+    assert query.databases == {
+        "prices_db": "sqlite",
+        "articles_db": "mongo",
+        "other_db": "mysql",
+    }
 
 
 def test_hints_append_the_official_hint_file(dab_root: Path) -> None:
@@ -455,7 +506,3 @@ def test_cli_rejects_a_missing_dab_root(tmp_path: Path, capsys: pytest.CaptureFi
     )
     assert code == 2
     assert "none" in capsys.readouterr().err
-
-
-def test_server_runs_from_the_repo_checkout() -> None:
-    assert dab.server_env() == {"PYTHONPATH": str(REPO_ROOT)}

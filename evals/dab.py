@@ -58,8 +58,6 @@ from evals import spend
 from evals.walk import walk_files
 
 RUNS_PER_QUERY = 5  # DAB README: 5 runs per query
-# Tool results longer than this are cut, as DAB's own agent previews them (its PREVIEW_LENGTH).
-RESULT_CHARS = 10_000
 # A query on a large database gets the run config's `large` turn limit instead of `query`
 # (spec "运行配置", SignalPilot's 75 for its known-large databases). SignalPilot keeps a list
 # measured from timeouts; with no measurements yet, "large" is the data's size on disk: DAB's
@@ -390,7 +388,7 @@ async def run_query(
         print(f"{dab_query.dataset} query{dab_query.query_id} run{run}: {status}")
         if status == "infra_error":
             infra_errors += 1
-            write_submission(submission, [])
+            write_submission(submission, [])  # no entry, but the file exists for the batch
             continue
         # Masked like the trace, so the answer in the submission matches the one in the trace.
         for secret in secrets:
@@ -429,7 +427,9 @@ def run_cli(args: argparse.Namespace) -> int:
         try:
             budget = Decimal(args.budget)
         except InvalidOperation:
-            return _error(f"budget must be a number, got {args.budget!r}")
+            budget = None
+        if budget is None or not budget.is_finite() or budget <= 0:
+            return _error(f"budget must be a positive number, got {args.budget!r}")
     if not (args.dab_root / "common_scaffold").is_dir():
         return _error(f"not a DataAgentBench clone: {args.dab_root}")
     try:
@@ -451,7 +451,7 @@ def run_cli(args: argparse.Namespace) -> int:
     except BudgetReached as exc:
         print(f"dab: {exc}; stop the batch and ask a human", file=sys.stderr)
         return 1
-    except (ConfigError, FileExistsError, ValueError) as exc:
+    except (ConfigError, FileExistsError, ValueError, spend.SpendUnknown) as exc:
         return _error(str(exc))
     if infra_errors:
         return _error(
