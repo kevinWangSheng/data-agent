@@ -101,7 +101,6 @@ def write_tasks(root: Path) -> tuple[Path, Path, dict[str, str]]:
     return tasks, dev_list, difficulty
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 10")
 def test_sample_is_reproducible_and_stratified(tmp_path: Path) -> None:
     tasks, dev_list, difficulty = write_tasks(tmp_path)
 
@@ -126,7 +125,6 @@ def test_sample_is_reproducible_and_stratified(tmp_path: Path) -> None:
 # --- Scoring --------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 10")
 def test_score_matches_leaderboard_metrics() -> None:
     score = json.loads(evals_ok("score", str(HARBOR_JOB), "--json"))
     assert score["n_trials"] == 21
@@ -136,7 +134,6 @@ def test_score_matches_leaderboard_metrics() -> None:
     assert score["pass_at_3"] == pytest.approx(0.8571, abs=1e-4)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 10")
 def test_errored_trials_count_as_zero(tmp_path: Path) -> None:
     job = write_job(tmp_path / "job", {"t1": [1.0, None, None], "t2": [1.0, 1.0, 1.0]})
     score = json.loads(evals_ok("score", str(job), "--json"))
@@ -156,7 +153,6 @@ def compare(baseline: Path, candidate: Path) -> dict[str, float | bool]:
     return json.loads(out)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 10")
 def test_bootstrap_interval_on_known_data(tmp_path: Path) -> None:
     tasks = [f"task-{i}" for i in range(10)]
     fail = write_job(tmp_path / "fail", {t: [0.0, 0.0, 0.0] for t in tasks})
@@ -200,7 +196,6 @@ def report(tmp_path: Path, split: str) -> tuple[dict[str, object], str]:
     return json.loads((out / "report.json").read_text()), everything
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 10")
 def test_holdout_report_has_aggregates_only(tmp_path: Path) -> None:
     summary, everything = report(tmp_path, "holdout")
     assert summary["accuracy"] == pytest.approx(58.333333, abs=1e-4)
@@ -212,7 +207,6 @@ def test_holdout_report_has_aggregates_only(tmp_path: Path) -> None:
         assert detail not in everything, f"per-trial detail {detail!r} leaked"
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 10")
 def test_dev_report_has_per_task_outcomes(tmp_path: Path) -> None:
     summary, everything = report(tmp_path, "dev")
     assert summary["accuracy"] == pytest.approx(44.444444, abs=1e-4)

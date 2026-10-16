@@ -18,6 +18,9 @@ enforced by `make check` and pre-commit instead. Each rule must be checkable aga
 - **Skills contain no benchmark-specific content.** No task ids, expected values, table names lifted from
   a benchmark answer, or hints tuned to one task (ADR-0005). Workflow guidance must hold for any dbt project
   or database.
+- **Skills copied from upstream get the same line-by-line review as our own.** Remove hints tuned to one
+  task, knowledge of the scorer or answer format (tolerances, CSV conventions), and tool names our server
+  does not expose. Note the changes at the top of the file and in `NOTICE`.
 - **Never bypass the read-only gateway.** All SQL against a data source goes through the gateway's AST
   check; no direct driver calls from tools, skills, or subagents. The only write path is a dbt project
   edit followed by `dbt run` (CONTEXT: dbt write).

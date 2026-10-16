@@ -35,18 +35,19 @@ runs/             运行产出，不进 git
 
 照 `docs/plan.md` 第 6 节。一个工单一个 agent、一个 worktree：
 
-工单文件只在主 checkout（`git worktree list` 第一行）里改，用绝对路径；工单分支不提交 `.scratch/*/issues/`，这样所有会话看到同一份状态。
+工单文件只在主 checkout（`git worktree list` 第一行）里改，用绝对路径；工单分支不提交 `.scratch/*/issues/`，这样所有会话看到同一份状态。工单 agent 只在认领时改工单文件；之后的 Comments、Ledger、状态写进最终回复，由主会话抄进工单（`-w` 会话有时被拦着写主 checkout）。
 
 开工：`claude -p -w NN-<slug> --permission-mode auto "/implement <工单绝对路径>"`（人或主会话启动均可）。`-w` 从远端 `origin/main` 建 worktree，所以派工前本地 main 不能有未推送的提交。
 
 1. 认领：工单 `Status: ready-for-agent` 且 `Blocked by:` 都已 `done` 才能领；先把 `Status:` 改成 `in-progress`、填 `Claimed by:` 和 `Branch:` 并保存，再做别的。
 2. 先跑测试拿基线，再在 spec 约定的测试接缝上 TDD 实现（`/implement`；它原文里的审查和提交顺序以本节为准）。
-3. `make check` 通过后，真实运行一次改动的行为，把命令和真实输出贴进工单 `## Comments`。
+3. `make check` 通过后，真实运行一次改动的行为，记下命令和真实输出（第 6 步交给主会话）。
 4. 提交到本工单分支。先提交再审查：两道审查都只看已提交的 diff。
-5. 两道审查：先 `da-review main`（Codex，只读，换模型找 bug）；再开新上下文跑 `eng:code-review main`（点名这个，不用内置的 `code-review`；Standards、Spec 两个子 agent，对照本工单验收标准）。每条结果要么修（修完提交），要么在工单 Comments 写明不修的理由；修复最多 2 轮，还不过就停下。
-6. 填工单 `## Ledger`，`Status:` 改成 `in-review`。合并由人做（GitHub PR，squash）。
+5. 两道审查：先 `da-review main`（Codex，只读，换模型找 bug）；再开新上下文跑 `eng:code-review main`（点名这个，不用内置的 `code-review`；Standards、Spec 两个子 agent，对照本工单验收标准）。每条结果要么修（修完提交），要么写明不修的理由（第 6 步交给主会话）；修复最多 2 轮，还不过就停下。
+6. 在最终回复里给出要写进工单的 `## Comments`（第 3 步的命令与输出、审查结果与不修的理由）、`## Ledger` 和新 `Status:`（通常 `in-review`）；主会话抄进工单。push 和合并由主会话做（GitHub PR，squash），每次由人在权限确认里批准。
+7. 合并前（主会话做）：PR 的 CI 绿后，读 Codex GitHub app 在 PR 上的意见（每次 push 自动审查；新提交没出审查时评论 `@codex review`），逐条对照代码核实。属实的写成"退回：原因"交回原工单，不属实的在工单 Comments 写理由。每个 PR 最多退回 2 轮；之后的新意见记成已知限制，属于后续工单的写进那个工单的验收标准。
 
-停下交回时：`Status: ready-for-human`，Comment 写清试了什么、哪里失败、分支名。被退回时（Comments 里有"退回：原因"，Status 回到 `ready-for-agent`）在原分支上接着修。工单格式见 `docs/agents/ticket-template.md`。
+停下交回时：最终回复写明 `Status: ready-for-human` 和 Comment（试了什么、哪里失败、分支名），由主会话抄进工单。被退回时（Comments 里有"退回：原因"，Status 回到 `ready-for-agent`）在原分支上接着修。工单格式见 `docs/agents/ticket-template.md`。
 
 ## 硬规矩
 
@@ -64,7 +65,7 @@ runs/             运行产出，不进 git
 ## Git 与 worktree
 
 - **MUST NOT**：`git reset --hard`、`git clean`、`git checkout .`、`git stash`、`git push --force`，除非用户明确要求这条命令。
-- **MUST NOT**：合并到 main、push、提交到榜单；这些由人做。
+- **MUST NOT**（工单 agent）：push、合并到 main。主会话可以 push 和 `gh pr merge --squash`，`.claude/settings.json` 的 ask 规则让人逐次批准。任何会话都不提交到榜单，这由人做。
 - 提交前看 `git status --short`，只提交本工单的文件；不回滚不是自己改的文件。
 - 每个 worktree 用自己的 DuckDB 文件、Postgres 库或端口、`runs/` 目录，不和别的 worktree 共用。
 

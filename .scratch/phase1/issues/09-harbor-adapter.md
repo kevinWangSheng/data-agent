@@ -27,6 +27,8 @@ plan §5 Harbor 与 dbt 版本、§7 运行时注意事项（报错记 0、只�
 - [ ] 网页搜索与抓取关闭
 - [ ] 只对模型接口临时错误重试
 - [ ] token 与花费回填
+- [ ] 上传的轨迹与事件文件不含本机绝对路径和用户名（工单 03 的 workspace guard 拒绝消息会写入绝对路径）
+- [ ] workspace guard 拒绝读 workspace 内的 `.env*` 等凭据文件（工单 03 已知限制）
 - [ ] 5 题真实运行的单次平均成本写进 Comments，并更新 plan §7 的推算
 
 ## Evidence required

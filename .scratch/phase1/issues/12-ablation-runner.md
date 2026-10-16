@@ -25,6 +25,8 @@ ADR-0004（6 配置 × 3 次 = 540 次）；plan §7 降级顺序与护栏。
 
 - [ ] 本地 1 题 × 6 配置跑通并出消融表
 - [ ] 留出集结果只以汇总形式出现
+- [ ] 调 `compare` 时传 `--manifest`/`--split`（工单 10 的 compare 不强制，见 10 的 Comments）
+- [ ] 每次报告用新的空 `--out` 目录；遇到配置类报错（`AgentAuthenticationError`、`ModelNotFoundError`、`UnsupportedModelParametersError`）停下找人，不出报告（工单 10 已知限制）
 - [ ] `make check` 通过
 
 ## Evidence required
