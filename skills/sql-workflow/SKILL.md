@@ -1,13 +1,15 @@
 ---
 name: sql-workflow
-description: "Use this skill before writing any SQL query. Covers: output shape inference (cardinality clues from the question), efficient schema exploration, iterative CTE-based query building, structured verification loop (row count, NULL audit, fan-out check, sample inspection), error recovery protocol, saving output to result.sql and result.csv, turn budget management, and common benchmark traps."
+description: "Use this skill before writing any SQL query. Covers: output shape inference (cardinality clues from the question), efficient schema exploration, iterative CTE-based query building, structured verification loop (row count, NULL audit, fan-out check, sample inspection), error recovery protocol, turn budget management, and common SQL mistakes."
 type: skill
 ---
 
 <!-- Copied from signalpilot-plugin (see NOTICE). Modified for data-agent: tool calls use this
 agent's `mcp__data__` tools (query_database, list_tables); steps that used SignalPilot-only tools
 (describe_table, explore_column, find_join_path, validate_sql, debug_cte_query, schema_overview)
-now use query_database or were removed; a benchmark-specific example in section 8 was replaced. -->
+now use query_database or were removed. Content about benchmark scoring was removed (ADR-0005): the
+"Saving Output" section (result.sql/result.csv and their CSV format) and "Common Benchmark Traps";
+that section's general SQL checks are kept as section 7, with a domain-neutral example. -->
 
 # SQL Workflow Skill
 
@@ -42,8 +44,8 @@ Write a comment at the top of your SQL:
 
 Critical checks:
 - If the question asks for a single number, the result MUST be 1 row × 1 column
-- If the question says "how many", verify the CSV has exactly 1 row with a COUNT value
-- If "top N" appears in the question, verify the CSV has at most N rows
+- If the question says "how many", verify the result has exactly 1 row with a COUNT value
+- If "top N" appears in the question, verify the result has at most N rows
 
 ## 3. Iterative Query Building - Build Bottom-Up
 
@@ -81,7 +83,7 @@ mcp__data__query_database
   row_limit=1000
 ```
 
-After executing, run these checks IN ORDER before saving:
+After executing, run these checks IN ORDER before answering:
 
 1. **Row count sanity**: Does 0 rows make sense? Does 1M rows make sense for a "top 10" question?
 2. **Column count**: Does the result have the right number of columns for the question?
@@ -109,44 +111,21 @@ After executing, run these checks IN ORDER before saving:
 - **Too many rows**: Check for fan-out (duplicate join keys) or missing GROUP BY
 - **CTE debugging**: Run each CTE on its own with `query_database` to find which step breaks
 
-## 6. Saving Output
-
-Once you have the correct result:
-
-1. Write final SQL to `result.sql`:
-   ```
-   Write tool: path="result.sql", content="<your SQL query>"
-   ```
-
-2. Write the result as CSV to `result.csv`:
-   ```
-   Write tool: path="result.csv", content="col1,col2,...\nval1,val2,..."
-   ```
- - Always include a header row with column names
- - Use comma as delimiter
- - Quote string values that contain commas or newlines
-
-## 7. Turn Budget Management
+## 6. Turn Budget Management
 
 - **First 3 turns**: Schema exploration only (`list_tables`, distinct values of key categorical columns). STOP exploring.
 - **Turns 4 through (N-3)**: Write query iteratively - execute and verify each step.
-- **Last 3 turns**: Finalize `result.sql` and `result.csv`. If you have a working query, SAVE IT NOW - do not keep iterating.
+- **Last 3 turns**: Give the answer. If you have a working query, ANSWER NOW - do not keep iterating.
 
-If your query works and passes all verification checks, SAVE IMMEDIATELY - do not continue exploring "just in case".
+If your query works and passes all verification checks, ANSWER IMMEDIATELY - do not continue exploring "just in case".
 
-## 8. Common Benchmark Traps
+## 7. Common SQL Mistakes
 
-- **Rounding**: Do NOT round unless the question explicitly asks for rounded values. The evaluator uses tolerance-based comparison - full precision is always safer.
-- **Column naming**: Match the question's phrasing exactly. If the question says "total revenue", name the column `total_revenue`, not `sum_revenue` or `revenue_total`.
-- **CSV format**: No trailing newline, no BOM, comma delimiter, double-quote strings containing commas.
-- **Empty result**: If the correct answer is 0 or empty, write a CSV with just the header row (or header + "0").
-- **Date/time format in CSV**: Use ISO 8601 (`YYYY-MM-DD`) unless the question specifies otherwise.
-- **String case in CSV**: Preserve the case from the database - do not uppercase/lowercase unless the question explicitly asks.
 - **Fan-out from JOINs**: Always check `COUNT(*) vs COUNT(DISTINCT key)` after every JOIN
 - **Wrong NULL handling**: Use `IS NULL` / `IS NOT NULL`, not `= NULL`
 - **Date format mismatch**: Check the actual format stored in the column by sampling its values
 - **Case sensitivity**: Use the correct case-insensitive function for your backend
-- **Interpretation errors**: Before saving, re-read the original question. Verify:
+- **Interpretation errors**: Before answering, re-read the original question. Verify:
   * Filter conditions match domain values (check the column's distinct values if unsure)
   * "Excluding X" means the right thing (NOT IN vs EXCEPT vs WHERE NOT)
   * Metrics match the question's definition (e.g., "customers who ordered" means at least one order, not every customer row)

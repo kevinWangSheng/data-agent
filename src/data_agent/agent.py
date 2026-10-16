@@ -18,6 +18,7 @@ import claude_agent_sdk
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    HookMatcher,
     ResultMessage,
     SystemMessage,
     TextBlock,
@@ -34,6 +35,7 @@ from claude_agent_sdk.types import McpStdioServerConfig
 
 from data_agent.events import EventLog, known_secrets
 from data_agent.run_config import MAX_TURNS, RunConfig
+from data_agent.workspace_guard import GUARDED_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_MODEL = "deepseek-flash"
@@ -51,8 +53,8 @@ BUILD_COMMIT = Path(__file__).resolve().parent / "BUILD_COMMIT"
 MCP_SERVER = "data"
 QUERY_TOOL = f"mcp__{MCP_SERVER}__query_database"
 # Query tasks only read: the data tools plus reading the workspace. No Bash, Write or Edit, so the
-# read-only gateway is the only way to the data.
-QUERY_BUILTIN_TOOLS = ["Read", "Glob", "Grep"]
+# read-only gateway is the only way to the data; the workspace guard keeps the file tools in it.
+QUERY_BUILTIN_TOOLS: list[str] = list(GUARDED_TOOLS)
 
 SYSTEM_PROMPT = """\
 You are a data agent. You answer questions about a user's data by exploring the database and \
@@ -75,8 +77,7 @@ Workspace (your working directory): {workspace}
 {task}
 </task>
 
-This run has no file-writing tools, so do not save result.sql or result.csv. End with a final \
-message that gives the answer first, then the assumptions you made.
+End with a final message that gives the answer first, then the assumptions you made.
 """
 
 
@@ -201,6 +202,7 @@ def build_options(
             *("--config", config.name, "--duckdb", str(task.duckdb.resolve())),
         ],
     }
+    guard = workspace_guard(task.workspace)
     return ClaudeAgentOptions(
         model=settings.model,
         env=settings.sdk_env(),
@@ -210,6 +212,7 @@ def build_options(
         allowed_tools=[*QUERY_BUILTIN_TOOLS, f"mcp__{MCP_SERVER}"],
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
+        hooks={"PreToolUse": [HookMatcher(matcher="|".join(GUARDED_TOOLS), hooks=[guard])]},
         mcp_servers={MCP_SERVER: server},
         strict_mcp_config=True,
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.

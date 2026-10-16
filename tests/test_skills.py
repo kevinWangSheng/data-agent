@@ -1,7 +1,9 @@
-"""The Skills preloaded for query runs name only tools this agent's MCP server really has."""
+"""The Skills preloaded for query runs: real tools only, no scoring hints, correct DuckDB facts."""
 
 import re
 from pathlib import Path
+
+import duckdb
 
 from data_agent.agent import MCP_SERVER, QUERY_SKILLS, SKILLS_DIR
 from data_agent.gateway import DuckDBGateway
@@ -36,3 +38,20 @@ async def test_query_skills_name_only_tools_the_server_has(tmp_path: Path) -> No
     assert "connection_name" not in text
     named = set(re.findall(r"`(\w+)`", text)) | set(re.findall(r"\b(\w+)\s*\(", text))
     assert not (named & (UPSTREAM_TOOLS - served))
+
+
+def test_query_skills_say_nothing_about_how_answers_are_scored() -> None:
+    """ADR-0005: no benchmark or evaluator conventions such as result files or tolerance."""
+    for name in QUERY_SKILLS:
+        text = (SKILLS_DIR / name / "SKILL.md").read_text().lower()
+        body = text.split("-->", 1)[-1]  # the modification note may name what was removed
+        for term in ("benchmark", "evaluator", "tolerance", "result.csv", "result.sql"):
+            assert term not in body, (name, term)
+
+
+def test_duckdb_skill_states_division_as_duckdb_does_it() -> None:
+    text = (SKILLS_DIR / "duckdb-sql" / "SKILL.md").read_text()
+    assert duckdb.sql("SELECT 5 / 2, 5 // 2").fetchone() == (2.5, 2)
+    assert "`5 / 2 = 2.5`" in text
+    assert "`5 // 2 = 2`" in text
+    assert "5/2 = 2`" not in text

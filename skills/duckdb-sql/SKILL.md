@@ -5,13 +5,14 @@ type: skill
 ---
 
 <!-- Copied from signalpilot-plugin (see NOTICE). Modified for data-agent: the date-spine step
-queries MIN/MAX with query_database instead of SignalPilot's get_date_boundaries tool. -->
+queries MIN/MAX with query_database instead of SignalPilot's get_date_boundaries tool; the integer
+division note was reversed to match DuckDB's documented `/` (float) and `//` (integer) operators. -->
 
 # DuckDB SQL - Key Differences from PostgreSQL/MySQL
 
 ## Gotchas
 
-- **Integer division truncates**: `5/2 = 2`. Fix: `CAST(numerator AS DOUBLE) / denominator`
+- **`/` is float division**: `5 / 2 = 2.5`, even for integers (PostgreSQL would give 2). Use `//` for integer division: `5 // 2 = 2`
 - **DATE_TRUNC returns TIMESTAMP**: Cast result if DATE needed: `CAST(DATE_TRUNC('month', col) AS DATE)`
 - **INTERVAL syntax**: `INTERVAL '1' DAY` (quoted), NOT `INTERVAL 1 DAY`
 - **No DATEADD/DATEDIFF**: In standalone queries, use `col + INTERVAL '1' DAY` and `DATE_DIFF('day', start, end)` - DuckDB has no `DATEADD`/`DATEDIFF` function.
