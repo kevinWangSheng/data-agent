@@ -128,6 +128,42 @@ async def test_api_error_without_http_status_is_infrastructure(
     assert outcome.infra_error
 
 
+async def test_result_event_keeps_the_http_status_of_a_failed_api_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Harbor adapter tells rate limits and server errors (retried) from the rest by it."""
+    final = result(is_error=True, api_error_status=429, result="API Error: 429 rate limited")
+    outcome, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert outcome.infra_error
+    assert events[-1]["api_error_status"] == 429
+    _, events = await run_with(monkeypatch, tmp_path, scripted(result()))
+    assert events[-1]["api_error_status"] is None
+
+
+async def test_result_event_keeps_the_message_of_a_failed_api_call_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without an HTTP status the CLI's message is what tells a timeout from a dropped
+    connection (the Harbor adapter retries only the latter); an answer is never copied."""
+    message = "API Error: Request timed out. Check your internet connection and proxy settings"
+    final = result(is_error=True, terminal_reason="api_error", result=message)
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert events[-1]["api_error"] == message
+    _, events = await run_with(monkeypatch, tmp_path, scripted(result()))
+    assert events[-1]["api_error"] is None
+
+
+@pytest.mark.parametrize("task_type", ["dbt", "query"])
+def test_web_search_and_fetch_are_never_available(tmp_path: Path, task_type: str) -> None:
+    """Benchmark integrity (data-eng-bench README): no looking up published solutions."""
+    task = Task(text="t", type=task_type, workspace=tmp_path, duckdb=tmp_path / "x.duckdb")  # type: ignore[arg-type]
+    settings = agent.ModelSettings.from_env(ENV)
+    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
+    assert {"WebSearch", "WebFetch"} <= set(options.disallowed_tools)
+    assert not {"WebSearch", "WebFetch"} & set(options.tools or [])
+    assert not {"WebSearch", "WebFetch"} & set(options.allowed_tools)
+
+
 async def test_sdk_failure_outside_its_error_types_still_ends_the_event_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

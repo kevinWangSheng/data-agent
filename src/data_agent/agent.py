@@ -66,6 +66,9 @@ QUERY_BUILTIN_TOOLS: list[str] = list(GUARDED_TOOLS)
 # and Edit in the workspace and off the database file; the command guard lets Bash run only dbt and
 # the dbt-workflow scripts, so reads still go through the gateway.
 DBT_BUILTIN_TOOLS: list[str] = [*GUARDED_TOOLS, *WRITE_TOOLS, "Bash"]
+# Denied outright as well as left out of the tools: benchmark solutions are public, and the official
+# data-eng-bench configs turn web lookup off the same way (`disallowed_tools: WebSearch,WebFetch`).
+WEB_TOOLS: list[str] = ["WebSearch", "WebFetch"]
 
 SYSTEM_PROMPT = """\
 You are a data agent. You answer questions about a user's data by exploring the database and \
@@ -107,8 +110,10 @@ DBT_PROMPT = """\
 Task type: dbt
 Database: {database}. dbt writes to it through the project's profile; you read it only through the \
 `{server}` MCP tools.
-dbt project (your working directory): {workspace}
-Bash runs only dbt commands{scripts}, from the working directory.
+Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
+Bash runs only dbt commands{scripts}, from the working directory; for a project in a \
+subdirectory, pass --project-dir and --profiles-dir. Relative paths in a profile resolve from the \
+working directory.
 
 <task>
 {task}
@@ -317,6 +322,7 @@ def build_options(
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
+        disallowed_tools=WEB_TOOLS,
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
         hooks=all_hooks,
@@ -387,6 +393,8 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
             "is_error": True,
             "num_turns": 0,
             "terminal_reason": None,
+            "api_error_status": None,
+            "api_error": None,
             "uncached_input_tokens": 0,
             "cached_input_tokens": 0,
             "output_tokens": 0,
@@ -420,6 +428,11 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
         "is_error": message.is_error,
         "num_turns": message.num_turns,
         "terminal_reason": message.terminal_reason,
+        # HTTP status of a failed model call; the Harbor adapter retries by it (evals.harbor_agent).
+        "api_error_status": message.api_error_status,
+        # The CLI's message for a failed model call ("API Error: Request timed out", ...): without
+        # an HTTP status it is what tells a timeout from a dropped connection.
+        "api_error": message.result if message.terminal_reason == "api_error" else None,
         "uncached_input_tokens": uncached,
         "cached_input_tokens": cached,
         "output_tokens": output,

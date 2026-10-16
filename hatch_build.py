@@ -20,13 +20,16 @@ class BuildCommitHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
         if version == "editable":
             return
-        proc = subprocess.run(
-            ["git", "-C", self.root, "describe", "--always", "--dirty", "--abbrev=40"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        commit = proc.stdout.strip() if proc.returncode == 0 else ""
+        try:
+            proc = subprocess.run(
+                ["git", "-C", self.root, "describe", "--always", "--dirty", "--abbrev=40"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            commit = proc.stdout.strip() if proc.returncode == 0 else ""
+        except OSError:  # no git in this environment
+            commit = ""
         self._tmp = Path(tempfile.mkdtemp())
         path = self._tmp / "BUILD_COMMIT"
         path.write_text(commit or "unknown")

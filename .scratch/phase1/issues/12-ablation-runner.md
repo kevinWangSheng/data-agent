@@ -1,7 +1,7 @@
 # 12 — 消融运行器
 
 Status: ready-for-agent
-Blocked by: 06, 07, 09, 10, 11, 15
+Blocked by: 06, 07, 09, 10, 11, 15, 16
 Spec: ../spec.md
 Claimed by: —
 Branch: —
