@@ -1,6 +1,6 @@
 # 13 — DAB runner
 
-Status: in-review
+Status: done
 Blocked by: 03, 05
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -293,3 +293,10 @@ stockindex query2 run0: finished
 - [P2] If `ExecTool` fails to start, the PG/Mongo databases already loaded are not cleaned up (the known limitation from return round 3).
 
 Full output is in `runs/13/da-review-r5.txt`. As in the earlier return rounds, I did not run `eng:code-review main` this round.
+
+### 2026-10-16 第 7 步：PR #11 复审（主会话）
+
+`56289da` CI 两次全绿；Codex 复审无 P1（gateway 问题已解决），3 条 P2 记为已知限制，合并：
+- `evals/dab.py:465` `submission.json` 非原子写，中断可能留下空文件导致续跑解码失败 → 写进工单 12 验收标准。
+- `evals/dab.py:250` 运行条件只记 DAB 的 `HEAD`，不标记脏工作区 → 写进工单 12 验收标准。
+- `evals/dab.py:133` 同一进程先后加载两个 DAB clone 时 `sys.path` 顺序不对（CLI 每次只用一个 clone，不触发）。
