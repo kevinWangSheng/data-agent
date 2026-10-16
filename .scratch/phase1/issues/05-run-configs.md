@@ -1,6 +1,6 @@
 # 05 — 运行配置与层开关
 
-Status: in-review
+Status: done
 Blocked by: 03
 Spec: ../spec.md
 Claimed by: claude (worktree 05-run-configs)
@@ -77,3 +77,8 @@ verifier events (both): none
 - 保留 `layers` 字段、`SKILLS_DIR` 仅测试使用、配置文件重复轮数与预算（单测防漂移）。
 
 **预期冲突**：04 也改 `agent.py`；合并后 dbt Skill 须从 `config.skills_dir` 加载、Skill 层关时跳过。
+
+### 2026-10-16 第 7 步：PR #6 Codex 意见核实（主会话）
+
+- CI：`check` 两次全绿。
+- P1「`full-old-skill` 应指向冻结的旧版 Skill 目录」（`src/data_agent/configs/full-old-skill.toml:5`）：属实，但不退回。本工单还没有旧版 Skill 可冻结，缺口已写进工单 12 的验收标准；工单 14 只起草报告、不自动改 Skill，按失败归因改 Skill 发生在 12 之后，冻结时机来得及。记为已知限制。
