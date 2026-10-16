@@ -512,6 +512,57 @@ def test_cli_fails_when_the_out_directory_holds_other_conditions(
     assert len(seen) == 1
 
 
+class FakeContainer:
+    def __init__(self, name: str, source: Path) -> None:
+        self.name = name
+        self.attrs = {"Mounts": [{"Source": str(source), "Destination": "/workspace"}]}
+        self.removed = False
+
+    def remove(self, force: bool = False) -> None:
+        self.removed = force
+
+
+class FakeDocker:
+    def __init__(self, containers: list[FakeContainer]) -> None:
+        self.containers = self
+        self.listed: list[dict[str, Any]] = []
+        self._containers = containers
+
+    def list(self, **kwargs: Any) -> list[FakeContainer]:
+        self.listed.append(kwargs)
+        return self._containers
+
+
+def test_leftover_exec_containers_of_the_workspace_are_removed(tmp_path: Path) -> None:
+    ours = FakeContainer("ours", tmp_path / "run0" / "workspace")
+    other = FakeContainer("other", tmp_path / "run1" / "workspace")
+    client = FakeDocker([ours, other])
+    removed = dab.remove_exec_containers(tmp_path / "run0" / "workspace", client)
+    assert removed == ["ours"]
+    assert ours.removed and not other.removed
+    assert client.listed == [{"all": True, "filters": {"ancestor": dab.EXEC_IMAGE}}]
+
+
+async def test_each_run_removes_its_exec_container_after_the_session(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # The SDK kills the tool server (SIGINT, SIGTERM, then for good) within about half a second,
+    # before DAB's own clean-up can stop the container; the runner removes it instead.
+    cleaned: list[Path] = []
+    monkeypatch.setattr(dab, "remove_exec_containers", lambda ws: cleaned.append(ws) or [])
+
+    async def broken_query(**_: Any) -> AsyncIterator[Any]:
+        raise RuntimeError("endpoint unreachable")
+        yield
+
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=1)
+    monkeypatch.setattr(dab, "query", broken_query)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    await dab.run_query(dab_root, query, load_config("full"), out, 2, ENV)
+    assert cleaned == [dab.run_dir(out, "toyset", "1", r) / "workspace" for r in (0, 1)]
+
+
 async def test_a_dab_server_that_failed_to_start_is_an_infra_error(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:

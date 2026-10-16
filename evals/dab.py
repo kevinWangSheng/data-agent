@@ -65,6 +65,7 @@ RUNS_PER_QUERY = 5  # DAB README: 5 runs per query
 # measured from timeouts; with no measurements yet, "large" is the data's size on disk: DAB's
 # smaller datasets stay under 40 MB, its larger ones start at about 300 MB.
 LARGE_DB_BYTES = 250 * 1024**2
+EXEC_IMAGE = "python-data:3.12"  # DAB's ExecTool runs code in this image
 SQL_WORKFLOW = "sql-workflow"
 DIALECT_SKILLS = {"duckdb": "duckdb-sql", "sqlite": "sqlite-sql", "postgres": "postgres-sql"}
 
@@ -328,6 +329,8 @@ async def run_once(
         except Exception as exc:
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
+        finally:
+            remove_exec_containers(workspace)
         log.emit("result", **result_fields(final, settings.model))
     if (
         not server_up
@@ -341,6 +344,34 @@ async def run_once(
     else:
         status = "unfinished"
     return (final.result or "") if final else "", status
+
+
+def remove_exec_containers(workspace: Path, client: Any = None) -> list[str]:
+    """Remove DAB's `execute_python` containers left on `workspace`; returns their names.
+
+    The SDK kills the tool server (SIGINT, SIGTERM, then for good) within about half a second of
+    the session's end, before DAB's clean-up can stop the container (a `docker stop` of up to
+    10 s), so the runner removes it. Without the Docker SDK or daemon no container was started.
+    """
+    if client is None:
+        try:
+            docker = importlib.import_module("docker")  # in evals/dab-requirements.txt
+        except ImportError:
+            return []
+        try:
+            client = docker.from_env()
+        except docker.errors.DockerException:
+            return []
+    removed = []
+    try:  # a failed clean-up is reported, never a failed run
+        for container in client.containers.list(all=True, filters={"ancestor": EXEC_IMAGE}):
+            sources = {m.get("Source") for m in container.attrs.get("Mounts", [])}
+            if str(workspace.resolve()) in sources:
+                container.remove(force=True)
+                removed.append(container.name)
+    except Exception as exc:
+        print(f"dab: could not remove the exec container on {workspace}: {exc}", file=sys.stderr)
+    return removed
 
 
 def mcp_status(servers: Any) -> str:
