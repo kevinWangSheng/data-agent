@@ -11,9 +11,9 @@ read from its SQL and the dbt project directory; the pointer to SignalPilot's sc
 verifier computes the baseline of a non-count metric (sum, average) itself, as the tool gives
 none, and re-counts with the model's own filters, which the tool does not apply; the
 "total_X means COUNT(*)" rule holds only for row nouns (total_orders), as total_amount and
-total_revenue are sums; counts compare exactly and sums and averages within 10%, and a min or
-max exactly; when the tool read the model's SQL its count verdict decides, and the column-name
-rules apply only when it could not. -->
+total_revenue are sums; counts, mins and maxes compare exactly and sums and averages only up to
+rounding (the column's DECIMAL scale, 1e-6 relative error for floats); when the tool read the
+model's SQL its count verdict decides, and the column-name rules apply only when it could not. -->
 
 You are a read-only value auditor. Return a report. Fix nothing.
 
@@ -111,9 +111,14 @@ A metric that totals a measure is not a count: "total_amount",
 same goes for an average, min or max. The tool gives no baseline for them.
 After the tool call, compute that aggregate yourself with ONE
 `query_database` query on the actual upstream, over the same slice the tool
-reports and with the model's filters, and compare it with the model value: a
-sum or average within ±10% of yours matches (rounding, float error); a min or
-max, like a count, must match exactly.
+reports and with the model's filters (and the model's own ROUND, if its SQL
+rounds), and compare it with the model value. You recompute the same
+aggregate, so the two may differ only by rounding: a DECIMAL column must equal
+yours rounded to the column's scale (its DECIMAL places); a float column
+(DOUBLE, REAL, FLOAT) may differ from yours by a relative error of at most 1e-6
+(|model - yours| <= 1e-6 * |yours|); an integer column must match exactly.
+Anything beyond that is a MISMATCH: CHECK 2 = FAIL. A min or max, like a
+count, must match exactly.
 
 Ignore candidates that are NOT the model's upstream - raw source tables
 may have different row counts due to upstream filtering, and that is

@@ -18,7 +18,8 @@ rule for skipping Steps 4-7 also keeps them when the task asks for a new model. 
 specific macro, column or entity names were made generic; the rule for review tasks no longer
 names a task format. Step 8 uses the verifiers' four verdicts (PASS, FAIL, NEEDS_INFO, N/A) and
 verify_model_values takes the model's upstream tables and the project directory and compares
-the model SQL's own COUNTs exactly; map_columns adds no domain prefix. -->
+the model SQL's own COUNTs exactly; sums and averages match only up to rounding; map_columns adds
+no domain prefix. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -225,7 +226,10 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
    exists as a table; CHECK 2 its columns match the YML contract and the
    task; CHECK 3 its row count matches the grain (`COUNT(*)` vs
    `COUNT(DISTINCT <key>)`, against the driving table); value CHECK 2 its
-   metric totals match the same aggregates computed from the sources.
+   metric totals match the same aggregates computed from the sources, with
+   the model's filters: counts, mins and maxes exactly, sums and averages up to
+   rounding (equal at the column's DECIMAL places; a float column within
+   1e-6 relative error). Anything more is a mismatch.
 3. Read BOTH reports. Every check is PASS, FAIL, NEEDS_INFO or N/A. Only act on
    checks the verifiers marked FAIL or NEEDS_INFO (give the verifier what it asks for).
    If a check is PASS or N/A, accept it - do NOT override the verifier

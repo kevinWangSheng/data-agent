@@ -180,11 +180,17 @@ def test_value_verifier_reads_total_as_a_count_only_for_row_nouns() -> None:
     assert "total_amount" in sums and "total_revenue" in sums
 
 
-def test_value_verifier_compares_counts_exactly_and_sums_within_ten_percent() -> None:
-    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+def test_value_verifier_compares_sums_and_averages_only_up_to_rounding() -> None:
+    """The verifier recomputes over the same slice and filters, so a sum or average may differ
+    from the model's only by rounding or float error; a 10% band would pass wrong results."""
+    prompt = value_verifier_prompt()
+    check_2 = prompt.split("### CHECK 2")[1].split("### CHECK 3")[0]
     flat = " ".join(check_2.split())
     assert "Counts compare exactly: one row off is a mismatch." in flat
-    assert "a sum or average within ±10% of yours matches" in flat
+    assert "rounded to the column's scale (its DECIMAL places)" in flat
+    assert "relative error of at most 1e-6" in flat
+    assert "Anything beyond that is a MISMATCH" in flat
+    assert "10%" not in prompt
 
 
 def test_value_verifier_lets_the_tools_sql_verdict_override_the_name_rules() -> None:
