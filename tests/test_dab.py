@@ -25,7 +25,7 @@ from mcp.types import CallToolResult, TextContent
 from data_agent.run_config import load_config
 from evals import dab
 from evals.__main__ import main as evals_main
-from evals.dab_server import RESULT_CHARS
+from evals.dab_server import RESULT_CHARS, STORAGE_DIR
 
 FAKE_DAB = Path(__file__).parent / "fixtures" / "fake_dab"
 ENV = {"DATA_AGENT_API_KEY": "sk-test-secret"}
@@ -73,11 +73,13 @@ def dab_root(tmp_path: Path) -> Path:
 @asynccontextmanager
 async def dab_server(root: Path, log: Path) -> AsyncIterator[ClientSession]:
     config = root / "query_toyset" / "db_config.yaml"
+    workspace = log.parent / "workspace"
+    workspace.mkdir(exist_ok=True)
     params = StdioServerParameters(
         command=sys.executable,
-        args=[*dab.server_args(root, config, log)],
+        args=[*dab.server_args(root, config, log, workspace)],
         env={**os.environ, **dab.server_env()},
-        cwd=str(root.parent),  # like the agent's workspace: not the repo root
+        cwd=str(workspace),  # as for the agent: not the repo root
     )
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
@@ -86,6 +88,13 @@ async def dab_server(root: Path, log: Path) -> AsyncIterator[ClientSession]:
 
 def text_of(result: CallToolResult) -> str:
     return "\n".join(item.text for item in result.content if isinstance(item, TextContent))
+
+
+def data_of(result: CallToolResult) -> Any:
+    """The JSON result under the line that names its variable."""
+    note, _, data = text_of(result).partition("\n")
+    assert note.startswith("Result `var_"), note
+    return json.loads(data)
 
 
 def logged_calls(log: Path) -> list[dict[str, Any]]:
@@ -99,12 +108,19 @@ async def test_server_exposes_dab_tools_under_our_tool_names(
 ) -> None:
     async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
         tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-    assert set(tools) == {"query_database", "list_tables"}
+    assert set(tools) == {"query_database", "list_tables", "execute_python"}
     # The descriptions are DAB's own, read from its tool specs at run time.
     assert tools["query_database"].description == "FAKE-DAB query description."
     assert tools["list_tables"].description == "FAKE-DAB list description."
     sql_arg = tools["query_database"].input_schema["properties"]["sql"]
     assert sql_arg["description"] == "FAKE-DAB query argument."
+    # DAB's agent states its print format in its prompt; ours says it in the tool description,
+    # with DAB's result marker.
+    exec_description = tools["execute_python"].description or ""
+    assert exec_description.startswith("FAKE-DAB exec description.")
+    assert "FAKE-RESULT:" in exec_description
+    code_arg = tools["execute_python"].input_schema["properties"]["code"]
+    assert code_arg["description"] == "FAKE-DAB code argument."
 
 
 async def test_query_runs_through_the_dab_tool(dab_root: Path, tmp_path: Path) -> None:
@@ -116,8 +132,8 @@ async def test_query_runs_through_the_dab_tool(dab_root: Path, tmp_path: Path) -
         )
         tables = await session.call_tool("list_tables", {"db_name": "prices_db"})
     assert not result.is_error
-    assert json.loads(text_of(result)) == [{"ticker": "T002"}]
-    assert json.loads(text_of(tables)) == ["prices"]
+    assert data_of(result) == [{"ticker": "T002"}]
+    assert data_of(tables) == ["prices"]
     assert [call["tool_name"] for call in logged_calls(log)] == ["query_db", "list_db"]
 
 
@@ -213,18 +229,58 @@ async def test_mongo_queries_skip_the_sql_check(dab_root: Path, tmp_path: Path) 
     async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
         result = await session.call_tool("query_database", {"db_name": "articles_db", "sql": query})
     assert not result.is_error
-    assert json.loads(text_of(result)) == [{"echo": query}]
+    assert data_of(result) == [{"echo": query}]
 
 
-async def test_long_results_are_cut_with_a_note(dab_root: Path, tmp_path: Path) -> None:
-    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
-        result = await session.call_tool(
-            "query_database",
-            {"db_name": "prices_db", "sql": "SELECT p.ticker FROM prices p, prices q LIMIT 5000"},
+PRINT = "import json\nprint('FAKE-RESULT:' + json.dumps({}))"
+
+
+async def test_results_are_variables_in_python(dab_root: Path, tmp_path: Path) -> None:
+    log = tmp_path / "tools.jsonl"
+    async with dab_server(dab_root, log) as session:
+        prices = await session.call_tool(
+            "query_database", {"db_name": "prices_db", "sql": "SELECT * FROM prices LIMIT 3"}
         )
+        articles = await session.call_tool(
+            "query_database", {"db_name": "articles_db", "sql": '{"collection": "articles"}'}
+        )
+        # A join across two databases, done outside both.
+        code = PRINT.format("[p['ticker'] for p in var_1] + var_2")
+        joined = await session.call_tool("execute_python", {"code": code})
+        again = await session.call_tool("execute_python", {"code": PRINT.format("len(var_3)")})
+    assert text_of(prices).startswith("Result `var_1`")
+    assert text_of(articles).startswith("Result `var_2`")
+    assert data_of(joined) == ["T000", "T001", "T002", {"echo": '{"collection": "articles"}'}]
+    assert text_of(joined).startswith("Result `var_3`")
+    assert data_of(again) == 4
+    assert [call["tool_name"] for call in logged_calls(log)][-2:] == ["execute_python"] * 2
+
+
+async def test_long_results_are_saved_in_the_workspace_with_a_preview(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    sql = "SELECT p.ticker FROM prices p, prices q LIMIT 5000"
+    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
+        result = await session.call_tool("query_database", {"db_name": "prices_db", "sql": sql})
+        code = PRINT.format("len(json.load(open(var_1)))")
+        counted = await session.call_tool("execute_python", {"code": code})
     text = text_of(result)
-    assert len(text) < RESULT_CHARS + 200
-    assert "truncated" in text
+    saved = tmp_path / "workspace" / STORAGE_DIR / "var_1.json"
+    assert f"`{STORAGE_DIR}/var_1.json`" in text
+    assert len(text) < RESULT_CHARS + 500
+    assert len(json.loads(saved.read_text())) == 5000
+    assert data_of(counted) == 5000
+
+
+async def test_python_errors_come_back_as_tool_errors(dab_root: Path, tmp_path: Path) -> None:
+    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
+        failed = await session.call_tool("execute_python", {"code": "1 / 0"})
+        later = await session.call_tool("execute_python", {"code": PRINT.format("var_2")})
+    assert failed.is_error
+    assert "ZeroDivisionError" in text_of(failed)
+    # A failed call stores nothing, so the next result is var_1 and var_2 does not exist.
+    assert later.is_error
+    assert "var_2" in text_of(later)
 
 
 # --- loading a query and sizing its data --------------------------------------------------------
@@ -359,6 +415,7 @@ async def test_the_agent_gets_the_task_and_dab_tools_but_no_answer(
     server = options.mcp_servers["data"]
     assert server["args"][:2] == ["-m", "evals.dab_server"]
     assert server["env"] == dab.server_env()
+    assert server["args"][-2:] == ["--workspace", str(workspace)]
     assert options.max_turns == 50
     assert options.max_budget_usd == 1.0
 
@@ -398,6 +455,61 @@ async def test_rerun_skips_finished_runs_and_redoes_removed_ones(
     seen = await run_dab(monkeypatch, dab_root, out, runs=2)
     assert len(seen) == 1  # only run 1 ran again
     assert [e["run"] for e in json.loads((out / "submission.json").read_text())] == ["0", "1"]
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        ({"config": "baseline"}, "config"),
+        ({"env": {**ENV, "DATA_AGENT_MODEL": "other-model"}}, "model"),
+        ({"hints": False}, "hints"),
+        ({"commit": "f00d"}, "DAB commit"),
+    ],
+)
+async def test_rerun_under_other_conditions_refuses_to_mix_them(
+    monkeypatch: pytest.MonkeyPatch,
+    dab_root: Path,
+    tmp_path: Path,
+    change: dict[str, Any],
+    field: str,
+) -> None:
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=1)
+    monkeypatch.setattr(dab, "dab_commit", lambda _root: change.get("commit", "unknown"))
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["x", "y"], seen))
+    query = dab.load_query(dab_root, "toyset", "1", hints=change.get("hints", True))
+    config = load_config(change.get("config", "full"))
+    with pytest.raises(dab.ConditionsChanged, match=field):
+        await dab.run_query(dab_root, query, config, out, 2, change.get("env", ENV))
+    assert seen == []  # nothing ran, not even the missing run 1
+    assert len(json.loads((out / "submission.json").read_text())) == 1
+
+
+async def test_a_finished_run_without_its_trace_cannot_be_checked(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=1)
+    (dab.run_dir(out, "toyset", "1", 0) / "events.jsonl").unlink()
+    with pytest.raises(dab.ConditionsChanged, match="trace"):
+        await run_dab(monkeypatch, dab_root, out, runs=1)
+
+
+def test_cli_fails_when_the_out_directory_holds_other_conditions(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["x", "y"], seen))
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test-secret")
+    out = tmp_path / "out"
+    args = [
+        *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+        *("--runs", "1", "--out", str(out)),
+    ]
+    assert evals_main([*args, "--config", "full"]) == 0
+    assert evals_main([*args, "--config", "baseline"]) == 2
+    assert len(seen) == 1
 
 
 async def test_a_dab_server_that_failed_to_start_is_an_infra_error(

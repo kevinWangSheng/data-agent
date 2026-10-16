@@ -1,17 +1,19 @@
 """`dab`: run our agent on DataAgentBench queries (ADR-0005) and write DAB's submission format.
 
 DAB has no license, so nothing of it lives here: its scaffold is imported from a local clone given
-by `--dab-root`, and its query tools are served to the agent by `evals.dab_server`. The task text is
+by `--dab-root`, and its tools are served to the agent by `evals.dab_server`. The task text is
 the query's `query.json` question plus the official description files (`db_description.txt`, with
 `db_description_withhint.txt` appended unless `--no-hints`). Each run is one agent session in its
 own directory:
 
     OUT/<dataset>/query<id>/run<k>/events.jsonl        the trace (our event file)
     OUT/<dataset>/query<id>/run<k>/dab_tool_calls.jsonl DAB's own tool log
-    OUT/<dataset>/query<id>/run<k>/workspace/          the agent's (empty) working directory
+    OUT/<dataset>/query<id>/run<k>/workspace/          the agent's and execute_python's directory
     OUT/submission.json                                [{dataset, query, run, answer}, ...]
 
-DAB's tools need extra packages, so run it as
+DAB's tools need extra packages, and its `execute_python` needs Docker with DAB's image (built from
+DAB's Dockerfile: `docker build -t python-data:3.12 ../DataAgentBench`; the Docker SDK finds the
+daemon through DOCKER_HOST). Run it as
 
     uv run --with-requirements evals/dab-requirements.txt python -m evals dab \
         --dab-root ../DataAgentBench --dataset stockindex --query 1 --config full --out runs/dab
@@ -88,12 +90,18 @@ class BudgetReached(Exception):
     """Spend under the output directory reached the stop fraction of the budget (plan §7)."""
 
 
+class ConditionsChanged(ValueError):
+    """A finished run under the output directory was made under other conditions than this one."""
+
+
 @dataclass(frozen=True)
 class Scaffold:
     """The parts of DAB's `common_scaffold` the runner uses, imported from the clone."""
 
     query_tool: type[Any]
     list_tool: type[Any]
+    exec_tool: type[Any]
+    result_marker: str  # what `execute_python` code prints before its JSON result
     load_db_clients: Any
 
 
@@ -127,6 +135,8 @@ def scaffold(dab_root: Path) -> Scaffold:
     return Scaffold(
         query_tool=_import_from(root, f"{tools}.QueryDBTool").QueryDBTool,
         list_tool=_import_from(root, f"{tools}.ListDBTool").ListDBTool,
+        exec_tool=_import_from(root, f"{tools}.ExecTool").ExecTool,
+        result_marker=_import_from(root, f"{tools}.exec_utils.parse_result").RESULT_MARKER,
         load_db_clients=_import_from(root, f"{tools}.db_utils.db_config").load_db_clients,
     )
 
@@ -183,12 +193,13 @@ def run_dir(out: Path, dataset: str, query_id: str, run: int) -> Path:
     return out / dataset / f"query{query_id}" / f"run{run}"
 
 
-def server_args(dab_root: Path, db_config: Path, log: Path) -> list[str]:
+def server_args(dab_root: Path, db_config: Path, log: Path, workspace: Path) -> list[str]:
     return [
         *("-m", "evals.dab_server"),
         *("--dab-root", str(dab_root.resolve())),
         *("--db-config", str(db_config.resolve())),
         *("--log", str(log.resolve())),
+        *("--workspace", str(workspace.resolve())),
     ]
 
 
@@ -261,7 +272,9 @@ async def run_once(
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
-        "args": server_args(dab_root, dab_query.db_config, directory / "dab_tool_calls.jsonl"),
+        "args": server_args(
+            dab_root, dab_query.db_config, directory / "dab_tool_calls.jsonl", workspace
+        ),
         "env": server_env(),
     }
     stderr: list[str] = []
@@ -338,6 +351,37 @@ def mcp_status(servers: Any) -> str:
     return "missing"
 
 
+def conditions(header: dict[str, Any]) -> dict[str, Any]:
+    """What a run's version header says about the experiment: runs that differ here must not share
+    a submission file."""
+    dab = header.get("dab") or {}
+    return {
+        "config": header.get("config"),
+        "model": header.get("model"),
+        "hints": dab.get("hints"),
+        "DAB commit": dab.get("commit"),
+    }
+
+
+def check_finished_run(directory: Path, expected: dict[str, Any]) -> None:
+    """Raise ConditionsChanged unless the run's trace starts with a header for `expected`."""
+    trace = directory / "events.jsonl"
+    try:
+        with trace.open() as f:
+            header = json.loads(f.readline())
+    except (OSError, ValueError) as exc:
+        raise ConditionsChanged(f"cannot check the finished run's trace {trace}: {exc}") from exc
+    if not isinstance(header, dict) or header.get("type") != "version":
+        raise ConditionsChanged(f"the finished run's trace {trace} has no version header")
+    found = conditions(header)
+    changed = [f"{k} {found[k]!r} there, {v!r} now" for k, v in expected.items() if found[k] != v]
+    if changed:
+        raise ConditionsChanged(
+            f"{directory} was run under other conditions ({'; '.join(changed)}); "
+            "use another --out for these"
+        )
+
+
 def spent(out: Path) -> Decimal:
     files, unchecked = walk_files(out)
     if unchecked:
@@ -370,13 +414,24 @@ async def run_query(
     A session that broke on infrastructure is not an answer: it stays out of the submission (its
     trace stays for a look) and is counted in the return value, so the caller can fail and the
     run be redone after removing its directory. Runs already in the submission are skipped, so a
-    rerun only redoes what is missing.
+    rerun only redoes what is missing, and only under the conditions (config, model, hints, DAB
+    commit) of the runs it keeps; otherwise it raises ConditionsChanged before running anything.
     """
     out.mkdir(parents=True, exist_ok=True)
     submission = out / "submission.json"
     done = set()
     if submission.exists():
         done = {(e["dataset"], e["query"], e["run"]) for e in json.loads(submission.read_text())}
+    finished = [r for r in range(runs) if (dab_query.dataset, dab_query.query_id, str(r)) in done]
+    if finished:
+        expected = {
+            "config": config.name,
+            "model": ModelSettings.from_env(env).model,
+            "hints": dab_query.hints,
+            "DAB commit": dab_commit(dab_root),
+        }
+        for run in finished:
+            check_finished_run(run_dir(out, dab_query.dataset, dab_query.query_id, run), expected)
     secrets = sorted(set(known_secrets(env)), key=len, reverse=True)
     infra_errors = 0
     for run in range(runs):

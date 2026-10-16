@@ -2,6 +2,9 @@
 #   uv run --with-requirements evals/dab-requirements.txt python -m evals dab ...
 # Versions follow DAB's environment.yaml; psycopg2-binary provides its psycopg2 without a build.
 # duckdb comes from this project (1.2.2, the data-eng-bench version); it reads DAB's DuckDB files.
+autogen-core==0.7.5
+autogen-ext[docker]==0.7.5
+docker==7.1.0
 numpy==2.2.6
 pandas==2.3.0
 psycopg2-binary==2.9.9
