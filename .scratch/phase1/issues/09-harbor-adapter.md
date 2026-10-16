@@ -1,6 +1,6 @@
 # 09 — Harbor 适配器
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 04
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -120,3 +120,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 - 上传 data-eng-bench 榜单需要 ATIF `trajectory.json`（`leaderboard/SUBMIT.md:123`）：属于遗漏，现有工单都没覆盖，交人在最终审查时决定开工单。
 - 预算上限：人已决定（2026-10-16），由工单 15 做。
 - **合并前集成**：工单 07 已合并，本分支与 main 在 `tests/test_packaging.py` 冲突（`git merge-tree` 实测）。在原分支上 `git merge origin/main`，解决冲突（两边的测试都保留），`make check` 通过后提交，不 push、不 rebase。不需要真实运行与审查。
+
+### 2026-10-16 合并前集成
+
+- 在原分支上 `git merge origin/main`（不 rebase、不 push），合并提交 `9770e34`（父提交 `eb3599e`、`8eeabf1`）。
+- `tests/test_packaging.py` 冲突：两边的测试都保留（本分支 `test_wheel_builds_without_git_and_reports_an_unknown_commit`，main 的 `test_installed_wheel_loads_the_verifier_agents`），共用 `build_and_extract_wheel`，不用改。
+- 合并没报冲突但类型检查不过：工单 07 给 `build_options` 加了必填参数 `emit`，本分支的 `test_web_search_and_fetch_are_never_available`（`tests/test_agent_outcomes.py:148`）没传，basedpyright 报 `Argument missing for parameter "emit"`。照 main 测试的写法补上空的 `emit`（`lambda *_, **__: None`）。合并后的 `agent.py` 两边的改动都在（`disallowed_tools=WEB_TOOLS`、`api_error_status` 和 verifier 的 hooks/agents）；`evals/dab.py` 也调 `build_options`，所以 DAB 运行同样禁用 web 工具。
+- `make check`：ruff、format 通过，basedpyright 0 errors，`858 passed, 15 deselected in 98.92s`；pre-commit 通过。按工单要求没有做真实运行，也没有审查。
