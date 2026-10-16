@@ -450,6 +450,58 @@ def test_jobs_from_other_conditions_are_not_reused(
     assert len(report_dirs(out)) == 1
 
 
+@pytest.mark.parametrize(
+    "damage",
+    ["no event file", "empty event file", "no git_commit", "no skill_version"],
+)
+def test_jobs_whose_trials_lack_versions_are_not_reused(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    damage: str,
+) -> None:
+    """A trial with no recorded code or Skill version cannot be shown to match this checkout."""
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    events = next((out / "jobs" / "full").glob("dbt-echo__*/agent/events/run.jsonl"))
+    if damage == "no event file":
+        events.unlink()
+    elif damage == "empty event file":
+        events.write_text("")
+    else:
+        header, *rest = events.read_text().splitlines()
+        fields = json.loads(header)
+        del fields[damage.removeprefix("no ")]
+        events.write_text("\n".join([json.dumps(fields), *rest]) + "\n")
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 2
+    assert "version" in capsys.readouterr().err
+    assert len(harbor.calls) == 1
+    assert len(report_dirs(out)) == 1
+
+
+def test_an_infrastructure_error_without_events_is_still_redone(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """A trial that broke before the agent wrote its event file is dropped by the resume anyway."""
+    broken = {"flaky": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if attempt == 0 and broken["flaky"]:
+            return None, "ApiInternalServerError"
+        return by_pass_rate(config, task, attempt)
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 2
+    for events in (out / "jobs" / "full").glob("*__a0c*/agent/events/run.jsonl"):
+        events.unlink()
+    broken["flaky"] = False
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    assert harbor.calls[-1][:2] == ["job", "resume"]
+
+
 def test_configs_run_with_different_models_are_not_compared(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,

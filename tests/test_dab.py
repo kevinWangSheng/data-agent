@@ -6,6 +6,7 @@ proven by a real run on a DAB query (ticket 13 Comments).
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -626,21 +627,58 @@ def test_dab_commit_marks_a_dirty_checkout(tmp_path: Path) -> None:
     assert dab.dab_commit(repo) == f"{head}-dirty"
 
 
-def test_dab_commit_ignores_its_lfs_data_files(tmp_path: Path) -> None:
+def test_dab_commit_accepts_lfs_data_that_matches_its_manifest(tmp_path: Path) -> None:
     """DAB keeps its databases in Git LFS; without git-lfs, data put in place by DAB's download.sh
-    (which checks it against DAB's sha256 manifest) differs from the committed pointer stubs."""
+    differs from the committed pointer stubs, and is clean only when it matches the sha256 in DAB's
+    dataset_manifest.tsv."""
     repo = tmp_path / "dab"
     (repo / "query_x").mkdir(parents=True)
     git(repo, "init", "-q")
     (repo / ".gitattributes").write_text("*.db filter=lfs diff=lfs merge=lfs -text\n")
-    (repo / "query_x" / "data.db").write_text("version https://git-lfs.github.com/spec/v1\n")
+    pointer = "version https://git-lfs.github.com/spec/v1\n"
+    (repo / "query_x" / "data.db").write_text(pointer)
+    (repo / "query_x" / "other.db").write_text(pointer)
     (repo / "query_x" / "query.json").write_text('"How many?"\n')
+    data = b"SQLite format 3\x00 real data"
+    digest = hashlib.sha256(data).hexdigest()
+    (repo / "dataset_manifest.tsv").write_text(f"query_x/data.db\t{digest}\t{len(data)}\n")
     git(repo, "add", ".")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init")
     head = git(repo, "rev-parse", "HEAD")
-    (repo / "query_x" / "data.db").write_bytes(b"SQLite format 3\x00 real data")
+    (repo / "query_x" / "data.db").write_bytes(data)
     assert dab.dab_commit(repo) == head
     (repo / "query_x" / "query.json").write_text('"How many, edited?"\n')
+    assert dab.dab_commit(repo) == f"{head}-dirty"
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["edited after download", "same size, other bytes", "not in the manifest", "deleted"],
+)
+def test_dab_commit_marks_lfs_data_that_differs_from_its_manifest(
+    tmp_path: Path, change: str
+) -> None:
+    repo = tmp_path / "dab"
+    (repo / "query_x").mkdir(parents=True)
+    git(repo, "init", "-q")
+    (repo / ".gitattributes").write_text("*.db filter=lfs diff=lfs merge=lfs -text\n")
+    pointer = "version https://git-lfs.github.com/spec/v1\n"
+    (repo / "query_x" / "data.db").write_text(pointer)
+    (repo / "query_x" / "other.db").write_text(pointer)
+    data = b"SQLite format 3\x00 real data"
+    digest = hashlib.sha256(data).hexdigest()
+    (repo / "dataset_manifest.tsv").write_text(f"query_x/data.db\t{digest}\t{len(data)}\n")
+    git(repo, "add", ".")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+    head = git(repo, "rev-parse", "HEAD")
+    if change == "edited after download":
+        (repo / "query_x" / "data.db").write_bytes(data + b" and a new row")
+    elif change == "same size, other bytes":
+        (repo / "query_x" / "data.db").write_bytes(data.upper())
+    elif change == "not in the manifest":
+        (repo / "query_x" / "other.db").write_bytes(data)
+    else:
+        (repo / "query_x" / "data.db").unlink()
     assert dab.dab_commit(repo) == f"{head}-dirty"
 
 

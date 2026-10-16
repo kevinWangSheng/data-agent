@@ -26,6 +26,7 @@ on infrastructure (left out of the submission, to be redone).
 
 import argparse
 import asyncio
+import hashlib
 import importlib
 import json
 import os
@@ -264,8 +265,8 @@ def dab_commit(dab_root: Path) -> str:
     --dirty`; untracked output such as DAB's own results does not count).
 
     DAB's databases are Git LFS files. Without git-lfs, the data DAB's download.sh puts in place
-    (checked against DAB's sha256 manifest) differs from the committed pointer stubs, so changes to
-    LFS files are left out: they would mark every prepared checkout dirty.
+    differs from the committed pointer stubs, so a changed LFS file counts as clean when it matches
+    its size and sha256 in DAB's `dataset_manifest.tsv` (what download.sh checks it against).
     """
     head = _git(dab_root, "rev-parse", "HEAD")
     if not head:
@@ -283,7 +284,45 @@ def dab_commit(dab_root: Path) -> str:
         }
         if attrs is None or set(paths) - lfs:
             return f"{head}-dirty"
+        manifest = dataset_manifest(dab_root)
+        if not all(path in manifest and _matches(dab_root / path, *manifest[path]) for path in lfs):
+            return f"{head}-dirty"
     return head
+
+
+def dataset_manifest(dab_root: Path) -> dict[str, tuple[str, int]]:
+    """DAB's `dataset_manifest.tsv`: path <TAB> sha256 <TAB> size per data file; empty if absent."""
+    manifest: dict[str, tuple[str, int]] = {}
+    try:
+        lines = (dab_root / "dataset_manifest.tsv").read_text().splitlines()
+    except OSError:
+        return manifest
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[2].isdigit():
+            manifest[fields[0]] = (fields[1].lower(), int(fields[2]))
+    return manifest
+
+
+_HASHED: dict[tuple[Path, int, int], str] = {}  # (path, size, mtime_ns) -> sha256, per process
+
+
+def _matches(path: Path, sha256: str, size: int) -> bool:
+    """The file has the manifest's size and sha256 (hashed once per process while unchanged)."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    if stat.st_size != size:
+        return False
+    key = (path, stat.st_size, stat.st_mtime_ns)
+    if key not in _HASHED:
+        digest = hashlib.sha256()
+        with path.open("rb") as f:
+            while chunk := f.read(1 << 20):
+                digest.update(chunk)
+        _HASHED[key] = digest.hexdigest()
+    return _HASHED[key] == sha256
 
 
 async def run_once(

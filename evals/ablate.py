@@ -160,6 +160,15 @@ def check_conditions(config: str, job: Path, trials: list[Trial]) -> None:
             f"this checkout has uncommitted changes, so it cannot be matched to the existing "
             f"{config} job; commit them, or use another --out"
         )
+    # Infrastructure errors are dropped by the resume; one may end before the agent writes events.
+    kept = [t for t in trials if not is_infra_error(t)]
+    unversioned = sum(1 for t in kept if not has_versions(t))
+    if unversioned:
+        raise Stop(
+            f"{unversioned} trial(s) of the {config} job have no recorded git_commit or "
+            "skill_version in their event files' version headers, so they cannot be matched to "
+            "this checkout; use another --out"
+        )
     found = versions(trials)
     changed = [
         f"{key} {found[key]} there, {value!r} now"
@@ -236,16 +245,28 @@ def ensure_job(config: str, args: argparse.Namespace, tasks: list[str]) -> None:
     check_config_errors(config, job, trials)
 
 
+def header(events: Path) -> dict[str, Any]:
+    with events.open() as f:
+        return json.loads(f.readline() or "{}")
+
+
+def has_versions(trial: Trial) -> bool:
+    """The trial has event files, and each one's version header records the code and Skills."""
+    files = event_files(trial)
+    return bool(files) and all(
+        header(events).get(key) for events in files for key in ("git_commit", "skill_version")
+    )
+
+
 def versions(trials: list[Trial]) -> dict[str, list[str]]:
     """The code, Skill version and model the trials ran with, from their event files' headers."""
     seen: dict[str, set[str]] = {"git_commit": set(), "skill_version": set(), "model": set()}
     for trial in trials:
         for events in event_files(trial):
-            with events.open() as f:
-                header = json.loads(f.readline() or "{}")
+            fields = header(events)
             for key, values in seen.items():
-                if header.get(key):
-                    values.add(str(header[key]))
+                if fields.get(key):
+                    values.add(str(fields[key]))
     return {key: sorted(values) for key, values in seen.items()}
 
 
