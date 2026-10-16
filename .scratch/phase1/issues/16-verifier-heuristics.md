@@ -1,6 +1,6 @@
 # 16 — 验证工具与验证提示的口径修正
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 07
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5) 2026-10-16
@@ -51,10 +51,10 @@ Spec 自相矛盾或验收测试看起来有错；需要人做决定；花费到
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 6（首次 da-review 2 + code-review 1；退回第 1 轮 da-review 3）
-- Model spend: ~$0.42
-- Outcome: 退回第 1 轮 3 条全修，另修 da-review 5 条；第 3 次 da-review 3 条 P2 记为已知限制
+- Attempts: 3
+- Review rounds: 7
+- Model spend: ~$0.45
+- Outcome: 退回第 2 轮已修（sum/avg 只容舍入误差）；最后一轮 da-review 无新问题，3 条已知限制保留
 - Human review minutes: —
 
 ## Comments
@@ -196,3 +196,37 @@ Spec 自相矛盾或验收测试看起来有错；需要人做决定；花费到
 1. **`src/data_agent/agents/value-verifier.md:116`**：验证子 agent 自己用同一切片、同样的过滤重算 sum/avg，结果只应差浮点或小数舍入；±10% 会放过误差 10% 以内的错误结果，也与 `CODING_STANDARDS.md` 去掉评分式容差的规则不符。改为舍入级容差：按模型列的小数位（DECIMAL 的 scale）舍入后相等，浮点列相对误差不超过 1e-6；超出即 MISMATCH。同步改 `verifier_tools.py` 里非计数指标若有相关文字、dbt-workflow Step 8 的说明和 prompt 测试（断言新规则、断言 "10%" 不再出现）。本工单 Acceptance 里那句以此为准。
 
 这是最后一轮；之后的新意见记为已知限制。在原分支上修，修完提交，不 push、不 rebase。修完 `make check`、full 配置真实 dbt 运行一次（看 value-verifier 的 `verifier_end`），再跑一轮 `da-review main`（新意见只记录）。最终回复给出 Comments、Ledger（Attempts 3）和 `Status: in-review`。
+
+### 2026-10-16 Ticket agent, send-back round 2 (commit `64ee041`)
+
+**The send-back item.** Its tests failed before the fix.
+- **`agents/value-verifier.md` CHECK 2:** the verifier recomputes the same aggregate over the same slice with the model's filters. If the model's SQL rounds, it applies the same `ROUND`. The model value then has to match the recomputed one:
+  - a DECIMAL column must equal it rounded to the column's scale;
+  - a float column (DOUBLE, REAL, FLOAT) may differ by a relative error of at most 1e-6;
+  - an integer column must match exactly.
+
+  Anything beyond that is a MISMATCH (CHECK 2 = FAIL). Mins and maxes, like counts, still match exactly. The header note is updated to match.
+- **`skills/dbt-workflow/SKILL.md`:** the Step 8 fallback (the checks the main agent runs itself when there are no verifier sub-agents) states the same rule. The header note says it too. The Skill avoids the word "tolerance", which ADR-0005's test forbids.
+- **`verifier_tools.py`:** unchanged. It never had any ±10% wording, and it still gives no verdict for sums and averages.
+- **Tests:**
+  - `test_value_verifier_compares_sums_and_averages_only_up_to_rounding` replaces the ±10% test. It checks the new rule's sentences and that "10%" no longer appears anywhere in the prompt.
+  - New `test_workflow_compares_sums_and_averages_only_up_to_rounding` checks the Step 8 wording and that "10%" is absent from the Skill.
+- The Acceptance line "±10% tolerance only for non-count sums/averages" is replaced by this rule, as the send-back says.
+
+**Evidence**
+- `make check`: ruff and format clean; basedpyright `0 errors, 0 warnings, 0 notes`; `839 passed, 15 deselected`.
+- **Real dbt run** at `64ee041`: `make test-integration` with full config and seam A's DBT_TASK gave `5 passed, 839 deselected, 10 xfailed`. It took 19 turns and `cost_usd` 0.0280.
+  - The value-verifier recomputed `lifetime_value` with the model's own CASE/status filter: `SUM(CASE WHEN lower(trim(status)) IN ('completed','complete') THEN amount END)` = 285.25, against a model value of 285.25, so PASS on an exact match. `completed_orders` = 6 matched the tool's verdict, which comes from the model's SQL.
+  - The two `verifier_end` events (full lines in `runs/16/real5_events.txt`):
+    ```
+    seq 109 verifier: CHECK 1 PASS, CHECK 2 PASS, CHECK 3 PASS, CHECK 4 PASS, CHECK 5 N/A
+    seq 111 value-verifier: CHECK 1 PASS, CHECK 2 PASS, CHECK 3 N/A
+    ```
+  - CHECK 3 is N/A because no rule about excluding returns was given.
+
+**`da-review main` (Codex), recorded only, last round:** no findings on this change. Codex repeated the 3 P2s that are already recorded as known limitations:
+- `verifier_tools.py:1083`: a slice dimension loses the table it belongs to.
+- `verifier_tools.py:917`: a COALESCE or CAST around a column that a CTE grouped on is dropped when tracing.
+- `verifier_tools.py:1091`: a positional key such as `ROLLUP(1)` is not recognised as a subtotal key.
+
+Full output is in `runs/16/da-review-6.txt`.
