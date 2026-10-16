@@ -272,6 +272,31 @@ async def test_long_results_are_saved_in_the_workspace_with_a_preview(
     assert data_of(counted) == 5000
 
 
+@pytest.mark.parametrize("link", ["file", "directory"])
+async def test_saved_results_never_follow_links_out_of_the_workspace(
+    dab_root: Path, tmp_path: Path, link: str
+) -> None:
+    # execute_python code runs as root on the workspace and could plant a link where the next
+    # long result is saved; the server must not write through it.
+    target = tmp_path / "outside"
+    target.mkdir()
+    (target / "var_2.json").write_text("keep")
+    plant = {
+        "file": f"os.makedirs('file_storage', exist_ok=True)\n"
+        f"os.symlink({str(target / 'var_2.json')!r}, 'file_storage/var_2.json')",
+        "directory": f"os.symlink({str(target)!r}, 'file_storage')",
+    }[link]
+    sql = "SELECT p.ticker FROM prices p, prices q LIMIT 5000"
+    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
+        planted = await session.call_tool(
+            "execute_python", {"code": f"import os\n{plant}\n" + PRINT.format("1")}
+        )
+        result = await session.call_tool("query_database", {"db_name": "prices_db", "sql": sql})
+    assert not planted.is_error
+    assert result.is_error
+    assert (target / "var_2.json").read_text() == "keep"
+
+
 async def test_python_errors_come_back_as_tool_errors(dab_root: Path, tmp_path: Path) -> None:
     async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
         failed = await session.call_tool("execute_python", {"code": "1 / 0"})
@@ -658,6 +683,38 @@ async def test_dab_logs_are_masked_like_the_trace(
         text = (run / name).read_text()
         assert "sk-test-secret" not in text
         assert "[REDACTED]" in text
+
+
+def test_database_connection_settings_are_masked_too() -> None:
+    env = {
+        **ENV,
+        "PG_HOST": "pg.example.internal",
+        "PG_PASSWORD": "pg-pass-123",
+        "MONGO_URI": "mongodb://mongo.example.internal:27017/",
+        "MYSQL_HOST": "localhost",  # a loopback name is no server address and stays readable
+    }
+    secrets = dab.secrets_of(env)
+    text = dab.mask(
+        "could not connect to pg.example.internal with pg-pass-123; "
+        "mongodb://mongo.example.internal:27017/ and mongo.example.internal; localhost",
+        secrets,
+    )
+    assert text == (
+        "could not connect to [REDACTED] with [REDACTED]; [REDACTED] and [REDACTED]; localhost"
+    )
+
+
+async def test_the_trace_masks_database_connection_settings(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["pg.example.internal is down"], seen))
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    env = {**ENV, "PG_HOST": "pg.example.internal"}
+    await dab.run_query(dab_root, query, load_config("full"), tmp_path / "out", 1, env)
+    trace = (dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "events.jsonl").read_text()
+    assert "pg.example.internal" not in trace
+    assert "pg.example.internal" not in (tmp_path / "out" / "submission.json").read_text()
 
 
 def test_infra_errors_are_left_out_of_the_submission_and_fail_the_cli(

@@ -21,6 +21,7 @@ requests, not SQL, and go to DAB's tool as given.
 
 import argparse
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Annotated, Any
@@ -83,14 +84,30 @@ class Results:
             # Through JSON, so the value is plain data whatever types the database returned.
             self.variables[name] = json.loads(text)
             return f"Result `{name}`:\n{text}"
-        self.storage.mkdir(exist_ok=True)
-        (self.storage / f"{name}.json").write_text(text)
+        self.save(f"{name}.json", text)
         path = f"{STORAGE_DIR}/{name}.json"
         self.variables[name] = path
         return (
             f"Result `{name}` is {len(text)} characters, saved in `{path}` (the value of "
             f"`{name}`); its first {RESULT_CHARS} characters:\n{text[:RESULT_CHARS]}"
         )
+
+    def save(self, file_name: str, text: str) -> None:
+        """Write a new file in the storage directory. execute_python code can change the workspace
+        (it runs as root on it), so neither the directory nor the file may be an existing link or
+        file: the write never leaves the workspace or overwrites anything."""
+        try:
+            self.storage.mkdir(exist_ok=True)
+            directory = os.open(self.storage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                fd = os.open(file_name, flags, 0o644, dir_fd=directory)
+            finally:
+                os.close(directory)
+        except OSError as exc:
+            raise ToolError(f"Could not save the result in {STORAGE_DIR}/: {exc}") from exc
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
 
 
 def build_server(

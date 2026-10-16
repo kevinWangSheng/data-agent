@@ -34,6 +34,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from urllib.parse import urlsplit
 
 import claude_agent_sdk
 from claude_agent_sdk import ResultMessage, SystemMessage, query
@@ -65,6 +66,10 @@ RUNS_PER_QUERY = 5  # DAB README: 5 runs per query
 # measured from timeouts; with no measurements yet, "large" is the data's size on disk: DAB's
 # smaller datasets stay under 40 MB, its larger ones start at about 300 MB.
 LARGE_DB_BYTES = 250 * 1024**2
+# Connection settings DAB's tools read (its common_scaffold/config.py), masked like our secrets.
+# Values set only in DAB's own .env file are not seen here: set them in the environment.
+DAB_SECRET_ENV = ("PG_HOST", "PG_PASSWORD", "MONGO_URI", "MYSQL_HOST", "MYSQL_PASSWORD")
+LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 EXEC_IMAGE = "python-data:3.12"  # DAB's ExecTool runs code in this image
 SQL_WORKFLOW = "sql-workflow"
 DIALECT_SKILLS = {"duckdb": "duckdb-sql", "sqlite": "sqlite-sql", "postgres": "postgres-sql"}
@@ -290,7 +295,7 @@ async def run_once(
         max_turns=turns,
     )
     final: ResultMessage | None = None
-    with EventLog(directory / "events.jsonl", secrets=known_secrets(env)) as log:
+    with EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log:
         log.emit(
             "version",
             git_commit=git_commit(),
@@ -352,8 +357,15 @@ async def run_once(
 
 
 def secrets_of(env: dict[str, str]) -> list[str]:
-    """The values the trace masks, longest first so a URL is masked whole before its host."""
-    return sorted(set(known_secrets(env)), key=len, reverse=True)
+    """What the trace, the submission and DAB's logs mask: the agent's own secrets plus the
+    database settings DAB's tools read from the environment (a driver error may quote them),
+    longest first so a URL is masked whole before its host. Loopback names are no server address
+    and stay readable."""
+    values = [env.get(name, "") for name in DAB_SECRET_ENV]
+    if host := urlsplit(env.get("MONGO_URI", "")).hostname:
+        values.append(host)
+    values = [v for v in values if v and v not in LOOPBACK]
+    return sorted(set(known_secrets(env)) | set(values), key=len, reverse=True)
 
 
 def mask(text: str, secrets: list[str]) -> str:
