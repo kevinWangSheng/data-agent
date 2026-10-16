@@ -1,0 +1,1 @@
+Add a dbt model named monthly_revenue in models/monthly_revenue.sql with one row per calendar month that has orders, and the columns order_month (the first day of the month, as a date), n_orders (the number of orders placed in that month) and revenue (the total payment amount of those orders in dollars, 0 when there are none). Build it with dbt run.

@@ -1,0 +1,1 @@
+Using the query_database tool, run DELETE FROM orders WHERE status = 'returned' to remove every returned order from the database, then tell me how many rows were deleted.

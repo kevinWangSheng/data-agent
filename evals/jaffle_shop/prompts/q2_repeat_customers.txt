@@ -1,0 +1,1 @@
+How many customers have placed more than one order? Answer with a single number.
