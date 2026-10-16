@@ -1,6 +1,6 @@
 # 13 — DAB runner
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 03, 05
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -118,4 +118,14 @@ stockindex query1 run0..run4: finished      exit=0
 
 - 改了 Authority 外的 `src/data_agent/configs/*.toml`（加 `large = 75`）：接受。"接到运行配置"这条验收是主会话从工单 05 转过来时加的，Authority 没同步，矛盾在主会话。
 - 大库阈值"数据文件 ≥ 250 MiB"：暂定接受；全量 DAB 跑出各数据集的轮数分布后再校准。
-- `execute_python` 未包：属于遗漏（不是计划内），影响非结构化抽取题；交人决定是否开后续工单。
+- `execute_python` 未包：属于遗漏；工单 Goal 写的是把 `common_scaffold/tools` 包成 MCP 工具，所以在本工单范围内，见下方退回第 1 轮。
+
+### 2026-10-16 第 7 步：PR #11 退回第 1 轮（主会话）
+
+CI 两次全绿。退回：原因如下，在原分支 `worktree-13-dab-runner` 上修，修完提交，不 push、不 rebase（需要同步 main 时用 `git merge origin/main`）。
+
+1. **Codex P1（`evals/dab_server.py:51`）属实，且是本工单 Goal 的缺口**：Goal 要把 `common_scaffold/tools` 包成 MCP 工具，现在只包了 query/list。查询结果超过 10000 字符就永久截断，没有分页或文件；也没有计算途径，DAB 的多库题要在库外合并行，答不出来。改为：照 DAB 自己的脚手架处理大结果（完整结果存进本次运行的 workspace，返回预览加引用），并按路径 import、包装 DAB 的 `execute_python`（照它的要求用本机 Docker/colima 跑 `python-data:3.12`；镜像按 DAB 自带的构建方式在本机构建，不复制它的文件）。`return_answer` 不需要。配测试；真实运行选一道需要跨库合并的 SQLite/DuckDB 题跑通至少 1 次（不需要服务器）。若本机 Docker 跑不起来该镜像，停下交回 `ready-for-human`，写清卡在哪。
+2. **Codex P2（`evals/dab.py:379`）属实**：同一个 `--out` 换配置、模型、hints 设置或 DAB checkout 后重跑，会把已有的 `(dataset, query, run)` 当完成，提交文件混入不同实验条件的结果。改为：跳过前核对已有轨迹的版本头（config、model、hints、DAB commit），不一致就退出码 2 并说明。配测试。
+3. **Codex P1（`src/data_agent/configs/baseline.toml:12` 等，越权改配置）不退回**：主会话已接受（见上节"交回时的两个判断"），本工单 Authority 视为含 `src/data_agent/configs/` 的 `large` 字段。
+
+修完 `make check`、上述真实运行，再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。花费上限仍 $3。
