@@ -1,8 +1,8 @@
 # HANDOFF — 通用 data agent 求职项目
 
-> **2026-10-16 状态：初始化完成，进入开发。** `docs/plan.md` 第 9 节 1–7 项完成；第 8 项 `da-remote` 只有 `check`，服务器（别名 `da-server`）6 核 / 7 GB 不够、仓库未 clone，延后到工单 12 全量 / 13 前升配（`docs/setup.md` #3）。Anthropic key 可选，工单 09 前补。
+> **2026-10-16 状态：初始化完成（服务器除外）；开发未开始，等人说开始再派工。** `docs/plan.md` 第 9 节 1–7 项完成；第 8 项 `da-remote` 只有 `check`，服务器（别名 `da-server`）6 核 / 7 GB 不够、仓库未 clone，延后到工单 12 全量 / 13 前升配（`docs/setup.md` #3）。Anthropic key 可选，工单 09 前补。
 >
-> 工单（`.scratch/phase1/issues/`）：01、02、03、10、11 已 done（PR #1–#5）。现在可派：04、05、14；之后 06（等 05）、07 与 09（等 04、05）、08、12、13 依次解锁。
+> 工单（`.scratch/phase1/issues/`）：01、02、03、10、11 已 done（PR #1–#5）。开始开发时先派：04、05、14；之后 06（等 05）、07 与 09（等 04、05）、08、12、13 依次解锁。
 >
 > 主会话的事：按 `AGENTS.md` 工作流程派工（`claude -p -w NN-<slug> --permission-mode auto "/implement <工单绝对路径>"`，派前本地 main 无未推送提交）；收工单 agent 的最终回复抄进工单；push、开 PR、CI 绿后做第 7 步 Codex 意见核实（GitHub app 已设每次 push 自动审查），然后 `gh pr merge --squash`、派新解锁的工单。返工在原 worktree 里 `claude -p`（不加 `-w`）。工单 agent 运行时主 checkout 不提交（pre-commit 会 stash 未暂存文件）。
 >
