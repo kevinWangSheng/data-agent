@@ -1,6 +1,6 @@
 # 07 — 验证子 agent 与 6 个验证工具
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 04, 05
 Spec: ../spec.md
 Claimed by: claude (worktree 07-verifiers)
@@ -41,10 +41,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 5（Codex 4 + eng:code-review 1）
-- Model spend: ~$0.29（之前 ~$0.22 + 两次真实运行 $0.034 + $0.030）
-- Outcome: 退回 4 条全修，另修 da-review 4 条；第 2 轮 da-review 4 条 P2 记为已知限制
+- Attempts: 3
+- Review rounds: 8（Codex 7 + eng:code-review 1）
+- Model spend: ~$0.39（本轮真实运行 $0.034）
+- Outcome: 退回第 2 轮 5 条全修并配测试；该轮 da-review 3 条 P2 记为已知限制
 - Human review minutes: —
 
 ## Comments
@@ -173,3 +173,46 @@ CI 两次全绿。退回：原因如下，在原分支 `worktree-07-verifiers` �
 5. **[P2] `verifier_tools.py:170`**：PG 的 `json` 列做 `count(DISTINCT ...)` 会报错，一个列让整个 `audit_model_sources` 失败。跳过不可比较的类型（`json`、BLOB 等）。
 
 这是最后一轮；之后的新意见记为已知限制。修完 `make check`、full 配置真实 dbt 运行一次，再跑一轮 `da-review main`（新意见只记录）；最终回复给出 Comments 与 Ledger（Attempts 3）和 `Status: in-review`。
+
+### 2026-10-16 PR #12 return round 2 handled (commit `1249d9f`)
+
+**The five returned items**, each with a test that failed before the fix:
+
+1. **[P1] Integer sums were checked as row counts.** `verify_model_values` now takes an optional `project_dir` and reads the model's SQL from it.
+   - A metric is held against COUNT(*) only when its expression in any SELECT (CTEs included) is `count(...)`.
+   - If the SQL is missing, or only passes the column through, the column name decides: `n_*`, `num_*`, `count_*`, `*_count`.
+   - Any other integer metric is listed with no verdict. Without the SQL, the output says that only metrics named as counts were compared.
+   - The value-verifier prompt and the dbt-workflow Skill now pass `project_dir`.
+   - Test: `test_verify_model_values_holds_only_counts_against_row_counts`.
+2. **[P1] "Ratio < 0.9 = over-filtering" in `verifier.md` CHECK 3.** A low ratio is now only an observation. The verifier compares the model's rows with its expected grain: the distinct count of its GROUP BY / grain columns in the driving source, after the model's own filters and inner joins. It reports FAIL only when the model has fewer rows than that. The tool's ratio note was reworded to match.
+   - Test: `test_verifier_reads_fewer_rows_against_the_models_grain`.
+3. **[P2] `verifier.md` CHECK 1.** Models set to `materialized: ephemeral` or `enabled: false` need no table or view. The setting can come from the model's `config()`, its YML `config:`, or `dbt_project.yml` by directory.
+   - Test: `test_verifier_needs_no_table_for_ephemeral_or_disabled_models`.
+4. **[P2] Query runs still got the verifier tools.** `mcp-server` has a new `--no-verifier-tools` flag. `build_options` passes it whenever `uses_verifiers(task.type, config)` is false, so the server and the subagents follow the same rule. Launching `mcp-server` without the flag behaves as before, which seam B expects.
+   - Tests: `test_verifiers_are_absent_when_off_or_for_query_runs` (now also checks the flag) and `test_no_verifier_tools_flag_serves_only_the_other_tools`.
+5. **[P2] `count(DISTINCT)` on uncomparable types.** `profile()` now takes column types and skips the distinct count for json, xml, Postgres geometry types and binary types. It still counts their NULLs. `audit_model_sources` prints `distinct not counted (JSON)`, and such a column can't be picked as the grain key.
+   - Test: `test_audit_skips_distinct_counts_of_types_that_cannot_be_compared`.
+
+**`make check`:** `748 passed, 15 deselected` (`runs/retry2-check.txt`).
+
+**Real run:** `sh runs/manual07/run.sh full runs/retry2/real` at `1249d9f` (`runs/retry2-real.txt`):
+- exit 0
+- `customer_ltv rows 12 [('C0001', 6, 285.25), ('C0002', 4, 232.50), ('C0003', 2, 98.75)]`
+- `verifier_start` for both verifiers (seq 56 and 58)
+- `verifier_end` value-verifier: CHECK 1–3 PASS
+- `verifier_end` verifier: CHECK 1–4 PASS, CHECK 5 N/A
+- `result`: `num_turns` 20, `cost_usd` 0.0342
+- no REDACTED strings in the event file
+
+What the run shows for the fixes:
+- The value-verifier called `verify_model_values(..., project_dir=.../dbt_shop)`.
+- `completed_orders` (`count(co.order_id)` in the SQL) was compared and got MISMATCH (9 vs 6). The gap is the model's status filter. The value-verifier re-counted with that filter, got 6, and passed it.
+- `lifetime_value` (a sum) got no count verdict.
+- The audit printed the new note: "fewer model rows than source rows (expected for an aggregate; over-filtering only if fewer than the model's grain)".
+
+**`da-review main`** (on `1249d9f`, `runs/retry2-da-review.txt`) found 3 P2s. They are recorded only, as the return note said:
+- **Aggregate outputs are used as slice dimensions.** In `customer_id, MAX(ordered_at) AS ordered_at, COUNT(*) AS n_orders`, `ordered_at` is a timestamp, so it joins the slice and causes a false MISMATCH. Fixing this needs the GROUP BY read from the SQL, the same limit as the numeric-dimension item from round 1.
+- **`is_count` matches any `count(` in an expression.** So `CAST(SUM(q) / COUNT(*) AS BIGINT)` counts as a row count. A fix would accept only expressions whose outermost call is `count` (or `coalesce(count(...), 0)`). This is in code written this round.
+- **Conditional counts are compared with every row of the slice.** `COUNT(CASE WHEN q > 10 THEN 1 END)` gets a false MISMATCH. The output's warning covers the model's WHERE and joins, not a predicate inside the aggregate. The value-verifier re-counts in this case, as it did in the real run.
+
+**Not run this round:** `eng:code-review main` (the return note asked only for `da-review`).
