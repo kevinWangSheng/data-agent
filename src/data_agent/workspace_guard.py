@@ -9,7 +9,7 @@ the database, which only `dbt run` may change.
 from collections.abc import Sequence
 from pathlib import Path
 
-from claude_agent_sdk import HookContext, HookInput, HookJSONOutput
+from claude_agent_sdk import HookCallback, HookContext, HookInput, HookJSONOutput
 
 GUARDED_TOOLS = ("Read", "Glob", "Grep")
 WRITE_TOOLS = ("Write", "Edit")
@@ -68,7 +68,7 @@ def outside_paths(
     return bad
 
 
-def workspace_guard(workspace: Path, protected: Sequence[Path] = ()):
+def workspace_guard(workspace: Path, protected: Sequence[Path] = ()) -> HookCallback:
     root = workspace.resolve()
     kept = [path.resolve() for path in protected]
 

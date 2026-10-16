@@ -10,7 +10,7 @@ only when present (it is a verification tool); SignalPilot-only tools were repla
 dbt_project_validate by the dbt-workflow scan and validate scripts); remarks about how results
 are graded or about a sandbox were reworded as plain dbt reasons (ADR-0005); the sibling exception
 for period-over-period columns and Section 6 (which forced COUNT(*) whenever a SUM used every row)
-were rewritten as general rules. -->
+were rewritten as general rules; the bug-class sweep uses the Grep tool instead of `grep` in Bash. -->
 
 # dbt Write Skill
 
@@ -112,7 +112,7 @@ multiple values ("A, B, C") mean use IN(...). Test data may be too sparse
 to discover all valid values - the YML descriptions are the source of truth
 for categorical patterns.
 
-When fixing a bug in one model, grep ALL models/ for the same CLASS of bug BEFORE editing any file. Run `grep -rn '<pattern>' models/` where `<pattern>` covers the class (e.g., for date bugs: `_date\|_at\|_on`). List every matching file and column. Fix all of them in the same pass.
+When fixing a bug in one model, grep ALL models/ for the same CLASS of bug BEFORE editing any file. Search with the Grep tool (pattern `<pattern>`, path `models/`) where `<pattern>` covers the class (e.g., for date bugs: `_date\|_at\|_on`). List every matching file and column. Fix all of them in the same pass.
 
 ## 3. Lookup Joins
 

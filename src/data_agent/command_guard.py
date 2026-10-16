@@ -3,7 +3,11 @@
 Any other command (a database CLI, `python3 -c`, `rm`, `cat ~/...`) would bypass the read-only
 gateway or leave the workspace, so a `PreToolUse` hook denies it. Allowed: one command, optionally
 `2>&1` and a pipe into `tail` or `head`. dbt subcommands that run ad-hoc SQL (`show`, `--inline`,
-`run-operation`) are denied too: reads go through the gateway, writes through models and `dbt run`.
+`run-operation`) are denied too, so ad-hoc reads go through the gateway.
+
+Known limit: dbt itself runs whatever the project holds. A model, a Python model, an `on-run-start`
+hook or a profile the agent edits can run any SQL or code under `dbt run`; that is the dbt write
+path (CONTEXT: dbt write), reviewable as project code, not something this guard can see.
 """
 
 import re
@@ -11,7 +15,7 @@ import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
-from claude_agent_sdk import HookContext, HookInput, HookJSONOutput
+from claude_agent_sdk import HookCallback, HookContext, HookInput, HookJSONOutput
 
 from data_agent.workspace_guard import inside, resolve
 
@@ -23,12 +27,15 @@ DIR_FLAGS = ("--project-dir", "--profiles-dir", "--target-path", "--log-path")
 PAGERS = frozenset({"tail", "head"})
 PAGER_ARG = re.compile(r"-n|-?\d+|-n\d+|--lines=\d+")
 OPERATOR_CHARS = frozenset("();<>|&")
-# `#` too: shlex reads it as a comment mid-word, Bash does not, so the two would split differently.
-FORBIDDEN_CHARS = frozenset("$`#\n\r")
+# Characters Bash acts on after the guard has read the words: expansions ($, `, braces, globs) and
+# `#`, which shlex reads as a comment mid-word where Bash does not. Quoting would make some of them
+# literal, but shlex drops the quotes, so they are refused everywhere.
+FORBIDDEN_CHARS = frozenset("$`#{}*?[]\n\r")
 RULE = (
-    "Bash may only run one dbt command (run, build, test, seed, snapshot, compile, parse, ls, "
-    "deps, debug) or the dbt-workflow scan/validate script, from the workspace, optionally "
-    "followed by 2>&1 and a pipe into tail or head. Query data with the query_database tool."
+    "Bash may only run one dbt command, subcommand first (run, build, test, seed, snapshot, "
+    "compile, parse, ls, deps, debug), or the dbt-workflow scan/validate script, from the "
+    "workspace, optionally followed by 2>&1 and a pipe into tail or head; no braces, globs, $ "
+    "or #. Query data with the query_database tool."
 )
 
 
@@ -61,7 +68,9 @@ def _split(command: str) -> list[list[str]] | None:
 
 
 def _dbt_denial(args: list[str], workspace: Path) -> str | None:
-    subcommand = next((arg for arg in args if not arg.startswith("-")), None)
+    # The subcommand must come first: a global flag's value (`--log-level debug`) could otherwise
+    # pass for it.
+    subcommand = args[0] if args else None
     if subcommand not in DBT_SUBCOMMANDS:
         return f"dbt subcommand {subcommand!r} is not allowed"
     for i, arg in enumerate(args):
@@ -99,7 +108,7 @@ def denial(command: str, workspace: Path, scripts: Sequence[Path]) -> str | None
     return f"{program!r} is not allowed"
 
 
-def command_guard(workspace: Path, scripts: Sequence[Path]):
+def command_guard(workspace: Path, scripts: Sequence[Path]) -> HookCallback:
     root = workspace.resolve()
 
     async def guard(
