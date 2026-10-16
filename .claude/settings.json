@@ -15,7 +15,8 @@
     ],
     "ask": [
       "Bash(git push)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(gh pr merge *)"
     ],
     "deny": [
       "Read(./.env)",
