@@ -1,6 +1,6 @@
 # 14 — 失败归因报告
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 03, 10
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -42,10 +42,10 @@ Spec 自相矛盾或验收测试看起来有错（接口猜错）；需要人做
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
-- Model spend: $0.078（agent 运行 $0.0346；judge $0.0089 + $0.0157 + $0.0189）
-- Outcome: 实现完成；夹具 job 出真实报告；`make check` 绿
+- Attempts: 2
+- Review rounds: 2（本轮 da-review × 2）
+- Model spend: $0.1281（之前 $0.078；本轮 judge $0.0248 + $0.0253）
+- Outcome: 退回 5 条全修，另修 da-review 2 条；夹具 job 出真实报告；`make check` 绿
 - Human review minutes: —
 
 ## Comments
@@ -83,3 +83,35 @@ attribute: 1 of 1 dev failures attributed, $0.0189 spent -> runs/14/report
 5. **Codex P2（`evals/attribute.py:301`）属实**：预算表只在调用前看已花费，单次调用不受剩余额度约束（两次 $1.20 在 $2 预算下都放行），SDK judge 还拿到整笔预算当单次上限。改为把剩余额度作为每次调用的上限传给 judge。配测试。
 
 修完重跑 `make check`、真实运行一次 `python -m evals attribute`（同之前的夹具 job），再跑一轮 `da-review main`；最终回复给出要追加的 Comments 与 Ledger（Attempts 2）。
+
+### 2026-10-16 Ticket agent: returned round 1 fixed (commits `742f761`, `3199da0`, `df6afb9`; after `git rebase origin/main`)
+
+**Fixes, one per returned item (each has a test that failed before the fix):**
+1. **CI**: rebased onto `origin/main`. `skill_sets()` computes `skill_version(d)` for `SKILLS_DIR` and for every run config's `load_config(name).skills_dir`. The report header no longer calls `skill_version()` without the Skill directory.
+2. **Name filter**: names come from two places now.
+   - Names the run actually saw are always blocked, even if a Skill uses the same word. These are manifest task ids, tables and columns parsed from the SQL, and tables and columns from `list_tables` output (`schema.table (kind): cols`).
+   - Snake_case and `a.b` names guessed from free text are still let through when a Skill uses them.
+   - Tests: `test_names_the_run_observed_are_specific_even_if_a_skill_uses_them` (`orders`/`customers`) and `test_a_skill_word_seen_only_in_free_text_is_allowed`.
+3. **Skill version**: the run's version header `skill_version` is looked up in `skill_sets()`, and the judge reads and the quote check uses that version's Skills. A no-Skill run (`"none"`) is judged with no Skills. If the version isn't available, the failure is not attributed and no judge call is made.
+   - Tests: `test_a_run_on_an_unavailable_skill_version_is_not_attributed` and `test_the_judge_sees_and_quotes_the_skills_of_the_run_version`.
+4. **Unverified quote**: if the quote still doesn't match the Skill word for word after the last retry, the entry gets `failure_mode=None` and the error "skill_quote is not verbatim …". The `quote_verified` field and the report's "NOT found verbatim" branch are removed.
+   - Test: `test_quote_never_found_in_the_skill_voids_the_attribution`.
+5. **Per-call budget**: the `Judge` signature is now `(prompt, max_budget_usd)`. `Meter` passes `budget - spent` to each call, and `sdk_judge` uses that as the call's `max_budget_usd`.
+   - Test: `test_each_call_is_capped_at_the_remaining_budget` (two calls at $1.20 against $2 get caps of [2.0, 0.8]).
+
+**Real run**: same fixture job as before. Commands and outputs are above; the earlier run on `742f761` cost $0.0248.
+- The repeat-buyers failure was labelled FM3 in this run and FM4 in the earlier one. The judge varies on this borderline case (status-value mapping: is it the definition or the implementation?).
+- The evidence cites the real cause: case variants of the status values ('COMPLETE' missed).
+- The suggestion contains no table names or task ids.
+- `grep HOLDOUT runs/14/report3/*` finds nothing.
+
+**Review**: `da-review main`, 2 rounds, both findings confirmed against the code and fixed:
+- **Round 1, P2**: `list_tables` content can come as a list of SDK text blocks, in which case no names were extracted. Fixed in `3199da0` with test `test_names_in_a_listing_given_as_sdk_text_blocks_are_specific`.
+- **Round 2, P1**: when the SDK yields an error `ResultMessage` and then raises `ResultError`, `sdk_judge` lost the charge, so the budget was under-counted. Now the charge is kept the same way `agent.run` does it. Fixed in `df6afb9` with test `test_sdk_judge_keeps_the_cost_of_a_result_followed_by_an_sdk_error`.
+- No third `da-review` was run after `df6afb9`, because that hit the 2-round limit. `eng:code-review` was not run this round, since the return only asked for `da-review`.
+
+**Known limitations (new)**:
+- The SDK's `max_budget_usd` is enforced by the CLI only after each API call, so one call can still go slightly over the remaining amount. `Meter` refuses the next call once the budget is used up.
+- Observed column names that are common words (e.g. `status`, `amount`) are now always blocked, so the judge often needs one retry to reword. The run on `742f761` took 2 attempts.
+
+**主会话**：分支已 rebase，推原 PR #7 需要 force push（AGENTS.md 禁止），改推 `worktree-14-failure-attribution-r1` 开新 PR，关闭 #7。
