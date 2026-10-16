@@ -52,6 +52,7 @@ def test_dbt_runs_offer_both_read_only_verifiers(tmp_path: Path) -> None:
     servers: Any = built.mcp_servers
     server = servers["data"]
     assert server["args"][-2:] == ["--workspace", str(tmp_path.resolve())]
+    assert "--no-verifier-tools" not in server["args"]
     assert VERIFIERS_PROMPT in str(built.system_prompt)
 
 
@@ -66,6 +67,9 @@ def test_verifiers_are_absent_when_off_or_for_query_runs(
     assert "Agent" not in (built.tools or []) and "Agent" not in built.allowed_tools
     assert not {"SubagentStart", "SubagentStop"} & set(built.hooks or {})
     assert VERIFIERS_PROMPT not in str(built.system_prompt)
+    # The server leaves the verifier tools out too, so the ablation holds for query runs.
+    servers: Any = built.mcp_servers
+    assert "--no-verifier-tools" in servers["data"]["args"]
 
 
 def test_verifier_definitions_name_only_tools_the_server_has() -> None:
@@ -81,6 +85,23 @@ def test_verifier_definitions_name_only_tools_the_server_has() -> None:
                     "audit_model_sources",
                     "verify_model_values",
                 }
+
+
+def verifier_prompt() -> str:
+    agents = options(Path("."), "dbt", "full").agents or {}
+    return agents["verifier"].prompt
+
+
+def test_verifier_needs_no_table_for_ephemeral_or_disabled_models() -> None:
+    check_1 = verifier_prompt().split("### CHECK 1")[1].split("### CHECK 2")[0]
+    assert "ephemeral" in check_1 and "enabled: false" in check_1
+    assert "dbt_project.yml" in check_1
+
+
+def test_verifier_reads_fewer_rows_against_the_models_grain() -> None:
+    check_3 = verifier_prompt().split("### CHECK 3")[1].split("### CHECK 4")[0]
+    assert "Ratio < 0.9 = over-filtering" not in check_3
+    assert "GROUP BY" in check_3 and "grain" in check_3
 
 
 @pytest.mark.parametrize(

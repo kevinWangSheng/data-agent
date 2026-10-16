@@ -478,3 +478,69 @@ def test_source_relations_reads_a_schema_after_the_tables(tmp_path: Path) -> Non
         ("shop", "orders"): ("raw", "orders"),
         ("other", "t"): ("other", "t"),
     }
+
+
+SUMS_SQL = """
+CREATE TABLE orders (order_id INT, customer_id VARCHAR, quantity INT);
+INSERT INTO orders VALUES (1, 'c1', 5), (2, 'c1', 4), (3, 'c2', 1);
+CREATE TABLE per_customer AS SELECT customer_id, sum(quantity)::BIGINT AS units,
+  count(*) AS orders_placed FROM orders GROUP BY customer_id;
+"""
+
+
+async def test_verify_model_values_holds_only_counts_against_row_counts(tmp_path: Path) -> None:
+    db = make_db(tmp_path / "sums.duckdb", SUMS_SQL)
+    project = tmp_path / "proj"
+    (project / "models").mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: proj\n")
+    (project / "models" / "per_customer.sql").write_text(
+        "SELECT customer_id, sum(quantity) AS units, count(*) AS orders_placed\n"
+        "FROM {{ ref('orders') }} GROUP BY customer_id\n"
+    )
+    # An integer SUM is not a row count, with or without the SQL.
+    bare = text_of(
+        await call(db, "verify_model_values", model_name="per_customer", source_tables="orders")
+    )
+    assert "→" not in metric_block(bare, "units")
+    assert "→" not in metric_block(bare, "orders_placed")
+    read = text_of(
+        await call(
+            db,
+            "verify_model_values",
+            model_name="per_customer",
+            source_tables="orders",
+            project_dir=str(project),
+        )
+    )
+    assert "→" not in metric_block(read, "units")
+    assert "Model matches COUNT(*)" in metric_block(read, "orders_placed")
+
+
+def test_audit_skips_distinct_counts_of_types_that_cannot_be_compared(tmp_path: Path) -> None:
+    db = make_db(
+        tmp_path / "json.duckdb",
+        "CREATE TABLE m AS SELECT range AS id, '{}'::JSON AS payload FROM range(3)",
+    )
+    gateway = DuckDBGateway(db)
+
+    def run(sql: str, row_limit: int) -> QueryResult:
+        # Postgres cannot compare json values, so count(DISTINCT) on one fails there.
+        assert 'DISTINCT "payload"' not in sql
+        return run_query(gateway, sql, row_limit)
+
+    model = verifier_tools.resolve(verifier_tools.load_catalog(run), "m")
+    text = "\n".join(verifier_tools.audit(run, model, ["m"], sample_nulls=True))
+    assert "payload: distinct not counted (JSON), 0 nulls" in text
+    assert "Grain key: id" in text
+
+
+async def test_no_verifier_tools_flag_serves_only_the_other_tools(shop: Path) -> None:
+    async with mcp_server(shop, "--no-verifier-tools") as session:
+        names = {tool.name for tool in (await session.list_tools()).tools}
+    assert "query_database" in names
+    assert not names & {
+        "map_columns",
+        "check_model_schema",
+        "audit_model_sources",
+        "verify_model_values",
+    }

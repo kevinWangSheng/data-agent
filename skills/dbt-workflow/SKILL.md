@@ -17,7 +17,7 @@ general ones (one date only when the description asks; comparisons from the sour
 rule for skipping Steps 4-7 also keeps them when the task asks for a new model. Examples carrying
 specific macro, column or entity names were made generic; the rule for review tasks no longer
 names a task format. Step 8 uses the verifiers' four verdicts (PASS, FAIL, NEEDS_INFO, N/A) and
-verify_model_values takes the model's upstream tables; map_columns adds no domain prefix. -->
+verify_model_values takes the model's upstream tables and the project directory; map_columns adds no domain prefix. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -55,8 +55,8 @@ or UNMAPPED-EXCLUDE with the recommended output alias.
 Run this BEFORE writing each model's SQL. Include all UNMAPPED-INCLUDE columns; skip UNMAPPED-EXCLUDE columns (see dbt-write §1).
 
 ### verify_model_values - Aggregate cross-validator (MCP tool, Step 8) (a verification tool: use it only if it is in your tool list)
-Call `verify_model_values(model_name, source_tables)`, with the tables in the
-model's FROM / ref() / source() as `source_tables`.
+Call `verify_model_values(model_name, source_tables, project_dir)`, with the
+tables in the model's FROM / ref() / source() as `source_tables`.
 Queries the model output, picks the top row's slice, and compares the model's
 metric values against both COUNT(*) and COUNT(DISTINCT <key>) from the upstream.
 Marks each count metric as matching COUNT(*) or a MISMATCH. Used by the

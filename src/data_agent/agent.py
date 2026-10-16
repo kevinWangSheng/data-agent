@@ -269,6 +269,8 @@ def build_options(
         "args": [
             *("-m", "data_agent", "mcp-server"),
             *("--config", config.name, "--duckdb", str(task.duckdb.resolve())),
+            # A run without the verifier subagents gets no verifier tools either (the ablation).
+            *(() if uses_verifiers(task.type, config) else ("--no-verifier-tools",)),
             *("--workspace", str(task.workspace.resolve())),
         ],
     }

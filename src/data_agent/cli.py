@@ -27,6 +27,11 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument(
         "--workspace", type=Path, help="keep the tools' file reads inside this directory"
     )
+    serve.add_argument(
+        "--no-verifier-tools",
+        action="store_true",
+        help="leave out the verifier tools (for a run without the verifier subagents)",
+    )
 
     run_cmd = commands.add_parser("run", help="run the agent on one task")
     task_arg = run_cmd.add_mutually_exclusive_group(required=True)
@@ -49,7 +54,8 @@ def main(argv: list[str] | None = None) -> None:
             serve.error(f"DuckDB file not found: {args.duckdb}")
         if args.workspace is not None and not args.workspace.is_dir():
             serve.error(f"workspace directory not found: {args.workspace}")
-        build_server(DuckDBGateway(args.duckdb), config, args.workspace).run("stdio")
+        gateway = DuckDBGateway(args.duckdb)
+        build_server(gateway, config, args.workspace, not args.no_verifier_tools).run("stdio")
         return
 
     if not args.duckdb.is_file():

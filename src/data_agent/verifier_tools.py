@@ -27,8 +27,10 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   slice on every grouping column is marked inconclusive, a one-row model without dimensions is
   compared with whole upstreams, and the output says the baselines do not apply the model's
   own filters.
-  It marks a COUNT(*) match or mismatch only for integer metrics; upstream also held sums up
-  against row counts.
+  It marks a COUNT(*) match or mismatch only for count metrics: an integer column whose
+  expression in the model's SQL (read when given `project_dir`) is count(...), or, without
+  one, whose name says count (n_*, num_*, count_*, *_count); upstream also held sums up against
+  row counts.
 - A table profiled over a sample says so, its NULL shares are of the sample, and a column that
   looks unique in the sample is counted over the whole table before it is called the grain; the
   grain key is looked for in every scanned column.
@@ -58,6 +60,13 @@ NUMERIC_TYPES = INTEGER_TYPES | {
     *("DECIMAL", "NUMERIC", "DOUBLE", "DOUBLE PRECISION", "FLOAT", "REAL", "FLOAT4", "FLOAT8"),
 }
 SLICE_TYPES = frozenset({"DATE", "TIME", "TIMETZ", "DATETIME", "BOOLEAN", "BOOL", "UUID"})
+# Types without equality on Postgres (json, xml, geometry) or whose values are opaque bytes:
+# count(DISTINCT) on one fails or says nothing, so their distinct counts are skipped.
+UNCOMPARABLE_TYPES = BINARY_TYPES | {
+    *("JSON", "XML", "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE"),
+}
+# Names that say a metric counts rows: n_orders, order_count, num_orders, count_orders.
+COUNT_NAME_RE = re.compile(r"^(n|num|count)_\w+$|^\w+_count$", re.IGNORECASE)
 MAX_SOURCES = 10
 # Upstream's profiling bounds: aggregates per statement, and cells (rows x columns) above which a
 # table is profiled over a sample.
@@ -87,7 +96,7 @@ class Profile:
 
     total: int
     nulls: int
-    distinct: int
+    distinct: int | None  # None: not counted, the type cannot be compared
     sampled: bool
 
 
@@ -153,25 +162,34 @@ def row_count(run: RunQuery, table: Table) -> int:
     return int(run(f"SELECT count(*) FROM {table.sql_name}", 1).rows[0][0])
 
 
-def profile(run: RunQuery, table: Table, columns: Sequence[str], rows: int) -> dict[str, Profile]:
-    """NULL and distinct counts per column, a chunk of columns per statement. A table with more
-    than SAMPLE_CELLS cells is profiled over its first SAMPLE_ROWS rows."""
+def comparable(data_type: str) -> bool:
+    return base_type(data_type) not in UNCOMPARABLE_TYPES
+
+
+def profile(
+    run: RunQuery, table: Table, columns: Sequence[tuple[str, str]], rows: int
+) -> dict[str, Profile]:
+    """NULL and distinct counts per (column, type), a chunk of columns per statement; a type
+    that cannot be compared gets no distinct count. A table with more than SAMPLE_CELLS cells is
+    profiled over its first SAMPLE_ROWS rows."""
     result: dict[str, Profile] = {}
     for start in range(0, len(columns), DISTINCTS_PER_STATEMENT):
         chunk = columns[start : start + DISTINCTS_PER_STATEMENT]
         source = table.sql_name
         sampled = rows * len(columns) > SAMPLE_CELLS
         if sampled:
-            picked = ", ".join(quote(column) for column in chunk)
+            picked = ", ".join(quote(column) for column, _ in chunk)
             source = f"(SELECT {picked} FROM {table.sql_name} LIMIT {SAMPLE_ROWS}) AS s"
         parts = ["count(*)"]
-        for column in chunk:
-            parts += [f"count({quote(column)})", f"count(DISTINCT {quote(column)})"]
+        for column, data_type in chunk:
+            distinct = f"count(DISTINCT {quote(column)})" if comparable(data_type) else "NULL"
+            parts += [f"count({quote(column)})", distinct]
         values = run(f"SELECT {', '.join(parts)} FROM {source}", 1).rows[0]
         total = int(values[0])
-        for index, column in enumerate(chunk):
+        for index, (column, _) in enumerate(chunk):
             non_null, distinct = values[1 + 2 * index], values[2 + 2 * index]
-            result[column] = Profile(total, total - int(non_null), int(distinct), sampled)
+            counted = None if distinct is None else int(distinct)
+            result[column] = Profile(total, total - int(non_null), counted, sampled)
     return result
 
 
@@ -323,33 +341,60 @@ def source_relations(project: Path) -> dict[tuple[str, str], tuple[str, str]]:
     return relations
 
 
-def sql_columns(sql: str) -> list[str]:
-    """Output column names of the last SELECT, for a model not materialized yet."""
+def select_lists(sql: str) -> list[list[str]]:
+    """The items of every SELECT list in the SQL, in order, Jinja and comments removed."""
     clean = re.sub(r"\{\{.*?\}\}", "___REF___", sql)
     clean = re.sub(r"\{%.*?%\}", "", clean)
     clean = re.sub(r"/\*.*?\*/", "", clean, flags=re.DOTALL)
     clean = re.sub(r"--.*$", "", clean, flags=re.MULTILINE)
-    selects = list(re.finditer(r"SELECT\s+(.*?)\s+FROM\b", clean, re.IGNORECASE | re.DOTALL))
-    if not selects or selects[-1].group(1).strip() == "*":
+    lists: list[list[str]] = []
+    for select in re.finditer(r"SELECT\s+(.*?)\s+FROM\b", clean, re.IGNORECASE | re.DOTALL):
+        parts: list[str] = []
+        depth, current = 0, ""
+        for char in select.group(1):
+            depth += {"(": 1, ")": -1}.get(char, 0)
+            if char == "," and depth == 0:
+                parts.append(current.strip())
+                current = ""
+            else:
+                current += char
+        parts.append(current.strip())
+        lists.append(parts)
+    return lists
+
+
+def item_name(item: str) -> str:
+    alias = re.search(r"\bAS\s+(\w+)\s*$", item, re.IGNORECASE)
+    words = item.split()
+    return alias.group(1) if alias else (words[-1].split(".")[-1] if words else "")
+
+
+def sql_columns(sql: str) -> list[str]:
+    """Output column names of the last SELECT, for a model not materialized yet."""
+    lists = select_lists(sql)
+    if not lists or lists[-1] == ["*"]:
         return []
-    parts: list[str] = []
-    depth, current = 0, ""
-    for char in selects[-1].group(1):
-        depth += {"(": 1, ")": -1}.get(char, 0)
-        if char == "," and depth == 0:
-            parts.append(current.strip())
-            current = ""
-        else:
-            current += char
-    parts.append(current.strip())
-    names: list[str] = []
-    for part in parts:
-        alias = re.search(r"\bAS\s+(\w+)\s*$", part, re.IGNORECASE)
-        words = part.split()
-        name = alias.group(1) if alias else (words[-1].split(".")[-1] if words else "")
-        if name and name not in ("*", "___REF___") and name.upper() not in SQL_KEYWORDS:
-            names.append(name)
-    return names
+    return [
+        name
+        for name in map(item_name, lists[-1])
+        if name and name not in ("*", "___REF___") and name.upper() not in SQL_KEYWORDS
+    ]
+
+
+def is_count(metric: str, sql: str | None) -> bool:
+    """Whether a metric counts rows: its expression in the model's SQL (in any SELECT, a CTE's
+    included) is count(...), or, when the SQL is missing or only passes the column through,
+    its name says count."""
+    expressions = [
+        re.sub(r"\s+AS\s+\w+\s*$", "", item, flags=re.IGNORECASE)
+        for items in (select_lists(sql) if sql else [])
+        for item in items
+        if item_name(item).lower() == metric.lower()
+    ]
+    computed = [e for e in expressions if not re.fullmatch(r"[\w.\"]+", e.strip())]
+    if computed:
+        return any(re.search(r"\bcount\s*\(", e, re.IGNORECASE) for e in computed)
+    return bool(COUNT_NAME_RE.match(metric))
 
 
 def classify(
@@ -386,7 +431,7 @@ def upstream_columns(
     if len(candidates) == 1:
         table = candidates[0]
         columns = table.columns
-        stats = profile(run, table, [c for c, _ in columns], row_count(run, table))
+        stats = profile(run, table, columns, row_count(run, table))
         return table.ref, columns, stats
     if candidates:
         options = ", ".join(table.ref for table in candidates)
@@ -452,15 +497,18 @@ def map_model(
 
 
 def ratio_note(model_rows: int, source_rows: int) -> str:
-    """Thresholds from the verifier's CHECK 3: above 1.0 possible fan-out, below 0.9 possible
-    over-filtering."""
+    """Thresholds from the verifier's CHECK 3: above 1.0 possible fan-out; below 0.9 fewer rows,
+    which the verifier holds against the model's grain."""
     if source_rows == 0:
         return "ratio N/A      OBSERVATION: source has 0 rows"
     ratio = model_rows / source_rows
     if ratio > 1.0:
         note = "OBSERVATION: more model rows than source rows (possible fan-out)"
     elif ratio < 0.9:
-        note = "OBSERVATION: fewer model rows than source rows (possible over-filtering)"
+        note = (
+            "OBSERVATION: fewer model rows than source rows (expected for an aggregate; "
+            "over-filtering only if fewer than the model's grain)"
+        )
     else:
         note = "OBSERVATION"
     return f"ratio {ratio:.2f}x  {note}"
@@ -495,18 +543,26 @@ def audit(run: RunQuery, model: Table, sources: list[str], sample_nulls: bool) -
     if not sample_nulls:
         return lines
 
-    columns = [column for column, _ in model.columns]
-    scanned = columns[:SCANNED_COLUMNS]
-    stats = profile(run, model, scanned, model_rows)
+    columns = model.columns
+    scanned_types = columns[:SCANNED_COLUMNS]
+    scanned = [column for column, _ in scanned_types]
+    stats = profile(run, model, scanned_types, model_rows)
     shown = f"first {len(scanned)} of {len(columns)}" if len(columns) > len(scanned) else "all"
     sampled = any(s.sampled for s in stats.values())
     over = f", over a sample of the first {SAMPLE_ROWS} rows" if sampled else ""
     lines += ["", f"Column scan ({shown} columns{over}):"]
-    for column in scanned:
+    for column, data_type in scanned_types:
         s = stats[column]
         share = f" ({100 * s.nulls / s.total:.1f}%)" if s.nulls else ""
-        lines.append(f"  [OBS] {column}: {s.distinct} distinct, {s.nulls} nulls{share}")
-    low = [c for c in scanned if 2 <= stats[c].distinct <= LOW_CARDINALITY][:LISTED_COLUMNS]
+        counted = (
+            f"{s.distinct} distinct"
+            if s.distinct is not None
+            else f"distinct not counted ({base_type(data_type)})"
+        )
+        lines.append(f"  [OBS] {column}: {counted}, {s.nulls} nulls{share}")
+    low = [
+        c for c in scanned if (n := stats[c].distinct) is not None and 2 <= n <= LOW_CARDINALITY
+    ][:LISTED_COLUMNS]
     if low:
         lines.append("Low-cardinality column values:")
         for column in low:
@@ -612,7 +668,9 @@ def candidate_counts(
     return int(values[0]), [(name, int(v)) for name, v in zip(ids, values[1:], strict=True)]
 
 
-def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
+def verify_values(
+    run: RunQuery, model: Table, sources: list[str], sql: str | None = None
+) -> list[str]:
     catalog = load_catalog(run)
     # An identifier is part of the grain even when it is a number, so it slices, not measures.
     metrics = [
@@ -647,6 +705,8 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
     else:
         lines.append("No dimension column for slicing; candidates skipped")
         return lines
+    if sql is None:
+        lines.append("Model SQL not read: only metrics named as counts are held against COUNT(*)")
     candidates: list[Table] = []
     if sources:
         for name in sources[:MAX_SOURCES]:
@@ -689,8 +749,8 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
         if value is None:
             continue
         lines += [f"### Metric: {metric}", f"  Model value: {value}"]
-        # Only an integer can be a row count; a sum or average is compared by the verifier.
-        is_count = base_type(types[metric]) in INTEGER_TYPES
+        # A sum, even of integers, or an average is compared by the verifier, not here.
+        counts_rows = base_type(types[metric]) in INTEGER_TYPES and is_count(metric, sql)
         for candidate, sliced_on, missing, count, distinct, rows in measured:
             if count is None:
                 lines.append(
@@ -712,7 +772,7 @@ def verify_values(run: RunQuery, model: Table, sources: list[str]) -> list[str]:
             lines.append(f"    COUNT(*): {count}")
             lines.extend(f"    COUNT(DISTINCT {name}): {n}" for name, n in distinct)
             model_value = float(value)
-            if is_count and not missing and not unsliceable and model_value > 0 and count > 0:
+            if counts_rows and not missing and not unsliceable and model_value > 0 and count > 0:
                 ratio = count / model_value
                 lines.append(
                     "    → Model matches COUNT(*)"
@@ -728,6 +788,14 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
     layer on. With a `workspace`, map_columns reads only dbt projects inside it."""
     root = workspace.resolve() if workspace else None
 
+    def dbt_project(project_dir: str) -> Path:
+        project = Path(project_dir).expanduser()
+        if root and not project.resolve().is_relative_to(root):
+            raise ToolError(f"Error: {project_dir!r} is outside the workspace {root}")
+        if not (project / "dbt_project.yml").is_file():
+            raise ToolError(f"Error: {project_dir!r} is not a dbt project (no dbt_project.yml)")
+        return project
+
     @server.tool()
     def map_columns(model_name: str, project_dir: str, exclude: str = "") -> str:
         """Map a dbt model's upstream columns against its YML contract.
@@ -737,11 +805,7 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
         flags such as all_null or constant_value, plus columns that collide across upstreams.
         `exclude` is a comma-separated list of column names to mark UNMAPPED-EXCLUDE.
         """
-        project = Path(project_dir).expanduser()
-        if root and not project.resolve().is_relative_to(root):
-            raise ToolError(f"Error: {project_dir!r} is outside the workspace {root}")
-        if not (project / "dbt_project.yml").is_file():
-            raise ToolError(f"Error: {project_dir!r} is not a dbt project (no dbt_project.yml)")
+        project = dbt_project(project_dir)
         sql_path = model_sql(project, model_name)
         if sql_path is None:
             raise ToolError(f"Error: no SQL file for model {model_name!r} in {project_dir!r}")
@@ -793,7 +857,7 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
         return "\n".join(audit(run, model, sources, sample_nulls))
 
     @server.tool()
-    def verify_model_values(model_name: str, source_tables: str = "") -> str:
+    def verify_model_values(model_name: str, source_tables: str = "", project_dir: str = "") -> str:
         """Cross-check a model's metric values against its upstream data.
 
         Takes the model's top row by its first numeric non-id column and slices on every text,
@@ -803,7 +867,13 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
         dimension is compared with the whole upstreams. The counts skip the model's own filters.
         Pass the model's upstreams (the tables in its FROM / ref() / source(), comma-separated)
         as `source_tables`; without them the nearest finer-grained table that has the first
-        slice column stands in.
+        slice column stands in. Pass the dbt project directory as `project_dir` so a metric is
+        held against COUNT(*) only when its SQL is count(...); without it, only metrics named
+        as counts (n_*, num_*, count_*, *_count) are.
         """
         model = resolve(load_catalog(run), model_name)
-        return "\n".join(verify_values(run, model, split_names(source_tables)))
+        sql = None
+        if project_dir:
+            path = model_sql(dbt_project(project_dir), model.name)
+            sql = read_text(path) if path else None
+        return "\n".join(verify_values(run, model, split_names(source_tables), sql))

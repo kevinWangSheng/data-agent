@@ -7,7 +7,7 @@ description: "Value verification: call verify_model_values MCP tool, then reason
 data-agent: every check ends PASS / FAIL / NEEDS_INFO / N/A (upstream: PASS / FAIL / SKIP); there
 is no Skill tool, so domain rules come from the main agent's message instead of a domain skill;
 verify_model_values drops SignalPilot's connection_name and is given the model's upstream tables
-read from its SQL; the pointer to SignalPilot's scan hint for driving tables was dropped; the
+read from its SQL and the dbt project directory; the pointer to SignalPilot's scan hint for driving tables was dropped; the
 verifier computes the baseline of a non-count metric (sum, average) itself, as the tool gives
 none, and re-counts with the model's own filters, which the tool does not apply. -->
 
@@ -51,8 +51,9 @@ For each model:
 
 #### Step A: Call the MCP tool (MANDATORY - do this FIRST, before any manual queries)
 Read the model's SQL file for the tables in its FROM / ref() / source(),
-then call `verify_model_values` with `model_name` and those tables as
-`source_tables` (comma-separated). This is NOT optional. Do NOT write your
+then call `verify_model_values` with `model_name`, those tables as
+`source_tables` (comma-separated) and the dbt project directory as
+`project_dir` (so it reads which metrics are count(...) in the SQL). This is NOT optional. Do NOT write your
 own aggregate queries. Do NOT skip this step. Do NOT substitute with manual SQL.
 The tool returns COUNT(*) and COUNT(DISTINCT) baselines that you MUST
 use for your analysis.

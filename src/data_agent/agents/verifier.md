@@ -8,7 +8,8 @@ check ends PASS / FAIL / NEEDS_INFO / N/A (upstream: PASS / FAIL / WARN / SKIP);
 drop SignalPilot's connection_name and audit_model_sources is given the model's upstream tables;
 CHECK 5 compares against the original upstreams the main agent passes, as this agent has no git;
 CHECK 5 was added to the output format; CHECK 5's example names generic tables instead of one
-project's. -->
+project's; CHECK 1 needs no table for ephemeral or disabled models; CHECK 3 reads fewer model
+rows against the model's grain instead of calling a ratio below 0.9 over-filtering. -->
 
 You are a read-only structure auditor. Return a report. Fix nothing.
 
@@ -35,7 +36,13 @@ number of turns for multi-model projects.
 1. Read `models/*.yml` - every `name:` under `models:` is a required model.
 2. Run `Glob` on `models/**/*.sql` (excluding `dbt_packages/`).
 3. Call `list_tables`.
-4. Report any model NOT materialized as a table.
+4. Report any model NOT materialized as a table or view.
+
+A model that dbt does not build needs no table or view; do not report it:
+- `materialized: ephemeral`, set in the model's `{{ config(...) }}`, its YML
+  `config:`, or `dbt_project.yml` under `models:` for its directory
+  (`+materialized: ephemeral`).
+- `enabled: false`, set in any of the same places.
 
 ### CHECK 2 - Column Completeness
 For each materialized model, call `map_columns(model_name, project_dir)`.
@@ -54,7 +61,12 @@ ratios, per-column distinct counts, and NULL fractions.
 
 From the output:
 - **Row count**: model rows vs source rows. Ratio > 1.0 = possible fan-out.
-  Ratio < 0.9 = over-filtering.
+  Ratio < 0.9 is only an observation: an aggregate has fewer rows than its
+  sources by design (one row per customer vs the orders table). Compare the
+  model's rows with its expected grain instead - the distinct count of its
+  GROUP BY / grain key columns in the driving source, after the model's own
+  WHERE filters and inner joins. Report CHECK 3 = FAIL for over-filtering
+  only when the model has fewer rows than that grain.
 - **Fan-out diagnosis**: if ratio > 1.0, identify which JOIN caused the
   multiplication. Query the lookup table for duplicate keys:
   `SELECT * FROM <lookup> WHERE <key> IN (SELECT <key> FROM <lookup>

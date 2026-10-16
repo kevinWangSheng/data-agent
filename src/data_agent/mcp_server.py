@@ -47,11 +47,15 @@ def format_rows(result: QueryResult) -> str:
 
 
 def build_server(
-    gateway: DuckDBGateway, config: RunConfig, workspace: Path | None = None
+    gateway: DuckDBGateway,
+    config: RunConfig,
+    workspace: Path | None = None,
+    verifier_tools: bool = True,
 ) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
-    `config` turns that layer on, so a run with it off cannot see them. `workspace` bounds the
-    files a tool may read (map_columns)."""
+    `config` turns that layer on, so a run with it off cannot see them; `verifier_tools=False`
+    also leaves out the verifier tools for a run whose task type has no verifiers. `workspace`
+    bounds the files a tool may read (map_columns)."""
     server = MCPServer("data-agent")
 
     @server.tool()
@@ -82,6 +86,6 @@ def build_server(
 
     if config.context:
         register_context_tools(server, partial(run_query, gateway))
-    if config.verifiers:
+    if config.verifiers and verifier_tools:
         register_verifier_tools(server, partial(run_query, gateway), workspace)
     return server
