@@ -1,6 +1,6 @@
 # 14 — 失败归因报告
 
-Status: in-review
+Status: done
 Blocked by: 03, 10
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -169,3 +169,10 @@ exit=0
 - 只解析 `Read` 读到的 `.yml`/`.yaml`/`.sql` 文件。经 `Bash`（如 `cat`）、`Grep` 或其他文件类型看到的普通单词表名不会进入一律拦截的名单。
 - 题面普通文字里，小写 `from`/`join` 后面没加反引号的普通单词表名不会被拦。
 - 正则只认 `name:` 形式的 YAML 条目和常见的 DDL、ref/source 写法。
+
+### 2026-10-16 第 7 步：PR #10 复审（主会话）
+
+`c56dd0e` CI 两次全绿。Codex 复审 2 条 P2，属实；退回已用满 2 轮，按流程记为已知限制，合并：
+- `evals/attribute.py:562` 打码在序列化后的整段 JSON 上做替换：密钥很短（如 `DATA_AGENT_API_KEY=1`）时会改坏数字和键，`json.loads` 失败、报告写不出（judge 花费已发生）。应像 `EventLog._mask` 一样只递归处理字符串值。
+- `evals/attribute.py:518` manifest 的 `dev` 列表含非字符串元素（如 `[[]]`）时 `set(...)` 抛 `TypeError`，CLI 打 traceback。应先校验每个 task id 是字符串。
+两条都小，下次有工单改 `evals/attribute.py` 时顺手修。
