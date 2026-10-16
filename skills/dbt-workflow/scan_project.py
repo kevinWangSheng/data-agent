@@ -10,6 +10,9 @@
 # data test, analysis or snapshot named like a missing model does not count as that model; the older
 # `source-paths` key is read when `model-paths` is absent, as dbt does.
 # Model paths, SQL, YAML and macro files that resolve outside the project are not read.
+# Without a dbt_project.yml at the root, a subdirectory is taken as the project only if it
+# resolves inside the given directory (a symlink leading out is not followed).
+# YML names are compared without the single or double quotes YAML allows around them.
 # The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
 # The snapshots hint says `dbt snapshot` cannot run here (data-agent's Bash allows no snapshot).
 """Pre-scan a dbt project and emit a structured context block.
@@ -103,6 +106,12 @@ def _model_sql_files(work_dir: Path) -> list[Path]:
 
 # ── YML parsing (no PyYAML dependency — regex-based) ──────────────────────
 
+def _yml_name(stripped: str) -> str | None:
+    """The value of a `- name:` item, without the quotes YAML allows around a scalar."""
+    m = re.match(r'-\s*name:\s*(\S+)', stripped)
+    return m.group(1).strip("'\"") if m else None
+
+
 def _extract_model_names(yml_text: str) -> set[str]:
     names: set[str] = set()
     in_models = False
@@ -117,9 +126,9 @@ def _extract_model_names(yml_text: str) -> set[str]:
                 in_models = False
                 continue
         if in_models and 1 <= indent <= 4:
-            m = re.match(r'-\s*name:\s*(\S+)', stripped)
+            m = _yml_name(stripped)
             if m:
-                names.add(m.group(1))
+                names.add(m)
     return names
 
 
@@ -132,9 +141,9 @@ def _extract_columns(yml_text: str) -> dict[str, list[str]]:
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
         # Model name
-        m = re.match(r'-\s*name:\s*(\S+)', stripped)
+        m = _yml_name(stripped)
         if m and 1 <= indent <= 4:
-            current_model = m.group(1)
+            current_model = m
             in_columns = False
             continue
         if current_model and stripped.startswith("columns:"):
@@ -144,9 +153,9 @@ def _extract_columns(yml_text: str) -> dict[str, list[str]]:
             in_columns = False
             continue
         if in_columns:
-            cm = re.match(r'-\s*name:\s*(\S+)', stripped)
+            cm = _yml_name(stripped)
             if cm:
-                result.setdefault(current_model, []).append(cm.group(1))
+                result.setdefault(current_model, []).append(cm)
     return result
 
 
@@ -157,9 +166,9 @@ def _extract_descriptions(yml_text: str) -> dict[str, str]:
     for line in yml_text.splitlines():
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
-        m = re.match(r'-\s*name:\s*(\S+)', stripped)
+        m = _yml_name(stripped)
         if m and 1 <= indent <= 4:
-            current_model = m.group(1)
+            current_model = m
             continue
         if current_model and stripped.startswith("description:"):
             desc = stripped[len("description:"):].strip().strip("'\"")
@@ -176,9 +185,9 @@ def _extract_materializations(yml_text: str) -> dict[str, str]:
     for line in yml_text.splitlines():
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
-        m = re.match(r'-\s*name:\s*(\S+)', stripped)
+        m = _yml_name(stripped)
         if m and 1 <= indent <= 4:
-            current_model = m.group(1)
+            current_model = m
             in_config = False
             continue
         if current_model and stripped.startswith("config:"):
@@ -216,12 +225,12 @@ def _extract_sources(yml_text: str) -> list[str]:
             in_sources = False
             continue
         if in_sources:
-            m = re.match(r'-\s*name:\s*(\S+)', stripped)
+            m = _yml_name(stripped)
             if m and indent <= 4:
                 # Flush previous source
                 if current_source and table_names:
                     sources.append(f"  source('{current_source}', '<table>') — tables: {', '.join(table_names)}")
-                current_source = m.group(1)
+                current_source = m
                 table_names = []
                 in_tables = False
                 continue
@@ -229,9 +238,9 @@ def _extract_sources(yml_text: str) -> list[str]:
                 in_tables = True
                 continue
             if in_tables:
-                tm = re.match(r'-\s*name:\s*(\S+)', stripped)
+                tm = _yml_name(stripped)
                 if tm:
-                    table_names.append(tm.group(1))
+                    table_names.append(tm)
     # Flush final
     if current_source and table_names:
         sources.append(f"  source('{current_source}', '<table>') — tables: {', '.join(table_names)}")
@@ -388,7 +397,11 @@ def main():
     if not (work_dir / "dbt_project.yml").exists():
         # Try common subdirectories
         for subdir in work_dir.iterdir():
-            if subdir.is_dir() and (subdir / "dbt_project.yml").exists():
+            if (
+                subdir.is_dir()
+                and _inside(subdir, work_dir)
+                and (subdir / "dbt_project.yml").exists()
+            ):
                 work_dir = subdir
                 break
         else:

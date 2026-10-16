@@ -211,3 +211,34 @@ def test_scan_reads_models_from_the_configured_model_paths(tmp_path: Path, setti
     complete = section(scan(project), "COMPLETE MODELS")
     for model in ("stg_customers", "stg_orders", "customer_orders"):
         assert model in complete, complete
+
+
+def test_scan_does_not_follow_a_symlink_out_of_the_workspace(tmp_path: Path) -> None:
+    """Without a dbt_project.yml at the root, a subdirectory linking outside is not the project."""
+    outside = tmp_path / "outside" / "dbt_shop"
+    shutil.copytree(DBT_SHOP, outside)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "linked").symlink_to(outside, target_is_directory=True)
+    output = scan(workspace)
+    assert "no dbt_project.yml found" in output, output
+    assert "stg_orders" not in output, output
+    shutil.copytree(DBT_SHOP, workspace / "dbt_shop")
+    assert "stg_orders" in section(scan(workspace), "COMPLETE MODELS")
+
+
+def test_scan_strips_quotes_from_yml_names(tmp_path: Path) -> None:
+    """`- name: "stg_customers"` names the existing stg_customers.sql, not a missing model."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    schema = project / "models" / "schema.yml"
+    text = schema.read_text()
+    text = text.replace("- name: stg_customers", '- name: "stg_customers"')
+    text = text.replace("- name: stg_orders", "- name: 'stg_orders'")
+    schema.write_text(text)
+    output = scan(project)
+    assert "none" in section(output, "MODELS TO BUILD"), output
+    complete = section(output, "COMPLETE MODELS")
+    assert "stg_customers" in complete and "stg_orders" in complete, output
+    assert '"' not in complete and "'" not in complete, output
+    assert "SQL FILES WITHOUT YML" not in output, output
