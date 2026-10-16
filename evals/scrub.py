@@ -7,8 +7,9 @@ secret nor get broken by a redaction; other files, and lines that do not parse, 
 text. JSON nested in a string (a tool that printed JSON) is decoded and scrubbed the same way.
 Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks, a
 `\\uXXXX` escape outside parseable JSON, a repeated JSON key) is listed and the command fails, and
-so is any host path left under a home directory (`/home/<x>`, `/Users/<x>`, `/root/`) that no
-rule removed; container paths such as `/app` and `/logs` are not host paths.
+so is any path left under a user's home directory (`/home/<x>`, `/Users/<x>`) that no rule
+removed. Container paths such as `/app`, `/logs` and `/root` (the agent runs as root in the task
+container, and the SDK saves long tool output under /root/.claude) are not host paths.
 """
 
 import argparse
@@ -41,10 +42,10 @@ KEY_SHAPE = re.compile(
 )
 OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 IPV4 = re.compile(rf"(?<![\d.]){OCTET}(?:\.{OCTET}){{3}}(?!\.?\d)")
-# A home directory path on a host; `[redacted-...]` is what a rule left in place of one.
+# A user's home directory on a host; `[redacted-...]` is what a rule left in place of a name.
 HOST_PATH = re.compile(
     r"(?:(?<![A-Za-z0-9_.-])|(?<=\\[bfnrt]))"
-    r"(?:/(?:home|Users)/(?!\[redacted-)[^/\s\"'\\]+|/root/)"
+    r"(?:/(?:home|Users)/(?!\[redacted-)[^/\s\"'\\]+)"
 )
 # Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
 UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
