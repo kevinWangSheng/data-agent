@@ -208,10 +208,12 @@ def run_dir(out: Path, dataset: str, query_id: str, run: int) -> Path:
 
 
 def _query_tool(dab_root: Path, dab_query: DabQuery, log: Path, check_load: bool) -> Any:
+    # Absolute, as for the tool server: DAB joins a dump's path onto the config's directory and
+    # `psql -f` runs inside the database container, from that container's working directory.
     return scaffold(dab_root).query_tool(
         log_path=str(log),
         name="query_db",
-        db_config_path=str(dab_query.db_config),
+        db_config_path=str(dab_query.db_config.resolve()),
         check_load=check_load,
     )
 

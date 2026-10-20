@@ -15,6 +15,7 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -908,6 +909,29 @@ async def test_databases_are_loaded_before_the_session_and_dropped_after(
     events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
     assert [e["type"] for e in events[:2]] == ["version", "dab_load"]
     assert events[1]["seconds"] >= 0
+
+
+def test_databases_are_loaded_from_an_absolute_config_path(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # DAB joins a dump's path onto the config's directory and hands it to `psql -f`, which runs
+    # inside the database container with that container's working directory: with
+    # `--dab-root ../da-benchmarks/DataAgentBench` the dump was not found (ticket 23, server run).
+    real = dab.scaffold(dab_root)
+    paths: list[str] = []
+
+    def query_tool(**kwargs: Any) -> Any:
+        paths.append(kwargs["db_config_path"])
+        return real.query_tool(**kwargs)
+
+    monkeypatch.setattr(dab, "scaffold", lambda _root: replace(real, query_tool=query_tool))
+    monkeypatch.chdir(tmp_path)
+    query = dab.load_query(Path("dab"), "toyset", "1", hints=True)
+    log = tmp_path / "tools.jsonl"
+    dab.load_databases(Path("dab"), query, log, [])
+    dab.drop_databases(Path("dab"), query, log, [])
+    assert len(paths) == 2
+    assert all(Path(path).is_absolute() for path in paths)
 
 
 async def test_a_failed_load_is_an_infra_error_and_no_session_starts(
