@@ -24,6 +24,7 @@ from harbor.agents.installed.base import (
 from harbor.environments.base import ExecResult
 from harbor.models.agent.context import AgentContext
 from harbor.models.job.config import JobConfig, RetryConfig
+from harbor.models.trajectories import Trajectory
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # evals/ is a directory of the repo, not an installed package.
@@ -326,6 +327,102 @@ def test_a_run_without_a_result_leaves_the_context_empty(tmp_path: Path) -> None
     context = AgentContext()
     agent.populate_context_post_run(context)
     assert context.is_empty()
+
+
+def test_a_trial_leaves_an_atif_trajectory_where_harbor_uploads_it(local: Local) -> None:
+    cls, tmp_path = local
+    agent = make_agent(cls, tmp_path)
+    tool_start = {
+        "seq": 1,
+        "type": "tool_start",
+        "tool": "Bash",
+        "tool_use_id": "c1",
+        "input": {"command": "dbt run"},
+    }
+    tool_end = {"seq": 2, "type": "tool_end", "tool_use_id": "c1", "content": "OK"}
+    events = jsonl(VERSION_EVENT, tool_start, tool_end, result_event())
+    run(agent, LocalEnvironment(container_env(tmp_path, 0, events)), instruction="fix rpt_x")
+    agent.populate_context_post_run(AgentContext())
+    # Harbor's uploader reads <trial>/agent/trajectory.json, the agent's logs_dir
+    # (harbor/upload/uploader.py:680).
+    trajectory = Trajectory.model_validate_json((agent.logs_dir / "trajectory.json").read_text())
+    assert trajectory.steps[0].message == "fix rpt_x"
+    assert trajectory.steps[1].tool_calls is not None
+    assert trajectory.steps[1].tool_calls[0].arguments == {"command": "dbt run"}
+    assert trajectory.final_metrics is not None
+    assert trajectory.final_metrics.total_cost_usd == pytest.approx(0.0123)
+
+
+def test_a_trial_without_an_event_file_has_no_trajectory_and_no_error(tmp_path: Path) -> None:
+    logs = tmp_path / "agent"
+    logs.mkdir()
+    agent = DataAgent(logs_dir=logs, model_name="deepseek/deepseek-flash")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+    assert not (logs / "trajectory.json").exists()
+    assert context.is_empty()
+
+
+@pytest.mark.parametrize(
+    "data", [b"", b"not json\n", b'{"type": "text"', b"\xff\xfe\x00 not utf-8\n"]
+)
+def test_a_broken_event_file_leaves_no_trajectory_and_no_error(tmp_path: Path, data: bytes) -> None:
+    logs = tmp_path / "agent"
+    (logs / "events").mkdir(parents=True)
+    (logs / "events" / "run-1.jsonl").write_bytes(data)
+    agent = DataAgent(logs_dir=logs, model_name="deepseek/deepseek-flash")
+    agent.populate_context_post_run(AgentContext())
+    assert not (logs / "trajectory.json").exists()
+
+
+def test_events_that_harbors_model_rejects_leave_no_trajectory(tmp_path: Path) -> None:
+    logs = tmp_path / "agent"
+    (logs / "events").mkdir(parents=True)
+    bad_time = {"seq": 1, "ts": "yesterday", "type": "text", "text": "hi"}
+    (logs / "events" / "run-1.jsonl").write_text(jsonl(VERSION_EVENT, bad_time, result_event()))
+    agent = DataAgent(logs_dir=logs, model_name="deepseek/deepseek-flash")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+    assert not (logs / "trajectory.json").exists()
+    # Tokens and cost are still filled back.
+    assert context.cost_usd == pytest.approx(0.0123)
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        {"output_tokens": "many", "cost_usd": [1]},
+        # json.loads reads Infinity, which int() cannot convert.
+        {"output_tokens": float("inf")},
+        # float() accepts these, but they are no cost and json.dumps writes them as non-JSON.
+        {"cost_usd": float("inf")},
+        {"cost_usd": float("-inf")},
+        {"cost_usd": float("nan")},
+        {"cost_usd": -0.01},
+    ],
+)
+def test_a_corrupt_result_event_leaves_no_trajectory_and_no_error(
+    tmp_path: Path, corrupt: dict[str, Any]
+) -> None:
+    logs = tmp_path / "agent"
+    (logs / "events").mkdir(parents=True)
+    (logs / "events" / "run-1.jsonl").write_text(jsonl(VERSION_EVENT, result_event(**corrupt)))
+    agent = DataAgent(logs_dir=logs, model_name="deepseek/deepseek-flash")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+    assert not (logs / "trajectory.json").exists()
+    assert context.is_empty()
+
+
+def test_a_trajectory_that_cannot_be_written_is_no_error(tmp_path: Path) -> None:
+    logs = tmp_path / "agent"
+    (logs / "events").mkdir(parents=True)
+    (logs / "events" / "run-1.jsonl").write_text(jsonl(VERSION_EVENT, result_event()))
+    (logs / "trajectory.json").mkdir()
+    agent = DataAgent(logs_dir=logs, model_name="deepseek/deepseek-flash")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+    assert context.cost_usd == pytest.approx(0.0123)
 
 
 def test_job_config_retries_only_transient_model_errors() -> None:

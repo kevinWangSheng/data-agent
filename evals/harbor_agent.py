@@ -4,7 +4,10 @@
 so dbt stays the image's (plan §5). `run()` gives the task instruction to `data-agent run` as a dbt
 task on the image's dbt project and DuckDB file, with the event file in the agent logs directory.
 After the trial Harbor calls `populate_context_post_run()`, which fills tokens and cost back into
-the trial result from the event file's `result` event.
+the trial result from the event file's `result` event, and writes the run as an ATIF
+`trajectory.json` in the logs directory (evals.atif), the file Harbor's uploader publishes as the
+trial's `trajectory_path`. A missing or broken event file leaves the trial without a trajectory.
+Both read the last event file by name (a trial runs `data-agent run` once).
 
 Errors (plan §7): an agent that stops early (turn or spend cap) is an agent failure the verifier
 scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status, or for a
@@ -48,6 +51,7 @@ from harbor.models.agent.context import AgentContext, ModelUsage
 from pydantic import Field, field_validator
 
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT
+from evals.atif import convert, usage
 
 # Harbor error types worth retrying: rate limits, server errors and dropped connections. The job
 # config retries exactly these; Harbor's default exclusions (timeouts, refusals, auth, usage
@@ -196,6 +200,11 @@ class DataAgent(BaseInstalledAgent):
     # Under the agent logs directory, which Harbor copies back to the trial directory.
     EVENTS_DIR: ClassVar[str] = "events"
     OUTPUT_FILE: ClassVar[str] = "data-agent.txt"
+    # Where Harbor's own agents write their ATIF trajectory (claude_code.py:1669, pi.py:461) and
+    # where its uploader looks for one (upload/uploader.py:680).
+    TRAJECTORY_FILE: ClassVar[str] = "trajectory.json"
+    # The instruction the last run() was given: the trajectory's user step.
+    instruction: str | None = None
 
     @staticmethod
     @override
@@ -283,6 +292,7 @@ class DataAgent(BaseInstalledAgent):
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
+        self.instruction = instruction
         try:
             await self.exec_as_agent(
                 environment, command=self._run_command(instruction), env=self._model_env()
@@ -294,23 +304,57 @@ class DataAgent(BaseInstalledAgent):
                 raise
             raise error(str(exc)) from exc
 
+    def _read_events(self) -> tuple[str, list[dict[str, Any]]] | None:
+        """The last event file's name and events; None when there is none or it is unreadable."""
+        paths = sorted((self.logs_dir / self.EVENTS_DIR).glob("*.jsonl"))
+        if not paths:
+            return None
+        try:
+            text = paths[-1].read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            self.logger.warning(f"no trajectory: cannot read {paths[-1].name}: {exc}")
+            return None
+        return paths[-1].stem, [e for e in parse_events(text) if isinstance(e, dict)]
+
+    def _write_trajectory(self, session_id: str, events: list[dict[str, Any]]) -> None:
+        path = self.logs_dir / self.TRAJECTORY_FILE
+        try:
+            path.unlink(missing_ok=True)
+            trajectory = convert(events, self.instruction, session_id)
+            if trajectory is None:
+                self.logger.warning("no trajectory: the event file holds no events")
+                return
+            text = json.dumps(trajectory.to_json_dict(), indent=2, ensure_ascii=False)
+            path.write_text(text, encoding="utf-8")
+        # Any failure leaves the trial without a trajectory, as Harbor's own agents do
+        # (claude_code.py:1659); pydantic's ValidationError is the usual one.
+        except Exception as exc:
+            self.logger.warning(f"no trajectory: {type(exc).__name__}: {exc}")
+
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
+        read = self._read_events()
+        if read is None:
+            self.logger.warning("no trajectory: the run left no readable event file")
+            return
+        session_id, events = read
+        self._write_trajectory(session_id, events)
         version: dict[str, Any] = {}
         result: dict[str, Any] | None = None
-        for path in sorted((self.logs_dir / self.EVENTS_DIR).glob("*.jsonl")):
-            for event in parse_events(path.read_text()):
-                if event.get("type") == "version":
-                    version = event
-                elif event.get("type") == "result":
-                    result = event
+        for event in events:
+            if event.get("type") == "version":
+                version = event
+            elif event.get("type") == "result":
+                result = event
         if result is None:
             return
-        cached = int(result.get("cached_input_tokens") or 0)
-        # Harbor's n_input_tokens includes the cached tokens.
-        total_input = int(result.get("uncached_input_tokens") or 0) + cached
-        output = int(result.get("output_tokens") or 0)
-        cost = float(result.get("cost_usd") or 0.0)
+        try:
+            totals = usage(result)
+        except (ValueError, TypeError, ArithmeticError) as exc:
+            self.logger.warning(f"no tokens or cost: corrupt result event: {exc}")
+            return
+        total_input, cached = totals.input_tokens, totals.cached_tokens
+        output, cost = totals.output_tokens, totals.cost_usd
         context.n_input_tokens = total_input
         context.n_cache_tokens = cached
         context.n_output_tokens = output
