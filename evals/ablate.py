@@ -11,7 +11,9 @@ Each run config is one Harbor job on the manifest's holdout tasks, k trials per 
         ablation.json, ablation.md
 
 Before each job the spend guard (`evals spend` on OUT) stops the batch at 80% of --budget; a job
-runs to its end once started, so the overshoot is at most one job. A finished job is not rerun; an
+runs to its end once started, so the overshoot is at most one job. Before the first job that runs,
+the wheel cache is filled for the platforms of the tasks' images (evals.wheels; with a full cache
+no network), and a failure there stops the batch before Harbor. A finished job is not rerun; an
 interrupted one, or one with infrastructure errors, is resumed with `harbor job resume`, which
 deletes the errored trials and runs what is missing (plan §7: infrastructure errors are rerun,
 never scored). An existing job is reused only from a clean checkout at the commit and Skill version
@@ -43,6 +45,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -51,6 +54,7 @@ from typing import Any
 
 from data_agent.agent import git_commit, skill_version
 from data_agent.run_config import REPO_ROOT, load_config
+from evals import wheels
 from evals.harbor import Trial, load_trials
 from evals.report import TRIALS_PER_TASK, check_complete, is_infra_error, split_trials
 
@@ -231,8 +235,26 @@ def keep_spend(out: Path, config: str, trials: list[Trial]) -> None:
             shutil.copyfile(events, kept)
 
 
-def ensure_job(config: str, args: argparse.Namespace, tasks: list[str]) -> None:
-    """Run the config's job, or resume it when it exists and is not ready to score."""
+def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:
+    """Fill the wheel cache for the platforms of the tasks' containers (evals.wheels), so that no
+    trial downloads the agent's dependencies within Harbor's agent setup limit."""
+    from evals.harbor_agent import build_artifacts  # imports Harbor
+
+    try:
+        images = {wheels.task_image(tasks_dir / task) for task in tasks}
+        _, requirements = build_artifacts()
+        lines = wheels.fill(images, requirements, REPO_ROOT / "uv.lock")
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+        raise Stop(f"cannot fill the wheel cache for the tasks' containers: {exc}") from exc
+    for line in lines:
+        print(f"wheels: {line}", flush=True)
+
+
+def ensure_job(
+    config: str, args: argparse.Namespace, tasks: list[str], prepare: Callable[[], None]
+) -> None:
+    """Run the config's job, or resume it when it exists and is not ready to score; `prepare`
+    runs before Harbor does."""
     jobs, logs = args.out / "jobs", args.out / "logs"
     job = jobs / config
     dropped: list[Trial] = []
@@ -255,6 +277,7 @@ def ensure_job(config: str, args: argparse.Namespace, tasks: list[str]) -> None:
             *(a for task in tasks for a in ("-i", task)),
         ]
     guard_spend(args.out, args.budget)
+    prepare()
     keep_spend(args.out, config, dropped)  # after the guard, which would count them twice
     log = logs / f"{config}.log"
     print(f"{config}: harbor {' '.join(harbor_args[:2])} -> {log}", flush=True)
@@ -394,8 +417,15 @@ def run(args: argparse.Namespace) -> int:
     (args.out / "logs").mkdir(exist_ok=True)
     try:
         check_request(args.out, args.model)
+        prefetched: list[bool] = []
+
+        def prepare() -> None:  # once, and only when a job is to run
+            if not prefetched:
+                prefetch_wheels(args.tasks_dir, tasks)
+                prefetched.append(True)
+
         for config in configs:
-            ensure_job(config, args, tasks)
+            ensure_job(config, args, tasks, prepare)
         left = {}
         for config in configs:
             reason = problem(load_trials(args.out / "jobs" / config), tasks, args.trials)

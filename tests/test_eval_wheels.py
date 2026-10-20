@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -220,3 +221,85 @@ def test_a_corrupt_cache_entry_is_fetched_again(served: list[str], tmp_path: Pat
     path = wheels.fetch(FILES + name, sha(name))
     assert path.read_bytes() == content(name)
     assert served == [FILES + name]
+
+
+def task_dir(root: Path, toml: str = "", dockerfile: str | None = None) -> Path:
+    task = root / "task"
+    (task / "environment").mkdir(parents=True)
+    (task / "task.toml").write_text(toml)
+    if dockerfile is not None:
+        (task / "environment" / "Dockerfile").write_text(dockerfile)
+    return task
+
+
+def test_a_tasks_image_is_the_base_of_its_dockerfiles_last_stage(tmp_path: Path) -> None:
+    dockerfile = (
+        "# a comment\nFROM --platform=$BUILDPLATFORM python:3.12 AS build\n"
+        "from ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0\nCOPY . /app\n"
+    )
+    task = task_dir(tmp_path, "[environment]\ncpus = 2\n", dockerfile)
+    assert wheels.task_image(task) == "ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0"
+
+
+def test_a_tasks_prebuilt_image_comes_first(tmp_path: Path) -> None:
+    task = task_dir(tmp_path, '[environment]\ndocker_image = "org/prebuilt:2"\n', "FROM other\n")
+    assert wheels.task_image(task) == "org/prebuilt:2"
+
+
+@pytest.mark.parametrize("dockerfile", [None, "COPY . /app\n", "ARG BASE\nFROM $BASE\n"])
+def test_a_task_without_a_known_image_is_an_error(tmp_path: Path, dockerfile: str | None) -> None:
+    task = task_dir(tmp_path, "", dockerfile)
+    with pytest.raises((RuntimeError, OSError)):
+        wheels.task_image(task)
+
+
+def probed(monkeypatch: pytest.MonkeyPatch, platforms: dict[str, dict[str, object]]) -> list[str]:
+    """`probe` answering from `platforms` by image, without Docker; returns the images probed."""
+    images: list[str] = []
+
+    def probe(image: str) -> Platform:
+        images.append(image)
+        return Platform.from_probe(json.dumps(platforms[image]))
+
+    monkeypatch.setattr(wheels, "probe", probe)
+    return images
+
+
+def test_fill_caches_each_platform_once(
+    served: list[str], locked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    images = probed(monkeypatch, {"a": AARCH64, "b": AARCH64, "x": x86_64()})
+    lines = wheels.fill(["b", "a", "x", "a"], *locked)
+    assert images == ["a", "b", "x"]
+    assert len(lines) == 2
+    assert "aarch64" in lines[0] and "3 wheels" in lines[0]
+    assert "x86_64" in lines[1]
+    # anyio is shared; orjson and cryptography are fetched for each architecture.
+    assert len(served) == 5
+    cached = {p.name for p in wheels.CACHE_DIR.iterdir()}
+    assert "orjson-3.11.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" in cached
+
+
+def test_fill_with_a_full_cache_goes_to_no_network(
+    served: list[str], locked: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probed(monkeypatch, {"a": AARCH64})
+    wheels.fill(["a"], *locked)
+    monkeypatch.setattr(wheels, "_wheelhouses", {})  # the next ablate: only the disk cache is left
+
+    def offline(url: str, dest: Path) -> None:
+        raise AssertionError(f"downloaded {url}")
+
+    monkeypatch.setattr(wheels, "download", offline)
+    (line,) = wheels.fill(["a"], *locked)
+    assert "3 wheels" in line
+
+
+def test_a_failed_probe_says_why(monkeypatch: pytest.MonkeyPatch) -> None:
+    def docker(args: list[str], **kwargs: object) -> SimpleNamespace:
+        assert args[:2] == ["docker", "run"]
+        return SimpleNamespace(returncode=125, stdout="", stderr="pull access denied\n")
+
+    monkeypatch.setattr(wheels.subprocess, "run", docker)
+    with pytest.raises(RuntimeError, match="cannot probe img:1: pull access denied"):
+        wheels.probe("img:1")

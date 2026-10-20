@@ -6,9 +6,10 @@ Harbor's 360-second agent setup).
 architecture and PEP 508 markers), takes each requirement of `uv export` whose marker holds there,
 and picks the lock's wheel that best fits the container's tags among those whose hash the
 requirement lists. Each wheel is fetched once into `CACHE_DIR`, outside the repo, and checked
-against its sha256; a later run finds it there and goes to no network. A cold cache costs the
-first trial of a run the download, which at the bandwidth seen here can exceed the setup limit by
-itself; fill the cache for an image first:
+against its sha256; a later run finds it there and goes to no network. A cold cache would cost
+the first trials of a run the download, which at the bandwidth seen here can exceed the setup limit
+by itself, so `ablate` fills the cache with `fill()` before it starts Harbor (ticket 22), for each
+task's image (`task_image()`) as `docker run` probes it. By hand, for one image:
 
     uv run python -m evals.wheels ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0
 """
@@ -21,7 +22,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -215,22 +218,58 @@ def wheelhouse(requirements: Path, lock: Path, platform: Platform) -> Path:
         return _wheelhouses[platform]
 
 
+def task_image(task: Path) -> str:
+    """The image of a Harbor task's container: task.toml's prebuilt `docker_image`, else the image
+    environment/Dockerfile's last stage starts from, taken to have the built image's Python and C
+    library (data-eng-bench's Dockerfiles only add files)."""
+    environment = tomllib.loads((task / "task.toml").read_text()).get("environment", {})
+    if image := environment.get("docker_image"):
+        return str(image)
+    dockerfile = task / "environment" / "Dockerfile"
+    bases = [
+        next((word for word in words[1:] if not word.startswith("--")), "")
+        for words in map(str.split, dockerfile.read_text().splitlines())
+        if words and words[0].upper() == "FROM"
+    ]
+    if not bases or not bases[-1] or "$" in bases[-1]:
+        raise RuntimeError(f"{dockerfile}: no FROM image to probe the platform of")
+    return bases[-1]
+
+
+def probe(image: str) -> Platform:
+    """The platform of an image's container, read with `docker run`."""
+    proc = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "python3", image, "-c", PROBE],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"cannot probe {image}: {proc.stderr.strip()}")
+    return Platform.from_probe(proc.stdout)
+
+
+def fill(images: Iterable[str], requirements: Path, lock: Path) -> list[str]:
+    """Fill the cache for the images' platforms, each platform once; a line on each."""
+    platforms = dict.fromkeys(probe(image) for image in sorted(set(images)))
+    lines: list[str] = []
+    for platform in platforms:
+        started = time.monotonic()
+        house = wheelhouse(requirements, lock, platform)
+        count = len(list(house.glob("*.whl")))
+        lines.append(
+            f"{platform}: {count} wheels in {CACHE_DIR}, {time.monotonic() - started:.1f} s"
+        )
+    return lines
+
+
 def main(argv: list[str]) -> None:
-    """Fill the cache for the platform of an image (argv[0]), probed with `docker run`."""
+    """Fill the cache for the platform of an image (argv[0])."""
     from data_agent.run_config import REPO_ROOT
     from evals.harbor_agent import build_artifacts
 
     (image,) = argv
-    probe = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "python3", image, "-c", PROBE],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    platform = Platform.from_probe(probe.stdout)
     _, requirements = build_artifacts()
-    house = wheelhouse(requirements, REPO_ROOT / "uv.lock", platform)
-    print(f"{platform}: {len(list(house.glob('*.whl')))} wheels in {CACHE_DIR}")
+    print("\n".join(fill([image], requirements, REPO_ROOT / "uv.lock")))
 
 
 if __name__ == "__main__":
