@@ -7,7 +7,8 @@
 #        da-remote setup [<commit>]               clone or fetch the repo on the server, check out
 #                                                 <commit> (default origin/main), uv sync
 #        da-remote start <name> -- <evals args>   run `python -m evals <evals args>` in the background,
-#                                                 log to runs/<name>/run.log on the server
+#                                                 log to runs/<name>/run.log on the server; give
+#                                                 evals --out runs/<name> so status and pull see it
 #        da-remote status [<name>]                running or not, log tail, spend so far
 #        da-remote push <name>                    copy this checkout's runs/<name>/ to the server
 #        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout
