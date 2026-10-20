@@ -1,6 +1,6 @@
 # 20 — 装 agent 不在容器里联网下载依赖
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: Claude Code (claude-opus-5-5) 2026-10-20
@@ -51,7 +51,7 @@ Harbor trial 里装 agent 不再从 PyPI 下载依赖：锁定的 wheel 在本�
 - Attempts: 1
 - Review rounds: 1
 - Model spend: 约 $0.70（6 个 trial）
-- Outcome: in-review
+- Outcome: done，PR #21 squash 合并（0 轮退回）
 - Human review minutes: —
 
 ## Comments
@@ -72,3 +72,7 @@ Harbor trial 里装 agent 不再从 PyPI 下载依赖：锁定的 wheel 在本�
 ### 2026-10-20 主会话
 
 服务器全量与开发集重跑前，先在对应机器上 `python -m evals.wheels <image>` 预热缓存（冷缓存已知限制）。
+
+### 2026-10-20 主会话：合并 PR #21
+
+CI 绿（2ea0f3c）。Codex 第一次审查状态 completed 但 `has_any_findings: null`、无评论无 👍，看不出审没审；评论 `@codex review` 重审后 `has_any_findings: false` 并 👍。已 `gh pr merge 21 --squash`。
