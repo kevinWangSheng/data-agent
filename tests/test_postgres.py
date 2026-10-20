@@ -301,3 +301,65 @@ def test_postgres_skill_date_guard_rejects_impossible_dates(postgres_url: str) -
     rows = PostgresGateway(postgres_url).query(sql).rows
     dates = [str(row[0]) if row[0] else None for row in rows]
     assert dates == ["2024-02-29", None, None, None, None]
+
+
+# Postgres-only forms: `~`, to_char, and `::`, DATE_TRUNC and ILIKE, which DuckDB shares.
+POSTGRES_MODEL = """\
+SELECT o.customer_id,
+  count(*) FILTER (WHERE o.status ~ '^ret') AS returns,
+  count(*) FILTER (WHERE to_char(o.ordered_at, 'YYYY') = '2025') AS orders_2025,
+  count(CASE WHEN o.status::text ILIKE 'PLACED'
+    AND DATE_TRUNC('month', o.ordered_at) >= '2024-02-01'::date THEN 1 END) AS late_placed
+FROM da19_dialect.orders AS o
+GROUP BY o.customer_id"""
+
+
+@pytest.mark.integration
+async def test_verifier_reads_and_counts_a_postgres_model_in_postgres(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    import psycopg
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from mcp.types import TextContent
+
+    with psycopg.connect(postgres_url, autocommit=True) as con:
+        con.execute("DROP SCHEMA IF EXISTS da19_dialect CASCADE")
+        con.execute("CREATE SCHEMA da19_dialect")
+        con.execute(
+            "CREATE TABLE da19_dialect.orders (order_id int, customer_id text, status text,"
+            " ordered_at date)"
+        )
+        con.execute(
+            "INSERT INTO da19_dialect.orders VALUES"
+            " (1, 'c1', 'placed', '2024-01-01'), (2, 'c1', 'returned', '2024-02-01'),"
+            " (3, 'c1', 'placed', '2025-03-01'), (4, 'c2', 'returned', '2025-04-01'),"
+            " (5, 'c3', 'placed', '2025-05-01')"
+        )
+        con.execute(f"CREATE TABLE da19_dialect.m AS {POSTGRES_MODEL}")
+    project = tmp_path / "pg_project"
+    (project / "models").mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: pg_project\nversion: '1.0'\n")
+    (project / "models" / "m.sql").write_text(POSTGRES_MODEL)
+    params = StdioServerParameters(
+        command=str(DATA_AGENT),
+        args=["mcp-server", "--config", "full", "--postgres-env", "DA_TEST_URL"],
+        env=dict(os.environ) | {"DA_TEST_URL": postgres_url},
+    )
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        result = await session.call_tool(
+            "verify_model_values",
+            {
+                "model_name": "da19_dialect.m",
+                "source_tables": "da19_dialect.orders",
+                "project_dir": str(project),
+            },
+        )
+    text = "\n".join(item.text for item in result.content if isinstance(item, TextContent))
+    assert not result.is_error, text
+    assert "Model SQL read" in text, text
+    assert "Model matches COUNT(*) FILTER(WHERE status ~ '^ret')" in text, text
+    assert "Model matches COUNT(*) FILTER(WHERE TO_CHAR(ordered_at, 'YYYY') = '2025')" in text
+    assert text.count("→ Model matches") == 3, text
+    assert "MISMATCH" not in text

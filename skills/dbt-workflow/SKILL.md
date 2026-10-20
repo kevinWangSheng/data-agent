@@ -9,8 +9,8 @@ allowed-tools: Bash(dbt *) Bash(python3 *)
 agent's tools (query_database, list_tables; the verification tools and verifier agents only when
 present); SignalPilot-only steps were removed or rewritten: analyze_project_db (now list_tables and
 query_database), the knowledge-base check, TaskCreate tracking, loading domain/testing/snapshot/
-versioning skills (data-agent does not ship them; dbt-write, dbt-debugging and duckdb-sql are
-loaded with this one), and the knowledge-base skill in Step 6 (its spec fields are inlined). Two
+versioning skills (data-agent does not ship them; dbt-write, dbt-debugging and the database's SQL
+skill are loaded with this one), and the knowledge-base skill in Step 6 (its spec fields are inlined). Two
 remarks about how results are graded were reworded as plain dbt reasons (ADR-0005). The rules that
 limited rolling/period-over-period models to the latest date with NULL comparisons were replaced by
 general ones (one date only when the description asks; comparisons from the source history). The
@@ -103,7 +103,7 @@ If the task describes a runtime bug (type mismatch, wrong values, broken output)
 
 ### Step 2 - Read the supporting skills
 The dbt-write skill, the dbt-debugging skill and the SQL skill for your
-database (duckdb-sql) are loaded below this one. Read dbt-write and the SQL
+database are loaded below this one. Read dbt-write and the SQL
 skill now - they contain rules needed for writing AND verifying models.
 
 Do NOT skip this step. These skills contain rules that apply to

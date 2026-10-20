@@ -137,6 +137,14 @@ def test_dbt_skills_carry_no_project_specific_names(name: str) -> None:
             assert term not in text, (path.name, term)
 
 
+def test_workflow_names_no_dialect_skill() -> None:
+    """A run loads its database's SQL Skill (duckdb-sql, postgres-sql); the workflow names none."""
+    text = (SKILLS_DIR / "dbt-workflow" / "SKILL.md").read_text()
+    assert "the SQL skill for your\ndatabase are loaded" in text
+    for name in ("duckdb-sql", "postgres-sql"):
+        assert name not in text
+
+
 def test_workflow_never_skips_building_a_model_the_task_asks_for() -> None:
     """The scan only sees models already declared in YAML; a task that asks for a new model must
     still run the build steps."""

@@ -111,7 +111,8 @@ CONFIG_ALIAS_RE = re.compile(
     r"\{\{\s*config\((?:[^()]|\([^()]*\))*?\balias\s*=\s*['\"](\w+)['\"]", re.DOTALL
 )
 NAME_LINE_RE = re.compile(r"-\s*name:\s*['\"]?([^'\"\s]+)")
-# The gateway's dialect: model SQL is parsed in it and rewritten counts are run in it.
+# The default gateway dialect. Model SQL is parsed in the run's gateway dialect and rewritten counts
+# are run in it, so a Postgres run reads `~` and to_char as Postgres does.
 DIALECT = "duckdb"
 SQL_KEYWORDS = frozenset(
     {"THEN", "ELSE", "END", "WHEN", "CASE", "AND", "OR", "NOT", "NULL", "TRUE", "FALSE", "AS"}
@@ -788,7 +789,7 @@ class Parsed:
 
 
 def parse_model(
-    sql: str, catalog: list[Table], relations: Relations | None = None
+    sql: str, catalog: list[Table], relations: Relations | None = None, dialect: str = DIALECT
 ) -> Parsed | None:
     """The model's SQL with Jinja rendered away (ref and source become the relations dbt builds
     and reads, by `relations`), its columns qualified with their tables from the catalog where
@@ -799,7 +800,7 @@ def parse_model(
     plain = SOURCE_RE.sub(lambda match: ".".join(relations.source(*match.groups())), plain)
     plain = re.sub(r"\{%.*?%\}|\{\{.*?\}\}", "", plain, flags=re.DOTALL)
     try:
-        tree = sqlglot.parse_one(plain, dialect=DIALECT)
+        tree = sqlglot.parse_one(plain, dialect=dialect)
     except SqlglotError:
         return None
     tables: dict[str, dict[str, dict[str, str]]] = {}
@@ -813,7 +814,7 @@ def parse_model(
         tree = qualify(
             tree.copy(),
             schema=schema,
-            dialect=DIALECT,
+            dialect=dialect,
             validate_qualify_columns=False,
             identify=False,
         )
@@ -933,7 +934,9 @@ def count_of(output: Output) -> exp.Expr | None:
     return node if isinstance(node, exp.Count) else None
 
 
-def origin(scope: Scope, column: exp.Column, depth: int = 0) -> tuple[str, str, str] | str:
+def origin(
+    scope: Scope, column: exp.Column, dialect: str, depth: int = 0
+) -> tuple[str, str, str] | str:
     """(schema or "", table, column), lowercase, of the upstream column that `column` reads
     unchanged through CTEs and subqueries, or why there is none."""
     sources = {alias: source for alias, (_, source) in scope.selected_sources.items()}
@@ -947,13 +950,13 @@ def origin(scope: Scope, column: exp.Column, depth: int = 0) -> tuple[str, str, 
             if projection.alias_or_name.lower() == column.name.lower():
                 inner = projection.unalias()
                 if isinstance(inner, exp.Column) and not isinstance(inner.this, exp.Star):
-                    return origin(source, inner, depth + 1)
-                computed = inner.sql(dialect=DIALECT)
+                    return origin(source, inner, dialect, depth + 1)
+                computed = inner.sql(dialect=dialect)
                 return f"{column.name} is computed in the model's SQL ({computed})"
     return f"cannot tell which upstream table {column.name} comes from"
 
 
-def portable(count: exp.Expr, scope: Scope) -> exp.Expr | str:
+def portable(count: exp.Expr, scope: Scope, dialect: str) -> exp.Expr | str:
     """The count with each column qualified by the upstream table it reads, or why it cannot be
     counted over an upstream."""
     problems: list[str] = []
@@ -961,7 +964,7 @@ def portable(count: exp.Expr, scope: Scope) -> exp.Expr | str:
     def rewrite(node: exp.Expr) -> exp.Expr:
         if not isinstance(node, exp.Column) or isinstance(node.this, exp.Star):
             return node
-        found = origin(scope, node)
+        found = origin(scope, node, dialect)
         if isinstance(found, str):
             problems.append(found)
             return node
@@ -999,15 +1002,17 @@ def counts_all_rows(count: exp.Expr) -> bool:
     return isinstance(count, exp.Count) and isinstance(count.this, exp.Star | exp.Literal)
 
 
-def label(count: exp.Expr) -> str:
-    return "COUNT(*)" if counts_all_rows(count) else unqualified(count).sql(dialect=DIALECT)
+def label(count: exp.Expr, dialect: str) -> str:
+    return "COUNT(*)" if counts_all_rows(count) else unqualified(count).sql(dialect=dialect)
 
 
-def baseline_sql(count: exp.Expr, candidate: Table, bridge: Table | None) -> str | list[str]:
+def baseline_sql(
+    count: exp.Expr, candidate: Table, bridge: Table | None, dialect: str
+) -> str | list[str]:
     """The model's count rewritten over the candidate (alias c) and the bridge it is sliced
     through (alias d), or the columns neither has, which leave the count without a baseline."""
     if count.find(exp.Select):
-        return [unqualified(count).sql(dialect=DIALECT)]
+        return [unqualified(count).sql(dialect=dialect)]
     keys = column_map(candidate)
     bridge_keys = column_map(bridge) if bridge else {}
     missing: list[str] = []
@@ -1028,7 +1033,7 @@ def baseline_sql(count: exp.Expr, candidate: Table, bridge: Table | None) -> str
         return node
 
     rewritten = count.transform(rewrite)
-    return missing or rewritten.sql(dialect=DIALECT)
+    return missing or rewritten.sql(dialect=dialect)
 
 
 ROW_COUNT = exp.Count(this=exp.Star())
@@ -1057,10 +1062,14 @@ class Roles:
 
 
 def column_roles(
-    model: Table, sql: str | None, catalog: list[Table], relations: Relations | None = None
+    model: Table,
+    sql: str | None,
+    catalog: list[Table],
+    relations: Relations | None = None,
+    dialect: str = DIALECT,
 ) -> tuple[Roles, str]:
     """The roles and a note on how they were read."""
-    parsed = parse_model(sql, catalog, relations) if sql is not None else None
+    parsed = parse_model(sql, catalog, relations, dialect) if sql is not None else None
     if sql is None:
         note = "Model SQL not read: only metrics named as counts are held against COUNT(*)"
     elif parsed is None:
@@ -1083,7 +1092,7 @@ def column_roles(
             kept = (
                 isinstance(column, exp.Column)
                 and scope is not None
-                and origin(scope, column)[2:] == (name.lower(),)
+                and origin(scope, column, dialect)[2:] == (name.lower(),)
             )
             # A ROLLUP's subtotal row has NULL there, which no upstream row matches.
             subtotals = subtotal_keys(output.select.args["group"])
@@ -1102,7 +1111,7 @@ def column_roles(
                 roles.metrics.append(name)
                 count = count_of(output)
                 if count is not None and parsed and scope:
-                    rewritten = portable(count, scope)
+                    rewritten = portable(count, scope, dialect)
                     problem = rows_problem(parsed, output.select)
                     if isinstance(rewritten, str) or problem:
                         roles.counts[name] = count
@@ -1143,13 +1152,17 @@ class Measured:
 
 
 def measure(
-    run: RunQuery, candidate: Table, found: Slice | None, counts: dict[str, exp.Expr]
+    run: RunQuery,
+    candidate: Table,
+    found: Slice | None,
+    counts: dict[str, exp.Expr],
+    dialect: str,
 ) -> Measured:
     rows = row_count(run, candidate)
     if found is None:
         return Measured(candidate, rows, None)
     rewritten = {
-        metric: baseline_sql(count, candidate, found.bridge)
+        metric: baseline_sql(count, candidate, found.bridge, dialect)
         for metric, count in counts.items()
         if not counts_all_rows(count)
     }
@@ -1168,9 +1181,10 @@ def verify_values(
     sources: list[str],
     sql: str | None = None,
     relations: Relations | None = None,
+    dialect: str = DIALECT,
 ) -> list[str]:
     catalog = load_catalog(run)
-    roles, note = column_roles(model, sql, catalog, relations)
+    roles, note = column_roles(model, sql, catalog, relations, dialect)
     metrics = roles.metrics
     if not metrics:
         return [f"No numeric metric columns in '{model.ref}'; nothing to verify."]
@@ -1219,6 +1233,7 @@ def verify_values(
             if whole_table
             else slice_filter(run, candidate, slice_values, bridges),
             {m: count for m, count in roles.counts.items() if m not in roles.opaque},
+            dialect,
         )
         for candidate in candidates
     ]
@@ -1261,29 +1276,28 @@ def verify_values(
             lines += counted
             if count is None:
                 continue
+            counted_as = label(count, dialect)
             if metric in roles.opaque:
-                lines.append(
-                    f"    {label(count)}: {roles.opaque[metric]}; no baseline, inconclusive"
-                )
+                lines.append(f"    {counted_as}: {roles.opaque[metric]}; no baseline, inconclusive")
                 continue
             baseline: int | list[str] = dict(m.baselines).get(metric, m.count)
             if isinstance(baseline, list):
                 lines.append(
-                    f"    {label(count)}: uses {', '.join(baseline)}, not in {m.candidate.ref}; "
+                    f"    {counted_as}: uses {', '.join(baseline)}, not in {m.candidate.ref}; "
                     "no baseline, inconclusive"
                 )
                 continue
-            if f"    {label(count)}: {baseline}" not in counted:
-                lines.append(f"    {label(count)}: {baseline}")
+            if f"    {counted_as}: {baseline}" not in counted:
+                lines.append(f"    {counted_as}: {baseline}")
             if found.missing or unsliceable:
                 continue
             # A count is exact: a row too many or too few is a defect.
             model_value = float(value)
             if baseline == model_value:
-                lines.append(f"    → Model matches {label(count)}")
+                lines.append(f"    → Model matches {counted_as}")
             else:
                 ratio = f" ({baseline / model_value:.1f}x)" if model_value else ""
-                lines.append(f"    → MISMATCH vs {label(count)}{ratio}")
+                lines.append(f"    → MISMATCH vs {counted_as}{ratio}")
         lines.append("")
     return lines
 
@@ -1314,42 +1328,45 @@ def declared_columns(text: str) -> list[tuple[str, str]]:
     return [(name.strip(), data_type.strip()) for name, _, data_type in pairs if name.strip()]
 
 
-def normalized_type(data_type: str) -> str:
+def normalized_type(data_type: str, dialect: str = DIALECT) -> str:
     """The type's kind, aliases folded (int4, int and integer are INT), with a nested type's
     element and field types folded the same way: INTEGER[] is ARRAY(INT), VARCHAR[] is
     ARRAY(VARCHAR)."""
     try:
-        return folded_type(exp.DataType.build(data_type, dialect=DIALECT))
+        return folded_type(exp.DataType.build(data_type, dialect=dialect), dialect)
     except SqlglotError:
         return base_type(data_type)
 
 
-def folded_type(data_type: exp.DataType) -> str:
+def folded_type(data_type: exp.DataType, dialect: str) -> str:
     kind = str(data_type.this.name)
     if kind == "USERDEFINED":
-        return base_type(data_type.sql(dialect=DIALECT))
+        return base_type(data_type.sql(dialect=dialect))
     inner: list[str] = []
     for item in data_type.expressions:
         if isinstance(item, exp.DataType):
-            inner.append(folded_type(item))
+            inner.append(folded_type(item, dialect))
         elif isinstance(item, exp.ColumnDef) and isinstance(field := item.kind, exp.DataType):
-            inner.append(f"{item.name.lower()} {folded_type(field)}")
+            inner.append(f"{item.name.lower()} {folded_type(field, dialect)}")
     kind = SAME_KIND.get(kind, kind)
     return f"{kind}({', '.join(inner)})" if inner else kind
 
 
-def same_type(declared: str, actual: str) -> bool:
+def same_type(declared: str, actual: str, dialect: str = DIALECT) -> bool:
     """Whether the types are of one kind; a nested type named without its element types (as
     Postgres' information_schema names every array ARRAY) matches any of its kind."""
-    expected, found = normalized_type(declared), normalized_type(actual)
+    expected, found = normalized_type(declared, dialect), normalized_type(actual, dialect)
     if "(" not in expected or "(" not in found:
         return expected.partition("(")[0] == found.partition("(")[0]
     return expected == found
 
 
-def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | None) -> None:
+def register_verifier_tools(
+    server: MCPServer, run: RunQuery, workspace: Path | None, dialect: str = DIALECT
+) -> None:
     """Add the verification tools to `server`; called only when the run config turns the verifier
-    layer on. With a `workspace`, map_columns reads only dbt projects inside it."""
+    layer on. With a `workspace`, map_columns reads only dbt projects inside it. `dialect` is the
+    gateway's: model SQL and declared types are read in it, and rewritten counts written in it."""
     root = workspace.resolve() if workspace else None
 
     def dbt_project(project_dir: str) -> Path:
@@ -1396,7 +1413,7 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
             for name, data_type in declared
             if data_type
             and name.lower() in actual_types
-            and not same_type(data_type, actual_types[name.lower()])
+            and not same_type(data_type, actual_types[name.lower()], dialect)
         ]
         actual = [column for column, _ in model.columns]
         expected_lower = {column.lower(): column for column in expected}
@@ -1462,4 +1479,5 @@ def register_verifier_tools(server: MCPServer, run: RunQuery, workspace: Path | 
             paths = (model_sql(project, name) for name in relations.models_named(model.name))
             path = next((path for path in paths if path), None)
             sql = read_text(path) if path else None
-        return "\n".join(verify_values(run, model, split_names(source_tables), sql, relations))
+        sources = split_names(source_tables)
+        return "\n".join(verify_values(run, model, sources, sql, relations, dialect))
