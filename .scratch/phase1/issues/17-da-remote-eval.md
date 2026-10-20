@@ -1,6 +1,6 @@
 # 17 — da-remote 跑评测、看状态、取结果
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 17-da-remote-eval)
@@ -23,15 +23,15 @@ plan §7"服务器与并发""结果怎么拿回来"、§9 第 8 项（"工单 12
 
 ## Acceptance
 
-- [ ] `da-remote setup`：服务器上没有仓库就 clone，有就 fetch；切到指定 commit（默认 `origin/main`），拒绝脏工作区；`uv sync`
-- [ ] `da-remote start <name> -- <evals 子命令与参数>`：在服务器 `$DIR` 里用 `nohup`（或 tmux）后台运行，加载服务器自己的 `~/.config/data-agent/env`，日志写 `runs/<name>/run.log`；同名已在跑就拒绝；打印运行的 commit
-- [ ] `da-remote status [<name>]`：是否还在跑、日志末尾若干行、`evals spend` 的当前花费
-- [ ] `da-remote pull <name>`：把服务器 `runs/<name>/` 取回 Mac 的 `runs/<name>/`（经 `remote` 走主机别名，不直接写 `ssh`/`rsync` 命令给人或 agent 用）
-- [ ] 所有子命令输出都过 `mask`；参数里的 `<name>` 只允许 `[A-Za-z0-9._-]`
-- [ ] `check` 的门槛改成 plan §7 的现行口径（6 核 / 7 GB 机器是合格的；不再要求 ≥8 核 / ≥32 GB）
-- [ ] 单元测试覆盖参数校验、mask、命令拼装（不连服务器）
-- [ ] 真实运行：`setup` → `start` 一次 1 题 × 1 配置 × 1 次的 `ablate`（holdout 只放一道开发集题目）→ `status` → `pull`，贴输出
-- [ ] `make check` 通过
+- [x] `da-remote setup`：服务器上没有仓库就 clone，有就 fetch；切到指定 commit（默认 `origin/main`），拒绝脏工作区；`uv sync`
+- [x] `da-remote start <name> -- <evals 子命令与参数>`：在服务器 `$DIR` 里用 `nohup`（或 tmux）后台运行，加载服务器自己的 `~/.config/data-agent/env`，日志写 `runs/<name>/run.log`；同名已在跑就拒绝；打印运行的 commit
+- [x] `da-remote status [<name>]`：是否还在跑、日志末尾若干行、`evals spend` 的当前花费
+- [x] `da-remote pull <name>`：把服务器 `runs/<name>/` 取回 Mac 的 `runs/<name>/`（经 `remote` 走主机别名，不直接写 `ssh`/`rsync` 命令给人或 agent 用）
+- [x] 所有子命令输出都过 `mask`；参数里的 `<name>` 只允许 `[A-Za-z0-9._-]`
+- [x] `check` 的门槛改成 plan §7 的现行口径（6 核 / 7 GB 机器是合格的；不再要求 ≥8 核 / ≥32 GB）
+- [x] 单元测试覆盖参数校验、mask、命令拼装（不连服务器）
+- [x] 真实运行：`setup` → `start` 一次 1 题 × 1 配置 × 1 次的 `ablate`（holdout 只放一道开发集题目）→ `status` → `pull`，贴输出
+- [x] `make check` 通过
 
 ## Evidence required
 
@@ -47,10 +47,10 @@ plan §7"服务器与并发""结果怎么拿回来"、§9 第 8 项（"工单 12
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2（da-review 1、eng:code-review 1）
-- Model spend: $0
-- Outcome: ready-for-human（服务器缺 GitHub deploy key）
+- Attempts: 2
+- Review rounds: 3（da-review 2、eng:code-review 1；3fb00bd 的 da-review 因模型满载未跑，由 PR 上的 Codex 审查覆盖）
+- Model spend: $0.0431（服务器冒烟）
+- Outcome: in-review
 - Human review minutes: —
 
 ## Comments
@@ -86,3 +86,18 @@ plan §7"服务器与并发""结果怎么拿回来"、§9 第 8 项（"工单 12
 ### 2026-10-20 主会话：解除阻塞，交回原分支
 
 人在服务器上补了 `~/.ssh/config` 的 `Host github.com` → `~/.ssh/data_agent_deploy`（仓库只读 deploy key 2026-10-16 已加）；`git ls-remote git@github.com:kevinWangSheng/data-agent.git HEAD` 在服务器上返回 `c876ccf…`。接着做：(1) 上一节定下的 holdout `pull` 只取汇总，配测试；(2) 真实 `setup → push → start → status → pull` 1 题冒烟（holdout 只放一道开发集题目），贴已 mask 的输出。
+
+### 2026-10-20 工单 agent：holdout pull 只取汇总 + 服务器真实冒烟（主会话抄录）
+
+分支：合并 origin/main（e46a73b，无冲突），再 5456aad、200a2b6、3fb00bd。
+
+- `start` 把 evals 子命令写进 `runs/<name>/subcommand`（`push` 不覆盖）。`pull` 先读它：`ablate`、缺失或不是单个小写词（防 ssh 噪声，失败即保守）→ 只取 `reports/***`、`run.log`、`exit`、`budget`、`subcommand`、`request.json`，`jobs/`、`logs/`、`dropped/` 留在服务器；其他（如 `dab`）取整个目录。只取汇总时本地 `runs/<name>/` 已有 `jobs/`、`logs/`、`dropped/` 就拒绝（exit 1），不删东西。`docs/setup.md` 补 holdout 规则，第 3 行改"已 clone、冒烟已跑"。顺带修了 bash 3.2 下 `set -u` 空数组报错。
+- 测试：holdout 只取汇总、没记子命令只取汇总、dab 取整目录、本地有 trial 目录拒绝（×3）；修复前对应失败。`tests/test_da_remote.py` 73 passed、1 skipped；shellcheck clean；`make check` 1093 passed、1 skipped，basedpyright 0 errors。
+- 真实运行（已 mask）：
+  - `setup` → `setup: /root/data-agent at f9b0e54 …`，`uv sync` 150 个包，exit 0；`check` → 0 failure(s)（含 "repo can reach GitHub"、"cores 6, memory 7 GB -> --n-concurrent 3"）
+  - `push smoke17`（临时 manifest，holdout 只放开发集题 dbt-daily-order-summary，加该题副本）
+  - `start smoke17 -- ablate --tasks-dir runs/smoke17/tasks --manifest runs/smoke17/manifest.json --out runs/smoke17 --budget 1 --config full --trials 1 --n-concurrent 1` → `start: smoke17 running at commit f9b0e54 (pid …)`
+  - `status smoke17` → 运行中显示 spend 与 80% 线；结束后 `smoke17: finished, exit 0`，`| full | 100.0 | 0.0 | 1 | 0.0431 | 55,935 / 513,408 | 19,374 |`，`spend: $0.0431 over 1 event file(s)`
+  - `pull smoke17` → `(holdout: summary only, trials stay on the server)`；本地只有 `budget`、`exit`、`request.json`、`run.log`、`subcommand`、`reports/<stamp>/{ablation.json, ablation.md, full/report.json}`，grep 不到题名和 IPv4。再 pull 同目录 exit 0；本地建 `jobs/` 后 pull → 拒绝，exit 1。
+- 审查：`da-review` 第 3 轮 P1（只取汇总时本地残留逐题文件）→ 3fb00bd 改成拒绝并配测试；不采纳 `--delete-excluded`（会删掉推上去的输入）。3fb00bd 的 da-review 四次 "Selected model is at capacity" 未跑。
+- 已知限制：`run.log` 安全靠 `ablate` 只打印汇总，Python traceback 若带题名会随日志回来；此前启动的 run 没有 `subcommand` 文件，一律只取汇总。
