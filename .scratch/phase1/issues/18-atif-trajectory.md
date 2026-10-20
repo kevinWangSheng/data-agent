@@ -1,6 +1,6 @@
 # 18 — 上榜轨迹 trajectory.json（ATIF）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5) 2026-10-20
@@ -47,8 +47,8 @@ data-eng-bench 上每个 trial 都带一份 Harbor 认可的 ATIF 轨迹（由�
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
+- Attempts: 2
+- Review rounds: 2（另 PR #19 退回 1 轮）
 - Model spend: 约 $0.27（两次真实运行 $0.114、$0.156）
 - Outcome: in-review
 - Human review minutes: —
@@ -86,3 +86,9 @@ scrubbed trajectory.json → Harbor validation OK
 CI 绿（d26779f）。Codex 一条，核实属实：
 
 - 退回：`evals/atif.py:203` `usage()` 里 `float(result.get("cost_usd") ...)` 接受 `Infinity`、`-Infinity`、`NaN`（不抛错），会写进 `FinalMetrics` 和 `context.cost_usd`，`json.dumps` 输出非标准 token，上传的轨迹或榜单指标可能被拒。像 token 字段一样校验 cost 是有限数（负数也拒），否则按损坏的 result 处理。配修复前失败的测试。
+
+### 2026-10-20 工单 agent：PR #19 第 1 轮退回修复（7ff6a03，主会话抄录）
+
+- 已修：`evals/atif.py` `usage()` 在 `float()` 后检查 `math.isfinite(cost) and cost >= 0`，否则抛 `ValueError`，按损坏的 result 处理：`populate_context_post_run` 不回填 token 与花费，`_write_trajectory` 不写轨迹，trial 都不失败。
+- 测试：`tests/test_harbor_agent.py::test_a_corrupt_result_event_leaves_no_trajectory_and_no_error` 加 4 个参数（`inf`、`-inf`、`nan`、`-0.01`），修复前 4 个都失败（`cost_usd=inf` 进了 AgentContext），修复后通过。
+- `make check`：1044 passed，24 deselected；basedpyright 0 errors。只改损坏输入处理，没真实跑模型。
