@@ -1,8 +1,11 @@
 """Harbor agent adapter (ADR-0001): runs `data-agent run` in a data-eng-bench task container.
 
 `install()` puts this checkout's wheel and its locked dependencies into a virtualenv of its own,
-so dbt stays the image's (plan §5). `run()` gives the task instruction to `data-agent run` as a dbt
-task on the image's dbt project and DuckDB file, with the event file in the agent logs directory.
+so dbt stays the image's (plan §5). The dependencies are wheels for the container's platform from a
+cache on this machine (evals.wheels), installed offline; the install's output and step times go to
+`setup/install.log` in the agent logs directory. `run()` gives the task instruction to
+`data-agent run` as a dbt task on the image's dbt project and DuckDB file, with the event file in
+the agent logs directory.
 After the trial Harbor calls `populate_context_post_run()`, which fills tokens and cost back into
 the trial result from the event file's `result` event, and writes the run as an ATIF
 `trajectory.json` in the logs directory (evals.atif), the file Harbor's uploader publishes as the
@@ -29,6 +32,7 @@ import shlex
 import subprocess
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, override
@@ -52,6 +56,7 @@ from pydantic import Field, field_validator
 
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT
 from evals.atif import convert, usage
+from evals.wheels import PROBE, Platform, download, wheelhouse
 
 # Harbor error types worth retrying: rate limits, server errors and dropped connections. The job
 # config retries exactly these; Harbor's default exclusions (timeouts, refusals, auth, usage
@@ -156,13 +161,6 @@ def build_artifacts() -> tuple[Path, Path]:
         return _built
 
 
-def download(url: str, dest: Path) -> None:
-    # Retries every error: a TLS handshake to GitHub's release host failed intermittently here.
-    subprocess.run(
-        ["curl", "-sSfL", "--retry", "5", "--retry-all-errors", "-o", str(dest), url], check=True
-    )
-
-
 def uv_archive(arch: str) -> Path:
     """uv's release archive for a container architecture (`uname -m`), fetched once per process."""
     with _uv_lock:
@@ -223,33 +221,55 @@ class DataAgent(BaseInstalledAgent):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
+        started = time.monotonic()
         wheel, requirements = await asyncio.to_thread(build_artifacts)
-        arch = (await environment.exec(command="uname -m")).stdout or ""
-        archive = await asyncio.to_thread(uv_archive, arch.strip())
+        probe = await environment.exec(command=f"python3 -c {shlex.quote(PROBE)}")
+        if probe.return_code != 0:
+            raise RuntimeError(f"cannot read the container's platform: {probe.stderr}")
+        platform = Platform.from_probe(probe.stdout or "")
+        archive = await asyncio.to_thread(uv_archive, platform.machine)
+        house = await asyncio.to_thread(wheelhouse, requirements, REPO_ROOT / "uv.lock", platform)
+        prepared = time.monotonic()
         remote_wheel = self.AGENT_DIR / wheel.name
         remote_requirements = self.AGENT_DIR / "requirements.txt"
         remote_archive = self.AGENT_DIR / archive.name
+        remote_house = self.AGENT_DIR / "wheels"
         await environment.upload_file(wheel, str(remote_wheel))
         await environment.upload_file(requirements, str(remote_requirements))
         await environment.upload_file(archive, str(remote_archive))
+        await environment.upload_dir(house, str(remote_house))
+        uploaded = time.monotonic()
         uv = shlex.quote(str(self.AGENT_DIR / "uv"))
         python = shlex.quote(str(self.venv / "bin" / "python"))
+        # No index and no network: every dependency is a wheel in the uploaded directory.
+        offline = f"--offline --no-index --find-links {shlex.quote(str(remote_house))}"
+        log = self.environment_logs_dir / "setup" / "install.log"
+        host = (
+            f"host: wheels for {platform} ready in {prepared - started:.1f} s, "
+            f"uploaded in {uploaded - prepared:.1f} s"
+        )
         await self.exec_as_root(
             environment,
             command=(
                 "set -euo pipefail; "
+                f"mkdir -p {shlex.quote(str(log.parent))}; "
+                # Each step's command and wall time, in the log with its output.
+                "TIMEFORMAT='  %R s'; "
+                'step() { echo "$ $*" >&2; time "$@"; }; '
+                f"{{ echo {shlex.quote(host)}; "
                 # uv from the uploaded archive: fetching it inside the container from astral.sh
                 # or GitHub failed the TLS handshake in 2 of 5 local trials.
-                f"tar -xzf {shlex.quote(str(remote_archive))} --strip-components 1 "
+                f"step tar -xzf {shlex.quote(str(remote_archive))} --strip-components 1 "
                 f"-C {shlex.quote(str(self.AGENT_DIR))}; "
                 # The image's Python; uv installs into the venv, so the venv needs no pip.
-                f"python3 -m venv --without-pip {shlex.quote(str(self.venv))}; "
-                # uv's defaults (3 retries, 30 s) lost a PyPI fetch in 1 of 5 local trials.
-                "export UV_HTTP_RETRIES=10 UV_HTTP_TIMEOUT=120; "
-                f"{uv} pip install --python {python} --require-hashes "
+                f"step python3 -m venv --without-pip {shlex.quote(str(self.venv))}; "
+                f"step {uv} pip install --python {python} {offline} --require-hashes "
                 f"-r {shlex.quote(str(remote_requirements))}; "
-                f"{uv} pip install --python {python} --no-deps {shlex.quote(str(remote_wheel))}; "
-                f"{shlex.quote(str(self.venv / 'bin' / 'data-agent'))} --help > /dev/null"
+                f"step {uv} pip install --python {python} {offline} --no-deps "
+                f"{shlex.quote(str(remote_wheel))}; "
+                f"step {shlex.quote(str(self.venv / 'bin' / 'data-agent'))} --help > /dev/null; "
+                'echo "installed in $SECONDS s"; '
+                f"}} 2>&1 | tee {shlex.quote(str(log))}"
             ),
         )
 
