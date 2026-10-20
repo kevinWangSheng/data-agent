@@ -4,7 +4,9 @@
 so dbt stays the image's (plan §5). `run()` gives the task instruction to `data-agent run` as a dbt
 task on the image's dbt project and DuckDB file, with the event file in the agent logs directory.
 After the trial Harbor calls `populate_context_post_run()`, which fills tokens and cost back into
-the trial result from the event file's `result` event.
+the trial result from the event file's `result` event, and writes the run as an ATIF
+`trajectory.json` in the logs directory (evals.atif), the file Harbor's uploader publishes as the
+trial's `trajectory_path`. A missing or broken event file leaves the trial without a trajectory.
 
 Errors (plan §7): an agent that stops early (turn or spend cap) is an agent failure the verifier
 scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status, or for a
@@ -45,9 +47,10 @@ from harbor.agents.installed.base import (
 from harbor.agents.options import InstalledAgentOptions
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext, ModelUsage
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
 
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT
+from evals.atif import convert
 
 # Harbor error types worth retrying: rate limits, server errors and dropped connections. The job
 # config retries exactly these; Harbor's default exclusions (timeouts, refusals, auth, usage
@@ -196,6 +199,11 @@ class DataAgent(BaseInstalledAgent):
     # Under the agent logs directory, which Harbor copies back to the trial directory.
     EVENTS_DIR: ClassVar[str] = "events"
     OUTPUT_FILE: ClassVar[str] = "data-agent.txt"
+    # Where Harbor's own agents write their ATIF trajectory (claude_code.py:1669, pi.py:461) and
+    # where its uploader looks for one (upload/uploader.py:680).
+    TRAJECTORY_FILE: ClassVar[str] = "trajectory.json"
+    # The instruction the last run() was given: the trajectory's user step.
+    instruction: str | None = None
 
     @staticmethod
     @override
@@ -283,6 +291,7 @@ class DataAgent(BaseInstalledAgent):
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
+        self.instruction = instruction
         try:
             await self.exec_as_agent(
                 environment, command=self._run_command(instruction), env=self._model_env()
@@ -294,16 +303,48 @@ class DataAgent(BaseInstalledAgent):
                 raise
             raise error(str(exc)) from exc
 
+    def _read_events(self) -> tuple[str, list[dict[str, Any]]] | None:
+        """The last event file's name and events; None when there is none or it is unreadable."""
+        paths = sorted((self.logs_dir / self.EVENTS_DIR).glob("*.jsonl"))
+        if not paths:
+            return None
+        try:
+            text = paths[-1].read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            self.logger.warning(f"no trajectory: cannot read {paths[-1].name}: {exc}")
+            return None
+        return paths[-1].stem, [e for e in parse_events(text) if isinstance(e, dict)]
+
+    def _write_trajectory(self, session_id: str, events: list[dict[str, Any]]) -> None:
+        path = self.logs_dir / self.TRAJECTORY_FILE
+        path.unlink(missing_ok=True)
+        try:
+            trajectory = convert(events, self.instruction, session_id)
+        except ValidationError as exc:
+            self.logger.warning(f"no trajectory: the events do not make valid ATIF: {exc}")
+            return
+        if trajectory is None:
+            self.logger.warning("no trajectory: the event file holds no events")
+            return
+        path.write_text(
+            json.dumps(trajectory.to_json_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
+        read = self._read_events()
+        if read is None:
+            self.logger.warning("no trajectory: the run left no readable event file")
+            return
+        session_id, events = read
+        self._write_trajectory(session_id, events)
         version: dict[str, Any] = {}
         result: dict[str, Any] | None = None
-        for path in sorted((self.logs_dir / self.EVENTS_DIR).glob("*.jsonl")):
-            for event in parse_events(path.read_text()):
-                if event.get("type") == "version":
-                    version = event
-                elif event.get("type") == "result":
-                    result = event
+        for event in events:
+            if event.get("type") == "version":
+                version = event
+            elif event.get("type") == "result":
+                result = event
         if result is None:
             return
         cached = int(result.get("cached_input_tokens") or 0)

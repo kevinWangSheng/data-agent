@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from harbor.models.trajectories import Trajectory
+
+from evals.atif import convert
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Key-shaped values are assembled here so the repository never contains a literal one.
@@ -334,3 +337,56 @@ def test_scrub_fails_on_user_names_left_after_scrubbing(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "output.jsonl" in proc.stderr and "ci-runner" in proc.stderr
     assert "events.jsonl" not in proc.stderr
+
+
+def test_scrub_cleans_every_field_of_an_atif_trajectory_and_keeps_it_valid(
+    tmp_path: Path,
+) -> None:
+    endpoint = "https://llm.build-box-7.example/v1"
+    events = [
+        {"type": "version", "git_commit": "abc", "model": "m", "config": "/home/ci-runner/cfg"},
+        {"type": "thinking", "text": "the database is at 198.51.100.9"},
+        {"type": "text", "text": "Connecting from build-box-7."},
+        {
+            "type": "tool_start",
+            "tool": "Bash",
+            "tool_use_id": "c1",
+            "input": {"command": f"curl -H 'Authorization: Bearer {FAKE_KEY}' {endpoint}"},
+        },
+        {
+            "type": "tool_end",
+            "tool_use_id": "c1",
+            "content": [{"type": "text", "text": f"POST {endpoint} failed for key {FAKE_KEY}"}],
+        },
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "a1"},
+        {
+            "type": "verifier_end",
+            "verifier": "verifier",
+            "agent_id": "a1",
+            "report": "Source: /home/ci-runner/job/models/x.sql",
+        },
+        {"type": "error", "source": "sdk", "error": "lost 198.51.100.9 via build-box-7"},
+    ]
+    trajectory = convert(events, instruction="fix it on build-box-7", session_id="run-1")
+    assert trajectory is not None
+    path = tmp_path / "trial" / "agent" / "trajectory.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(trajectory.to_json_dict(), indent=2))
+    proc = scrub(
+        tmp_path,
+        "--hostname",
+        "build-box-7",
+        "--home",
+        "/home/ci-runner",
+        "--user",
+        "ci-runner",
+        DATA_AGENT_API_KEY=FAKE_KEY,
+        DATA_AGENT_BASE_URL=endpoint,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = path.read_text()
+    for leak in (FAKE_KEY, endpoint, "build-box-7", "198.51.100.9", "/home/ci-runner"):
+        assert leak not in out
+    scrubbed = Trajectory.model_validate_json(out)
+    assert len(scrubbed.steps) == len(trajectory.steps)
+    assert scrubbed.steps[0].message == "fix it on [redacted-host]"
