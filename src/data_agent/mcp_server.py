@@ -87,5 +87,5 @@ def build_server(
     if config.context:
         register_context_tools(server, partial(run_query, gateway))
     if config.verifiers and verifier_tools:
-        register_verifier_tools(server, partial(run_query, gateway), workspace)
+        register_verifier_tools(server, partial(run_query, gateway), workspace, gateway.dialect)
     return server
