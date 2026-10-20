@@ -249,7 +249,8 @@ def probe(image: str) -> Platform:
 
 
 def fill(images: Iterable[str], requirements: Path, lock: Path) -> list[str]:
-    """Fill the cache for the images' platforms, each platform once; a line on each."""
+    """Fill the cache for the images' platforms, each platform once; returns one summary line per
+    platform (its wheel count and the time taken)."""
     platforms = dict.fromkeys(probe(image) for image in sorted(set(images)))
     lines: list[str] = []
     for platform in platforms:

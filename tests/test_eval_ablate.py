@@ -648,6 +648,7 @@ def test_the_fill_covers_the_images_of_the_holdout_tasks(
         (RuntimeError("x.whl: sha256 00, expected 11"), "sha256"),
         (RuntimeError("no locked wheel of duckdb==1.4.0 installs on"), "no locked wheel"),
         (subprocess.CalledProcessError(6, ["curl"]), "curl"),
+        (KeyError("markers"), "markers"),  # a probe that printed other JSON
     ],
 )
 def test_a_failed_fill_stops_before_any_harbor_job(

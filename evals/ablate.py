@@ -244,7 +244,7 @@ def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:
         images = {wheels.task_image(tasks_dir / task) for task in tasks}
         _, requirements = build_artifacts()
         lines = wheels.fill(images, requirements, REPO_ROOT / "uv.lock")
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+    except (OSError, KeyError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise Stop(f"cannot fill the wheel cache for the tasks' containers: {exc}") from exc
     for line in lines:
         print(f"wheels: {line}", flush=True)
