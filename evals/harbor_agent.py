@@ -47,7 +47,7 @@ from harbor.agents.installed.base import (
 from harbor.agents.options import InstalledAgentOptions
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext, ModelUsage
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, field_validator
 
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT
 from evals.atif import convert
@@ -317,18 +317,17 @@ class DataAgent(BaseInstalledAgent):
 
     def _write_trajectory(self, session_id: str, events: list[dict[str, Any]]) -> None:
         path = self.logs_dir / self.TRAJECTORY_FILE
-        path.unlink(missing_ok=True)
         try:
+            path.unlink(missing_ok=True)
             trajectory = convert(events, self.instruction, session_id)
-        except ValidationError as exc:
-            self.logger.warning(f"no trajectory: the events do not make valid ATIF: {exc}")
-            return
-        if trajectory is None:
-            self.logger.warning("no trajectory: the event file holds no events")
-            return
-        path.write_text(
-            json.dumps(trajectory.to_json_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+            if trajectory is None:
+                self.logger.warning("no trajectory: the event file holds no events")
+                return
+            text = json.dumps(trajectory.to_json_dict(), indent=2, ensure_ascii=False)
+            path.write_text(text, encoding="utf-8")
+        # ValueError covers pydantic's ValidationError: events that do not make valid ATIF.
+        except (ValueError, TypeError, OSError) as exc:
+            self.logger.warning(f"no trajectory: {type(exc).__name__}: {exc}")
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
@@ -347,11 +346,15 @@ class DataAgent(BaseInstalledAgent):
                 result = event
         if result is None:
             return
-        cached = int(result.get("cached_input_tokens") or 0)
-        # Harbor's n_input_tokens includes the cached tokens.
-        total_input = int(result.get("uncached_input_tokens") or 0) + cached
-        output = int(result.get("output_tokens") or 0)
-        cost = float(result.get("cost_usd") or 0.0)
+        try:
+            cached = int(result.get("cached_input_tokens") or 0)
+            # Harbor's n_input_tokens includes the cached tokens.
+            total_input = int(result.get("uncached_input_tokens") or 0) + cached
+            output = int(result.get("output_tokens") or 0)
+            cost = float(result.get("cost_usd") or 0.0)
+        except (ValueError, TypeError) as exc:
+            self.logger.warning(f"no tokens or cost: corrupt result event: {exc}")
+            return
         context.n_input_tokens = total_input
         context.n_cache_tokens = cached
         context.n_output_tokens = output

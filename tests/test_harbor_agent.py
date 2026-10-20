@@ -388,6 +388,29 @@ def test_events_that_harbors_model_rejects_leave_no_trajectory(tmp_path: Path) -
     assert context.cost_usd == pytest.approx(0.0123)
 
 
+def test_a_corrupt_result_event_leaves_no_trajectory_and_no_error(tmp_path: Path) -> None:
+    logs = tmp_path / "agent"
+    (logs / "events").mkdir(parents=True)
+    corrupt = result_event(output_tokens="many", cost_usd=[1])
+    (logs / "events" / "run-1.jsonl").write_text(jsonl(VERSION_EVENT, corrupt))
+    agent = DataAgent(logs_dir=logs, model_name="deepseek/deepseek-flash")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+    assert not (logs / "trajectory.json").exists()
+    assert context.is_empty()
+
+
+def test_a_trajectory_that_cannot_be_written_is_no_error(tmp_path: Path) -> None:
+    logs = tmp_path / "agent"
+    (logs / "events").mkdir(parents=True)
+    (logs / "events" / "run-1.jsonl").write_text(jsonl(VERSION_EVENT, result_event()))
+    (logs / "trajectory.json").mkdir()
+    agent = DataAgent(logs_dir=logs, model_name="deepseek/deepseek-flash")
+    context = AgentContext()
+    agent.populate_context_post_run(context)
+    assert context.cost_usd == pytest.approx(0.0123)
+
+
 def test_job_config_retries_only_transient_model_errors() -> None:
     """plan §7: retry rate limits, 5xx and disconnects; Harbor's default exclusions stay."""
     config = JobConfig.model_validate(yaml.safe_load(JOB_CONFIG.read_text()))
