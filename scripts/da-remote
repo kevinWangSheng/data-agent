@@ -4,11 +4,27 @@
 # Output never shows the server address: IPv4/IPv6 addresses are replaced with <server>.
 #
 # Usage: da-remote check
-# Env:   DA_REMOTE_HOST (default: da-server), DA_REMOTE_DIR (repo path on the server, default: ~/data-agent)
+#        da-remote setup [<commit>]               clone or fetch the repo on the server, check out
+#                                                 <commit> (default origin/main), uv sync
+#        da-remote start <name> -- <evals args>   run `python -m evals <evals args>` in the background,
+#                                                 log to runs/<name>/run.log on the server
+#        da-remote status [<name>]                running or not, log tail, spend so far
+#        da-remote push <name>                    copy this checkout's runs/<name>/ to the server
+#        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout
+# Env:   DA_REMOTE_HOST (default: da-server), DA_REMOTE_DIR (repo path on the server, default:
+#        ~/data-agent), DA_REMOTE_REPO (clone URL, default: the GitHub repo)
 set -euo pipefail
 
 host="${DA_REMOTE_HOST:-da-server}"
 dir="${DA_REMOTE_DIR:-~/data-agent}"
+repo="${DA_REMOTE_REPO:-https://github.com/kevinWangSheng/data-agent.git}"
+ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10)
+tail_lines=20
+
+usage() {
+  sed -n 's/^# Usage: /usage: /p; s/^#        da-remote/       da-remote/p' "$0" >&2
+  exit 2
+}
 
 mask() {
   sed -E \
@@ -18,29 +34,100 @@ mask() {
 }
 
 remote() {
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "$@" 2>&1 | mask
+  # shellcheck disable=SC2029  # the remote command is a fixed string
+  ssh "${ssh_opts[@]}" "$host" "$@" 2>&1 | mask
   return "${PIPESTATUS[0]}"
+}
+
+check_name() {
+  local LC_ALL=C
+  if ! [[ $1 =~ ^[A-Za-z0-9._-]+$ ]] || [[ $1 =~ ^\.+$ ]]; then
+    echo "da-remote: run name must match [A-Za-z0-9._-]+ and not be all dots, got '$1'" >&2
+    exit 2
+  fi
+}
+
+# The server's repo dir as a shell word: a leading ~ stays expandable, the rest is quoted.
+# shellcheck disable=SC2016,SC2088  # ~ and $HOME are the server's, kept literal on purpose
+remote_dir_word() {
+  case $dir in
+    "~") printf '"$HOME"' ;;
+    "~/"*) printf '"$HOME"/%q' "${dir#\~/}" ;;
+    *) printf '%q' "$dir" ;;
+  esac
+}
+
+# rsync resolves a relative remote path from the login directory, so ~/x becomes x.
+# shellcheck disable=SC2088
+rsync_dir() {
+  case $dir in
+    "~") printf '.' ;;
+    "~/"*) printf '%s' "${dir#\~/}" ;;
+    *) printf '%s' "$dir" ;;
+  esac
+}
+
+checkout_root() {
+  git rev-parse --show-toplevel 2>/dev/null || {
+    echo "da-remote: run from inside the data-agent checkout (runs/ goes to its root)" >&2
+    exit 2
+  }
+}
+
+# Runs `bash -s` on the server: variable assignments (quoted here), the shared helpers, then the
+# subcommand's script from stdin. Every argument reaches the server inside the script, never on the
+# remote command line.
+run_script() {
+  {
+    printf 'DIR=%s\n' "$(remote_dir_word)"
+    [ $# -eq 0 ] || printf '%s=%q\n' "$@"
+    cat <<'EOF'
+export PATH="$HOME/.local/bin:$PATH"
+ENVF="$HOME/.config/data-agent/env"
+# A run is alive while its pid runs its own runner script (a reused pid runs something else).
+alive() {
+  local pid
+  pid=$(cat "$DIR/runs/$1/run.pid" 2>/dev/null) || return 1
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null &&
+    ps -p "$pid" -o args= 2>/dev/null | grep -qF "runs/$1/run.sh"
+}
+state() {
+  if alive "$1"; then
+    echo "running (pid $(cat "$DIR/runs/$1/run.pid"))"
+  elif [ -f "$DIR/runs/$1/exit" ]; then
+    echo "finished, exit $(cat "$DIR/runs/$1/exit")"
+  else
+    echo "stopped without an exit code"
+  fi
+}
+EOF
+    cat
+  } | remote "bash -s"
 }
 
 check() {
   # Reports facts only; never prints the env file's contents or the hostname.
-  remote "DIR=$dir bash -s" <<'EOF'
+  run_script <<'EOF'
 ok() { printf '  ok    %s\n' "$1"; }
 bad() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 fails=0
 
 arch=$(uname -m)
 [ "$arch" = x86_64 ] && ok "arch $arch" || bad "arch $arch (need x86_64)"
+# plan §7: no fixed machine size; concurrency = min((memory - 1 GB) / 0.8 GB, cores / 2), each trial
+# capped at 2 cores and peaking under 0.8 GB. The machine qualifies when it fits one trial.
 cores=$(nproc)
-[ "$cores" -ge 8 ] && ok "cores $cores" || bad "cores $cores (want >= 8)"
-mem=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
-[ "$mem" -ge 30 ] && ok "memory ${mem} GB" || bad "memory ${mem} GB (want >= 32)"
+mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+by_mem=$(((mem_mb - 1024) * 10 / 8192))
+by_cores=$((cores / 2))
+conc=$((by_mem < by_cores ? by_mem : by_cores))
+summary="cores $cores, memory $((mem_mb / 1024)) GB -> --n-concurrent $conc"
+[ "$conc" -ge 1 ] && ok "$summary" || bad "$summary (need >= 1)"
 disk=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc 0-9)
-[ "$disk" -ge 100 ] && ok "free disk ${disk} GB" || bad "free disk ${disk} GB (want >= 100)"
+[ "$disk" -ge 20 ] && ok "free disk ${disk} GB" || bad "free disk ${disk} GB (want >= 20)"
 . /etc/os-release 2>/dev/null && ok "os $PRETTY_NAME"
 
-export PATH="$HOME/.local/bin:$PATH"
-for t in docker uv git git-lfs; do
+for t in docker uv git git-lfs rsync; do
   command -v "$t" >/dev/null && ok "$t installed" || bad "$t missing"
 done
 docker info >/dev/null 2>&1 && ok "docker runs without sudo" || bad "docker info failed (daemon down or user not in docker group)"
@@ -49,12 +136,11 @@ if [ -d "$DIR/.git" ]; then
   ok "repo at $DIR ($(git -C "$DIR" log --oneline -1))"
   git -C "$DIR" ls-remote --exit-code origin HEAD >/dev/null 2>&1 && ok "repo can reach GitHub" || bad "git ls-remote origin failed"
 else
-  bad "no git repo at $DIR (set DA_REMOTE_DIR)"
+  bad "no git repo at $DIR (da-remote setup)"
 fi
 
-envf="$HOME/.config/data-agent/env"
-if [ -f "$envf" ]; then
-  perm=$(stat -c %a "$envf")
+if [ -f "$ENVF" ]; then
+  perm=$(stat -c %a "$ENVF")
   [ "$perm" = 600 ] && ok "env file present, mode 600" || bad "env file mode $perm (want 600)"
 else
   bad "env file missing"
@@ -68,10 +154,187 @@ echo "$fails failure(s)"
 EOF
 }
 
-case "${1:-}" in
-  check) check ;;
-  *)
-    echo "usage: da-remote check" >&2
-    exit 2
+setup() {
+  local rev="${1:-origin/main}"
+  [[ $rev == -* ]] && usage
+  run_script REPO "$repo" REV "$rev" <<'EOF'
+if [ -d "$DIR/runs" ]; then
+  for f in "$DIR"/runs/*/run.pid; do
+    [ -e "$f" ] || continue
+    n=$(basename "$(dirname "$f")")
+    if alive "$n"; then
+      echo "setup: run $n is still running; it would see the code change under it"
+      exit 1
+    fi
+  done
+fi
+if [ -d "$DIR/.git" ]; then
+  git -C "$DIR" fetch --quiet origin || exit 1
+elif [ -e "$DIR" ]; then
+  echo "setup: $DIR exists but is not a git repo"
+  exit 1
+else
+  git clone --quiet "$REPO" "$DIR" || exit 1
+fi
+cd "$DIR" || exit 1
+if [ -n "$(git status --porcelain)" ]; then
+  echo "setup: $DIR has uncommitted changes; refusing to switch commits:"
+  git status --short | head -20
+  exit 1
+fi
+sha=$(git rev-parse --verify --quiet "$REV^{commit}") || {
+  echo "setup: unknown commit $REV"
+  exit 1
+}
+git checkout --quiet --detach "$sha" || exit 1
+echo "setup: $DIR at $(git log --oneline -1)"
+uv sync
+EOF
+}
+
+start() {
+  local name=$1
+  shift
+  # The budget the run was started with, for `status`'s spend line.
+  local budget="" prev=""
+  for a in "$@"; do
+    [ "$prev" = --budget ] && budget=$a
+    [[ $a == --budget=* ]] && budget=${a#--budget=}
+    prev=$a
+  done
+  run_script NAME "$name" BUDGET "$budget" EVALS_ARGS "$(printf '%q ' "$@")" <<'EOF'
+cd "$DIR" 2>/dev/null && [ -d .git ] || {
+  echo "start: no repo at $DIR; run da-remote setup first"
+  exit 1
+}
+[ -f "$ENVF" ] || {
+  echo "start: no env file on the server (~/.config/data-agent/env)"
+  exit 1
+}
+run="runs/$NAME"
+if alive "$NAME"; then
+  echo "start: $NAME is already running ($(state "$NAME")); pick another name or wait"
+  exit 1
+fi
+mkdir -p "$run"
+rm -f "$run/exit"
+if [ -n "$BUDGET" ]; then printf '%s\n' "$BUDGET" >"$run/budget"; else rm -f "$run/budget"; fi
+commit=$(git rev-parse --short HEAD)
+[ -n "$(git status --porcelain)" ] && commit="$commit-dirty"
+cat >"$run/run.sh" <<RUN
+#!/usr/bin/env bash
+# da-remote start $NAME, commit $commit
+set -a
+. "\$HOME/.config/data-agent/env"
+set +a
+export PATH="\$HOME/.local/bin:\$PATH"
+cd $(printf '%q' "$PWD") || exit 1
+uv run --no-sync python -m evals $EVALS_ARGS
+code=\$?
+echo "da-remote: evals exited \$code at \$(date -u +%FT%TZ)"
+echo "\$code" >$(printf '%q' "$run/exit")
+RUN
+echo "=== da-remote start $NAME at $(date -u +%FT%TZ), commit $commit: evals $EVALS_ARGS" >>"$run/run.log"
+nohup bash "$run/run.sh" >>"$run/run.log" 2>&1 </dev/null &
+echo $! >"$run/run.pid"
+echo "start: $NAME running at commit $commit (pid $!), log $run/run.log"
+echo "  evals $EVALS_ARGS"
+EOF
+}
+
+status() {
+  if [ $# -eq 0 ]; then
+    run_script <<'EOF'
+found=0
+for f in "$DIR"/runs/*/run.pid; do
+  [ -e "$f" ] || continue
+  n=$(basename "$(dirname "$f")")
+  printf '%-30s %s\n' "$n" "$(state "$n")"
+  found=1
+done
+[ "$found" = 1 ] || echo "status: no runs"
+EOF
+    return
+  fi
+  run_script NAME "$1" TAIL "$tail_lines" <<'EOF'
+run="$DIR/runs/$NAME"
+[ -f "$run/run.pid" ] || {
+  echo "status: no run named $NAME"
+  exit 1
+}
+echo "$NAME: $(state "$NAME")"
+echo "--- last $TAIL lines of runs/$NAME/run.log"
+tail -n "$TAIL" "$run/run.log"
+echo "---"
+budget=$(cat "$run/budget" 2>/dev/null) || budget=""
+if [ -z "$budget" ]; then
+  budget=1000000
+  echo "(no --budget at start; the stop line below uses a nominal budget)"
+fi
+cd "$DIR" && uv run --no-sync python -m evals spend "runs/$NAME" --budget "$budget"
+true  # spend's exit 1 at 80% is reported in its output, not as a failed status
+EOF
+}
+
+# rsync over the same host alias and ssh options; rsync's own messages are masked too.
+copy() {
+  rsync -a -e "ssh ${ssh_opts[*]}" "$1" "$2" 2>&1 | mask
+  return "${PIPESTATUS[0]}"
+}
+
+push() {
+  local root
+  root=$(checkout_root)
+  [ -d "$root/runs/$1" ] || {
+    echo "push: no runs/$1 in this checkout" >&2
+    exit 1
+  }
+  run_script <<'EOF'
+[ -d "$DIR/.git" ] || {
+  echo "push: no repo at $DIR; run da-remote setup first"
+  exit 1
+}
+mkdir -p "$DIR/runs"
+EOF
+  copy "$root/runs/$1/" "$host:$(rsync_dir)/runs/$1/"
+  echo "push: runs/$1 -> server runs/$1"
+}
+
+pull() {
+  local root
+  root=$(checkout_root)
+  mkdir -p "$root/runs"
+  copy "$host:$(rsync_dir)/runs/$1/" "$root/runs/$1/"
+  echo "pull: server runs/$1 -> $root/runs/$1"
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  check)
+    [ $# -eq 0 ] || usage
+    check
     ;;
+  setup)
+    [ $# -le 1 ] || usage
+    setup "$@"
+    ;;
+  start)
+    [ $# -ge 3 ] && [ "$2" = -- ] || usage
+    check_name "$1"
+    name=$1
+    shift 2
+    start "$name" "$@"
+    ;;
+  status)
+    [ $# -le 1 ] || usage
+    [ $# -eq 0 ] || check_name "$1"
+    status "$@"
+    ;;
+  push | pull)
+    [ $# -eq 1 ] || usage
+    check_name "$1"
+    "$cmd" "$1"
+    ;;
+  *) usage ;;
 esac
