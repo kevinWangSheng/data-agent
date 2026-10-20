@@ -1,6 +1,6 @@
 # 17 — da-remote 跑评测、看状态、取结果
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 17-da-remote-eval)
@@ -50,7 +50,7 @@ plan §7"服务器与并发""结果怎么拿回来"、§9 第 8 项（"工单 12
 - Attempts: 2
 - Review rounds: 3（da-review 2、eng:code-review 1；3fb00bd 的 da-review 因模型满载未跑，由 PR 上的 Codex 审查覆盖）
 - Model spend: $0.0431（服务器冒烟）
-- Outcome: in-review
+- Outcome: done，PR #20 squash 合并（0 轮退回）
 - Human review minutes: —
 
 ## Comments
@@ -101,3 +101,8 @@ plan §7"服务器与并发""结果怎么拿回来"、§9 第 8 项（"工单 12
   - `pull smoke17` → `(holdout: summary only, trials stay on the server)`；本地只有 `budget`、`exit`、`request.json`、`run.log`、`subcommand`、`reports/<stamp>/{ablation.json, ablation.md, full/report.json}`，grep 不到题名和 IPv4。再 pull 同目录 exit 0；本地建 `jobs/` 后 pull → 拒绝，exit 1。
 - 审查：`da-review` 第 3 轮 P1（只取汇总时本地残留逐题文件）→ 3fb00bd 改成拒绝并配测试；不采纳 `--delete-excluded`（会删掉推上去的输入）。3fb00bd 的 da-review 四次 "Selected model is at capacity" 未跑。
 - 已知限制：`run.log` 安全靠 `ablate` 只打印汇总，Python traceback 若带题名会随日志回来；此前启动的 run 没有 `subcommand` 文件，一律只取汇总。
+
+### 2026-10-20 主会话：合并 PR #20
+
+- CI 第一次失败：`tests/test_da_remote.py::test_the_script_is_shellcheck_clean` 在 CI（装了 shellcheck）报 `scripts/da-remote:358` SC2015（`A && B || C`）；本机没装 shellcheck，该测试被跳过。主会话在分支上改成 `if [ $# -lt 3 ] || [ "$2" != -- ]; then usage; fi`（3ccfadc，行为不变），`uvx --from shellcheck-py shellcheck` clean，`tests/test_da_remote.py` 74 passed（含 shellcheck 测试）。
+- CI 绿（3ccfadc）；Codex 对 3fb00bd 与 3ccfadc 均无意见（覆盖了本地没跑成的 3fb00bd 的 da-review）。已 `gh pr merge 20 --squash`，并把 `scripts/da-remote` 装到 `~/.local/bin/da-remote`。
