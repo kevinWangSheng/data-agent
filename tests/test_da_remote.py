@@ -337,14 +337,49 @@ def test_pull_copies_the_server_run_into_the_checkout(env: Env, remote_dir: str,
     assert proc.returncode == 0, proc.stderr
     local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))
     args = (env.log / "rsync.args").read_text().splitlines()
-    assert args == [
-        "-a",
-        "-e",
-        "ssh -o BatchMode=yes -o ConnectTimeout=10",
-        f"my-alias:{remote_path}",
-        f"{local}/runs/smoke/",
-    ]
+    assert args[:3] == ["-a", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10"]
+    assert args[-2:] == [f"my-alias:{remote_path}", f"{local}/runs/smoke/"]
     assert (local / "runs").is_dir()
+
+
+SUMMARY_FILTERS = [
+    "--include=/reports/***",
+    *(f"--include=/{f}" for f in ("run.log", "exit", "budget", "subcommand", "request.json")),
+    "--exclude=*",
+]
+
+
+def test_pull_of_a_holdout_run_takes_the_summary_only(env: Env):
+    """ADR-0004: an ablate run is on the holdout; its trial dirs and Harbor logs name tasks and stay
+    on the server. The reports, the run log (aggregates only) and the control files come back."""
+    assert env.run("setup").returncode == 0
+    assert env.run("start", "smoke", "--", "ablate", "--budget", "1").returncode == 0
+    env.finish(0)
+    assert (env.repo / "runs" / "smoke" / "subcommand").read_text().strip() == "ablate"
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "summary only" in proc.stdout
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert args[3:-2] == SUMMARY_FILTERS
+
+
+def test_pull_of_a_run_with_no_recorded_subcommand_takes_the_summary_only(env: Env):
+    """Fail closed: a run da-remote did not start may be a holdout run."""
+    (env.repo / "runs" / "smoke").mkdir(parents=True)
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert args[3:-2] == SUMMARY_FILTERS
+
+
+def test_pull_of_a_dev_or_dab_run_takes_the_whole_dir(env: Env):
+    assert env.run("setup").returncode == 0
+    assert env.run("start", "smoke", "--", "dab", "--budget", "1").returncode == 0
+    env.finish(0)
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert not any(a.startswith(("--include", "--exclude")) for a in args)
 
 
 def test_push_copies_a_local_run_dir_to_the_server(env: Env):
@@ -375,7 +410,7 @@ def test_push_never_touches_a_live_run_or_its_control_files(env: Env):
     env.finish(0)
     assert env.run("push", "smoke").returncode == 0
     args = (env.log / "rsync.args").read_text().splitlines()
-    for control in ("run.pid", "run.sh", "run.log", "exit", "budget"):
+    for control in ("run.pid", "run.sh", "run.log", "exit", "budget", "subcommand"):
         assert f"--exclude=/{control}" in args
 
 

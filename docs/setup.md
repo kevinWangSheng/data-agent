@@ -12,7 +12,7 @@
 | 4 | Mac 上的 colima 运行中（Docker 运行时；数据在外接盘 sd710） | 开发期跑测试用数据库和单题 | ☑ `m1-kind` 运行中，`docker` context 已切到 `colima-m1-kind`（2026-10-16，`docker info` 通） |
 | 5 | 私有 GitHub 仓库作为 remote | 代码从 Mac 同步到服务器靠它；一期跑通前保持私有，之后转公开 | ☑ `github.com/kevinWangSheng/data-agent`（2026-10-12） |
 
-服务器只经 `da-remote` 访问（用法见脚本头注释）：`setup [<commit>]` 拉仓库到指定 commit 并 `uv sync`；`push <name>` 把本机 `runs/<name>/`（如临时 manifest、题目副本）传上去；`start <name> -- <evals 子命令与参数>` 后台跑评测，日志在服务器 `runs/<name>/run.log`，评测的 `--out` 用 `runs/<name>`；`status [<name>]` 看状态、日志末尾和花费；`pull <name>` 取回本机 `runs/<name>/`。
+服务器只经 `da-remote` 访问（用法见脚本头注释）：`setup [<commit>]` 拉仓库到指定 commit 并 `uv sync`；`push <name>` 把本机 `runs/<name>/`（如临时 manifest、题目副本）传上去；`start <name> -- <evals 子命令与参数>` 后台跑评测，日志在服务器 `runs/<name>/run.log`，评测的 `--out` 用 `runs/<name>`；`status [<name>]` 看状态、日志末尾和花费；`pull <name>` 取回本机 `runs/<name>/`；留出集的 run（`ablate`）只取回汇总（`reports/`、`run.log`、控制文件），逐题 trial 与 Harbor 日志留在服务器（ADR-0004）。
 
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。
 

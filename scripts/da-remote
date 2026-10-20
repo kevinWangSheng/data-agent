@@ -11,7 +11,8 @@
 #                                                 evals --out runs/<name> so status and pull see it
 #        da-remote status [<name>]                running or not, log tail, spend so far
 #        da-remote push <name>                    copy this checkout's runs/<name>/ to the server
-#        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout
+#        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout;
+#                                                 a holdout run (ablate) brings back its summary only
 # Env:   DA_REMOTE_HOST (default: da-server), DA_REMOTE_DIR (repo path on the server, default:
 #        ~/data-agent), DA_REMOTE_REPO (clone URL, default: the GitHub repo)
 set -euo pipefail
@@ -204,7 +205,7 @@ start() {
     [[ $a == --budget=* ]] && budget=${a#--budget=}
     prev=$a
   done
-  run_script NAME "$name" BUDGET "$budget" EVALS_ARGS "$(printf '%q ' "$@")" <<'EOF'
+  run_script NAME "$name" BUDGET "$budget" SUBCOMMAND "$1" EVALS_ARGS "$(printf '%q ' "$@")" <<'EOF'
 cd "$DIR" 2>/dev/null && [ -d .git ] || {
   echo "start: no repo at $DIR; run da-remote setup first"
   exit 1
@@ -221,6 +222,7 @@ fi
 mkdir -p "$run"
 rm -f "$run/exit"
 if [ -n "$BUDGET" ]; then printf '%s\n' "$BUDGET" >"$run/budget"; else rm -f "$run/budget"; fi
+printf '%s\n' "$SUBCOMMAND" >"$run/subcommand" # pull decides from it what may leave the server
 commit=$(git rev-parse --short HEAD)
 [ -n "$(git status --porcelain)" ] && commit="$commit-dirty"
 cat >"$run/run.sh" <<RUN
@@ -304,16 +306,33 @@ mkdir -p "$DIR/runs"
 EOF
   # Inputs only: the files da-remote keeps for a run stay the server's.
   copy --exclude=/run.pid --exclude=/run.sh --exclude=/run.log --exclude=/exit --exclude=/budget \
+    --exclude=/subcommand \
     "$root/runs/$1/" "$host:$(rsync_dir)/runs/$1/"
   echo "push: runs/$1 -> server runs/$1"
 }
 
 pull() {
-  local root
+  local root sub filters=()
   root=$(checkout_root)
+  sub=$(run_script NAME "$1" <<'EOF'
+cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
+EOF
+  )
+  # ADR-0004: an ablate run is on the holdout, whose trial dirs and Harbor logs name tasks; only its
+  # reports (aggregates), the run log (ablate prints aggregates only) and control files leave the
+  # server. Anything else read back (none recorded, ssh noise) may be one too.
+  if ! [[ $sub =~ ^[a-z]+$ ]] || [ "$sub" = ablate ]; then
+    filters=(--include='/reports/***')
+    for f in run.log exit budget subcommand request.json; do filters+=(--include="/$f"); done
+    filters+=(--exclude='*')
+  fi
   mkdir -p "$root/runs"
-  copy "$host:$(rsync_dir)/runs/$1/" "$root/runs/$1/"
-  echo "pull: server runs/$1 -> $root/runs/$1"
+  copy ${filters[@]+"${filters[@]}"} "$host:$(rsync_dir)/runs/$1/" "$root/runs/$1/"
+  if [ ${#filters[@]} -gt 0 ]; then
+    echo "pull: server runs/$1 -> $root/runs/$1 (holdout: summary only, trials stay on the server)"
+  else
+    echo "pull: server runs/$1 -> $root/runs/$1"
+  fi
 }
 
 cmd="${1:-}"
