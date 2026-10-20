@@ -1,10 +1,10 @@
 # 17 — da-remote 跑评测、看状态、取结果
 
-Status: ready-for-agent
+Status: ready-for-human
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 17-da-remote-eval)
+Branch: worktree-17-da-remote-eval
 
 ## Goal
 
@@ -47,10 +47,10 @@ plan §7"服务器与并发""结果怎么拿回来"、§9 第 8 项（"工单 12
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2（da-review 1、eng:code-review 1）
 - Model spend: $0
-- Outcome: —
+- Outcome: ready-for-human（服务器缺 GitHub deploy key）
 - Human review minutes: —
 
 ## Comments
@@ -58,3 +58,27 @@ plan §7"服务器与并发""结果怎么拿回来"、§9 第 8 项（"工单 12
 ### 2026-10-20 主会话：建票
 
 用户确认一期剩余准备项（17 da-remote、18 上榜轨迹、19 Postgres 方言）。本工单改的是 `scripts/da-remote`（仓库里的源）；合并后由主会话把它装到 `~/.local/bin/da-remote`。
+
+### 2026-10-20 工单 agent：实现完成，真实运行受阻，转人（主会话抄录）
+
+分支 worktree-17-da-remote-eval：3b6f9c8、123c5c0、8ad0232。
+
+改动：`scripts/da-remote` 新增 `setup [<commit>]` / `start <name> -- <evals 参数>` / `status [<name>]` / `push <name>` / `pull <name>`。参数放进 stdin 上的 `bash -s` 脚本、`%q` 引号，不上远端命令行；输出都过 mask；`<name>` 限 `[A-Za-z0-9._-]+` 且不能全是点。`start` 写 `runs/<name>/run.sh`、`run.log`、`run.pid`，结束写 `exit`；同名在跑拒绝；打印 commit（脏标 `-dirty`）。`setup` 在有 run 在跑时拒绝。`status` 显示状态、日志末尾 20 行，并按启动时 `--budget` 跑 `evals spend`。`check` 改用 plan §7 并发口径（6 核 / 7 GB → `--n-concurrent 3`），磁盘门槛 100→20 GB，工具列表加 rsync；`docs/setup.md` 同步。新增 `push`（Acceptance 没列，冒烟要把临时 manifest 和题目副本传上去）：只写服务器 `runs/<name>/`，在跑的 run 拒绝，控制文件不覆盖。
+
+测试：`tests/test_da_remote.py`（假 ssh、rsync、uv，不连服务器）67 passed、1 skipped（shellcheck 未装；`uvx --from shellcheck-py shellcheck scripts/da-remote` 手动查 clean）。`make check`：1085 passed, 1 skipped；basedpyright 0 errors。
+
+真实运行（本 worktree 的 `scripts/da-remote`）：
+- `check` → exit 1：仅 "FAIL no git repo at …/data-agent (da-remote setup)"，其余 ok（"ok cores 6, memory 7 GB -> --n-concurrent 3"、"ok free disk 98 GB"、"ok rsync installed"）
+- `setup`（https）→ "fatal: could not read Username for 'https://github.com'"；`setup`（ssh，现默认）→ "git@github.com: Permission denied (publickey)."
+- `status` → "status: no runs"（exit 0）；`status smoke` → exit 1；`start smoke -- ablate --budget 1` → "no repo …; run da-remote setup first"（exit 1）；`pull smoke` → 经主机别名连上，远端目录不存在（exit 23）；`start ../x -- ablate` → 名字校验拒绝（exit 2）
+- 受阻：服务器没有 GitHub 凭据，私有仓库拉不下来；加 deploy key 属于改服务器配置（停止条件）。冒烟未跑，花费 $0。GitHub 主机密钥已在服务器 known_hosts。
+
+审查：
+- `da-review main`：P1 默认 https clone 用不了 deploy key → 已修，改 SSH；P2 push 会覆盖在跑 run 的控制文件 → 已修。各配修复前失败的测试。
+- `eng:code-review main` 已修：setup.md 段落打断表格；第 3 行仍写 100 GB；`--out` 与 `<name>` 一致写进用法。不修：push 的存活检查与 rsync 间竞态（单人工具）；push 用旧文件覆盖同名输出（只传输入、控制文件已排除）；mask 误伤版本号（只影响显示）；远端路径含空格（默认无空格）；本地报错不过 mask（不含地址）；重复代码。
+- 待决定：`pull` 会把 holdout 逐题 trial 目录取回 Mac。
+
+### 2026-10-20 主会话
+
+- `pull` 的 holdout 问题由主会话定：按 `spec.md:141`"服务器上的逐题结果只经 `da-remote` 取汇总"与 ADR-0004，holdout 的 run（`ablate`）只取回汇总报告（reports、`ablation.json`/`ablation.md`、日志里不含逐题信息的部分），不取 trial 目录；开发集与上榜全量 run 照旧整目录取回。建票时 Acceptance 写"取回 `runs/<name>/`"有误，以此为准。接手时一并修，配测试。
+- deploy key 交给用户决定；加好后原分支接着做冒烟。
