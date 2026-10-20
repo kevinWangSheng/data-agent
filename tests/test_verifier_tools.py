@@ -990,3 +990,37 @@ def test_a_count_keeps_its_columns_schema(tmp_path: Path) -> None:
     block = metric_block(text, "n_ok")
     assert "MISMATCH" not in block, block
     assert "Model matches" in block.split("staging.events")[1]
+
+
+POSTGRES_COUNTS = (
+    "SELECT customer_id, count(*) FILTER (WHERE status ~ '^ret') AS returns,"
+    " count(*) FILTER (WHERE to_char(ordered_at, 'YYYY') = '2025') AS orders_2025"
+    " FROM orders GROUP BY customer_id"
+)
+
+
+def test_a_postgres_model_is_read_and_counted_in_postgres() -> None:
+    """Read as DuckDB, `~` becomes REGEXP_FULL_MATCH and to_char a plain CAST to text."""
+    orders = verifier_tools.Table(
+        "public",
+        "orders",
+        "BASE TABLE",
+        [("customer_id", "text"), ("status", "text"), ("ordered_at", "date")],
+    )
+    model = verifier_tools.Table(
+        "public",
+        "m",
+        "BASE TABLE",
+        [("customer_id", "text"), ("returns", "bigint"), ("orders_2025", "bigint")],
+    )
+    roles, note = verifier_tools.column_roles(
+        model, POSTGRES_COUNTS, [orders, model], None, "postgres"
+    )
+    assert "Model SQL read" in note
+    labels = {name: verifier_tools.label(count, "postgres") for name, count in roles.counts.items()}
+    assert labels == {
+        "returns": "COUNT(*) FILTER(WHERE status ~ '^ret')",
+        "orders_2025": "COUNT(*) FILTER(WHERE TO_CHAR(ordered_at, 'YYYY') = '2025')",
+    }
+    baseline = verifier_tools.baseline_sql(roles.counts["orders_2025"], orders, None, "postgres")
+    assert baseline == "COUNT(*) FILTER(WHERE TO_CHAR(\"c\".\"ordered_at\", 'YYYY') = '2025')"
