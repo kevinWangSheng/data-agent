@@ -394,6 +394,11 @@ def test_events_that_harbors_model_rejects_leave_no_trajectory(tmp_path: Path) -
         {"output_tokens": "many", "cost_usd": [1]},
         # json.loads reads Infinity, which int() cannot convert.
         {"output_tokens": float("inf")},
+        # float() accepts these, but they are no cost and json.dumps writes them as non-JSON.
+        {"cost_usd": float("inf")},
+        {"cost_usd": float("-inf")},
+        {"cost_usd": float("nan")},
+        {"cost_usd": -0.01},
     ],
 )
 def test_a_corrupt_result_event_leaves_no_trajectory_and_no_error(

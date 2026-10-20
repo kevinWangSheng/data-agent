@@ -16,6 +16,7 @@ Totals come from the `result` event, which counts the verifiers too.
 """
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -196,11 +197,15 @@ class Usage:
 def usage(result: dict[str, Any]) -> Usage:
     """Raises ValueError, TypeError or OverflowError on a corrupt field."""
     cached = int(result.get("cached_input_tokens") or 0)
+    cost = float(result.get("cost_usd") or 0.0)
+    # float() takes inf and nan, which json.dumps writes as non-JSON tokens.
+    if not math.isfinite(cost) or cost < 0:
+        raise ValueError(f"cost_usd is not a cost: {cost}")
     return Usage(
         input_tokens=int(result.get("uncached_input_tokens") or 0) + cached,
         cached_tokens=cached,
         output_tokens=int(result.get("output_tokens") or 0),
-        cost_usd=float(result.get("cost_usd") or 0.0),
+        cost_usd=cost,
     )
 
 
