@@ -111,8 +111,8 @@ CONFIG_ALIAS_RE = re.compile(
     r"\{\{\s*config\((?:[^()]|\([^()]*\))*?\balias\s*=\s*['\"](\w+)['\"]", re.DOTALL
 )
 NAME_LINE_RE = re.compile(r"-\s*name:\s*['\"]?([^'\"\s]+)")
-# The default gateway dialect. Model SQL is parsed in the run's gateway dialect and rewritten counts
-# are run in it, so a Postgres run reads `~` and to_char as Postgres does.
+# Model SQL is parsed in the gateway's dialect and rewritten counts are run in it, so a Postgres run
+# reads `~` and to_char as Postgres does. DuckDB's where a caller names none.
 DIALECT = "duckdb"
 SQL_KEYWORDS = frozenset(
     {"THEN", "ELSE", "END", "WHEN", "CASE", "AND", "OR", "NOT", "NULL", "TRUE", "FALSE", "AS"}
@@ -789,7 +789,7 @@ class Parsed:
 
 
 def parse_model(
-    sql: str, catalog: list[Table], relations: Relations | None = None, dialect: str = DIALECT
+    sql: str, catalog: list[Table], relations: Relations | None, dialect: str
 ) -> Parsed | None:
     """The model's SQL with Jinja rendered away (ref and source become the relations dbt builds
     and reads, by `relations`), its columns qualified with their tables from the catalog where
@@ -1065,8 +1065,8 @@ def column_roles(
     model: Table,
     sql: str | None,
     catalog: list[Table],
-    relations: Relations | None = None,
-    dialect: str = DIALECT,
+    relations: Relations | None,
+    dialect: str,
 ) -> tuple[Roles, str]:
     """The roles and a note on how they were read."""
     parsed = parse_model(sql, catalog, relations, dialect) if sql is not None else None
@@ -1328,7 +1328,7 @@ def declared_columns(text: str) -> list[tuple[str, str]]:
     return [(name.strip(), data_type.strip()) for name, _, data_type in pairs if name.strip()]
 
 
-def normalized_type(data_type: str, dialect: str = DIALECT) -> str:
+def normalized_type(data_type: str, dialect: str) -> str:
     """The type's kind, aliases folded (int4, int and integer are INT), with a nested type's
     element and field types folded the same way: INTEGER[] is ARRAY(INT), VARCHAR[] is
     ARRAY(VARCHAR)."""
@@ -1362,7 +1362,7 @@ def same_type(declared: str, actual: str, dialect: str = DIALECT) -> bool:
 
 
 def register_verifier_tools(
-    server: MCPServer, run: RunQuery, workspace: Path | None, dialect: str = DIALECT
+    server: MCPServer, run: RunQuery, workspace: Path | None, dialect: str
 ) -> None:
     """Add the verification tools to `server`; called only when the run config turns the verifier
     layer on. With a `workspace`, map_columns reads only dbt projects inside it. `dialect` is the

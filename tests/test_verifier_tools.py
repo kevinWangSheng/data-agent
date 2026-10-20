@@ -1014,7 +1014,7 @@ def test_a_postgres_model_is_read_and_counted_in_postgres() -> None:
         [("customer_id", "text"), ("returns", "bigint"), ("orders_2025", "bigint")],
     )
     roles, note = verifier_tools.column_roles(
-        model, POSTGRES_COUNTS, [orders, model], dialect="postgres"
+        model, POSTGRES_COUNTS, [orders, model], None, "postgres"
     )
     assert "Model SQL read" in note
     labels = {name: verifier_tools.label(count, "postgres") for name, count in roles.counts.items()}
