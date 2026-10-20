@@ -362,6 +362,29 @@ def test_push_copies_a_local_run_dir_to_the_server(env: Env):
     assert args[-2:] == [f"{local}/runs/smoke/", f"da-server:{env.repo}/runs/smoke/"]
 
 
+def test_push_never_touches_a_live_run_or_its_control_files(env: Env):
+    assert env.run("setup").returncode == 0
+    assert env.run("start", "smoke", "--", "ablate", "--budget", "1").returncode == 0
+    local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))
+    (local / "runs" / "smoke").mkdir(parents=True)
+    proc = env.run("push", "smoke")
+    assert proc.returncode == 1
+    assert "running" in proc.stdout
+    assert not (env.log / "rsync.args").exists()
+
+    env.finish(0)
+    assert env.run("push", "smoke").returncode == 0
+    args = (env.log / "rsync.args").read_text().splitlines()
+    for control in ("run.pid", "run.sh", "run.log", "exit", "budget"):
+        assert f"--exclude=/{control}" in args
+
+
+def test_setup_clones_over_ssh_by_default():
+    """The server reads the private repo with a deploy key, which GitHub accepts over SSH only."""
+    text = DA_REMOTE.read_text()
+    assert 'DA_REMOTE_REPO:-git@github.com:kevinWangSheng/data-agent.git}"' in text
+
+
 def test_pull_outside_a_checkout_is_refused(env: Env, tmp_path: Path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()

@@ -17,7 +17,8 @@ set -euo pipefail
 
 host="${DA_REMOTE_HOST:-da-server}"
 dir="${DA_REMOTE_DIR:-~/data-agent}"
-repo="${DA_REMOTE_REPO:-https://github.com/kevinWangSheng/data-agent.git}"
+# SSH: the server reads the private repo with a deploy key, which GitHub does not take over HTTPS.
+repo="${DA_REMOTE_REPO:-git@github.com:kevinWangSheng/data-agent.git}"
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10)
 tail_lines=20
 
@@ -278,7 +279,7 @@ EOF
 
 # rsync over the same host alias and ssh options; rsync's own messages are masked too.
 copy() {
-  rsync -a -e "ssh ${ssh_opts[*]}" "$1" "$2" 2>&1 | mask
+  rsync -a -e "ssh ${ssh_opts[*]}" "$@" 2>&1 | mask
   return "${PIPESTATUS[0]}"
 }
 
@@ -289,14 +290,20 @@ push() {
     echo "push: no runs/$1 in this checkout" >&2
     exit 1
   }
-  run_script <<'EOF'
+  run_script NAME "$1" <<'EOF'
 [ -d "$DIR/.git" ] || {
   echo "push: no repo at $DIR; run da-remote setup first"
   exit 1
 }
+if alive "$NAME"; then
+  echo "push: $NAME is running; push inputs before start"
+  exit 1
+fi
 mkdir -p "$DIR/runs"
 EOF
-  copy "$root/runs/$1/" "$host:$(rsync_dir)/runs/$1/"
+  # Inputs only: the files da-remote keeps for a run stay the server's.
+  copy --exclude=/run.pid --exclude=/run.sh --exclude=/run.log --exclude=/exit --exclude=/budget \
+    "$root/runs/$1/" "$host:$(rsync_dir)/runs/$1/"
   echo "push: runs/$1 -> server runs/$1"
 }
 
