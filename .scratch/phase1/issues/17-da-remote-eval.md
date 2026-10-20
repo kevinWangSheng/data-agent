@@ -1,6 +1,6 @@
 # 17 — da-remote 跑评测、看状态、取结果
 
-Status: ready-for-human
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 17-da-remote-eval)
@@ -82,3 +82,7 @@ plan §7"服务器与并发""结果怎么拿回来"、§9 第 8 项（"工单 12
 
 - `pull` 的 holdout 问题由主会话定：按 `spec.md:141`"服务器上的逐题结果只经 `da-remote` 取汇总"与 ADR-0004，holdout 的 run（`ablate`）只取回汇总报告（reports、`ablation.json`/`ablation.md`、日志里不含逐题信息的部分），不取 trial 目录；开发集与上榜全量 run 照旧整目录取回。建票时 Acceptance 写"取回 `runs/<name>/`"有误，以此为准。接手时一并修，配测试。
 - deploy key 交给用户决定；加好后原分支接着做冒烟。
+
+### 2026-10-20 主会话：解除阻塞，交回原分支
+
+人在服务器上补了 `~/.ssh/config` 的 `Host github.com` → `~/.ssh/data_agent_deploy`（仓库只读 deploy key 2026-10-16 已加）；`git ls-remote git@github.com:kevinWangSheng/data-agent.git HEAD` 在服务器上返回 `c876ccf…`。接着做：(1) 上一节定下的 holdout `pull` 只取汇总，配测试；(2) 真实 `setup → push → start → status → pull` 1 题冒烟（holdout 只放一道开发集题目），贴已 mask 的输出。
