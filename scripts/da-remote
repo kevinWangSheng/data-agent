@@ -325,6 +325,14 @@ EOF
     filters=(--include='/reports/***')
     for f in run.log exit budget subcommand request.json; do filters+=(--include="/$f"); done
     filters+=(--exclude='*')
+    # The filters keep old local files: refuse rather than leave trials next to the summary.
+    for d in jobs logs dropped; do
+      if [ -e "$root/runs/$1/$d" ]; then
+        echo "pull: runs/$1/$d exists here; a holdout pull brings back the summary only," \
+          "so move runs/$1 aside first" >&2
+        exit 1
+      fi
+    done
   fi
   mkdir -p "$root/runs"
   copy ${filters[@]+"${filters[@]}"} "$host:$(rsync_dir)/runs/$1/" "$root/runs/$1/"

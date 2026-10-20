@@ -363,6 +363,20 @@ def test_pull_of_a_holdout_run_takes_the_summary_only(env: Env):
     assert args[3:-2] == SUMMARY_FILTERS
 
 
+@pytest.mark.parametrize("trial_dir", ["jobs", "logs", "dropped"])
+def test_a_summary_pull_refuses_a_local_dir_holding_trials(env: Env, trial_dir: str):
+    """rsync's filters keep old local files, so per-task files from an earlier full pull would stay
+    next to the summary; pull refuses instead of deleting anything local."""
+    local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))
+    (local / "runs" / "smoke" / trial_dir / "full").mkdir(parents=True)
+    (local / "runs" / "smoke" / "manifest.json").write_text("{}")  # a pushed input is fine
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 1
+    assert f"runs/smoke/{trial_dir}" in proc.stderr
+    assert not (env.log / "rsync.args").exists()
+    assert (local / "runs" / "smoke" / trial_dir / "full").is_dir()
+
+
 def test_pull_of_a_run_with_no_recorded_subcommand_takes_the_summary_only(env: Env):
     """Fail closed: a run da-remote did not start may be a holdout run."""
     (env.repo / "runs" / "smoke").mkdir(parents=True)
