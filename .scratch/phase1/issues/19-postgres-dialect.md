@@ -1,6 +1,6 @@
 # 19 — Postgres 运行时验证者与 Skill 用对方言
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (opus-5.5, worktree 19-postgres-dialect)
@@ -48,7 +48,7 @@ Branch: worktree-19-postgres-dialect
 - Attempts: 1
 - Review rounds: 1
 - Model spend: 约 $0.07（两次 jaffle）
-- Outcome: in-review
+- Outcome: done，PR #18 squash 合并（0 轮退回）
 - Human review minutes: —
 
 ## Comments
@@ -71,3 +71,7 @@ Branch: worktree-19-postgres-dialect
 ### 2026-10-20 主会话
 
 接受 `mcp_server.py:90` 一行越界：建票时把注入点错写成 `agent.py`，实际注册点在 `mcp_server.py`，改动最小。
+
+### 2026-10-20 主会话：合并 PR #18
+
+CI 绿（4616b4e），Codex 无意见（`has_any_findings: false`）。已 `gh pr merge 18 --squash`。
