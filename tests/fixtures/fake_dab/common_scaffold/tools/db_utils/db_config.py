@@ -40,7 +40,10 @@ def load_dbs(config_file: str, db_clients: dict[str, dict[str, str]]) -> None:
 
 
 def drop_dbs(config_file: str, db_clients: dict[str, dict[str, str]]) -> None:
-    """As DAB's query and list tools' `clean_up`: drop each loaded database."""
+    """As DAB's query and list tools' `clean_up`: drop each loaded database. A client with
+    `drop_error` fails to drop with that message."""
     for client in db_clients.values():
         if client["db_type"] in LOADED_TYPES:
+            if "drop_error" in client:
+                raise RuntimeError(client["drop_error"])
             record(config_file, "drop", client["db_name"])

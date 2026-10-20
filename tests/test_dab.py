@@ -943,6 +943,29 @@ async def test_a_failed_load_is_an_infra_error_and_no_session_starts(
     ]
 
 
+async def test_a_failed_drop_is_reported_masked_and_the_run_still_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    dab_root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = dab_root / "query_toyset" / "db_config.yaml"
+    config = json.loads(config_path.read_text())
+    error = "cleanup error: connection to db.internal.example refused"
+    config["db_clients"]["articles_db"]["drop_error"] = error
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setattr(dab, "query", scripted(["answer"], []))
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    env = {**ENV, "PG_HOST": "db.internal.example"}
+    errors = await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, env)
+    assert errors == 0
+    assert json.loads((out / "submission.json").read_text())[0]["answer"] == "answer"
+    stderr = capsys.readouterr().err
+    assert "could not drop the toyset databases" in stderr
+    assert "db.internal.example" not in stderr
+
+
 async def test_submission_keeps_entries_from_earlier_queries(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1043,6 +1066,22 @@ async def test_dab_logs_are_masked_when_the_run_is_interrupted(
     monkeypatch.setattr(dab, "query", interrupted_query)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
     with pytest.raises(asyncio.CancelledError):
+        await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, ENV)
+    log = dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "dab_tool_calls.jsonl"
+    assert log.read_text() == '{"result": "[REDACTED]"}\n'
+
+
+async def test_dab_logs_are_masked_when_the_load_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # Ctrl-C during a long load (minutes for imdb); DAB's log still gets masked.
+    def interrupted_load(_root: Path, _query: Any, log: Path, _secrets: list[str]) -> float:
+        log.write_text('{"result": "sk-test-secret"}\n')
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(dab, "load_databases", interrupted_load)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    with pytest.raises(KeyboardInterrupt):
         await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, ENV)
     log = dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "dab_tool_calls.jsonl"
     assert log.read_text() == '{"result": "[REDACTED]"}\n'

@@ -207,36 +207,39 @@ def run_dir(out: Path, dataset: str, query_id: str, run: int) -> Path:
     return out / dataset / f"query{query_id}" / f"run{run}"
 
 
-def load_databases(dab_root: Path, dab_query: DabQuery, log: Path) -> float:
+def _query_tool(dab_root: Path, dab_query: DabQuery, log: Path, check_load: bool) -> Any:
+    return scaffold(dab_root).query_tool(
+        log_path=str(log),
+        name="query_db",
+        db_config_path=str(dab_query.db_config),
+        check_load=check_load,
+    )
+
+
+def load_databases(dab_root: Path, dab_query: DabQuery, log: Path, secrets: list[str]) -> float:
     """Load the query's Postgres and MongoDB dumps with DAB's query tool, as DAB's own agent does
     before a session; returns the seconds it took. Done here, not in the tool server: imdb's
     1.6 GB dump loads for longer than the SDK waits for the server to start, which then counts as
     failed (ticket 23). When a load fails, what did load is dropped again."""
     started = time.monotonic()
     try:
-        scaffold(dab_root).query_tool(
-            log_path=str(log), name="query_db", db_config_path=str(dab_query.db_config)
-        )
+        _query_tool(dab_root, dab_query, log, check_load=True)
     except BaseException:
-        drop_databases(dab_root, dab_query, log)
+        drop_databases(dab_root, dab_query, log, secrets)
         raise
     return time.monotonic() - started
 
 
-def drop_databases(dab_root: Path, dab_query: DabQuery, log: Path) -> None:
+def drop_databases(dab_root: Path, dab_query: DabQuery, log: Path, secrets: list[str]) -> None:
     """Drop the query's loaded databases (DAB's clean-up), so one dataset at a time takes the
-    database containers' disk and memory. A failed drop is reported, never a failed run: the next
-    load of the dataset drops an earlier copy first."""
+    database containers' disk and memory. A failed drop is reported (masked: a driver error may
+    quote the connection settings), never a failed run: DAB's load drops an earlier copy of a
+    dataset before loading it again."""
     try:
-        tool = scaffold(dab_root).query_tool(
-            log_path=str(log),
-            name="query_db",
-            db_config_path=str(dab_query.db_config),
-            check_load=False,
-        )
-        tool.clean_up()
+        _query_tool(dab_root, dab_query, log, check_load=False).clean_up()
     except Exception as exc:
-        print(f"dab: could not drop the {dab_query.dataset} databases: {exc}", file=sys.stderr)
+        error = mask(str(exc), secrets)
+        print(f"dab: could not drop the {dab_query.dataset} databases: {error}", file=sys.stderr)
 
 
 def server_args(dab_root: Path, db_config: Path, log: Path, workspace: Path) -> list[str]:
@@ -422,12 +425,14 @@ async def run_once(
             },
         )
         try:
-            seconds = load_databases(dab_root, dab_query, tool_log)
+            seconds = load_databases(dab_root, dab_query, tool_log, secrets_of(env))
         except Exception as exc:
             # No session: without its databases the agent could only say the data is unreachable.
             log.emit("error", source="dab_load", error=f"loading DAB's databases failed: {exc}")
             log.emit("result", **ended_by_sdk(None, settings.model, cap))
             return "", "infra_error"
+        finally:  # also when the load is interrupted
+            mask_dab_logs(directory, secrets_of(env))
         log.emit("dab_load", seconds=round(seconds, 1))
         tools: dict[str, str] = {}
         server_up = True
@@ -453,7 +458,7 @@ async def run_once(
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
         finally:  # also when the run is interrupted
             remove_exec_containers(workspace)
-            drop_databases(dab_root, dab_query, tool_log)
+            drop_databases(dab_root, dab_query, tool_log, secrets_of(env))
             mask_dab_logs(directory, secrets_of(env))
         stopped = cap.result_fields() if cap is not None and cap.stopped else None
         log.emit("result", **(stopped or ended_by_sdk(final, settings.model, cap)))
