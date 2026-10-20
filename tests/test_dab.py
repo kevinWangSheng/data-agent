@@ -157,6 +157,25 @@ async def test_query_runs_through_the_dab_tool(dab_root: Path, tmp_path: Path) -
     assert [call["tool_name"] for call in logged_calls(log)] == ["query_db", "query_db"]
 
 
+def loads(root: Path) -> list[dict[str, str]]:
+    """What the fake DAB tools loaded and dropped, in order."""
+    path = root / "query_toyset" / "loads.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+async def test_the_tool_server_neither_loads_nor_drops_databases(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    # Loading a large dump (imdb's 1.6 GB) outlasts the SDK's wait for the server to start, and a
+    # drop on exit would race the next run's load: the runner owns both (ticket 23).
+    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
+        result = await session.call_tool("list_tables", {"db_name": "articles_db"})
+    assert not result.is_error
+    assert loads(dab_root) == []
+
+
 async def test_sql_tables_are_listed_through_the_gateway(dab_root: Path, tmp_path: Path) -> None:
     # DAB's ListDBTool sends its own SQL to the database; ours goes through the gateway and DAB's
     # query tool like any other query.
@@ -864,6 +883,64 @@ async def test_a_dab_server_that_failed_to_start_is_an_infra_error(
     assert json.loads((out / "submission.json").read_text()) == []
     events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
     assert any(e["type"] == "error" and e["source"] == "mcp" for e in events)
+
+
+async def test_databases_are_loaded_before_the_session_and_dropped_after(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    at_start: list[list[dict[str, str]]] = []
+
+    async def session(**_: Any) -> AsyncIterator[Any]:
+        at_start.append(loads(dab_root))
+        yield result("answer")
+
+    monkeypatch.setattr(dab, "query", session)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    errors = await dab.run_query(dab_root, query, load_config(CONFIG), out, 2, ENV)
+    assert errors == 0
+    load, drop = (
+        {"action": "load", "db_name": "articles"},
+        {"action": "drop", "db_name": "articles"},
+    )
+    assert at_start == [[load], [load, drop, load]]
+    assert loads(dab_root) == [load, drop, load, drop]
+    events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
+    assert [e["type"] for e in events[:2]] == ["version", "dab_load"]
+    assert events[1]["seconds"] >= 0
+
+
+async def test_a_failed_load_is_an_infra_error_and_no_session_starts(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    config_path = dab_root / "query_toyset" / "db_config.yaml"
+    config = json.loads(config_path.read_text())
+    config["db_clients"] = {
+        "films_db": {"db_type": "postgres", "db_name": "films", "sql_file": "films.sql"},
+        "articles_db": {
+            **config["db_clients"]["articles_db"],
+            "load_error": "mongorestore: no space",
+        },
+    }
+    config_path.write_text(json.dumps(config))
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["answer"], seen))
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    errors = await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, ENV)
+    assert errors == 1
+    assert seen == []
+    assert json.loads((out / "submission.json").read_text()) == []
+    events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
+    error = next(e for e in events if e["type"] == "error")
+    assert error["source"] == "dab_load"
+    assert "mongorestore: no space" in error["error"]
+    assert events[-1]["type"] == "result"
+    # What did load before the failure is dropped again.
+    assert loads(dab_root)[-2:] == [
+        {"action": "drop", "db_name": "films"},
+        {"action": "drop", "db_name": "articles"},
+    ]
 
 
 async def test_submission_keeps_entries_from_earlier_queries(

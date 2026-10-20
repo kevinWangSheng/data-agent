@@ -4,7 +4,7 @@ import json
 import sqlite3
 from typing import Any
 
-from common_scaffold.tools.db_utils.db_config import load_db_clients
+from common_scaffold.tools.db_utils.db_config import drop_dbs, load_db_clients
 
 DESCRIPTION = "FAKE-DAB list description."
 
@@ -15,6 +15,7 @@ class ListDBTool:
     ) -> None:
         self.log_path = log_path
         self.name = name
+        self.db_config_path = db_config_path
         self.db_clients = load_db_clients(db_config_path)
 
     def get_spec(self) -> dict[str, Any]:
@@ -42,4 +43,4 @@ class ListDBTool:
         return {"success": True, "result": [name for (name,) in names]}
 
     def clean_up(self) -> None:
-        pass
+        drop_dbs(self.db_config_path, self.db_clients)
