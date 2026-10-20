@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 1 | DeepSeek API key，充值约 $20 | platform.deepseek.com。一期上限暂定 $300、推算约 $250（未实测，见 `docs/plan.md` 第 7 节） | ☑ 人已填（2026-10-15）；工单 03 的真实运行用它跑通（2026-10-16） |
 | 2 | Anthropic API key，充值约 $20（可选） | 只用于工单 09 的 5 题 Sonnet 5.5 对照（约 $7）；不跑 Claude 全量 | ☐ |
-| 3 | x86_64 Linux 服务器 | Docker、uv、git、git-lfs；Mac 能 SSH 免密登录。台数和大小按工单 09 实测的单题峰值内存定（见 `docs/plan.md` 第 7 节"服务器与并发"）；20 GB 空闲磁盘（题目约 11 MB，DAB 数据约 5 GB，其余是镜像） | ◐ 别名 `da-server`：6 核 / 7 GB / 98 GB，SSH、Docker、uv、git、git-lfs、rsync、env 文件都通，按 plan §7 口径并发 3（`da-remote check`，2026-10-20）。这台不能升配。仓库未 clone：服务器没有 GitHub 凭据，私有仓库 https / ssh 都拉不下来，待人加只读 deploy key（2026-10-20） |
+| 3 | x86_64 Linux 服务器 | Docker、uv、git、git-lfs；Mac 能 SSH 免密登录。台数和大小按工单 09 实测的单题峰值内存定（见 `docs/plan.md` 第 7 节"服务器与并发"）；20 GB 空闲磁盘（题目约 11 MB，DAB 数据约 5 GB，其余是镜像） | ◐ 别名 `da-server`：6 核 / 7 GB / 98 GB，SSH、Docker、uv、git、git-lfs、rsync、env 文件都通，按 plan §7 口径并发 3（`da-remote check`，2026-10-20）。这台不能升配。仓库经只读 deploy key（SSH）clone 到服务器，`da-remote setup → push → start → status → pull` 1 题冒烟跑通（2026-10-20） |
 | 4 | Mac 上的 colima 运行中（Docker 运行时；数据在外接盘 sd710） | 开发期跑测试用数据库和单题 | ☑ `m1-kind` 运行中，`docker` context 已切到 `colima-m1-kind`（2026-10-16，`docker info` 通） |
 | 5 | 私有 GitHub 仓库作为 remote | 代码从 Mac 同步到服务器靠它；一期跑通前保持私有，之后转公开 | ☑ `github.com/kevinWangSheng/data-agent`（2026-10-12） |
 
