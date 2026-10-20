@@ -157,6 +157,10 @@ sys.exit(1 if fails else 0)
 PY
   )
 }
+# Whether db_probe's output and exit status ($1, $2) show both databases reachable.
+dbs_ready() {
+  [ "$2" = 0 ] && grep -qx 'postgres ok' <<<"$1" && grep -qx 'mongodb ok' <<<"$1"
+}
 # DAB data files whose size differs from its dataset_manifest.tsv (missing, or still an LFS stub).
 dab_data_mismatches() {
   local path _sha size
@@ -245,19 +249,20 @@ pinned DataAgentBench "$DAB" "$DAB_COMMIT"
 if [ -f "$DAB/dataset_manifest.tsv" ]; then
   total=$(grep -cv '^#' "$DAB/dataset_manifest.tsv")
   wrong=$(dab_data_mismatches | wc -l | tr -dc 0-9)
-  [ "$wrong" = 0 ] && ok "DAB data: all $total files of dataset_manifest.tsv, sizes match" ||
+  [ "$wrong" = 0 ] && ok "DAB data: all $total files of dataset_manifest.tsv, sizes match (sha256: da-remote benchmarks)" ||
     bad "DAB data: $wrong of $total files missing or of the wrong size (da-remote benchmarks)"
 fi
 docker image inspect "$EXEC_IMAGE" >/dev/null 2>&1 && ok "image $EXEC_IMAGE" || bad "no image $EXEC_IMAGE (da-remote benchmarks)"
 if [ -f "$DABENV" ]; then
   perm=$(stat -c %a "$DABENV" 2>/dev/null || stat -f %Lp "$DABENV")
   [ "$perm" = 600 ] && ok "DAB database settings present, mode 600" || bad "DAB database settings mode $perm (want 600)"
-  while IFS= read -r line; do
-    case $line in
-      *" ok") ok "${line% ok} reachable" ;;
-      *) bad "$line" ;;
-    esac
-  done < <(db_probe 2>&1)
+  probe=$(db_probe 2>&1) && code=0 || code=$?
+  if dbs_ready "$probe" "$code"; then
+    ok "postgres and mongodb reachable"
+  else
+    bad "DAB databases not both reachable (exit $code):"
+    printf '%s\n' "$probe" | tail -n 5 | sed 's/^/          /'
+  fi
 else
   bad "DAB database settings missing (da-remote benchmarks)"
 fi
@@ -337,19 +342,14 @@ pin() { # <name> <dir> <url> <commit>
 pin data-eng-bench "$DEB" "$DEB_REPO" "$DEB_COMMIT" || exit 1
 pin DataAgentBench "$DAB" "$DAB_REPO" "$DAB_COMMIT" || exit 1
 
-# download.sh hashes every file against dataset_manifest.tsv and fetches the ones that differ.
-if [ -z "$(dab_data_mismatches)" ] && [ "$(cat "$BENCH/dab-data.ok" 2>/dev/null)" = "$DAB_COMMIT" ]; then
-  echo "DAB data: verified by download.sh at ${DAB_COMMIT:0:7}, sizes unchanged, already"
-else
-  rm -f "$BENCH/dab-data.ok"
-  echo "DAB data: download.sh (fetches what does not match dataset_manifest.tsv; log in $BENCH/download.log)"
-  code=0
-  (cd "$DAB" && uv run -q --no-project --with 'huggingface_hub>=0.23' bash download.sh) \
-    >"$BENCH/download.log" 2>&1 || code=$?
-  grep -v '^  \[ok  \]' "$BENCH/download.log" | tail -n 40
-  [ "$code" = 0 ] || { echo "benchmarks: DAB download.sh failed (exit $code)"; exit 1; }
-  echo "$DAB_COMMIT" >"$BENCH/dab-data.ok"
-fi
+# download.sh hashes every file against dataset_manifest.tsv (sha256, every time: a size check
+# would miss a changed byte) and fetches the ones that differ.
+echo "DAB data: download.sh (checks every file's sha256, fetches what differs; log in $BENCH/download.log)"
+code=0
+(cd "$DAB" && uv run -q --no-project --with 'huggingface_hub>=0.23' bash download.sh) \
+  >"$BENCH/download.log" 2>&1 || code=$?
+grep -v '^  \[ok  \]' "$BENCH/download.log" | tail -n 40
+[ "$code" = 0 ] || { echo "benchmarks: DAB download.sh failed (exit $code)"; exit 1; }
 # evals/dab.py records DAB's commit with `git diff`, which runs git-lfs's clean filter on every
 # downloaded file (13 GB, read into memory) when git-lfs is installed. With the driver set to do
 # nothing in this clone only, the data differs from its pointer stubs and dab.py checks it against
@@ -427,11 +427,15 @@ container "$MONGO_CONTAINER" -p 127.0.0.1:37017:27017 -v da-dab-mongodata:/data/
   -v "$DAB:$DAB:ro" mongo:8 --wiredTigerCacheSizeGB 0.5 || exit 1
 
 for _ in $(seq 30); do
-  probe=$(db_probe 2>&1) && break
+  probe=$(db_probe 2>&1) && code=0 || code=$?
+  dbs_ready "$probe" "$code" && break
   sleep 2
 done
 printf '%s\n' "$probe"
-case $probe in *FAIL* | "") echo "benchmarks: a DAB database is not reachable"; exit 1 ;; esac
+dbs_ready "$probe" "$code" || {
+  echo "benchmarks: the DAB databases are not both reachable"
+  exit 1
+}
 
 echo "benchmarks: ready. data-eng-bench: --tasks-dir ../da-benchmarks/data-eng-bench/tasks;" \
   "DAB: --dab-root ../da-benchmarks/DataAgentBench (paths from the repo, where runs start)"
@@ -473,7 +477,7 @@ if alive "$NAME"; then
   exit 1
 fi
 mkdir -p "$run"
-rm -f "$run/exit"
+rm -f "$run/exit" "$run/memory.log"
 if [ -n "$BUDGET" ]; then printf '%s\n' "$BUDGET" >"$run/budget"; else rm -f "$run/budget"; fi
 printf '%s\n' "$SUBCOMMAND" >"$run/subcommand" # pull decides from it what may leave the server
 commit=$(git rev-parse --short HEAD)

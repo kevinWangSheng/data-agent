@@ -17,12 +17,12 @@
 两个榜单由 `da-remote benchmarks` 备好（可重复跑，已就绪的步骤跳过），全放在服务器仓库旁的 `da-benchmarks/`：
 
 - `data-eng-bench/`（钉 `a3278ad`）：评测用 `--tasks-dir ../da-benchmarks/data-eng-bench/tasks`（路径相对服务器仓库，`start` 在那里跑）。
-- `DataAgentBench/`（钉 `6ad9d68`，无许可证，只在服务器 clone）：数据由 DAB 自带的 `download.sh` 从 Hugging Face 取并按 `dataset_manifest.tsv` 校验（日志 `da-benchmarks/download.log`）；评测用 `--dab-root ../da-benchmarks/DataAgentBench`。
+- `DataAgentBench/`（钉 `6ad9d68`，无许可证，只在服务器 clone）：数据由 DAB 自带的 `download.sh` 从 Hugging Face 取并按 `dataset_manifest.tsv` 校验 sha256（每次 `benchmarks` 都全量校验，13 GB 约 75 秒；日志 `da-benchmarks/download.log`）。DAB 这个 clone 里 git-lfs 的 filter 设成不做事（只改该 clone 的 `.git/config`）：否则 `evals/dab.py` 记 DAB commit 时的 `git diff` 会把 13 GB 数据读进内存过 LFS 过滤，7 GB 的机器扛不住；数据改由 `dab.py` 按清单核对；评测用 `--dab-root ../da-benchmarks/DataAgentBench`。
 - 镜像 `python-data:3.12`（DAB 的 Dockerfile，`execute_python` 用）。
 - 容器 `da-dab-postgres`（`postgres:17`，127.0.0.1:15432）与 `da-dab-mongo`（`mongo:8`，127.0.0.1:37017，WiredTiger 缓存 0.5 GB）；数据卷 `da-dab-pgdata`、`da-dab-mongodata`，删掉容器和卷即可重来。DAB 装库要调 `psql` 和 `mongorestore`，服务器不装系统包，所以 `da-benchmarks/bin/` 里的同名包装脚本经 `docker exec` 在容器里跑它们（两个容器只读挂载 DAB 目录，路径与宿主机相同）。
 - 连接设置（`PG_*`、`MONGO_URI`、`PG_CLIENT` 和 `bin/` 的 PATH）写在服务器 `~/.config/data-agent/dab.env`（600，密码随机生成、不打印）；`start <name> -- dab ...` 会额外读它，并用 `--with-requirements evals/dab-requirements.txt` 跑。删了 `dab.env` 而保留 Postgres 数据卷会对不上密码，要连卷一起删。
 
-`da-remote check` 也报这些就绪项：两个 clone 的 commit、题目数、DAB 数据大小与清单一致、镜像、`dab.env`、两个数据库从宿主机可连。
+`da-remote check` 也报这些就绪项：两个 clone 的 commit、题目数、DAB 数据大小与清单一致（只比大小，快；sha256 由 `benchmarks` 校验）、镜像、`dab.env`、两个数据库从宿主机可连。
 
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。
 

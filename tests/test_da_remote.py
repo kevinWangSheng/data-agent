@@ -323,6 +323,12 @@ def test_a_run_samples_memory_and_status_shows_the_peak(env: Env):
     proc = env.run("status", "smoke")
     assert "memory peak: 2100 MB used (total_mb=7900), at 2026-10-20T10:00:05Z" in proc.stdout
 
+    (env.server / "release").unlink()
+    assert env.run("start", "smoke", "--", "ablate", "--budget", "1").returncode == 0
+    log = run / "memory.log"  # the peak is this run's
+    assert not log.exists() or "used_mb=2100" not in log.read_text()
+    env.finish(0)
+
 
 def test_status_of_an_unknown_run(env: Env):
     assert env.run("setup").returncode == 0
@@ -526,6 +532,7 @@ case "$*" in
     if [ -n "${FAKE_DB_DOWN:-}" ]; then
       echo "postgres FAIL OperationalError: connection refused"; echo "mongodb ok"; exit 1
     fi
+    if [ -n "${FAKE_PROBE_BROKEN:-}" ]; then echo "error: no interpreter found"; exit 2; fi
     echo "postgres ok"; echo "mongodb ok"
     ;;
 esac
@@ -663,20 +670,19 @@ def test_benchmarks_skips_what_is_ready(bench: Env):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert settings.read_text() == before  # the password stays the one the database has
     assert not any(c.startswith("clone") or " checkout " in c for c in calls(bench, "git"))
-    assert not any("download.sh" in c for c in calls(bench, "uv"))
+    # The data is hashed again every time: a size check misses a changed byte.
+    assert sum("download.sh" in c for c in calls(bench, "uv")) == 1
     assert not any(c.startswith(("build", "run", "start")) for c in calls(bench, "docker"))
-    assert proc.stdout.count("already") == 6
+    assert proc.stdout.count("already") == 5
 
 
-def test_benchmarks_starts_stopped_containers_and_redownloads_changed_data(bench: Env):
+def test_benchmarks_starts_stopped_containers(bench: Env):
     assert bench.run("benchmarks").returncode == 0
     (bench.server / "docker-state" / "da-dab-mongo").write_text("false\n")
-    (bench.server / "da-benchmarks" / "DataAgentBench" / "query_x" / "data.db").write_text("x")
     proc = bench.run("benchmarks")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "start da-dab-mongo" in calls(bench, "docker")
     assert "da-dab-mongo: started" in proc.stdout
-    assert sum("download.sh" in c for c in calls(bench, "uv")) == 2
 
 
 def test_benchmarks_names_tracked_dab_changes_besides_the_data(bench: Env):
@@ -692,7 +698,6 @@ def test_benchmarks_stops_when_dab_download_fails(bench: Env):
     assert "download.sh failed" in proc.stdout
     assert "[FAIL] query_x/data.db" in proc.stdout
     assert not any(c.startswith(("build", "run")) for c in calls(bench, "docker"))
-    assert not (bench.server / "da-benchmarks" / "dab-data.ok").exists()
 
 
 def test_benchmarks_needs_the_repo(bench: Env):
@@ -731,16 +736,24 @@ def test_check_reports_the_benchmarks(bench: Env):
         "ok    DAB data: all 1 files of dataset_manifest.tsv, sizes match",
         "ok    image python-data:3.12",
         "ok    DAB database settings present, mode 600",
-        "ok    postgres reachable",
-        "ok    mongodb reachable",
+        "ok    postgres and mongodb reachable",
     ]:
         assert ready in proc.stdout
 
     (bench.server / "da-benchmarks" / "DataAgentBench" / "query_x" / "data.db").write_text("x")
     proc = bench.run("check", FAKE_DB_DOWN="1")
     assert "FAIL  DAB data: 1 of 1 files missing or of the wrong size" in proc.stdout
-    assert "FAIL  postgres FAIL OperationalError" in proc.stdout
-    assert "ok    mongodb reachable" in proc.stdout
+    assert "FAIL  DAB databases not both reachable (exit 1)" in proc.stdout
+    assert "postgres FAIL OperationalError" in proc.stdout
+
+
+def test_a_probe_that_cannot_run_is_not_reachable(bench: Env):
+    """A probe that never got to connect (uv or its packages failed) proves nothing."""
+    assert bench.run("benchmarks").returncode == 0
+    proc = bench.run("check", FAKE_PROBE_BROKEN="1")
+    assert "FAIL  DAB databases not both reachable (exit 2)" in proc.stdout
+    assert "no interpreter found" in proc.stdout
+    assert "postgres and mongodb reachable" not in proc.stdout
 
 
 def test_a_dab_run_gets_dab_packages_and_database_settings(env: Env):
