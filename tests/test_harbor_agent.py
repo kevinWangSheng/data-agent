@@ -388,11 +388,20 @@ def test_events_that_harbors_model_rejects_leave_no_trajectory(tmp_path: Path) -
     assert context.cost_usd == pytest.approx(0.0123)
 
 
-def test_a_corrupt_result_event_leaves_no_trajectory_and_no_error(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        {"output_tokens": "many", "cost_usd": [1]},
+        # json.loads reads Infinity, which int() cannot convert.
+        {"output_tokens": float("inf")},
+    ],
+)
+def test_a_corrupt_result_event_leaves_no_trajectory_and_no_error(
+    tmp_path: Path, corrupt: dict[str, Any]
+) -> None:
     logs = tmp_path / "agent"
     (logs / "events").mkdir(parents=True)
-    corrupt = result_event(output_tokens="many", cost_usd=[1])
-    (logs / "events" / "run-1.jsonl").write_text(jsonl(VERSION_EVENT, corrupt))
+    (logs / "events" / "run-1.jsonl").write_text(jsonl(VERSION_EVENT, result_event(**corrupt)))
     agent = DataAgent(logs_dir=logs, model_name="deepseek/deepseek-flash")
     context = AgentContext()
     agent.populate_context_post_run(context)

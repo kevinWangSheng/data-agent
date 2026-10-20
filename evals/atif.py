@@ -77,7 +77,8 @@ def convert(
     version: dict[str, Any] = {}
     status: dict[str, Any] = {}
     result: dict[str, Any] | None = None
-    # Steps in order: a Turn until the end, when it becomes a Step.
+    # Steps in order: a Turn until the end, when it becomes a Step. Steps made in the loop carry
+    # step_id 1 until they are numbered at the end.
     entries: list[Turn | Step] = []
     if instruction is not None:
         entries.append(Step(step_id=1, source="user", message=instruction))
@@ -181,15 +182,37 @@ def convert(
     )
 
 
+@dataclass(frozen=True)
+class Usage:
+    """A run's tokens and cost from its `result` event. Input counts the cached tokens too, as
+    Harbor's n_input_tokens and ATIF's prompt tokens do."""
+
+    input_tokens: int
+    cached_tokens: int
+    output_tokens: int
+    cost_usd: float
+
+
+def usage(result: dict[str, Any]) -> Usage:
+    """Raises ValueError, TypeError or OverflowError on a corrupt field."""
+    cached = int(result.get("cached_input_tokens") or 0)
+    return Usage(
+        input_tokens=int(result.get("uncached_input_tokens") or 0) + cached,
+        cached_tokens=cached,
+        output_tokens=int(result.get("output_tokens") or 0),
+        cost_usd=float(result.get("cost_usd") or 0.0),
+    )
+
+
 def final_metrics(result: dict[str, Any] | None, n_steps: int) -> FinalMetrics | None:
     if result is None:
         return None
-    cached = int(result.get("cached_input_tokens") or 0)
+    totals = usage(result)
     return FinalMetrics(
-        total_prompt_tokens=int(result.get("uncached_input_tokens") or 0) + cached,
-        total_completion_tokens=int(result.get("output_tokens") or 0),
-        total_cached_tokens=cached,
-        total_cost_usd=float(result.get("cost_usd") or 0.0),
+        total_prompt_tokens=totals.input_tokens,
+        total_completion_tokens=totals.output_tokens,
+        total_cached_tokens=totals.cached_tokens,
+        total_cost_usd=totals.cost_usd,
         total_steps=n_steps,
         extra={key: result[key] for key in RESULT_FIELDS if key in result} or None,
     )

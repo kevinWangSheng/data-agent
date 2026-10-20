@@ -7,6 +7,7 @@ After the trial Harbor calls `populate_context_post_run()`, which fills tokens a
 the trial result from the event file's `result` event, and writes the run as an ATIF
 `trajectory.json` in the logs directory (evals.atif), the file Harbor's uploader publishes as the
 trial's `trajectory_path`. A missing or broken event file leaves the trial without a trajectory.
+Both read the last event file by name (a trial runs `data-agent run` once).
 
 Errors (plan §7): an agent that stops early (turn or spend cap) is an agent failure the verifier
 scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status, or for a
@@ -50,7 +51,7 @@ from harbor.models.agent.context import AgentContext, ModelUsage
 from pydantic import Field, field_validator
 
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT
-from evals.atif import convert
+from evals.atif import convert, usage
 
 # Harbor error types worth retrying: rate limits, server errors and dropped connections. The job
 # config retries exactly these; Harbor's default exclusions (timeouts, refusals, auth, usage
@@ -325,8 +326,9 @@ class DataAgent(BaseInstalledAgent):
                 return
             text = json.dumps(trajectory.to_json_dict(), indent=2, ensure_ascii=False)
             path.write_text(text, encoding="utf-8")
-        # ValueError covers pydantic's ValidationError: events that do not make valid ATIF.
-        except (ValueError, TypeError, OSError) as exc:
+        # Any failure leaves the trial without a trajectory, as Harbor's own agents do
+        # (claude_code.py:1659); pydantic's ValidationError is the usual one.
+        except Exception as exc:
             self.logger.warning(f"no trajectory: {type(exc).__name__}: {exc}")
 
     @override
@@ -347,14 +349,12 @@ class DataAgent(BaseInstalledAgent):
         if result is None:
             return
         try:
-            cached = int(result.get("cached_input_tokens") or 0)
-            # Harbor's n_input_tokens includes the cached tokens.
-            total_input = int(result.get("uncached_input_tokens") or 0) + cached
-            output = int(result.get("output_tokens") or 0)
-            cost = float(result.get("cost_usd") or 0.0)
-        except (ValueError, TypeError) as exc:
+            totals = usage(result)
+        except (ValueError, TypeError, ArithmeticError) as exc:
             self.logger.warning(f"no tokens or cost: corrupt result event: {exc}")
             return
+        total_input, cached = totals.input_tokens, totals.cached_tokens
+        output, cost = totals.output_tokens, totals.cost_usd
         context.n_input_tokens = total_input
         context.n_cache_tokens = cached
         context.n_output_tokens = output
