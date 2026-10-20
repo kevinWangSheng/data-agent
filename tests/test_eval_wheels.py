@@ -241,6 +241,17 @@ def test_a_tasks_image_is_the_base_of_its_dockerfiles_last_stage(tmp_path: Path)
     assert wheels.task_image(task) == "ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0"
 
 
+def test_a_last_stage_from_an_earlier_stage_resolves_to_that_stages_image(tmp_path: Path) -> None:
+    dockerfile = (
+        "FROM ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0 AS Base\n"
+        "FROM base as builder\nRUN make\n"
+        "FROM python:3.12 AS other\n"
+        "FROM BUILDER\nCOPY --from=other /x /x\n"
+    )
+    task = task_dir(tmp_path, "", dockerfile)
+    assert wheels.task_image(task) == "ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0"
+
+
 def test_a_tasks_prebuilt_image_comes_first(tmp_path: Path) -> None:
     task = task_dir(tmp_path, '[environment]\ndocker_image = "org/prebuilt:2"\n', "FROM other\n")
     assert wheels.task_image(task) == "org/prebuilt:2"

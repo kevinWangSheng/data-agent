@@ -220,20 +220,24 @@ def wheelhouse(requirements: Path, lock: Path, platform: Platform) -> Path:
 
 def task_image(task: Path) -> str:
     """The image of a Harbor task's container: task.toml's prebuilt `docker_image`, else the image
-    environment/Dockerfile's last stage starts from, taken to have the built image's Python and C
-    library (data-eng-bench's Dockerfiles only add files)."""
+    environment/Dockerfile's last stage starts from (through any earlier stages it names), taken
+    to have the built image's Python and C library (data-eng-bench's Dockerfiles only add files)."""
     environment = tomllib.loads((task / "task.toml").read_text()).get("environment", {})
     if image := environment.get("docker_image"):
         return str(image)
     dockerfile = task / "environment" / "Dockerfile"
-    bases = [
-        next((word for word in words[1:] if not word.startswith("--")), "")
-        for words in map(str.split, dockerfile.read_text().splitlines())
-        if words and words[0].upper() == "FROM"
-    ]
-    if not bases or not bases[-1] or "$" in bases[-1]:
+    stages: dict[str, str] = {}  # stage name (Docker ignores its case) -> the image it starts from
+    base = ""
+    for words in map(str.split, dockerfile.read_text().splitlines()):
+        if not words or words[0].upper() != "FROM":
+            continue
+        args = [word for word in words[1:] if not word.startswith("--")]
+        base = stages.get(args[0].lower(), args[0]) if args else ""
+        if len(args) >= 3 and args[1].upper() == "AS":
+            stages[args[2].lower()] = base
+    if not base or "$" in base:
         raise RuntimeError(f"{dockerfile}: no FROM image to probe the platform of")
-    return bases[-1]
+    return base
 
 
 def probe(image: str) -> Platform:
