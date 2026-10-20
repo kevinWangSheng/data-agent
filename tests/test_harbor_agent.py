@@ -9,6 +9,8 @@ import asyncio
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -113,6 +115,9 @@ class LocalEnvironment:
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         self.uploads[target_path] = Path(source_path)
+
+    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+        self.uploads[target_dir] = Path(source_dir)
 
 
 # The adapter class installed under a test directory, and that directory.
@@ -500,14 +505,51 @@ def test_uv_archive_rejects_an_unknown_architecture(fake_uv: bytes) -> None:
         harbor_agent.uv_archive("riscv64")
 
 
+# What evals.wheels.PROBE prints in data-eng-bench's image (python:3.12-slim) on a Mac.
+PROBE_OUTPUT = json.dumps(
+    {
+        "markers": {
+            "implementation_name": "cpython",
+            "implementation_version": "3.12.13",
+            "os_name": "posix",
+            "platform_machine": "aarch64",
+            "platform_python_implementation": "CPython",
+            "platform_release": "6.8.0",
+            "platform_system": "Linux",
+            "platform_version": "#1 SMP",
+            "python_full_version": "3.12.13",
+            "python_version": "3.12",
+            "sys_platform": "linux",
+        },
+        "libc": ["glibc", "2.36"],
+    }
+)
+
+
+@pytest.fixture
+def fake_wheelhouse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[Any]]:
+    """evals.wheels.wheelhouse without the network: one wheel. Returns it and its calls."""
+    house = tmp_path / "wheelhouse"
+    house.mkdir()
+    (house / "anyio-4.9.0-py3-none-any.whl").write_bytes(b"anyio")
+    calls: list[Any] = []
+
+    def wheelhouse(*args: Any) -> Path:
+        calls.append(args)
+        return house
+
+    monkeypatch.setattr(harbor_agent, "wheelhouse", wheelhouse)
+    return house, calls
+
+
 def test_install_puts_the_locked_agent_in_its_own_virtualenv(
-    tmp_path: Path, fake_uv: bytes
+    tmp_path: Path, fake_uv: bytes, fake_wheelhouse: tuple[Path, list[Any]]
 ) -> None:
     recorded = LocalEnvironment({})
 
     async def no_exec(command: str, **_: Any) -> ExecResult:
         recorded.commands.append(command)
-        stdout = "aarch64\n" if command == "uname -m" else ""
+        stdout = PROBE_OUTPUT if command.startswith("python3 -c ") else ""
         return ExecResult(stdout=stdout, stderr="", return_code=0)
 
     recorded.exec = no_exec  # type: ignore[method-assign]
@@ -532,3 +574,96 @@ def test_install_puts_the_locked_agent_in_its_own_virtualenv(
     assert seen[uv] == fake_uv.decode()
     assert uv in script
     assert "-m pip" not in script and "pip install uv" not in script
+    # The dependencies: the probed platform's wheels, uploaded beside the agent.
+    house, ((_, lock, platform),) = fake_wheelhouse
+    assert lock == REPO_ROOT / "uv.lock"
+    assert (platform.machine, platform.python, platform.glibc) == ("aarch64", (3, 12), (2, 36))
+    assert recorded.uploads == {f"{DataAgent.AGENT_DIR}/wheels": house}
+
+
+class ContainerEnvironment(LocalEnvironment):
+    """A LocalEnvironment whose uploads land on disk and whose python3 probes as
+    data-eng-bench's image does."""
+
+    async def exec(self, command: str, **kwargs: Any) -> ExecResult:  # type: ignore[override]
+        if command.startswith("python3 -c "):
+            self.commands.append(command)
+            return ExecResult(stdout=PROBE_OUTPUT, stderr="", return_code=0)
+        return await super().exec(command, **kwargs)
+
+    async def upload_file(self, source_path: Path | str, target_path: str) -> None:
+        await super().upload_file(source_path, target_path)
+        Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, target_path)
+
+    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+        await super().upload_dir(source_dir, target_dir)
+        shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
+
+
+# A stand-in for uv: logs its arguments and, installing the agent, leaves a `data-agent`.
+FAKE_UV = """\
+#!/bin/sh
+echo "$@" >> "$UV_ARGS"
+echo "uv: $*" >&2
+case "$*" in
+  *--no-deps*)
+    bin="$(dirname "$0")/venv/bin"
+    printf '#!/bin/sh\\nexit 0\\n' > "$bin/data-agent"
+    chmod +x "$bin/data-agent";;
+esac
+exit "${UV_EXIT:-0}"
+"""
+
+
+def install_locally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **env: str
+) -> tuple[DataAgent, ContainerEnvironment, Path]:
+    """Runs install()'s real script with bash, the agent directory under tmp_path."""
+    root = tmp_path / "uv-src" / "uv-aarch64-unknown-linux-musl"
+    root.mkdir(parents=True)
+    (root / "uv").write_text(FAKE_UV)
+    (root / "uv").chmod(0o755)
+    archive = tmp_path / "uv-aarch64-unknown-linux-musl.tar.gz"
+    subprocess.run(["tar", "-czf", str(archive), "-C", str(root.parent), root.name], check=True)
+    monkeypatch.setattr(harbor_agent, "uv_archive", lambda arch: archive)
+    agent_dir = tmp_path / "installed-agent"
+    cls = type("LocalDataAgent", (DataAgent,), {"AGENT_DIR": PurePosixPath(agent_dir)})
+    agent = make_agent(cls, tmp_path)
+    uv_args = tmp_path / "uv-args.txt"
+    environment = ContainerEnvironment({"UV_ARGS": str(uv_args), **env})
+    asyncio.run(agent.install(environment))  # type: ignore[arg-type]
+    return agent, environment, uv_args
+
+
+def test_install_is_offline_and_logs_each_step_with_its_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_wheelhouse: tuple[Path, list[Any]]
+) -> None:
+    agent, environment, uv_args = install_locally(tmp_path, monkeypatch)
+    house = f"{agent.AGENT_DIR}/wheels"
+    assert environment.uploads[house] == fake_wheelhouse[0]
+    calls = [call.split() for call in uv_args.read_text().splitlines()]
+    assert len(calls) == 2  # the dependencies, then the agent's own wheel
+    for args in calls:
+        assert args[:2] == ["pip", "install"]
+        assert {"--offline", "--no-index"} <= set(args)
+        assert args[args.index("--find-links") + 1] == house
+        assert not any(arg.startswith(("--index-url", "--extra-index-url")) for arg in args)
+    assert "--require-hashes" in calls[0]
+    log = (agent.logs_dir / "setup" / "install.log").read_text()
+    assert log.startswith("host: wheels for CPython 3.12, glibc 2.36, aarch64 ready in ")
+    assert "uv: pip install" in log  # the install's own output
+    steps = re.findall(r"^\$ (\S+)", log, re.MULTILINE)
+    assert [Path(step).name for step in steps] == ["tar", "python3", "uv", "uv", "data-agent"]
+    assert len(re.findall(r"^  \d+\.\d+ s$", log, re.MULTILINE)) == len(steps)
+    assert re.search(r"^installed in \d+ s$", log, re.MULTILINE)
+
+
+def test_a_failed_install_fails_setup_and_leaves_its_output_in_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_wheelhouse: tuple[Path, list[Any]]
+) -> None:
+    with pytest.raises(NonZeroAgentExitCodeError):
+        install_locally(tmp_path, monkeypatch, UV_EXIT="1")
+    log = (tmp_path / "logs" / "agent" / "setup" / "install.log").read_text()
+    assert "uv: pip install" in log
+    assert "installed in" not in log
