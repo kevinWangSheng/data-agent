@@ -244,7 +244,7 @@ class DataAgent(BaseInstalledAgent):
         # No index and no network: every dependency is a wheel in the uploaded directory.
         offline = f"--offline --no-index --find-links {shlex.quote(str(remote_house))}"
         log = self.environment_logs_dir / "setup" / "install.log"
-        host = (
+        host_line = (
             f"host: wheels for {platform} ready in {prepared - started:.1f} s, "
             f"uploaded in {uploaded - prepared:.1f} s"
         )
@@ -256,7 +256,7 @@ class DataAgent(BaseInstalledAgent):
                 # Each step's command and wall time, in the log with its output.
                 "TIMEFORMAT='  %R s'; "
                 'step() { echo "$ $*" >&2; time "$@"; }; '
-                f"{{ echo {shlex.quote(host)}; "
+                f"{{ echo {shlex.quote(host_line)}; "
                 # uv from the uploaded archive: fetching it inside the container from astral.sh
                 # or GitHub failed the TLS handshake in 2 of 5 local trials.
                 f"step tar -xzf {shlex.quote(str(remote_archive))} --strip-components 1 "

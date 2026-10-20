@@ -117,7 +117,7 @@ class Wheel:
 
 
 def download(url: str, dest: Path) -> None:
-    # Retries every error: a TLS handshake to GitHub's release host failed intermittently here.
+    # Retries every error: TLS handshakes to GitHub and PyPI failed intermittently here.
     subprocess.run(
         ["curl", "-sSfL", "--retry", "5", "--retry-all-errors", "-o", str(dest), url], check=True
     )
