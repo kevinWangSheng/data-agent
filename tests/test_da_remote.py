@@ -307,6 +307,29 @@ def test_status_shows_state_log_tail_and_spend(env: Env):
     assert "smoke" in listing.stdout and "finished, exit 0" in listing.stdout
 
 
+def test_a_run_samples_memory_and_status_shows_the_peak(env: Env):
+    assert env.run("setup").returncode == 0
+    assert env.run("start", "smoke", "--", "ablate", "--budget", "1").returncode == 0
+    run = env.repo / "runs" / "smoke"
+    env.wait_for(run / "memory.log")
+    env.finish(0)
+
+    (run / "memory.log").write_text(
+        "2026-10-20T10:00:00Z used_mb=900 total_mb=7900\n"
+        "  da-dab-postgres 50MiB / 7.7GiB\n"
+        "2026-10-20T10:00:05Z used_mb=2100 total_mb=7900\n"
+        "2026-10-20T10:00:10Z used_mb=1500 total_mb=7900\n"
+    )
+    proc = env.run("status", "smoke")
+    assert "memory peak: 2100 MB used (total_mb=7900), at 2026-10-20T10:00:05Z" in proc.stdout
+
+    (env.server / "release").unlink()
+    assert env.run("start", "smoke", "--", "ablate", "--budget", "1").returncode == 0
+    log = run / "memory.log"  # the peak is this run's
+    assert not log.exists() or "used_mb=2100" not in log.read_text()
+    env.finish(0)
+
+
 def test_status_of_an_unknown_run(env: Env):
     assert env.run("setup").returncode == 0
     proc = env.run("status", "smoke")
@@ -388,6 +411,7 @@ def test_pull_of_a_run_with_no_recorded_subcommand_takes_the_summary_only(env: E
 
 def test_pull_of_a_dev_or_dab_run_takes_the_whole_dir(env: Env):
     assert env.run("setup").returncode == 0
+    (env.server / ".config" / "data-agent" / "dab.env").write_text("")
     assert env.run("start", "smoke", "--", "dab", "--budget", "1").returncode == 0
     env.finish(0)
     proc = env.run("pull", "smoke")
@@ -424,7 +448,7 @@ def test_push_never_touches_a_live_run_or_its_control_files(env: Env):
     env.finish(0)
     assert env.run("push", "smoke").returncode == 0
     args = (env.log / "rsync.args").read_text().splitlines()
-    for control in ("run.pid", "run.sh", "run.log", "exit", "budget", "subcommand"):
+    for control in ("run.pid", "run.sh", "run.log", "exit", "budget", "subcommand", "memory.log"):
         assert f"--exclude=/{control}" in args
 
 
@@ -455,3 +479,297 @@ def test_the_script_is_shellcheck_clean():
         pytest.skip("shellcheck not installed")
     proc = subprocess.run([shellcheck, str(DA_REMOTE)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout
+
+
+# `benchmarks` and the benchmark lines of `check`: fake git (clones of the public benchmark repos;
+# anything else goes to the real git), docker, uv and curl on the server record their calls.
+FAKE_BENCH_GIT = """#!/usr/bin/env bash
+printf '%s|LFS=%s\\n' "$*" "${GIT_LFS_SKIP_SMUDGE:-}" >> "$HOME/git.calls"
+if [ "$1" = clone ] && [[ $* == *github.com* ]]; then
+  dir="${@: -1}"
+  mkdir -p "$dir/.git"
+  echo upstream-head > "$dir/.git/FAKE_HEAD"
+  case $dir in
+    */DataAgentBench)
+      mkdir -p "$dir/query_x"
+      printf 'stub' > "$dir/query_x/data.db"
+      printf '# path\\tsha256\\tsize\\nquery_x/data.db\\tabc\\t5\\n' > "$dir/dataset_manifest.tsv"
+      ;;
+    */data-eng-bench)
+      mkdir -p "$dir/tasks/t1" && touch "$dir/tasks/t1/task.toml"
+      ;;
+  esac
+  exit 0
+fi
+if [ "$1" = -C ] && [[ $2 == */da-benchmarks/* ]]; then
+  d=$2
+  shift 2
+  case $1 in
+    rev-parse) exec cat "$d/.git/FAKE_HEAD" 2>/dev/null ;;
+    diff) [[ $d == */DataAgentBench ]] && printf 'query_x/data.db\\n%s' "${FAKE_DAB_EDITED:-}" ;;
+    cat-file) exit 1 ;;
+    checkout) echo "${@: -1}" > "$d/.git/FAKE_HEAD" ;;
+  esac
+  exit 0
+fi
+exec REAL_GIT "$@"
+"""
+
+# download.sh "fetches" the data file; the probe reports both databases up unless FAKE_DB_DOWN.
+FAKE_BENCH_UV = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$HOME/uv.calls"
+case "$*" in
+  *download.sh*)
+    if [ -n "${FAKE_DOWNLOAD_FAIL:-}" ]; then echo "  [FAIL] query_x/data.db"; exit 1; fi
+    echo "  [ok  ] query_y/other.db"
+    echo "  [get ] query_x/data.db (0.0 MB)"
+    printf '12345' > query_x/data.db
+    echo "All datasets present and verified."
+    ;;
+  *dab-requirements.txt*)
+    cat > /dev/null
+    printf '%s' "$PG_PASSWORD" > "$HOME/probe.password"
+    if [ -n "${FAKE_DB_DOWN:-}" ]; then
+      echo "postgres FAIL OperationalError: connection refused"; echo "mongodb ok"; exit 1
+    fi
+    if [ -n "${FAKE_PROBE_BROKEN:-}" ]; then echo "error: no interpreter found"; exit 2; fi
+    echo "postgres ok"; echo "mongodb ok"
+    ;;
+esac
+"""
+
+FAKE_DOCKER = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$HOME/docker.calls"
+st="$HOME/docker-state"
+mkdir -p "$st"
+case $1 in
+  info) exit 0 ;;
+  image) [ -e "$st/image" ] ;;
+  build) touch "$st/image" ;;
+  inspect) [ -e "$st/${@: -1}" ] && cat "$st/${@: -1}" ;;
+  start) echo true > "$st/$2" ;;
+  run)
+    while [ $# -gt 0 ]; do [ "$1" = --name ] && name=$2; shift; done
+    echo true > "$st/$name"
+    printf '%s' "${POSTGRES_PASSWORD:-}" > "$st/$name.password"
+    echo 0123456789ab
+    ;;
+esac
+"""
+
+FAKE_CURL = """#!/usr/bin/env bash
+printf 401
+"""
+
+DEB_SHA = "a3278ad102829a6084dde086244a0ef665a8011c"
+DAB_SHA = "6ad9d689393ff13b51a6bdcc0b98d1d4d8209f36"
+
+
+@pytest.fixture
+def bench(env: Env) -> Env:
+    real_git = shutil.which("git")
+    assert real_git
+    server_bin = env.server / ".local" / "bin"
+    write_exe(server_bin / "git", FAKE_BENCH_GIT.replace("REAL_GIT", real_git))
+    write_exe(server_bin / "uv", FAKE_BENCH_UV)
+    write_exe(server_bin / "docker", FAKE_DOCKER)
+    write_exe(server_bin / "curl", FAKE_CURL)
+    (env.repo / "evals").mkdir(parents=True)
+    (env.repo / "evals" / "dab-requirements.txt").write_text("pymongo\n")
+    return env
+
+
+def calls(env: Env, tool: str) -> list[str]:
+    path = env.server / f"{tool}.calls"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_benchmarks_prepares_both_benchmarks_and_the_dab_databases(bench: Env):
+    proc = bench.run("benchmarks")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    base = bench.server / "da-benchmarks"
+    git_calls = calls(bench, "git")
+    for url, path in [
+        ("https://github.com/Snowflake-Labs/data-eng-bench.git", base / "data-eng-bench"),
+        ("https://github.com/ucbepic/DataAgentBench.git", base / "DataAgentBench"),
+    ]:
+        assert f"clone --quiet {url} {path}|LFS=1" in git_calls
+    assert (base / "data-eng-bench" / ".git" / "FAKE_HEAD").read_text().strip() == DEB_SHA
+    assert (base / "DataAgentBench" / ".git" / "FAKE_HEAD").read_text().strip() == DAB_SHA
+
+    uv_calls = calls(bench, "uv")
+    assert "run -q --no-project --with huggingface_hub>=0.23 bash download.sh" in uv_calls
+    assert "[get ] query_x/data.db" in proc.stdout
+    assert "[ok  ]" not in proc.stdout  # matched files are not listed one by one
+    for setting in ("process ", "clean ", "smudge ", "required false"):
+        assert f"-C {base / 'DataAgentBench'} config filter.lfs.{setting}|LFS=" in git_calls
+    assert "only the downloaded data differs from the LFS stubs" in proc.stdout
+
+    docker = calls(bench, "docker")
+    assert f"build -q -t python-data:3.12 {base / 'DataAgentBench'}" in docker
+    runs = [c for c in docker if c.startswith("run ")]
+    assert len(runs) == 2
+    for c in runs:
+        published = [a for a in c.split() if a.count(":") == 2 and not a.endswith(":ro")]
+        assert published and all(p.startswith("127.0.0.1:") for p in published)
+        assert f"{base / 'DataAgentBench'}:{base / 'DataAgentBench'}:ro" in c
+    assert "--name da-dab-postgres" in runs[0] and "postgres:17" in runs[0]
+    assert "--name da-dab-mongo" in runs[1] and "mongo:8" in runs[1]
+
+    settings = bench.server / ".config" / "data-agent" / "dab.env"
+    assert settings.stat().st_mode & 0o777 == 0o600
+    password = next(
+        line.split("=", 1)[1]
+        for line in settings.read_text().splitlines()
+        if line.startswith("PG_PASSWORD=")
+    )
+    assert len(password) == 32
+    assert password not in proc.stdout + proc.stderr
+    assert not any(password in c for c in docker)  # off the command line
+    state = bench.server / "docker-state"
+    assert (state / "da-dab-postgres.password").read_text() == password
+    assert (bench.server / "probe.password").read_text() == password
+    for tool in ("psql", "mongorestore"):
+        assert os.access(base / "bin" / tool, os.X_OK)
+    assert "postgres ok" in proc.stdout and "mongodb ok" in proc.stdout
+    assert "--tasks-dir ../da-benchmarks/data-eng-bench/tasks" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("tool", "container"), [("psql", "da-dab-postgres"), ("mongorestore", "da-dab-mongo")]
+)
+def test_the_loader_wrappers_leave_the_mcp_stream_alone(bench: Env, tool: str, container: str):
+    """DAB's loaders run inside its MCP server; a wrapper that passed stdin to `docker exec -i`
+    swallowed the MCP handshake, and the server never connected (ticket 21, bookreview run)."""
+    assert bench.run("benchmarks").returncode == 0
+    recorder = bench.tmp / "docker-bin" / "docker"
+    write_exe(recorder, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" > "$OUT"\ncat > "$OUT.stdin"\n')
+    out = bench.tmp / f"{tool}.args"
+    proc = subprocess.run(
+        [str(bench.server / "da-benchmarks" / "bin" / tool), "-d", "db", "-f", "/x.sql"],
+        input="initialize request",
+        env=os.environ
+        | {"PATH": f"{recorder.parent}{os.pathsep}{os.environ['PATH']}", "OUT": str(out)},
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    args = out.read_text().split()
+    assert args[0] == "exec" and "-i" not in args and container in args
+    assert args[-4:] == ["-d", "db", "-f", "/x.sql"]
+    assert Path(f"{out}.stdin").read_text() == ""
+
+
+def test_benchmarks_skips_what_is_ready(bench: Env):
+    assert bench.run("benchmarks").returncode == 0
+    settings = bench.server / ".config" / "data-agent" / "dab.env"
+    before = settings.read_text()
+    for tool in ("git", "uv", "docker"):
+        (bench.server / f"{tool}.calls").unlink()
+    proc = bench.run("benchmarks")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert settings.read_text() == before  # the password stays the one the database has
+    assert not any(c.startswith("clone") or " checkout " in c for c in calls(bench, "git"))
+    # The data is hashed again every time: a size check misses a changed byte.
+    assert sum("download.sh" in c for c in calls(bench, "uv")) == 1
+    assert not any(c.startswith(("build", "run", "start")) for c in calls(bench, "docker"))
+    assert proc.stdout.count("already") == 5
+
+
+def test_benchmarks_starts_stopped_containers(bench: Env):
+    assert bench.run("benchmarks").returncode == 0
+    (bench.server / "docker-state" / "da-dab-mongo").write_text("false\n")
+    proc = bench.run("benchmarks")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "start da-dab-mongo" in calls(bench, "docker")
+    assert "da-dab-mongo: started" in proc.stdout
+
+
+def test_benchmarks_names_tracked_dab_changes_besides_the_data(bench: Env):
+    proc = bench.run("benchmarks", FAKE_DAB_EDITED="common_scaffold/config.py\n")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "1 tracked file(s) changed besides the data" in proc.stdout
+    assert "common_scaffold/config.py" in proc.stdout
+
+
+def test_benchmarks_stops_when_dab_download_fails(bench: Env):
+    proc = bench.run("benchmarks", FAKE_DOWNLOAD_FAIL="1")
+    assert proc.returncode == 1
+    assert "download.sh failed" in proc.stdout
+    assert "[FAIL] query_x/data.db" in proc.stdout
+    assert not any(c.startswith(("build", "run")) for c in calls(bench, "docker"))
+
+
+def test_benchmarks_needs_the_repo(bench: Env):
+    shutil.rmtree(bench.repo / "evals")
+    proc = bench.run("benchmarks")
+    assert proc.returncode == 1
+    assert "da-remote setup" in proc.stdout
+    assert calls(bench, "git") == []
+
+
+@pytest.mark.parametrize("args", [["benchmarks", "x"], ["check", "x"]])
+def test_benchmarks_and_check_take_no_arguments(env: Env, args: list[str]):
+    proc = env.run(*args)
+    assert proc.returncode == 2
+    assert "usage" in proc.stderr
+    assert env.ssh_calls() == 0
+
+
+def test_check_reports_the_benchmarks(bench: Env):
+    proc = bench.run("check")
+    for missing in [
+        "FAIL  data-eng-bench missing",
+        "FAIL  no data-eng-bench tasks",
+        "FAIL  DataAgentBench missing",
+        "FAIL  no image python-data:3.12",
+        "FAIL  DAB database settings missing",
+    ]:
+        assert missing in proc.stdout, proc.stdout
+
+    assert bench.run("benchmarks").returncode == 0
+    proc = bench.run("check")
+    for ready in [
+        "ok    data-eng-bench at a3278ad",
+        "ok    data-eng-bench tasks: 1",
+        "ok    DataAgentBench at 6ad9d68",
+        "ok    DAB data: all 1 files of dataset_manifest.tsv, sizes match",
+        "ok    image python-data:3.12",
+        "ok    DAB database settings present, mode 600",
+        "ok    postgres and mongodb reachable",
+    ]:
+        assert ready in proc.stdout
+
+    (bench.server / "da-benchmarks" / "DataAgentBench" / "query_x" / "data.db").write_text("x")
+    proc = bench.run("check", FAKE_DB_DOWN="1")
+    assert "FAIL  DAB data: 1 of 1 files missing or of the wrong size" in proc.stdout
+    assert "FAIL  DAB databases not both reachable (exit 1)" in proc.stdout
+    assert "postgres FAIL OperationalError" in proc.stdout
+
+
+def test_a_probe_that_cannot_run_is_not_reachable(bench: Env):
+    """A probe that never got to connect (uv or its packages failed) proves nothing."""
+    assert bench.run("benchmarks").returncode == 0
+    proc = bench.run("check", FAKE_PROBE_BROKEN="1")
+    assert "FAIL  DAB databases not both reachable (exit 2)" in proc.stdout
+    assert "no interpreter found" in proc.stdout
+    assert "postgres and mongodb reachable" not in proc.stdout
+
+
+def test_a_dab_run_gets_dab_packages_and_database_settings(env: Env):
+    assert env.run("setup").returncode == 0
+    proc = env.run("start", "smoke", "--", "dab", "--budget", "1")
+    assert proc.returncode == 1
+    assert "da-remote benchmarks" in proc.stdout
+    assert not (env.repo / "runs" / "smoke").exists()
+
+    (env.server / ".config" / "data-agent" / "dab.env").write_text("DATA_AGENT_SMOKE=dab\n")
+    assert env.run("start", "smoke", "--", "dab", "--budget", "1").returncode == 0
+    env.wait_for_evals()
+    uv_args = (env.server / "uv.last").read_text().split("\n")[:-1]
+    assert uv_args == [
+        *("run", "--no-sync", "--with-requirements", "evals/dab-requirements.txt"),
+        *("python", "-m", "evals", "dab", "--budget", "1"),
+    ]
+    env.finish(0)
+    assert "env loaded: dab" in (env.repo / "runs" / "smoke" / "run.log").read_text()

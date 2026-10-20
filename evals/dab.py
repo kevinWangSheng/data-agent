@@ -251,11 +251,13 @@ def task_prompt(dab_query: DabQuery, workspace: Path) -> str:
 
 
 def _git(dab_root: Path, *args: str) -> str | None:
+    """git's output, None when it failed or timed out (with git-lfs's filter active, `git diff`
+    re-cleans every LFS file; `da-remote benchmarks` turns that filter off in its DAB clone)."""
     try:
         proc = subprocess.run(
             ["git", "-C", str(dab_root), *args], capture_output=True, text=True, timeout=10
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return proc.stdout.strip() if proc.returncode == 0 else None
 
