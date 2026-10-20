@@ -106,6 +106,7 @@ DAB="$BENCH/DataAgentBench"
 DABENV="$HOME/.config/data-agent/dab.env"
 PG_CONTAINER=da-dab-postgres
 MONGO_CONTAINER=da-dab-mongo
+MONGO_PORT=37017
 EXEC_IMAGE=python-data:3.12
 # Connects to each database as DAB's tools do, from this host; prints "<database> ok" or
 # "<database> FAIL <error>" per line.
@@ -115,12 +116,13 @@ db_probe() {
     uv run -q --no-sync --with-requirements evals/dab-requirements.txt python - <<'PY'
 import os
 import sys
+from collections.abc import Callable
 
 secret = os.environ.get("PG_PASSWORD", "")
 fails = 0
 
 
-def report(name, connect):
+def report(name: str, connect: Callable[[], None]) -> None:
     global fails
     try:
         connect()
@@ -131,7 +133,7 @@ def report(name, connect):
         print(f"{name} FAIL {type(exc).__name__}: {text.splitlines()[0] if text else ''}")
 
 
-def postgres():
+def postgres() -> None:
     import psycopg2
 
     psycopg2.connect(
@@ -144,7 +146,7 @@ def postgres():
     ).close()
 
 
-def mongodb():
+def mongodb() -> None:
     from pymongo import MongoClient
 
     with MongoClient(os.environ["MONGO_URI"], serverSelectionTimeoutMS=5000) as client:
@@ -232,7 +234,7 @@ else
 fi
 
 # The benchmarks (da-remote benchmarks prepares them).
-pinned() { # <name> <dir> <commit>
+at_pin() { # <name> <dir> <commit>
   local head
   if ! head=$(git -C "$2" rev-parse HEAD 2>/dev/null); then
     bad "$1 missing at $2 (da-remote benchmarks)"
@@ -242,10 +244,10 @@ pinned() { # <name> <dir> <commit>
     bad "$1 at ${head:0:7}, want ${3:0:7} (da-remote benchmarks)"
   fi
 }
-pinned data-eng-bench "$DEB" "$DEB_COMMIT"
+at_pin data-eng-bench "$DEB" "$DEB_COMMIT"
 tasks=$(find "$DEB/tasks" -mindepth 2 -maxdepth 2 -name task.toml 2>/dev/null | wc -l | tr -dc 0-9)
 [ "$tasks" -gt 0 ] && ok "data-eng-bench tasks: $tasks" || bad "no data-eng-bench tasks in $DEB/tasks"
-pinned DataAgentBench "$DAB" "$DAB_COMMIT"
+at_pin DataAgentBench "$DAB" "$DAB_COMMIT"
 if [ -f "$DAB/dataset_manifest.tsv" ]; then
   total=$(grep -cv '^#' "$DAB/dataset_manifest.tsv")
   wrong=$(dab_data_mismatches | wc -l | tr -dc 0-9)
@@ -362,12 +364,13 @@ changed=$(timeout 120 git -C "$DAB" diff --name-only HEAD) || {
   echo "benchmarks: git diff in $DAB failed or took over 120 s"
   exit 1
 }
-other=$(printf '%s\n' "$changed" | grep -vxF -f <(cut -f1 "$DAB/dataset_manifest.tsv") | grep -c .)
+other_files=$(printf '%s\n' "$changed" | grep -vxF -f <(cut -f1 "$DAB/dataset_manifest.tsv"))
+other=$(printf '%s' "$other_files" | grep -c .)
 if [ "$other" = 0 ]; then
   echo "DAB checkout: at ${DAB_COMMIT:0:7}, only the downloaded data differs from the LFS stubs"
 else
   echo "DAB checkout: $other tracked file(s) changed besides the data; runs will record -dirty:"
-  printf '%s\n' "$changed" | grep -vxF -f <(cut -f1 "$DAB/dataset_manifest.tsv") | head -n 10
+  printf '%s\n' "$other_files" | head -n 10
 fi
 
 if docker image inspect "$EXEC_IMAGE" >/dev/null 2>&1; then
@@ -390,7 +393,7 @@ PG_PORT=15432
 PG_USER=postgres
 PG_PASSWORD=$password
 PG_CLIENT=$BENCH/bin/psql
-MONGO_URI=mongodb://127.0.0.1:37017/
+MONGO_URI=mongodb://127.0.0.1:$MONGO_PORT/
 PATH="$BENCH/bin:\$PATH"
 ENV
   )
@@ -423,7 +426,7 @@ container() { # <name> <docker run args...>
 export POSTGRES_PASSWORD="$PG_PASSWORD" # docker run -e takes it from here, off the command line
 container "$PG_CONTAINER" -p "127.0.0.1:$PG_PORT:5432" -e POSTGRES_PASSWORD \
   -v da-dab-pgdata:/var/lib/postgresql/data -v "$DAB:$DAB:ro" postgres:17 || exit 1
-container "$MONGO_CONTAINER" -p 127.0.0.1:37017:27017 -v da-dab-mongodata:/data/db \
+container "$MONGO_CONTAINER" -p "127.0.0.1:$MONGO_PORT:27017" -v da-dab-mongodata:/data/db \
   -v "$DAB:$DAB:ro" mongo:8 --wiredTigerCacheSizeGB 0.5 || exit 1
 
 for _ in $(seq 30); do
@@ -468,7 +471,7 @@ if [ "$SUBCOMMAND" = dab ]; then
     echo "start: no DAB database settings on the server; run da-remote benchmarks first"
     exit 1
   }
-  dab_env=". \"\$HOME/.config/data-agent/dab.env\""
+  dab_env=". $(printf '%q' "$DABENV")"
   with="--with-requirements evals/dab-requirements.txt "
 fi
 run="runs/$NAME"
