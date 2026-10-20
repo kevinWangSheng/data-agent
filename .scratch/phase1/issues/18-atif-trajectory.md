@@ -1,6 +1,6 @@
 # 18 — 上榜轨迹 trajectory.json（ATIF）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5) 2026-10-20
@@ -80,3 +80,9 @@ scrubbed trajectory.json → Harbor validation OK
   7 处 home 路径都在 Harbor 的 config/lock/result 里，轨迹本身只有容器路径。更早的 `atif-real-1`（reward 0，87 步）也校验通过，但版本带 `-dirty`，所以在提交后的代码上重跑。
 - 审查：`da-review` P1（只接 `ValidationError`，非数字/`Infinity` token 数或写失败会让 trial 失败）→ fea3242、d26779f 修，各配先失败的测试。`eng:code-review` Standards：合并重复的 result 解析为 `atif.usage()`、注释占位 `step_id`、写明只读最后一个事件文件；不修：agent 上的 `instruction` 属性（Harbor 只在 `run()` 给指令）。Spec：修 `OverflowError`/`Infinity`，改成照 Harbor（`claude_code.py:1659`）兜底捕获；不修：验证者在 `verifier_end` 前被截停时标签留在之后的步骤上（那种运行之后没有主 agent 步，docstring 已写并行标签限制）；缺 `tool_use_id` 变成字符串 `"None"`（`record_message` 总会设 id）。
 - 已知限制：并行验证者共用标签（事件文件里子 agent 没有父 id；要区分需改 `src/data_agent/` 事件格式）。Hub 上传未覆盖，由人做；证明的是文件内容与位置。
+
+### 2026-10-20 主会话：PR #19 第 1 轮退回
+
+CI 绿（d26779f）。Codex 一条，核实属实：
+
+- 退回：`evals/atif.py:203` `usage()` 里 `float(result.get("cost_usd") ...)` 接受 `Infinity`、`-Infinity`、`NaN`（不抛错），会写进 `FinalMetrics` 和 `context.cost_usd`，`json.dumps` 输出非标准 token，上传的轨迹或榜单指标可能被拒。像 token 字段一样校验 cost 是有限数（负数也拒），否则按损坏的 result 处理。配修复前失败的测试。
