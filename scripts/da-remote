@@ -355,7 +355,7 @@ case "$cmd" in
     setup "$@"
     ;;
   start)
-    [ $# -ge 3 ] && [ "$2" = -- ] || usage
+    if [ $# -lt 3 ] || [ "$2" != -- ]; then usage; fi
     check_name "$1"
     name=$1
     shift 2
