@@ -627,6 +627,29 @@ def test_dab_commit_marks_a_dirty_checkout(tmp_path: Path) -> None:
     assert dab.dab_commit(repo) == f"{head}-dirty"
 
 
+def test_dab_commit_counts_a_git_that_times_out_as_dirty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With git-lfs installed and a stale index, `git diff` re-cleans every LFS file (13 GB on the
+    server, ticket 21) and outlasts the timeout; that is an unknown state, not a crashed run."""
+    repo = tmp_path / "dab"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    (repo / "README.md").write_text("DAB\n")
+    git(repo, "add", "README.md")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+    head = git(repo, "rev-parse", "HEAD")
+    run = subprocess.run
+
+    def slow_diff(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if "diff" in cmd:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 0)
+        return run(cmd, **kwargs)
+
+    monkeypatch.setattr(dab.subprocess, "run", slow_diff)
+    assert dab.dab_commit(repo) == f"{head}-dirty"
+
+
 def test_dab_commit_accepts_lfs_data_that_matches_its_manifest(tmp_path: Path) -> None:
     """DAB keeps its databases in Git LFS; without git-lfs, data put in place by DAB's download.sh
     differs from the committed pointer stubs, and is clean only when it matches the sha256 in DAB's

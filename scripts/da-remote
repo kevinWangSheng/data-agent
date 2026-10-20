@@ -6,9 +6,15 @@
 # Usage: da-remote check
 #        da-remote setup [<commit>]               clone or fetch the repo on the server, check out
 #                                                 <commit> (default origin/main), uv sync
+#        da-remote benchmarks                     in da-benchmarks/ next to the repo: data-eng-bench
+#                                                 and DAB at their pinned commits, DAB's data (fetched
+#                                                 and checked by its download.sh), its image
+#                                                 python-data:3.12, Postgres and MongoDB containers
+#                                                 on 127.0.0.1; steps already done are skipped
 #        da-remote start <name> -- <evals args>   run `python -m evals <evals args>` in the background,
 #                                                 log to runs/<name>/run.log on the server; give
-#                                                 evals --out runs/<name> so status and pull see it
+#                                                 evals --out runs/<name> so status and pull see it;
+#                                                 a dab run gets DAB's packages and database settings
 #        da-remote status [<name>]                running or not, log tail, spend so far
 #        da-remote push <name>                    copy this checkout's runs/<name>/ to the server
 #        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout;
@@ -23,6 +29,11 @@ dir="${DA_REMOTE_DIR:-~/data-agent}"
 repo="${DA_REMOTE_REPO:-git@github.com:kevinWangSheng/data-agent.git}"
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10)
 tail_lines=20
+# The benchmark checkouts (plan §7, NOTICE). DAB has no license: it is cloned on the server only.
+deb_repo=https://github.com/Snowflake-Labs/data-eng-bench.git
+deb_commit=a3278ad102829a6084dde086244a0ef665a8011c
+dab_repo=https://github.com/ucbepic/DataAgentBench.git
+dab_commit=6ad9d689393ff13b51a6bdcc0b98d1d4d8209f36
 
 usage() {
   sed -n 's/^# Usage: /usage: /p; s/^#        da-remote/       da-remote/p' "$0" >&2
@@ -87,6 +98,73 @@ run_script() {
     cat <<'EOF'
 export PATH="$HOME/.local/bin:$PATH"
 ENVF="$HOME/.config/data-agent/env"
+# The benchmarks next to the repo, and the settings DAB's tools read for its databases: written by
+# `benchmarks`, sourced by runs; the Postgres password in it is never printed.
+BENCH="${DIR%/*}/da-benchmarks"
+DEB="$BENCH/data-eng-bench"
+DAB="$BENCH/DataAgentBench"
+DABENV="$HOME/.config/data-agent/dab.env"
+PG_CONTAINER=da-dab-postgres
+MONGO_CONTAINER=da-dab-mongo
+EXEC_IMAGE=python-data:3.12
+# Connects to each database as DAB's tools do, from this host; prints "<database> ok" or
+# "<database> FAIL <error>" per line.
+db_probe() {
+  (
+    cd "$DIR" && set -a && . "$DABENV" && set +a || exit 1
+    uv run -q --no-sync --with-requirements evals/dab-requirements.txt python - <<'PY'
+import os
+import sys
+
+secret = os.environ.get("PG_PASSWORD", "")
+fails = 0
+
+
+def report(name, connect):
+    global fails
+    try:
+        connect()
+        print(f"{name} ok")
+    except Exception as exc:
+        fails += 1
+        text = (str(exc).replace(secret, "<masked>") if secret else str(exc)).strip()
+        print(f"{name} FAIL {type(exc).__name__}: {text.splitlines()[0] if text else ''}")
+
+
+def postgres():
+    import psycopg2
+
+    psycopg2.connect(
+        host=os.environ["PG_HOST"],
+        port=os.environ["PG_PORT"],
+        user=os.environ["PG_USER"],
+        password=secret,
+        dbname="postgres",
+        connect_timeout=5,
+    ).close()
+
+
+def mongodb():
+    from pymongo import MongoClient
+
+    with MongoClient(os.environ["MONGO_URI"], serverSelectionTimeoutMS=5000) as client:
+        client.admin.command("ping")
+
+
+report("postgres", postgres)
+report("mongodb", mongodb)
+sys.exit(1 if fails else 0)
+PY
+  )
+}
+# DAB data files whose size differs from its dataset_manifest.tsv (missing, or still an LFS stub).
+dab_data_mismatches() {
+  local path _sha size
+  while IFS=$'\t' read -r path _sha size; do
+    case $path in "" | "#"*) continue ;; esac
+    [ "$(wc -c 2>/dev/null <"$DAB/$path" | tr -dc 0-9)" = "$size" ] || echo "$path"
+  done <"$DAB/dataset_manifest.tsv"
+}
 # A run is alive while its pid runs its own runner script (a reused pid runs something else).
 alive() {
   local pid
@@ -110,7 +188,7 @@ EOF
 
 check() {
   # Reports facts only; never prints the env file's contents or the hostname.
-  run_script <<'EOF'
+  run_script DEB_COMMIT "$deb_commit" DAB_COMMIT "$dab_commit" <<'EOF'
 ok() { printf '  ok    %s\n' "$1"; }
 bad() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 fails=0
@@ -147,6 +225,41 @@ if [ -f "$ENVF" ]; then
   [ "$perm" = 600 ] && ok "env file present, mode 600" || bad "env file mode $perm (want 600)"
 else
   bad "env file missing"
+fi
+
+# The benchmarks (da-remote benchmarks prepares them).
+pinned() { # <name> <dir> <commit>
+  local head
+  if ! head=$(git -C "$2" rev-parse HEAD 2>/dev/null); then
+    bad "$1 missing at $2 (da-remote benchmarks)"
+  elif [ "$head" = "$3" ]; then
+    ok "$1 at ${3:0:7} ($2)"
+  else
+    bad "$1 at ${head:0:7}, want ${3:0:7} (da-remote benchmarks)"
+  fi
+}
+pinned data-eng-bench "$DEB" "$DEB_COMMIT"
+tasks=$(find "$DEB/tasks" -mindepth 2 -maxdepth 2 -name task.toml 2>/dev/null | wc -l | tr -dc 0-9)
+[ "$tasks" -gt 0 ] && ok "data-eng-bench tasks: $tasks" || bad "no data-eng-bench tasks in $DEB/tasks"
+pinned DataAgentBench "$DAB" "$DAB_COMMIT"
+if [ -f "$DAB/dataset_manifest.tsv" ]; then
+  total=$(grep -cv '^#' "$DAB/dataset_manifest.tsv")
+  wrong=$(dab_data_mismatches | wc -l | tr -dc 0-9)
+  [ "$wrong" = 0 ] && ok "DAB data: all $total files of dataset_manifest.tsv, sizes match" ||
+    bad "DAB data: $wrong of $total files missing or of the wrong size (da-remote benchmarks)"
+fi
+docker image inspect "$EXEC_IMAGE" >/dev/null 2>&1 && ok "image $EXEC_IMAGE" || bad "no image $EXEC_IMAGE (da-remote benchmarks)"
+if [ -f "$DABENV" ]; then
+  perm=$(stat -c %a "$DABENV" 2>/dev/null || stat -f %Lp "$DABENV")
+  [ "$perm" = 600 ] && ok "DAB database settings present, mode 600" || bad "DAB database settings mode $perm (want 600)"
+  while IFS= read -r line; do
+    case $line in
+      *" ok") ok "${line% ok} reachable" ;;
+      *) bad "$line" ;;
+    esac
+  done < <(db_probe 2>&1)
+else
+  bad "DAB database settings missing (da-remote benchmarks)"
 fi
 
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.deepseek.com/ || echo 000)
@@ -195,6 +308,136 @@ uv sync
 EOF
 }
 
+benchmarks() {
+  run_script DEB_REPO "$deb_repo" DEB_COMMIT "$deb_commit" DAB_REPO "$dab_repo" \
+    DAB_COMMIT "$dab_commit" <<'EOF'
+[ -f "$DIR/evals/dab-requirements.txt" ] || {
+  echo "benchmarks: no repo with evals/dab-requirements.txt at $DIR; run da-remote setup first"
+  exit 1
+}
+mkdir -p "$BENCH/bin" || exit 1
+
+# Git LFS files are left as stubs: data-eng-bench's tasks use a published image, and DAB's data
+# comes from its download.sh.
+pin() { # <name> <dir> <url> <commit>
+  local done=already
+  if [ ! -d "$2/.git" ]; then
+    [ -e "$2" ] && { echo "benchmarks: $2 exists but is not a git repo"; return 1; }
+    GIT_LFS_SKIP_SMUDGE=1 git clone --quiet "$3" "$2" || return 1
+    done=cloned
+  fi
+  if [ "$(git -C "$2" rev-parse HEAD)" = "$4" ]; then
+    echo "$1: at ${4:0:7}, $done"
+    return 0
+  fi
+  git -C "$2" cat-file -e "$4^{commit}" 2>/dev/null || git -C "$2" fetch --quiet origin || return 1
+  GIT_LFS_SKIP_SMUDGE=1 git -C "$2" checkout --quiet --detach "$4" || return 1
+  echo "$1: checked out ${4:0:7}"
+}
+pin data-eng-bench "$DEB" "$DEB_REPO" "$DEB_COMMIT" || exit 1
+pin DataAgentBench "$DAB" "$DAB_REPO" "$DAB_COMMIT" || exit 1
+
+# download.sh hashes every file against dataset_manifest.tsv and fetches the ones that differ.
+if [ -z "$(dab_data_mismatches)" ] && [ "$(cat "$BENCH/dab-data.ok" 2>/dev/null)" = "$DAB_COMMIT" ]; then
+  echo "DAB data: verified by download.sh at ${DAB_COMMIT:0:7}, sizes unchanged, already"
+else
+  rm -f "$BENCH/dab-data.ok"
+  echo "DAB data: download.sh (fetches what does not match dataset_manifest.tsv; log in $BENCH/download.log)"
+  code=0
+  (cd "$DAB" && uv run -q --no-project --with 'huggingface_hub>=0.23' bash download.sh) \
+    >"$BENCH/download.log" 2>&1 || code=$?
+  grep -v '^  \[ok  \]' "$BENCH/download.log" | tail -n 40
+  [ "$code" = 0 ] || { echo "benchmarks: DAB download.sh failed (exit $code)"; exit 1; }
+  echo "$DAB_COMMIT" >"$BENCH/dab-data.ok"
+fi
+# evals/dab.py records DAB's commit with `git diff`, which runs git-lfs's clean filter on every
+# downloaded file (13 GB, read into memory) when git-lfs is installed. With the driver set to do
+# nothing in this clone only, the data differs from its pointer stubs and dab.py checks it against
+# dataset_manifest.tsv instead; the filter=lfs attributes stay.
+git -C "$DAB" config filter.lfs.process "" &&
+  git -C "$DAB" config filter.lfs.clean "" &&
+  git -C "$DAB" config filter.lfs.smudge "" &&
+  git -C "$DAB" config filter.lfs.required false || exit 1
+changed=$(timeout 120 git -C "$DAB" diff --name-only HEAD) || {
+  echo "benchmarks: git diff in $DAB failed or took over 120 s"
+  exit 1
+}
+other=$(printf '%s\n' "$changed" | grep -vxF -f <(cut -f1 "$DAB/dataset_manifest.tsv") | grep -c .)
+if [ "$other" = 0 ]; then
+  echo "DAB checkout: at ${DAB_COMMIT:0:7}, only the downloaded data differs from the LFS stubs"
+else
+  echo "DAB checkout: $other tracked file(s) changed besides the data; runs will record -dirty:"
+  printf '%s\n' "$changed" | grep -vxF -f <(cut -f1 "$DAB/dataset_manifest.tsv") | head -n 10
+fi
+
+if docker image inspect "$EXEC_IMAGE" >/dev/null 2>&1; then
+  echo "image $EXEC_IMAGE: present, already"
+else
+  echo "image $EXEC_IMAGE: building from DAB's Dockerfile"
+  docker build -q -t "$EXEC_IMAGE" "$DAB" >/dev/null || { echo "benchmarks: docker build failed"; exit 1; }
+fi
+
+# DAB's tools read these (common_scaffold/config.py); its loaders shell out to `psql` (PG_CLIENT)
+# and `mongorestore`, which run inside the database containers through the wrappers in bin/.
+if [ ! -f "$DABENV" ]; then
+  password=$(LC_ALL=C tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+  (
+    umask 077
+    cat >"$DABENV" <<ENV
+# Written by da-remote benchmarks: the DAB databases' settings, for DAB's tools.
+PG_HOST=127.0.0.1
+PG_PORT=15432
+PG_USER=postgres
+PG_PASSWORD=$password
+PG_CLIENT=$BENCH/bin/psql
+MONGO_URI=mongodb://127.0.0.1:37017/
+PATH="$BENCH/bin:\$PATH"
+ENV
+  )
+  echo "DAB database settings: written to $DABENV (mode 600)"
+fi
+set -a
+. "$DABENV"
+set +a
+# DAB passes its host paths; the containers see the DAB checkout at the same path, read-only.
+# Never stdin: DAB's loaders run inside its MCP server, whose stdin is the MCP stream.
+cat >"$BENCH/bin/psql" <<WRAP
+#!/usr/bin/env bash
+exec docker exec -e PGPASSWORD -e PGCLIENTENCODING $PG_CONTAINER psql "\$@" </dev/null
+WRAP
+cat >"$BENCH/bin/mongorestore" <<WRAP
+#!/usr/bin/env bash
+exec docker exec $MONGO_CONTAINER mongorestore "\$@" </dev/null
+WRAP
+chmod 755 "$BENCH/bin/psql" "$BENCH/bin/mongorestore"
+
+container() { # <name> <docker run args...>
+  local name=$1
+  shift
+  case $(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null) in
+    true) echo "$name: running, already" ;;
+    false) docker start "$name" >/dev/null && echo "$name: started" ;;
+    *) docker run -d --quiet --name "$name" "$@" >/dev/null && echo "$name: created and started" ;;
+  esac
+}
+export POSTGRES_PASSWORD="$PG_PASSWORD" # docker run -e takes it from here, off the command line
+container "$PG_CONTAINER" -p "127.0.0.1:$PG_PORT:5432" -e POSTGRES_PASSWORD \
+  -v da-dab-pgdata:/var/lib/postgresql/data -v "$DAB:$DAB:ro" postgres:17 || exit 1
+container "$MONGO_CONTAINER" -p 127.0.0.1:37017:27017 -v da-dab-mongodata:/data/db \
+  -v "$DAB:$DAB:ro" mongo:8 --wiredTigerCacheSizeGB 0.5 || exit 1
+
+for _ in $(seq 30); do
+  probe=$(db_probe 2>&1) && break
+  sleep 2
+done
+printf '%s\n' "$probe"
+case $probe in *FAIL* | "") echo "benchmarks: a DAB database is not reachable"; exit 1 ;; esac
+
+echo "benchmarks: ready. data-eng-bench: --tasks-dir ../da-benchmarks/data-eng-bench/tasks;" \
+  "DAB: --dab-root ../da-benchmarks/DataAgentBench (paths from the repo, where runs start)"
+EOF
+}
+
 start() {
   local name=$1
   shift
@@ -214,6 +457,16 @@ cd "$DIR" 2>/dev/null && [ -d .git ] || {
   echo "start: no env file on the server (~/.config/data-agent/env)"
   exit 1
 }
+# A dab run needs DAB's packages and the database settings `benchmarks` wrote.
+dab_env="" with=""
+if [ "$SUBCOMMAND" = dab ]; then
+  [ -f "$DABENV" ] || {
+    echo "start: no DAB database settings on the server; run da-remote benchmarks first"
+    exit 1
+  }
+  dab_env=". \"\$HOME/.config/data-agent/dab.env\""
+  with="--with-requirements evals/dab-requirements.txt "
+fi
 run="runs/$NAME"
 if alive "$NAME"; then
   echo "start: $NAME is already running ($(state "$NAME")); pick another name or wait"
@@ -230,11 +483,21 @@ cat >"$run/run.sh" <<RUN
 # da-remote start $NAME, commit $commit
 set -a
 . "\$HOME/.config/data-agent/env"
+$dab_env
 set +a
 export PATH="\$HOME/.local/bin:\$PATH"
 cd $(printf '%q' "$PWD") || exit 1
-uv run --no-sync python -m evals $EVALS_ARGS
+# The server's memory every 5 s while evals runs (plan §7: concurrency follows measured peaks).
+# Container names can name holdout tasks, so the log stays out of a summary-only pull.
+while :; do
+  echo "\$(date -u +%FT%TZ) \$(free -m 2>/dev/null | awk '/^Mem:/ {print "used_mb=" \$3, "total_mb=" \$2}')"
+  docker stats --no-stream --format '  {{.Name}} {{.MemUsage}}' 2>/dev/null
+  sleep 5
+done >>$(printf '%q' "$run/memory.log") 2>&1 &
+sampler=\$!
+uv run --no-sync ${with}python -m evals $EVALS_ARGS
 code=\$?
+kill "\$sampler" 2>/dev/null
 echo "da-remote: evals exited \$code at \$(date -u +%FT%TZ)"
 echo "\$code" >$(printf '%q' "$run/exit")
 RUN
@@ -270,6 +533,8 @@ echo "$NAME: $(state "$NAME")"
 echo "--- last $TAIL lines of runs/$NAME/run.log"
 tail -n "$TAIL" "$run/run.log"
 echo "---"
+awk '{for (i = 2; i <= NF; i++) if ($i ~ /^used_mb=/) { v = substr($i, 9) + 0; if (v > peak) { peak = v; at = $1; of = $(i + 1) } }}
+  END { if (peak) printf "memory peak: %d MB used (%s), at %s\n", peak, of, at }' "$run/memory.log" 2>/dev/null
 budget=$(cat "$run/budget" 2>/dev/null) || budget=""
 if [ -z "$budget" ]; then
   budget=1000000
@@ -306,7 +571,7 @@ mkdir -p "$DIR/runs"
 EOF
   # Inputs only: the files da-remote keeps for a run stay the server's.
   copy --exclude=/run.pid --exclude=/run.sh --exclude=/run.log --exclude=/exit --exclude=/budget \
-    --exclude=/subcommand \
+    --exclude=/subcommand --exclude=/memory.log \
     "$root/runs/$1/" "$host:$(rsync_dir)/runs/$1/"
   echo "push: runs/$1 -> server runs/$1"
 }
@@ -346,9 +611,9 @@ EOF
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
 case "$cmd" in
-  check)
+  check | benchmarks)
     [ $# -eq 0 ] || usage
-    check
+    "$cmd"
     ;;
   setup)
     [ $# -le 1 ] || usage
