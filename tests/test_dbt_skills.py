@@ -304,7 +304,65 @@ def test_scan_does_not_read_a_project_config_outside_the_workspace(tmp_path: Pat
 
 
 def test_workflow_compares_sums_and_averages_only_up_to_rounding() -> None:
-    step_8 = " ".join(body("dbt-workflow").split("### Step 8", 1)[1].split("### ", 1)[0].split())
-    assert "sums and averages up to rounding" in step_8
-    assert "1e-6" in step_8
+    assert "sums and averages up to rounding" in step_8()
+    assert "1e-6" in step_8()
     assert "10%" not in body("dbt-workflow")
+
+
+def step_8() -> str:
+    return " ".join(body("dbt-workflow").split("### Step 8", 1)[1].split("\n---", 1)[0].split())
+
+
+def write_section(number: int) -> str:
+    text = body("dbt-write").split(f"\n## {number}. ", 1)[1].split("\n## ", 1)[0]
+    return " ".join(text.split())
+
+
+def test_workflow_checks_values_per_key_against_an_independent_recomputation() -> None:
+    """A grand total can match while single keys are wrong, and a check that reuses the model's
+    own expression repeats its error; Step 8 runs whether or not the verifiers passed."""
+    text = step_8()
+    assert "output grain" in text
+    assert "never copy the model's expression" in text
+    assert "each branch" in text
+    assert "same rounding allowance" in text
+    assert "key-level check" in text.split("STOP when", 1)[1]
+
+
+def test_workflow_final_check_covers_types_of_every_required_model() -> None:
+    text = step_8()
+    assert "column types" in text
+    assert "every model the task asks for" in text
+
+
+def test_write_measures_rows_each_filter_removes_before_adding_it() -> None:
+    text = write_section(5)
+    assert "without the predicate" in text
+    assert "alone and their overlap" in text
+    edit_rule = body("dbt-workflow").split("Do NOT rewrite pre-existing SQL", 1)[1]
+    assert "predicate by predicate" in edit_rule.split("\n\n", 1)[0]
+
+
+def test_null_rows_stay_except_under_a_date_bound() -> None:
+    text = write_section(5)
+    assert "A row with some NULL columns is real data - keep it" in text
+    assert "NULL date" in text.split("A row with some NULL columns", 1)[1]
+
+
+def test_percentage_default_is_a_ratio_and_self_checks_use_it() -> None:
+    text = write_section(13)
+    assert "output a 0-1 ratio" in text
+    assert "output a 0-100 scale" not in text
+    assert "same scale" in text
+
+
+def test_write_keeps_column_precision() -> None:
+    text = write_section(1)
+    assert "timestamp stays a timestamp" in text
+
+
+def test_edit_changes_a_predicate_the_task_names_as_wrong() -> None:
+    edit_rule = body("dbt-workflow").split("Do NOT rewrite pre-existing SQL", 1)[1]
+    edit_rule = edit_rule.split("\n\n", 1)[0]
+    assert "removal or correction" in edit_rule
+    assert "keep every other predicate" in edit_rule

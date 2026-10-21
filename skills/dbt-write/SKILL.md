@@ -12,7 +12,11 @@ are graded or about a sandbox were reworded as plain dbt reasons (ADR-0005); the
 for period-over-period columns and Section 6 (which forced COUNT(*) whenever a SUM used every row)
 were rewritten as general rules; the bug-class sweep uses the Grep tool instead of `grep` in Bash;
 examples carrying specific table, column, entity names or row counts were made generic, and
-Section 13 asks for the project's percentage scale before defaulting to 0-100. -->
+Section 13 asks for the project's percentage scale before defaulting to a 0-1 ratio (upstream:
+0-100). After the first failure attribution: Section 1 keeps column precision; Section 5 measures
+the rows each added filter removes, limits exclusions to the named categories and excludes NULL
+dates from date-bounded metrics; Section 13 covers every share column and self-checks on the same
+scale. -->
 
 # dbt Write Skill
 
@@ -30,6 +34,9 @@ Preserve column types from the pre-existing reference table if one exists. If th
 reference table has an ID column as VARCHAR, your model must output VARCHAR too -
 even if the raw source has it as INTEGER. When no reference exists, preserve the
 source type. Type mismatches break downstream joins and comparisons even when values are identical.
+Do not lower precision the task does not ask for: a timestamp stays a timestamp (no cast to
+DATE), a decimal stays a decimal - the dropped part cannot be recovered downstream. A reference
+table or sibling that uses the lower type still wins (above, Section 2).
 
 **Rounding in aggregations**: always aggregate first, then round:
 `ROUND(SUM(expr), 2)` - NOT `SUM(ROUND(expr, 2))`. Rounding per-row before
@@ -176,7 +183,12 @@ fact aggregation drives the FROM clause, not the dimension.
 ## 5. Do NOT Add Filters Unless Explicitly Required
 
 Do NOT add WHERE or HAVING clauses unless the task description or YML explicitly
-says to exclude rows. When a filter IS required, apply it at the NARROWEST
+says to exclude rows. Before adding any filtering predicate (WHERE, HAVING, a filtering join),
+count the rows without the predicate and with it, and record in the technical spec how many rows
+each predicate removes - a count measured after the filter hides what it dropped. An exclusion
+uses only the categories the task names, one predicate per named category: do NOT add a
+column whose name merely sounds related. When combining several, count each predicate's rows
+alone and their overlap first, so the rows an extra predicate removes are visible. When a filter IS required, apply it at the NARROWEST
 single point - the first model where the filtered entity is the driving
 table. Do NOT add the same filter to other models that JOIN the entity
 as a lookup - those models inherit the filter through the ref() chain.
@@ -209,7 +221,10 @@ Common mistakes:
 - Filtering NULLs from UNIONs when only some columns are NULL
 - Adding HAVING to exclude groups with NULL values
 
-A row with some NULL columns is real data - keep it.
+A row with some NULL columns is real data - keep it. One exception: a metric bounded
+by a date (as of a date, within a period, to today) counts only rows whose date meets the
+bound, and a NULL date meets none - exclude NULL-date rows from that metric even if a total
+over all rows would then not reconcile.
 
 ## 6. Grain Consistency
 
@@ -289,7 +304,7 @@ database-native functions. This ensures compatibility across adapters.
 
 ## 13. Percentage Columns
 
-If a YML column name contains `pct`, `percent`, `percentage`, or `rate`, use the scale the project already uses: the YML description, a sibling model or a pre-existing table with the same kind of column. If nothing in the project says, output a 0-100 scale (multiply the 0-1 ratio by 100).
+For any column that holds a share of a population (a percentage, rate, ratio, retention or conversion - whatever its name), use the scale the task or project fixes: the task text, the YML description or tests, a sibling model or a pre-existing table with the same kind of column. If nothing says, output a 0-1 ratio - the plain quotient, with no conversion step to get wrong. Every self-check of the column uses the same scale (a full share is 1, not 100) - a check on another scale passes a wrong one.
 
 ## 14. Boolean Flag Columns
 
