@@ -9,7 +9,7 @@ import json
 import sqlite3
 from typing import Any
 
-from common_scaffold.tools.db_utils.db_config import load_db_clients
+from common_scaffold.tools.db_utils.db_config import drop_dbs, load_db_clients, load_dbs
 
 DESCRIPTION = "FAKE-DAB query description."
 QUERY_ARG = "FAKE-DAB query argument."
@@ -21,7 +21,10 @@ class QueryDBTool:
     ) -> None:
         self.log_path = log_path
         self.name = name
+        self.db_config_path = db_config_path
         self.db_clients = load_db_clients(db_config_path)
+        if check_load:
+            load_dbs(db_config_path, self.db_clients)
 
     def get_spec(self) -> dict[str, Any]:
         return {
@@ -58,4 +61,4 @@ class QueryDBTool:
         return {"success": True, "result": rows}
 
     def clean_up(self) -> None:
-        pass
+        drop_dbs(self.db_config_path, self.db_clients)

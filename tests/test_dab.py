@@ -15,6 +15,7 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -155,6 +156,25 @@ async def test_query_runs_through_the_dab_tool(dab_root: Path, tmp_path: Path) -
     assert data_of(result) == [{"ticker": "T002"}]
     assert data_of(tables) == ["prices"]
     assert [call["tool_name"] for call in logged_calls(log)] == ["query_db", "query_db"]
+
+
+def loads(root: Path) -> list[dict[str, str]]:
+    """What the fake DAB tools loaded and dropped, in order."""
+    path = root / "query_toyset" / "loads.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+async def test_the_tool_server_neither_loads_nor_drops_databases(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    # Loading a large dump (imdb's 1.6 GB) outlasts the SDK's wait for the server to start, and a
+    # drop on exit would race the next run's load: the runner owns both (ticket 23).
+    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
+        result = await session.call_tool("list_tables", {"db_name": "articles_db"})
+    assert not result.is_error
+    assert loads(dab_root) == []
 
 
 async def test_sql_tables_are_listed_through_the_gateway(dab_root: Path, tmp_path: Path) -> None:
@@ -866,6 +886,110 @@ async def test_a_dab_server_that_failed_to_start_is_an_infra_error(
     assert any(e["type"] == "error" and e["source"] == "mcp" for e in events)
 
 
+async def test_databases_are_loaded_before_the_session_and_dropped_after(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    at_start: list[list[dict[str, str]]] = []
+
+    async def session(**_: Any) -> AsyncIterator[Any]:
+        at_start.append(loads(dab_root))
+        yield result("answer")
+
+    monkeypatch.setattr(dab, "query", session)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    errors = await dab.run_query(dab_root, query, load_config(CONFIG), out, 2, ENV)
+    assert errors == 0
+    load, drop = (
+        {"action": "load", "db_name": "articles"},
+        {"action": "drop", "db_name": "articles"},
+    )
+    assert at_start == [[load], [load, drop, load]]
+    assert loads(dab_root) == [load, drop, load, drop]
+    events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
+    assert [e["type"] for e in events[:2]] == ["version", "dab_load"]
+    assert events[1]["seconds"] >= 0
+
+
+def test_databases_are_loaded_from_an_absolute_config_path(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # DAB joins a dump's path onto the config's directory and hands it to `psql -f`, which runs
+    # inside the database container with that container's working directory: with
+    # `--dab-root ../da-benchmarks/DataAgentBench` the dump was not found (ticket 23, server run).
+    real = dab.scaffold(dab_root)
+    paths: list[str] = []
+
+    def query_tool(**kwargs: Any) -> Any:
+        paths.append(kwargs["db_config_path"])
+        return real.query_tool(**kwargs)
+
+    monkeypatch.setattr(dab, "scaffold", lambda _root: replace(real, query_tool=query_tool))
+    monkeypatch.chdir(tmp_path)
+    query = dab.load_query(Path("dab"), "toyset", "1", hints=True)
+    log = tmp_path / "tools.jsonl"
+    dab.load_databases(Path("dab"), query, log, [])
+    dab.drop_databases(Path("dab"), query, log, [])
+    assert len(paths) == 2
+    assert all(Path(path).is_absolute() for path in paths)
+
+
+async def test_a_failed_load_is_an_infra_error_and_no_session_starts(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    config_path = dab_root / "query_toyset" / "db_config.yaml"
+    config = json.loads(config_path.read_text())
+    config["db_clients"] = {
+        "films_db": {"db_type": "postgres", "db_name": "films", "sql_file": "films.sql"},
+        "articles_db": {
+            **config["db_clients"]["articles_db"],
+            "load_error": "mongorestore: no space",
+        },
+    }
+    config_path.write_text(json.dumps(config))
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["answer"], seen))
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    errors = await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, ENV)
+    assert errors == 1
+    assert seen == []
+    assert json.loads((out / "submission.json").read_text()) == []
+    events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
+    error = next(e for e in events if e["type"] == "error")
+    assert error["source"] == "dab_load"
+    assert "mongorestore: no space" in error["error"]
+    assert events[-1]["type"] == "result"
+    # What did load before the failure is dropped again.
+    assert loads(dab_root)[-2:] == [
+        {"action": "drop", "db_name": "films"},
+        {"action": "drop", "db_name": "articles"},
+    ]
+
+
+async def test_a_failed_drop_is_reported_masked_and_the_run_still_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    dab_root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = dab_root / "query_toyset" / "db_config.yaml"
+    config = json.loads(config_path.read_text())
+    error = "cleanup error: connection to db.internal.example refused"
+    config["db_clients"]["articles_db"]["drop_error"] = error
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setattr(dab, "query", scripted(["answer"], []))
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    env = {**ENV, "PG_HOST": "db.internal.example"}
+    errors = await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, env)
+    assert errors == 0
+    assert json.loads((out / "submission.json").read_text())[0]["answer"] == "answer"
+    stderr = capsys.readouterr().err
+    assert "could not drop the toyset databases" in stderr
+    assert "db.internal.example" not in stderr
+
+
 async def test_submission_keeps_entries_from_earlier_queries(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -966,6 +1090,22 @@ async def test_dab_logs_are_masked_when_the_run_is_interrupted(
     monkeypatch.setattr(dab, "query", interrupted_query)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
     with pytest.raises(asyncio.CancelledError):
+        await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, ENV)
+    log = dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "dab_tool_calls.jsonl"
+    assert log.read_text() == '{"result": "[REDACTED]"}\n'
+
+
+async def test_dab_logs_are_masked_when_the_load_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # Ctrl-C during a long load (minutes for imdb); DAB's log still gets masked.
+    def interrupted_load(_root: Path, _query: Any, log: Path, _secrets: list[str]) -> float:
+        log.write_text('{"result": "sk-test-secret"}\n')
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(dab, "load_databases", interrupted_load)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    with pytest.raises(KeyboardInterrupt):
         await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, ENV)
     log = dab.run_dir(tmp_path / "out", "toyset", "1", 0) / "dab_tool_calls.jsonl"
     assert log.read_text() == '{"result": "[REDACTED]"}\n'

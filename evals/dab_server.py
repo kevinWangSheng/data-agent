@@ -202,10 +202,12 @@ def main() -> None:
     args = parser.parse_args()
     tools = scaffold(args.dab_root)
     config = str(args.db_config)
-    # As in DAB's own agent: the query tool loads the Postgres and MongoDB dumps, and clean-up
-    # drops them again.
+    # The runner loads the Postgres and MongoDB dumps before the session and drops them after it
+    # (`evals.dab.load_databases`): a large dump loads for longer than the SDK waits for this
+    # server to start. So the tools here only connect, and their clean-up (which drops the
+    # databases) is never called.
     query_tool = tools.query_tool(
-        log_path=args.log, name="query_db", db_config_path=config, check_load=True
+        log_path=args.log, name="query_db", db_config_path=config, check_load=False
     )
     list_tool = tools.list_tool(
         log_path=args.log, name="list_db", db_config_path=config, check_load=False
@@ -218,8 +220,6 @@ def main() -> None:
         server = build_server(query_tool, list_tool, exec_tool, tools.result_marker, args.workspace)
         server.run("stdio")
     finally:
-        query_tool.clean_up()
-        list_tool.clean_up()
         exec_tool.clean_up()
 
 
