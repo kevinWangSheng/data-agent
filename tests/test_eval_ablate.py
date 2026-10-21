@@ -6,6 +6,7 @@ event file), so everything after it (spend guard, scrub, report, compare) runs f
 """
 
 import json
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -119,6 +120,18 @@ class FakeHarbor:
 def commit(monkeypatch: pytest.MonkeyPatch) -> None:
     """A clean commit, whatever state this checkout is in while the tests run."""
     monkeypatch.setattr(ablate, "git_commit", lambda: "c0ffee")
+
+
+PREFETCH_WHEELS = ablate.prefetch_wheels
+
+
+@pytest.fixture(autouse=True)
+def prefetched(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, list[str]]]:
+    """The wheel cache fills ablate asks for, as (tasks dir, tasks); the real fill needs task
+    directories and Docker."""
+    calls: list[tuple[Path, list[str]]] = []
+    monkeypatch.setattr(ablate, "prefetch_wheels", lambda *call: calls.append(call))
+    return calls
 
 
 @pytest.fixture
@@ -558,3 +571,115 @@ def test_another_model_on_the_same_out_stops(
     # The same request again still reuses the jobs.
     assert run(monkeypatch, harbor, manifest, out, "--config", "full", *first) == 0
     assert len(harbor.calls) == 1
+
+
+def test_the_wheel_cache_is_filled_once_before_the_first_harbor_job(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    prefetched: list[tuple[Path, list[str]]],
+) -> None:
+    harbor = FakeHarbor()
+    fills_seen: list[int] = []
+
+    def harbor_after_fill(args: list[str], log: Path) -> int:
+        fills_seen.append(len(prefetched))
+        return harbor(args, log)
+
+    monkeypatch.setattr(ablate, "run_harbor", harbor_after_fill)
+    out = tmp_path / "out"
+    assert evals_main(ablate_args(manifest, out)) == 0
+    assert fills_seen == [1] * len(ablate.CONFIGS)
+    assert prefetched == [(Path("tasks"), HOLDOUT)]
+    # Every job finished: a rerun starts no Harbor job, so it needs no wheels.
+    assert evals_main(ablate_args(manifest, out)) == 0
+    assert len(prefetched) == 1
+
+
+@pytest.fixture
+def tasks_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The holdout tasks on one base image, the agent's artifacts faked, the real fill wired in."""
+    from evals import harbor_agent
+
+    tasks = tmp_path / "tasks"
+    for task in HOLDOUT:
+        (tasks / task / "environment").mkdir(parents=True)
+        (tasks / task / "task.toml").write_text("[environment]\ncpus = 2\n")
+        (tasks / task / "environment" / "Dockerfile").write_text("FROM base:1\n")
+    requirements = tmp_path / "requirements.txt"
+    monkeypatch.setattr(harbor_agent, "build_artifacts", lambda: (tmp_path / "a.whl", requirements))
+    monkeypatch.setattr(ablate, "prefetch_wheels", PREFETCH_WHEELS)
+    return tasks
+
+
+def run_on(
+    monkeypatch: pytest.MonkeyPatch, harbor: FakeHarbor, manifest: Path, out: Path, tasks: Path
+) -> int:
+    argv = ablate_args(manifest, out)
+    argv[argv.index("--tasks-dir") + 1] = str(tasks)
+    monkeypatch.setattr(ablate, "run_harbor", harbor)
+    return evals_main(argv)
+
+
+def test_the_fill_covers_the_images_of_the_holdout_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    tasks_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    filled: list[set[str]] = []
+
+    def fill(images: set[str], requirements: Path, lock: Path) -> list[str]:
+        filled.append(set(images))
+        assert requirements == tmp_path / "requirements.txt"
+        return ["CPython 3.12, glibc 2.36, x86_64: 3 wheels in cache, 0.1 s"]
+
+    monkeypatch.setattr(ablate.wheels, "fill", fill)
+    assert run_on(monkeypatch, FakeHarbor(), manifest, tmp_path / "out", tasks_dir) == 0
+    assert filled == [{"base:1"}]
+    assert "wheels: CPython 3.12, glibc 2.36, x86_64: 3 wheels" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (RuntimeError("cannot probe base:1: Cannot connect to the Docker daemon"), "Docker daemon"),
+        (RuntimeError("x.whl: sha256 00, expected 11"), "sha256"),
+        (RuntimeError("no locked wheel of duckdb==1.4.0 installs on"), "no locked wheel"),
+        (subprocess.CalledProcessError(6, ["curl"]), "curl"),
+        (KeyError("markers"), "markers"),  # a probe that printed other JSON
+    ],
+)
+def test_a_failed_fill_stops_before_any_harbor_job(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    tasks_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    failure: Exception,
+    reason: str,
+) -> None:
+    def fill(images: set[str], requirements: Path, lock: Path) -> list[str]:
+        raise failure
+
+    monkeypatch.setattr(ablate.wheels, "fill", fill)
+    harbor = FakeHarbor()
+    assert run_on(monkeypatch, harbor, manifest, tmp_path / "out", tasks_dir) == 2
+    assert harbor.calls == []
+    err = capsys.readouterr().err
+    assert "cannot fill the wheel cache" in err and reason in err
+
+
+def test_a_task_without_a_known_image_stops_before_any_harbor_job(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    tasks_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tasks_dir / HOLDOUT[1] / "environment" / "Dockerfile").unlink()
+    harbor = FakeHarbor()
+    assert run_on(monkeypatch, harbor, manifest, tmp_path / "out", tasks_dir) == 2
+    assert harbor.calls == []
+    assert "cannot fill the wheel cache" in capsys.readouterr().err
