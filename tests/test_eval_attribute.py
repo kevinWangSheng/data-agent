@@ -247,9 +247,8 @@ def test_infra_errors_and_missing_events_are_not_attributed(tmp_path: Path) -> N
 def test_the_latest_of_several_event_files_is_attributed(tmp_path: Path) -> None:
     job = tmp_path / "job"
     trial = write_trial(job, "dev-task__a", "dev-task", 0.0, sql="SELECT * FROM latest_run")
-    earlier = write_trial(tmp_path / "earlier", "x", "dev-task", 0.0, sql="SELECT * FROM first_run")
-    first = trial / EVENTS.with_name("run-20261020T200000Z-00000000.jsonl")
-    first.write_text((earlier / EVENTS).read_text())
+    earlier = trial / EVENTS.with_name("run-20261020T200000Z-00000000.jsonl")
+    earlier.write_text((trial / EVENTS).read_text().replace("latest_run", "first_run"))
     judge = FakeJudge(reply())
 
     report = run(job, tmp_path / "out", judge)
