@@ -359,3 +359,10 @@ def test_percentage_default_is_a_ratio_and_self_checks_use_it() -> None:
 def test_write_keeps_column_precision() -> None:
     text = write_section(1)
     assert "timestamp stays a timestamp" in text
+
+
+def test_edit_changes_a_predicate_the_task_names_as_wrong() -> None:
+    edit_rule = body("dbt-workflow").split("Do NOT rewrite pre-existing SQL", 1)[1]
+    edit_rule = edit_rule.split("\n\n", 1)[0]
+    assert "removal or correction" in edit_rule
+    assert "keep every other predicate" in edit_rule

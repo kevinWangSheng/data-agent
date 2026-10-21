@@ -200,7 +200,7 @@ For each model in dependency order:
    clamp on the total hides a factor past its own cap.
 6. Write the SQL file.
 
-Do NOT rewrite pre-existing SQL files from scratch. For bug-fix tasks, EDIT the existing SQL minimally - change only the broken expression (e.g., add a CAST, fix an aggregation function). Keep all existing JOINs, CTEs, column aliases, and WHERE clauses intact. Rewriting from scratch drops logic the original author put there (lookup JOINs, filters, aliases) that you may not notice is missing. After any edit, compare the new SQL with the original predicate by predicate (every WHERE, HAVING and JOIN condition): each stays unless the task names it for removal.
+Do NOT rewrite pre-existing SQL files from scratch. For bug-fix tasks, EDIT the existing SQL minimally - change only the broken expression (e.g., add a CAST, fix an aggregation function). Keep all existing JOINs, CTEs, column aliases, and WHERE clauses intact. Rewriting from scratch drops logic the original author put there (lookup JOINs, filters, aliases) that you may not notice is missing. After any edit, compare the new SQL with the original predicate by predicate (every WHERE, HAVING and JOIN condition): each stays unchanged unless the task names it for removal or correction. Change a named predicate as the task says and keep every other predicate as it was.
 
 After ALL SQL files are written, build ONLY the models you wrote:
 `dbt run --select <model1> <model2> <model3>` (NO `+` prefix).
