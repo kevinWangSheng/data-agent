@@ -62,6 +62,12 @@ def load_trials(job_dir: Path) -> list[Trial]:
     return trials
 
 
+def event_files(trial: Trial) -> list[Path]:
+    """The trial's event files, where the agent writes them in Harbor's agent logs directory
+    (`agent/events/run-<UTC stamp>-<id>.jsonl`), oldest first: the names sort by start time."""
+    return sorted((trial.dir / "agent" / "events").glob("*.jsonl"))
+
+
 def by_task(trials: list[Trial]) -> dict[str, list[float | None]]:
     """Per-task reward lists, the input shape of `evals.metrics`."""
     out: dict[str, list[float | None]] = defaultdict(list)
