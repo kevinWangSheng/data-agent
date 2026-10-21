@@ -19,7 +19,10 @@ specific macro, column or entity names were made generic; the rule for review ta
 names a task format. Step 8 uses the verifiers' four verdicts (PASS, FAIL, NEEDS_INFO, N/A) and
 verify_model_values takes the model's upstream tables and the project directory and compares
 the model SQL's own COUNTs exactly; sums and averages match only up to rounding; map_columns adds
-no domain prefix. -->
+no domain prefix. After the first failure attribution: an edit is compared with the original
+predicate by predicate; rule-defined columns implement each factor as stated; Step 8 checks
+column types for every model the task asks for and adds a key-level check against an
+independent recomputation, which also gates the STOP. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -170,7 +173,7 @@ aggregation source. If counts differ, use the spine.
 Write `<project_dir>/technical_spec.md` - a structured plan that distills
 your Step 5 research into decisions for every model: build order, sources,
 joins (type and keys), filters, column expressions, grain, and expected row
-count with the query that measured it.
+count with the query that measured it (with the rows each added filter removes, dbt-write §5).
 
 If `technical_spec.md` already exists (retry), read it and skip re-research.
 
@@ -191,10 +194,12 @@ For each model in dependency order:
 4. Read the YML description for date boundaries. If it says "to the
    current date" or "to today", add `WHERE date_col <= current_date`.
 5. Read the YML description for transformation rules. If it states
-   explicit logic ("categorized as X if Y"), implement that logic.
+   explicit logic ("categorized as X if Y"), implement that logic. For a score
+   or weighted column, write one expression per factor and apply each cap and
+   threshold to the measure it names, not one clamp on the final value.
 6. Write the SQL file.
 
-Do NOT rewrite pre-existing SQL files from scratch. For bug-fix tasks, EDIT the existing SQL minimally - change only the broken expression (e.g., add a CAST, fix an aggregation function). Keep all existing JOINs, CTEs, column aliases, and WHERE clauses intact. Rewriting from scratch drops logic the original author put there (lookup JOINs, filters, aliases) that you may not notice is missing.
+Do NOT rewrite pre-existing SQL files from scratch. For bug-fix tasks, EDIT the existing SQL minimally - change only the broken expression (e.g., add a CAST, fix an aggregation function). Keep all existing JOINs, CTEs, column aliases, and WHERE clauses intact. Rewriting from scratch drops logic the original author put there (lookup JOINs, filters, aliases) that you may not notice is missing. After any edit, compare the new SQL with the original predicate by predicate (every WHERE, HAVING and JOIN condition): each stays unless the task names it for removal.
 
 After ALL SQL files are written, build ONLY the models you wrote:
 `dbt run --select <model1> <model2> <model3>` (NO `+` prefix).
@@ -217,23 +222,36 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
  - `subagent_type="verifier"` - structure checks
  - `subagent_type="value-verifier"` - value checks
    Both are READ-ONLY. They return reports. They fix nothing.
-   Pass: project directory and model names.
+   Pass: project directory and the names of every model the task asks for,
+   not only the ones you last edited.
    Also pass the path to `technical_spec.md` so verifiers can reference it.
    Do NOT include column definitions, SQL logic, or your interpretation
    of what the columns mean. The verifiers must discover this themselves.
    If those agents are not offered, run the same checks yourself, read-only,
-   with `list_tables` and `query_database`: CHECK 1 every model you built
-   exists as a table; CHECK 2 its columns match the YML contract and the
-   task; CHECK 3 its row count matches the grain (`COUNT(*)` vs
+   with `list_tables` and `query_database`, for every model the task asks for:
+   CHECK 1 it exists as a table; CHECK 2 its column names and column types
+   match the YML contract and the task (a timestamp the source holds is not a
+   DATE); CHECK 3 its row count matches the grain (`COUNT(*)` vs
    `COUNT(DISTINCT <key>)`, against the driving table); value CHECK 2 its
    metric totals match the same aggregates computed from the sources, with
    the model's filters: counts, mins and maxes exactly, sums and averages up to
    rounding (equal at the column's DECIMAL places; a float column within
    1e-6 relative error). Anything more is a mismatch.
+   Then, whether or not the verifiers ran, run the key-level check yourself:
+   totals can match while single keys are wrong, and a check that reuses the
+   model's expression repeats its error. For each built model, pick 3-5 keys
+   at the output grain (include edge cases: NULLs, zeros, the largest group)
+   and recompute every metric for those keys straight from the sources with a
+   query you write from the task's and YML's written rules - never copy the
+   model's expression or CTEs. For a column defined by rules (weights,
+   thresholds, caps, CASE branches), pick rows that exercise each branch.
+   Compare with the model row by row; a difference is a FAIL like a
+   verifier's, and the fix follows step 3.
 3. Read BOTH reports. Every check is PASS, FAIL, NEEDS_INFO or N/A. Only act on
    checks the verifiers marked FAIL or NEEDS_INFO (give the verifier what it asks for).
    If a check is PASS or N/A, accept it - do NOT override the verifier
-   or "fix" something it approved. If the model's row count differs from
+   or "fix" something it approved, unless your key-level check shows a
+   difference there. If the model's row count differs from
    your technical spec but the verifier says CHECK 3 PASS, update your
    spec to match reality - the verifier has already diagnosed whether
    the row count is correct.
@@ -252,7 +270,7 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
      as intentional. The verifier's numbers are measured from source data.
    For ANY fix, update `technical_spec.md` FIRST, then rewrite the SQL
    from the updated spec. Rebuild.
-4. STOP when both reports show every check PASS or N/A. Once verification passes, do NOT modify any model files - the task is complete. No further investigation, no "what if" queries, no source table changes. The verifiers are the final authority.
+4. STOP when both reports show every check PASS or N/A and your key-level check matches. Once verification passes, do NOT modify any model files - the task is complete. No further investigation, no "what if" queries, no source table changes. The verifiers and your key-level check are the final authority.
 
 ---
 
@@ -312,7 +330,8 @@ what the output SHOULD contain - they do NOT constrain which rows appear.
 
 Apply `WHERE IS NOT NULL` ONLY on `_id` join-key columns - NULL keys cause
 cross-joins. Do NOT filter descriptive columns (name, title, date) based on
-`not_null` - NULL descriptive fields are valid data.
+`not_null` - NULL descriptive fields are valid data (a date-bounded metric
+still leaves out NULL-date rows, dbt-write §5).
 
 not_null tests are NOT a reason to change JOIN type or driving table. If a
 metric column has a not_null test but would produce NULL from a LEFT JOIN
