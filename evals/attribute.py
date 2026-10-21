@@ -41,7 +41,7 @@ from sqlglot.errors import SqlglotError
 from data_agent.agent import SKILLS_DIR, ConfigError, ModelSettings, result_fields, skill_version
 from data_agent.events import REDACTED, known_secrets
 from data_agent.run_config import CONFIG_NAMES, load_config
-from evals.harbor import Trial, load_trials
+from evals.harbor import Trial, event_files, load_trials
 from evals.metrics import is_success
 from evals.report import is_infra_error
 
@@ -519,14 +519,16 @@ async def attribute(
     meter = Meter(judge, budget_usd)
     entries: list[dict[str, Any]] = []
     for trial in failures:
-        events = trial.dir / "agent" / "events.jsonl"
+        # A trial whose agent ran more than once has one file per run; the last run is the one
+        # the verifier scored.
+        files = event_files(trial)
         base = {"task": trial.task, "trial": trial.name, "failure_mode": None}
         before = meter.spent
-        if not events.is_file():
+        if not files:
             entry = {**base, "error": "no event file"}
         else:
             try:
-                entry = await attribute_one(trial, events, manifest, meter, skills, tasks_dir)
+                entry = await attribute_one(trial, files[-1], manifest, meter, skills, tasks_dir)
             except ConfigError:
                 raise
             except BudgetReached as exc:

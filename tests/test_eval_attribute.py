@@ -26,6 +26,8 @@ MANIFEST: dict[str, Any] = {"seed": 0, "dev": ["dev-task"], "holdout": ["held-ta
 SKILLS = load_skills()
 VERSION = skill_version(SKILLS_DIR)
 QUOTE = "Stop exploring after 3-5 tool calls."  # sql-workflow, section 1
+# Where the agent writes a trial's event file in a Harbor job (DataAgent.EVENTS_DIR, events_file).
+EVENTS = Path("agent", "events", "run-20261020T213727Z-ab4c66e5.jsonl")
 
 
 def event(seq: int, type: str, **fields: Any) -> dict[str, Any]:
@@ -42,7 +44,7 @@ def write_trial(
     version: str = VERSION,
 ) -> Path:
     trial = job / name
-    (trial / "agent").mkdir(parents=True)
+    (trial / EVENTS).parent.mkdir(parents=True)
     result = {
         "task_name": f"org/{task}",
         "trial_name": name,
@@ -59,7 +61,7 @@ def write_trial(
         event(6, "text", text="The answer is 42."),
         event(7, "result", subtype="success", num_turns=3, cost_usd=0.01),
     ]
-    (trial / "agent" / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    (trial / EVENTS).write_text("".join(json.dumps(e) + "\n" for e in events))
     return trial
 
 
@@ -124,7 +126,7 @@ def test_holdout_trials_are_never_read(tmp_path: Path) -> None:
     job = tmp_path / "job"
     write_trial(job, "dev-task__a", "dev-task", 0.0)
     held = write_trial(job, "held-task__a", "held-task", 0.0, sql="SELECT secret_holdout_col")
-    (held / "agent" / "events.jsonl").chmod(0)  # reading it would raise
+    (held / EVENTS).chmod(0)  # reading it would raise
     judge = FakeJudge(reply())
 
     report = run(job, tmp_path / "out", judge)
@@ -230,7 +232,7 @@ def test_infra_errors_and_missing_events_are_not_attributed(tmp_path: Path) -> N
     result["exception_info"] = {"exception_type": "ConnectionError"}
     (infra / "result.json").write_text(json.dumps(result))
     no_events = write_trial(job, "dev-task__b", "dev-task", 0.0)
-    (no_events / "agent" / "events.jsonl").unlink()
+    (no_events / EVENTS).unlink()
     judge = FakeJudge()
 
     report = run(job, tmp_path / "out", judge)
@@ -240,6 +242,21 @@ def test_infra_errors_and_missing_events_are_not_attributed(tmp_path: Path) -> N
     [entry] = report["failures"]
     assert entry["trial"] == "dev-task__b"
     assert entry["error"] == "no event file"
+
+
+def test_the_latest_of_several_event_files_is_attributed(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    trial = write_trial(job, "dev-task__a", "dev-task", 0.0, sql="SELECT * FROM latest_run")
+    earlier = write_trial(tmp_path / "earlier", "x", "dev-task", 0.0, sql="SELECT * FROM first_run")
+    first = trial / EVENTS.with_name("run-20261020T200000Z-00000000.jsonl")
+    first.write_text((earlier / EVENTS).read_text())
+    judge = FakeJudge(reply())
+
+    report = run(job, tmp_path / "out", judge)
+
+    assert "latest_run" in judge.prompts[0]
+    assert "first_run" not in judge.prompts[0]
+    assert report["failures"][0]["events"] == str(trial / EVENTS)
 
 
 def test_cli_without_dev_failures_needs_no_model(tmp_path: Path) -> None:
@@ -387,7 +404,7 @@ def test_each_call_is_capped_at_the_remaining_budget(tmp_path: Path) -> None:
 def test_names_in_a_listing_given_as_sdk_text_blocks_are_specific(tmp_path: Path) -> None:
     job = tmp_path / "job"
     trial = write_trial(job, "dev-task__a", "dev-task", 0.0)
-    path = trial / "agent" / "events.jsonl"
+    path = trial / EVENTS
     events = [json.loads(line) for line in path.read_text().splitlines()]
     blocks = [{"type": "text", "text": "main.orders (base table): status, amount"}]
     events[2]["content"] = blocks  # list_tables' tool_end
@@ -428,7 +445,7 @@ async def test_sdk_judge_keeps_the_cost_of_a_result_followed_by_an_sdk_error(
 
 
 def add_events(trial: Path, *events: dict[str, Any]) -> None:
-    with (trial / "agent" / "events.jsonl").open("a") as f:
+    with (trial / EVENTS).open("a") as f:
         f.writelines(json.dumps(e) + "\n" for e in events)
 
 

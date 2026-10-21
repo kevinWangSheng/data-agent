@@ -51,7 +51,7 @@ from typing import Any
 
 from data_agent.agent import git_commit, skill_version
 from data_agent.run_config import REPO_ROOT, load_config
-from evals.harbor import Trial, load_trials
+from evals.harbor import Trial, event_files, load_trials
 from evals.report import TRIALS_PER_TASK, check_complete, is_infra_error, split_trials
 
 # Run order: the reference first, and full-old-skill last, the first config plan §7 drops.
@@ -214,11 +214,6 @@ def guard_spend(out: Path, budget: str) -> None:
     if code != 0:
         raise Stop(f"the spend guard cannot total the spend; see {out / 'logs' / 'guards.log'}")
     print(printed.strip(), flush=True)
-
-
-def event_files(trial: Trial) -> list[Path]:
-    """The trial's event files, where the agent writes them in Harbor's agent logs directory."""
-    return sorted((trial.dir / "agent" / "events").glob("*.jsonl"))
 
 
 def keep_spend(out: Path, config: str, trials: list[Trial]) -> None:
