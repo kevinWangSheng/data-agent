@@ -35,7 +35,8 @@ reference table has an ID column as VARCHAR, your model must output VARCHAR too 
 even if the raw source has it as INTEGER. When no reference exists, preserve the
 source type. Type mismatches break downstream joins and comparisons even when values are identical.
 Do not lower precision the task does not ask for: a timestamp stays a timestamp (no cast to
-DATE), a decimal stays a decimal - the dropped part cannot be recovered downstream.
+DATE), a decimal stays a decimal - the dropped part cannot be recovered downstream. A reference
+table or sibling that uses the lower type still wins (above, Section 2).
 
 **Rounding in aggregations**: always aggregate first, then round:
 `ROUND(SUM(expr), 2)` - NOT `SUM(ROUND(expr, 2))`. Rounding per-row before
@@ -187,7 +188,7 @@ count the rows without the predicate and with it, and record in the technical sp
 each predicate removes - a count measured after the filter hides what it dropped. An exclusion
 uses only the categories the task names, one predicate per named category: do NOT add a
 column whose name merely sounds related. When combining several, count each predicate's rows
-alone and their overlap first. When a filter IS required, apply it at the NARROWEST
+alone and their overlap first, so the rows an extra predicate removes are visible. When a filter IS required, apply it at the NARROWEST
 single point - the first model where the filtered entity is the driving
 table. Do NOT add the same filter to other models that JOIN the entity
 as a lookup - those models inherit the filter through the ref() chain.
@@ -303,7 +304,7 @@ database-native functions. This ensures compatibility across adapters.
 
 ## 13. Percentage Columns
 
-For any column that holds a share of a population (a percentage, rate, ratio, retention or conversion - whatever its name), use the scale the task or project fixes: the task text, the YML description or tests, a sibling model or a pre-existing table with the same kind of column. If nothing says, output a 0-1 ratio; use 0-100 only when asked. Every self-check of the column uses the same scale (a full share is 1, not 100) - a check on another scale passes a wrong one.
+For any column that holds a share of a population (a percentage, rate, ratio, retention or conversion - whatever its name), use the scale the task or project fixes: the task text, the YML description or tests, a sibling model or a pre-existing table with the same kind of column. If nothing says, output a 0-1 ratio - the plain quotient, with no conversion step to get wrong. Every self-check of the column uses the same scale (a full share is 1, not 100) - a check on another scale passes a wrong one.
 
 ## 14. Boolean Flag Columns
 

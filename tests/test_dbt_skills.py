@@ -304,9 +304,8 @@ def test_scan_does_not_read_a_project_config_outside_the_workspace(tmp_path: Pat
 
 
 def test_workflow_compares_sums_and_averages_only_up_to_rounding() -> None:
-    step_8 = " ".join(body("dbt-workflow").split("### Step 8", 1)[1].split("### ", 1)[0].split())
-    assert "sums and averages up to rounding" in step_8
-    assert "1e-6" in step_8
+    assert "sums and averages up to rounding" in step_8()
+    assert "1e-6" in step_8()
     assert "10%" not in body("dbt-workflow")
 
 
@@ -326,6 +325,7 @@ def test_workflow_checks_values_per_key_against_an_independent_recomputation() -
     assert "output grain" in text
     assert "never copy the model's expression" in text
     assert "each branch" in text
+    assert "same rounding allowance" in text
     assert "key-level check" in text.split("STOP when", 1)[1]
 
 

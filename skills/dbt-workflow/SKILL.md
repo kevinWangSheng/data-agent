@@ -196,7 +196,8 @@ For each model in dependency order:
 5. Read the YML description for transformation rules. If it states
    explicit logic ("categorized as X if Y"), implement that logic. For a score
    or weighted column, write one expression per factor and apply each cap and
-   threshold to the measure it names, not one clamp on the final value.
+   threshold to the measure it names, not one clamp on the final value - a
+   clamp on the total hides a factor past its own cap.
 6. Write the SQL file.
 
 Do NOT rewrite pre-existing SQL files from scratch. For bug-fix tasks, EDIT the existing SQL minimally - change only the broken expression (e.g., add a CAST, fix an aggregation function). Keep all existing JOINs, CTEs, column aliases, and WHERE clauses intact. Rewriting from scratch drops logic the original author put there (lookup JOINs, filters, aliases) that you may not notice is missing. After any edit, compare the new SQL with the original predicate by predicate (every WHERE, HAVING and JOIN condition): each stays unless the task names it for removal.
@@ -239,14 +240,15 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
    1e-6 relative error). Anything more is a mismatch.
    Then, whether or not the verifiers ran, run the key-level check yourself:
    totals can match while single keys are wrong, and a check that reuses the
-   model's expression repeats its error. For each built model, pick 3-5 keys
+   model's expression repeats its error. For every model the task asks for, pick 3-5 keys
    at the output grain (include edge cases: NULLs, zeros, the largest group)
    and recompute every metric for those keys straight from the sources with a
    query you write from the task's and YML's written rules - never copy the
    model's expression or CTEs. For a column defined by rules (weights,
    thresholds, caps, CASE branches), pick rows that exercise each branch.
-   Compare with the model row by row; a difference is a FAIL like a
-   verifier's, and the fix follows step 3.
+   Compare with the model row by row under the same rounding allowance as
+   above; a larger difference is a FAIL like a verifier's - update
+   `technical_spec.md` first, then edit the SQL, as in step 3.
 3. Read BOTH reports. Every check is PASS, FAIL, NEEDS_INFO or N/A. Only act on
    checks the verifiers marked FAIL or NEEDS_INFO (give the verifier what it asks for).
    If a check is PASS or N/A, accept it - do NOT override the verifier
