@@ -1,10 +1,10 @@
 # 21 — 服务器上备好两个榜单的数据与 DAB 数据库
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 21-server-benchmarks)
+Branch: worktree-21-server-benchmarks
 
 ## Goal
 
@@ -48,11 +48,10 @@ Branch: —
 `Status: ready-for-human`，Comment 写清试了什么、哪里失败、分支名。
 
 ## Ledger
-
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1 (Codex: 3 findings, all fixed; eng:code-review: 6 fixed, 5 not fixed with reasons)
+- Model spend: $0.18 (DAB $0.1250, data-eng-bench $0.0524)
+- Outcome: done，PR #22 squash 合并（0 轮退回）; all acceptance items met; branch `worktree-21-server-benchmarks`, commits 6ab01ec, ee6a84b, ad4939d
 - Human review minutes: —
 
 ## Comments
@@ -60,3 +59,87 @@ Branch: —
 ### 2026-10-20 主会话：建票
 
 用户确认：全量运行前把剩余准备做完，真正跑全量前找用户。本工单与工单 20（`evals/harbor_agent.py`）不重叠，可并行。
+
+### 2026-10-20 工单 agent：实现（6ab01ec、ee6a84b、ad4939d，主会话抄录）
+
+**What changed**
+- New `da-remote benchmarks` subcommand. It can be rerun, and skips steps that are already done:
+  - Clones data-eng-bench@`a3278ad` and DAB@`6ad9d68` into `~/da-benchmarks/` next to the repo, without pulling Git LFS files.
+  - Runs DAB's own `download.sh` through `uv run --with huggingface_hub`. It checks every file's sha256 on every run (about 75 s for 13 GB).
+  - Builds `python-data:3.12`.
+  - Starts `postgres:17` on 127.0.0.1:15432 and `mongo:8` on 127.0.0.1:37017. Their data volumes can be deleted, and both containers mount the DAB directory read-only at the same path.
+  - Writes the database settings to `~/.config/data-agent/dab.env` (mode 600) with a random password. The password is passed to docker only through the environment and is never printed.
+  - Uses `bin/psql` and `bin/mongorestore` wrappers that run those tools inside the containers via `docker exec`, because the server must not get system packages.
+- `check` reports the benchmark readiness items:
+  - the two pinned commits and the task count;
+  - DAB data sizes against the manifest (size only, which is fast; `benchmarks` does the sha256 check);
+  - the image and `dab.env`;
+  - both databases reachable from the host, checked with psycopg2 and pymongo the way DAB's tools connect.
+- `start ... -- dab` adds `--with-requirements evals/dab-requirements.txt` and reads `dab.env`. If `dab.env` is missing, it refuses to start.
+- `start` samples memory every 5 s into `memory.log`, and `status` shows the peak. This is how the memory peak gets recorded without a server shell.
+- `memory.log` is never pushed, and summary-only (`ablate`) pulls leave it on the server because container names can name holdout tasks.
+- `docs/setup.md` is updated.
+
+**Problems the real runs exposed, and their fixes**
+1. **The `psql` wrapper swallowed the MCP handshake.** It used `docker exec -i`, so docker took the MCP server's stdin and the server stayed `pending`. The first `bookreview` run became an infra_error with no data tools. Fixed with no `-i` and stdin from `/dev/null`. The test `test_the_loader_wrappers_leave_the_mcp_stream_alone` fails against the old wrapper.
+2. **`dab_commit`'s `git diff` timed out and crashed the run.** The server's git-lfs filter re-cleans the 13 GB of data, which caused an uncaught `TimeoutExpired` (`dab21-file`). One attempt to refresh the git index also dropped the SSH session, most likely from memory pressure. Two fixes:
+   - `evals/dab.py` `_git` now treats a timeout as unknown, recorded as `-dirty`, instead of crashing. The test `test_dab_commit_counts_a_git_that_times_out_as_dirty` failed before the fix.
+   - `benchmarks` turns the LFS filter driver off in the DAB clone's own `.git/config` only. The `filter=lfs` attributes stay, so `dab.py` still checks the data against the manifest as ticket 13 designed. `git diff` now takes about 7 s.
+
+**Real output, masked**
+- `da-remote benchmarks`, first run: all 36 files downloaded (`Downloaded: 36, already matched: 0, failed: 0 / All datasets present and verified.`), the image was built, both containers were created and started, and `postgres ok` / `mongodb ok` printed.
+- Rerun: every step printed `already`, and download.sh reported `already matched: 36`.
+- `da-remote check`: `0 failure(s)`, including:
+  - `data-eng-bench at a3278ad`, `tasks: 103`
+  - `DataAgentBench at 6ad9d68`
+  - `DAB data: all 36 files ... sizes match`
+  - `image python-data:3.12`
+  - `DAB database settings present, mode 600`
+  - `postgres and mongodb reachable`
+
+**Runs.** All four were started with `da-remote start` and read back with `status` and `pull`. The three DAB runs used `--dab-root ../da-benchmarks/DataAgentBench ... --config no-context --runs 1`.
+
+| Run | Source type | Result | DAB tool calls (ok / failed) | Cost | Host memory peak (DB containers) |
+|---|---|---|---|---|---|
+| `dab21-file2` stockindex q1 | files | finished, exit 0 | sqlite 2/0, duckdb 9/0 | $0.0098 | 1227 MB |
+| `dab21-pg2` bookreview q1 | Postgres + SQLite | finished, exit 0 | postgres 8/0, sqlite 5/0 | $0.0117 | 1264 MB (postgres 50 MiB) |
+| `dab21-mongo` civic_unstructured q1 | MongoDB + SQLite | finished, exit 0 | mongo 3/0, sqlite 6/0 | $0.0762 | 1286 MB (mongo 62 MiB) |
+| `deb21b` data-eng-bench dev task `dbt-daily-order-summary`, at main `58bec8d` (after ticket 20) | — | full 100.0 ($0.0388), baseline 100.0 ($0.0136) | — | $0.0524 | 1491 MB |
+
+- Submissions:
+  - stockindex: "399001.SZ — Shenzhen Component Index, 1.83%/day"
+  - bookreview: "The 2020s, avg rating 4.66"
+  - civic_unstructured: "9 projects ... above $500,000"
+- Host memory is out of 7940 MB total, and includes about 1 GB of other services already on the machine.
+- The data-eng-bench run used `ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest runs/deb21b/manifest.json --config full --config baseline --trials 1`, with a temporary manifest whose holdout list is that one dev task. `ablate` refuses to run without `full` as the reference, so baseline could not run alone.
+
+**Reviews**
+- **`da-review` (Codex).** The first attempt hit "model at capacity"; the rerun completed. All three findings were fixed in `ee6a84b`:
+  - P1: `benchmarks` now requires the probe to exit 0 and print both `ok` lines.
+  - P2: the size-only shortcut is gone, and `download.sh` hashes every run.
+  - P2: `start` resets `memory.log`.
+- **`eng:code-review`.** Fixed in `ad4939d`:
+  - the stale `dab.py` comment;
+  - type annotations on the embedded probe;
+  - the duplicated grep pipeline;
+  - the Mongo port and the `dab.env` path written in one place each;
+  - `pinned` renamed to `at_pin`.
+- **Not fixed, with reasons:**
+  - New tests lack `-> None`: this matches the rest of `test_da_remote.py`.
+  - `da-remote` is getting long (644 lines): moving the probe out would mean a new module outside this ticket's Authority.
+  - The repeated `probe && code` pair: already reduced to the shared `dbs_ready` helper.
+  - `check` validates DAB data by size only: a full sha256 pass takes 75 s and runs in `benchmarks`.
+  - A git timeout is recorded as `-dirty`: deliberate, it fails safe on reruns.
+
+**Known limitations**
+- Peak memory for loading the large datasets has not been measured: imdb `movies.sql` is 1.6 GB into Postgres, and krama `files.bson` is 530 MB into Mongo. Measure these before running the full DAB set.
+- When ticket 13's `ExecTool` fails during construction, the Postgres or Mongo data it already loaded is not cleaned up. The real runs did not hit this (the failed `bookreview` run was the stdin problem), and the next load of the same dataset drops the database first.
+- If `dab.env` is deleted but the `da-dab-pgdata` volume is kept, the password no longer matches. Delete the volume along with it.
+- The `dab.py` timeout fix has not run on the server, because the server is at main. The LFS-filter change avoids the timeout in practice.
+- A `benchmarks` run whose probe never succeeds waits 60 s before failing. That path has no unit test; the shared `dbs_ready` check is tested through `check`.
+
+### 2026-10-20 主会话：PR #22 Codex 意见核实
+
+CI 绿（ad4939d）。Codex P1"`dab.env` 没设 `PG_DB`，DAB 默认连 `test` 库，新服务器上会失败"——不属实：DAB@6ad9d68 里 `PG_DB` 只在 `common_scaffold/config.py:26`、`tools/db_utils/db_config.py:26` 定义，没有任何代码使用；加载器连 `postgres` 库后 `CREATE DATABASE <数据集名>`（`postgres_utils.py:31-41`），查询连各数据集库。真实运行 `dab21-pg2`（bookreview，postgres 8/0 调用成功）也证明不需要。不修。
+
+已 `gh pr merge 22 --squash`（9da3477），本机 `~/.local/bin/da-remote` 已更新。
