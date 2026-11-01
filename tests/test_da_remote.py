@@ -29,14 +29,19 @@ printf '%s\\n' "$@" > "$FAKE_LOG/rsync.args"
 """
 
 # The server's uv: `sync` succeeds; `run --no-sync python -m evals spend ...` reports a spend line;
-# any other evals command prints whether the env file was loaded, then waits for `release`.
+# `run --no-sync python -m evals.balance` a balance line (exit FAKE_BALANCE_EXIT); any other evals
+# command prints whether the env file was loaded, then waits for `release`.
 # `run -q --no-sync python ...` (pull's dev-set check) runs this test's own Python.
 FAKE_UV = """#!/usr/bin/env bash
 if [ "$1 $2 $3 $4" = "run -q --no-sync python" ]; then shift 4; exec "$FAKE_PYTHON" "$@"; fi
 printf '%s\\n' "$@" > "$HOME/uv.last"
 [ "$1" = sync ] && { echo "fake uv sync"; exit 0; }
 [ "$6" = spend ] && { echo "spend: \\$0.1200 over 1 event file(s); budget \\$$9"; exit 0; }
-echo "env loaded: ${DATA_AGENT_SMOKE:-no}"
+if [ "$5" = evals.balance ]; then
+  echo "balance: 110.00 CNY (about \\$15.07), env loaded: ${DATA_AGENT_SMOKE:-no}"
+  exit "${FAKE_BALANCE_EXIT:-0}"
+fi
+echo "env loaded: ${DATA_AGENT_SMOKE:-no}, machine: ${DATA_AGENT_MACHINE:-none}"
 while [ ! -e "$HOME/release" ]; do sleep 0.05; done
 exit "$(cat "$HOME/release")"
 """
@@ -259,6 +264,39 @@ def test_start_runs_evals_in_the_background_with_the_server_env(env: Env):
     assert head in log
     assert "env loaded: yes" in log
     assert (run / "exit").read_text().strip() == "3"
+
+
+def test_a_run_gets_the_host_alias_as_its_machine_label(env: Env):
+    """ablate's run record names the machine (ADR-0008) by a human-given label, not its address."""
+    assert env.run("setup").returncode == 0
+    assert env.run("start", "smoke", "--", "ablate", DA_REMOTE_HOST="eval-box").returncode == 0
+    env.wait_for_evals()
+    env.finish(0)
+    assert "machine: eval-box" in (env.repo / "runs" / "smoke" / "run.log").read_text()
+
+
+def test_an_address_as_host_never_becomes_the_machine_label(env: Env):
+    assert env.run("setup").returncode == 0
+    assert env.run("start", "smoke", "--", "ablate", DA_REMOTE_HOST="203.0.113.7").returncode == 0
+    env.wait_for_evals()
+    env.finish(0)
+    log = (env.repo / "runs" / "smoke" / "run.log").read_text()
+    script = (env.repo / "runs" / "smoke" / "run.sh").read_text()
+    assert "machine: <server>" in log
+    assert "203.0.113.7" not in log + script
+
+
+@pytest.mark.parametrize(("code", "mark"), [("0", "ok   "), ("1", "FAIL ")])
+def test_check_reports_the_model_account_balance(env: Env, code: str, mark: str):
+    assert env.run("setup").returncode == 0
+    proc = env.run("check", FAKE_BALANCE_EXIT=code)
+    line = f"  {mark} model account balance: 110.00 CNY (about $15.07), env loaded: yes"
+    assert line in proc.stdout.splitlines(), proc.stdout
+
+
+def test_check_without_the_repo_cannot_read_the_balance(env: Env):
+    proc = env.run("check")
+    assert "FAIL  model account balance unknown: needs the repo and the env file" in proc.stdout
 
 
 def test_a_running_name_is_refused_and_a_finished_one_can_start_again(env: Env):

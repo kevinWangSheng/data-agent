@@ -34,6 +34,8 @@ def score(trials: list[Trial]) -> dict[str, Any]:
 # Harbor's default `RetryConfig.exclude_exceptions` (harbor src/harbor/models/job/config.py):
 # errors a rerun would not fix, so they are the agent's (or the task's) and score 0. Any other
 # exception is infrastructure noise that Harbor retries; it is rerun, never scored (plan §7).
+# Except ApiUsageLimitError, which Harbor also excludes: the model account's limit or balance ran
+# out, which says nothing about the agent, so it is rerun once the account is topped up.
 NOT_RETRIED = frozenset(
     {
         "AgentTimeoutError",
@@ -41,7 +43,6 @@ NOT_RETRIED = frozenset(
         "RewardFileNotFoundError",
         "RewardFileEmptyError",
         "VerifierOutputParseError",
-        "ApiUsageLimitError",
         "AgentSafetyRefusalError",
         "AgentAuthenticationError",
         "ModelNotFoundError",

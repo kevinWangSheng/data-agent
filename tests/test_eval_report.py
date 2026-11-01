@@ -117,6 +117,18 @@ def test_dev_report_has_process_metrics_per_task(tmp_path: Path) -> None:
     assert process["per_task"]["t1"]["cost_usd"] == pytest.approx(1.5)
 
 
+def test_a_usage_limit_is_rerun_not_scored(tmp_path: Path) -> None:
+    """The account ran out (Harbor does not retry it); that is no agent failure to score as 0."""
+    job = tmp_path / "job"
+    write_trial(job, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    write_trial(job, "t1__b", {"verifier_result": {"rewards": {"reward": 0.0}}})
+    write_trial(job, "t1__c", {"exception_info": {"exception_type": "ApiUsageLimitError"}})
+    proc = holdout_report(job, tmp_path, ["t1"])
+    assert proc.returncode != 0
+    assert "1 infrastructure error" in proc.stderr
+    assert not (tmp_path / "report" / "report.json").exists()
+
+
 def test_report_refuses_uneven_trial_counts(tmp_path: Path) -> None:
     job = tmp_path / "job"
     passed = {"verifier_result": {"rewards": {"reward": 1.0}}}

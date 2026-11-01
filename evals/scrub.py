@@ -7,9 +7,10 @@ secret nor get broken by a redaction; other files, and lines that do not parse, 
 text. JSON nested in a string (a tool that printed JSON) is decoded and scrubbed the same way.
 Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks, a
 `\\uXXXX` escape outside parseable JSON, a repeated JSON key) is listed and the command fails, and
-so is any path left under a user's home directory (`/home/<x>`, `/Users/<x>`), or user name left
-as a word outside JSON keys, that no rule removed. Container paths such as `/app`, `/logs` and
-`/root` (the agent runs as root in the task container, and the SDK saves long tool output under
+so is any path left under a user's home directory (`/home/<x>`, `/Users/<x>`; but not
+`/home/<digits>` ending a URL or SQL string, a page path from task data), or user name left as a
+word outside JSON keys, that no rule removed. Container paths such as `/app`, `/logs` and `/root`
+(the agent runs as root in the task container, and the SDK saves long tool output under
 /root/.claude) are not host paths.
 """
 
@@ -49,6 +50,12 @@ HOST_PATH = re.compile(
     r"(?:(?<![A-Za-z0-9_.-])|(?<=\\[bfnrt]))"
     r"(?:/(?:home|Users)/(?!\[redacted-)[^/\s\"'\\]+)"
 )
+# A page path from task data such as `/home/193`, as it ends a URL or SQL string: whitespace, a
+# quote, a query or fragment, a JSON escape other than `\/` and `\uXXXX`, or the end. It is not a
+# host path left behind, since user names are not all digits. A home directory can still be named
+# so, but Harbor records the job's paths beneath it, so `/home/193/...`, `/home/193:/usr/bin` and
+# `/home/193%2F` are still reported.
+PAGE_PATH = re.compile(r"/home/[0-9]+(?=[\s\"'?#]|\\[bfnrt\"\\]|$)")
 # Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
 UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
 
@@ -199,16 +206,23 @@ def names_left(path: Path, text: str, users: list[str]) -> list[str]:
     return [f"{where}: {name}" for where, name in sorted(found)]
 
 
+def host_paths_in(text: str) -> Iterator[str]:
+    """Each host home path in text, page paths aside."""
+    for match in HOST_PATH.finditer(text):
+        if not PAGE_PATH.match(text, match.start()):
+            yield match.group()
+
+
 def host_paths(path: Path, text: str) -> list[str]:
     """`file:line: path` for each host home path in scrubbed text, then `file: path` for those
     only a JSON escape (`\\/`, `\\u002f`) kept out of sight."""
     found = [
-        (f"{path}:{number}", match.group())
+        (f"{path}:{number}", host_path)
         for number, line in enumerate(text.splitlines(), start=1)
-        for match in HOST_PATH.finditer(line)
+        for host_path in host_paths_in(line)
     ]
     seen = {host_path for _, host_path in found}
-    escaped = {m.group() for s in json_strings(text) for m in HOST_PATH.finditer(s)} - seen
+    escaped = {p for s in json_strings(text) for p in host_paths_in(s)} - seen
     found.extend((str(path), host_path) for host_path in sorted(escaped))
     return [f"{where}: {host_path}" for where, host_path in found]
 
