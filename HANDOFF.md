@@ -10,10 +10,14 @@
 > - 开发集迭代累计实际花费到 ¥300 就止损。
 > - 实现一律派到工单会话（`claude -p -w`），主会话只做编排。
 >
-> **旧会话还在收尾，新会话不要碰下面三件**（旧会话做完会更新本段）：
-> - 工单 32（修复一）：PR #31。服务器已 setup 到 `4634d50`。真实运行 `t32-real`（rfm × 1）在跑，跑完核对验证者读了 task.md、报告里有 CHECK 6，然后跑初筛：6 道目标题 × 3，必须 > 10/18。过了再合并。
-> - 工单 34（估算口径修正）：工单 agent 在跑，最终回复写进 `runs/ticket-34.jsonl`。
-> - 工单 35（DAB 算分）：工单 agent 在跑，最终回复写进 `runs/ticket-35.jsonl`。
+> **待收尾（新会话接手，旧会话已停）：**
+> - 工单 34（估算口径修正）：实现会话已结束，最终回复在 `runs/ticket-34.jsonl`（本机，不进 git）。把 Comments、Ledger、Status 抄进工单，然后推分支、开 PR，按 AGENTS.md 第 6、7 步合并。
+> - 工单 35（DAB 算分）：同上，回复在 `runs/ticket-35.jsonl`。合并后由主会话在服务器上，对已有的 DAB 输出（`runs/dab21-*`、`runs/t23b-*`）跑一次真实运行。
+> - 工单 32（修复一）：PR #31 已开，工单里的结论已抄。服务器已 setup 到 `4634d50`，真实运行 `t32-real`（rfm × 1，full）已经启动。
+>   - 用 `scripts/da-remote status t32-real` 看结果，`pull t32-real` 取回轨迹。
+>   - 核对两点：验证者 Read 过 task.md；`verifier_end` 的报告里有 CHECK 6。
+>   - 再跑初筛：`ablate --split dev --config full --trials 3`，每道目标题加一个 `--task`。目标题是 dbt-multi-warehouse-stock-rebalance、dbt-rfm-customer-segmentation、dbt-customer-cross-sell-insights、dbt-receivables-aging-buckets、web-session-quality-scoring、dbt-supplier-payment-optimization。必须 > 10/18。
+>   - CI 绿、Codex 意见处理完、初筛通过，才能合并。
 >
 > **新会话现在就可以做：**
 > - plan §10 第 5 项网页界面：从 `docs/research/2026-11-01-upstream-web-ui.md` 开始，一个话题一个话题地讨论，定下来再写 spec 和工单。
