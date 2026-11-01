@@ -628,6 +628,9 @@ def run(args: argparse.Namespace) -> int:
     if budget is None or not budget.is_finite() or budget <= 0:
         print(f"ablate: budget must be a positive number, got {args.budget!r}", file=sys.stderr)
         return 2
+    if args.fail_fast < 1:
+        print(f"ablate: --fail-fast must be at least 1, got {args.fail_fast}", file=sys.stderr)
+        return 2
     configs = [c for c in CONFIGS if c in (args.config or CONFIGS)]
     if REFERENCE not in configs:
         print(f"ablate: --config must include {REFERENCE}, the reference", file=sys.stderr)

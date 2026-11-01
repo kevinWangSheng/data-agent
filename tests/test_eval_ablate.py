@@ -369,6 +369,20 @@ def test_a_streak_of_infrastructure_errors_stops_the_batch_mid_job(
     ]
 
 
+@pytest.mark.parametrize("streak", ["0", "-1"])
+def test_a_fail_fast_streak_below_one_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    streak: str,
+) -> None:
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", "--fail-fast", streak) == 2
+    assert harbor.calls == harbor.smoke == []
+    assert "--fail-fast" in capsys.readouterr().err
+
+
 def test_infrastructure_errors_between_other_outcomes_do_not_stop_the_job(
     monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
 ) -> None:

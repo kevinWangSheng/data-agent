@@ -270,6 +270,17 @@ def test_a_run_gets_the_host_alias_as_its_machine_label(env: Env):
     assert "machine: eval-box" in (env.repo / "runs" / "smoke" / "run.log").read_text()
 
 
+def test_an_address_as_host_never_becomes_the_machine_label(env: Env):
+    assert env.run("setup").returncode == 0
+    assert env.run("start", "smoke", "--", "ablate", DA_REMOTE_HOST="203.0.113.7").returncode == 0
+    env.wait_for_evals()
+    env.finish(0)
+    log = (env.repo / "runs" / "smoke" / "run.log").read_text()
+    script = (env.repo / "runs" / "smoke" / "run.sh").read_text()
+    assert "machine: <server>" in log
+    assert "203.0.113.7" not in log + script
+
+
 @pytest.mark.parametrize(("code", "mark"), [("0", "ok   "), ("1", "FAIL ")])
 def test_check_reports_the_model_account_balance(env: Env, code: str, mark: str):
     assert env.run("setup").returncode == 0

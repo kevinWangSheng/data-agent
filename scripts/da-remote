@@ -466,7 +466,9 @@ start() {
     [[ $a == --budget=* ]] && budget=${a#--budget=}
     prev=$a
   done
-  run_script NAME "$name" BUDGET "$budget" MACHINE "$host" SUBCOMMAND "$1" \
+  # The host alias labels the machine in ablate's run record; an address given as the host is
+  # masked, never written there.
+  run_script NAME "$name" BUDGET "$budget" MACHINE "$(printf '%s' "$host" | mask)" SUBCOMMAND "$1" \
     EVALS_ARGS "$(printf '%q ' "$@")" <<'EOF'
 cd "$DIR" 2>/dev/null && [ -d .git ] || {
   echo "start: no repo at $DIR; run da-remote setup first"
