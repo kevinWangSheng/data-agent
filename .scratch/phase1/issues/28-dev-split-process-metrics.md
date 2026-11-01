@@ -3,8 +3,8 @@
 Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 28-dev-split-process-metrics)
+Branch: worktree-28-dev-split-process-metrics
 
 ## Goal
 
@@ -48,10 +48,20 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2
 - Model spend: $0
-- Outcome: —
+- Outcome: implemented (982fcc6, 158cece, c8594f5); colima real run open
 - Human review minutes: —
 
 ## Comments
+
+- 2026-10-31 工单 agent（分支 worktree-28-dev-split-process-metrics）：
+  - 真实运行 1（c8594f5）：`uv run python -m evals diverge --baseline <main>/runs/dev-2/out/jobs/baseline --candidate <main>/runs/dev-2/out/jobs/full --manifest evals/manifest.json --out runs/28-dev2-diverge` → exit 0："30 paired tasks; successes differ on 6: baseline better on 4, full better on 2."。full 赢：dbt-customer-cross-sell-insights、pos-operations；baseline 赢：dbt-fix-daily-cohorts、dbt-multi-warehouse-stock-rebalance、web-session-quality-scoring、workforce-analytics（dev-2 k=1）。成功 trial 平均花费 baseline 0.0721 USD、full 0.1590 USD；没有 trial 被预算或轮数截停。示例行（full）：pos-operations 1/1，207 轮，4 次验证者调用（FAIL 8、N/A 83、NEEDS_INFO 22、PASS 228），43 次模型编辑，$0.6716。
+  - 真实运行 2（参数检查）：`ablate --split dev --task dbt-coupon-effectiveness` → "not in the manifest's dev list"，exit 2；`ablate --task dbt-fix-division-by-zero`（holdout）→ "--task needs --split dev; the holdout is run whole"，exit 2。
+  - 未做：Mac colima `ablate --split dev` 1 题 k=1（agent 不能加载 env）。
+  - make check：1205 passed, 1 skipped（shellcheck）；接缝 C 验收 8/8 通过，未改。
+  - da-review 第 1 轮，4 条全修（158cece）：P1 dev-only 取回漏判没有 result.json 的 trial 目录 → 每个 trial 目录按 result.json 或 Harbor trial 名（task[:32].rstrip('-_')）判断；P2 trial 数不等 / 有基础设施报错 → diverge 拒绝；P2 多个事件文件被相加 → 只取最后一个；P2 report trials.json 的 events 路径指向不存在的 agent/events.jsonl → 改为最后一个 agent/events/*.jsonl（report.py 原有 bug）。
+  - eng:code-review 第 2 轮，已修（c8594f5）：只跑 --config full 的 dev 运行没有过程指标 → dev report.json 加 `process`（共用 evals/process.py）；manifest 的 dev 与 holdout 有重叠时 diverge 拒绝；若干改名。不修：da-remote 里的内联 Python 保留（在服务器的 checkout 上跑，不能 import 本提交的 evals）；attribute.py 自己的"最后一个事件文件"查找不在本工单；split 仍用字符串；经 Bash 改的模型（sed -i、heredoc）不计入编辑次数，已在 evals/process.py 写明；holdout 题与 dev 题共享 32 字符前缀的风险低（config.json 的 task_names 须全是 dev 题）。
+- 2026-10-31 主会话：PR #29 CI 绿。退回：Codex GitHub app P2（evals/process.py:44）属实——`trial_metrics` 对每行直接 `json.loads`（evals/process.py:40），事件文件末尾有写了一半的行时会抛 JSONDecodeError，`report --split dev` / `diverge` 失败；evals/harbor_agent.py:137 对截断行是跳过的。要求：用同样的容错方式跳过截断行；配修复前会失败的测试。
+- 2026-10-31 用户决定：本工单的 colima 真实运行改在服务器上用 da-remote 跑（本机代理拉不下 ghcr 镜像），由主会话在修复后做。

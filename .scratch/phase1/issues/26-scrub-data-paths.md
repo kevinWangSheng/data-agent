@@ -1,10 +1,10 @@
 # 26 — scrub 把题目数据里的 `/home/<x>` 当成主机路径
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 26-scrub-data-paths)
+Branch: worktree-26-scrub-data-paths
 
 ## Goal
 
@@ -48,10 +48,20 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2 (plus a final Codex confirmation run)
+- Model spend: not recorded
+- Outcome: fixed; commits 2c7610e, 1b40f17, f421111 on worktree-26-scrub-data-paths
 - Human review minutes: —
 
 ## Comments
+
+- 2026-10-31 工单 agent（分支 worktree-26-scrub-data-paths）：
+  - 改法：`/home/<数字>` 只有作为最后一个路径段、且后面是空白、引号、`?`、`#`、非 `\/`/`\uXXXX` 的 JSON 转义或串尾时才放过（`host_paths_in` 里在主正则匹配后再查白名单）；`/home/1001/jobs`、`PATH=/home/1002:/usr/bin`、`/home/1003%2F`、原样 `\/`、全角数字、`/home/193abc`、`/home/7.bak`、所有 `/Users/<x>` 仍报。
+  - 真实运行：`cp -R runs/dev-2/out/jobs/full runs/26-scrub/copy && uv run python -m evals scrub runs/26-scrub/copy` → `scrub: changed 0 file(s) of 338; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0`，exit 0（dev-2 副本本身没有 /home、/Users，只是回归检查）。在第二份副本植入 `page_url = '/home/193'` 和 `/home/alice/jobs`：只报 `.../trajectory.json:2355: /home/alice`，exit 1。
+  - 测试：`test_scrub_keeps_numeric_home_segments_from_task_data` 修复前失败（输出同 dev-3）；`test_scrub_still_fails_on_home_segments_that_could_be_user_names` 覆盖仍须报的情况。tests/test_eval_scrub.py 25 passed；make check 1179 passed, 1 skipped。
+  - Codex 第 1 轮 P1（已修 1b40f17）：没给 --home 时数字命名的真实 home 会漏，豁免收窄到最后一段。Codex 第 2 轮无阻断。
+  - eng:code-review（已修 f421111）：后随字符黑名单换成显式白名单并补回归测试；删掉超出范围的 `/Users/<数字>` 豁免；嵌套 lookahead 改成匹配后检查；docstring 改正。
+  - Codex 第 3 轮 P2 不修：要求也豁免 `/Users/<数字>`。理由：相对 main 不是退步（main 也报 `/Users/7`），工单只管 `/home/<x>`，且宁多拦不漏拦。
+  - 已知限制：数字命名的真实 home 裸打印（如 `HOME=/home/1001`）在别的机器上不带 --home 跑 scrub 会放过；ablate 里 scrub 在跑 job 的机器上跑（evals/ablate.py:435），Path.home() 会删掉。dev-3 上 ablate 能否出报告未确认（需服务器）。useradd/macOS/systemd 拒绝纯数字用户名未确认。
+- 2026-10-31 主会话：PR #28 CI 绿。Codex GitHub app P1（evals/scrub.py:213）"suffix-only 豁免会放过 `working directory /home/193` 这类数字 home"——不修：工单只允许放宽"不是本机或跑 job 的机器的 home"；ablate 里 scrub 在跑 job 的机器上跑，Path.home() 会删本机 home，`--home` 也照拦；剩下的只有别的机器上纯数字命名的 home，主流工具链默认拒绝纯数字用户名（未确认）；按上下文判断只能靠猜 dev-3 那行未读过的原文。合并。

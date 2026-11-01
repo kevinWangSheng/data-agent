@@ -3,8 +3,8 @@
 Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5)
+Branch: worktree-27-preflight-fail-fast
 
 ## Goal
 
@@ -50,10 +50,30 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2
 - Model spend: $0
-- Outcome: —
+- Outcome: implemented; paid smoke blocked by local proxy to ghcr.io (see Comments)
 - Human review minutes: —
 
 ## Comments
+
+- 2026-10-31 工单 agent（分支 worktree-27-preflight-fail-fast：c0f74ef、13935e7、c6b422b）：
+  - make check：1223 passed, 1 skipped（shellcheck 未装）。
+  - 无 key 真实运行：记录写出（benchmark_commit a3278ad1…、machine mac-colima、git_commit c0f74ef…）；预检 exit 2 "cannot read the model account's balance (DATA_AGENT_API_KEY is not set); no job starts"。
+  - da-review 第 1 轮：修了 --fail-fast < 1 被拒、DA_REMOTE_HOST 是地址时标签打码。不修 "P1 smoke spend not reserved"：余额须覆盖 budget − spent，冒烟花费计入同一 OUT 下的预算，冒烟后余额仍覆盖剩余。
+  - eng:code-review 第 2 轮：修了冒烟遇用量上限用账户措辞、记录先于请求检查写出、改名 harbor_run_args / prepared。不修（判断题或超出 Authority 的重构）：ablate.py 约 700 行、preflight 可拆模块；benchmark_commit 不用 git describe；两处余额检查逻辑相似；finished_at 单独读（harbor.py 不在 Authority）。
+  - 已知限制：`da-remote check` 用 DeepSeek 的 is_available 判"够"；不加 --skip-smoke 时每次都冒烟所有配置；完整主机名做 DA_REMOTE_HOST 不打码，只打码 IP；CNY 固定按 7.3 换算。
+- 2026-10-31 主会话付费真实运行（worktree 27，c6b422b，按 Makefile 方式 source env）：
+  `DATA_AGENT_MACHINE=mac-colima uv run python -m evals ablate --tasks-dir ~/dev/AI/data-agent-refs/data-eng-bench/tasks --manifest runs/27-real/manifest.json --out runs/27-real/out2 --budget 2 --config full --config baseline --trials 1 --n-concurrent 1`
+  ```
+  record: runs/27-real/out2/records/20261101T045849.027784Z.json
+  spend: $0.0000 over 0 event file(s); budget $2, stop at 80% = $1.6000
+  balance: 79.63 CNY (about $10.91), covers the $2.00 left of --budget
+  ablate: cannot fill the wheel cache for the tasks' containers: cannot probe ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0: ... Head "https://ghcr.io/v2/.../manifests/1.0.0": EOF
+  exit 2
+  ```
+  记录：{"started_at": "2026-11-01T04:58:49Z", "benchmark_commit": "a3278ad1…", "machine": "mac-colima", "git_commit": "c6b422b…", "model": "the job config's default", "configs": ["full","baseline"], "smoke": true}。
+  余额接口对真 API 已验证。冒烟没跑成：本机走代理 127.0.0.1:1087 连 ghcr.io SSL 失败（直连 401 正常），colima 本地没有该基础镜像。属于环境问题，不是本工单的 bug；冒烟成功路径待补。
+- 2026-10-31 主会话：PR #27 CI 绿。退回：Codex GitHub app P1（evals/ablate.py:467）属实——`ensure_job` 在同一 --out 下续跑/复用已有 job 时只调 `check_conditions`（只比代码与 Skill 版本，evals/ablate.py:272-297），不读运行记录；换了 benchmark checkout 或机器后会在同一个 job 里混入不同版本的题。要求：续跑或跳过已有 job 前，把当前 benchmark commit 和机器标签与 OUT 下最近一份运行记录比对，不一致就 Stop（exit 2）并说明；配修复前会失败的测试。"两周内"条件不在本工单（属于工单 29 的跨版本复用）。
+- 2026-10-31 用户决定：本工单的付费冒烟改在服务器上用 da-remote 跑（本机代理拉不下 ghcr 镜像），由主会话在修复后做。
