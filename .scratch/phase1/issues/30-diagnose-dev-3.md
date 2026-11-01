@@ -1,6 +1,6 @@
 # 30 — 诊断 dev-3：full 为什么不如 baseline（不跑新评测）
 
-Status: ready-for-human
+Status: done
 Blocked by: 28
 Spec: ../spec.md
 Claimed by: 主会话 + 人
@@ -44,10 +44,10 @@ Branch: —（只读分析，不改代码）
 
 ## Ledger
 
-- Attempts: 0
+- Attempts: 1
 - Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Model spend: $0（读轨迹用 9 个子 agent，未调评测模型）
+- Outcome: done；汇总 runs/30-diagnosis/summary.md
 - Human review minutes: —
 
 ## Comments
@@ -60,3 +60,20 @@ Branch: —（只读分析，不改代码）
   - 过程指标要点：两边都没有 trial 被花费上限或轮数上限截停（"stopped: budget / turns" 全为 0 / 0），排除"被 $1 上限截停"这一解释；成功 trial 平均花费 baseline $0.0762、full $0.1605（约 2 倍）；full 每题 6–10 次验证者调用，输的分歧题里验证者多数给 PASS（如 dbt-fix-marketing-attribution 0/3：N/A 6、PASS 18，无 FAIL）。
   - 阅读入口：`runs/30-diagnosis/reading-index.md`（9 道分歧题输的一方的 13 个 trial 目录）。
   - 阅读包（用户选：主会话整理不带解读的原文，人读）：`runs/30-diagnosis/reading/README.md`，每道分歧题一个文件：题目原文、输的一方全部输的 trial（写过的文件列表、评分器输出末尾 120 行、逐步轨迹，长返回截断到 2500 字符）、赢的一方第一条成功 trial 作对照。生成脚本在会话 scratchpad（render_pack.py），不进仓库。笔记写 `runs/30-diagnosis/reading/notes.md`。
+- 2026-11-01 主会话（诊断结论）：
+  - 分工变更：用户决定由 agent 读轨迹、归类，人审汇总，不写自由笔记（与 ADR-0008"人先读、自由记录"原文不同，按用户决定执行）。9 个子 agent 各读一道分歧题，不看 runs/dev-3-attr，以免被已有归因带偏。汇总：`runs/30-diagnosis/summary.md`。
+  - 失败模式（full 输的 12 条）：
+    - A 偏离题目字面口径（自加过滤 / 删行 / 换源表）：3 题 4 条，multi-warehouse、rfm、cross-sell ×2
+    - B 有歧义时没回到题内定义或输出列（同名量另造公式、选中间层列、"没有"写成 NULL）：3 题 4 条，receivables、web-session ×2、supplier
+    - C 输出列不符题目契约（漏改名）：1 题 1 条，workforce
+    - D 项目位置或 schema 判断错，评分器找不到上游表：1 题 3 条，marketing-attribution（baseline 也有 1 条输在这里，更像题面和评分器不一致）
+    - E 共同放行者：12/12 条里验证者对照的是 agent 自写的 technical_spec，而不是题目原文，错误结果判 PASS；Structure 验证者没有 YML 就判 NEEDS_INFO 放行
+    - F 验证者给出错误修法：1 条（cross-sell 8UZ7pRK 的 QoQ，未实跑确认）
+  - pos-operations（baseline 输）：6 条里 5 条第一次就写对，判为偶然，不算 full 的收益。
+  - 工单 31 补跑：dev-3 的三个消融配置无效（no-skill 60/90、no-verifiers 90/90、no-context 90/90 都是 ApiUsageLimitError，见 runs/dev-3/run.log）。用户决定补跑剩余配置，按工单 31 原范围：full、baseline、no-skill、no-verifiers、no-context。
+  - 候选修复工单：
+    1. 验证者拿到题目原文并以它为标准，专查 spec 与题目的偏离（过滤、join、源表、缺省值、列名）。针对 E/G，兼顾 A/B/C。目标题：multi-warehouse、rfm、cross-sell、receivables、web-session、supplier、workforce
+    2. 没有 YML 时，Structure 验证者用题目的输出列清单作为契约。针对 C/E。目标题：workforce
+    3. Skill 通用规则：不加题目没写的过滤、join 或换源；空结果可以接受；有歧义时先找题内定义。针对 A/B。目标题：同 1 中的 A/B 题
+    4. 上下文压缩后保留题目原文。针对 C。目标题：workforce
+    - marketing-attribution 暂不修（ADR-0005 风险），记为待确认。
