@@ -47,7 +47,8 @@ def cmd_compare(args: argparse.Namespace) -> None:
 
 def cmd_report(args: argparse.Namespace) -> None:
     manifest = json.loads(args.manifest.read_text())
-    report = write_report(load_trials(args.job_dir), manifest, args.split, args.out, args.trials)
+    trials = load_trials(args.job_dir)
+    report = write_report(trials, manifest, args.split, args.out, args.trials, args.manifest)
     print(
         f"{args.split}: accuracy {report['accuracy']:.1f}% ± {report['accuracy_stderr']:.1f}% "
         f"over {report['n_trials']} trials -> {args.out}"

@@ -14,6 +14,9 @@ from evals.harbor import Trial, by_task, last_event_file
 from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
 from evals.process import job_metrics
 
+# The repo's own manifest: on the server, the real one (evals.ablate checks a dev run the same way).
+REPO_MANIFEST = Path(__file__).resolve().parent / "manifest.json"
+
 
 def score(trials: list[Trial]) -> dict[str, Any]:
     """Leaderboard metrics (data-eng-bench `metrics.py`): errored trials count as 0.
@@ -146,18 +149,38 @@ def split_trials(
     return in_split
 
 
+def check_dev_list(manifest: dict[str, Any], source: Path | str) -> None:
+    """Refuse per-task output for a dev list that names a holdout task (ADR-0004 allows task ids
+    for the dev set only): one the given manifest (`source`) holds out, or one the repo's
+    evals/manifest.json holds out, since a temporary manifest may hold out nothing. A repo
+    manifest that cannot be read is refused too. Errors name the manifests, never a task.
+    """
+    try:
+        held_out = set(json.loads(REPO_MANIFEST.read_text())["holdout"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"cannot read the holdout of {REPO_MANIFEST}: {exc}") from exc
+    dev = set(manifest["dev"])
+    for name, holdout in ((source, manifest.get("holdout") or []), (REPO_MANIFEST, held_out)):
+        if dev & set(holdout):
+            raise ValueError(f"{name} holds out tasks the dev list names; use the real manifest")
+
+
 def write_report(
     trials: list[Trial],
     manifest: dict[str, Any],
     split: str,
     out_dir: Path,
     trials_per_task: int = TRIALS_PER_TASK,
+    source: Path | str = "the manifest",
 ) -> dict[str, Any]:
     """Write `out_dir/report.json` for one split of the manifest; dev also gets `trials.json`.
 
     Refuses a split that is incomplete: a task without results, or a split `check_complete`
-    rejects. Errors give counts only, so they name no holdout task.
+    rejects; and a dev list `check_dev_list` rejects. Errors give counts only, so they name no
+    holdout task.
     """
+    if split == "dev":
+        check_dev_list(manifest, source)
     in_split = split_trials(trials, manifest, split, "this")
     check_complete(in_split, split, trials_per_task)
     report: dict[str, Any] = {"split": split, **summary(in_split)}

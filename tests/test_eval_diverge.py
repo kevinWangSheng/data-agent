@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+import evals.report as report_module
 from evals.__main__ import main as evals_main
 
 MANIFEST = {"seed": 0, "dev": ["dbt-alpha", "dbt-bravo", "dbt-charlie"], "holdout": ["dbt-delta"]}
@@ -173,6 +174,48 @@ def test_a_manifest_listing_a_task_in_both_splits_is_refused(
     out = tmp_path / "diverge"
     assert evals_main([*argv, "--manifest", str(manifest), "--out", str(out)]) == 2
     assert "dbt-delta" not in capsys.readouterr().err
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("real", [{"dev": [], "holdout": ["dbt-charlie"]}, None])
+def test_a_dev_list_the_repos_manifest_holds_out_from_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    jobs: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    real: dict[str, list[str]] | None,
+) -> None:
+    """The given manifest may list a holdout task under dev and hold out nothing (or something
+    else); the repo's evals/manifest.json (on the server, the real one) decides. Unreadable:
+    refused."""
+    repo_manifest = tmp_path / "repo-manifest.json"
+    if real is not None:
+        repo_manifest.write_text(json.dumps(real))
+    monkeypatch.setattr(report_module, "REPO_MANIFEST", repo_manifest)
+    code, _, _ = diverge(tmp_path, *jobs)
+    assert code == 2
+    err = capsys.readouterr().err
+    assert str(repo_manifest) in err
+    assert "dbt-charlie" not in err
+    assert not (tmp_path / "diverge").exists()
+
+
+def test_a_dev_list_the_real_manifest_holds_out_from_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """End to end against the repo's own evals/manifest.json; the task id is never printed."""
+    real = Path(report_module.__file__).parent / "manifest.json"
+    held_out = json.loads(real.read_text())["holdout"][0]
+    baseline, full = tmp_path / "baseline", tmp_path / "full"
+    write_trial(baseline, held_out, 0, 1.0, [result(10, 0.10)])
+    write_trial(full, held_out, 0, 0.0, [result(10, 0.10)])
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"dev": [held_out], "holdout": []}))
+    out = tmp_path / "diverge"
+    argv = ["diverge", "--baseline", str(baseline), "--candidate", str(full)]
+    assert evals_main([*argv, "--manifest", str(manifest), "--out", str(out)]) == 2
+    captured = capsys.readouterr()
+    assert held_out not in captured.out + captured.err
     assert not out.exists()
 
 

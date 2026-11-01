@@ -10,9 +10,10 @@ Writes `DIR/diverge.json` and `DIR/diverge.md` and prints the markdown:
 
 Only the manifest's dev tasks are shown. A trial of any other task is counted and nothing else of
 it is read or written (ADR-0004), and two jobs with no dev trial between them are refused, as is
-a manifest whose dev list shares a task with its holdout. So are infrastructure errors in the dev
-trials and a dev task the jobs ran a different number of times: an interrupted job is rerun before
-it is compared.
+a dev list that shares a task with the given manifest's holdout or the repo's evals/manifest.json
+holdout (on the server, the real one), or an unreadable repo manifest. So are infrastructure
+errors in the dev trials and a dev task the jobs ran a different number of times: an interrupted
+job is rerun before it is compared.
 """
 
 import argparse
@@ -24,7 +25,7 @@ from typing import Any
 
 from evals.harbor import load_trials
 from evals.process import job_metrics
-from evals.report import is_infra_error
+from evals.report import check_dev_list, is_infra_error
 
 SIDES = ("baseline", "candidate")
 
@@ -148,10 +149,8 @@ def markdown(report: dict[str, Any]) -> str:
 def write_divergence(baseline: Path, candidate: Path, manifest: Path, out: Path) -> dict[str, Any]:
     """Build the report and write it under `out`; ValueError when there is nothing to show."""
     splits = json.loads(manifest.read_text())
-    dev = set(splits["dev"])
-    if dev & set(splits.get("holdout", [])):
-        raise ValueError(f"{manifest} lists tasks in both dev and holdout; use the real manifest")
-    report = divergence_report(baseline, candidate, dev)
+    check_dev_list(splits, manifest)
+    report = divergence_report(baseline, candidate, set(splits["dev"]))
     out.mkdir(parents=True, exist_ok=True)
     (out / "diverge.json").write_text(json.dumps(report, indent=2) + "\n")
     (out / "diverge.md").write_text(markdown(report))

@@ -332,3 +332,61 @@ def test_sample_rejects_dev_tasks_missing_from_tasks_dir(tmp_path: Path) -> None
     )
     assert proc.returncode != 0
     assert "not-a-task" in proc.stderr
+
+
+@pytest.mark.parametrize("real", [{"dev": [], "holdout": ["t1"]}, None])
+def test_a_dev_report_on_a_task_the_repos_manifest_holds_out_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, real: dict[str, list[str]] | None
+) -> None:
+    """A dev report names its tasks; a manifest that lists a holdout task under dev (the old
+    temporary-manifest practice) is checked against the repo's evals/manifest.json (on the
+    server, the real one), and refused when that cannot be read."""
+    from evals import report as report_module
+    from evals.harbor import load_trials
+
+    repo_manifest = tmp_path / "repo-manifest.json"
+    if real is not None:
+        repo_manifest.write_text(json.dumps(real))
+    monkeypatch.setattr(report_module, "REPO_MANIFEST", repo_manifest)
+    job = tmp_path / "job"
+    write_trial(job, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    out = tmp_path / "report"
+    manifest = {"seed": 0, "dev": ["t1"], "holdout": []}
+    with pytest.raises(ValueError, match=str(repo_manifest)) as exc:
+        report_module.write_report(load_trials(job), manifest, "dev", out, trials_per_task=1)
+    assert "t1" not in str(exc.value).replace(str(tmp_path), "")
+    assert not out.exists()
+
+
+def test_a_dev_report_on_a_task_its_own_manifest_holds_out_is_refused(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"seed": 0, "dev": ["t1"], "holdout": ["t1"]}))
+    out = tmp_path / "report"
+    proc = evals(
+        *("report", str(job), "--manifest", str(manifest), "--split", "dev"),
+        *("--out", str(out), "--trials", "1"),
+    )
+    assert proc.returncode == 2
+    assert str(manifest) in proc.stderr
+    assert not out.exists()
+
+
+def test_a_dev_report_on_a_task_the_real_manifest_holds_out_is_refused(tmp_path: Path) -> None:
+    """End to end against the repo's own evals/manifest.json; the task id is never printed."""
+    held_out = json.loads((REPO_ROOT / "evals" / "manifest.json").read_text())["holdout"][0]
+    job = tmp_path / "job"
+    (job / "x__a").mkdir(parents=True)
+    outcome = {"task_name": held_out, "verifier_result": {"rewards": {"reward": 1.0}}}
+    (job / "x__a" / "result.json").write_text(json.dumps(outcome))
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"seed": 0, "dev": [held_out], "holdout": []}))
+    out = tmp_path / "report"
+    proc = evals(
+        *("report", str(job), "--manifest", str(manifest), "--split", "dev"),
+        *("--out", str(out), "--trials", "1"),
+    )
+    assert proc.returncode == 2
+    assert held_out not in proc.stdout + proc.stderr
+    assert not out.exists()
