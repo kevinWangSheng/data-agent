@@ -68,6 +68,13 @@ def event_files(trial: Trial) -> list[Path]:
     return sorted((trial.dir / "agent" / "events").glob("*.jsonl"))
 
 
+def last_event_file(trial: Trial) -> Path | None:
+    """The event file the trial is scored and reported by: the Harbor adapter reads the last one
+    (evals.harbor_agent), since a trial runs `data-agent run` once."""
+    files = event_files(trial)
+    return files[-1] if files else None
+
+
 def by_task(trials: list[Trial]) -> dict[str, list[float | None]]:
     """Per-task reward lists, the input shape of `evals.metrics`."""
     out: dict[str, list[float | None]] = defaultdict(list)

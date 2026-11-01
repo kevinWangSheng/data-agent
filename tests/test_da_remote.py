@@ -1,9 +1,11 @@
 """`scripts/da-remote` without a server: a fake `ssh` runs the remote script locally with a fake
 server home, a fake `rsync` records its arguments, and a fake `uv` on the server records its own."""
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -29,7 +31,9 @@ printf '%s\\n' "$@" > "$FAKE_LOG/rsync.args"
 # The server's uv: `sync` succeeds; `run --no-sync python -m evals spend ...` reports a spend line;
 # `run --no-sync python -m evals.balance` a balance line (exit FAKE_BALANCE_EXIT); any other evals
 # command prints whether the env file was loaded, then waits for `release`.
+# `run -q --no-sync python ...` (pull's dev-set check) runs this test's own Python.
 FAKE_UV = """#!/usr/bin/env bash
+if [ "$1 $2 $3 $4" = "run -q --no-sync python" ]; then shift 4; exec "$FAKE_PYTHON" "$@"; fi
 printf '%s\\n' "$@" > "$HOME/uv.last"
 [ "$1" = sync ] && { echo "fake uv sync"; exit 0; }
 [ "$6" = spend ] && { echo "spend: \\$0.1200 over 1 event file(s); budget \\$$9"; exit 0; }
@@ -78,6 +82,7 @@ class Env:
             "HOME": str(tmp_path / "mac-home"),
             "FAKE_LOG": str(self.log),
             "FAKE_SERVER_HOME": str(self.server),
+            "FAKE_PYTHON": sys.executable,
             "DA_REMOTE_DIR": str(self.repo),
             "DA_REMOTE_REPO": str(self.origin),
         }
@@ -424,7 +429,7 @@ def test_pull_of_a_holdout_run_takes_the_summary_only(env: Env):
     assert args[3:-2] == SUMMARY_FILTERS
 
 
-@pytest.mark.parametrize("trial_dir", ["jobs", "logs", "dropped"])
+@pytest.mark.parametrize("trial_dir", ["jobs", "logs", "dropped", "smoke"])
 def test_a_summary_pull_refuses_a_local_dir_holding_trials(env: Env, trial_dir: str):
     """rsync's filters keep old local files, so per-task files from an earlier full pull would stay
     next to the summary; pull refuses instead of deleting anything local."""
@@ -456,6 +461,152 @@ def test_pull_of_a_dev_or_dab_run_takes_the_whole_dir(env: Env):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     args = (env.log / "rsync.args").read_text().splitlines()
     assert not any(a.startswith(("--include", "--exclude")) for a in args)
+
+
+# The server checkout's real manifest; a run's jobs are judged against it.
+LONG_DEV = "dbt-fix-customer-snapshot-and-build-dimension"  # over Harbor's 32-character cut
+SERVER_MANIFEST = {
+    "seed": 0,
+    "dev": ["dbt-alpha", "dbt-bravo", LONG_DEV],
+    "holdout": ["dbt-delta"],
+}
+
+
+def ablate_run(env: Env, jobs: dict[str, list[str]]) -> Path:
+    """A finished ablate run on the server: per config, a Harbor job over `tasks` (its config.json
+    names them, as `-i` gave them) with one finished trial per task, its log, and a report."""
+    assert env.run("setup").returncode == 0
+    (env.repo / "evals").mkdir(exist_ok=True)
+    (env.repo / "evals" / "manifest.json").write_text(json.dumps(SERVER_MANIFEST))
+    assert env.run("start", "smoke", "--", "ablate", "--budget", "1").returncode == 0
+    env.finish(0)
+    run = env.repo / "runs" / "smoke"
+    for config, tasks in jobs.items():
+        job = run / "jobs" / config
+        job.mkdir(parents=True)
+        datasets = [{"path": "[redacted-home]/tasks", "task_names": tasks}]
+        (job / "config.json").write_text(json.dumps({"job_name": config, "datasets": datasets}))
+        for task in tasks:
+            (job / f"{task}__abc").mkdir()
+            (job / f"{task}__abc" / "result.json").write_text(json.dumps({"task_name": task}))
+        (run / "logs").mkdir(exist_ok=True)
+        (run / "logs" / f"{config}.log").write_text("harbor output\n")
+    (run / "logs" / "guards.log").write_text("spend ok\n")
+    (run / "reports" / "t1").mkdir(parents=True)
+    return run
+
+
+def pulled_whole(env: Env) -> bool:
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    if args[3:-2] == SUMMARY_FILTERS:
+        assert "summary only" in proc.stdout
+        return False
+    assert args[3:-2] == []
+    assert "dev set" in proc.stdout
+    return True
+
+
+def test_pull_of_an_ablate_run_on_dev_tasks_only_takes_the_whole_dir(env: Env):
+    """ADR-0008: dev-set trajectories are read by a human; ADR-0004 guards the holdout only."""
+    run = ablate_run(env, {"full": ["dbt-alpha", LONG_DEV], "baseline": ["dbt-bravo"]})
+    # Harbor names a trial `<task[:32] without trailing - or _>__<7 chars>`: a trial still running
+    # (no result.json yet) and the trials a resume dropped are judged by that name.
+    (run / "jobs" / "full" / "dbt-alpha__run1234" / "agent").mkdir(parents=True)
+    (run / "dropped" / "full" / f"{LONG_DEV[:32].rstrip('-_')}__drop123").mkdir(parents=True)
+    # The preflight's smoke job (ticket 27): one dev task per config, its own Harbor log.
+    smoke = run / "smoke" / "20261031T000000.000000Z" / "full"
+    smoke.mkdir(parents=True)
+    datasets = [{"path": "[redacted-home]/tasks", "task_names": ["dbt-bravo"]}]
+    (smoke / "config.json").write_text(json.dumps({"job_name": "full", "datasets": datasets}))
+    trial = smoke / "dbt-bravo__smk1234"
+    trial.mkdir()
+    (trial / "result.json").write_text(json.dumps({"task_name": "dbt-bravo"}))
+    (run / "logs" / "smoke-full.log").write_text("harbor output\n")
+    # A config smoked whose job never started (the batch stopped first) is judged by its smoke job.
+    smoke = run / "smoke" / "20261031T000000.000000Z" / "no-skill"
+    smoke.mkdir(parents=True)
+    (smoke / "config.json").write_text(json.dumps({"job_name": "no-skill", "datasets": datasets}))
+    (run / "logs" / "smoke-no-skill.log").write_text("harbor output\n")
+    assert pulled_whole(env)
+
+
+def test_pull_of_an_ablate_run_with_a_holdout_trial_takes_the_summary_only(env: Env):
+    run = ablate_run(env, {"full": ["dbt-alpha"]})
+    # A trial the job's config does not name, of a holdout task.
+    (run / "jobs" / "full" / "dbt-delta__x").mkdir()
+    (run / "jobs" / "full" / "dbt-delta__x" / "result.json").write_text(
+        json.dumps({"task_name": "org/dbt-delta"})
+    )
+    assert not pulled_whole(env)
+
+
+@pytest.mark.parametrize(
+    "spoil",
+    [
+        "holdout task in the job config",
+        "job without a task list",
+        "job without config.json",
+        "unreadable result.json",
+        "log of a job not on disk",
+        "dropped trials of a job not on disk",
+        "no jobs",
+        "no server manifest",
+        "holdout trial without result.json",
+        "dropped trial of a holdout task",
+        "dropped file named like a dev trial",
+        "smoke trial of a holdout task",
+        "smoke job naming a holdout task",
+        "smoke log without its smoke job",
+        "file in the smoke dir",
+    ],
+)
+def test_pull_of_an_ablate_run_it_cannot_judge_takes_the_summary_only(env: Env, spoil: str):
+    """Fail closed: anything not shown to be dev-set only stays on the server."""
+    run = ablate_run(env, {"full": ["dbt-alpha"]})
+    config = run / "jobs" / "full" / "config.json"
+    if spoil == "holdout task in the job config":  # no trial written yet
+        ablate_run_config = json.loads(config.read_text())
+        ablate_run_config["datasets"][0]["task_names"].append("dbt-delta")
+        config.write_text(json.dumps(ablate_run_config))
+    elif spoil == "job without a task list":  # Harbor runs every task in the path
+        config.write_text(json.dumps({"datasets": [{"path": "[redacted-home]/tasks"}]}))
+    elif spoil == "job without config.json":
+        config.unlink()
+    elif spoil == "unreadable result.json":
+        (run / "jobs" / "full" / "dbt-alpha__abc" / "result.json").write_text("{")
+    elif spoil == "log of a job not on disk":
+        (run / "logs" / "no-skill.log").write_text("harbor output\n")
+    elif spoil == "dropped trials of a job not on disk":
+        (run / "dropped" / "no-skill" / "x__y").mkdir(parents=True)
+    elif spoil == "no jobs":
+        for path in sorted((run / "jobs").rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+    elif spoil == "no server manifest":
+        (env.repo / "evals" / "manifest.json").unlink()
+    elif spoil == "holdout trial without result.json":
+        (run / "jobs" / "full" / "dbt-delta__run1234" / "agent").mkdir(parents=True)
+    elif spoil == "dropped trial of a holdout task":
+        (run / "dropped" / "full" / "dbt-delta__drop123").mkdir(parents=True)
+    elif spoil == "dropped file named like a dev trial":  # a trial is a dir; a file is unknown
+        (run / "dropped" / "full").mkdir(parents=True)
+        (run / "dropped" / "full" / "dbt-alpha__drop123").write_text("dbt-delta trajectory\n")
+    elif spoil.startswith("smoke") and spoil != "smoke log without its smoke job":
+        smoke = run / "smoke" / "20261031T000000.000000Z" / "full"
+        smoke.mkdir(parents=True)
+        task = "dbt-delta"
+        names = ["dbt-delta" if spoil == "smoke job naming a holdout task" else "dbt-alpha"]
+        datasets = [{"path": "[redacted-home]/tasks", "task_names": names}]
+        (smoke / "config.json").write_text(json.dumps({"job_name": "full", "datasets": datasets}))
+        if spoil != "smoke job naming a holdout task":
+            (smoke / f"{task}__smk1234").mkdir()
+    elif spoil == "smoke log without its smoke job":  # Harbor failed before the job dir
+        (run / "logs" / "smoke-full.log").write_text("dbt-delta output\n")
+    elif spoil == "file in the smoke dir":
+        (run / "smoke").mkdir()
+        (run / "smoke" / "dbt-delta.json").write_text("{}")
+    assert not pulled_whole(env)
 
 
 def test_push_copies_a_local_run_dir_to_the_server(env: Env):
