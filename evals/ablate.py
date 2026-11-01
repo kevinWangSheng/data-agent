@@ -4,7 +4,8 @@ Each run config is one Harbor job on one split of the manifest, k trials per tas
 the holdout, always whole; with `--split dev`, the dev set or the `--task`s chosen from it:
 
     OUT/jobs/<config>/        the Harbor job (resumed when it exists)
-    OUT/dropped/<config>/     event files of trials a resume deleted, kept for the spend guard
+    OUT/dropped/<config>/     result.json and event files of trials a resume deleted, kept for the
+                              spend guard and `evals accept`
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
     OUT/request.json          the model (dev: also the split and tasks) the first invocation
                               asked for; another request is refused
@@ -352,12 +353,14 @@ def guard_spend(out: Path, budget: str) -> None:
 
 def keep_spend(out: Path, config: str, trials: list[Trial]) -> None:
     """Copy the event files of the trials a resume will delete to OUT/dropped/, where the spend
-    guard still counts what they cost."""
+    guard still counts what they cost, and their result.json, which marks that the round had an
+    infrastructure error even for a trial that broke before writing events (`evals accept`)."""
     for trial in trials:
+        kept_dir = out / "dropped" / config / trial.dir.name
+        kept_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(trial.dir / "result.json", kept_dir / "result.json")
         for events in event_files(trial):
-            kept = out / "dropped" / config / trial.dir.name / events.name
-            kept.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(events, kept)
+            shutil.copyfile(events, kept_dir / events.name)
 
 
 def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:

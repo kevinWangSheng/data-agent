@@ -808,6 +808,8 @@ def test_an_infrastructure_error_without_events_is_still_redone(
     broken["flaky"] = False
     assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
     assert harbor.calls[-1][:2] == ["job", "resume"]
+    # Its result stays under dropped/, so `evals accept` still sees the round had an error.
+    assert list((out / "dropped" / "full").glob("*__a0c*/result.json"))
 
 
 def test_configs_run_with_different_models_are_not_compared(
