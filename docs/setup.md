@@ -24,6 +24,15 @@
 - 容器 `da-dab-postgres`（`postgres:17`，127.0.0.1:15432）与 `da-dab-mongo`（`mongo:8`，127.0.0.1:37017，WiredTiger 缓存 0.5 GB）；数据卷 `da-dab-pgdata`、`da-dab-mongodata`，删掉容器和卷即可重来。DAB 装库要调 `psql` 和 `mongorestore`，服务器不装系统包，所以 `da-benchmarks/bin/` 里的同名包装脚本经 `docker exec` 在容器里跑它们（两个容器只读挂载 DAB 目录，路径与宿主机相同）。装库由 `evals/dab.py` 在每次会话开始前做、结束后删（同一时间只装着一个数据集），用时记在 trace 的 `dab_load` 事件里；装失败记 `infra_error`，不起会话。DAB 的工具服务器只连已装好的库：imdb 的 1.6 GB dump 装得比 SDK 等 MCP 服务器启动的约 30 秒久（工单 23）。
 - 连接设置（`PG_*`、`MONGO_URI`、`PG_CLIENT` 和 `bin/` 的 PATH）写在服务器 `~/.config/data-agent/dab.env`（600，密码随机生成、不打印）；`start <name> -- dab ...` 会额外读它，并用 `--with-requirements evals/dab-requirements.txt` 跑。删了 `dab.env` 而保留 Postgres 数据卷会对不上密码，要连卷一起删。
 
+DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.txt python -m evals dab-score OUT --dab-root ../da-benchmarks/DataAgentBench [--baseline OUT_BASE] [--runs N] [--all-queries] [--strict] [--report PATH] [--seed 0] [--n-boot 10000]`。
+
+- 判分用 DAB clone 里的 `common_scaffold/validate/validate.py`（按路径 import，不复制）：空答案判错，否则跑该题目录下的 `validate.py`。某题的验证器报错或返回的不是 `(bool, reason)`，就退出 2 并点名那道题，不当作答错。
+- 口径是 DAB 的 Pass@1：每题通过率 = 通过的运行数 ÷ 应有运行数；每个数据集取各题平均；再对数据集取平均。默认只算输出里出现的题，并在 stderr 和报告的 `coverage` 里写明覆盖了 clone 里多少题；这样算出的分数不能和榜单比。`--all-queries` 按榜单规矩把 clone 里每道题都算进来，没跑的题按 0 算（每题应有 `--runs` 次，不给时取输出里跑得最多的那道题的次数）。
+- 应有运行：输出里的 `run<k>/` 目录和 submission 条目；给了 `--runs N` 时，再加上每道出现过的题的 run 0..N-1。没有答案的运行（基础设施报错不进 submission）列在 stderr，默认按 0 算；`--strict` 下退出 2、不写报告，重跑后再算。
+- 给 `--baseline` 时做配对 bootstrap（候选减 baseline，百分点，95% 百分位区间，区间不含 0 才算显著）：在每个数据集内对题有放回重抽，每次重抽都含所有数据集。两份输出覆盖的 (数据集, 题) 不一致就退出 2，只报不一致的个数。DAB 上的比较是 `no-context` 对 `baseline`（DAB 的工具服务器没有上下文工具）。
+- 输出：终端汇总（Pass@1、各数据集、各题通过数），加一份 JSON 报告（默认 `OUT/dab_score.json`）。
+- 规定：DAB 只有一套题，没有开发集和留出集之分。逐题结果只用来排查基础设施问题，不能用来改 Skill（ADR-0005）。
+
 `da-remote check` 也报这些就绪项：两个 clone 的 commit、题目数、DAB 数据大小与清单一致（只比大小，快；sha256 由 `benchmarks` 校验）、镜像、`dab.env`、两个数据库从宿主机可连；以及模型账户余额（`python -m evals.balance`，DeepSeek 的 `GET /user/balance`：报数额和 DeepSeek 说的能否付费，key 只进请求头、不打印；CNY 按 7.3 折成美元，偏保守）。
 
 两种花费口径（工单 34）：

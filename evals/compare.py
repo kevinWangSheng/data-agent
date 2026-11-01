@@ -35,11 +35,17 @@ def paired_bootstrap(
     rng = random.Random(seed)
     n = len(diffs)
     boots = [statistics.fmean(rng.choices(diffs, k=n)) for _ in range(n_boot)]
+    return percentile_interval(statistics.fmean(diffs), boots)
+
+
+def percentile_interval(diff: float, boots: list[float]) -> dict[str, float | bool]:
+    """The difference with the 95% percentile interval of its bootstrap resamples; significant
+    only when the interval excludes 0."""
     # n=40 cut points sit at 2.5%, 5%, ..., 97.5%: the first and last bound the 95% interval.
     cuts = statistics.quantiles(boots, n=40, method="inclusive")
     ci_low, ci_high = cuts[0], cuts[-1]
     return {
-        "diff": statistics.fmean(diffs),
+        "diff": diff,
         "ci_low": ci_low,
         "ci_high": ci_high,
         "significant": ci_low > 0 or ci_high < 0,
