@@ -1,12 +1,16 @@
 """Edge cases of `python -m evals score|report` beyond the seam C acceptance tests."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from evals.harbor import load_trials
+from evals.report import billed_usd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -245,6 +249,18 @@ def test_holdout_report_gives_billed_cost_next_to_cost(tmp_path: Path) -> None:
     summary = json.loads((out / "report.json").read_text())
     assert summary["cost_usd"] == pytest.approx(1.2)
     assert summary["billed_cost_usd"] == pytest.approx(1.0)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read any file")
+def test_an_unreadable_event_file_is_billed_at_its_full_cost(tmp_path: Path) -> None:
+    job = billed_job(tmp_path)
+    events = job / "t1__a" / "agent" / "events" / "run-1.jsonl"
+    trial = next(t for t in load_trials(job) if t.name == "t1__a")
+    events.chmod(0)
+    try:
+        assert billed_usd(trial) == 0.4
+    finally:
+        events.chmod(0o644)
 
 
 def test_missing_or_empty_job_dir_is_an_error(tmp_path: Path) -> None:

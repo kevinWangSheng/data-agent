@@ -43,7 +43,7 @@ class SpendUnknown(Exception):
 
 @dataclass(frozen=True)
 class FileSpend:
-    listed: Decimal  # the results' `cost_usd`, at peak prices
+    listed: Decimal  # the results' `cost_usd`: peak prices for a price-table run
     billed: Decimal
     period: Period | None  # when the run started; None when its start cannot be read
 
@@ -147,7 +147,7 @@ def run(args: argparse.Namespace) -> int:
     periods = [s.period for s in spends]
     limit = budget * STOP_FRACTION
     print(
-        f"spend: billed ${spent:.4f} (at peak prices ${listed:.4f}) over {len(files)} event "
+        f"spend: billed ${spent:.4f} (cost_usd ${listed:.4f}) over {len(files)} event "
         f"file(s) ({periods.count('off-peak')} off-peak, {periods.count('peak')} peak, "
         f"{periods.count(None)} unknown); budget ${budget}, stop at {STOP_PERCENT} = ${limit:.4f}"
     )

@@ -746,7 +746,7 @@ def test_spend_of_trials_a_resume_drops_still_counts(
     code, printed, _ = ablate.evals_cli(["spend", str(out), "--budget", "100"])
     # 6 configs x 2 tasks x 3 trials, the 2 dropped ones, and 6 smoke trials in each of the 2
     # invocations, at $0.01 each.
-    assert code == 0 and "(at peak prices $0.5000) over 50 event file(s)" in printed
+    assert code == 0 and "(cost_usd $0.5000) over 50 event file(s)" in printed
 
 
 @pytest.mark.parametrize(

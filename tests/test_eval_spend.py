@@ -183,11 +183,11 @@ def test_the_spend_guard_stops_on_billed_spend_and_prints_both_totals(tmp_path: 
     write_events(tmp_path / "a" / "events.jsonl", *run_events(f"{SATURDAY}T12:00:00+00:00", 0.6))
     write_events(tmp_path / "b" / "events.jsonl", *run_events(f"{MONDAY}T02:00:00+00:00", 0.2))
     write_events(tmp_path / "c" / "events.jsonl", *run_events(None, 0.1))
-    # Billed: 0.3 + 0.2 + 0.1 = 0.6; at peak prices 0.9. A $1 budget stops at $0.80.
+    # Billed: 0.3 + 0.2 + 0.1 = 0.6; cost_usd 0.9. A $1 budget stops at $0.80.
     under = spend(tmp_path, "1")
     assert under.returncode == 0, under.stderr
     assert "billed $0.6000" in under.stdout
-    assert "at peak prices $0.9000" in under.stdout
+    assert "(cost_usd $0.9000)" in under.stdout
     assert "1 off-peak, 1 peak, 1 unknown" in under.stdout
     assert spend(tmp_path, "0.75").returncode == 1  # $0.60 is exactly 80% of $0.75
-    assert spend(tmp_path, "0.76").returncode == 0  # though $0.90 at peak prices is over $0.608
+    assert spend(tmp_path, "0.76").returncode == 0  # though cost_usd $0.90 is over $0.608

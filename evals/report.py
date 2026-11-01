@@ -58,27 +58,31 @@ NOT_RETRIED = frozenset(
 
 def billed_usd(trial: Trial) -> float:
     """The trial's `cost_usd` as the model account is billed it (evals.spend), by its scored
-    event file (`last_event_file`); at the full `cost_usd` when it has no readable result event."""
+    event file (`last_event_file`); at the full `cost_usd` when that file cannot be read or holds
+    no result event."""
     events = last_event_file(trial)
     if events is None:
         return trial.cost_usd
     first: dict[str, Any] | None = None
     version: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
-    with events.open(encoding="utf-8", errors="replace") as f:
-        for line in f:
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # a line cut short by a killed run (as evals.process)
-            if not isinstance(event, dict):
-                continue
-            if first is None:
-                first = event
-            if version is None and event.get("type") == "version":
-                version = event
-            if event.get("type") == "result":
-                result = event
+    try:
+        lines = events.read_text(encoding="utf-8", errors="replace").split("\n")
+    except OSError:
+        return trial.cost_usd
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # a blank line, or one cut short by a killed run (as evals.process)
+        if not isinstance(event, dict):
+            continue
+        if first is None:
+            first = event
+        if version is None and event.get("type") == "version":
+            version = event
+        if event.get("type") == "result":
+            result = event
     if result is None:
         return trial.cost_usd
     cost = Decimal(str(trial.cost_usd))
