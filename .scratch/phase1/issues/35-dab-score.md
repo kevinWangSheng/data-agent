@@ -1,6 +1,6 @@
 # 35 — DAB 算分：用 DAB 自带的 validate.py 算 Pass@1，并和 baseline 配对比较
 
-Status: in-progress
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 35-dab-score)
@@ -74,10 +74,26 @@ Branch: worktree-35-dab-score
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1（da-review + eng:code-review，修复在 f83e5b6、ad4ce2f）
 - Model spend: $0
-- Outcome: —
+- Outcome: dab-score 已实现；服务器真实运行待主会话做
 - Human review minutes: —
 
 ## Comments
+- 2026-11-01 工单 agent（主会话转抄）：
+  - 分支 `worktree-35-dab-score`，提交 80f0beb、f83e5b6、ad4ce2f。make check：1341 passed（第一次跑有一个 `test_harbor_agent.py` 连不上 pypi，单独重跑通过，最终整跑干净）。
+  - 命令：`python -m evals dab-score OUT --dab-root R [--baseline B] [--runs N] [--all-queries] [--strict] [--report P] [--seed] [--n-boot]`（`evals/dab_score.py`）。按路径 import clone 里的判分代码，不复制；测试替身在 `tests/fixtures/fake_dab/common_scaffold/validate/validate.py`。
+  - 本地真实运行（假 DAB，2 个数据集 / 4 题，每题 2 次，候选有 1 次基础设施报错）：
+    - `uv run python -m evals dab-score /tmp/dabscore35/cand --baseline /tmp/dabscore35/base --dab-root /tmp/dabscore35/dab --n-boot 2000`
+    - → stderr `candidate: 1 missing run(s), counted as fails: bookreview query1 run1`；baseline Pass@1 0.0000；candidate 0.5833（bookreview 0.5000，stockindex 0.6667）；`candidate - baseline: +58.33 points (95% CI +25.00 to +75.00; significant)`；exit 0。
+    - `--strict` → exit 2，不写报告。数字与手算一致。
+  - da-review：
+    - P1"完全没跑的题没按 0 算"→ 加 `--all-queries`（榜单口径）和覆盖率输出；默认仍是"只算输出里的题"。
+    - P2"空输出崩溃"→ 已修：exit 2 `no runs in OUT`，有测试。
+  - eng:code-review：
+    - Standards：bootstrap 区间从 compare.py 复制 → 已抽成共用的 `percentile_interval`；numpy bool_ 补测试。不修：覆盖率提示其实有断言；`_import_from` 私有 import、NamedTuple 键、`Score` 命名属风格，改 `_import_from` 要动 dab.py。
+    - Spec："真 DAB 入口可能需要 `reason` 或返回 tuple"不属实，DAB@6ad9d68 是 `def validate(query_dir, llm_answer, reason=None)`，返回带 `is_valid` 的 dict；"Pass@1 标题没注明覆盖"已修；"`--all-queries --strict` 对部分输出 exit 2"是榜单口径下的预期行为，不修。
+  - 工单 agent 没见过真实题目自己的 `validate.py`；签名不同时工具以 exit 2 退出并点名该题（对应停止条件），服务器运行时核对。
+- 2026-11-01 主会话：
+  - 缺题默认口径定为"只算输出里出现的题"，`--all-queries` 是榜单口径。理由：本工单验收里"缺项按 0 算"指基础设施丢掉的运行，已实现；DAB 试跑只跑 query1，榜单口径会压到接近 0；正式评测跑全部题时两种口径相同。报告每行都注明覆盖了 clone 里多少题，不会被误当榜单分。正式评测报告用 `--all-queries`。

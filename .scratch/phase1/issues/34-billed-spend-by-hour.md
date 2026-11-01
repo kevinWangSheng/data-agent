@@ -1,6 +1,6 @@
 # 34 — 花费按运行时段计价：报告、累计花费、开跑前检查
 
-Status: in-progress
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 34-billed-spend-by-hour)
@@ -77,10 +77,30 @@ Branch: worktree-34-billed-spend-by-hour
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2（第 1 轮的问题已修）
+- Model spend: $0（不调模型；Codex 审查不计）
+- Outcome: 已实现；make check 通过；dev-3 真实运行已做
 - Human review minutes: —
 
 ## Comments
+- 2026-11-01 工单 agent（主会话转抄）：
+  - 分支 `worktree-34-billed-spend-by-hour`，提交 3f15797、bf0953d。make check：1351 passed，1 skipped。
+  - 改动：
+    - 计价规则在 `evals/spend.py`：时段取事件文件第一条事件的 `ts`（UTC）；DeepSeek 且 `cost_basis == "price_table"` 的闲时运行按 `cost_usd × 0.5`；SDK 口径、其他模型、`ts` 缺失/读不了/无时区，都按全额。
+    - `evals spend` 的 80% 护栏用实际价合计；输出两种合计和闲时/高峰/未知的事件文件数。
+    - `ablate.spent`（余额检查）、`dab.spent`（`--budget`）按实际价算。
+    - 开发集、留出集 `report.json` 加 `billed_cost_usd`，开发集 `trials.json` 每行也有；`cost_usd` 保留。
+    - `src/`、单次上限、事件文件里的 `cost_usd` 不变。
+  - 真实运行（`runs/dev-3`）：
+    - `uv run python -m evals spend runs/dev-3 --budget 75` → `spend: billed $17.1332 (cost_usd $26.6632) over 450 event file(s) (318 off-peak, 132 peak, 0 unknown); budget $75, stop at 80% = $60.0000`，exit 0。
+    - 开发集报告（`--split dev`，逐 job）：baseline 90 trials，cost_usd 7.0601 / billed 3.5300，闲时 90 / 高峰 0；full 90 trials，14.4607 / 8.4607，72 / 18；合计 180 trials，21.5207 / 11.9908，162 / 18。
+    - 另三个 job（no-context、no-skill、no-verifiers）有工单前就存在的基础设施报错，报告拒绝它们。
+  - da-review：2 × P2 已在 bf0953d 修——读不了的事件文件让报告崩溃（改成按全额，有回归测试）；第二个合计标成"高峰价"不准（也含 SDK 口径和其他模型，改标 `cost_usd`）。
+  - eng:code-review：Standards 无违规，Spec 无阻塞。不修的几处：
+    - 报告和护栏读事件文件的逻辑不同：有意的，护栏读不了要 exit 2，报告跳过坏行按全额；计价规则（`period`、`run_rate`、`billed`）共用。
+    - `ablate.spent` 与 `dab.spent` 近乎重复：旧代码，合并超出本工单。
+    - `startswith("deepseek")`、`"price_table"` 是裸字符串：从 `src/` 取超出 Authority；名字不匹配时按全额，只会多算。
+    - 报告把开发集事件文件读两遍：开销小。
+    - 已知限制：`process.mean_cost_usd_succeeded`、`process.per_task.cost_usd` 仍是 `cost_usd`；验收只要求新增一列。
+  - 测试改动：`tests/test_dab.py::test_budget_guard_stops_before_the_next_run` 预算 0.00001 → 0.000001（脚本化运行带真实 `ts`，闲时会打折，原阈值不再触发）；`test_eval_ablate.py` 的花费输出文本断言改成新格式。`tests/acceptance/` 没动。
