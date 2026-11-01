@@ -51,3 +51,12 @@ Branch: —（只读分析，不改代码）
 - Human review minutes: —
 
 ## Comments
+
+## Comments
+
+- 2026-11-01 主会话（准备，人读之前）：
+  - `da-remote setup dcba420`；`scripts/da-remote pull dev-3` → `pull: server runs/dev-3 -> .../runs/dev-3 (dev set only: the whole run)`，取回 jobs/{full,baseline,no-context,no-skill,no-verifiers}。
+  - `uv run python -m evals diverge --baseline runs/dev-3/jobs/baseline --candidate runs/dev-3/jobs/full --manifest evals/manifest.json --out runs/30-diagnosis/diverge` → "30 paired tasks; successes differ on 9: baseline better on 8, full better on 1."（与工单 Context 一致）。完整过程指标表：`runs/30-diagnosis/diverge/diverge.md`。
+  - 过程指标要点：两边都没有 trial 被花费上限或轮数上限截停（"stopped: budget / turns" 全为 0 / 0），排除"被 $1 上限截停"这一解释；成功 trial 平均花费 baseline $0.0762、full $0.1605（约 2 倍）；full 每题 6–10 次验证者调用，输的分歧题里验证者多数给 PASS（如 dbt-fix-marketing-attribution 0/3：N/A 6、PASS 18，无 FAIL）。
+  - 阅读入口：`runs/30-diagnosis/reading-index.md`（9 道分歧题输的一方的 13 个 trial 目录）。
+  - 阅读包（用户选：主会话整理不带解读的原文，人读）：`runs/30-diagnosis/reading/README.md`，每道分歧题一个文件：题目原文、输的一方全部输的 trial（写过的文件列表、评分器输出末尾 120 行、逐步轨迹，长返回截断到 2500 字符）、赢的一方第一条成功 trial 作对照。生成脚本在会话 scratchpad（render_pack.py），不进仓库。笔记写 `runs/30-diagnosis/reading/notes.md`。
