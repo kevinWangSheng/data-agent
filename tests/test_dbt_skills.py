@@ -1,5 +1,6 @@
 """The Skills preloaded for dbt runs and the scripts dbt-workflow runs."""
 
+import json
 import re
 import shutil
 import subprocess
@@ -8,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from data_agent.agent import DBT_SKILLS, SKILLS_DIR, dbt_scripts, load_skills
+from data_agent.agent import DBT_SKILLS, SKILLS_DIR, TASK_FILE_NOTE, dbt_scripts, load_skills
 from data_agent.run_config import load_config
+from data_agent.verifiers import AGENTS_DIR, VERIFIERS_PROMPT
 
 DBT_SHOP = Path(__file__).parent / "fixtures" / "dbt_shop"
 SCAN = SKILLS_DIR / "dbt-workflow" / "scan_project.py"
@@ -311,6 +313,45 @@ def test_workflow_compares_sums_and_averages_only_up_to_rounding() -> None:
 
 def step_8() -> str:
     return " ".join(body("dbt-workflow").split("### Step 8", 1)[1].split("\n---", 1)[0].split())
+
+
+def test_workflow_passes_the_spec_to_the_verifiers_as_intent_only() -> None:
+    """Ticket 32: the verifiers judge against the task text; the spec is the main agent's intent."""
+    text = step_8()
+    assert "technical_spec.md" in text and "intent" in text and "task text" in text
+    assert "so verifiers can reference it" not in text
+    assert "Do NOT include column definitions, SQL logic" in text
+
+
+MANIFEST = Path(__file__).resolve().parents[1] / "evals" / "manifest.json"
+
+
+def task_names() -> set[str]:
+    """Every dev and holdout task name, as written and in the forms a prompt might spell it."""
+    manifest = json.loads(MANIFEST.read_text())
+    names: set[str] = set()
+    for name in [*manifest["dev"], *manifest["holdout"]]:
+        for form in (name, name.removeprefix("dbt-")):
+            names |= {form, form.replace("-", "_"), form.replace("-", " ")}
+    return names
+
+
+def test_skills_and_verifier_prompts_name_no_task() -> None:
+    """ADR-0005: the prompts state general rules, never one task's name."""
+    texts = {
+        str(path.relative_to(SKILLS_DIR)): path.read_text()
+        for name in DBT_SKILLS
+        for path in (SKILLS_DIR / name).iterdir()
+        if path.is_file()
+    }
+    texts |= {path.name: path.read_text() for path in AGENTS_DIR.glob("*.md")}
+    texts |= {"VERIFIERS_PROMPT": VERIFIERS_PROMPT, "TASK_FILE_NOTE": TASK_FILE_NOTE}
+    names = task_names()
+    assert "rfm-customer-segmentation" in names and "rfm customer segmentation" in names
+    for where, text in texts.items():
+        lowered = text.lower()
+        for name in names:
+            assert name not in lowered, (where, name)
 
 
 def write_section(number: int) -> str:

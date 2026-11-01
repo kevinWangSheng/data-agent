@@ -222,3 +222,53 @@ def test_verifier_finds_models_under_the_model_paths() -> None:
 def test_verifier_passes_yml_types_to_check_model_schema() -> None:
     check_2 = verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
     assert "check_model_schema" in check_2 and "name:data_type" in check_2
+
+
+def test_verifier_checks_every_row_removal_against_the_task_or_yml() -> None:
+    """Ticket 32: each filter, inner join, row removal and changed source needs a basis in the
+    task text or the YML, or the check fails quoting the SQL."""
+    prompt = verifier_prompt()
+    check_6 = " ".join(prompt.split("### CHECK 6")[1].split("## Output Format")[0].split())
+    for term in ("WHERE", "HAVING", "INNER JOIN", "source table", "task file", "YML", "quote"):
+        assert term.lower() in check_6.lower(), term
+    output_format = prompt.split("## Output Format")[1]
+    template = next(line for line in output_format.splitlines() if "CHECK 6" in line)
+    for status in ("PASS", "FAIL"):
+        line = template.replace("PASS / FAIL / NEEDS_INFO / N/A", status)
+        expected = [{"model": "m", "check": "CHECK 6", "status": status}]
+        assert parse_checks(f"### m\n{line}") == expected
+
+
+@pytest.mark.parametrize("name", VERIFIER_NAMES)
+def test_verifiers_judge_against_the_task_file_not_the_spec(name: str) -> None:
+    prompt = " ".join((options(Path("."), "dbt", "full").agents or {})[name].prompt.split())
+    section = prompt.split("## Task file")[1].split("##")[0]
+    assert "word for word" in section and "Read it before any check" in section
+    assert "technical_spec.md" in section and "the task text wins" in section
+
+
+def test_value_verifier_recomputes_what_the_task_defines_from_the_task() -> None:
+    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
+    flat = " ".join(check_2.split())
+    rule = flat.split("A quantity the task defines")[1].split(". ", 3)
+    text = ". ".join(rule[:3])
+    for term in ("formula", "bucket", "default", "task file"):
+        assert term in text, term
+    assert "not" in text and "technical spec" in text
+
+
+def test_verifiers_prompt_passes_the_spec_as_intent_and_still_hides_the_sql() -> None:
+    flat = " ".join(VERIFIERS_PROMPT.split())
+    assert "technical_spec.md" in flat and "intent" in flat and "task text" in flat
+    assert "Do not tell them what the columns mean or how you wrote the SQL." in flat
+
+
+def test_parse_checks_reads_a_row_removal_fail_that_quotes_sql() -> None:
+    report = (
+        "### fct_orders\n"
+        "- CHECK 5: N/A - created from scratch\n"
+        "- CHECK 6: FAIL - `WHERE o.status <> 'cancelled'` (models/fct_orders.sql:12): neither "
+        "the task nor the YML asks to drop cancelled orders\n"
+    )
+    expected = {"model": "fct_orders", "check": "CHECK 6", "status": "FAIL"}
+    assert parse_checks(report)[-1] == expected

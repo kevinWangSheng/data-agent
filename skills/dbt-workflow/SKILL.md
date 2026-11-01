@@ -22,7 +22,8 @@ the model SQL's own COUNTs exactly; sums and averages match only up to rounding;
 no domain prefix. After the first failure attribution: an edit is compared with the original
 predicate by predicate; rule-defined columns implement each factor as stated; Step 8 checks
 column types for every model the task asks for and adds a key-level check against an
-independent recomputation, which also gates the STOP. -->
+independent recomputation, which also gates the STOP. Step 8 passes technical_spec.md to the
+verifiers as the main agent's intent only, as they judge against the task text. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -225,7 +226,8 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
    Both are READ-ONLY. They return reports. They fix nothing.
    Pass: project directory and the names of every model the task asks for,
    not only the ones you last edited.
-   Also pass the path to `technical_spec.md` so verifiers can reference it.
+   Also pass the path to `technical_spec.md`: the verifiers read it only as
+   your intent and judge against the task text, which they read themselves.
    Do NOT include column definitions, SQL logic, or your interpretation
    of what the columns mean. The verifiers must discover this themselves.
    If those agents are not offered, run the same checks yourself, read-only,

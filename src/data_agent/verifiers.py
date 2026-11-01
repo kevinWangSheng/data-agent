@@ -40,6 +40,9 @@ STATUSES = ("PASS", "FAIL", "NEEDS_INFO", "N/A")
 # "CHECK 2: FAIL", "**CHECK 2**: FAIL", "**CHECK 2 - Aggregate Cross-Validation: FAIL**".
 CHECK_RE = re.compile(r"(CHECK\s*\d+)\b[^:\n]{0,80}:[\s*]*(PASS|FAIL|NEEDS_INFO|N/A)\b")
 MODEL_RE = re.compile(r"^###\s+(.+?)\s*$")
+# Ends each verifier's prompt in a run with a task file; the prompt's "Task file" section says how
+# to use it.
+TASK_FILE_LINE = "\n\nTask file (read it first, with Read): `{path}`\n"
 
 # Appended to a dbt run's system prompt when the verifier layer is on, so the protocol holds with
 # or without the Skill layer.
@@ -48,7 +51,9 @@ VERIFIERS_PROMPT = """
 Before your final message, dispatch the `verifier` (structure) and `value-verifier` (values) \
 agents IN PARALLEL with the Agent tool, both in one turn. Give each the dbt project directory and \
 the names of the models you created or changed; for a model you changed, also the tables its \
-SQL read from before your change. Do not tell them what the columns mean or how you wrote the SQL.
+SQL read from before your change. If you wrote a `technical_spec.md`, pass its path too: the \
+verifiers read it only as your intent and judge against the task text, which they read \
+themselves. Do not tell them what the columns mean or how you wrote the SQL.
 
 Each report gives every check one of PASS, FAIL, NEEDS_INFO or N/A.
 - FAIL: first reproduce the failure yourself with one read-only query that shows the defect. Then \
@@ -62,20 +67,24 @@ that.
 Emit = Callable[..., None]
 
 
-def load_definition(name: str, server: str) -> AgentDefinition:
-    """One verifier from its markdown file: frontmatter description, body as the prompt."""
+def load_definition(name: str, server: str, task_file: Path | None = None) -> AgentDefinition:
+    """One verifier from its markdown file: frontmatter description, body as the prompt, and the
+    path of the run's task file (`agent.saved_task`), which the prompt's checks judge against."""
     _, frontmatter, body = (AGENTS_DIR / f"{name}.md").read_text().split("---\n", 2)
     fields = dict(line.split(":", 1) for line in frontmatter.splitlines() if ":" in line)
+    prompt = body.strip()
+    if task_file is not None:
+        prompt += TASK_FILE_LINE.format(path=task_file)
     return AgentDefinition(
         description=fields["description"].strip().strip('"'),
-        prompt=body.strip(),
+        prompt=prompt,
         tools=[*READ_TOOLS, *(f"mcp__{server}__{tool}" for tool in DATA_TOOLS[name])],
         model="inherit",
     )
 
 
-def verifier_agents(server: str) -> dict[str, AgentDefinition]:
-    return {name: load_definition(name, server) for name in VERIFIER_NAMES}
+def verifier_agents(server: str, task_file: Path | None = None) -> dict[str, AgentDefinition]:
+    return {name: load_definition(name, server, task_file) for name in VERIFIER_NAMES}
 
 
 def parse_checks(report: str) -> list[dict[str, str]]:
