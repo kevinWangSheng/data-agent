@@ -683,3 +683,80 @@ def test_a_task_without_a_known_image_stops_before_any_harbor_job(
     assert run_on(monkeypatch, harbor, manifest, tmp_path / "out", tasks_dir) == 2
     assert harbor.calls == []
     assert "cannot fill the wheel cache" in capsys.readouterr().err
+
+
+DEV = ["dbt-alpha", "dbt-bravo", "dbt-charlie"]
+
+
+@pytest.fixture
+def dev_manifest(tmp_path: Path) -> Path:
+    path = tmp_path / "dev-manifest.json"
+    path.write_text(json.dumps({"seed": 1, "dev": DEV, "holdout": HOLDOUT}))
+    return path
+
+
+def test_the_dev_split_runs_the_chosen_dev_tasks_with_per_task_reports(
+    monkeypatch: pytest.MonkeyPatch, dev_manifest: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    configs = ("--config", "full", "--config", "baseline")
+    tasks = ("--task", "dbt-charlie", "--task", "dbt-alpha")
+    assert run(monkeypatch, harbor, dev_manifest, out, "--split", "dev", *tasks, *configs) == 0
+    for call in harbor.calls:
+        assert [call[i + 1] for i, a in enumerate(call) if a == "-i"] == [
+            "dbt-alpha",
+            "dbt-charlie",
+        ]
+    result = table(out)
+    assert (result["split"], result["n_tasks"]) == ("dev", 2)
+    (reports,) = report_dirs(out)
+    full = json.loads((reports / "full" / "report.json").read_text())
+    assert full["per_task"] == {
+        "dbt-alpha": {"successes": 3, "trials": 3},
+        "dbt-charlie": {"successes": 3, "trials": 3},
+    }
+    diverged = json.loads((reports / "diverge" / "baseline" / "diverge.json").read_text())
+    assert diverged["labels"] == {"baseline": "baseline", "candidate": "full"}
+    assert diverged["wins"] == {"baseline": 0, "candidate": 2}
+
+
+def test_the_dev_split_without_tasks_runs_the_whole_dev_list(
+    monkeypatch: pytest.MonkeyPatch, dev_manifest: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, dev_manifest, out, "--split", "dev", "--config", "full") == 0
+    assert [harbor.calls[0][i + 1] for i, a in enumerate(harbor.calls[0]) if a == "-i"] == DEV
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("--split", "dev", "--task", "dbt-delta"),  # a holdout task
+        ("--split", "dev", "--task", "dbt-zulu"),  # in no list
+        ("--task", "dbt-alpha"),  # the holdout is run whole
+    ],
+)
+def test_tasks_outside_the_dev_list_are_refused(
+    monkeypatch: pytest.MonkeyPatch, dev_manifest: Path, tmp_path: Path, extra: tuple[str, ...]
+) -> None:
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, dev_manifest, tmp_path / "out", *extra) == 2
+    assert harbor.calls == []
+
+
+def test_another_split_or_task_list_on_the_same_out_stops(
+    monkeypatch: pytest.MonkeyPatch,
+    dev_manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    dev = ("--split", "dev", "--config", "full")
+    assert run(monkeypatch, harbor, dev_manifest, out, *dev, "--task", "dbt-alpha") == 0
+    assert run(monkeypatch, harbor, dev_manifest, out, *dev, "--task", "dbt-bravo") == 2
+    assert run(monkeypatch, harbor, dev_manifest, out, "--config", "full") == 2
+    assert "another --out" in capsys.readouterr().err
+    assert len(harbor.calls) == 1

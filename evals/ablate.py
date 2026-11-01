@@ -1,14 +1,18 @@
 """`ablate`: the ablation table in one command (ADR-0004, plan §7).
 
-Each run config is one Harbor job on the manifest's holdout tasks, k trials per task:
+Each run config is one Harbor job on one split of the manifest, k trials per task: by default
+the holdout, always whole; with `--split dev`, the dev set or the `--task`s chosen from it:
 
     OUT/jobs/<config>/        the Harbor job (resumed when it exists)
     OUT/dropped/<config>/     event files of trials a resume deleted, kept for the spend guard
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
-    OUT/request.json          the model the first invocation asked for; another one is refused
+    OUT/request.json          the model (dev: also the split and tasks) the first invocation
+                              asked for; another request is refused
     OUT/reports/<UTC time>/   new on every invocation:
         <config>/report.json  `evals report` (holdout: aggregates only)
         ablation.json, ablation.md
+        tasks.json            dev only: the tasks run, the manifest the reports read
+        diverge/<config>/     dev only: `evals diverge` of the config against full
 
 Before each job the spend guard (`evals spend` on OUT) stops the batch at 80% of --budget; a job
 runs to its end once started, so the overshoot is at most one job. Before the first job that runs,
@@ -22,7 +26,7 @@ match Harbor's -m, so the request itself is compared), and the table needs one c
 across its configs. A config error (the model's key, name or parameters) stops the batch for a
 human: Harbor does not retry it and a report would score it as a real 0. Once every job is
 complete, `evals scrub` cleans this table's jobs in place, `evals report` writes each config's
-report and `evals compare --manifest --split holdout` gives each layer's contribution: full minus
+report and `evals compare --manifest --split <split>` gives each layer's contribution: full minus
 the config without the layer, in accuracy points, with a paired bootstrap 95% interval. Per-task
 holdout results are never printed or written (ADR-0004); the guards' and Harbor's own output,
 which name tasks, go to logs.
@@ -33,6 +37,12 @@ Run from the repo root with the DATA_AGENT_* variables set, as for `harbor run`:
         --manifest evals/manifest.json --out runs/ablation --budget 300 --n-concurrent 2
 
 plan §7's cuts: `--trials 2`, or `--config` repeated to drop configs (full is always needed).
+On the dev set (ADR-0008: read the trajectories where configs differ), for example one task once:
+
+    uv run python -m evals ablate --tasks-dir <data-eng-bench>/tasks \
+        --manifest evals/manifest.json --out runs/dev-4 --budget 5 \
+        --split dev --task dbt-fix-division-by-zero --trials 1 --config full
+
 Exit 0 with the table; 1 when the spend guard stopped the batch; 2 on anything a human must look at
 (a config error, a failed Harbor run, infrastructure errors left, a scrub that could not check
 everything).
@@ -75,7 +85,6 @@ CONFIG_ERRORS = frozenset(
     {"AgentAuthenticationError", "ModelNotFoundError", "UnsupportedModelParametersError"}
 )
 JOB_CONFIG = REPO_ROOT / "evals" / "configs" / "data-eng-bench-duckdb.data-agent.yaml"
-SPLIT = "holdout"
 DEFAULT_MODEL = "the job config's default"
 
 
@@ -88,7 +97,7 @@ class Stop(Exception):
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
-    parser = commands.add_parser("ablate", help="run the configs on the holdout, write the table")
+    parser = commands.add_parser("ablate", help="run the configs on a split, write the table")
     parser.add_argument("--tasks-dir", type=Path, required=True, help="data-eng-bench tasks/")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
@@ -99,6 +108,10 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="trials per task")
     parser.add_argument("--n-concurrent", type=int, help="Harbor's concurrent trials")
     parser.add_argument("--model", help="Harbor's model name (default: the job config's)")
+    parser.add_argument("--split", choices=("holdout", "dev"), default="holdout")
+    parser.add_argument(
+        "--task", action="append", help="with --split dev, repeatable: run only these dev tasks"
+    )
     parser.set_defaults(run=run)
 
 
@@ -131,10 +144,10 @@ def _log(path: Path, *texts: str) -> None:
         f.write("".join(texts))
 
 
-def problem(trials: list[Trial], tasks: list[str], trials_per_task: int) -> str | None:
+def problem(trials: list[Trial], tasks: list[str], split: str, trials_per_task: int) -> str | None:
     """Why the job is not ready to score, in counts only; None when it is."""
     try:
-        check_complete(split_trials(trials, {SPLIT: tasks}, SPLIT, "this"), SPLIT, trials_per_task)
+        check_complete(split_trials(trials, {split: tasks}, split, "this"), split, trials_per_task)
     except ValueError as exc:
         return str(exc)
     return None
@@ -190,11 +203,14 @@ def check_conditions(config: str, job: Path, trials: list[Trial]) -> None:
         )
 
 
-def check_request(out: Path, model: str | None) -> None:
-    """OUT holds one requested model: finished jobs are reused, so another --model would otherwise
-    get the table of the model OUT was first run with."""
+def check_request(out: Path, model: str | None, split: str, tasks: list[str]) -> None:
+    """OUT holds one request: finished jobs are reused, so another --model would otherwise get
+    the table of the model OUT was first run with, and other tasks would meet jobs that never
+    cover them. A holdout request records the model only, since the holdout is always run whole."""
     path = out / "request.json"
-    now = {"model": model or DEFAULT_MODEL}
+    now: dict[str, Any] = {"model": model or DEFAULT_MODEL}
+    if split != "holdout":
+        now |= {"split": split, "tasks": tasks}
     if not path.is_file():
         path.write_text(json.dumps(now) + "\n")
         return
@@ -203,10 +219,7 @@ def check_request(out: Path, model: str | None) -> None:
     except ValueError as exc:
         raise Stop(f"cannot read {path}: {exc}; use another --out") from exc
     if before != now:
-        raise Stop(
-            f"{out} was run for model {before.get('model')!r}, this call asks for "
-            f"{now['model']!r}; use another --out"
-        )
+        raise Stop(f"{out} was run for {before}, this call asks for {now}; use another --out")
 
 
 def guard_spend(out: Path, budget: str) -> None:
@@ -257,7 +270,7 @@ def ensure_job(
         trials = load_trials(job) if any(job.glob("*/result.json")) else []
         check_config_errors(config, job, trials)
         check_conditions(config, job, trials)
-        if problem(trials, tasks, args.trials) is None:
+        if problem(trials, tasks, args.split, args.trials) is None:
             return
         dropped = [t for t in trials if is_infra_error(t)]
         infra = sorted({str(t.exception_type) for t in dropped})
@@ -321,7 +334,11 @@ def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     reports = args.out / "reports" / stamp
     reports.mkdir(parents=True)  # never an earlier report's directory
-    common = ["--manifest", str(args.manifest), "--split", SPLIT, "--trials", str(args.trials)]
+    manifest = args.manifest
+    if args.split == "dev":  # the reports and comparisons cover the tasks run, maybe a subset
+        manifest = reports / "tasks.json"
+        manifest.write_text(json.dumps({"dev": tasks}, indent=2) + "\n")
+    common = ["--manifest", str(manifest), "--split", args.split, "--trials", str(args.trials)]
     rows: list[dict[str, Any]] = []
     for config in configs:
         argv = ["report", str(jobs / config), *common, "--out", str(reports / config)]
@@ -339,8 +356,13 @@ def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]
         if code != 0:
             raise Stop(f"compare {REFERENCE} with {config}: {err.strip()}")
         contributions.append({"layer": LAYERS[config], "config": config, **json.loads(out)})
+        if args.split == "dev":
+            argv = ["diverge", *pair, "--manifest", str(manifest)]
+            code, _, err = evals_cli([*argv, "--out", str(reports / "diverge" / config)])
+            if code != 0:
+                raise Stop(f"diverge of {config} against {REFERENCE}: {err.strip()}")
     table = {
-        "split": SPLIT,
+        "split": args.split,
         "n_tasks": len(tasks),
         "trials_per_task": args.trials,
         "reference": REFERENCE,
@@ -401,17 +423,29 @@ def run(args: argparse.Namespace) -> int:
         print(f"ablate: --config must include {REFERENCE}, the reference", file=sys.stderr)
         return 2
     try:
-        tasks: list[str] = json.loads(args.manifest.read_text())[SPLIT]
+        tasks: list[str] = json.loads(args.manifest.read_text())[args.split]
     except (OSError, ValueError, KeyError) as exc:
-        print(f"ablate: cannot read the {SPLIT} tasks from {args.manifest}: {exc}", file=sys.stderr)
+        print(
+            f"ablate: cannot read the {args.split} tasks from {args.manifest}: {exc}",
+            file=sys.stderr,
+        )
         return 2
+    if args.task:
+        if args.split != "dev":
+            print("ablate: --task needs --split dev; the holdout is run whole", file=sys.stderr)
+            return 2
+        unknown = sorted(set(args.task) - set(tasks))
+        if unknown:
+            print(f"ablate: not in the manifest's dev list: {', '.join(unknown)}", file=sys.stderr)
+            return 2
+        tasks = [task for task in tasks if task in args.task]
     if not tasks:
-        print(f"ablate: the manifest's {SPLIT} split is empty", file=sys.stderr)
+        print(f"ablate: the manifest's {args.split} split is empty", file=sys.stderr)
         return 2
     (args.out / "jobs").mkdir(parents=True, exist_ok=True)
     (args.out / "logs").mkdir(exist_ok=True)
     try:
-        check_request(args.out, args.model)
+        check_request(args.out, args.model, args.split, tasks)
         prefetched: list[bool] = []
 
         def prepare() -> None:  # once, and only when a job is to run
@@ -423,7 +457,8 @@ def run(args: argparse.Namespace) -> int:
             ensure_job(config, args, tasks, prepare)
         left = {}
         for config in configs:
-            reason = problem(load_trials(args.out / "jobs" / config), tasks, args.trials)
+            trials = load_trials(args.out / "jobs" / config)
+            reason = problem(trials, tasks, args.split, args.trials)
             if reason:
                 left[config] = reason
         if left:

@@ -1,0 +1,162 @@
+"""`python -m evals diverge`: per-task process metrics and the paired divergence of two jobs on
+the dev set (ticket 28). Holdout tasks are only counted, never named (ADR-0004)."""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from evals.__main__ import main as evals_main
+
+MANIFEST = {"seed": 0, "dev": ["dbt-alpha", "dbt-bravo", "dbt-charlie"], "holdout": ["dbt-delta"]}
+
+
+def edit(path: str, tool: str = "Write") -> dict[str, Any]:
+    return {"type": "tool_start", "tool": tool, "input": {"file_path": path}}
+
+
+def verifier(*statuses: str) -> list[dict[str, Any]]:
+    checks = [{"model": "m", "check": f"CHECK {i}", "status": s} for i, s in enumerate(statuses)]
+    return [
+        {"type": "verifier_start", "verifier": "value-verifier"},
+        {"type": "verifier_end", "verifier": "value-verifier", "checks": checks},
+    ]
+
+
+def result(turns: int, cost: float, subtype: str = "success", reason: str = "completed") -> dict:
+    return {
+        "type": "result",
+        "subtype": subtype,
+        "num_turns": turns,
+        "terminal_reason": reason,
+        "cost_usd": cost,
+    }
+
+
+def write_trial(job: Path, task: str, attempt: int, reward: float, events: list[dict]) -> None:
+    trial = job / f"{task}__t{attempt}"
+    (trial / "agent" / "events").mkdir(parents=True)
+    lines = [{"type": "version", "config": job.name}, *events]
+    text = "".join(json.dumps({"seq": i, **e}) + "\n" for i, e in enumerate(lines))
+    (trial / "agent" / "events" / "run-1.jsonl").write_text(text)
+    outcome = {
+        "task_name": f"org/{task}",
+        "trial_name": trial.name,
+        "verifier_result": {"rewards": {"reward": reward}},
+        "agent_result": {"cost_usd": 0.0},
+    }
+    (trial / "result.json").write_text(json.dumps(outcome))
+
+
+def diverge(tmp_path: Path, baseline: Path, candidate: Path) -> tuple[int, dict[str, Any], str]:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(MANIFEST))
+    out = tmp_path / "diverge"
+    argv = ["diverge", "--baseline", str(baseline), "--candidate", str(candidate)]
+    code = evals_main([*argv, "--manifest", str(manifest), "--out", str(out)])
+    report = json.loads((out / "diverge.json").read_text()) if code == 0 else {}
+    return code, report, (out / "diverge.md").read_text() if code == 0 else ""
+
+
+@pytest.fixture
+def jobs(tmp_path: Path) -> tuple[Path, Path]:
+    baseline, full = tmp_path / "baseline", tmp_path / "full"
+    # alpha: both pass both trials. bravo: baseline 2/2, full 0/2. charlie: baseline 0/2, full 1/2.
+    for attempt in range(2):
+        write_trial(baseline, "dbt-alpha", attempt, 1.0, [result(10, 0.10)])
+        write_trial(baseline, "dbt-bravo", attempt, 1.0, [result(20, 0.30)])
+        write_trial(baseline, "dbt-charlie", attempt, 0.0, [result(30, 0.50)])
+    write_trial(
+        full,
+        "dbt-alpha",
+        0,
+        1.0,
+        [
+            edit("/app/models/a.sql"),
+            edit("/app/models/a.sql", "Edit"),
+            *verifier("PASS", "PASS"),
+            result(12, 0.20),
+        ],
+    )
+    write_trial(full, "dbt-alpha", 1, 1.0, [edit("/app/models/marts/b.sql"), result(14, 0.40)])
+    # Stopped by the spend cap, after a verifier that found a failing check.
+    write_trial(
+        full,
+        "dbt-bravo",
+        0,
+        0.0,
+        [*verifier("PASS", "FAIL"), result(40, 1.00, "error_max_budget_usd", "budget_exhausted")],
+    )
+    write_trial(full, "dbt-bravo", 1, 0.0, [result(50, 0.50, "error_max_turns", "max_turns")])
+    write_trial(full, "dbt-charlie", 0, 1.0, [edit("/app/README.md"), result(16, 0.60)])
+    write_trial(full, "dbt-charlie", 1, 0.0, [result(18, 0.20)])
+    return baseline, full
+
+
+def test_paired_divergence_lists_the_tasks_where_successes_differ(
+    tmp_path: Path, jobs: tuple[Path, Path]
+) -> None:
+    code, report, markdown = diverge(tmp_path, *jobs)
+    assert code == 0
+    assert report["labels"] == {"baseline": "baseline", "candidate": "full"}
+    assert report["divergent"] == [
+        {"task": "dbt-bravo", "baseline": [2, 2], "candidate": [0, 2], "better": "baseline"},
+        {"task": "dbt-charlie", "baseline": [0, 2], "candidate": [1, 2], "better": "candidate"},
+    ]
+    assert report["wins"] == {"baseline": 1, "candidate": 1}
+    assert "| dbt-bravo | 2/2 | 0/2 | baseline |" in markdown
+    assert "dbt-alpha" in markdown  # in the process-metrics table
+
+
+def test_process_metrics_per_task_come_from_the_event_files(
+    tmp_path: Path, jobs: tuple[Path, Path]
+) -> None:
+    _, report, _ = diverge(tmp_path, *jobs)
+    full = report["candidate"]
+    assert full["per_task"]["dbt-alpha"] == {
+        "successes": 2,
+        "trials": 2,
+        "mean_turns": 13.0,
+        "stopped_by_budget": 0,
+        "stopped_by_turns": 0,
+        "verifier_calls": 1,
+        "verifier_checks": {"PASS": 2},
+        "model_edits": 3,
+        "cost_usd": pytest.approx(0.60),
+    }
+    bravo = full["per_task"]["dbt-bravo"]
+    assert (bravo["stopped_by_budget"], bravo["stopped_by_turns"]) == (1, 1)
+    assert bravo["verifier_checks"] == {"PASS": 1, "FAIL": 1}
+    assert full["per_task"]["dbt-charlie"]["model_edits"] == 0  # README.md is not a dbt model
+    # Mean cost of the successful trials: alpha 0.20 and 0.40, charlie 0.60.
+    assert full["mean_cost_usd_succeeded"] == pytest.approx(0.40)
+    assert report["baseline"]["mean_cost_usd_succeeded"] == pytest.approx(0.20)
+    trial = next(t for t in full["trials"] if t["trial"] == "dbt-bravo__t0")
+    assert trial["stopped"] == "budget"
+    assert [Path(p).name for p in trial["events"]] == ["run-1.jsonl"]
+
+
+def test_holdout_tasks_are_counted_but_never_named(tmp_path: Path, jobs: tuple[Path, Path]) -> None:
+    baseline, full = jobs
+    for job in jobs:
+        write_trial(job, "dbt-delta", 0, 1.0 if job == full else 0.0, [result(5, 0.1)])
+    code, report, markdown = diverge(tmp_path, baseline, full)
+    assert code == 0
+    assert report["outside_dev_trials"] == {"baseline": 1, "candidate": 1}
+    everything = json.dumps(report) + markdown
+    assert "dbt-delta" not in everything
+
+
+def test_jobs_without_dev_trials_are_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = tmp_path / "a", tmp_path / "b"
+    for job in (a, b):
+        write_trial(job, "dbt-delta", 0, 1.0, [result(5, 0.1)])
+    code, _, _ = diverge(tmp_path, a, b)
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "dev" in captured.err
+    assert "dbt-delta" not in captured.out + captured.err
+    assert not (tmp_path / "diverge").exists()

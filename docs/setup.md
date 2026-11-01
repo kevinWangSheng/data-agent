@@ -12,7 +12,9 @@
 | 4 | Mac 上的 colima 运行中（Docker 运行时；数据在外接盘 sd710） | 开发期跑测试用数据库和单题 | ☑ `m1-kind` 运行中，`docker` context 已切到 `colima-m1-kind`（2026-10-16，`docker info` 通） |
 | 5 | 私有 GitHub 仓库作为 remote | 代码从 Mac 同步到服务器靠它；一期跑通前保持私有，之后转公开 | ☑ `github.com/kevinWangSheng/data-agent`（2026-10-12） |
 
-服务器只经 `da-remote` 访问（用法见脚本头注释）：`setup [<commit>]` 拉仓库到指定 commit 并 `uv sync`；`push <name>` 把本机 `runs/<name>/`（如临时 manifest、题目副本）传上去；`start <name> -- <evals 子命令与参数>` 后台跑评测，日志在服务器 `runs/<name>/run.log`，评测的 `--out` 用 `runs/<name>`；`status [<name>]` 看状态、日志末尾和花费；`pull <name>` 取回本机 `runs/<name>/`；留出集的 run（`ablate`）只取回汇总（`reports/`、`run.log`、控制文件），逐题 trial 与 Harbor 日志留在服务器（ADR-0004）。
+服务器只经 `da-remote` 访问（用法见脚本头注释）：`setup [<commit>]` 拉仓库到指定 commit 并 `uv sync`；`push <name>` 把本机 `runs/<name>/`（如临时 manifest、题目副本）传上去；`start <name> -- <evals 子命令与参数>` 后台跑评测，日志在服务器 `runs/<name>/run.log`，评测的 `--out` 用 `runs/<name>`；`status [<name>]` 看状态、日志末尾和花费；`pull <name>` 取回本机 `runs/<name>/`；`ablate` 的 run 默认只取回汇总（`reports/`、`run.log`、控制文件），逐题 trial 与 Harbor 日志留在服务器（ADR-0004）；只有按服务器仓库的 `evals/manifest.json` 核对、每个 job 的题和每个 trial 的题都在 dev 列表里时才整份取回（ADR-0008，供人读轨迹），判断不了的照旧只取汇总。
+
+开发集运行不再借临时 manifest：`ablate --split dev` 跑真 manifest 的开发集，`--task <题>` 可重复、只跑其中几题（例：`start dev-4 -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --out runs/dev-4 --budget 5 --split dev --task <题> --trials 1 --config full`）。报告目录里每个配置另有 `diverge/<配置>/`：与 full 的逐题配对分歧和每题过程指标；两个现成 job 也可直接比：`python -m evals diverge --baseline <job> --candidate <job> --manifest evals/manifest.json --out <目录>`（只列开发集题，其他题只计数）。
 
 两个榜单由 `da-remote benchmarks` 备好（可重复跑，已就绪的步骤跳过），全放在服务器仓库旁的 `da-benchmarks/`：
 

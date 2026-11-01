@@ -18,7 +18,8 @@
 #        da-remote status [<name>]                running or not, log tail, spend so far
 #        da-remote push <name>                    copy this checkout's runs/<name>/ to the server
 #        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout;
-#                                                 a holdout run (ablate) brings back its summary only
+#                                                 an ablate run brings back its summary only, unless
+#                                                 all its tasks are in the server's dev list
 # Env:   DA_REMOTE_HOST (default: da-server), DA_REMOTE_DIR (repo path on the server, default:
 #        ~/data-agent), DA_REMOTE_REPO (clone URL, default: the GitHub repo)
 set -euo pipefail
@@ -584,16 +585,50 @@ EOF
 }
 
 pull() {
-  local root sub filters=()
+  local root scope sub dev_only=no filters=()
   root=$(checkout_root)
-  sub=$(run_script NAME "$1" <<'EOF'
+  # The subcommand on the first line; for an ablate run, a second line `dev-only` when every job
+  # in it is shown to cover dev-set tasks only, judged against the server checkout's
+  # evals/manifest.json (not one the run brought): each job's Harbor config names its tasks and
+  # all are in the dev list, every trial's result.json names a dev task, and every Harbor log and
+  # dropped-trials dir belongs to one of those jobs. Anything unreadable fails the check.
+  scope=$(run_script NAME "$1" <<'EOF'
 cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
+[ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = ablate ] || exit 0
+cd "$DIR" && uv run -q --no-sync python - "runs/$NAME" evals/manifest.json >/dev/null 2>&1 <<'PY' &&
+import json
+import sys
+from pathlib import Path
+
+run, manifest = Path(sys.argv[1]), Path(sys.argv[2])
+try:
+    dev = set(json.loads(manifest.read_text())["dev"])
+    jobs = {job.name: job for job in (run / "jobs").iterdir()}
+    ok = bool(jobs)
+    for job in jobs.values():
+        datasets = json.loads((job / "config.json").read_text())["datasets"]
+        names = [dataset.get("task_names") for dataset in datasets]
+        ok = ok and bool(datasets) and all(names) and all(set(n) <= dev for n in names)
+        for result in job.glob("*/result.json"):
+            ok = ok and json.loads(result.read_text())["task_name"].rsplit("/", 1)[-1] in dev
+    logs = run / "logs"
+    ok = ok and all(p.stem in jobs for p in logs.glob("*") if p.name != "guards.log")
+    ok = ok and all(p.name in jobs for p in (run / "dropped").glob("*"))
+except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    ok = False
+sys.exit(0 if ok else 1)
+PY
+  echo dev-only
+true
 EOF
   )
-  # ADR-0004: an ablate run is on the holdout, whose trial dirs and Harbor logs name tasks; only its
-  # reports (aggregates), the run log (ablate prints aggregates only) and control files leave the
-  # server. Anything else read back (none recorded, ssh noise) may be one too.
-  if ! [[ $sub =~ ^[a-z]+$ ]] || [ "$sub" = ablate ]; then
+  sub=${scope%%$'\n'*}
+  [ "$scope" = "ablate"$'\n'"dev-only" ] && dev_only=yes
+  # ADR-0004: an ablate run may be on the holdout, whose trial dirs and Harbor logs name tasks; only
+  # its reports (aggregates), the run log (ablate prints aggregates only) and control files leave
+  # the server, unless the run was shown to hold dev-set tasks only (ADR-0008: those trajectories
+  # are read by a human). Anything else read back (none recorded, ssh noise) may be one too.
+  if ! [[ $sub =~ ^[a-z]+$ ]] || { [ "$sub" = ablate ] && [ "$dev_only" = no ]; }; then
     filters=(--include='/reports/***')
     for f in run.log exit budget subcommand request.json; do filters+=(--include="/$f"); done
     filters+=(--exclude='*')
@@ -610,6 +645,8 @@ EOF
   copy ${filters[@]+"${filters[@]}"} "$host:$(rsync_dir)/runs/$1/" "$root/runs/$1/"
   if [ ${#filters[@]} -gt 0 ]; then
     echo "pull: server runs/$1 -> $root/runs/$1 (holdout: summary only, trials stay on the server)"
+  elif [ "$dev_only" = yes ]; then
+    echo "pull: server runs/$1 -> $root/runs/$1 (dev set only: the whole run)"
   else
     echo "pull: server runs/$1 -> $root/runs/$1"
   fi
