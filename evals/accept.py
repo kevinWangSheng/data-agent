@@ -185,9 +185,11 @@ def regression_check(
 
 
 def fields(trials: list[Trial]) -> dict[str, set[str]]:
-    """Every version header field's values over the trials' event files; a file whose header
-    lacks a field another file has adds MISSING to that field's values."""
-    headers = [header(events) for trial in trials for events in event_files(trial)]
+    """Every version header field's values over the event files of the trials that ran; a file
+    whose header lacks a field another file has adds MISSING to that field's values. Trials with
+    an infrastructure error are left out: never scored, they may end before the header."""
+    ran = [t for t in trials if not is_infra_error(t)]
+    headers = [header(events) for trial in ran for events in event_files(trial)]
     keys = {key for h in headers for key in h} - PER_FILE
     return {
         key: {json.dumps(h[key], sort_keys=True) if key in h else MISSING for h in headers}

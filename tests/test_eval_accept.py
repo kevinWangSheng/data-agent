@@ -206,6 +206,33 @@ def test_refuses_a_rerun_of_another_version(
     assert "version headers differ" in capsys.readouterr().err
 
 
+def test_an_infrastructure_error_in_a_rerun_is_reported_as_one(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = write_job(tmp_path, "old", all_tasks(3, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(3, t1=3, t3=2), commit="c")
+    rerun = write_job(tmp_path, "rerun", {"t3": 3}, commit="c", errors={"t3": "RuntimeError"})
+    # The error ended the trial before the agent wrote its version header.
+    (rerun / "t3__2" / "agent" / "events" / "run-1.jsonl").write_text("")
+    reg = tmp_path / "regression.json"
+    reg.write_text(json.dumps(["t3"]))
+    argv = ["accept", "--old", str(old), "--new", str(new), "--manifest", str(manifest)]
+    argv += ["--regression", str(reg), "--target", "t1", "--rerun", str(rerun)]
+    assert main(argv) == 2
+    assert "1 infrastructure error in the rerun trials" in capsys.readouterr().err
+
+
+def test_an_old_infrastructure_error_without_a_header_adds_no_field_problems(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a", errors={"t2": "RuntimeError"})
+    (old / "t2__2" / "agent" / "events" / "run-1.jsonl").write_text("")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert (code, result["verdict"]) == (1, "rerun-old")
+    assert result["reuse_problems"] == ["the old round had infrastructure errors"]
+
+
 def rerun_old_because(
     tmp_path: Path,
     manifest: Path,
