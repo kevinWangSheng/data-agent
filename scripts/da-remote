@@ -607,8 +607,9 @@ pull() {
   # in it is shown to cover dev-set tasks only, judged against the server checkout's
   # evals/manifest.json (not one the run brought): each job's Harbor config names its tasks and
   # all are in the dev list, every trial dir (kept or dropped by a resume) is a dev task's by its
-  # result.json or Harbor's trial name, and every Harbor log and dropped-trials dir belongs to one
-  # of those jobs. Anything unreadable fails the check.
+  # result.json or Harbor's trial name, every preflight smoke job is judged the same way, and every
+  # Harbor log and dropped-trials dir belongs to one of those jobs. Anything unreadable or not a
+  # trial dir where one belongs fails the check.
   pull_info=$(run_script NAME "$1" <<'EOF'
 cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
 [ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = ablate ] || exit 0
@@ -629,19 +630,31 @@ def dev_trial(trial: Path) -> bool:
     return trial.name.rpartition("__")[0] in {task[:32].rstrip("-_") for task in dev}
 
 
+def dev_job(job: Path) -> bool:
+    """A Harbor job dir: its config names dev tasks only, and so does every trial dir in it (the
+    files beside them are the job's own: config.json, result.json, job.log)."""
+    datasets = json.loads((job / "config.json").read_text())["datasets"]
+    names = [dataset.get("task_names") for dataset in datasets]
+    ok = bool(datasets) and all(names) and all(set(n) <= dev for n in names)
+    return ok and all(dev_trial(trial) for trial in job.iterdir() if trial.is_dir())
+
+
 try:
     dev = set(json.loads(manifest.read_text())["dev"])
     jobs = {job.name: job for job in (run / "jobs").iterdir()}
-    ok = bool(jobs)
-    for job in jobs.values():
-        datasets = json.loads((job / "config.json").read_text())["datasets"]
-        names = [dataset.get("task_names") for dataset in datasets]
-        ok = ok and bool(datasets) and all(names) and all(set(n) <= dev for n in names)
-        ok = ok and all(dev_trial(trial) for trial in job.iterdir() if trial.is_dir())
+    ok = bool(jobs) and all(dev_job(job) for job in jobs.values())
     logs = run / "logs"
-    ok = ok and all(p.stem in jobs for p in logs.glob("*") if p.name != "guards.log")
+    stems = {p.stem.removeprefix("smoke-") for p in logs.glob("*") if p.name != "guards.log"}
+    ok = ok and stems <= set(jobs)
+    # A dropped trial is a dir; anything else there cannot be judged.
     for dropped in (run / "dropped").glob("*"):
-        ok = ok and dropped.name in jobs and all(dev_trial(t) for t in dropped.iterdir())
+        trials = list(dropped.iterdir())
+        ok = ok and dropped.name in jobs and all(t.is_dir() and dev_trial(t) for t in trials)
+    # The preflight's smoke jobs, smoke/<UTC time>/<config>/: the run's own manifest picked the
+    # task, so each is judged like a job.
+    for stamp in (run / "smoke").glob("*"):
+        smoke_jobs = list(stamp.iterdir())
+        ok = ok and all(job.name in jobs and dev_job(job) for job in smoke_jobs)
 except (OSError, ValueError, KeyError, TypeError, AttributeError):
     ok = False
 sys.exit(0 if ok else 1)
@@ -661,7 +674,7 @@ EOF
     for f in run.log exit budget subcommand request.json; do filters+=(--include="/$f"); done
     filters+=(--exclude='*')
     # The filters keep old local files: refuse rather than leave trials next to the summary.
-    for d in jobs logs dropped; do
+    for d in jobs logs dropped smoke; do
       if [ -e "$root/runs/$1/$d" ]; then
         echo "pull: runs/$1/$d exists here; a holdout pull brings back the summary only," \
           "so move runs/$1 aside first" >&2

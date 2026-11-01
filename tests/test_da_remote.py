@@ -429,7 +429,7 @@ def test_pull_of_a_holdout_run_takes_the_summary_only(env: Env):
     assert args[3:-2] == SUMMARY_FILTERS
 
 
-@pytest.mark.parametrize("trial_dir", ["jobs", "logs", "dropped"])
+@pytest.mark.parametrize("trial_dir", ["jobs", "logs", "dropped", "smoke"])
 def test_a_summary_pull_refuses_a_local_dir_holding_trials(env: Env, trial_dir: str):
     """rsync's filters keep old local files, so per-task files from an earlier full pull would stay
     next to the summary; pull refuses instead of deleting anything local."""
@@ -515,6 +515,15 @@ def test_pull_of_an_ablate_run_on_dev_tasks_only_takes_the_whole_dir(env: Env):
     # (no result.json yet) and the trials a resume dropped are judged by that name.
     (run / "jobs" / "full" / "dbt-alpha__run1234" / "agent").mkdir(parents=True)
     (run / "dropped" / "full" / f"{LONG_DEV[:32].rstrip('-_')}__drop123").mkdir(parents=True)
+    # The preflight's smoke job (ticket 27): one dev task per config, its own Harbor log.
+    smoke = run / "smoke" / "20261031T000000.000000Z" / "full"
+    smoke.mkdir(parents=True)
+    datasets = [{"path": "[redacted-home]/tasks", "task_names": ["dbt-bravo"]}]
+    (smoke / "config.json").write_text(json.dumps({"job_name": "full", "datasets": datasets}))
+    trial = smoke / "dbt-bravo__smk1234"
+    trial.mkdir()
+    (trial / "result.json").write_text(json.dumps({"task_name": "dbt-bravo"}))
+    (run / "logs" / "smoke-full.log").write_text("harbor output\n")
     assert pulled_whole(env)
 
 
@@ -541,6 +550,11 @@ def test_pull_of_an_ablate_run_with_a_holdout_trial_takes_the_summary_only(env: 
         "no server manifest",
         "holdout trial without result.json",
         "dropped trial of a holdout task",
+        "dropped file named like a dev trial",
+        "smoke trial of a holdout task",
+        "smoke job naming a holdout task",
+        "smoke log of a job not on disk",
+        "file in the smoke dir",
     ],
 )
 def test_pull_of_an_ablate_run_it_cannot_judge_takes_the_summary_only(env: Env, spoil: str):
@@ -570,6 +584,23 @@ def test_pull_of_an_ablate_run_it_cannot_judge_takes_the_summary_only(env: Env, 
         (run / "jobs" / "full" / "dbt-delta__run1234" / "agent").mkdir(parents=True)
     elif spoil == "dropped trial of a holdout task":
         (run / "dropped" / "full" / "dbt-delta__drop123").mkdir(parents=True)
+    elif spoil == "dropped file named like a dev trial":  # a trial is a dir; a file is unknown
+        (run / "dropped" / "full").mkdir(parents=True)
+        (run / "dropped" / "full" / "dbt-alpha__drop123").write_text("dbt-delta trajectory\n")
+    elif spoil.startswith("smoke"):
+        smoke = run / "smoke" / "20261031T000000.000000Z" / "full"
+        smoke.mkdir(parents=True)
+        task = "dbt-alpha" if spoil == "smoke log of a job not on disk" else "dbt-delta"
+        names = ["dbt-delta" if spoil == "smoke job naming a holdout task" else "dbt-alpha"]
+        datasets = [{"path": "[redacted-home]/tasks", "task_names": names}]
+        (smoke / "config.json").write_text(json.dumps({"job_name": "full", "datasets": datasets}))
+        if spoil != "smoke job naming a holdout task":
+            (smoke / f"{task}__smk1234").mkdir()
+        if spoil == "smoke log of a job not on disk":
+            (run / "logs" / "smoke-no-skill.log").write_text("harbor output\n")
+    elif spoil == "file in the smoke dir":
+        (run / "smoke").mkdir()
+        (run / "smoke" / "dbt-delta.json").write_text("{}")
     assert not pulled_whole(env)
 
 
