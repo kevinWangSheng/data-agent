@@ -231,6 +231,8 @@ def test_verifier_checks_every_row_removal_against_the_task_or_yml() -> None:
     check_6 = " ".join(prompt.split("### CHECK 6")[1].split("## Output Format")[0].split())
     for term in ("WHERE", "HAVING", "INNER JOIN", "source table", "task file", "YML", "quote"):
         assert term.lower() in check_6.lower(), term
+    # Only a changed source needs a basis, not every upstream the model reads.
+    assert "A source the model reads that the task and YML do not name is not a change" in check_6
     output_format = prompt.split("## Output Format")[1]
     template = next(line for line in output_format.splitlines() if "CHECK 6" in line)
     for status in ("PASS", "FAIL"):

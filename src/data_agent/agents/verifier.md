@@ -141,9 +141,10 @@ what its rows come from:
 - any other row removal: QUALIFY, DISTINCT or a `row_number() = 1`
   dedup, an anti-join (`NOT EXISTS`, `NOT IN`, a LEFT JOIN kept only
   `WHERE ... IS NULL`);
-- each source table that is not the one the task or the YML names for the
-  model (for a modified model, also any source table changed from the
-  original, as in CHECK 5).
+- each changed source: a source table used in place of the one the task or
+  the YML names for the model, or, for a modified model, a source table
+  changed from the original (as in CHECK 5). A source the model reads that
+  the task and YML do not name is not a change by itself.
 
 For each one, find its basis in the task file or the YML (a model or column
 description, a test, a stated rule). A basis says that those rows go or
@@ -154,7 +155,7 @@ An INNER JOIN needs a basis only when it drops rows: check with one
 - Every item has a basis: CHECK 6 = PASS; name the basis for each.
 - An item has none: CHECK 6 = FAIL. Quote that SQL (the clause and its
   file and line) and say what in the task or YML you looked for.
-- The model drops no rows and uses the named sources: CHECK 6 = PASS.
+- The model drops no rows and changes no source: CHECK 6 = PASS.
 
 ## Output Format
 
