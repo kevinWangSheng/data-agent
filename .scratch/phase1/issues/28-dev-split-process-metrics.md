@@ -1,6 +1,6 @@
 # 28 — 开发集运行：逐题配对分歧与过程指标，并能把轨迹取回本机
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 28-dev-split-process-metrics)
@@ -48,10 +48,10 @@ Branch: worktree-28-dev-split-process-metrics
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 3
+- Attempts: 4
+- Review rounds: 8
 - Model spend: $0
-- Outcome: implemented (982fcc6, 158cece, c8594f5, fa7ba14, 90c1ad8); server real run open
+- Outcome: merged (PR #29); server real run and dev-only pull verified
 - Human review minutes: —
 
 ## Comments
@@ -75,3 +75,29 @@ Branch: worktree-28-dev-split-process-metrics
 - 2026-10-31 主会话：PR #29 CI 绿。退回（第 2 轮）：
   1. Codex GitHub app（90c1ad8）P2 属实：`scripts/da-remote` 约 628 行对 `dropped/<job>/` 下每个条目调 `dev_trial`，不查是不是目录；名字带开发集题前缀的普通文件会被当成合格 trial，整份取回。要求：只接受 trial 目录，其他条目一律判"无法判断"（只取汇总）；配修复前会失败的测试。
   2. 工单 27 已合并（f9df8e7），与本分支在 `evals/ablate.py`、`scripts/da-remote`、`docs/setup.md`、测试上会冲突：先把本分支 rebase（或 merge）到最新 origin/main，解决冲突时两边的行为都保留（27 的预检、快速失败、运行记录、check_record 与 28 的 --split dev、--task、process、dev-only pull），make check 通过。
+- 2026-11-01 工单 agent（退回第 2 轮；cd536b2、1d508aa、5e4f8f7、9b01d06）：
+  - 合并 origin/main（cd536b2，分支已推送所以用 merge）：冲突在 evals/ablate.py 与三个测试文件，两边行为都保留（27 的预检、--fail-fast、--skip-smoke、运行记录、check_record；28 的 --split dev、--task、request.json 记 split 与 tasks、dev 报告与 diverge），`SPLIT` 全换成 `args.split`。
+  - 退回第 1 条（1d508aa）：`dropped/<job>/` 只认 trial 目录（`t.is_dir() and dev_trial(t)`），其他判"无法判断"；测试 `dropped file named like a dev trial` 修复前整份取回。
+  - 合并带出（1d508aa、9b01d06）：27 的冒烟产物 `logs/smoke-<config>.log`、`smoke/<stamp>/<config>/` 原会让每个开发集运行只取汇总；现在冒烟 job 按服务器 manifest 单独判断，`smoke-<c>.log` 须有对应冒烟 job；只取汇总时本地已有 smoke/ 也拒绝。setup.md 同步。
+  - make check：1272 passed, 1 skipped；接缝 C 未改（`git diff main...HEAD -- tests/acceptance` 为空）。
+  - da-review（1d508aa）P1 已修（5e4f8f7）：`ablate --split dev` 拒绝 dev 与 holdout 重叠的 manifest。
+  - eng:code-review 已修（9b01d06）：dev 题还要对照仓库 evals/manifest.json（服务器上即真 manifest）的 holdout，读不了就拒绝；冒烟 job 不要求同名正式 job；没有冒烟 job 的冒烟日志不接受。不修：与 diverge.py 2 行重叠检查重复；job 目录里的非目录文件（Harbor 自己的 config.json 等）；--task X 时冒烟仍跑 dev[0]（27 的设计）。
+  - da-review（9b01d06）P1 未修（轮数用完，Status ready-for-human）：单独 `evals diverge` 只信给定 manifest（evals/diverge.py:150-153），留出题列进 dev 或没有 holdout 时写出逐题结果。主会话核实属实。
+- 2026-11-01 用户决定：破例第 3 轮，只修这条。退回（第 3 轮）：`evals diverge`（以及 `report --split dev`，若有同类问题）对照 `REPO_MANIFEST`（evals/ablate.py:112、723 的做法）的 holdout 检查，任何留出题出现在 dev、或读不了真 manifest 时拒绝写逐题结果；配修复前会失败的测试。
+- 2026-11-01 工单 agent（退回第 3 轮；686030c、f2b15ef）：
+  - `report --split dev` 确有同类问题（原先完全不查留出题），一起修。新增 `evals/report.py` 的 `check_dev_list`：dev 列表对照给定 manifest 与仓库 `evals/manifest.json`（REPO_MANIFEST）的 holdout，重叠或读不了仓库 manifest 就 ValueError，报错只写路径不写题名；`write_report`（dev）与 `write_divergence` 写任何文件前调用；ablate 原有的复制版检查也改为调用它（f2b15ef）。仓库 holdout 不是字符串列表时拒绝。
+  - 测试（修复前失败）：`test_a_dev_report_on_a_task_the_real_manifest_holds_out_is_refused`、`test_a_dev_list_the_real_manifest_holds_out_from_is_refused`（修复前 exit 0 并写出逐题结果）、`test_a_dev_report_on_a_task_its_own_manifest_holds_out_is_refused`；参数化测试覆盖仓库 manifest 留出 / holdout 为字符串 / 不存在；断言输出无题名、不建 out 目录。
+  - make check：1282 passed, 1 skipped；接缝 C 未改。
+  - eng:code-review 不修：给定 manifest 顶层不是 dict 时 TypeError 堆栈（早先代码，不泄露题名）；矛盾 manifest + 仓库 manifest 缺失时报的原因（都被拒绝）；测试内 import。
+  - da-review P2"dev 列表须是仓库 dev 列表的子集"：主会话决定不修，记为已知限制——ADR-0004 只禁留出集逐题结果；改成子集会改变 `ablate --split dev` 行为并重写大量测试。
+
+- 2026-11-01 主会话服务器真实运行（用户决定改在服务器跑，代替 Mac colima）：`da-remote setup f2b15ef`；`scripts/da-remote start t28-dev -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task cohort-retention-matrix --out runs/t28-dev --budget 2 --config full --config baseline --trials 1` → exit 0：
+  ```
+  smoke: full ok (reward 0, $0.1250)
+  smoke: baseline ok (reward 0, $0.0548)
+  # Ablation: dev, 1 tasks x 1 trials
+  | full | 0.0 | 0.0 | 1 | 0.1440 | ...   | baseline | 0.0 | 0.0 | 1 | 0.0634 | ...
+  -> runs/t28-dev/reports/20261101T093849.683594Z
+  ```
+  总花费 $0.3871（上限 $2），内存峰值 2050 MB。`scripts/da-remote pull t28-dev` → `pull: server runs/t28-dev -> .../runs/t28-dev (dev set only: the whole run)`；取回 jobs/、logs/、records/（machine da-server、benchmark_commit a3278ad1…、git_commit f2b15ef…）、smoke/、reports/<stamp>/{ablation.*, diverge/, full/, baseline/}。"含非开发集题只取汇总"的服务器实测没做（单元测试覆盖）。
+- 2026-11-01 主会话：PR #29 CI 绿。Codex GitHub app（f2b15ef，自动与 `@codex review` 两次）P2"dev-only 判断忽略 job 目录里的普通文件，应拒绝未知文件或白名单"——记为已知限制，不修：退回轮数已用完（2 轮 + 用户授权的破例 1 轮）；这些文件是 Harbor 自己写的 config.json、result.json、job.log，job 的 task_names 须全是开发集题；白名单会随 Harbor 版本变化误拦。若要收紧，另开工单。合并。
