@@ -426,7 +426,7 @@ def test_preflight_smokes_every_config_on_one_dev_task_before_any_job(
     ("smoke", "says"),
     [
         ((None, "ApiInternalServerError"), "ApiInternalServerError"),
-        ((None, "ApiUsageLimitError"), "ApiUsageLimitError"),
+        ((None, "ApiUsageLimitError"), "account"),
         ((None, None), "no reward"),
     ],
 )

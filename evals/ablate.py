@@ -354,7 +354,7 @@ def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:
         print(f"wheels: {line}", flush=True)
 
 
-def harbor_run(
+def harbor_run_args(
     args: argparse.Namespace, jobs: Path, config: str, tasks: list[str], trials: int
 ) -> list[str]:
     """`harbor run` of the config on `tasks`, `trials` each, as job `jobs/<config>`."""
@@ -406,13 +406,14 @@ def smoke(args: argparse.Namespace, configs: list[str], task: str, stamp: str) -
     for config in configs:
         log = args.out / "logs" / f"smoke-{config}.log"
         print(f"smoke: {config} on {task} -> {log}", flush=True)
-        code, _ = run_harbor(harbor_run(args, jobs, config, [task], 1), log, lambda: None)
+        code, _ = run_harbor(harbor_run_args(args, jobs, config, [task], 1), log, lambda: None)
         if code != 0:
             raise Stop(f"smoke run of {config}: harbor exited {code}, so no job starts; see {log}")
         try:
             (trial,) = load_trials(jobs / config)
         except ValueError as exc:
             raise Stop(f"smoke run of {config}: not one trial result ({exc}); see {log}") from exc
+        check_account_errors(f"{config} smoke", [trial])
         failure = trial.exception_type or ("no reward" if trial.reward is None else None)
         if not failure and not has_versions(trial):
             failure = "no version header in its event files"
@@ -492,7 +493,7 @@ def ensure_job(
         harbor_args = ["job", "resume", "-p", str(job), *(a for e in infra for a in ("-f", e))]
     else:
         harbor_args = [
-            *harbor_run(args, jobs, config, tasks, args.trials),
+            *harbor_run_args(args, jobs, config, tasks, args.trials),
             *(("-n", str(args.n_concurrent)) if args.n_concurrent else ()),
         ]
     guard_spend(args.out, args.budget)
@@ -652,18 +653,18 @@ def run(args: argparse.Namespace) -> int:
     (args.out / "logs").mkdir(exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     try:
-        check_request(args.out, args.model)
         record = write_record(args, configs, stamp)
+        check_request(args.out, args.model)
         print(f"record: {record}", flush=True)
-        prefetched: list[bool] = []
+        prepared: list[bool] = []
 
         def prepare() -> None:  # once, and only when a job is to run: the preflight
-            if prefetched:
+            if prepared:
                 return
             check_balance(args.out, budget)
             smoke_tasks = [] if args.skip_smoke else dev[:1]
             prefetch_wheels(args.tasks_dir, [*tasks, *smoke_tasks])
-            prefetched.append(True)
+            prepared.append(True)
             if smoke_tasks:
                 smoke(args, configs, smoke_tasks[0], stamp)
 
