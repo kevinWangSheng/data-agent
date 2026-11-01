@@ -18,8 +18,9 @@ the holdout, always whole; with `--split dev`, the dev set or the `--task`s chos
         tasks.json            dev only: the tasks run, the manifest the reports read
         diverge/<config>/     dev only: `evals diverge` of the config against full
 
-Before each job the spend guard (`evals spend` on OUT) stops the batch at 80% of --budget; a job
-runs to its end once started, so the overshoot is at most one job. Before the first job that runs
+Before each job the spend guard (`evals spend` on OUT) stops the batch at 80% of --budget, counting
+billed spend (evals.spend); a job runs to its end once started, so the overshoot is at most one
+job. Before the first job that runs
 comes the preflight (ADR-0008): the model account's balance must cover what is left of --budget
 (evals.balance); the wheel cache is filled for the platforms of the tasks' images (evals.wheels;
 with a full cache no network); each config runs the manifest's first dev task once, which must
@@ -392,12 +393,12 @@ def harbor_run_args(
 
 
 def spent(out: Path) -> Decimal:
-    """What OUT's event files cost so far, as the spend guard totals it."""
+    """What OUT's event files were billed so far, as the spend guard totals it."""
     found, unchecked = walk_files(out)
     if unchecked:
         raise Stop(f"cannot see every event file under {out}: {'; '.join(unchecked)}")
     try:
-        return sum((file_spend(p) for p in found if p.suffix == ".jsonl"), Decimal(0))
+        return sum((file_spend(p).billed for p in found if p.suffix == ".jsonl"), Decimal(0))
     except (SpendUnknown, OSError, UnicodeDecodeError) as exc:
         raise Stop(f"cannot total the spend under {out}: {exc}") from exc
 

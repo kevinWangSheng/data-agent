@@ -1,12 +1,16 @@
 """Edge cases of `python -m evals score|report` beyond the seam C acceptance tests."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from evals.harbor import load_trials
+from evals.report import billed_usd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -200,6 +204,63 @@ def test_report_totals_tokens_and_cost(tmp_path: Path) -> None:
     assert summary["cached_input_tokens"] == 300
     assert summary["output_tokens"] == 12
     assert summary["cost_usd"] == 1.5
+
+
+def billed_job(tmp_path: Path) -> Path:
+    """Three trials at $0.40 at peak prices: one run on a Saturday (billed $0.20), one on a
+    Monday at peak, one without events (both billed $0.40)."""
+    job = tmp_path / "job"
+    starts = {"t1__a": "2026-10-31T12:00:00+00:00", "t1__b": "2026-11-02T02:00:00+00:00"}
+    for name in ("t1__a", "t1__b", "t1__c"):
+        write_trial(job, name, {"agent_result": {"cost_usd": 0.4}})
+        if name not in starts:
+            continue
+        events = job / name / "agent" / "events"
+        events.mkdir(parents=True)
+        lines = [
+            {"type": "version", "ts": starts[name], "model": "deepseek-flash"},
+            {"type": "result", "cost_usd": 0.4, "cost_basis": "price_table"},
+        ]
+        (events / "run-1.jsonl").write_text("".join(json.dumps(e) + "\n" for e in lines))
+    return job
+
+
+def test_dev_report_gives_billed_cost_next_to_cost(tmp_path: Path) -> None:
+    summary = report(billed_job(tmp_path), tmp_path)
+    assert summary["cost_usd"] == pytest.approx(1.2)
+    assert summary["billed_cost_usd"] == pytest.approx(1.0)
+    rows = json.loads((tmp_path / "report" / "trials.json").read_text())
+    assert [(r["cost_usd"], r["billed_cost_usd"]) for r in rows] == [
+        (0.4, pytest.approx(0.2)),
+        (0.4, 0.4),
+        (0.4, 0.4),
+    ]
+
+
+def test_holdout_report_gives_billed_cost_next_to_cost(tmp_path: Path) -> None:
+    job = billed_job(tmp_path)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"seed": 0, "dev": [], "holdout": ["t1"]}))
+    out = tmp_path / "report"
+    proc = evals(
+        "report", str(job), "--manifest", str(manifest), "--split", "holdout", "--out", str(out)
+    )
+    assert proc.returncode == 0, proc.stderr
+    summary = json.loads((out / "report.json").read_text())
+    assert summary["cost_usd"] == pytest.approx(1.2)
+    assert summary["billed_cost_usd"] == pytest.approx(1.0)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read any file")
+def test_an_unreadable_event_file_is_billed_at_its_full_cost(tmp_path: Path) -> None:
+    job = billed_job(tmp_path)
+    events = job / "t1__a" / "agent" / "events" / "run-1.jsonl"
+    trial = next(t for t in load_trials(job) if t.name == "t1__a")
+    events.chmod(0)
+    try:
+        assert billed_usd(trial) == 0.4
+    finally:
+        events.chmod(0o644)
 
 
 def test_missing_or_empty_job_dir_is_an_error(tmp_path: Path) -> None:
