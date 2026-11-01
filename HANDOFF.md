@@ -1,6 +1,9 @@
 # HANDOFF — 通用 data agent 求职项目
 
-> **2026-11-01 交接：编排交给新主会话。**
+> **2026-11-01 交接：分成两个会话，各管一摊。**
+> - **编排会话**（主会话）：只按 plan §10 的依赖推进。负责派工单（`claude -p -w`）、把工单会话的结果抄进工单、开 PR、核对审查意见、合并、在服务器上跑评测。它是唯一做这些事的会话。不讨论"怎么构建"。
+> - **对齐会话**：只讨论还没定的话题，一次一个，只写人确认过的 spec、工单、ADR 和文档。不派工、不合并、不碰服务器。每次提交前先 `git pull --rebase`，写好的工单交给编排会话去派。
+> - 两个会话都从干净的上下文开始。2026-11-01 的旧会话已经停下，它的结论都写在 ADR、plan、工单和本文件里。
 >
 > 先读：`AGENTS.md`；`docs/plan.md` §10（一期剩余项和它们的依赖）；ADR-0008 Update 2026-11-01（分别初筛、合并验收，旧版用 dev-3）。
 >
@@ -10,7 +13,7 @@
 > - 开发集迭代累计实际花费到 ¥300 就止损。
 > - 实现一律派到工单会话（`claude -p -w`），主会话只做编排。
 >
-> **待收尾（新会话接手，旧会话已停）：**
+> **编排会话待收尾：**
 > - 工单 34（估算口径修正）：实现会话已结束，最终回复在 `runs/ticket-34.jsonl`（本机，不进 git）。把 Comments、Ledger、Status 抄进工单，然后推分支、开 PR，按 AGENTS.md 第 6、7 步合并。
 > - 工单 35（DAB 算分）：同上，回复在 `runs/ticket-35.jsonl`。合并后由主会话在服务器上，对已有的 DAB 输出（`runs/dab21-*`、`runs/t23b-*`）跑一次真实运行。
 > - 工单 32（修复一）：PR #31 已开，工单里的结论已抄。服务器已 setup 到 `4634d50`，真实运行 `t32-real`（rfm × 1，full）已经启动。
@@ -19,11 +22,14 @@
 >   - 再跑初筛：`ablate --split dev --config full --trials 3`，每道目标题加一个 `--task`。目标题是 dbt-multi-warehouse-stock-rebalance、dbt-rfm-customer-segmentation、dbt-customer-cross-sell-insights、dbt-receivables-aging-buckets、web-session-quality-scoring、dbt-supplier-payment-optimization。必须 > 10/18。
 >   - CI 绿、Codex 意见处理完、初筛通过，才能合并。
 >
-> **新会话现在就可以做：**
-> - plan §10 第 5 项网页界面：从 `docs/research/2026-11-01-upstream-web-ui.md` 开始，一个话题一个话题地讨论，定下来再写 spec 和工单。
->   - 先要定的三点：SignalPilot 其实没用 assistant-ui；可复制的组件清单；Memory 和澄清是否进一期（澄清需要 agent 先加事件）。
+> **对齐会话的话题（按 plan §10，一次一个）：**
+> - 第 5 项网页界面。从 `docs/research/2026-11-01-upstream-web-ui.md` 开始，先定三点：
+>   - SignalPilot 其实没用 assistant-ui；
+>   - 可复制的组件清单；
+>   - Memory 和澄清是否进一期（澄清需要 agent 先加事件）。
+> - 之后的话题：第 15 项正式评测总花费（等合并验收和 DAB 试跑的实测）；第 19–23 项交付（报告、README、转公开）。
 >
-> **工单 32 合并后，新会话接着做：**
+> **工单 32 合并后，编排会话接着做：**
 > - 派工单 33（修复二），跑它的初筛：workforce + pos × 3，必须 > 5/6。
 > - 33 合并后跑合并验收。
 >
