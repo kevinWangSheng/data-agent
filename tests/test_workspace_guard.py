@@ -23,9 +23,13 @@ def workspace(tmp_path: Path) -> Path:
 
 
 async def decide(
-    workspace: Path, tool: str, tool_input: dict[str, Any], protected: tuple[Path, ...] = ()
+    workspace: Path,
+    tool: str,
+    tool_input: dict[str, Any],
+    protected: tuple[Path, ...] = (),
+    readable: tuple[Path, ...] = (),
 ) -> str:
-    guard = workspace_guard(workspace, protected)
+    guard = workspace_guard(workspace, protected, readable)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
         "session_id": "s",
@@ -234,18 +238,7 @@ async def test_the_task_file_may_only_be_read(
     workspace: Path, task_file: Path, tool: str, tool_input: dict[str, Any], decision: str
 ) -> None:
     filled = {k: v.format(task=task_file, task_dir=task_file.parent) for k, v in tool_input.items()}
-    guard = workspace_guard(workspace, readable=(task_file,))
-    hook_input: Any = {
-        "hook_event_name": "PreToolUse",
-        "session_id": "s",
-        "transcript_path": "t",
-        "cwd": str(workspace),
-        "tool_name": tool,
-        "tool_input": filled,
-        "tool_use_id": "u",
-    }
-    output: Any = await guard(hook_input, "u", {"signal": None})
-    assert output.get("hookSpecificOutput", {}).get("permissionDecision", "none") == decision
+    assert await decide(workspace, tool, filled, readable=(task_file,)) == decision
 
 
 async def test_the_task_file_is_denied_without_being_named_readable(

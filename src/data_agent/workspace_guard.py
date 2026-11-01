@@ -89,12 +89,12 @@ def outside_paths(
     match tool:
         case "Read":
             raw = str(tool_input.get("file_path", ""))
-            if raw and resolve(workspace, raw) in readable:
-                pass
-            elif (
-                not raw
-                or not inside(resolve(workspace, raw), workspace)
-                or _names_credential(workspace, raw)
+            if not raw or (
+                resolve(workspace, raw) not in readable
+                and (
+                    not inside(resolve(workspace, raw), workspace)
+                    or _names_credential(workspace, raw)
+                )
             ):
                 bad.append(raw)
         case "Write" | "Edit":
@@ -130,14 +130,16 @@ def workspace_guard(
 ) -> HookCallback:
     root = workspace.resolve()
     kept = [path.resolve() for path in protected]
-    opened = [path.resolve() for path in readable]
+    readable_paths = [path.resolve() for path in readable]
 
     async def guard(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
         if hook_input["hook_event_name"] != "PreToolUse":
             return {}
-        bad = outside_paths(hook_input["tool_name"], hook_input["tool_input"], root, kept, opened)
+        bad = outside_paths(
+            hook_input["tool_name"], hook_input["tool_input"], root, kept, readable_paths
+        )
         if not bad:
             return {}
         return {
