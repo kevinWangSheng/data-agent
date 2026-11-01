@@ -111,8 +111,8 @@ def evaluate(
     split_trials(new, manifest, "dev", "the new")
     check_complete(new, "new", trials)
 
-    problems = reuse_problems(old_job, new_job, old, new)
     old_infra = had_infra_errors(old_job, old)
+    problems = reuse_problems(old_job, new_job, old, new, old_infra)
     conditions: dict[str, Any] = {}
     if not old_infra:  # the old round cannot be scored at all
         check_complete(old, "old", trials)
@@ -209,7 +209,9 @@ def times(trials: list[Trial], key: str) -> list[datetime]:
     return out
 
 
-def reuse_problems(old_job: Path, new_job: Path, old: list[Trial], new: list[Trial]) -> list[str]:
+def reuse_problems(
+    old_job: Path, new_job: Path, old: list[Trial], new: list[Trial], old_infra: bool
+) -> list[str]:
     """Why the old results cannot be reused (ADR-0008); empty when they can."""
     problems: list[str] = []
     for side, trials in (("old", old), ("new", new)):
@@ -238,9 +240,11 @@ def reuse_problems(old_job: Path, new_job: Path, old: list[Trial], new: list[Tri
         problems.append("trial times are missing, so the old results' age is unknown")
     elif max(finished) - min(started) > MAX_AGE:
         days = (max(finished) - min(started)).days
-        problems.append(f"the old job started {days} days before the new one ended (over 14)")
+        problems.append(
+            f"the old job started {days} days before the new one ended (over {MAX_AGE.days})"
+        )
 
-    if had_infra_errors(old_job, old):
+    if old_infra:
         problems.append("the old round had infrastructure errors")
     return problems
 

@@ -3,7 +3,8 @@
 Each run config is one Harbor job on the manifest's holdout tasks, k trials per task:
 
     OUT/jobs/<config>/        the Harbor job (resumed when it exists)
-    OUT/dropped/<config>/     event files of trials a resume deleted, kept for the spend guard
+    OUT/dropped/<config>/     result.json and event files of trials a resume deleted, kept for the
+                              spend guard and `evals accept`
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
     OUT/request.json          the model the first invocation asked for; another one is refused
     OUT/records/<UTC time>.json  new on every invocation check_record lets through: start
@@ -340,9 +341,7 @@ def keep_spend(out: Path, config: str, trials: list[Trial]) -> None:
         kept_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(trial.dir / "result.json", kept_dir / "result.json")
         for events in event_files(trial):
-            kept = out / "dropped" / config / trial.dir.name / events.name
-            kept.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(events, kept)
+            shutil.copyfile(events, kept_dir / events.name)
 
 
 def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:

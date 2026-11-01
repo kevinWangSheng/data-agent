@@ -36,6 +36,7 @@
 - 回归集文件是开发集题名的 JSON 列表，如 `["dbt-daily-order-summary", "pos-operations"]`；空列表 `[]` 表示还没有回归集。
 - 三条过关条件：新版开发集成功次数不少于旧版（点估计不低，相等算过）；目标题成功次数合计严格上升；回归题新版一轮 k/k。低于 k/k 的题列在 `rerun these tasks` 里，在新版上补跑 k 次，补跑 job 用 `--rerun` 加进来再判；补跑成功率 ≤1/3 算退步。补跑 job 的 version 头要和新版一致。
 - 旧版复用：两份 job 的每个 trial（基础设施报错的除外）都有 version 头，且除 `git_commit`、`skill_version` 外字段都一致；各自 `--out` 下最近一份运行记录（`records/`）的 benchmark commit、机器标签一致且不为空；旧版最早开始的 trial 到新版最晚结束的 trial 不超过 14 天；旧版那一轮没有基础设施报错（job 里没有，`dropped/<config>/` 里也没有被续跑删掉的；`ablate` 续跑前把每个要删的 trial 的 `result.json` 和事件文件存到那里）。任何一条不满足，判 `rerun-old` 并列出原因；旧版有基础设施报错时前两条不计分。
+- 命令不查 `--old` 是不是上一次合入的版本，由调用者保证。ADR-0008 的验收就是 `--trials 3`；别的值只用来试跑（如 k=1 的 `runs/dev-2`）。工单 29 之前的 `--out`（dev-2、dev-3）里，续跑删掉的、没写事件文件的 trial 没在 `dropped/` 留下 `result.json`，这种基础设施报错查不出来。
 - 结论：`pass`（退出 0）；`fail`、`rerun-regression`、`rerun-old`（退出 1）。回归题已判退步时，不管旧版能否复用都是 `fail`。
 
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。

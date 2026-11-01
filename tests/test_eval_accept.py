@@ -251,6 +251,72 @@ def test_reuse_needs_a_run_record(
     assert problems == ["the old job has no run record"]
 
 
+def test_reuse_needs_a_run_record_for_the_new_job_too(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    problems = rerun_old_because(tmp_path, manifest, capsys, {}, {"record": None})
+    assert problems == ["the new job has no run record"]
+
+
+def test_reuse_needs_a_known_machine(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # DATA_AGENT_MACHINE unset on both runs: equal, but the machine cannot be matched.
+    unknown = {"record": RECORD | {"machine": None}}
+    problems = rerun_old_because(tmp_path, manifest, capsys, unknown, unknown)
+    assert problems == ["machine: None old, None new"]
+
+
+def test_reuse_needs_one_value_per_version_field(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    # One old trial ran under another model: the old job mixes two.
+    events = old / "t2__0" / "agent" / "events" / "run-1.jsonl"
+    events.write_text(json.dumps(json.loads(events.read_text()) | {"model": "m0"}) + "\n")
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert (code, result["verdict"]) == (1, "rerun-old")
+    assert result["reuse_problems"] == [
+        "version field model: ['\"m0\"', '\"m1\"'] old, ['\"m1\"'] new"
+    ]
+
+
+def test_text_output_lists_the_tasks_to_rerun(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = write_job(tmp_path, "old", all_tasks(3, t1=1), commit="a", record=None)
+    new = write_job(tmp_path, "new", all_tasks(3, t1=3, t3=2), commit="c")
+    reg = tmp_path / "regression.json"
+    reg.write_text(json.dumps(["t3"]))
+    argv = ["accept", "--old", str(old), "--new", str(new), "--manifest", str(manifest)]
+    argv += ["--regression", str(reg), "--target", "t1"]
+    assert main(argv) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "verdict: rerun-old",
+        "old results: rerun the old version",
+        "  - the old job has no run record",
+        "point_estimate: pass, old 10/12, new 11/12 (+8.3 points)",
+        "targets: pass, old 1/3, new 3/3",
+        "regression: rerun needed",
+        "  t3: 2/3 -> rerun",
+        "rerun these tasks on the new version: t3",
+    ]
+
+
+def test_refuses_a_regression_file_that_is_no_list_of_names(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    reg = tmp_path / "regression.json"
+    reg.write_text(json.dumps({"tasks": ["t1"]}))
+    argv = ["accept", "--old", str(old), "--new", str(new), "--manifest", str(manifest)]
+    argv += ["--regression", str(reg), "--target", "t1"]
+    assert main(argv) == 2
+    assert "JSON list of task names" in capsys.readouterr().err
+
+
 def test_reuse_needs_results_within_two_weeks(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -324,18 +390,24 @@ def test_an_agent_timeout_is_no_infrastructure_error(
     assert (code, result["verdict"]) == (0, "pass")
 
 
-@pytest.mark.parametrize("where", ["job", "target", "regression"])
+@pytest.mark.parametrize("where", ["old", "new", "rerun", "target", "regression"])
 def test_refuses_tasks_outside_the_dev_set(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str], where: str
 ) -> None:
-    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
-    tasks = all_tasks(2, t1=3) | ({"h1": 3} if where == "job" else {})
-    new = write_job(tmp_path, "new", tasks, commit="c")
+    holdout = {"h1": 3}
+    old = write_job(
+        tmp_path, "old", all_tasks(2, t1=1) | (holdout if where == "old" else {}), commit="a"
+    )
+    new = write_job(
+        tmp_path, "new", all_tasks(2, t1=3) | (holdout if where == "new" else {}), commit="c"
+    )
     reg = tmp_path / "regression.json"
     reg.write_text(json.dumps(["h1"] if where == "regression" else []))
     argv = ["accept", "--old", str(old), "--new", str(new), "--manifest", str(manifest)]
     argv += ["--regression", str(reg), "--target", "t1"]
     argv += ["--target", "h1"] if where == "target" else []
+    if where == "rerun":
+        argv += ["--rerun", str(write_job(tmp_path, "rerun", holdout, commit="c"))]
     assert main(argv) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
