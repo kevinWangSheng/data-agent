@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from evals.ablate import header
+from evals.ablate import has_versions, header
 from evals.harbor import Trial, event_files, load_trials
 from evals.metrics import is_success
 from evals.report import TRIALS_PER_TASK, check_complete, is_infra_error, split_trials
@@ -112,7 +112,7 @@ def evaluate(
     check_complete(new, "new", trials)
 
     problems = reuse_problems(old_job, new_job, old, new)
-    old_infra = any(is_infra_error(t) for t in old)
+    old_infra = had_infra_errors(old_job, old)
     conditions: dict[str, Any] = {}
     if not old_infra:  # the old round cannot be scored at all
         check_complete(old, "old", trials)
@@ -212,9 +212,11 @@ def times(trials: list[Trial], key: str) -> list[datetime]:
 def reuse_problems(old_job: Path, new_job: Path, old: list[Trial], new: list[Trial]) -> list[str]:
     """Why the old results cannot be reused (ADR-0008); empty when they can."""
     problems: list[str] = []
-    kept = [t for t in old if not is_infra_error(t)]
-    if any(not event_files(t) for t in kept):
-        problems.append("some old trials have no event files, so no version header")
+    for side, trials in (("old", old), ("new", new)):
+        # An infrastructure error may end before the agent writes its events.
+        unversioned = sum(1 for t in trials if not is_infra_error(t) and not has_versions(t))
+        if unversioned:
+            problems.append(f"{unversioned} {side} trial(s) have no version header")
     old_fields, new_fields = fields(old), fields(new)
     for key in sorted((old_fields.keys() | new_fields.keys()) - CHANGED_BY_DESIGN):
         before, after = old_fields.get(key, set()), new_fields.get(key, set())
@@ -238,11 +240,16 @@ def reuse_problems(old_job: Path, new_job: Path, old: list[Trial], new: list[Tri
         days = (max(finished) - min(started)).days
         problems.append(f"the old job started {days} days before the new one ended (over 14)")
 
-    infra = sum(1 for t in old if is_infra_error(t))
-    dropped = old_job.parent.parent / "dropped" / old_job.name
-    if infra or (dropped.is_dir() and any(dropped.iterdir())):
+    if had_infra_errors(old_job, old):
         problems.append("the old round had infrastructure errors")
     return problems
+
+
+def had_infra_errors(job: Path, trials: list[Trial]) -> bool:
+    """An infrastructure error left in the job, or one a resume dropped (ablate.keep_spend keeps
+    each dropped trial under `OUT/dropped/<config>/`)."""
+    dropped = job.parent.parent / "dropped" / job.name
+    return any(is_infra_error(t) for t in trials) or (dropped.is_dir() and any(dropped.iterdir()))
 
 
 def render(result: dict[str, Any]) -> str:

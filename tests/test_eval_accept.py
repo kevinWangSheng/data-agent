@@ -288,11 +288,28 @@ def test_reuse_needs_a_round_without_infrastructure_errors(
 def test_reuse_counts_infrastructure_errors_a_resume_dropped(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    dropped = tmp_path / "old" / "dropped" / "full" / "t2__x" / "agent" / "events"
+    # A trial that broke before writing events leaves only its result.json (ablate.keep_spend).
+    dropped = tmp_path / "old" / "dropped" / "full" / "t2__x"
     dropped.mkdir(parents=True)
-    (dropped / "run-1.jsonl").write_text("{}\n")
-    problems = rerun_old_because(tmp_path, manifest, capsys, {})
-    assert problems == ["the old round had infrastructure errors"]
+    (dropped / "result.json").write_text("{}")
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert (code, result["verdict"]) == (1, "rerun-old")
+    assert result["reuse_problems"] == ["the old round had infrastructure errors"]
+    assert set(result["conditions"]) == {"regression"}
+
+
+@pytest.mark.parametrize("side", ["old", "new"])
+def test_reuse_needs_a_version_header_on_every_trial(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str], side: str
+) -> None:
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    (old if side == "old" else new).joinpath("t2__0", "agent", "events", "run-1.jsonl").unlink()
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert (code, result["verdict"]) == (1, "rerun-old")
+    assert result["reuse_problems"] == [f"1 {side} trial(s) have no version header"]
 
 
 def test_an_agent_timeout_is_no_infrastructure_error(
