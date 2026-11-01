@@ -1,10 +1,10 @@
 # 32 — 验证者拿题目原文当标准
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5)
+Branch: worktree-32-verifiers-judge-against-task
 
 ## Goal
 
@@ -93,10 +93,49 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0（工单 agent）；服务器运行见 Comments
+- Outcome: 单元测试类验收完成；服务器真实运行与初筛由主会话做
 - Human review minutes: —
 
 ## Comments
+- 2026-11-01 工单 agent（主会话转抄）：
+  - 分支 `worktree-32-verifiers-judge-against-task`，提交 6118b77、3241230、4634d50。
+  - 改动：
+    - 开了验证者层的运行，用 `tempfile.mkdtemp(prefix="data-agent-task-")` 在工作区外建临时目录，把 `--task` 原文逐字节写进只读的 `task.md`；运行结束时删除这个目录。
+      - 服务器上的路径是 `/tmp/data-agent-task-XXXX/task.md`，不是 spec 示例里的 `/tmp/data-agent/<id>/`。
+      - 用 mkdtemp，是为了避免和别的用户共用一个目录。
+    - `DBT_PROMPT` 加一句话给出这个路径。没开验证者层时，提示词和原来一字不差。
+    - 两个验证者在构建时把路径写进提示词：`verifier_agents(server, task_file)`。
+    - `workspace_guard(..., readable=)`：Read 只能打开这一个文件；Write、Edit、Glob、Grep，以及它旁边的文件，仍然一律拒绝。
+    - 结构验证者新增 CHECK 6（Row Removal Has a Basis），输出格式加上对应的一行。
+    - 数值验证者：题目定义过的量，按题目文件里的定义重算。
+    - Skill 第 8 步和 `VERIFIERS_PROMPT` 改成：`technical_spec.md` 只代表主 agent 的意图。"不要告诉验证者列的含义、SQL 写法"这两句保留。
+  - 不调模型的检查（`uv run python runs/32/demo.py runs/32/demo/ws`，SDK 的 query 换成桩）：
+    - full：
+      - 提示词里有 task.md 的路径；文件内容与题目逐字节一致；权限 0o444。
+      - 两个验证者的提示词都带上了这个路径。
+      - guard：Read task.md 放行；Write task.md 拒绝；Glob 它的目录拒绝；Read 同目录下的 other.md 拒绝。
+      - 运行结束后目录已删除。
+    - baseline：提示词里没有题目文件，和原来一致；没有 agents。
+  - make check：ruff 和格式检查通过；basedpyright 0 errors；1354 passed，1 skipped（改动前是 1324）。pypi 连不上，用 `UV_OFFLINE=1` 跑。
+  - da-review：
+    - P1"CHECK 6 会让题目或 YML 没提到的每个源表都判 FAIL"：属实。3241230 已修，改成只有换过的源表才要找依据，并加了测试。
+    - P1"某测试会抛 IndexError"：不属实。`## Task file` 在 md 正文里，不在追加的那一行路径里；这个测试在 make check 里是通过的。
+  - eng:code-review（Standards）：
+    - 没有硬性违规。
+    - 4634d50 已改：`readable_paths` 命名；条件判断合并；guard 测试复用 decide()。
+    - 不改的几处及理由：
+      - 两个验证者的 md 里有同样的 `## Task file` 一节：每个 agent 的提示词必须各自完整。
+      - protected 和 readable 两个参数：只有两个，不值得为它们单独定义一个类型。
+      - 测试靠切分提示词找路径：措辞一改，测试会明确失败，不会悄悄通过。
+      - test_task_file 里重复的 hook 调用：它测的是运行中实际构建出来的 guard，decide() 测不到这一层。
+  - eng:code-review（Spec）：
+    - 没有缺漏或错误。
+    - 有意保留的两处：
+      - Skill 文件头的修改记录写在第 8 步之外：复制来的上游文件必须登记修改（AGENTS.md）。
+      - CHECK 3 的扇出豁免不再接受 technical spec 作依据：这符合 Goal 里"spec 只当作主 agent 的意图"。
+  - 已知副作用：no-verifiers 也加载 Skill，所以第 8 步的措辞改动会让它的系统提示词跟着变。它的任务提示词不变，也不写题目文件。baseline 和查数任务完全不变。
+- 2026-11-01 主会话：
+  - no-verifiers 的系统提示词变化可以接受。dev-3 的 no-verifiers 全是 ApiUsageLimitError，没有有效结果要复用；最终消融时 6 个配置都会在新版本上重跑。dev-3 的 baseline 仍然可以复用。
