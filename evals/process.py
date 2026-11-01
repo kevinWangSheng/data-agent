@@ -35,7 +35,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     checks: Counter[str] = Counter()
     stopped: str | None = None
     if events is not None:
-        with events.open() as f:
+        with events.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 try:
                     event = json.loads(line)

@@ -225,3 +225,16 @@ def test_a_line_cut_short_by_a_killed_run_is_skipped(
     assert code == 0
     trial = next(t for t in report["candidate"]["trials"] if t["trial"] == "dbt-alpha__t0")
     assert (trial["turns"], trial["model_edits"], trial["verifier_calls"]) == (12, 2, 1)
+
+
+def test_a_line_cut_inside_a_multibyte_character_is_skipped(
+    tmp_path: Path, jobs: tuple[Path, Path]
+) -> None:
+    baseline, full = jobs
+    events = full / "dbt-alpha__t0" / "agent" / "events" / "run-1.jsonl"
+    with events.open("ab") as f:
+        f.write('{"seq": 99, "type": "text", "text": "数'.encode()[:-1])
+    code, report, _ = diverge(tmp_path, baseline, full)
+    assert code == 0
+    trial = next(t for t in report["candidate"]["trials"] if t["trial"] == "dbt-alpha__t0")
+    assert trial["turns"] == 12
