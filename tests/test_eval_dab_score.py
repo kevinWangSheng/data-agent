@@ -85,6 +85,21 @@ def test_a_validator_of_another_shape_is_an_error_naming_the_query(
     assert not (out / "dab_score.json").exists()
 
 
+def test_a_numpy_bool_from_the_validator_counts(dab_root: Path) -> None:
+    # numpy is not a dependency here: a class of the same name stands in for numpy.bool_.
+    checker = (
+        "class bool_:\n"
+        "    def __init__(self, v): self.v = v\n"
+        "    def __bool__(self): return self.v\n"
+        "def validate(llm_answer):\n"
+        "    return bool_('gold1' in llm_answer), ''\n"
+    )
+    (dab_root / "query_alpha" / "query1" / "validate.py").write_text(checker)
+    grade = dab_score.grader(dab_root)
+    assert grade("alpha", "1", "gold1") is True
+    assert grade("alpha", "1", "gold2") is False
+
+
 def test_pass_at_1_averages_queries_within_a_dataset_then_datasets(
     dab_root: Path, tmp_path: Path
 ) -> None:
@@ -249,7 +264,7 @@ def test_cli_compares_with_a_baseline(
         "significant": True,
     }
     out = capsys.readouterr().out
-    assert "baseline: Pass@1 0.0000" in out
+    assert "baseline: Pass@1 0.0000 (over 4 of the clone's 4 queries)" in out
     assert "candidate - baseline: +50.00 points" in out
 
 

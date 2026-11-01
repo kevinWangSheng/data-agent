@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from evals.compare import percentile_interval
 from evals.dab import _import_from
 
 Grader = Callable[[str, str, str], bool]
@@ -187,7 +188,11 @@ def summary(result: Score) -> dict[str, Any]:
 
 
 def render(name: str, data: dict[str, Any]) -> str:
-    lines = [f"{name}: Pass@1 {data['pass_at_1']:.4f}"]
+    covered = data["coverage"]
+    lines = [
+        f"{name}: Pass@1 {data['pass_at_1']:.4f} "
+        f"(over {covered['queries']} of the clone's {covered['clone_queries']} queries)"
+    ]
     for dataset, entry in data["datasets"].items():
         lines.append(f"  {dataset}: {entry['pass_at_1']:.4f}")
         for query, count in entry["queries"].items():
@@ -219,15 +224,7 @@ def paired_bootstrap(
         statistics.fmean(statistics.fmean(rng.choices(g, k=len(g))) for g in groups)
         for _ in range(n_boot)
     ]
-    # n=40 cut points sit at 2.5%, 5%, ..., 97.5%: the first and last bound the 95% interval.
-    cuts = statistics.quantiles(boots, n=40, method="inclusive")
-    ci_low, ci_high = cuts[0], cuts[-1]
-    return {
-        "diff": statistics.fmean(statistics.fmean(g) for g in groups),
-        "ci_low": ci_low,
-        "ci_high": ci_high,
-        "significant": ci_low > 0 or ci_high < 0,
-    }
+    return percentile_interval(statistics.fmean(statistics.fmean(g) for g in groups), boots)
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
