@@ -271,6 +271,17 @@ fi
 
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.deepseek.com/ || echo 000)
 [ "$code" != 000 ] && ok "DeepSeek API reachable (HTTP $code)" || bad "DeepSeek API unreachable"
+# The account's balance and whether DeepSeek says it can pay for calls (evals.balance); the key
+# stays in the environment of that one command.
+if [ -d "$DIR/.git" ] && [ -f "$ENVF" ]; then
+  if line=$(cd "$DIR" && set -a && . "$ENVF" && set +a && uv run --no-sync python -m evals.balance 2>&1); then
+    ok "model account $line"
+  else
+    bad "model account $(printf '%s' "$line" | tail -n 1)"
+  fi
+else
+  bad "model account balance unknown: needs the repo and the env file"
+fi
 
 echo "$fails failure(s)"
 [ "$fails" -eq 0 ]
@@ -455,7 +466,10 @@ start() {
     [[ $a == --budget=* ]] && budget=${a#--budget=}
     prev=$a
   done
-  run_script NAME "$name" BUDGET "$budget" SUBCOMMAND "$1" EVALS_ARGS "$(printf '%q ' "$@")" <<'EOF'
+  # The host alias labels the machine in ablate's run record; an address given as the host is
+  # masked, never written there.
+  run_script NAME "$name" BUDGET "$budget" MACHINE "$(printf '%s' "$host" | mask)" SUBCOMMAND "$1" \
+    EVALS_ARGS "$(printf '%q ' "$@")" <<'EOF'
 cd "$DIR" 2>/dev/null && [ -d .git ] || {
   echo "start: no repo at $DIR; run da-remote setup first"
   exit 1
@@ -488,6 +502,8 @@ commit=$(git rev-parse --short HEAD)
 cat >"$run/run.sh" <<RUN
 #!/usr/bin/env bash
 # da-remote start $NAME, commit $commit
+# The machine's label for ablate's run record: the SSH host alias (the env file may set another).
+export DATA_AGENT_MACHINE=$(printf '%q' "$MACHINE")
 set -a
 . "\$HOME/.config/data-agent/env"
 $dab_env
