@@ -1053,7 +1053,30 @@ def test_a_dev_run_on_a_manifest_whose_dev_and_holdout_overlap_is_refused(
     harbor = FakeHarbor()
     out = tmp_path / "out"
     assert run(monkeypatch, harbor, overlapping, out, "--split", "dev", "--config", "full") == 2
-    assert "both dev and holdout" in capsys.readouterr().err
+    assert f"{overlapping} holds out" in capsys.readouterr().err
+    assert harbor.calls == harbor.smoke == []
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("real", [{"dev": [], "holdout": ["dbt-charlie"]}, None])
+def test_a_dev_run_on_a_task_the_repos_manifest_holds_out_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    dev_manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    real: dict[str, list[str]] | None,
+) -> None:
+    """A manifest the run brings may list a holdout task under dev, without overlap of its own;
+    the repo's evals/manifest.json (on the server, the real one) decides. Unreadable: refused."""
+    repo_manifest = tmp_path / "repo-manifest.json"
+    if real is not None:
+        repo_manifest.write_text(json.dumps(real))
+    monkeypatch.setattr(ablate, "REPO_MANIFEST", repo_manifest)
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    dev = ("--split", "dev", "--config", "full", "--task", "dbt-alpha", "--task", "dbt-charlie")
+    assert run(monkeypatch, harbor, dev_manifest, out, *dev) == 2
+    assert str(repo_manifest) in capsys.readouterr().err
     assert harbor.calls == harbor.smoke == []
     assert not out.exists()
 

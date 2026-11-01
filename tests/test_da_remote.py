@@ -524,6 +524,11 @@ def test_pull_of_an_ablate_run_on_dev_tasks_only_takes_the_whole_dir(env: Env):
     trial.mkdir()
     (trial / "result.json").write_text(json.dumps({"task_name": "dbt-bravo"}))
     (run / "logs" / "smoke-full.log").write_text("harbor output\n")
+    # A config smoked whose job never started (the batch stopped first) is judged by its smoke job.
+    smoke = run / "smoke" / "20261031T000000.000000Z" / "no-skill"
+    smoke.mkdir(parents=True)
+    (smoke / "config.json").write_text(json.dumps({"job_name": "no-skill", "datasets": datasets}))
+    (run / "logs" / "smoke-no-skill.log").write_text("harbor output\n")
     assert pulled_whole(env)
 
 
@@ -553,7 +558,7 @@ def test_pull_of_an_ablate_run_with_a_holdout_trial_takes_the_summary_only(env: 
         "dropped file named like a dev trial",
         "smoke trial of a holdout task",
         "smoke job naming a holdout task",
-        "smoke log of a job not on disk",
+        "smoke log without its smoke job",
         "file in the smoke dir",
     ],
 )
@@ -587,17 +592,17 @@ def test_pull_of_an_ablate_run_it_cannot_judge_takes_the_summary_only(env: Env, 
     elif spoil == "dropped file named like a dev trial":  # a trial is a dir; a file is unknown
         (run / "dropped" / "full").mkdir(parents=True)
         (run / "dropped" / "full" / "dbt-alpha__drop123").write_text("dbt-delta trajectory\n")
-    elif spoil.startswith("smoke"):
+    elif spoil.startswith("smoke") and spoil != "smoke log without its smoke job":
         smoke = run / "smoke" / "20261031T000000.000000Z" / "full"
         smoke.mkdir(parents=True)
-        task = "dbt-alpha" if spoil == "smoke log of a job not on disk" else "dbt-delta"
+        task = "dbt-delta"
         names = ["dbt-delta" if spoil == "smoke job naming a holdout task" else "dbt-alpha"]
         datasets = [{"path": "[redacted-home]/tasks", "task_names": names}]
         (smoke / "config.json").write_text(json.dumps({"job_name": "full", "datasets": datasets}))
         if spoil != "smoke job naming a holdout task":
             (smoke / f"{task}__smk1234").mkdir()
-        if spoil == "smoke log of a job not on disk":
-            (run / "logs" / "smoke-no-skill.log").write_text("harbor output\n")
+    elif spoil == "smoke log without its smoke job":  # Harbor failed before the job dir
+        (run / "logs" / "smoke-full.log").write_text("dbt-delta output\n")
     elif spoil == "file in the smoke dir":
         (run / "smoke").mkdir()
         (run / "smoke" / "dbt-delta.json").write_text("{}")

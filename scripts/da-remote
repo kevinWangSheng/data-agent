@@ -643,18 +643,22 @@ try:
     dev = set(json.loads(manifest.read_text())["dev"])
     jobs = {job.name: job for job in (run / "jobs").iterdir()}
     ok = bool(jobs) and all(dev_job(job) for job in jobs.values())
-    logs = run / "logs"
-    stems = {p.stem.removeprefix("smoke-") for p in logs.glob("*") if p.name != "guards.log"}
-    ok = ok and stems <= set(jobs)
     # A dropped trial is a dir; anything else there cannot be judged.
     for dropped in (run / "dropped").glob("*"):
         trials = list(dropped.iterdir())
         ok = ok and dropped.name in jobs and all(t.is_dir() and dev_trial(t) for t in trials)
     # The preflight's smoke jobs, smoke/<UTC time>/<config>/: the run's own manifest picked the
-    # task, so each is judged like a job.
+    # task, so each is judged like a job (its config's job may never have started).
+    smoked = set()
     for stamp in (run / "smoke").glob("*"):
-        smoke_jobs = list(stamp.iterdir())
-        ok = ok and all(job.name in jobs and dev_job(job) for job in smoke_jobs)
+        for job in stamp.iterdir():
+            ok = ok and dev_job(job)
+            smoked.add(job.name)
+    # Harbor's logs: logs/<config>.log of a job, logs/smoke-<config>.log of a smoke job.
+    for log in (run / "logs").glob("*"):
+        stem = log.stem
+        if log.name != "guards.log":
+            ok = ok and (stem in jobs or (stem.startswith("smoke-") and stem[6:] in smoked))
 except (OSError, ValueError, KeyError, TypeError, AttributeError):
     ok = False
 sys.exit(0 if ok else 1)
