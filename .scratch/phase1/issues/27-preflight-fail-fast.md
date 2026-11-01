@@ -1,6 +1,6 @@
 # 27 — 批量评测的预检、快速失败与运行记录
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -50,10 +50,10 @@ Branch: worktree-27-preflight-fail-fast
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
+- Attempts: 2
+- Review rounds: 3
 - Model spend: $0
-- Outcome: implemented; paid smoke blocked by local proxy to ghcr.io (see Comments)
+- Outcome: returned round 1 fixed (run record checked before reusing jobs); paid smoke pending on the server (main session)
 - Human review minutes: —
 
 ## Comments
@@ -77,3 +77,23 @@ Branch: worktree-27-preflight-fail-fast
   余额接口对真 API 已验证。冒烟没跑成：本机走代理 127.0.0.1:1087 连 ghcr.io SSL 失败（直连 401 正常），colima 本地没有该基础镜像。属于环境问题，不是本工单的 bug；冒烟成功路径待补。
 - 2026-10-31 主会话：PR #27 CI 绿。退回：Codex GitHub app P1（evals/ablate.py:467）属实——`ensure_job` 在同一 --out 下续跑/复用已有 job 时只调 `check_conditions`（只比代码与 Skill 版本，evals/ablate.py:272-297），不读运行记录；换了 benchmark checkout 或机器后会在同一个 job 里混入不同版本的题。要求：续跑或跳过已有 job 前，把当前 benchmark commit 和机器标签与 OUT 下最近一份运行记录比对，不一致就 Stop（exit 2）并说明；配修复前会失败的测试。"两周内"条件不在本工单（属于工单 29 的跨版本复用）。
 - 2026-10-31 用户决定：本工单的付费冒烟改在服务器上用 da-remote 跑（本机代理拉不下 ghcr 镜像），由主会话在修复后做。
+- 2026-10-31 工单 agent（退回第 1 轮，08cedad、fd0e1e8）：
+  - 修法：`run()` 写本次记录前调 `check_record`：OUT 下有 `jobs/*/config.json` 时，把当前 benchmark commit 和 `DATA_AGENT_MACHINE` 与 `OUT/records/` 最新一份比对；不一致、benchmark dirty 或不在 git 里、没设机器标签、有 job 没记录，都 Stop（exit 2），不写新记录（所以"最新一份"始终是建 job 那次）。检查在所有 `ensure_job` 之前，覆盖续跑与跳过。
+  - 测试：`test_jobs_from_another_benchmark_or_machine_are_not_reused`（6 种参数，修复前第二次调用跳过已完成 job 返回 0）、`test_a_refused_benchmark_change_does_not_block_going_back`、`test_a_new_out_records_whatever_benchmark_it_runs_on`。改了本分支自己的 `test_every_invocation_writes_a_run_record`（dirty 那步改到新 OUT）；"每次 ablate 写运行记录"收窄为"每次通过 check_record 的调用"，主会话接受（被拒的调用不该留记录）。
+  - make check：1231 passed, 1 skipped。
+  - 真实运行（无 key）：OUT 里放一个 job 和 machine=mac-colima 的记录；`DATA_AGENT_MACHINE=server-1` → exit 2 "the jobs under runs/27-reject/out were run under other conditions (machine 'mac-colima' there, 'server-1' now, ...); use another --out"，无新记录；`mac-colima` → 通过记录检查进入预检，停在没有 key；不设 → exit 2 "DATA_AGENT_MACHINE is not set, so this machine cannot be matched ..."。
+  - da-review：不修 P1"--skip-smoke 只许续跑时用"（工单写的是人手动给的参数）；不修 P1"超过两周不复用"（属工单 29）；P2"冒烟 trial 事件首行坏 JSON 时 has_versions 抛 traceback 而不是 exit 2"属实但是第一轮就有的代码（evals/ablate.py 约 419 行），记为已知限制。
+  - eng:code-review：Standards 修了 docstring、变量名、`check_record` 只收 out/tasks_dir、常量改名；Spec 修了两次都没设标签时 None==None 放行。不修：check_record/check_request 结构相似；record 用 dict；规则在三处各写一遍；Harbor 写 config.json 前死掉的半成品 job 不触发检查（未确认）；benchmark_commit 用 --untracked-files=no。
+
+- 2026-10-31 主会话服务器真实运行（用户决定改在服务器跑）：`da-remote setup fd0e1e8`；`scripts/da-remote start t27-smoke -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest runs/t27-smoke/manifest.json --out runs/t27-smoke --budget 2 --config full --config baseline --trials 1`（manifest 同 runs/27-real，dev=holdout=cohort-retention-matrix）→ exit 0：
+  ```
+  record: runs/t27-smoke/records/20261101T055002.304412Z.json
+  spend: $0.0000 over 0 event file(s); budget $2, stop at 80% = $1.6000
+  balance: 79.62 CNY (about $10.91), covers the $2.00 left of --budget
+  wheels: CPython 3.12, glibc 2.41, x86_64: 34 wheels in /root/.cache/data-agent/wheels, 1.1 s
+  smoke: full ok (reward 0, $0.1464)
+  smoke: baseline ok (reward 0, $0.0506)
+  | full | 0.0 | ... | 1 | 0.1606 |   | baseline | 0.0 | ... | 1 | 0.0591 |
+  ```
+  总花费 $0.4167（上限 $2），内存峰值 2097 MB。已知限制：holdout 运行的 `da-remote pull` 只取汇总，不含 `records/`；工单 29 用开发集运行（工单 28 后整份取回），不受影响。
+- 2026-10-31 主会话：PR #27 CI 绿。Codex GitHub app（fd0e1e8）P1 "复用前拒绝超过两周的运行记录"——不修：ADR-0008 的两周条件针对改动验收时复用上一合入版本的结果（工单 29），不针对同一 --out 下续跑本次 job；退回条目已写明。合并。

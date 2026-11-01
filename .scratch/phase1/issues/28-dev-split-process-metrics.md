@@ -48,10 +48,10 @@ Branch: worktree-28-dev-split-process-metrics
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
+- Attempts: 2
+- Review rounds: 3
 - Model spend: $0
-- Outcome: implemented (982fcc6, 158cece, c8594f5); colima real run open
+- Outcome: implemented (982fcc6, 158cece, c8594f5, fa7ba14, 90c1ad8); server real run open
 - Human review minutes: —
 
 ## Comments
@@ -65,3 +65,13 @@ Branch: worktree-28-dev-split-process-metrics
   - eng:code-review 第 2 轮，已修（c8594f5）：只跑 --config full 的 dev 运行没有过程指标 → dev report.json 加 `process`（共用 evals/process.py）；manifest 的 dev 与 holdout 有重叠时 diverge 拒绝；若干改名。不修：da-remote 里的内联 Python 保留（在服务器的 checkout 上跑，不能 import 本提交的 evals）；attribute.py 自己的"最后一个事件文件"查找不在本工单；split 仍用字符串；经 Bash 改的模型（sed -i、heredoc）不计入编辑次数，已在 evals/process.py 写明；holdout 题与 dev 题共享 32 字符前缀的风险低（config.json 的 task_names 须全是 dev 题）。
 - 2026-10-31 主会话：PR #29 CI 绿。退回：Codex GitHub app P2（evals/process.py:44）属实——`trial_metrics` 对每行直接 `json.loads`（evals/process.py:40），事件文件末尾有写了一半的行时会抛 JSONDecodeError，`report --split dev` / `diverge` 失败；evals/harbor_agent.py:137 对截断行是跳过的。要求：用同样的容错方式跳过截断行；配修复前会失败的测试。
 - 2026-10-31 用户决定：本工单的 colima 真实运行改在服务器上用 da-remote 跑（本机代理拉不下 ghcr 镜像），由主会话在修复后做。
+- 2026-10-31 工单 agent（退回第 1 轮，fa7ba14、90c1ad8）：
+  - 修复：`trial_metrics` 对坏 JSON 行 `continue`（同 harbor_agent.parse_events）；事件文件用 `encoding="utf-8", errors="replace"` 打开，截断落在多字节字符中间也被跳过。
+  - 测试：`test_a_line_cut_short_by_a_killed_run_is_skipped`（修复前 `diverge: Unterminated string starting at: line 1 column 21`）、`test_a_line_cut_inside_a_multibyte_character_is_skipped`（修复前 AssertionError）。
+  - 真实运行：dev-2 的 full/baseline 副本，在 pos-operations 最后一个事件文件末尾追加 `{"seq": 999999, "type": "tool_st`；修复前 `diverge: Unterminated string starting at: line 1 column 25 (char 24)` exit 2；修复后 exit 0，"30 paired tasks; successes differ on 6: baseline better on 4, full better on 2."，pos-operations 指标与未截断时一致。
+  - make check：1207 passed, 1 skipped；接缝 C 未改。
+  - da-review（fa7ba14）无问题。eng:code-review：不修与 parse_events 的 4 行重复（导入会把 harbor/pydantic 带进指标路径）；不修非 dict 的 JSON 行。
+  - da-review（90c1ad8）两条 P1 针对早先 da-remote pull 代码，核实后不修（主会话同意）：本地旧 jobs/logs/dropped 残留——holdout pull 只取汇总且本地已有这些目录时拒绝（scripts/da-remote 约 653–659 行），不产生新泄露；32 字符前缀歧义——task_names 须全是 dev 题，按当前 manifest 实算 holdout 与 dev 共享截断前缀数为 0。
+- 2026-10-31 主会话：PR #29 CI 绿。退回（第 2 轮）：
+  1. Codex GitHub app（90c1ad8）P2 属实：`scripts/da-remote` 约 628 行对 `dropped/<job>/` 下每个条目调 `dev_trial`，不查是不是目录；名字带开发集题前缀的普通文件会被当成合格 trial，整份取回。要求：只接受 trial 目录，其他条目一律判"无法判断"（只取汇总）；配修复前会失败的测试。
+  2. 工单 27 已合并（f9df8e7），与本分支在 `evals/ablate.py`、`scripts/da-remote`、`docs/setup.md`、测试上会冲突：先把本分支 rebase（或 merge）到最新 origin/main，解决冲突时两边的行为都保留（27 的预检、快速失败、运行记录、check_record 与 28 的 --split dev、--task、process、dev-only pull），make check 通过。
