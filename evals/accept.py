@@ -41,6 +41,8 @@ MAX_AGE = timedelta(days=14)
 # Version header fields that a change is expected to alter, or that differ per event file.
 CHANGED_BY_DESIGN = frozenset({"git_commit", "skill_version"})
 PER_FILE = frozenset({"seq", "type", "ts"})
+# Written by every run (data_agent.agent); one no trial has cannot be matched either.
+REQUIRED = frozenset({"config", "layers", "model", "sdk_version", "cli_version"})
 MISSING = "(missing)"  # not JSON, so no header value collides with it
 RECORD_KEYS = (("benchmark_commit", "benchmark commit"), ("machine", "machine"))
 
@@ -186,11 +188,12 @@ def regression_check(
 
 def fields(trials: list[Trial]) -> dict[str, set[str]]:
     """Every version header field's values over the event files of the trials that ran; a file
-    whose header lacks a field another file has adds MISSING to that field's values. Trials with
+    whose header lacks a field another file has, or a REQUIRED one, adds MISSING to that field's
+    values. Trials with
     an infrastructure error are left out: never scored, they may end before the header."""
     ran = [t for t in trials if not is_infra_error(t)]
     headers = [header(events) for trial in ran for events in event_files(trial)]
-    keys = {key for h in headers for key in h} - PER_FILE
+    keys = ({key for h in headers for key in h} | REQUIRED) - PER_FILE
     return {
         key: {json.dumps(h[key], sort_keys=True) if key in h else MISSING for h in headers}
         for key in keys
@@ -204,8 +207,9 @@ def last_record(job: Path) -> dict[str, Any] | None:
 
 
 def times(trials: list[Trial], key: str) -> tuple[list[datetime], int]:
-    """The trials' `key` times, and how many trials that ran have none (an infrastructure error
-    may end before Harbor writes them; such a round is rerun anyway)."""
+    """The trials' `key` times, and how many trials that ran have none. Infrastructure error
+    trials are not counted: they may end before Harbor writes the times, an old one forces a
+    rerun anyway, and the new job may have none (check_complete)."""
     out: list[datetime] = []
     missing = 0
     for trial in trials:
@@ -230,7 +234,7 @@ def reuse_problems(
     old_fields, new_fields = fields(old), fields(new)
     for key in sorted((old_fields.keys() | new_fields.keys()) - CHANGED_BY_DESIGN):
         before, after = old_fields.get(key, set()), new_fields.get(key, set())
-        if len(before) != 1 or before != after:
+        if len(before) != 1 or before != after or MISSING in before:
             problems.append(f"version field {key}: {sorted(before)} old, {sorted(after)} new")
 
     records = {"old": last_record(old_job), "new": last_record(new_job)}
@@ -246,15 +250,16 @@ def reuse_problems(
 
     started, old_missing = times(old, "started_at")
     finished, new_missing = times(new, "finished_at")
-    if old_missing or new_missing:
+    untimed = [
+        f"{missing} {side} trial(s) have no {key}, so the old results' age is unknown"
         for side, key, missing in (
             ("old", "started_at", old_missing),
             ("new", "finished_at", new_missing),
-        ):
-            if missing:
-                problems.append(
-                    f"{missing} {side} trial(s) have no {key}, so the old results' age is unknown"
-                )
+        )
+        if missing
+    ]
+    if untimed:
+        problems += untimed
     elif not started or not finished:
         problems.append("trial times are missing, so the old results' age is unknown")
     elif max(finished) - min(started) > MAX_AGE:

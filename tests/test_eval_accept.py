@@ -494,3 +494,12 @@ def test_reuse_needs_a_non_empty_record_value(
     unknown = {"record": RECORD | {key: value}}
     problems = rerun_old_because(tmp_path, manifest, capsys, unknown, unknown)
     assert problems == [f"{key.replace('_', ' ')}: {value!r} old, {value!r} new"]
+
+
+def test_reuse_needs_the_version_fields_every_run_writes(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # No trial on either side records the model: equal, but the models cannot be matched.
+    no_model = {"version": {k: v for k, v in VERSION.items() if k != "model"}}
+    problems = rerun_old_because(tmp_path, manifest, capsys, no_model, no_model)
+    assert problems == ["version field model: ['(missing)'] old, ['(missing)'] new"]
