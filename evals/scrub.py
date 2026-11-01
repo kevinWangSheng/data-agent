@@ -7,8 +7,8 @@ secret nor get broken by a redaction; other files, and lines that do not parse, 
 text. JSON nested in a string (a tool that printed JSON) is decoded and scrubbed the same way.
 Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks, a
 `\\uXXXX` escape outside parseable JSON, a repeated JSON key) is listed and the command fails, and
-so is any path left under a user's home directory (`/home/<x>`, `/Users/<x>`; `<x>` all digits,
-as in a page path from task data, names no user), or user name left as a word outside JSON keys,
+so is any path left under a user's home directory (`/home/<x>`, `/Users/<x>`; but not a bare
+`/home/<digits>`, a page path from task data), or user name left as a word outside JSON keys,
 that no rule removed. Container paths such as `/app`, `/logs` and `/root` (the agent runs as root
 in the task container, and the SDK saves long tool output under /root/.claude) are not host paths.
 """
@@ -45,12 +45,13 @@ KEY_SHAPE = re.compile(
 OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 IPV4 = re.compile(rf"(?<![\d.]){OCTET}(?:\.{OCTET}){{3}}(?!\.?\d)")
 # A user's home directory on a host; `[redacted-...]` is what a rule left in place of a name. A
-# segment of digits alone (a page path like `/home/193` in task data) is not one: useradd, macOS and
-# systemd reject all-digit user names, which would read as uids. The digits must end where a user
-# name could not go on, so `/home/193abc` and `/home/7.bak` are still reported.
+# last segment of digits alone (a page path like `/home/193` in task data) is not reported: useradd,
+# macOS and systemd reject all-digit user names. A home directory can still be named so, but Harbor
+# records the job and task paths beneath the home of the machine that ran it, so `/home/193/...`
+# is reported, as are `/home/193abc` and `/home/7.bak`.
 HOST_PATH = re.compile(
     r"(?:(?<![A-Za-z0-9_.-])|(?<=\\[bfnrt]))"
-    r"(?:/(?:home|Users)/(?!\[redacted-)(?!\d+(?![A-Za-z0-9_.$-]))[^/\s\"'\\]+)"
+    r"(?:/(?:home|Users)/(?!\[redacted-)(?!\d+(?![A-Za-z0-9_.$/-]))[^/\s\"'\\]+)"
 )
 # Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
 UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
