@@ -6,14 +6,17 @@ event file), so everything after it (spend guard, scrub, report, compare) runs f
 """
 
 import json
+import os
 import subprocess
+import sys
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from evals import ablate
+from evals import ablate, balance
 from evals.__main__ import main as evals_main
 
 HOLDOUT = ["dbt-delta", "dbt-echo"]
@@ -30,24 +33,34 @@ PASS = {
 FAKE_KEY = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
 
 type Outcome = Callable[[str, str, int], tuple[float | None, str | None]]
+type StopWhen = Callable[[], str | None]
 
 
 def by_pass_rate(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
     return (1.0 if attempt < round(3 * PASS[config]) else 0.0), None
 
 
+def smoke_passes(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+    return 1.0, None
+
+
 class FakeHarbor:
     """Writes what `harbor run` / `harbor job resume` would; `outcome(config, task, attempt)` gives
-    each new trial's (reward, exception type)."""
+    each new trial's (reward, exception type). Preflight smoke runs (jobs under OUT/smoke/) are
+    recorded in `smoke` rather than `calls` and take `smoke_outcome`."""
 
     def __init__(self, outcome: Outcome = by_pass_rate, cost: float = 0.01) -> None:
         self.outcome = outcome
+        self.smoke_outcome: Outcome = smoke_passes
         self.cost = cost
         self.calls: list[list[str]] = []
+        self.smoke: list[list[str]] = []
         self.model: dict[str, str] = {}  # per config; deepseek-flash otherwise
+        self.finished: list[str] = []  # trial names in the order they finished
 
-    def __call__(self, args: list[str], log: Path) -> int:
-        self.calls.append(args)
+    def __call__(self, args: list[str], log: Path, stop_when: StopWhen) -> tuple[int, str | None]:
+        smoke = args[0] == "run" and Path(args[args.index("-o") + 1]).parent.name == "smoke"
+        (self.smoke if smoke else self.calls).append(args)
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("harbor output\n")
         if args[:2] == ["job", "resume"]:
@@ -75,10 +88,14 @@ class FakeHarbor:
                 "path": str(Path.home() / "tasks"),
             }
             (job / "config.json").write_text(json.dumps(config))
-        self.fill(job, config)
-        return 0
+        # As ablate's watcher would see them: after each trial Harbor finishes.
+        outcome = self.smoke_outcome if smoke else self.outcome
+        reason = self.fill(job, config, stop_when, outcome)
+        return (-15, reason) if reason else (0, None)
 
-    def fill(self, job: Path, config: dict[str, Any]) -> None:
+    def fill(
+        self, job: Path, config: dict[str, Any], stop_when: StopWhen, outcome: Outcome
+    ) -> str | None:
         for task in config["tasks"]:
             # Trial names carry the attempt they fill: `<task>__a<attempt>c<call>`.
             have = {
@@ -87,8 +104,8 @@ class FakeHarbor:
             for attempt in range(config["k"]):
                 if str(attempt) in have:
                     continue
-                reward, error = self.outcome(config["run_config"], task, attempt)
-                trial = job / f"{task}__a{attempt}c{len(self.calls)}"
+                reward, error = outcome(config["run_config"], task, attempt)
+                trial = job / f"{task}__a{attempt}c{len(self.calls) + len(self.smoke)}"
                 (trial / "agent" / "events").mkdir(parents=True)
                 header = {
                     "type": "version",
@@ -106,6 +123,8 @@ class FakeHarbor:
                     "trial_name": trial.name,
                     "verifier_result": None if reward is None else {"rewards": {"reward": reward}},
                     "exception_info": {"exception_type": error} if error else None,
+                    "finished_at": f"2026-10-31T00:{len(self.finished) // 60:02d}:"
+                    f"{len(self.finished) % 60:02d}.000000Z",
                     "agent_result": {
                         "n_input_tokens": 100,
                         "n_cache_tokens": 60,
@@ -114,12 +133,27 @@ class FakeHarbor:
                     },
                 }
                 (trial / "result.json").write_text(json.dumps(result))
+                self.finished.append(trial.name)
+                if reason := stop_when():
+                    return reason
+        return None
 
 
 @pytest.fixture(autouse=True)
 def commit(monkeypatch: pytest.MonkeyPatch) -> None:
     """A clean commit, whatever state this checkout is in while the tests run."""
     monkeypatch.setattr(ablate, "git_commit", lambda: "c0ffee")
+
+
+@pytest.fixture(autouse=True)
+def account(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The model account's balance as DeepSeek would answer it; the real one needs the network."""
+    reply: dict[str, Any] = {
+        "is_available": True,
+        "balance_infos": [{"currency": "USD", "total_balance": "500.00"}],
+    }
+    monkeypatch.setattr(balance, "fetch", lambda: reply)
+    return reply
 
 
 PREFETCH_WHEELS = ablate.prefetch_wheels
@@ -270,6 +304,238 @@ def test_a_config_error_stops_for_a_human_without_a_report(
     assert len(harbor.calls) == 1
 
 
+def test_a_usage_limit_stops_for_a_human_and_a_rerun_redoes_those_trials(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ApiUsageLimitError means the account's limit or balance ran out (dev-3: no-verifiers 90/90
+    of it, scored as a real 0%). Once a human tops the account up, the same --out reruns them."""
+    topped_up = {"yes": False}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if config == "no-skill" and not topped_up["yes"]:
+            return None, "ApiUsageLimitError"
+        return by_pass_rate(config, task, attempt)
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out) == 2
+    assert len(harbor.calls) == ablate.CONFIGS.index("no-skill") + 1  # no further config ran
+    assert report_dirs(out) == []
+    err = capsys.readouterr().err
+    assert "ApiUsageLimitError" in err and "account" in err and "human" in err
+    assert all(task not in err for task in HOLDOUT)
+    topped_up["yes"] = True
+    assert run(monkeypatch, harbor, manifest, out) == 0
+    resume = ["job", "resume", "-p", str(out / "jobs" / "no-skill"), "-f", "ApiUsageLimitError"]
+    assert harbor.calls[ablate.CONFIGS.index("no-skill") + 1] == resume
+    no_skill = table(out)["configs"][ablate.CONFIGS.index("no-skill")]
+    assert no_skill["accuracy"] == pytest.approx(100 / 3)
+
+
+@pytest.mark.parametrize(("extra", "streak"), [((), 5), (("--fail-fast", "3"), 3)])
+def test_a_streak_of_infrastructure_errors_stops_the_batch_mid_job(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: tuple[str, ...],
+    streak: int,
+) -> None:
+    """Docker down, the network gone: every trial would error. Stop instead of burning the batch."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if config == "baseline" and broken["yes"]:
+            return None, "ApiConnectionClosedError"
+        return by_pass_rate(config, task, attempt)
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, *extra) == 2
+    assert len(harbor.calls) == 2  # full, then baseline, stopped
+    assert len(list((out / "jobs" / "baseline").glob("*/result.json"))) == streak
+    assert report_dirs(out) == []
+    err = capsys.readouterr().err
+    assert f"{streak} infrastructure errors in a row" in err and "human" in err
+    assert all(task not in err for task in HOLDOUT)
+    broken["yes"] = False
+    assert run(monkeypatch, harbor, manifest, out, *extra) == 0
+    assert harbor.calls[2] == [
+        *("job", "resume", "-p", str(out / "jobs" / "baseline")),
+        *("-f", "ApiConnectionClosedError"),
+    ]
+
+
+def test_infrastructure_errors_between_other_outcomes_do_not_stop_the_job(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if config == "full" and attempt != 1:  # 2 in a row at most: a0, a2 of one task, a0 next
+            return None, "ApiConnectionClosedError"
+        return by_pass_rate(config, task, attempt)
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--fail-fast", "3") == 2
+    assert len(list((out / "jobs" / "full").glob("*/result.json"))) == 6  # the job ran to its end
+
+
+def test_preflight_smokes_every_config_on_one_dev_task_before_any_job(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    smoked_by_first_job: list[int] = []
+
+    def watching(args: list[str], log: Path, stop_when: StopWhen) -> tuple[int, str | None]:
+        if not harbor.calls and args[0] == "run" and "/jobs" in args[args.index("-o") + 1]:
+            smoked_by_first_job.append(len(harbor.smoke))
+        return harbor(args, log, stop_when)
+
+    monkeypatch.setattr(ablate, "run_harbor", watching)
+    out = tmp_path / "out"
+    assert evals_main(ablate_args(manifest, out)) == 0
+    assert smoked_by_first_job == [len(ablate.CONFIGS)]
+    for config, call in zip(ablate.CONFIGS, harbor.smoke, strict=True):
+        assert f"run_config={config}" in call
+        assert [call[i + 1] for i, a in enumerate(call) if a == "-i"] == MANIFEST["dev"]
+        assert call[call.index("-k") + 1] == "1"
+    # scrub ran on the smoke trials too
+    smoke_events = list((out / "smoke").rglob("run.jsonl"))
+    assert len(smoke_events) == len(ablate.CONFIGS)
+    assert all(FAKE_KEY not in p.read_text() for p in smoke_events)
+
+
+@pytest.mark.parametrize(
+    ("smoke", "says"),
+    [
+        ((None, "ApiInternalServerError"), "ApiInternalServerError"),
+        ((None, "ApiUsageLimitError"), "ApiUsageLimitError"),
+        ((None, None), "no reward"),
+    ],
+)
+def test_a_failed_smoke_stops_before_any_job(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    smoke: tuple[float | None, str | None],
+    says: str,
+) -> None:
+    harbor = FakeHarbor()
+    harbor.smoke_outcome = lambda config, task, attempt: (
+        smoke if config == "baseline" else (1, None)
+    )
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out") == 2
+    assert harbor.calls == []
+    assert len(harbor.smoke) == 2  # full passed, baseline failed, nothing after
+    err = capsys.readouterr().err
+    assert "smoke" in err and "baseline" in err and says in err
+
+
+def test_a_smoke_scrub_that_cannot_check_everything_stops_before_any_job(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harbor = FakeHarbor()
+
+    def harbor_with_a_symlink(
+        args: list[str], log: Path, stop_when: StopWhen
+    ) -> tuple[int, str | None]:
+        code = harbor(args, log, stop_when)
+        job = Path(args[args.index("-o") + 1]) / args[args.index("--job-name") + 1]
+        (job / "link").symlink_to(job / "config.json")
+        return code
+
+    monkeypatch.setattr(ablate, "run_harbor", harbor_with_a_symlink)
+    assert evals_main(ablate_args(manifest, tmp_path / "out")) == 2
+    assert harbor.calls == []
+    err = capsys.readouterr().err
+    assert "smoke" in err and "scrub" in err
+
+
+def test_skip_smoke_runs_the_jobs_without_it(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", "--skip-smoke") == 0
+    assert harbor.smoke == []
+    assert len(harbor.calls) == len(ablate.CONFIGS)
+
+
+@pytest.mark.parametrize(
+    ("infos", "available", "extra"),
+    [
+        ([{"currency": "USD", "total_balance": "50.00"}], True, ()),
+        ([{"currency": "USD", "total_balance": "50.00"}], True, ("--skip-smoke",)),
+        ([{"currency": "CNY", "total_balance": "700.00"}], True, ()),  # under $100
+        ([{"currency": "USD", "total_balance": "500.00"}], False, ()),
+    ],
+)
+def test_a_balance_short_of_the_budget_stops_before_any_harbor_run(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    account: dict[str, Any],
+    infos: list[dict[str, str]],
+    available: bool,
+    extra: tuple[str, ...],
+) -> None:
+    account["balance_infos"], account["is_available"] = infos, available
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", *extra) == 2  # --budget 100
+    assert harbor.calls == harbor.smoke == []
+    assert "balance" in capsys.readouterr().err
+
+
+def test_the_balance_needs_to_cover_only_the_budget_left(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path, account: dict[str, Any]
+) -> None:
+    harbor = FakeHarbor(cost=1.0)
+    out = tmp_path / "out"
+    # $1 of smoke and 6 trials at $1: $7 of the $100 spent.
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    account["balance_infos"] = [{"currency": "USD", "total_balance": "93.50"}]
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--config", "baseline") == 0
+    assert len(harbor.calls) == 2
+
+
+def test_an_unreadable_balance_stops_before_any_harbor_run(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fetch() -> Any:
+        raise balance.BalanceUnknown("HTTP 401 from the balance endpoint")
+
+    monkeypatch.setattr(balance, "fetch", fetch)
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out") == 2
+    assert harbor.calls == harbor.smoke == []
+    assert "HTTP 401" in capsys.readouterr().err
+
+
+def test_no_preflight_when_no_job_is_to_run(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out) == 0
+
+    def fetch() -> Any:
+        raise AssertionError("asked for the balance")
+
+    monkeypatch.setattr(balance, "fetch", fetch)
+    assert run(monkeypatch, harbor, manifest, out) == 0
+    assert len(harbor.smoke) == len(ablate.CONFIGS)
+
+
 def test_spend_guard_stops_before_the_next_job(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,
@@ -280,7 +546,7 @@ def test_spend_guard_stops_before_the_next_job(
     harbor = FakeHarbor(cost=1.0)
     out = tmp_path / "out"
     monkeypatch.setattr(ablate, "run_harbor", harbor)
-    args = ablate_args(manifest, out)
+    args = ablate_args(manifest, out, "--skip-smoke")  # smoke would spend $6 first
     args[args.index("--budget") + 1] = "7.5"
     assert evals_main(args) == 1
     assert len(harbor.calls) == 1
@@ -349,9 +615,13 @@ def test_a_scrub_that_cannot_check_everything_stops_the_report(
 ) -> None:
     harbor = FakeHarbor()
 
-    def harbor_with_a_symlink(args: list[str], log: Path) -> int:
-        code = harbor(args, log)
-        job = log.parent.parent / "jobs" / log.stem
+    def harbor_with_a_symlink(
+        args: list[str], log: Path, stop_when: StopWhen
+    ) -> tuple[int, str | None]:
+        code = harbor(args, log, stop_when)
+        job = log.parent.parent / "jobs" / log.stem  # the smoke jobs live elsewhere
+        if not job.is_dir():
+            return code
         (job / "link").symlink_to(job / "config.json")
         return code
 
@@ -399,9 +669,9 @@ def test_a_failed_harbor_run_stops_the_batch(
 ) -> None:
     calls: list[list[str]] = []
 
-    def failing(args: list[str], log: Path) -> int:
+    def failing(args: list[str], log: Path, stop_when: StopWhen) -> tuple[int, str | None]:
         calls.append(args)
-        return 1
+        return 1, None
 
     monkeypatch.setattr(ablate, "run_harbor", failing)
     out = tmp_path / "out"
@@ -428,8 +698,9 @@ def test_spend_of_trials_a_resume_drops_still_counts(
     assert run(monkeypatch, harbor, manifest, out) == 0
     assert list((out / "dropped" / "no-skill").rglob("*.jsonl"))
     code, printed, _ = ablate.evals_cli(["spend", str(out), "--budget", "100"])
-    # 6 configs x 2 tasks x 3 trials, plus the 2 dropped ones, at $0.01 each.
-    assert code == 0 and "$0.3800 over 38 event file(s)" in printed
+    # 6 configs x 2 tasks x 3 trials, the 2 dropped ones, and 6 smoke trials in each of the 2
+    # invocations, at $0.01 each.
+    assert code == 0 and "$0.5000 over 50 event file(s)" in printed
 
 
 @pytest.mark.parametrize(
@@ -582,15 +853,17 @@ def test_the_wheel_cache_is_filled_once_before_the_first_harbor_job(
     harbor = FakeHarbor()
     fills_seen: list[int] = []
 
-    def harbor_after_fill(args: list[str], log: Path) -> int:
+    def harbor_after_fill(
+        args: list[str], log: Path, stop_when: StopWhen
+    ) -> tuple[int, str | None]:
         fills_seen.append(len(prefetched))
-        return harbor(args, log)
+        return harbor(args, log, stop_when)
 
     monkeypatch.setattr(ablate, "run_harbor", harbor_after_fill)
     out = tmp_path / "out"
     assert evals_main(ablate_args(manifest, out)) == 0
-    assert fills_seen == [1] * len(ablate.CONFIGS)
-    assert prefetched == [(Path("tasks"), HOLDOUT)]
+    assert fills_seen == [1] * 2 * len(ablate.CONFIGS)  # smoke and job per config
+    assert prefetched == [(Path("tasks"), HOLDOUT + MANIFEST["dev"])]  # the smoke task too
     # Every job finished: a rerun starts no Harbor job, so it needs no wheels.
     assert evals_main(ablate_args(manifest, out)) == 0
     assert len(prefetched) == 1
@@ -602,7 +875,7 @@ def tasks_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from evals import harbor_agent
 
     tasks = tmp_path / "tasks"
-    for task in HOLDOUT:
+    for task in [*HOLDOUT, *MANIFEST["dev"]]:
         (tasks / task / "environment").mkdir(parents=True)
         (tasks / task / "task.toml").write_text("[environment]\ncpus = 2\n")
         (tasks / task / "environment" / "Dockerfile").write_text("FROM base:1\n")
@@ -683,3 +956,85 @@ def test_a_task_without_a_known_image_stops_before_any_harbor_job(
     assert run_on(monkeypatch, harbor, manifest, tmp_path / "out", tasks_dir) == 2
     assert harbor.calls == []
     assert "cannot fill the wheel cache" in capsys.readouterr().err
+
+
+SLEEPER = "import signal, sys, time; print('started', flush=True); {setup}; time.sleep(60)"
+
+
+@pytest.mark.parametrize(
+    ("setup", "code"),
+    [("pass", -15), ("signal.signal(signal.SIGTERM, signal.SIG_IGN)", -9)],
+)
+def test_the_watcher_stops_its_own_child_with_sigterm_then_kills_it(
+    tmp_path: Path, setup: str, code: int
+) -> None:
+    """Harbor's own stop is SIGTERM (it cancels its trials); a child that ignores it is killed."""
+    asks: list[int] = []
+
+    def stop_when() -> str | None:
+        asks.append(1)
+        return "stop now" if len(asks) >= 2 else None
+
+    log = tmp_path / "child.log"
+    command = [sys.executable, "-c", SLEEPER.format(setup=setup)]
+    result = ablate.run_watched(command, log, dict(os.environ), stop_when, 0.2, grace=1.0)
+    assert result == (code, "stop now")
+    assert "started" in log.read_text()
+
+
+def test_the_watcher_returns_the_exit_code_of_a_child_that_ends(tmp_path: Path) -> None:
+    log = tmp_path / "child.log"
+    command = [sys.executable, "-c", "print('done'); raise SystemExit(3)"]
+    assert ablate.run_watched(command, log, dict(os.environ), lambda: None, 0.05) == (3, None)
+    assert log.read_text() == "done\n"
+
+
+def records(out: Path) -> list[dict[str, Any]]:
+    return [json.loads(p.read_text()) for p in sorted((out / "records").glob("*.json"))]
+
+
+def test_every_invocation_writes_a_run_record(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """ADR-0008 reuses an earlier result only on the same benchmark commit and machine."""
+    bench = tmp_path / "data-eng-bench"
+    (bench / "tasks").mkdir(parents=True)
+    (bench / "tasks" / "README").write_text("tasks\n")
+    git = ["git", "-C", str(bench), "-c", "user.email=t@example.com", "-c", "user.name=t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "tasks"], check=True)
+    head = subprocess.run(
+        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    monkeypatch.setenv("DATA_AGENT_MACHINE", "mac-colima")
+    monkeypatch.setattr(ablate, "run_harbor", FakeHarbor())
+    out = tmp_path / "out"
+    argv = ablate_args(manifest, out, "--config", "full")
+    argv[argv.index("--tasks-dir") + 1] = str(bench / "tasks")
+    assert evals_main(argv) == 0
+    (record,) = records(out)
+    assert record["benchmark_commit"] == head
+    assert record["machine"] == "mac-colima"
+    assert record["git_commit"] == "c0ffee"
+    assert datetime.fromisoformat(record["started_at"]).tzinfo is not None
+    (bench / "tasks" / "README").write_text("changed\n")
+    assert evals_main(argv) == 0
+    assert [r["benchmark_commit"] for r in records(out)] == [head, f"{head}-dirty"]
+
+
+def test_a_run_record_without_git_or_a_machine_label_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("DATA_AGENT_MACHINE", raising=False)
+    out = tmp_path / "out"
+    argv = ablate_args(manifest, out, "--config", "full")
+    argv[argv.index("--tasks-dir") + 1] = str(tmp_path)  # not in a git checkout
+    monkeypatch.setattr(ablate, "run_harbor", FakeHarbor())
+    assert evals_main(argv) == 0
+    (record,) = records(out)
+    assert record["benchmark_commit"] is None and record["machine"] is None
+    assert "DATA_AGENT_MACHINE" in capsys.readouterr().err
