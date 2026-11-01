@@ -1,6 +1,6 @@
 # 32 — 验证者拿题目原文当标准
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -93,8 +93,8 @@ Branch: worktree-32-verifiers-judge-against-task
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1
+- Attempts: 2
+- Review rounds: 2（退回 1 次）
 - Model spend: $0（工单 agent）；服务器运行见 Comments
 - Outcome: 单元测试类验收完成；服务器真实运行与初筛由主会话做
 - Human review minutes: —
@@ -141,3 +141,10 @@ Branch: worktree-32-verifiers-judge-against-task
   - no-verifiers 的系统提示词变化可以接受。dev-3 的 no-verifiers 全是 ApiUsageLimitError，没有有效结果要复用；最终消融时 6 个配置都会在新版本上重跑。dev-3 的 baseline 仍然可以复用。
 - 2026-11-01 主会话：服务器真实运行 `t32-real`（commit 4634d50，`ablate --split dev --config full --task dbt-rfm-customer-segmentation --trials 1`）：reward 1，$0.1627（冒烟 cohort-retention-matrix reward 0，$0.1349）。轨迹核对：主 agent 派出的两个验证者和复查的结构验证者都 Read 了 `/tmp/data-agent-task-7lfqahsw/task.md`（3 次）；两份结构验证者的 `verifier_end` 都有 CHECK 6（数值验证者本来没有 CHECK 6）。
 - 2026-11-01 主会话：退回：PR #31 Codex P2（`src/data_agent/agent.py:155`）属实。`saved_task` 直接 `tempfile.mkdtemp()`，`--workspace` 是 `/tmp` 或 TMPDIR 落在 workspace 里时，`task.md` 会建在 workspace 内，违反"workspace 之外"的约定（评分方会读到多出来的文件，guard 的边界也不成立）。修法：建临时目录前确认父目录不在 workspace 内（在的话换一个 workspace 外的父目录，或者直接报错），配一个修复前会失败的测试。Harbor 里 workspace 是 `/app`，不受影响，所以 4634d50 上的初筛 `t32-screen2` 结果对修复后的版本仍然有效。
+- 2026-11-01 工单 agent 返工第 1 轮（主会话转抄），提交 05e910c：
+  - 修复：`saved_task(text, workspace)`（`src/data_agent/agent.py:152`）先解析 `tempfile.gettempdir()` 和 workspace；临时目录就是 workspace 或在它里面时，抛 `ConfigError`（"set TMPDIR to a directory outside the workspace"），CLI 以退出码 2 报用法错误（`cli.py:97`），`evals/dab.py` 本来就接 `ConfigError`；否则 `mkdtemp(dir=<解析后的临时目录>)`。Harbor 里行为不变。
+  - 测试（`tests/test_task_file.py`）：`test_a_temp_dir_inside_the_workspace_is_refused[.|tmp]`，修复前失败、修复后通过；`test_a_workspace_inside_the_temp_dir_still_gets_a_task_file_outside_it` 防止拒绝过度。
+  - 不调模型的真实运行：workspace 等于临时目录时抛出上述 ConfigError；workspace 在另一个临时目录时 task.md 建在 workspace 外，内容一致。
+  - make check（`UV_OFFLINE=1`）：ruff、basedpyright 通过；1357 passed，1 skipped。
+  - da-review：无可修问题。eng:code-review：Standards 无硬性违规；不改的几处——被拒绝的运行会留下空的 events 目录（无事件文件，无害）；临时目录等于 workspace 时报错写"inside"略不准，但给出了做法；三个测试重复同一个 monkeypatch，内联更清楚；`uses_verifiers` 多处调用是旧代码。Spec：无缺漏、无越界。
+  - 已知限制：路径比较区分大小写，macOS 不区分大小写的卷上 `TMPDIR=/x/WS/tmp` 配 `--workspace /x/ws` 能绕过检查；Linux 和 Harbor 不受影响。

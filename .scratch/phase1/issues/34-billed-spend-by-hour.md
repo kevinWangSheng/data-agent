@@ -1,6 +1,6 @@
 # 34 — 花费按运行时段计价：报告、累计花费、开跑前检查
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 34-billed-spend-by-hour)
@@ -104,3 +104,4 @@ Branch: worktree-34-billed-spend-by-hour
     - 报告把开发集事件文件读两遍：开销小。
     - 已知限制：`process.mean_cost_usd_succeeded`、`process.per_task.cost_usd` 仍是 `cost_usd`；验收只要求新增一列。
   - 测试改动：`tests/test_dab.py::test_budget_guard_stops_before_the_next_run` 预算 0.00001 → 0.000001（脚本化运行带真实 `ts`，闲时会打折，原阈值不再触发）；`test_eval_ablate.py` 的花费输出文本断言改成新格式。`tests/acceptance/` 没动。
+- 2026-11-01 主会话：PR #32 CI 绿；Codex 审 bf0953d 无意见。squash 合并为 b0c7727。

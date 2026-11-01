@@ -97,3 +97,4 @@ Branch: worktree-35-dab-score
   - 工单 agent 没见过真实题目自己的 `validate.py`；签名不同时工具以 exit 2 退出并点名该题（对应停止条件），服务器运行时核对。
 - 2026-11-01 主会话：
   - 缺题默认口径定为"只算输出里出现的题"，`--all-queries` 是榜单口径。理由：本工单验收里"缺项按 0 算"指基础设施丢掉的运行，已实现；DAB 试跑只跑 query1，榜单口径会压到接近 0；正式评测跑全部题时两种口径相同。报告每行都注明覆盖了 clone 里多少题，不会被误当榜单分。正式评测报告用 `--all-queries`。
+- 2026-11-01 主会话：PR #33 CI 绿。Codex P1"`dab_score.py:53` 没传 `reason`，真 DAB 会 TypeError"不属实：服务器钉的 DAB 6ad9d68（`scripts/da-remote` 的 `dab_commit`）里入口是 `def validate(query_dir: Path, llm_answer: str, reason: str=None)`，已在 PR 回复。squash 合并。服务器真实运行待做（服务器正在跑 t32-screen2，跑完再 setup）。
