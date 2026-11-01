@@ -1,6 +1,6 @@
 # 31 — 开发集诊断消融补跑与回归集入集
 
-Status: ready-for-human
+Status: wontfix
 Blocked by: 26、27、28、30
 Spec: ../spec.md
 Claimed by: 主会话
@@ -65,3 +65,8 @@ Branch: —（运维；只提交 `evals/regression.json`）
     - 实际花费在估算的 50%–100% 之间，取决于高峰与闲时的比例。
   - 量与时长：dev-3 原计划 450 条，有效 210 条，其中 no-skill 30/90，no-verifiers、no-context 都是 0/90；另外 240 条是 ApiUsageLimitError，没花钱。dev-3 跑 180 条用了约 12.8 小时（并发 3）。
   - 用户在重新考虑是否补跑（花费）；本工单暂停，未开跑。
+- 2026-11-01 主会话（关闭）：wontfix，未开跑，花费 $0。
+  - 开发集诊断消融不跑：每一层的贡献只在最终留出集 6 配置消融里测。
+  - 回归集改在合并验收那一轮建：dev-3 full 与合并版都 3/3 的题入集。
+  - 依据：ADR-0008 Update 2026-11-01。后续由工单 32、33 分别初筛，再合并验收。
+  - 服务器上的 `runs/dev-4` 只有两条预检记录（退出码 2），没有 trial。
