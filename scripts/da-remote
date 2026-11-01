@@ -18,7 +18,8 @@
 #        da-remote status [<name>]                running or not, log tail, spend so far
 #        da-remote push <name>                    copy this checkout's runs/<name>/ to the server
 #        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout;
-#                                                 a holdout run (ablate) brings back its summary only
+#                                                 an ablate run brings back its summary only, unless
+#                                                 all its tasks are in the server's dev list
 # Env:   DA_REMOTE_HOST (default: da-server), DA_REMOTE_DIR (repo path on the server, default:
 #        ~/data-agent), DA_REMOTE_REPO (clone URL, default: the GitHub repo)
 set -euo pipefail
@@ -600,21 +601,84 @@ EOF
 }
 
 pull() {
-  local root sub filters=()
+  local root pull_info sub dev_only=no filters=()
   root=$(checkout_root)
-  sub=$(run_script NAME "$1" <<'EOF'
+  # The subcommand on the first line; for an ablate run, a second line `dev-only` when every job
+  # in it is shown to cover dev-set tasks only, judged against the server checkout's
+  # evals/manifest.json (not one the run brought): each job's Harbor config names its tasks and
+  # all are in the dev list, every trial dir (kept or dropped by a resume) is a dev task's by its
+  # result.json or Harbor's trial name, every preflight smoke job is judged the same way, and every
+  # Harbor log and dropped-trials dir belongs to one of those jobs. Anything unreadable or not a
+  # trial dir where one belongs fails the check.
+  pull_info=$(run_script NAME "$1" <<'EOF'
 cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
+[ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = ablate ] || exit 0
+cd "$DIR" && uv run -q --no-sync python - "runs/$NAME" evals/manifest.json >/dev/null 2>&1 <<'PY' &&
+import json
+import sys
+from pathlib import Path
+
+run, manifest = Path(sys.argv[1]), Path(sys.argv[2])
+
+
+def dev_trial(trial: Path) -> bool:
+    """By its result.json, or before there is one (and for a dropped trial) by Harbor's trial
+    name: `<task[:32] without trailing - or _>__<7 random characters>`."""
+    result = trial / "result.json"
+    if result.exists():
+        return json.loads(result.read_text())["task_name"].rsplit("/", 1)[-1] in dev
+    return trial.name.rpartition("__")[0] in {task[:32].rstrip("-_") for task in dev}
+
+
+def dev_job(job: Path) -> bool:
+    """A Harbor job dir: its config names dev tasks only, and so does every trial dir in it (the
+    files beside them are the job's own: config.json, result.json, job.log)."""
+    datasets = json.loads((job / "config.json").read_text())["datasets"]
+    names = [dataset.get("task_names") for dataset in datasets]
+    ok = bool(datasets) and all(names) and all(set(n) <= dev for n in names)
+    return ok and all(dev_trial(trial) for trial in job.iterdir() if trial.is_dir())
+
+
+try:
+    dev = set(json.loads(manifest.read_text())["dev"])
+    jobs = {job.name: job for job in (run / "jobs").iterdir()}
+    ok = bool(jobs) and all(dev_job(job) for job in jobs.values())
+    # A dropped trial is a dir; anything else there cannot be judged.
+    for dropped in (run / "dropped").glob("*"):
+        trials = list(dropped.iterdir())
+        ok = ok and dropped.name in jobs and all(t.is_dir() and dev_trial(t) for t in trials)
+    # The preflight's smoke jobs, smoke/<UTC time>/<config>/: the run's own manifest picked the
+    # task, so each is judged like a job (its config's job may never have started).
+    smoked = set()
+    for stamp in (run / "smoke").glob("*"):
+        for job in stamp.iterdir():
+            ok = ok and dev_job(job)
+            smoked.add(job.name)
+    # Harbor's logs: logs/<config>.log of a job, logs/smoke-<config>.log of a smoke job.
+    for log in (run / "logs").glob("*"):
+        stem = log.stem
+        if log.name != "guards.log":
+            ok = ok and (stem in jobs or (stem.startswith("smoke-") and stem[6:] in smoked))
+except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    ok = False
+sys.exit(0 if ok else 1)
+PY
+  echo dev-only
+true
 EOF
   )
-  # ADR-0004: an ablate run is on the holdout, whose trial dirs and Harbor logs name tasks; only its
-  # reports (aggregates), the run log (ablate prints aggregates only) and control files leave the
-  # server. Anything else read back (none recorded, ssh noise) may be one too.
-  if ! [[ $sub =~ ^[a-z]+$ ]] || [ "$sub" = ablate ]; then
+  sub=${pull_info%%$'\n'*}
+  [ "$pull_info" = "ablate"$'\n'"dev-only" ] && dev_only=yes
+  # ADR-0004: an ablate run may be on the holdout, whose trial dirs and Harbor logs name tasks; only
+  # its reports (aggregates), the run log (ablate prints aggregates only) and control files leave
+  # the server, unless the run was shown to hold dev-set tasks only (ADR-0008: those trajectories
+  # are read by a human). Anything else read back (none recorded, ssh noise) may be one too.
+  if ! [[ $sub =~ ^[a-z]+$ ]] || { [ "$sub" = ablate ] && [ "$dev_only" = no ]; }; then
     filters=(--include='/reports/***')
     for f in run.log exit budget subcommand request.json; do filters+=(--include="/$f"); done
     filters+=(--exclude='*')
     # The filters keep old local files: refuse rather than leave trials next to the summary.
-    for d in jobs logs dropped; do
+    for d in jobs logs dropped smoke; do
       if [ -e "$root/runs/$1/$d" ]; then
         echo "pull: runs/$1/$d exists here; a holdout pull brings back the summary only," \
           "so move runs/$1 aside first" >&2
@@ -626,6 +690,8 @@ EOF
   copy ${filters[@]+"${filters[@]}"} "$host:$(rsync_dir)/runs/$1/" "$root/runs/$1/"
   if [ ${#filters[@]} -gt 0 ]; then
     echo "pull: server runs/$1 -> $root/runs/$1 (holdout: summary only, trials stay on the server)"
+  elif [ "$dev_only" = yes ]; then
+    echo "pull: server runs/$1 -> $root/runs/$1 (dev set only: the whole run)"
   else
     echo "pull: server runs/$1 -> $root/runs/$1"
   fi

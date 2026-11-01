@@ -80,6 +80,43 @@ def test_report_refuses_infrastructure_errors(tmp_path: Path) -> None:
     assert not (tmp_path / "report" / "report.json").exists()
 
 
+def test_dev_trials_point_at_the_event_file_harbor_keeps(tmp_path: Path) -> None:
+    """The agent writes `agent/events/run-<stamp>-<id>.jsonl` (evals.harbor.event_files); the
+    adapter reads the last one by name."""
+    job = tmp_path / "job"
+    for name in ("t1__a", "t1__b", "t1__c"):
+        write_trial(job, name, {"verifier_result": {"rewards": {"reward": 1.0}}})
+    events = job / "t1__a" / "agent" / "events"
+    events.mkdir(parents=True)
+    for name in ("run-20261020T100000Z-a.jsonl", "run-20261020T110000Z-b.jsonl"):
+        (events / name).write_text("{}\n")
+    report(job, tmp_path)
+    rows = json.loads((tmp_path / "report" / "trials.json").read_text())
+    assert [row["events"] for row in rows] == [
+        str(events / "run-20261020T110000Z-b.jsonl"),
+        None,
+        None,
+    ]
+
+
+def test_dev_report_has_process_metrics_per_task(tmp_path: Path) -> None:
+    """Without a second config to diverge from, a dev report still gives each task's process
+    metrics (ticket 28), next to the per-task outcomes seam C fixes."""
+    job = tmp_path / "job"
+    for name, reward, cost in (("t1__a", 1.0, 0.2), ("t1__b", 1.0, 0.4), ("t1__c", 0.0, 0.9)):
+        write_trial(job, name, {"verifier_result": {"rewards": {"reward": reward}}})
+        events = job / name / "agent" / "events"
+        events.mkdir(parents=True)
+        result = {"type": "result", "subtype": "success", "num_turns": 10, "cost_usd": cost}
+        (events / "run-1.jsonl").write_text(json.dumps(result) + "\n")
+    summary = report(job, tmp_path)
+    assert summary["per_task"] == {"t1": {"successes": 2, "trials": 3}}
+    process = summary["process"]
+    assert process["mean_cost_usd_succeeded"] == pytest.approx(0.3)
+    assert process["per_task"]["t1"]["mean_turns"] == 10.0
+    assert process["per_task"]["t1"]["cost_usd"] == pytest.approx(1.5)
+
+
 def test_a_usage_limit_is_rerun_not_scored(tmp_path: Path) -> None:
     """The account ran out (Harbor does not retry it); that is no agent failure to score as 0."""
     job = tmp_path / "job"
@@ -295,3 +332,61 @@ def test_sample_rejects_dev_tasks_missing_from_tasks_dir(tmp_path: Path) -> None
     )
     assert proc.returncode != 0
     assert "not-a-task" in proc.stderr
+
+
+@pytest.mark.parametrize("real", [{"dev": [], "holdout": ["t1"]}, {"holdout": "t2"}, None])
+def test_a_dev_report_on_a_task_the_repos_manifest_holds_out_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, real: dict[str, Any] | None
+) -> None:
+    """A dev report names its tasks; a manifest that lists a holdout task under dev (the old
+    temporary-manifest practice) is checked against the repo's evals/manifest.json (on the
+    server, the real one), and refused when that cannot be read."""
+    from evals import report as report_module
+    from evals.harbor import load_trials
+
+    repo_manifest = tmp_path / "repo-manifest.json"
+    if real is not None:
+        repo_manifest.write_text(json.dumps(real))
+    monkeypatch.setattr(report_module, "REPO_MANIFEST", repo_manifest)
+    job = tmp_path / "job"
+    write_trial(job, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    out = tmp_path / "report"
+    manifest = {"seed": 0, "dev": ["t1"], "holdout": []}
+    with pytest.raises(ValueError, match=str(repo_manifest)) as exc:
+        report_module.write_report(load_trials(job), manifest, "dev", out, trials_per_task=1)
+    assert "t1" not in str(exc.value).replace(str(tmp_path), "")
+    assert not out.exists()
+
+
+def test_a_dev_report_on_a_task_its_own_manifest_holds_out_is_refused(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "t1__a", {"verifier_result": {"rewards": {"reward": 1.0}}})
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"seed": 0, "dev": ["t1"], "holdout": ["t1"]}))
+    out = tmp_path / "report"
+    proc = evals(
+        *("report", str(job), "--manifest", str(manifest), "--split", "dev"),
+        *("--out", str(out), "--trials", "1"),
+    )
+    assert proc.returncode == 2
+    assert str(manifest) in proc.stderr
+    assert not out.exists()
+
+
+def test_a_dev_report_on_a_task_the_real_manifest_holds_out_is_refused(tmp_path: Path) -> None:
+    """End to end against the repo's own evals/manifest.json; the task id is never printed."""
+    held_out = json.loads((REPO_ROOT / "evals" / "manifest.json").read_text())["holdout"][0]
+    job = tmp_path / "job"
+    (job / "x__a").mkdir(parents=True)
+    outcome = {"task_name": held_out, "verifier_result": {"rewards": {"reward": 1.0}}}
+    (job / "x__a" / "result.json").write_text(json.dumps(outcome))
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"seed": 0, "dev": [held_out], "holdout": []}))
+    out = tmp_path / "report"
+    proc = evals(
+        *("report", str(job), "--manifest", str(manifest), "--split", "dev"),
+        *("--out", str(out), "--trials", "1"),
+    )
+    assert proc.returncode == 2
+    assert held_out not in proc.stdout + proc.stderr
+    assert not out.exists()

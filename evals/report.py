@@ -1,8 +1,8 @@
 """Scores and split reports for a Harbor job.
 
 Holdout reports carry aggregates only: no task ids, trial names, per-task outcomes or error
-text ever reach the output (ADR-0004). Dev reports add per-task outcomes and where each
-trial's events live, for failure attribution.
+text ever reach the output (ADR-0004). Dev reports add per-task outcomes, per-task process
+metrics (evals.process) and where each trial's events live, for failure attribution.
 """
 
 import json
@@ -10,8 +10,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from evals.harbor import Trial, by_task
+from evals.harbor import Trial, by_task, last_event_file
 from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
+from evals.process import job_metrics
+
+# The repo's own manifest: on the server, the real one (evals.ablate checks a dev run the same way).
+REPO_MANIFEST = Path(__file__).resolve().parent / "manifest.json"
 
 
 def score(trials: list[Trial]) -> dict[str, Any]:
@@ -87,7 +91,7 @@ def _per_task(trials: list[Trial]) -> dict[str, dict[str, int]]:
 def _trial_rows(trials: list[Trial]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for t in trials:
-        events = t.dir / "agent" / "events.jsonl"
+        events = last_event_file(t)
         rows.append(
             {
                 "task": t.task,
@@ -98,7 +102,7 @@ def _trial_rows(trials: list[Trial]) -> list[dict[str, Any]]:
                 "cached_input_tokens": t.cached_input_tokens,
                 "output_tokens": t.output_tokens,
                 "cost_usd": t.cost_usd,
-                "events": str(events) if events.exists() else None,
+                "events": str(events) if events else None,
             }
         )
     return rows
@@ -145,24 +149,49 @@ def split_trials(
     return in_split
 
 
+def check_dev_list(manifest: dict[str, Any], label: Path | str) -> None:
+    """Refuse per-task output for a dev list that names a holdout task (ADR-0004 allows task ids
+    for the dev set only): one the given manifest (`label` in errors) holds out, or one the repo's
+    evals/manifest.json holds out, since a temporary manifest may hold out nothing. A repo
+    manifest whose holdout cannot be read as a list of task ids is refused too. Errors name the
+    manifests, never a task.
+    """
+    try:
+        held_out = json.loads(REPO_MANIFEST.read_text())["holdout"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"cannot read the holdout of {REPO_MANIFEST}: {exc}") from exc
+    if not isinstance(held_out, list) or not all(isinstance(t, str) for t in held_out):
+        raise ValueError(f"cannot read the holdout of {REPO_MANIFEST}: not a list of task ids")
+    dev = set(manifest["dev"])
+    for name, holdout in ((label, manifest.get("holdout") or []), (REPO_MANIFEST, held_out)):
+        if dev & set(holdout):
+            raise ValueError(f"{name} holds out tasks the dev list names; use the real manifest")
+
+
 def write_report(
     trials: list[Trial],
     manifest: dict[str, Any],
     split: str,
     out_dir: Path,
     trials_per_task: int = TRIALS_PER_TASK,
+    manifest_label: Path | str = "the manifest",
 ) -> dict[str, Any]:
     """Write `out_dir/report.json` for one split of the manifest; dev also gets `trials.json`.
 
     Refuses a split that is incomplete: a task without results, or a split `check_complete`
-    rejects. Errors give counts only, so they name no holdout task.
+    rejects; and a dev list `check_dev_list` rejects. Errors give counts only, so they name no
+    holdout task.
     """
+    if split == "dev":
+        check_dev_list(manifest, manifest_label)
     in_split = split_trials(trials, manifest, split, "this")
     check_complete(in_split, split, trials_per_task)
     report: dict[str, Any] = {"split": split, **summary(in_split)}
     out_dir.mkdir(parents=True, exist_ok=True)
     if split == "dev":
         report["per_task"] = _per_task(in_split)
+        process = job_metrics(in_split)
+        report["process"] = {key: process[key] for key in ("mean_cost_usd_succeeded", "per_task")}
         rows = _trial_rows(in_split)
         (out_dir / "trials.json").write_text(json.dumps(rows, indent=2) + "\n")
     (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
