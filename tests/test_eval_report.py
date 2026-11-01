@@ -80,6 +80,25 @@ def test_report_refuses_infrastructure_errors(tmp_path: Path) -> None:
     assert not (tmp_path / "report" / "report.json").exists()
 
 
+def test_dev_trials_point_at_the_event_file_harbor_keeps(tmp_path: Path) -> None:
+    """The agent writes `agent/events/run-<stamp>-<id>.jsonl` (evals.harbor.event_files); the
+    adapter reads the last one by name."""
+    job = tmp_path / "job"
+    for name in ("t1__a", "t1__b", "t1__c"):
+        write_trial(job, name, {"verifier_result": {"rewards": {"reward": 1.0}}})
+    events = job / "t1__a" / "agent" / "events"
+    events.mkdir(parents=True)
+    for name in ("run-20261020T100000Z-a.jsonl", "run-20261020T110000Z-b.jsonl"):
+        (events / name).write_text("{}\n")
+    report(job, tmp_path)
+    rows = json.loads((tmp_path / "report" / "trials.json").read_text())
+    assert [row["events"] for row in rows] == [
+        str(events / "run-20261020T110000Z-b.jsonl"),
+        None,
+        None,
+    ]
+
+
 def test_report_refuses_uneven_trial_counts(tmp_path: Path) -> None:
     job = tmp_path / "job"
     passed = {"verifier_result": {"rewards": {"reward": 1.0}}}

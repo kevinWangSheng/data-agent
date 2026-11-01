@@ -10,7 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from evals.harbor import Trial, by_task
+from evals.harbor import Trial, by_task, last_event_file
 from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
 
 
@@ -86,7 +86,7 @@ def _per_task(trials: list[Trial]) -> dict[str, dict[str, int]]:
 def _trial_rows(trials: list[Trial]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for t in trials:
-        events = t.dir / "agent" / "events.jsonl"
+        events = last_event_file(t)
         rows.append(
             {
                 "task": t.task,
@@ -97,7 +97,7 @@ def _trial_rows(trials: list[Trial]) -> list[dict[str, Any]]:
                 "cached_input_tokens": t.cached_input_tokens,
                 "output_tokens": t.output_tokens,
                 "cost_usd": t.cost_usd,
-                "events": str(events) if events.exists() else None,
+                "events": str(events) if events else None,
             }
         )
     return rows

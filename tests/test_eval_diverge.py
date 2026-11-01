@@ -134,7 +134,7 @@ def test_process_metrics_per_task_come_from_the_event_files(
     assert report["baseline"]["mean_cost_usd_succeeded"] == pytest.approx(0.20)
     trial = next(t for t in full["trials"] if t["trial"] == "dbt-bravo__t0")
     assert trial["stopped"] == "budget"
-    assert [Path(p).name for p in trial["events"]] == ["run-1.jsonl"]
+    assert Path(trial["events"]).name == "run-1.jsonl"
 
 
 def test_holdout_tasks_are_counted_but_never_named(tmp_path: Path, jobs: tuple[Path, Path]) -> None:
@@ -160,3 +160,39 @@ def test_jobs_without_dev_trials_are_refused(
     assert "dev" in captured.err
     assert "dbt-delta" not in captured.out + captured.err
     assert not (tmp_path / "diverge").exists()
+
+
+def test_only_the_last_event_file_counts(tmp_path: Path, jobs: tuple[Path, Path]) -> None:
+    """The Harbor adapter scores and reports a trial by its last event file (a trial runs
+    `data-agent run` once); an older file left in the directory is not part of the result."""
+    baseline, full = jobs
+    old = full / "dbt-alpha__t0" / "agent" / "events" / "run-0.jsonl"
+    old.write_text(json.dumps({"seq": 0, **result(99, 9.0, "error_max_turns")}) + "\n")
+    _, report, _ = diverge(tmp_path, baseline, full)
+    trial = next(t for t in report["candidate"]["trials"] if t["trial"] == "dbt-alpha__t0")
+    assert (trial["turns"], trial["stopped"]) == (12, None)
+    assert Path(trial["events"]).name == "run-1.jsonl"
+
+
+def test_unequal_trial_counts_are_refused(
+    tmp_path: Path, jobs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline, full = jobs
+    write_trial(full, "dbt-charlie", 2, 1.0, [result(10, 0.1)])
+    code, _, _ = diverge(tmp_path, baseline, full)
+    assert code == 2
+    assert "dbt-charlie" in capsys.readouterr().err
+
+
+def test_infrastructure_errors_are_refused(
+    tmp_path: Path, jobs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline, full = jobs
+    path = full / "dbt-bravo__t1" / "result.json"
+    outcome = json.loads(path.read_text())
+    outcome["verifier_result"] = None
+    outcome["exception_info"] = {"exception_type": "ApiInternalServerError"}
+    path.write_text(json.dumps(outcome))
+    code, _, _ = diverge(tmp_path, baseline, full)
+    assert code == 2
+    assert "infrastructure" in capsys.readouterr().err

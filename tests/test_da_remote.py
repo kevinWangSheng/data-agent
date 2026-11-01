@@ -426,7 +426,12 @@ def test_pull_of_a_dev_or_dab_run_takes_the_whole_dir(env: Env):
 
 
 # The server checkout's real manifest; a run's jobs are judged against it.
-SERVER_MANIFEST = {"seed": 0, "dev": ["dbt-alpha", "dbt-bravo"], "holdout": ["dbt-delta"]}
+LONG_DEV = "dbt-fix-customer-snapshot-and-build-dimension"  # over Harbor's 32-character cut
+SERVER_MANIFEST = {
+    "seed": 0,
+    "dev": ["dbt-alpha", "dbt-bravo", LONG_DEV],
+    "holdout": ["dbt-delta"],
+}
 
 
 def ablate_run(env: Env, jobs: dict[str, list[str]]) -> Path:
@@ -467,7 +472,11 @@ def pulled_whole(env: Env) -> bool:
 
 def test_pull_of_an_ablate_run_on_dev_tasks_only_takes_the_whole_dir(env: Env):
     """ADR-0008: dev-set trajectories are read by a human; ADR-0004 guards the holdout only."""
-    ablate_run(env, {"full": ["dbt-alpha", "dbt-bravo"], "baseline": ["dbt-bravo"]})
+    run = ablate_run(env, {"full": ["dbt-alpha", LONG_DEV], "baseline": ["dbt-bravo"]})
+    # Harbor names a trial `<task[:32] without trailing - or _>__<7 chars>`: a trial still running
+    # (no result.json yet) and the trials a resume dropped are judged by that name.
+    (run / "jobs" / "full" / "dbt-alpha__run1234" / "agent").mkdir(parents=True)
+    (run / "dropped" / "full" / f"{LONG_DEV[:32].rstrip('-_')}__drop123").mkdir(parents=True)
     assert pulled_whole(env)
 
 
@@ -492,6 +501,8 @@ def test_pull_of_an_ablate_run_with_a_holdout_trial_takes_the_summary_only(env: 
         "dropped trials of a job not on disk",
         "no jobs",
         "no server manifest",
+        "holdout trial without result.json",
+        "dropped trial of a holdout task",
     ],
 )
 def test_pull_of_an_ablate_run_it_cannot_judge_takes_the_summary_only(env: Env, spoil: str):
@@ -517,6 +528,10 @@ def test_pull_of_an_ablate_run_it_cannot_judge_takes_the_summary_only(env: Env, 
             path.rmdir() if path.is_dir() else path.unlink()
     elif spoil == "no server manifest":
         (env.repo / "evals" / "manifest.json").unlink()
+    elif spoil == "holdout trial without result.json":
+        (run / "jobs" / "full" / "dbt-delta__run1234" / "agent").mkdir(parents=True)
+    elif spoil == "dropped trial of a holdout task":
+        (run / "dropped" / "full" / "dbt-delta__drop123").mkdir(parents=True)
     assert not pulled_whole(env)
 
 

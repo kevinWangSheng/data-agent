@@ -11,7 +11,9 @@ Writes `DIR/diverge.json` and `DIR/diverge.md` and prints the markdown:
   mean spend of the job's successful trials. Per-trial rows name each event file, for reading.
 
 Only the manifest's dev tasks are shown. A trial of any other task is counted and nothing else of
-it is read or written (ADR-0004), and two jobs with no dev trial between them are refused.
+it is read or written (ADR-0004), and two jobs with no dev trial between them are refused. So
+are infrastructure errors in the dev trials and a dev task the jobs ran a different number of
+times: an interrupted job is rerun before it is compared.
 """
 
 import argparse
@@ -21,8 +23,9 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from evals.harbor import Trial, event_files, load_trials
+from evals.harbor import Trial, last_event_file, load_trials
 from evals.metrics import is_success
+from evals.report import is_infra_error
 
 # Claude Code's file-writing tools; a call on a `.sql` file under a `models/` directory edits a
 # dbt model.
@@ -51,13 +54,13 @@ def is_model_edit(event: dict[str, Any]) -> bool:
 
 
 def trial_metrics(trial: Trial) -> dict[str, Any]:
-    """One trial's process metrics, over all its event files (a retried run writes another)."""
-    files = event_files(trial)
+    """One trial's process metrics, from the event file it is scored by (`last_event_file`)."""
+    events = last_event_file(trial)
     turns, edits, calls, cost = 0, 0, 0, 0.0
     checks: Counter[str] = Counter()
     stopped: str | None = None
-    for path in files:
-        with path.open() as f:
+    if events is not None:
+        with events.open() as f:
             for line in f:
                 event = json.loads(line)
                 kind = event.get("type")
@@ -80,7 +83,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
         "verifier_checks": dict(checks),
         "model_edits": edits,
         "cost_usd": cost,
-        "events": [str(p) for p in files],
+        "events": str(events) if events else None,
     }
 
 
@@ -136,6 +139,20 @@ def build(baseline: Path, candidate: Path, dev: set[str]) -> dict[str, Any]:
     in_dev = {side: [t for t in trials if t.task in dev] for side, trials in jobs.items()}
     if not any(in_dev.values()):
         raise ValueError("neither job has a dev-set trial; per-task output is for the dev set only")
+    infra = sum(1 for trials in in_dev.values() for t in trials if is_infra_error(t))
+    if infra:
+        raise ValueError(f"{infra} infrastructure error(s) in the dev trials; rerun those first")
+    counts = {side: Counter(t.task for t in trials) for side, trials in in_dev.items()}
+    uneven = sorted(
+        task
+        for task in set(counts["baseline"]) & set(counts["candidate"])
+        if counts["baseline"][task] != counts["candidate"][task]
+    )
+    if uneven:
+        raise ValueError(
+            f"the jobs ran these dev tasks a different number of times: {', '.join(uneven)}; "
+            "rerun the interrupted trials"
+        )
     metrics = {side: job_metrics(trials) for side, trials in in_dev.items()}
     divergent = divergence(metrics["baseline"]["per_task"], metrics["candidate"]["per_task"])
     paired = set(metrics["baseline"]["per_task"]) & set(metrics["candidate"]["per_task"])

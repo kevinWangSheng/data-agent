@@ -590,8 +590,9 @@ pull() {
   # The subcommand on the first line; for an ablate run, a second line `dev-only` when every job
   # in it is shown to cover dev-set tasks only, judged against the server checkout's
   # evals/manifest.json (not one the run brought): each job's Harbor config names its tasks and
-  # all are in the dev list, every trial's result.json names a dev task, and every Harbor log and
-  # dropped-trials dir belongs to one of those jobs. Anything unreadable fails the check.
+  # all are in the dev list, every trial dir (kept or dropped by a resume) is a dev task's by its
+  # result.json or Harbor's trial name, and every Harbor log and dropped-trials dir belongs to one
+  # of those jobs. Anything unreadable fails the check.
   scope=$(run_script NAME "$1" <<'EOF'
 cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
 [ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = ablate ] || exit 0
@@ -601,6 +602,17 @@ import sys
 from pathlib import Path
 
 run, manifest = Path(sys.argv[1]), Path(sys.argv[2])
+
+
+def dev_trial(trial: Path) -> bool:
+    """By its result.json, or before there is one (and for a dropped trial) by Harbor's trial
+    name: `<task[:32] without trailing - or _>__<7 random characters>`."""
+    result = trial / "result.json"
+    if result.exists():
+        return json.loads(result.read_text())["task_name"].rsplit("/", 1)[-1] in dev
+    return trial.name.rpartition("__")[0] in {task[:32].rstrip("-_") for task in dev}
+
+
 try:
     dev = set(json.loads(manifest.read_text())["dev"])
     jobs = {job.name: job for job in (run / "jobs").iterdir()}
@@ -609,11 +621,11 @@ try:
         datasets = json.loads((job / "config.json").read_text())["datasets"]
         names = [dataset.get("task_names") for dataset in datasets]
         ok = ok and bool(datasets) and all(names) and all(set(n) <= dev for n in names)
-        for result in job.glob("*/result.json"):
-            ok = ok and json.loads(result.read_text())["task_name"].rsplit("/", 1)[-1] in dev
+        ok = ok and all(dev_trial(trial) for trial in job.iterdir() if trial.is_dir())
     logs = run / "logs"
     ok = ok and all(p.stem in jobs for p in logs.glob("*") if p.name != "guards.log")
-    ok = ok and all(p.name in jobs for p in (run / "dropped").glob("*"))
+    for dropped in (run / "dropped").glob("*"):
+        ok = ok and dropped.name in jobs and all(dev_trial(t) for t in dropped.iterdir())
 except (OSError, ValueError, KeyError, TypeError, AttributeError):
     ok = False
 sys.exit(0 if ok else 1)
