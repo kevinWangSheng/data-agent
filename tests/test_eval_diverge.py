@@ -210,3 +210,18 @@ def test_infrastructure_errors_are_refused(
     code, _, _ = diverge(tmp_path, baseline, full)
     assert code == 2
     assert "infrastructure" in capsys.readouterr().err
+
+
+def test_a_line_cut_short_by_a_killed_run_is_skipped(
+    tmp_path: Path, jobs: tuple[Path, Path]
+) -> None:
+    """A run killed mid-write leaves half a line at the end of its event file; the Harbor adapter
+    skips it (`evals.harbor_agent.parse_events`), and so do the process metrics."""
+    baseline, full = jobs
+    events = full / "dbt-alpha__t0" / "agent" / "events" / "run-1.jsonl"
+    with events.open("a") as f:
+        f.write('{"seq": 99, "type": "tool_st')
+    code, report, _ = diverge(tmp_path, baseline, full)
+    assert code == 0
+    trial = next(t for t in report["candidate"]["trials"] if t["trial"] == "dbt-alpha__t0")
+    assert (trial["turns"], trial["model_edits"], trial["verifier_calls"]) == (12, 2, 1)

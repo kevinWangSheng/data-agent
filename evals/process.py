@@ -37,7 +37,10 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     if events is not None:
         with events.open() as f:
             for line in f:
-                event = json.loads(line)
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # a line cut short by a killed run (as harbor_agent.parse_events)
                 kind = event.get("type")
                 if kind == "result":
                     turns += int(event.get("num_turns") or 0)
