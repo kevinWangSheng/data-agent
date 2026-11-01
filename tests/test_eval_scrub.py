@@ -307,6 +307,38 @@ def test_scrub_fails_on_host_paths_hidden_by_json_escapes(tmp_path: Path) -> Non
     assert "/home/erin" in proc.stderr
 
 
+def test_scrub_keeps_numeric_home_segments_from_task_data(tmp_path: Path) -> None:
+    """A page path such as `/home/193` in a URL or SQL string names no user (user names cannot be
+    all digits), so it is neither reported nor changed, escaped or not."""
+    trajectory = tmp_path / "trial" / "agent" / "trajectory.json"
+    trajectory.parent.mkdir(parents=True)
+    sql = "select count(*) from page_views where page_url = '/home/193'"
+    trajectory.write_text(
+        json.dumps({"steps": [{"message": sql}, {"output": '{"url": "\\/home\\/193"}'}]}, indent=2)
+    )
+    events = tmp_path / "trial" / "agent" / "events.jsonl"
+    events.write_text(
+        json.dumps({"output": '[{"path": "/home/193"}, {"path": "\\u002fhome\\u002f42?x=1"}]'})
+        + "\n"
+    )
+    log = tmp_path / "trial" / "trial.log"
+    log.write_text("GET /home/193 200\nGET /Users/7/ 200\n")
+    before = {p: p.read_bytes() for p in (trajectory, events, log)}
+    proc = scrub(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "changed 0 file(s) of 3" in proc.stdout
+    assert {p: p.read_bytes() for p in before} == before
+
+
+def test_scrub_still_fails_on_home_segments_that_could_be_user_names(tmp_path: Path) -> None:
+    log = tmp_path / "trial.log"
+    log.write_text("/home/193abc/x\n/home/7.bak\n/home/42-ci/jobs\n/Users/u193/x\n")
+    proc = scrub(tmp_path)
+    assert proc.returncode != 0
+    for left in ("/home/193abc", "/home/7.bak", "/home/42-ci", "/Users/u193"):
+        assert left in proc.stderr
+
+
 def test_scrub_removes_the_user_name_as_a_word_in_values_and_text(tmp_path: Path) -> None:
     """Not only as a path segment: a JSON value or a log line can name the user outright."""
     events = tmp_path / "trial" / "events.jsonl"
