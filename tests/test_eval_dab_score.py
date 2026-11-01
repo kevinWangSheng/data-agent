@@ -41,6 +41,7 @@ def make_out(out: Path, answers: dict[tuple[str, str, int], str | None]) -> Path
     """An `evals dab` output: a run directory per key, a submission entry unless the answer is None
     (a run that broke on infrastructure)."""
     entries = []
+    out.mkdir(parents=True)
     for (dataset, q, run), answer in answers.items():
         (out / dataset / f"query{q}" / f"run{run}").mkdir(parents=True)
         if answer is not None:
@@ -144,6 +145,35 @@ def test_runs_sets_the_expected_runs_per_query(dab_root: Path, tmp_path: Path) -
     result = dab_score.score(dab_root, out, runs=4)
     assert result.missing == (("alpha", "1", 1), ("alpha", "1", 2), ("alpha", "1", 3))
     assert result.pass_at_1() == 0.25
+
+
+def test_all_queries_counts_queries_the_output_never_ran_as_fails(
+    dab_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The clone has alpha 1-3 and beta 1; the output ran alpha query1 twice and nothing else.
+    out = make_out(tmp_path / "out", {("alpha", "1", 0): "gold1", ("alpha", "1", 1): "gold1"})
+    report = tmp_path / "report.json"
+    argv = ["dab-score", str(out), "--dab-root", str(dab_root), "--report", str(report)]
+    assert evals_main(argv) == 0
+    data = json.loads(report.read_text())
+    assert data["candidate"]["pass_at_1"] == 1.0
+    assert data["candidate"]["coverage"] == {"queries": 1, "clone_queries": 4}
+    assert "1 of the clone's 4 queries" in capsys.readouterr().err
+
+    assert evals_main([*argv, "--all-queries"]) == 0
+    data = json.loads(report.read_text())
+    # alpha (1 + 0 + 0) / 3, beta 0; the never-run queries are missing for both runs found.
+    assert data["candidate"]["pass_at_1"] == pytest.approx(1 / 6)
+    assert data["candidate"]["coverage"] == {"queries": 4, "clone_queries": 4}
+    assert {"dataset": "beta", "query": "1", "run": 1} in data["candidate"]["missing"]
+
+
+def test_an_output_without_runs_is_an_error(
+    dab_root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = make_out(tmp_path / "out", {})
+    assert evals_main(["dab-score", str(out), "--dab-root", str(dab_root)]) == 2
+    assert "no runs" in capsys.readouterr().err
 
 
 def test_strict_exits_2_on_missing_runs(

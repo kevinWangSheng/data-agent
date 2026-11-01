@@ -6,7 +6,9 @@ fails an empty answer and otherwise runs the query's own `validate.py`.
 
 DAB's Pass@1 is the mean over datasets of each dataset's mean per-query pass rate; a run with no
 answer (one that broke on infrastructure) counts as a fail and is listed, or stops the scoring
-under `--strict`. With `--baseline`, a paired bootstrap of the difference resamples queries within
+under `--strict`. Only the output's queries count unless `--all-queries` (DAB's leaderboard rule:
+a query never run scores 0); the coverage of the clone's queries is always reported. With
+`--baseline`, a paired bootstrap of the difference resamples queries within
 each dataset. Run it as
 
     uv run --with-requirements evals/dab-requirements.txt python -m evals dab-score runs/dab \\
@@ -65,6 +67,10 @@ class Score:
 
     passed: dict[RunKey, bool]
     missing: tuple[RunKey, ...]
+    clone_queries: int  # queries in the DAB clone, for coverage
+
+    def coverage(self) -> dict[str, int]:
+        return {"queries": len(self.query_rates()), "clone_queries": self.clone_queries}
 
     def query_rates(self) -> dict[QueryKey, float]:
         """Per query: passing runs over expected runs (a missing run counts as a fail)."""
@@ -116,17 +122,38 @@ def run_dirs(out: Path) -> set[RunKey]:
     return found
 
 
-def score(dab_root: Path, out: Path, runs: int | None = None) -> Score:
+def clone_queries(dab_root: Path) -> set[QueryKey]:
+    """Every `query_<dataset>/query<id>/` in the DAB clone."""
+    found = set()
+    for path in dab_root.glob("query_*/query*"):
+        query = _QUERY_DIR.fullmatch(path.name)
+        if path.is_dir() and query:
+            found.add((path.parent.name.removeprefix("query_"), query.group(1)))
+    return found
+
+
+def score(dab_root: Path, out: Path, runs: int | None = None, all_queries: bool = False) -> Score:
     """Grade every answer in the output. Expected runs are the run directories and submission
-    entries found, plus runs 0..`runs`-1 of every query found when `runs` is given."""
+    entries found, plus runs 0..`runs`-1 of every query found when `runs` is given. With
+    `all_queries`, every query of the clone is expected too (DAB's leaderboard rule: a missing
+    query scores 0), with `runs` runs or as many as the output's most-run query."""
     answers = submitted(out)
     expected = run_dirs(out) | set(answers)
+    if not expected:
+        raise ValueError(f"no runs in {out}")
+    in_clone = clone_queries(dab_root)
+    if runs is None and all_queries:
+        counts: dict[QueryKey, int] = {}
+        for d, q, _ in expected:
+            counts[(d, q)] = counts.get((d, q), 0) + 1
+        runs = max(counts.values())
     if runs is not None:
-        expected |= {(d, q, k) for d, q, _ in expected for k in range(runs)}
+        queries = {(d, q) for d, q, _ in expected} | (in_clone if all_queries else set())
+        expected |= {(d, q, k) for d, q in queries for k in range(runs)}
     grade = grader(dab_root)
     passed = {key: grade(key[0], key[1], answer) for key, answer in sorted(answers.items())}
     missing = tuple(sorted((key for key in expected if key not in answers), key=_run_order))
-    return Score(passed=passed, missing=missing)
+    return Score(passed=passed, missing=missing, clone_queries=len(in_clone))
 
 
 def _run_order(key: RunKey) -> tuple[str, int, int]:
@@ -153,6 +180,7 @@ def summary(result: Score) -> dict[str, Any]:
         datasets[dataset] = {"pass_at_1": rate, "queries": queries}
     return {
         "pass_at_1": result.pass_at_1(),
+        "coverage": result.coverage(),
         "datasets": datasets,
         "missing": [{"dataset": d, "query": q, "run": k} for d, q, k in result.missing],
     }
@@ -210,6 +238,11 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.add_argument("--baseline", type=Path, help="an output to compare against (paired)")
     parser.add_argument("--dab-root", type=Path, required=True, help="local DataAgentBench clone")
     parser.add_argument("--runs", type=int, help="expected runs per query (default: as found)")
+    parser.add_argument(
+        "--all-queries",
+        action="store_true",
+        help="expect every query of the clone; never-run ones score 0 (DAB's leaderboard rule)",
+    )
     parser.add_argument("--strict", action="store_true", help="exit 2 when a run is missing")
     parser.add_argument("--report", type=Path, help="JSON report (default: OUT/dab_score.json)")
     parser.add_argument("--seed", type=int, default=0)
@@ -243,7 +276,10 @@ def run_cli(args: argparse.Namespace) -> int:
     if args.baseline is not None:
         outputs = {"baseline": args.baseline, **outputs}
     try:
-        scores = {name: score(args.dab_root, out, args.runs) for name, out in outputs.items()}
+        scores = {
+            name: score(args.dab_root, out, args.runs, args.all_queries)
+            for name, out in outputs.items()
+        }
         comparison = None
         if "baseline" in scores:
             comparison = paired_bootstrap(
@@ -253,6 +289,14 @@ def run_cli(args: argparse.Namespace) -> int:
         return _error(str(exc))
     for name, result in scores.items():
         report_missing(name, result)
+        covered = result.coverage()
+        if covered["queries"] < covered["clone_queries"]:
+            print(
+                f"dab-score: {name} covers {covered['queries']} of the clone's "
+                f"{covered['clone_queries']} queries; its Pass@1 is over those only, not "
+                "comparable with DAB's leaderboard (--all-queries scores the others as 0)",
+                file=sys.stderr,
+            )
     if args.strict and any(result.missing for result in scores.values()):
         return _error("--strict: missing runs; redo them, then score again")
     data: dict[str, Any] = {
