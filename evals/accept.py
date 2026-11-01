@@ -203,13 +203,18 @@ def last_record(job: Path) -> dict[str, Any] | None:
     return json.loads(paths[-1].read_text()) if paths else None
 
 
-def times(trials: list[Trial], key: str) -> list[datetime]:
+def times(trials: list[Trial], key: str) -> tuple[list[datetime], int]:
+    """The trials' `key` times, and how many trials that ran have none (an infrastructure error
+    may end before Harbor writes them; such a round is rerun anyway)."""
     out: list[datetime] = []
+    missing = 0
     for trial in trials:
         value = json.loads((trial.dir / "result.json").read_text()).get(key)
         if value:
             out.append(datetime.fromisoformat(value))
-    return out
+        elif not is_infra_error(trial):
+            missing += 1
+    return out, missing
 
 
 def reuse_problems(
@@ -235,11 +240,22 @@ def reuse_problems(
     if records["old"] is not None and records["new"] is not None:
         for key, label in RECORD_KEYS:
             before, after = records["old"].get(key), records["new"].get(key)
-            if before is None or before != after:
+            # An empty or non-string value (e.g. DATA_AGENT_MACHINE unset) cannot be matched.
+            if not isinstance(before, str) or not before or before != after:
                 problems.append(f"{label}: {before!r} old, {after!r} new")
 
-    started, finished = times(old, "started_at"), times(new, "finished_at")
-    if not started or not finished:
+    started, old_missing = times(old, "started_at")
+    finished, new_missing = times(new, "finished_at")
+    if old_missing or new_missing:
+        for side, key, missing in (
+            ("old", "started_at", old_missing),
+            ("new", "finished_at", new_missing),
+        ):
+            if missing:
+                problems.append(
+                    f"{missing} {side} trial(s) have no {key}, so the old results' age is unknown"
+                )
+    elif not started or not finished:
         problems.append("trial times are missing, so the old results' age is unknown")
     elif max(finished) - min(started) > MAX_AGE:
         days = (max(finished) - min(started)).days

@@ -467,3 +467,30 @@ def test_refuses_a_job_missing_dev_tasks(
     new = write_job(tmp_path, "new", {"t1": 3}, commit="c")
     code, _ = accept(tmp_path, manifest, old, new, capsys=capsys)
     assert code == 2
+
+
+@pytest.mark.parametrize(("side", "key"), [("old", "started_at"), ("new", "finished_at")])
+def test_reuse_needs_the_times_of_every_trial(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str], side: str, key: str
+) -> None:
+    # One trial without its time could be the one outside the two weeks.
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    path = (old if side == "old" else new) / "t2__0" / "result.json"
+    path.write_text(json.dumps({k: v for k, v in json.loads(path.read_text()).items() if k != key}))
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert (code, result["verdict"]) == (1, "rerun-old")
+    assert result["reuse_problems"] == [
+        f"1 {side} trial(s) have no {key}, so the old results' age is unknown"
+    ]
+
+
+@pytest.mark.parametrize("key", ["benchmark_commit", "machine"])
+@pytest.mark.parametrize("value", ["", 7])
+def test_reuse_needs_a_non_empty_record_value(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str], key: str, value: Any
+) -> None:
+    # Equal on both runs, but an empty or non-string value cannot be matched.
+    unknown = {"record": RECORD | {key: value}}
+    problems = rerun_old_because(tmp_path, manifest, capsys, unknown, unknown)
+    assert problems == [f"{key.replace('_', ' ')}: {value!r} old, {value!r} new"]
