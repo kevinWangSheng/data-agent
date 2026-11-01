@@ -155,3 +155,33 @@ async def test_runs_without_the_verifier_layer_keep_the_prompt_and_write_no_file
     )
     assert seen["prompt"] == expected
     assert "task.md" not in str(seen["options"].system_prompt)
+
+
+@pytest.mark.parametrize("temp_in_workspace", [".", "tmp"])
+def test_a_temp_dir_inside_the_workspace_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, temp_in_workspace: str
+) -> None:
+    # Codex P2 on PR #31: with `--workspace /tmp`, or TMPDIR inside the workspace, mkdtemp would put
+    # task.md where the grader reads; the run must stop instead.
+    workspace = tmp_path / "ws"
+    temp = workspace / temp_in_workspace
+    temp.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(temp))
+    with (
+        pytest.raises(agent.ConfigError, match="inside the workspace"),
+        agent.saved_task(TASK_TEXT, workspace),
+    ):
+        pass
+    # Nothing but the temp dir itself is in the workspace.
+    assert {p.resolve() for p in workspace.rglob("*")} <= {temp.resolve()}
+
+
+def test_a_workspace_inside_the_temp_dir_still_gets_a_task_file_outside_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    with agent.saved_task(TASK_TEXT, workspace) as path:
+        assert path.read_bytes() == TASK_TEXT.encode()
+        assert workspace.resolve() not in path.parents

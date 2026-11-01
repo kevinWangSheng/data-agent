@@ -149,10 +149,18 @@ wording, for example after your context is compacted.
 
 
 @contextmanager
-def saved_task(text: str) -> Iterator[Path]:
+def saved_task(text: str, workspace: Path) -> Iterator[Path]:
     """The task text, byte for byte, in a file of its own outside the workspace (whose contents
-    the grader reads), removed when the run ends. The verifiers judge the models against it."""
-    directory = Path(tempfile.mkdtemp(prefix="data-agent-task-")).resolve()
+    the grader reads), removed when the run ends. The verifiers judge the models against it.
+    Raises ConfigError when the temp dir is the workspace or inside it (`--workspace /tmp`)."""
+    base = Path(tempfile.gettempdir()).resolve()
+    root = workspace.resolve()
+    if base == root or root in base.parents:
+        raise ConfigError(
+            f"the temp dir {base} is inside the workspace {root}, so the task file would be too; "
+            "set TMPDIR to a directory outside the workspace"
+        )
+    directory = Path(tempfile.mkdtemp(prefix="data-agent-task-", dir=base))
     path = directory / "task.md"
     try:
         path.write_bytes(text.encode())
@@ -810,7 +818,8 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     if task.postgres_env:
         secrets += url_secrets(env[task.postgres_env])
         names = url_names(env[task.postgres_env])
-    saving = saved_task(task.text) if uses_verifiers(task.type, config) else nullcontext()
+    verified = uses_verifiers(task.type, config)
+    saving = saved_task(task.text, task.workspace) if verified else nullcontext()
     with saving as task_file, EventLog(path, secrets=secrets, names=names) as log:
         log.emit(
             "version",
