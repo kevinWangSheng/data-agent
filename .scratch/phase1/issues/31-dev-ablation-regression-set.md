@@ -52,3 +52,16 @@ Branch: —（运维；只提交 `evals/regression.json`）
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-01 主会话（开跑前，两次被预检拦下，未花钱）：
+  - 准备：`da-remote setup ba1aca5`。
+  - 运行命令：`scripts/da-remote start dev-4 -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --out runs/dev-4 --budget 70 --config full --config no-verifiers --config no-skill --config no-context --config baseline --trials 3 --n-concurrent 3`。
+  - 第 1 次（17:41Z）：`balance (76.76 CNY (about $10.52)) is below the $70.00 left of --budget`。
+  - 用户充值后第 2 次（17:55Z）：`balance (176.75 CNY (about $24.21)) is below the $70.00 left of --budget`。
+  - 估算与实际花费：
+    - 花费口径按 `src/data_agent/agent.py` 的 PRICES 计算，用的是 deepseek-flash 官方价格区间的上限，没有计闲时半价（ADR-0001：$0.15–0.30 / $0.6–1.2，缓存读 $0.003–0.006）。
+    - 实测：t27-smoke 开跑前余额 ¥79.62，dev-4 开跑前 ¥76.76，实扣 ¥2.86（约 $0.39）；这两次估算合计 $0.81，实扣约为估算的 48%。两次都在北京时间夜间跑，样本很小。
+    - dev-3 full 90 条的花费构成：缓存读 3.25 亿 token，占输入的 96%，花费 $1.95；未命中输入 1300 万 token，$3.88；输出 720 万 token，$8.63（占 60%）。合计 $14.46。
+    - 实际花费在估算的 50%–100% 之间，取决于高峰与闲时的比例。
+  - 量与时长：dev-3 原计划 450 条，有效 210 条，其中 no-skill 30/90，no-verifiers、no-context 都是 0/90；另外 240 条是 ApiUsageLimitError，没花钱。dev-3 跑 180 条用了约 12.8 小时（并发 3）。
+  - 用户在重新考虑是否补跑（花费）；本工单暂停，未开跑。
