@@ -308,9 +308,8 @@ def test_scrub_fails_on_host_paths_hidden_by_json_escapes(tmp_path: Path) -> Non
 
 
 def test_scrub_keeps_numeric_home_segments_from_task_data(tmp_path: Path) -> None:
-    """A page path such as `/home/193` in a URL or SQL string names no user (user names cannot be
-    all digits), so it is neither reported nor changed, escaped or not. Only a last segment: Harbor
-    records the job's paths beneath a host home, so a numeric host home is still caught there."""
+    """A page path such as `/home/193` ending a URL or SQL string names no user (tools reject
+    all-digit user names), so it is neither reported nor changed, escaped or not."""
     trajectory = tmp_path / "trial" / "agent" / "trajectory.json"
     trajectory.parent.mkdir(parents=True)
     sql = "select count(*) from page_views where page_url = '/home/193'"
@@ -323,7 +322,7 @@ def test_scrub_keeps_numeric_home_segments_from_task_data(tmp_path: Path) -> Non
         + "\n"
     )
     log = tmp_path / "trial" / "trial.log"
-    log.write_text("GET /home/193 200\nGET /Users/7#top 200\n")
+    log.write_text("GET /home/193 200\nGET /home/7#top 200\n")
     before = {p: p.read_bytes() for p in (trajectory, events, log)}
     proc = scrub(tmp_path)
     assert proc.returncode == 0, proc.stderr
@@ -332,15 +331,29 @@ def test_scrub_keeps_numeric_home_segments_from_task_data(tmp_path: Path) -> Non
 
 
 def test_scrub_still_fails_on_home_segments_that_could_be_user_names(tmp_path: Path) -> None:
+    """Digits are let through only where a URL or SQL string ends; a home directory can be named
+    by digits, and Harbor records the job's paths beneath it."""
     log = tmp_path / "trial.log"
-    log.write_text("/home/193abc/x\n/home/7.bak\n/home/42-ci/jobs\n/Users/u193/x\n")
+    lines = [
+        "/home/193abc/x",
+        "/home/7.bak",
+        "/home/42-ci/jobs",
+        "/Users/u193/x",
+        "/Users/7#top",
+        "PATH=/home/1002:/usr/bin",
+        "/home/1003%2Fjobs",
+        "raw /home/1004\\/jobs",
+        "/home/1005,/x",
+        "/home/\uff11\uff19\uff13",
+    ]
+    log.write_text("\n".join(lines) + "\n")
     paths = json.dumps({"job_dir": "/home/1001/jobs/x", "trial_uri": "file:///Users/502/t"})
     (tmp_path / "result.json").write_text(paths)
     proc = scrub(tmp_path)
     assert proc.returncode != 0
-    for left in ("/home/193abc", "/home/7.bak", "/home/42-ci", "/Users/u193", "/home/1001"):
-        assert left in proc.stderr
-    assert "/Users/502" in proc.stderr
+    for number in range(1, len(lines) + 1):
+        assert f"trial.log:{number}:" in proc.stderr
+    assert "/home/1001" in proc.stderr and "/Users/502" in proc.stderr
 
 
 def test_scrub_removes_the_user_name_as_a_word_in_values_and_text(tmp_path: Path) -> None:
