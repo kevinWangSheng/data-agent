@@ -1,8 +1,8 @@
 """Scores and split reports for a Harbor job.
 
 Holdout reports carry aggregates only: no task ids, trial names, per-task outcomes or error
-text ever reach the output (ADR-0004). Dev reports add per-task outcomes and where each
-trial's events live, for failure attribution.
+text ever reach the output (ADR-0004). Dev reports add per-task outcomes, per-task process
+metrics (evals.process) and where each trial's events live, for failure attribution.
 """
 
 import json
@@ -12,6 +12,7 @@ from typing import Any
 
 from evals.harbor import Trial, by_task, last_event_file
 from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
+from evals.process import job_metrics
 
 
 def score(trials: list[Trial]) -> dict[str, Any]:
@@ -162,6 +163,8 @@ def write_report(
     out_dir.mkdir(parents=True, exist_ok=True)
     if split == "dev":
         report["per_task"] = _per_task(in_split)
+        process = job_metrics(in_split)
+        report["process"] = {key: process[key] for key in ("mean_cost_usd_succeeded", "per_task")}
         rows = _trial_rows(in_split)
         (out_dir / "trials.json").write_text(json.dumps(rows, indent=2) + "\n")
     (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")

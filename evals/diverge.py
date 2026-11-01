@@ -5,34 +5,28 @@ Writes `DIR/diverge.json` and `DIR/diverge.md` and prints the markdown:
 - the paired divergence: each dev task both jobs ran, with each job's successes out of its trials,
   listing the tasks where the success counts differ and which job did better (ADR-0008: read
   those trajectories first);
-- each job's process metrics per task, read from the trials' event files (`data_agent.agent`
-  writes them): turns, runs stopped by the spend cap or the turn limit (the SDK result's
-  subtype), verifier calls and their check statuses, edits to dbt model files, spend; plus the
-  mean spend of the job's successful trials. Per-trial rows name each event file, for reading.
+- each job's process metrics per task (evals.process); per-trial rows name each event file, for
+  reading.
 
 Only the manifest's dev tasks are shown. A trial of any other task is counted and nothing else of
-it is read or written (ADR-0004), and two jobs with no dev trial between them are refused. So
-are infrastructure errors in the dev trials and a dev task the jobs ran a different number of
-times: an interrupted job is rerun before it is compared.
+it is read or written (ADR-0004), and two jobs with no dev trial between them are refused, as is
+a manifest whose dev list shares a task with its holdout. So are infrastructure errors in the dev
+trials and a dev task the jobs ran a different number of times: an interrupted job is rerun before
+it is compared.
 """
 
 import argparse
 import json
 import sys
 from collections import Counter
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
-from evals.harbor import Trial, last_event_file, load_trials
-from evals.metrics import is_success
+from evals.harbor import load_trials
+from evals.process import job_metrics
 from evals.report import is_infra_error
 
-# Claude Code's file-writing tools; a call on a `.sql` file under a `models/` directory edits a
-# dbt model.
-EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
-# The SDK ResultMessage subtypes of a run cut off by a limit (data_agent.agent's `Spend` writes the
-# budget one too when it stops the run itself).
-STOPS = {"error_max_budget_usd": "budget", "error_max_turns": "turns"}
+SIDES = ("baseline", "candidate")
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -46,78 +40,8 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.set_defaults(run=run)
 
 
-def is_model_edit(event: dict[str, Any]) -> bool:
-    if event.get("type") != "tool_start" or event.get("tool") not in EDIT_TOOLS:
-        return False
-    path = PurePosixPath(str((event.get("input") or {}).get("file_path") or ""))
-    return path.suffix == ".sql" and "models" in path.parts[:-1]
-
-
-def trial_metrics(trial: Trial) -> dict[str, Any]:
-    """One trial's process metrics, from the event file it is scored by (`last_event_file`)."""
-    events = last_event_file(trial)
-    turns, edits, calls, cost = 0, 0, 0, 0.0
-    checks: Counter[str] = Counter()
-    stopped: str | None = None
-    if events is not None:
-        with events.open() as f:
-            for line in f:
-                event = json.loads(line)
-                kind = event.get("type")
-                if kind == "result":
-                    turns += int(event.get("num_turns") or 0)
-                    cost += float(event.get("cost_usd") or 0.0)
-                    stopped = STOPS.get(str(event.get("subtype")), stopped)
-                elif kind == "verifier_start":
-                    calls += 1
-                elif kind == "verifier_end":
-                    checks.update(str(c.get("status")) for c in event.get("checks") or [])
-                elif is_model_edit(event):
-                    edits += 1
-    return {
-        "trial": trial.name,
-        "success": is_success(trial.reward),
-        "turns": turns,
-        "stopped": stopped,
-        "verifier_calls": calls,
-        "verifier_checks": dict(checks),
-        "model_edits": edits,
-        "cost_usd": cost,
-        "events": str(events) if events else None,
-    }
-
-
-def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    checks: Counter[str] = Counter()
-    for row in rows:
-        checks.update(row["verifier_checks"])
-    return {
-        "successes": sum(1 for r in rows if r["success"]),
-        "trials": len(rows),
-        "mean_turns": sum(r["turns"] for r in rows) / len(rows),
-        "stopped_by_budget": sum(1 for r in rows if r["stopped"] == "budget"),
-        "stopped_by_turns": sum(1 for r in rows if r["stopped"] == "turns"),
-        "verifier_calls": sum(r["verifier_calls"] for r in rows),
-        "verifier_checks": dict(checks),
-        "model_edits": sum(r["model_edits"] for r in rows),
-        "cost_usd": sum(r["cost_usd"] for r in rows),
-    }
-
-
-def job_metrics(trials: list[Trial]) -> dict[str, Any]:
-    """Process metrics of dev trials: per task, per trial, and the mean spend of a success."""
-    rows: dict[str, list[dict[str, Any]]] = {}
-    for trial in trials:
-        rows.setdefault(trial.task, []).append({"task": trial.task, **trial_metrics(trial)})
-    succeeded = [r["cost_usd"] for rs in rows.values() for r in rs if r["success"]]
-    return {
-        "mean_cost_usd_succeeded": sum(succeeded) / len(succeeded) if succeeded else None,
-        "per_task": {task: task_metrics(rs) for task, rs in sorted(rows.items())},
-        "trials": [r for _, rs in sorted(rows.items()) for r in rs],
-    }
-
-
-def divergence(base: dict[str, Any], cand: dict[str, Any]) -> list[dict[str, Any]]:
+def divergent_tasks(base: dict[str, Any], cand: dict[str, Any]) -> list[dict[str, Any]]:
+    """The paired tasks whose success counts differ, as {task, baseline, candidate, better}."""
     rows: list[dict[str, Any]] = []
     for task in sorted(set(base) & set(cand)):
         b, c = base[task], cand[task]
@@ -134,8 +58,8 @@ def divergence(base: dict[str, Any], cand: dict[str, Any]) -> list[dict[str, Any
     return rows
 
 
-def build(baseline: Path, candidate: Path, dev: set[str]) -> dict[str, Any]:
-    jobs = {"baseline": load_trials(baseline), "candidate": load_trials(candidate)}
+def divergence_report(baseline: Path, candidate: Path, dev: set[str]) -> dict[str, Any]:
+    jobs = dict(zip(SIDES, (load_trials(baseline), load_trials(candidate)), strict=True))
     in_dev = {side: [t for t in trials if t.task in dev] for side, trials in jobs.items()}
     if not any(in_dev.values()):
         raise ValueError("neither job has a dev-set trial; per-task output is for the dev set only")
@@ -154,22 +78,15 @@ def build(baseline: Path, candidate: Path, dev: set[str]) -> dict[str, Any]:
             "rerun the interrupted trials"
         )
     metrics = {side: job_metrics(trials) for side, trials in in_dev.items()}
-    divergent = divergence(metrics["baseline"]["per_task"], metrics["candidate"]["per_task"])
-    paired = set(metrics["baseline"]["per_task"]) & set(metrics["candidate"]["per_task"])
+    base_tasks, cand_tasks = (metrics[side]["per_task"] for side in SIDES)
+    divergent = divergent_tasks(base_tasks, cand_tasks)
     return {
         "labels": {"baseline": baseline.name, "candidate": candidate.name},
-        "paired_tasks": len(paired),
-        "unpaired_tasks": sorted(
-            set(metrics["baseline"]["per_task"]) ^ set(metrics["candidate"]["per_task"])
-        ),
-        "outside_dev_trials": {
-            side: len(jobs[side]) - len(in_dev[side]) for side in ("baseline", "candidate")
-        },
+        "paired_tasks": len(set(base_tasks) & set(cand_tasks)),
+        "unpaired_tasks": sorted(set(base_tasks) ^ set(cand_tasks)),
+        "outside_dev_trials": {side: len(jobs[side]) - len(in_dev[side]) for side in SIDES},
         "divergent": divergent,
-        "wins": {
-            side: sum(1 for row in divergent if row["better"] == side)
-            for side in ("baseline", "candidate")
-        },
+        "wins": {side: sum(1 for row in divergent if row["better"] == side) for side in SIDES},
         **metrics,
     }
 
@@ -206,7 +123,7 @@ def markdown(report: dict[str, Any]) -> str:
         lines.append(
             f"| {row['task']} | {_ratio(row['baseline'])} | {_ratio(row['candidate'])} | {better} |"
         )
-    for side in ("baseline", "candidate"):
+    for side in SIDES:
         job = report[side]
         lines += [
             "",
@@ -228,10 +145,13 @@ def markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write(baseline: Path, candidate: Path, manifest: Path, out: Path) -> dict[str, Any]:
+def write_divergence(baseline: Path, candidate: Path, manifest: Path, out: Path) -> dict[str, Any]:
     """Build the report and write it under `out`; ValueError when there is nothing to show."""
-    dev = set(json.loads(manifest.read_text())["dev"])
-    report = build(baseline, candidate, dev)
+    splits = json.loads(manifest.read_text())
+    dev = set(splits["dev"])
+    if dev & set(splits.get("holdout", [])):
+        raise ValueError(f"{manifest} lists tasks in both dev and holdout; use the real manifest")
+    report = divergence_report(baseline, candidate, dev)
     out.mkdir(parents=True, exist_ok=True)
     (out / "diverge.json").write_text(json.dumps(report, indent=2) + "\n")
     (out / "diverge.md").write_text(markdown(report))
@@ -240,7 +160,7 @@ def write(baseline: Path, candidate: Path, manifest: Path, out: Path) -> dict[st
 
 def run(args: argparse.Namespace) -> int:
     try:
-        report = write(args.baseline, args.candidate, args.manifest, args.out)
+        report = write_divergence(args.baseline, args.candidate, args.manifest, args.out)
     except (OSError, KeyError, ValueError) as exc:
         print(f"diverge: {exc}", file=sys.stderr)
         return 2

@@ -162,6 +162,20 @@ def test_jobs_without_dev_trials_are_refused(
     assert not (tmp_path / "diverge").exists()
 
 
+def test_a_manifest_listing_a_task_in_both_splits_is_refused(
+    tmp_path: Path, jobs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The old practice of a temporary manifest that moves holdout tasks into `dev` would print
+    per-task holdout rows; a dev list that overlaps the holdout is refused."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"dev": ["dbt-alpha", "dbt-delta"], "holdout": ["dbt-delta"]}))
+    argv = ["diverge", "--baseline", str(jobs[0]), "--candidate", str(jobs[1])]
+    out = tmp_path / "diverge"
+    assert evals_main([*argv, "--manifest", str(manifest), "--out", str(out)]) == 2
+    assert "dbt-delta" not in capsys.readouterr().err
+    assert not out.exists()
+
+
 def test_only_the_last_event_file_counts(tmp_path: Path, jobs: tuple[Path, Path]) -> None:
     """The Harbor adapter scores and reports a trial by its last event file (a trial runs
     `data-agent run` once); an older file left in the directory is not part of the result."""

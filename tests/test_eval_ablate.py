@@ -716,6 +716,7 @@ def test_the_dev_split_runs_the_chosen_dev_tasks_with_per_task_reports(
         "dbt-alpha": {"successes": 3, "trials": 3},
         "dbt-charlie": {"successes": 3, "trials": 3},
     }
+    assert full["process"]["per_task"]["dbt-alpha"]["cost_usd"] == pytest.approx(0.03)
     diverged = json.loads((reports / "diverge" / "baseline" / "diverge.json").read_text())
     assert diverged["labels"] == {"baseline": "baseline", "candidate": "full"}
     assert diverged["wins"] == {"baseline": 0, "candidate": 2}

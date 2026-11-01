@@ -585,7 +585,7 @@ EOF
 }
 
 pull() {
-  local root scope sub dev_only=no filters=()
+  local root pull_info sub dev_only=no filters=()
   root=$(checkout_root)
   # The subcommand on the first line; for an ablate run, a second line `dev-only` when every job
   # in it is shown to cover dev-set tasks only, judged against the server checkout's
@@ -593,7 +593,7 @@ pull() {
   # all are in the dev list, every trial dir (kept or dropped by a resume) is a dev task's by its
   # result.json or Harbor's trial name, and every Harbor log and dropped-trials dir belongs to one
   # of those jobs. Anything unreadable fails the check.
-  scope=$(run_script NAME "$1" <<'EOF'
+  pull_info=$(run_script NAME "$1" <<'EOF'
 cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
 [ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = ablate ] || exit 0
 cd "$DIR" && uv run -q --no-sync python - "runs/$NAME" evals/manifest.json >/dev/null 2>&1 <<'PY' &&
@@ -634,8 +634,8 @@ PY
 true
 EOF
   )
-  sub=${scope%%$'\n'*}
-  [ "$scope" = "ablate"$'\n'"dev-only" ] && dev_only=yes
+  sub=${pull_info%%$'\n'*}
+  [ "$pull_info" = "ablate"$'\n'"dev-only" ] && dev_only=yes
   # ADR-0004: an ablate run may be on the holdout, whose trial dirs and Harbor logs name tasks; only
   # its reports (aggregates), the run log (ablate prints aggregates only) and control files leave
   # the server, unless the run was shown to hold dev-set tasks only (ADR-0008: those trajectories

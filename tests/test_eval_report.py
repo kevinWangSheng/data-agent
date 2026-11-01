@@ -99,6 +99,24 @@ def test_dev_trials_point_at_the_event_file_harbor_keeps(tmp_path: Path) -> None
     ]
 
 
+def test_dev_report_has_process_metrics_per_task(tmp_path: Path) -> None:
+    """Without a second config to diverge from, a dev report still gives each task's process
+    metrics (ticket 28), next to the per-task outcomes seam C fixes."""
+    job = tmp_path / "job"
+    for name, reward, cost in (("t1__a", 1.0, 0.2), ("t1__b", 1.0, 0.4), ("t1__c", 0.0, 0.9)):
+        write_trial(job, name, {"verifier_result": {"rewards": {"reward": reward}}})
+        events = job / name / "agent" / "events"
+        events.mkdir(parents=True)
+        result = {"type": "result", "subtype": "success", "num_turns": 10, "cost_usd": cost}
+        (events / "run-1.jsonl").write_text(json.dumps(result) + "\n")
+    summary = report(job, tmp_path)
+    assert summary["per_task"] == {"t1": {"successes": 2, "trials": 3}}
+    process = summary["process"]
+    assert process["mean_cost_usd_succeeded"] == pytest.approx(0.3)
+    assert process["per_task"]["t1"]["mean_turns"] == 10.0
+    assert process["per_task"]["t1"]["cost_usd"] == pytest.approx(1.5)
+
+
 def test_report_refuses_uneven_trial_counts(tmp_path: Path) -> None:
     job = tmp_path / "job"
     passed = {"verifier_result": {"rewards": {"reward": 1.0}}}
