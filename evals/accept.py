@@ -41,6 +41,7 @@ MAX_AGE = timedelta(days=14)
 # Version header fields that a change is expected to alter, or that differ per event file.
 CHANGED_BY_DESIGN = frozenset({"git_commit", "skill_version"})
 PER_FILE = frozenset({"seq", "type", "ts"})
+MISSING = "(missing)"  # not JSON, so no header value collides with it
 RECORD_KEYS = (("benchmark_commit", "benchmark commit"), ("machine", "machine"))
 
 
@@ -184,14 +185,14 @@ def regression_check(
 
 
 def fields(trials: list[Trial]) -> dict[str, set[str]]:
-    """Every version header field's values over the trials' event files."""
-    seen: dict[str, set[str]] = {}
-    for trial in trials:
-        for events in event_files(trial):
-            for key, value in header(events).items():
-                if key not in PER_FILE:
-                    seen.setdefault(key, set()).add(json.dumps(value, sort_keys=True))
-    return seen
+    """Every version header field's values over the trials' event files; a file whose header
+    lacks a field another file has adds MISSING to that field's values."""
+    headers = [header(events) for trial in trials for events in event_files(trial)]
+    keys = {key for h in headers for key in h} - PER_FILE
+    return {
+        key: {json.dumps(h[key], sort_keys=True) if key in h else MISSING for h in headers}
+        for key in keys
+    }
 
 
 def last_record(job: Path) -> dict[str, Any] | None:

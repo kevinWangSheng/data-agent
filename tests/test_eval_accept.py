@@ -282,6 +282,24 @@ def test_reuse_needs_one_value_per_version_field(
     ]
 
 
+@pytest.mark.parametrize("side", ["old", "new"])
+def test_reuse_needs_every_version_field_on_every_trial(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str], side: str
+) -> None:
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    # One trial's header lacks `model`; every other trial has the same one.
+    events = (old if side == "old" else new) / "t2__0" / "agent" / "events" / "run-1.jsonl"
+    header = json.loads(events.read_text())
+    del header["model"]
+    events.write_text(json.dumps(header) + "\n")
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert (code, result["verdict"]) == (1, "rerun-old")
+    with_gap, without = "['\"m1\"', '(missing)']", "['\"m1\"']"
+    before, after = (with_gap, without) if side == "old" else (without, with_gap)
+    assert result["reuse_problems"] == [f"version field model: {before} old, {after} new"]
+
+
 def test_text_output_lists_the_tasks_to_rerun(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
