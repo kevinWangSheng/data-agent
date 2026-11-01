@@ -1043,6 +1043,21 @@ def test_tasks_outside_the_dev_list_are_refused(
     assert harbor.calls == []
 
 
+def test_a_dev_run_on_a_manifest_whose_dev_and_holdout_overlap_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ADR-0004: a dev report names its tasks, so a holdout task listed under dev too would have
+    its per-task results written; fail closed before any job."""
+    overlapping = tmp_path / "overlap.json"
+    overlapping.write_text(json.dumps({"seed": 1, "dev": [*DEV, HOLDOUT[0]], "holdout": HOLDOUT}))
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, overlapping, out, "--split", "dev", "--config", "full") == 2
+    assert "both dev and holdout" in capsys.readouterr().err
+    assert harbor.calls == harbor.smoke == []
+    assert not out.exists()
+
+
 def test_another_split_or_task_list_on_the_same_out_stops(
     monkeypatch: pytest.MonkeyPatch,
     dev_manifest: Path,

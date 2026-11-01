@@ -714,6 +714,13 @@ def run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # A dev run's reports name their tasks (ADR-0004 allows that for dev only), as evals.diverge.
+    if args.split == "dev" and set(tasks) & set(manifest.get("holdout") or []):
+        print(
+            f"ablate: {args.manifest} lists tasks in both dev and holdout; use the real manifest",
+            file=sys.stderr,
+        )
+        return 2
     if args.task:
         if args.split != "dev":
             print("ablate: --task needs --split dev; the holdout is run whole", file=sys.stderr)
