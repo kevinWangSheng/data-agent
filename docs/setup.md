@@ -30,6 +30,14 @@
 - 要起第一个 job 前做预检，任何一项不过就退出 2、不起正式 job：余额要够 `--budget` 减去已花的；每个配置在 manifest 开发集第 1 题上冒烟 1 次（`smoke/<UTC 时间>/<config>/`，日志 `logs/smoke-<config>.log`），要有 reward、无报错、事件文件有 version 头；再对冒烟结果跑 scrub。续跑已冒烟过的批次加 `--skip-smoke`（余额照查）。没有 job 要跑时不预检。
 - 跑的过程中每 10 秒看一次新完成的 trial：出现 `ApiUsageLimitError`（账户额度或余额用完）或配置错误立即停；连续 `--fail-fast N`（默认 5）个基础设施报错也停。停 Harbor 用它自己的方式（SIGTERM，它会取消 trial、清容器），300 秒不退才 SIGKILL，只对本次启动的那个进程。都是退出 2。`ApiUsageLimitError` 算基础设施报错（`evals report` 不记 0 分）：充值后用同一 `--out` 重跑，这些 trial 会被重跑。
 
+改动验收（ADR-0008，工单 29）：`uv run python -m evals accept --old OUT_OLD/jobs/full --new OUT_NEW/jobs/full --manifest evals/manifest.json --target <题> [--target <题> ...] --regression evals/regression.json [--rerun <补跑 job> ...] [--json]`。
+
+- 两份 job 都要覆盖整个开发集、每题 `--trials`（默认 3）次，新版不能有基础设施报错；job、目标题、回归集、补跑里有任何非开发集题就拒绝（只报个数，ADR-0004），退出 2。
+- 回归集文件是开发集题名的 JSON 列表，如 `["dbt-daily-order-summary", "pos-operations"]`；空列表 `[]` 表示还没有回归集。
+- 三条过关条件：新版开发集成功次数不少于旧版（点估计不低，相等算过）；目标题成功次数合计严格上升；回归题新版一轮 k/k。低于 k/k 的题列在 `rerun these tasks` 里，在新版上补跑 k 次，补跑 job 用 `--rerun` 加进来再判；补跑成功率 ≤1/3 算退步。补跑 job 的 version 头要和新版一致。
+- 旧版复用：两份 job 的 version 头除 `git_commit`、`skill_version` 外字段都一致；各自 `--out` 下最近一份运行记录（`records/`）的 benchmark commit、机器标签一致且不为空；旧版最早开始的 trial 到新版最晚结束的 trial 不超过 14 天；旧版那一轮没有基础设施报错（job 里没有，`dropped/<config>/` 里也没有被续跑删掉的）。任何一条不满足，判 `rerun-old` 并列出原因；旧版有基础设施报错时前两条不计分。
+- 结论：`pass`（退出 0）；`fail`、`rerun-regression`、`rerun-old`（退出 1）。回归题已判退步时，不管旧版能否复用都是 `fail`。
+
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。
 
 ## 以后才要
