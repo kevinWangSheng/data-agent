@@ -156,6 +156,13 @@ def account(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return reply
 
 
+@pytest.fixture(autouse=True)
+def benchmark(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clean benchmark clone; the tests' --tasks-dir is no git checkout."""
+    monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: "be4c4")
+
+
+BENCHMARK_COMMIT = ablate.benchmark_commit
 PREFETCH_WHEELS = ablate.prefetch_wheels
 
 
@@ -1022,6 +1029,7 @@ def test_every_invocation_writes_a_run_record(
         [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
     ).stdout.strip()
     monkeypatch.setenv("DATA_AGENT_MACHINE", "mac-colima")
+    monkeypatch.setattr(ablate, "benchmark_commit", BENCHMARK_COMMIT)
     monkeypatch.setattr(ablate, "run_harbor", FakeHarbor())
     out = tmp_path / "out"
     argv = ablate_args(manifest, out, "--config", "full")
@@ -1032,9 +1040,13 @@ def test_every_invocation_writes_a_run_record(
     assert record["machine"] == "mac-colima"
     assert record["git_commit"] == "c0ffee"
     assert datetime.fromisoformat(record["started_at"]).tzinfo is not None
-    (bench / "tasks" / "README").write_text("changed\n")
     assert evals_main(argv) == 0
-    assert [r["benchmark_commit"] for r in records(out)] == [head, f"{head}-dirty"]
+    assert len(records(out)) == 2
+    (bench / "tasks" / "README").write_text("changed\n")
+    other = tmp_path / "other"
+    argv[argv.index("--out") + 1] = str(other)
+    assert evals_main(argv) == 0
+    assert [r["benchmark_commit"] for r in records(other)] == [f"{head}-dirty"]
 
 
 def test_a_run_record_without_git_or_a_machine_label_says_so(
@@ -1044,6 +1056,7 @@ def test_a_run_record_without_git_or_a_machine_label_says_so(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.delenv("DATA_AGENT_MACHINE", raising=False)
+    monkeypatch.setattr(ablate, "benchmark_commit", BENCHMARK_COMMIT)
     out = tmp_path / "out"
     argv = ablate_args(manifest, out, "--config", "full")
     argv[argv.index("--tasks-dir") + 1] = str(tmp_path)  # not in a git checkout
@@ -1052,3 +1065,70 @@ def test_a_run_record_without_git_or_a_machine_label_says_so(
     (record,) = records(out)
     assert record["benchmark_commit"] is None and record["machine"] is None
     assert "DATA_AGENT_MACHINE" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"benchmark": "0ther"}, "benchmark commit 'be4c4' there, '0ther' now"),
+        ({"machine": "server-1"}, "machine 'mac-colima' there, 'server-1' now"),
+        ({"benchmark": "be4c4-dirty"}, "uncommitted changes"),
+        ({"benchmark": None}, "uncommitted changes"),
+        ({"records": "deleted"}, "no run record"),
+    ],
+)
+def test_jobs_from_another_benchmark_or_machine_are_not_reused(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    change: dict[str, Any],
+    message: str,
+) -> None:
+    """ADR-0008: a job resumed or skipped on another benchmark checkout or machine would mix
+    tasks of two benchmark versions, or two machines, in one result."""
+    monkeypatch.setenv("DATA_AGENT_MACHINE", "mac-colima")
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    if "benchmark" in change:
+        monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: change["benchmark"])
+    if "machine" in change:
+        monkeypatch.setenv("DATA_AGENT_MACHINE", change["machine"])
+    if "records" in change:
+        for path in (out / "records").iterdir():
+            path.unlink()
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 2
+    assert message in capsys.readouterr().err
+    assert len(harbor.calls) == 1
+    assert len(report_dirs(out)) == 1
+    # The refused call leaves no record of its own, so the checkout OUT was run on still matches.
+    assert len(records(out)) == (0 if "records" in change else 1)
+
+
+def test_a_refused_benchmark_change_does_not_block_going_back(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: "0ther")
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 2
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 2
+    monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: "be4c4")
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+
+
+def test_a_new_out_records_whatever_benchmark_it_runs_on(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Records from calls that made no job do not bind OUT."""
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    monkeypatch.setattr(balance, "fetch", lambda: {"is_available": False, "balance_infos": []})
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 2
+    assert not harbor.calls
+    funded = {"is_available": True, "balance_infos": [{"currency": "USD", "total_balance": "500"}]}
+    monkeypatch.setattr(balance, "fetch", lambda: funded)
+    monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: "0ther")
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0

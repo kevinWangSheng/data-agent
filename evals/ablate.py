@@ -6,7 +6,8 @@ Each run config is one Harbor job on the manifest's holdout tasks, k trials per 
     OUT/dropped/<config>/     event files of trials a resume deleted, kept for the spend guard
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
     OUT/request.json          the model the first invocation asked for; another one is refused
-    OUT/records/<UTC time>.json  new on every invocation: start time, benchmark commit, machine
+    OUT/records/<UTC time>.json  new on every invocation not refused: start time, benchmark
+                              commit, machine
     OUT/smoke/<UTC time>/<config>/  the preflight's smoke job, one dev task once
     OUT/reports/<UTC time>/   new on every invocation:
         <config>/report.json  `evals report` (holdout: aggregates only)
@@ -24,8 +25,9 @@ row, stop Harbor and the batch. A finished job is not rerun; an
 interrupted one, or one with infrastructure errors, is resumed with `harbor job resume`, which
 deletes the errored trials and runs what is missing (plan §7: infrastructure errors are rerun,
 never scored). An existing job is reused only from a clean checkout at the commit and Skill version
-its trials recorded and under the --model OUT was first run with (the recorded model names need not
-match Harbor's -m, so the request itself is compared), and the table needs one commit and one model
+its trials recorded, on the clean benchmark commit and the machine of OUT's last run record, and
+under the --model OUT was first run with (the recorded model names need not match Harbor's -m, so
+the request itself is compared), and the table needs one commit and one model
 across its configs. A config error (the model's key, name or parameters) stops the batch for a
 human: Harbor does not retry it and a report would score it as a real 0. So does a usage limit
 (the account ran out), but its trials are infrastructure errors, rerun once the account is topped
@@ -454,10 +456,10 @@ def benchmark_commit(tasks_dir: Path) -> str | None:
     return head.stdout.strip() + ("-dirty" if status.stdout.strip() else "")
 
 
-def write_record(args: argparse.Namespace, configs: list[str], stamp: str) -> Path:
-    """OUT/records/<stamp>.json: what ADR-0008 compares before reusing results, beyond the
-    version headers: the benchmark's commit and the machine, under a human-given label."""
-    record = {
+def make_record(args: argparse.Namespace, configs: list[str]) -> dict[str, Any]:
+    """What ADR-0008 compares before reusing results, beyond the version headers: the benchmark's
+    commit and the machine, under a human-given label."""
+    return {
         "started_at": datetime.now(UTC).isoformat(),
         "benchmark_commit": benchmark_commit(args.tasks_dir),
         "machine": os.environ.get(MACHINE_ENV) or None,
@@ -466,7 +468,46 @@ def write_record(args: argparse.Namespace, configs: list[str], stamp: str) -> Pa
         "configs": configs,
         "smoke": not args.skip_smoke,
     }
-    path = args.out / "records" / f"{stamp}.json"
+
+
+def check_record(args: argparse.Namespace, record: dict[str, Any]) -> None:
+    """Jobs under OUT are reused (skipped or resumed) only on the benchmark commit and machine of
+    OUT's last run record: another checkout of the tasks or another machine would mix two versions
+    in one job. A refused call writes no record, so the last one is always the jobs' own."""
+    if not any((args.out / "jobs").glob("*/config.json")):
+        return
+    paths = sorted((args.out / "records").glob("*.json"))
+    if not paths:
+        raise Stop(
+            f"{args.out} has jobs but no run record, so they cannot be matched to this benchmark "
+            "checkout and machine; use another --out"
+        )
+    try:
+        before = json.loads(paths[-1].read_text())
+    except (OSError, ValueError) as exc:
+        raise Stop(f"cannot read {paths[-1]}: {exc}; use another --out") from exc
+    commit = record["benchmark_commit"]
+    if commit is None or commit.endswith("-dirty"):
+        raise Stop(
+            f"the benchmark checkout of {args.tasks_dir} has uncommitted changes or is no git "
+            f"clone, so it cannot be matched to the jobs under {args.out}; use a clean clone, "
+            "or another --out"
+        )
+    changed = [
+        f"{label} {before.get(key)!r} there, {record[key]!r} now"
+        for key, label in (("benchmark_commit", "benchmark commit"), ("machine", "machine"))
+        if before.get(key) != record[key]
+    ]
+    if changed:
+        raise Stop(
+            f"the jobs under {args.out} were run under other conditions ({'; '.join(changed)}, "
+            f"see {paths[-1]}); use another --out"
+        )
+
+
+def write_record(out: Path, record: dict[str, Any], stamp: str) -> Path:
+    """OUT/records/<stamp>.json, one per call that gets past `check_record`."""
+    path = out / "records" / f"{stamp}.json"
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(record, indent=2) + "\n")
     if record["machine"] is None:
@@ -653,7 +694,9 @@ def run(args: argparse.Namespace) -> int:
     (args.out / "logs").mkdir(exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     try:
-        record = write_record(args, configs, stamp)
+        now = make_record(args, configs)
+        check_record(args, now)
+        record = write_record(args.out, now, stamp)
         check_request(args.out, args.model)
         print(f"record: {record}", flush=True)
         prepared: list[bool] = []
