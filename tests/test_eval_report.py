@@ -334,9 +334,9 @@ def test_sample_rejects_dev_tasks_missing_from_tasks_dir(tmp_path: Path) -> None
     assert "not-a-task" in proc.stderr
 
 
-@pytest.mark.parametrize("real", [{"dev": [], "holdout": ["t1"]}, None])
+@pytest.mark.parametrize("real", [{"dev": [], "holdout": ["t1"]}, {"holdout": "t2"}, None])
 def test_a_dev_report_on_a_task_the_repos_manifest_holds_out_is_refused(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, real: dict[str, list[str]] | None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, real: dict[str, Any] | None
 ) -> None:
     """A dev report names its tasks; a manifest that lists a holdout task under dev (the old
     temporary-manifest practice) is checked against the repo's evals/manifest.json (on the

@@ -149,18 +149,21 @@ def split_trials(
     return in_split
 
 
-def check_dev_list(manifest: dict[str, Any], source: Path | str) -> None:
+def check_dev_list(manifest: dict[str, Any], label: Path | str) -> None:
     """Refuse per-task output for a dev list that names a holdout task (ADR-0004 allows task ids
-    for the dev set only): one the given manifest (`source`) holds out, or one the repo's
+    for the dev set only): one the given manifest (`label` in errors) holds out, or one the repo's
     evals/manifest.json holds out, since a temporary manifest may hold out nothing. A repo
-    manifest that cannot be read is refused too. Errors name the manifests, never a task.
+    manifest whose holdout cannot be read as a list of task ids is refused too. Errors name the
+    manifests, never a task.
     """
     try:
-        held_out = set(json.loads(REPO_MANIFEST.read_text())["holdout"])
+        held_out = json.loads(REPO_MANIFEST.read_text())["holdout"]
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(f"cannot read the holdout of {REPO_MANIFEST}: {exc}") from exc
+    if not isinstance(held_out, list) or not all(isinstance(t, str) for t in held_out):
+        raise ValueError(f"cannot read the holdout of {REPO_MANIFEST}: not a list of task ids")
     dev = set(manifest["dev"])
-    for name, holdout in ((source, manifest.get("holdout") or []), (REPO_MANIFEST, held_out)):
+    for name, holdout in ((label, manifest.get("holdout") or []), (REPO_MANIFEST, held_out)):
         if dev & set(holdout):
             raise ValueError(f"{name} holds out tasks the dev list names; use the real manifest")
 
@@ -171,7 +174,7 @@ def write_report(
     split: str,
     out_dir: Path,
     trials_per_task: int = TRIALS_PER_TASK,
-    source: Path | str = "the manifest",
+    manifest_label: Path | str = "the manifest",
 ) -> dict[str, Any]:
     """Write `out_dir/report.json` for one split of the manifest; dev also gets `trials.json`.
 
@@ -180,7 +183,7 @@ def write_report(
     holdout task.
     """
     if split == "dev":
-        check_dev_list(manifest, source)
+        check_dev_list(manifest, manifest_label)
     in_split = split_trials(trials, manifest, split, "this")
     check_complete(in_split, split, trials_per_task)
     report: dict[str, Any] = {"split": split, **summary(in_split)}

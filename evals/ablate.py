@@ -77,7 +77,13 @@ from data_agent.agent import git_commit, skill_version
 from data_agent.run_config import REPO_ROOT, load_config
 from evals import balance, wheels
 from evals.harbor import Trial, event_files, load_trials
-from evals.report import TRIALS_PER_TASK, check_complete, is_infra_error, split_trials
+from evals.report import (
+    TRIALS_PER_TASK,
+    check_complete,
+    check_dev_list,
+    is_infra_error,
+    split_trials,
+)
 from evals.spend import SpendUnknown, file_spend
 from evals.walk import walk_files
 
@@ -109,7 +115,6 @@ STOP_GRACE_SECONDS = 300.0
 # every later trial would fail the same way, so stop for a human too.
 ACCOUNT_ERRORS = frozenset({"ApiUsageLimitError"})
 JOB_CONFIG = REPO_ROOT / "evals" / "configs" / "data-eng-bench-duckdb.data-agent.yaml"
-REPO_MANIFEST = REPO_ROOT / "evals" / "manifest.json"
 DEFAULT_MODEL = "the job config's default"
 # The machine's human-given label for the run record (`da-remote start` sets its host alias);
 # never a hostname or address, which scrub would remove (plan §7).
@@ -717,23 +722,13 @@ def run(args: argparse.Namespace) -> int:
         return 2
     if args.split == "dev":
         # A dev run's reports name their tasks (ADR-0004 allows that for dev only): no task the
-        # given manifest or the repo's (on the server, the real one) holds out. evals.diverge
-        # checks the given manifest too; this check comes before any spend.
+        # given manifest or the repo's (on the server, the real one) holds out. evals.report and
+        # evals.diverge check the same way; here it comes before any spend.
         try:
-            held_out = set(json.loads(REPO_MANIFEST.read_text())["holdout"])
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            print(f"ablate: cannot read the holdout of {REPO_MANIFEST}: {exc}", file=sys.stderr)
+            check_dev_list(manifest, args.manifest)
+        except (ValueError, KeyError, TypeError) as exc:
+            print(f"ablate: {exc}", file=sys.stderr)
             return 2
-        for source, holdout in (
-            (args.manifest, manifest.get("holdout") or []),
-            (REPO_MANIFEST, held_out),
-        ):
-            if set(tasks) & set(holdout):
-                print(
-                    f"ablate: {source} holds out tasks the dev run would name; use the real one",
-                    file=sys.stderr,
-                )
-                return 2
     if args.task:
         if args.split != "dev":
             print("ablate: --task needs --split dev; the holdout is run whole", file=sys.stderr)

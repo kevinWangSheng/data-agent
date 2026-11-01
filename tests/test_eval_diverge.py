@@ -177,13 +177,15 @@ def test_a_manifest_listing_a_task_in_both_splits_is_refused(
     assert not out.exists()
 
 
-@pytest.mark.parametrize("real", [{"dev": [], "holdout": ["dbt-charlie"]}, None])
+@pytest.mark.parametrize(
+    "real", [{"dev": [], "holdout": ["dbt-charlie"]}, {"holdout": "dbt-charlie"}, None]
+)
 def test_a_dev_list_the_repos_manifest_holds_out_from_is_refused(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     jobs: tuple[Path, Path],
     capsys: pytest.CaptureFixture[str],
-    real: dict[str, list[str]] | None,
+    real: dict[str, Any] | None,
 ) -> None:
     """The given manifest may list a holdout task under dev and hold out nothing (or something
     else); the repo's evals/manifest.json (on the server, the real one) decides. Unreadable:
