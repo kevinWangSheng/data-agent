@@ -158,11 +158,13 @@ def account(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 @pytest.fixture(autouse=True)
 def benchmark(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A clean benchmark clone; the tests' --tasks-dir is no git checkout."""
+    """A clean benchmark clone, the tests' --tasks-dir being no git checkout, on a labelled
+    machine."""
     monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: "be4c4")
+    monkeypatch.setenv("DATA_AGENT_MACHINE", "mac-colima")
 
 
-BENCHMARK_COMMIT = ablate.benchmark_commit
+REAL_BENCHMARK_COMMIT = ablate.benchmark_commit
 PREFETCH_WHEELS = ablate.prefetch_wheels
 
 
@@ -1029,7 +1031,7 @@ def test_every_invocation_writes_a_run_record(
         [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
     ).stdout.strip()
     monkeypatch.setenv("DATA_AGENT_MACHINE", "mac-colima")
-    monkeypatch.setattr(ablate, "benchmark_commit", BENCHMARK_COMMIT)
+    monkeypatch.setattr(ablate, "benchmark_commit", REAL_BENCHMARK_COMMIT)
     monkeypatch.setattr(ablate, "run_harbor", FakeHarbor())
     out = tmp_path / "out"
     argv = ablate_args(manifest, out, "--config", "full")
@@ -1056,7 +1058,7 @@ def test_a_run_record_without_git_or_a_machine_label_says_so(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.delenv("DATA_AGENT_MACHINE", raising=False)
-    monkeypatch.setattr(ablate, "benchmark_commit", BENCHMARK_COMMIT)
+    monkeypatch.setattr(ablate, "benchmark_commit", REAL_BENCHMARK_COMMIT)
     out = tmp_path / "out"
     argv = ablate_args(manifest, out, "--config", "full")
     argv[argv.index("--tasks-dir") + 1] = str(tmp_path)  # not in a git checkout
@@ -1074,6 +1076,7 @@ def test_a_run_record_without_git_or_a_machine_label_says_so(
         ({"machine": "server-1"}, "machine 'mac-colima' there, 'server-1' now"),
         ({"benchmark": "be4c4-dirty"}, "uncommitted changes"),
         ({"benchmark": None}, "uncommitted changes"),
+        ({"machine": None}, "DATA_AGENT_MACHINE is not set"),
         ({"records": "deleted"}, "no run record"),
     ],
 )
@@ -1093,8 +1096,10 @@ def test_jobs_from_another_benchmark_or_machine_are_not_reused(
     assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
     if "benchmark" in change:
         monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: change["benchmark"])
-    if "machine" in change:
+    if change.get("machine"):
         monkeypatch.setenv("DATA_AGENT_MACHINE", change["machine"])
+    elif "machine" in change:
+        monkeypatch.delenv("DATA_AGENT_MACHINE")
     if "records" in change:
         for path in (out / "records").iterdir():
             path.unlink()

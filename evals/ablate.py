@@ -6,8 +6,8 @@ Each run config is one Harbor job on the manifest's holdout tasks, k trials per 
     OUT/dropped/<config>/     event files of trials a resume deleted, kept for the spend guard
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
     OUT/request.json          the model the first invocation asked for; another one is refused
-    OUT/records/<UTC time>.json  new on every invocation not refused: start time, benchmark
-                              commit, machine
+    OUT/records/<UTC time>.json  new on every invocation check_record lets through: start
+                              time, benchmark commit, machine
     OUT/smoke/<UTC time>/<config>/  the preflight's smoke job, one dev task once
     OUT/reports/<UTC time>/   new on every invocation:
         <config>/report.json  `evals report` (holdout: aggregates only)
@@ -470,16 +470,16 @@ def make_record(args: argparse.Namespace, configs: list[str]) -> dict[str, Any]:
     }
 
 
-def check_record(args: argparse.Namespace, record: dict[str, Any]) -> None:
+def check_record(out: Path, tasks_dir: Path, record: dict[str, Any]) -> None:
     """Jobs under OUT are reused (skipped or resumed) only on the benchmark commit and machine of
     OUT's last run record: another checkout of the tasks or another machine would mix two versions
-    in one job. A refused call writes no record, so the last one is always the jobs' own."""
-    if not any((args.out / "jobs").glob("*/config.json")):
+    in one job. A call this check refuses writes no record, so the last one is the jobs' own."""
+    if not any((out / "jobs").glob("*/config.json")):
         return
-    paths = sorted((args.out / "records").glob("*.json"))
+    paths = sorted((out / "records").glob("*.json"))
     if not paths:
         raise Stop(
-            f"{args.out} has jobs but no run record, so they cannot be matched to this benchmark "
+            f"{out} has jobs but no run record, so they cannot be matched to this benchmark "
             "checkout and machine; use another --out"
         )
     try:
@@ -489,9 +489,14 @@ def check_record(args: argparse.Namespace, record: dict[str, Any]) -> None:
     commit = record["benchmark_commit"]
     if commit is None or commit.endswith("-dirty"):
         raise Stop(
-            f"the benchmark checkout of {args.tasks_dir} has uncommitted changes or is no git "
-            f"clone, so it cannot be matched to the jobs under {args.out}; use a clean clone, "
+            f"the benchmark checkout of {tasks_dir} has uncommitted changes or is no git "
+            f"clone, so it cannot be matched to the jobs under {out}; use a clean clone, "
             "or another --out"
+        )
+    if record["machine"] is None:
+        raise Stop(
+            f"{MACHINE_ENV} is not set, so this machine cannot be matched to the jobs under "
+            f"{out}; set it to the label of the machine they ran on, or use another --out"
         )
     changed = [
         f"{label} {before.get(key)!r} there, {record[key]!r} now"
@@ -500,13 +505,13 @@ def check_record(args: argparse.Namespace, record: dict[str, Any]) -> None:
     ]
     if changed:
         raise Stop(
-            f"the jobs under {args.out} were run under other conditions ({'; '.join(changed)}, "
+            f"the jobs under {out} were run under other conditions ({'; '.join(changed)}, "
             f"see {paths[-1]}); use another --out"
         )
 
 
 def write_record(out: Path, record: dict[str, Any], stamp: str) -> Path:
-    """OUT/records/<stamp>.json, one per call that gets past `check_record`."""
+    """OUT/records/<stamp>.json, one per call that `check_record` lets through."""
     path = out / "records" / f"{stamp}.json"
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(record, indent=2) + "\n")
@@ -694,11 +699,11 @@ def run(args: argparse.Namespace) -> int:
     (args.out / "logs").mkdir(exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     try:
-        now = make_record(args, configs)
-        check_record(args, now)
-        record = write_record(args.out, now, stamp)
+        record = make_record(args, configs)
+        check_record(args.out, args.tasks_dir, record)
+        record_path = write_record(args.out, record, stamp)
         check_request(args.out, args.model)
-        print(f"record: {record}", flush=True)
+        print(f"record: {record_path}", flush=True)
         prepared: list[bool] = []
 
         def prepare() -> None:  # once, and only when a job is to run: the preflight
