@@ -1009,12 +1009,27 @@ async def test_submission_keeps_entries_from_earlier_queries(
 async def test_budget_guard_stops_before_the_next_run(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:
-    # A scripted run costs about $0.00001 at the default model's price.
+    # A scripted run costs about $0.00001 at the default model's price, half that off peak; the
+    # budget below stops after one run whenever it runs.
     seen = await run_dab(monkeypatch, dab_root, tmp_path / "out", runs=3, budget=Decimal(1))
     assert len(seen) == 3
     with pytest.raises(dab.BudgetReached):
-        await run_dab(monkeypatch, dab_root, tmp_path / "out2", runs=3, budget=Decimal("0.00001"))
+        await run_dab(monkeypatch, dab_root, tmp_path / "out2", runs=3, budget=Decimal("0.000001"))
     assert not dab.run_dir(tmp_path / "out2", "toyset", "1", 1).exists()
+
+
+def test_budget_counts_billed_spend(tmp_path: Path) -> None:
+    """Ticket 34: a DeepSeek run that started off peak (a Saturday) is billed half its
+    `cost_usd`; one at peak is billed all of it."""
+    for run, ts in enumerate(("2026-10-31T12:00:00+00:00", "2026-11-02T02:00:00+00:00")):
+        path = dab.run_dir(tmp_path, "toyset", "1", run) / "events.jsonl"
+        path.parent.mkdir(parents=True)
+        lines = [
+            {"type": "version", "ts": ts, "model": "deepseek-flash"},
+            {"type": "result", "cost_usd": 0.4, "cost_basis": "price_table"},
+        ]
+        path.write_text("".join(json.dumps(e) + "\n" for e in lines))
+    assert dab.spent(tmp_path) == Decimal("0.6")
 
 
 async def test_answers_are_masked_like_the_trace(

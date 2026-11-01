@@ -26,10 +26,16 @@
 
 `da-remote check` 也报这些就绪项：两个 clone 的 commit、题目数、DAB 数据大小与清单一致（只比大小，快；sha256 由 `benchmarks` 校验）、镜像、`dab.env`、两个数据库从宿主机可连；以及模型账户余额（`python -m evals.balance`，DeepSeek 的 `GET /user/balance`：报数额和 DeepSeek 说的能否付费，key 只进请求头、不打印；CNY 按 7.3 折成美元，偏保守）。
 
+两种花费口径（工单 34）：
+
+- 高峰价花费：事件文件结果事件里的 `cost_usd`，按 `PRICES`（deepseek-flash 的高峰价）算。用途是单次运行的上限 `max_budget_usd`，不随时段变，agent 行为白天夜里一样。报告里的 `cost_usd` 列仍是它。
+- 实际价花费：接近账户实际扣费。DeepSeek 闲时（高峰是周一至周五 UTC 01:00–04:00、06:00–10:00，其余都是闲时）每项单价减半。一次运行按事件文件第一条事件的 `ts` 定时段；`cost_basis` 是 `price_table`、模型是 DeepSeek 的闲时运行算 `cost_usd × 0.5`，其他情况（SDK 口径、别的模型、缺 `ts`）算 `cost_usd`。中国法定节假日不单独处理，按高峰算，宁可多算。用途：`evals spend` 的 80% 护栏、`ablate` 开跑前余额检查里的"已花的"、`evals dab` 的 `--budget`，以及报告里的 `billed_cost_usd` 列（开发集和留出集都有；开发集的 `trials.json` 每行也有）。
+- `evals spend` 两个合计都打印，并给出闲时、高峰、时段未知的事件文件数。
+
 `ablate` 的预检与快速失败（ADR-0008，工单 27）：
 
 - 每次调用先在 `--out` 下写运行记录 `records/<UTC 时间>.json`：开始时间、benchmark commit（`--tasks-dir` 所在 clone 的 HEAD，有改动带 `-dirty`）、机器标签（环境变量 `DATA_AGENT_MACHINE`；`da-remote start` 设成 SSH 主机别名，env 文件可覆盖；本机跑要自己设，如 `mac-colima`）、代码 commit、模型。`--out` 下已有 job 时，benchmark commit 或机器标签和最近一份记录不同（或 benchmark 有改动、不在 git 里、没设机器标签、没有记录）就停（exit 2），不写新记录、不续跑也不复用；换了 benchmark 或机器就换一个 `--out`。
-- 要起第一个 job 前做预检，任何一项不过就退出 2、不起正式 job：余额要够 `--budget` 减去已花的；每个配置在 manifest 开发集第 1 题上冒烟 1 次（`smoke/<UTC 时间>/<config>/`，日志 `logs/smoke-<config>.log`），要有 reward、无报错、事件文件有 version 头；再对冒烟结果跑 scrub。续跑已冒烟过的批次加 `--skip-smoke`（余额照查）。没有 job 要跑时不预检。
+- 要起第一个 job 前做预检，任何一项不过就退出 2、不起正式 job：余额要够 `--budget` 减去已花的（按实际价花费）；每个配置在 manifest 开发集第 1 题上冒烟 1 次（`smoke/<UTC 时间>/<config>/`，日志 `logs/smoke-<config>.log`），要有 reward、无报错、事件文件有 version 头；再对冒烟结果跑 scrub。续跑已冒烟过的批次加 `--skip-smoke`（余额照查）。没有 job 要跑时不预检。
 - 跑的过程中每 10 秒看一次新完成的 trial：出现 `ApiUsageLimitError`（账户额度或余额用完）或配置错误立即停；连续 `--fail-fast N`（默认 5）个基础设施报错也停。停 Harbor 用它自己的方式（SIGTERM，它会取消 trial、清容器），300 秒不退才 SIGKILL，只对本次启动的那个进程。都是退出 2。`ApiUsageLimitError` 算基础设施报错（`evals report` 不记 0 分）：充值后用同一 `--out` 重跑，这些 trial 会被重跑。
 
 改动验收（ADR-0008，工单 29）：`uv run python -m evals accept --old OUT_OLD/jobs/full --new OUT_NEW/jobs/full --manifest evals/manifest.json --target <题> [--target <题> ...] --regression evals/regression.json [--rerun <补跑 job> ...] [--json]`。

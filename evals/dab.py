@@ -579,10 +579,12 @@ def check_finished_run(directory: Path, expected: dict[str, Any]) -> None:
 
 
 def spent(out: Path) -> Decimal:
+    """What the runs under OUT were billed so far (evals.spend)."""
     files, unchecked = walk_files(out)
     if unchecked:
         raise ValueError(f"cannot see every event file under {out}: {unchecked[0]}")
-    return sum((spend.file_spend(p) for p in files if p.name == "events.jsonl"), Decimal(0))
+    events = (p for p in files if p.name == "events.jsonl")
+    return sum((spend.file_spend(p).billed for p in events), Decimal(0))
 
 
 def write_submission(path: Path, entries: list[dict[str, str]]) -> None:
@@ -687,7 +689,9 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.add_argument("--config", required=True, choices=CONFIG_NAMES)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--no-hints", action="store_true", help="leave out the hint file")
-    parser.add_argument("--budget", help="stop once spend under --out reaches 80%% of this (USD)")
+    parser.add_argument(
+        "--budget", help="stop once billed spend under --out reaches 80%% of this (USD)"
+    )
     parser.set_defaults(run=run_cli)
 
 

@@ -11,6 +11,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -529,6 +530,27 @@ def test_the_balance_needs_to_cover_only_the_budget_left(
     assert len(harbor.calls) == 2
 
 
+def test_the_budget_left_counts_what_was_spent_at_billed_prices(
+    tmp_path: Path, account: dict[str, Any]
+) -> None:
+    """Ticket 34: $20 at peak prices, run on a Saturday, was billed $10, so $90 of a $100 budget
+    is left, not $80."""
+    out = tmp_path / "out"
+    events = out / "jobs" / "full" / "t__a" / "agent" / "events"
+    events.mkdir(parents=True)
+    lines = [
+        {"type": "version", "ts": "2026-10-31T12:00:00+00:00", "model": "deepseek-flash"},
+        {"type": "result", "cost_usd": 20.0, "cost_basis": "price_table"},
+    ]
+    (events / "run.jsonl").write_text("".join(json.dumps(e) + "\n" for e in lines))
+    assert ablate.spent(out) == Decimal(10)
+    account["balance_infos"] = [{"currency": "USD", "total_balance": "85.00"}]
+    with pytest.raises(ablate.Stop, match=r"below the \$90.00 left"):
+        ablate.check_balance(out, Decimal(100))
+    account["balance_infos"] = [{"currency": "USD", "total_balance": "90.00"}]
+    ablate.check_balance(out, Decimal(100))
+
+
 def test_an_unreadable_balance_stops_before_any_harbor_run(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,
@@ -724,7 +746,7 @@ def test_spend_of_trials_a_resume_drops_still_counts(
     code, printed, _ = ablate.evals_cli(["spend", str(out), "--budget", "100"])
     # 6 configs x 2 tasks x 3 trials, the 2 dropped ones, and 6 smoke trials in each of the 2
     # invocations, at $0.01 each.
-    assert code == 0 and "$0.5000 over 50 event file(s)" in printed
+    assert code == 0 and "(at peak prices $0.5000) over 50 event file(s)" in printed
 
 
 @pytest.mark.parametrize(

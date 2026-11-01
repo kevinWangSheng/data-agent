@@ -7,9 +7,11 @@ metrics (evals.process) and where each trial's events live, for failure attribut
 
 import json
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from evals import spend
 from evals.harbor import Trial, by_task, last_event_file
 from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
 from evals.process import job_metrics
@@ -54,6 +56,35 @@ NOT_RETRIED = frozenset(
 )
 
 
+def billed_usd(trial: Trial) -> float:
+    """The trial's `cost_usd` as the model account is billed it (evals.spend), by its scored
+    event file (`last_event_file`); at the full `cost_usd` when it has no readable result event."""
+    events = last_event_file(trial)
+    if events is None:
+        return trial.cost_usd
+    first: dict[str, Any] | None = None
+    version: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
+    with events.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # a line cut short by a killed run (as evals.process)
+            if not isinstance(event, dict):
+                continue
+            if first is None:
+                first = event
+            if version is None and event.get("type") == "version":
+                version = event
+            if event.get("type") == "result":
+                result = event
+    if result is None:
+        return trial.cost_usd
+    cost = Decimal(str(trial.cost_usd))
+    return float(spend.billed(cost, result, spend.run_rate(first, version)))
+
+
 def is_infra_error(trial: Trial) -> bool:
     return (
         not is_success(trial.reward)
@@ -78,6 +109,7 @@ def summary(trials: list[Trial]) -> dict[str, Any]:
         "cached_input_tokens": sum(t.cached_input_tokens for t in trials),
         "output_tokens": sum(t.output_tokens for t in trials),
         "cost_usd": sum(t.cost_usd for t in trials),
+        "billed_cost_usd": sum(billed_usd(t) for t in trials),
     }
 
 
@@ -102,6 +134,7 @@ def _trial_rows(trials: list[Trial]) -> list[dict[str, Any]]:
                 "cached_input_tokens": t.cached_input_tokens,
                 "output_tokens": t.output_tokens,
                 "cost_usd": t.cost_usd,
+                "billed_cost_usd": billed_usd(t),
                 "events": str(events) if events else None,
             }
         )
