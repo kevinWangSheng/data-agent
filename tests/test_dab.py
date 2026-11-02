@@ -132,7 +132,13 @@ async def test_server_exposes_dab_tools_under_our_tool_names(
 ) -> None:
     async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
         tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-    assert set(tools) == {"query_database", "list_tables", "execute_python"}
+    assert set(tools) == {
+        "query_database",
+        "list_tables",
+        "execute_python",
+        "describe_table",  # ours, for Postgres and DuckDB databases (ticket 37)
+        "explain_query",
+    }
     # The descriptions are DAB's own, read from its tool specs at run time.
     assert tools["query_database"].description == "FAKE-DAB query description."
     assert tools["list_tables"].description == "FAKE-DAB list description."
@@ -360,7 +366,11 @@ async def test_a_slow_query_times_out_and_the_next_one_runs(
         elapsed = time.monotonic() - started
         after = await session.call_tool("query_database", {"db_name": db_name, "sql": quick})
     assert stopped.is_error
-    assert text_of(stopped).endswith(": Query timed out after 0.5s")
+    if db_name in ("numbers_db", "films_db"):
+        # Postgres and DuckDB timeouts also carry the plan and the indexes (ticket 37).
+        assert ": Query timed out after 0.5s\n\nPlan (EXPLAIN" in text_of(stopped)
+    else:
+        assert text_of(stopped).endswith(": Query timed out after 0.5s")
     assert elapsed < 10
     assert not after.is_error, text_of(after)
     assert data_of(after) == rows
@@ -386,6 +396,149 @@ async def test_a_slow_failure_of_another_kind_keeps_its_own_error(
     assert result.is_error
     assert "(ServerSelectionTimeoutError)" in text_of(result)
     assert "timed out after" not in text_of(result)
+
+
+# --- database facts (ticket 37): Postgres and DuckDB only ---
+
+
+def add_shop(root: Path) -> None:
+    """Give toyset a DuckDB database with keys, an index and a view, beside add_databases'."""
+    add_databases(root)
+    dataset = root / "query_toyset"
+    con = duckdb.connect(str(dataset / "query_dataset" / "shop.duckdb"))
+    try:
+        con.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR);"
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER "
+            "REFERENCES customers (id));"
+            "CREATE INDEX orders_customer ON orders (customer_id);"
+            "INSERT INTO customers VALUES (1, 'a'), (2, 'b'), (3, 'c');"
+            "INSERT INTO orders VALUES (10, 1), (11, 1);"
+            "CREATE VIEW named AS SELECT name FROM customers;"
+        )
+    finally:
+        con.close()
+    config_path = dataset / "db_config.yaml"
+    config = json.loads(config_path.read_text())
+    config["db_clients"]["shop_db"] = {"db_type": "duckdb", "db_path": "query_dataset/shop.duckdb"}
+    config_path.write_text(json.dumps(config))
+
+
+async def test_sql_tables_are_listed_with_row_estimates(dab_root: Path, tmp_path: Path) -> None:
+    add_shop(dab_root)
+    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
+        shop = await session.call_tool("list_tables", {"db_name": "shop_db"})
+        films = await session.call_tool("list_tables", {"db_name": "films_db"})
+        prices = await session.call_tool("list_tables", {"db_name": "prices_db"})
+    assert data_of(shop) == [
+        {"name": "customers", "type": "table", "rows_estimate": 3},
+        {"name": "named", "type": "view"},
+        {"name": "orders", "type": "table", "rows_estimate": 2},
+    ]
+    assert data_of(films) == [{"name": "films", "type": "table", "rows_estimate": 1234}]
+    assert data_of(prices) == ["prices"]  # SQLite: as before
+
+
+async def test_describe_table_and_explain_query_run_through_the_dab_tool(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    add_shop(dab_root)
+    log = tmp_path / "tools.jsonl"
+    async with dab_server(dab_root, log) as session:
+        tools = {tool.name for tool in (await session.list_tools()).tools}
+        orders = await session.call_tool(
+            "describe_table", {"db_name": "shop_db", "table": "orders"}
+        )
+        films = await session.call_tool("describe_table", {"db_name": "films_db", "table": "films"})
+        plan = await session.call_tool(
+            "explain_query",
+            {
+                "db_name": "shop_db",
+                "sql": "SELECT * FROM orders JOIN customers ON customer_id = customers.id",
+            },
+        )
+        films_plan = await session.call_tool(
+            "explain_query", {"db_name": "films_db", "sql": "SELECT * FROM films"}
+        )
+    assert {"describe_table", "explain_query"} <= tools
+    assert not orders.is_error, text_of(orders)
+    lines = text_of(orders).splitlines()
+    assert lines[0] == "main.orders (table, ~2 rows, 2 columns)"
+    assert "  FOREIGN KEY (customer_id) REFERENCES customers(id)" in lines
+    assert "  CREATE INDEX orders_customer ON orders(customer_id);" in lines
+    assert not films.is_error, text_of(films)
+    assert "  id integer, not null; n_distinct=-1, null_frac=0" in text_of(films).splitlines()
+    assert "HASH_JOIN" in text_of(plan)
+    assert text_of(films_plan) == "Fake Plan  (rows=42) for: SELECT * FROM films LIMIT 10000"
+    # Every statement went to DAB's query tool, after the gateway's check.
+    assert {call["tool_name"] for call in logged_calls(log)} == {"query_db"}
+
+
+@pytest.mark.parametrize(
+    "sql",
+    ["DROP TABLE orders", "EXPLAIN ANALYZE SELECT * FROM orders", "SELECT 1; DELETE FROM orders"],
+)
+async def test_explain_query_blocks_what_the_gateway_blocks(
+    dab_root: Path, tmp_path: Path, sql: str
+) -> None:
+    add_shop(dab_root)
+    log = tmp_path / "tools.jsonl"
+    async with dab_server(dab_root, log) as session:
+        result = await session.call_tool("explain_query", {"db_name": "shop_db", "sql": sql})
+    assert result.is_error
+    assert "read-only gateway" in text_of(result)
+    assert logged_calls(log) == []
+
+
+@pytest.mark.parametrize("db_name", ["prices_db", "articles_db"])
+async def test_fact_tools_are_refused_for_sqlite_and_mongo(
+    dab_root: Path, tmp_path: Path, db_name: str
+) -> None:
+    log = tmp_path / "tools.jsonl"
+    async with dab_server(dab_root, log) as session:
+        described = await session.call_tool("describe_table", {"db_name": db_name, "table": "x"})
+        explained = await session.call_tool(
+            "explain_query", {"db_name": db_name, "sql": "SELECT 1"}
+        )
+    for result in (described, explained):
+        assert result.is_error
+        assert "Postgres and DuckDB" in text_of(result)
+    assert logged_calls(log) == []
+
+
+async def test_a_duckdb_timeout_carries_the_plan_and_indexes(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    add_shop(dab_root)
+    sql = (
+        "SELECT count(*) FROM orders, range(100000) AS a, range(100000) AS b "
+        "WHERE (a.range * b.range + customer_id) % 7 = 3"
+    )
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        result = await session.call_tool("query_database", {"db_name": "shop_db", "sql": sql})
+    assert result.is_error
+    text = text_of(result)
+    assert ": Query timed out after 0.5s\n\nPlan (EXPLAIN" in text
+    assert "CROSS_PRODUCT" in text
+    index = "  main.orders: CREATE INDEX orders_customer ON orders(customer_id);"
+    assert index in text.splitlines()
+
+
+async def test_a_postgres_timeout_carries_the_indexes_of_the_tables_it_resolves(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    """The fake server's search path resolves `films` only; the report says so for sleep_30."""
+    add_databases(dab_root)
+    sql = "SELECT * FROM sleep_30 CROSS JOIN films"
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        result = await session.call_tool("query_database", {"db_name": "films_db", "sql": sql})
+    assert result.is_error
+    text = text_of(result)
+    indexes = text[text.index("Indexes on the tables") :].splitlines()[1:]
+    assert indexes == [
+        "  sleep_30: no table or view by this name on the search path",
+        "  public.films: CREATE UNIQUE INDEX films_pkey ON public.films USING btree (id)",
+    ]
 
 
 async def test_postgres_connections_carry_the_statement_timeout(

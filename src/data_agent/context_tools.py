@@ -7,17 +7,25 @@ matching, capped at ktx's 25 candidates per column. All SQL goes through the gat
 """
 
 import re
-from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from data_agent.gateway import MAX_ROWS, QueryResult
+from data_agent.db_facts import (
+    RunQuery,
+    Table,
+    column_line,
+    find_table,
+    key_lines,
+    literal,
+    load_catalog,
+    quote,
+    table_facts,
+)
+from data_agent.gateway import MAX_ROWS
 
-# Runs one statement through the gateway; blocks and database errors raise ToolError.
-RunQuery = Callable[[str, int], QueryResult]
+__all__ = ["Table", "find_table", "register_context_tools"]
 
 SUMMARY_LIMIT = 200
 JOIN_CANDIDATES_PER_COLUMN = 25
@@ -30,67 +38,10 @@ KEYWORD_CHARS = 200
 COLUMNS_PER_STATEMENT = MAX_ROWS // VALUES_PER_COLUMN
 STATEMENT_CHARS = 90_000
 
-CATALOG_SQL = """
-SELECT c.table_schema, c.table_name, t.table_type, c.column_name, c.data_type
-FROM information_schema.columns AS c
-JOIN information_schema.tables AS t
-  ON t.table_catalog = c.table_catalog
- AND t.table_schema = c.table_schema
- AND t.table_name = c.table_name
-WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
-ORDER BY c.table_schema, c.table_name, c.ordinal_position
-LIMIT {limit} OFFSET {offset}
-"""
-
-
-@dataclass
-class Table:
-    schema: str
-    name: str
-    kind: str
-    columns: list[tuple[str, str]]  # (name, data type), in table order
-
-    @property
-    def ref(self) -> str:
-        return f"{ref_part(self.schema)}.{ref_part(self.name)}"
-
-    @property
-    def sql_name(self) -> str:
-        return f"{quote(self.schema)}.{quote(self.name)}"
-
-
-def quote(identifier: str) -> str:
-    return '"' + identifier.replace('"', '""') + '"'
-
-
-def ref_part(identifier: str) -> str:
-    """Plain unless a dot or quote would make the ref ambiguous: a."b.c" and "a.b".c stay apart."""
-    return quote(identifier) if "." in identifier or '"' in identifier else identifier
-
-
-def literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
 
 def is_text(data_type: str) -> bool:
     upper = data_type.upper()
     return "CHAR" in upper or "TEXT" in upper or upper == "STRING"
-
-
-def load_catalog(run: RunQuery) -> list[Table]:
-    """Every column of every table, read in pages: one gateway query returns at most MAX_ROWS."""
-    tables: dict[tuple[str, str], Table] = {}
-    offset = 0
-    while True:
-        rows = run(CATALOG_SQL.format(limit=MAX_ROWS, offset=offset), MAX_ROWS).rows
-        for schema, name, kind, column, data_type in rows:
-            table = tables.setdefault(
-                (schema, name), Table(schema, name, kind.lower().removeprefix("base "), [])
-            )
-            table.columns.append((column, data_type))
-        if len(rows) < MAX_ROWS:
-            return list(tables.values())
-        offset += MAX_ROWS
 
 
 def terms_of(text: str) -> list[str]:
@@ -135,22 +86,6 @@ def summarize(table: Table, matched_columns: list[str]) -> str:
     if len(text) > SUMMARY_LIMIT:
         text = text[: SUMMARY_LIMIT - 1].rstrip(", ") + "…"
     return text
-
-
-def find_table(catalog: list[Table], ref: str) -> Table:
-    """The exact ref first, so quoted names with spaces or case-only differences resolve; then a
-    case-folded match on the ref or the bare name."""
-    for table in catalog:
-        if table.ref == ref:
-            return table
-    wanted = ref.strip().lower()
-    hits = [table for table in catalog if wanted in (table.ref.lower(), table.name.lower())]
-    if len(hits) == 1:
-        return hits[0]
-    if hits:
-        options = ", ".join(table.ref for table in hits)
-        raise ToolError(f"Error: {ref!r} is ambiguous; use one of: {options}")
-    raise ToolError(f"Error: no table or view {ref!r}; use a ref returned by discover")
 
 
 def named_after(prefix: str) -> set[str]:
@@ -237,9 +172,10 @@ def search_values(run: RunQuery, table: Table, keyword: str) -> list[str]:
     return lines
 
 
-def register_context_tools(server: MCPServer, run: RunQuery) -> None:
+def register_context_tools(server: MCPServer, run: RunQuery, dialect: str) -> None:
     """Add the context-strategy tools to `server`; called only when the run config turns the
-    context layer on."""
+    context layer on. `dialect` is the gateway's, for the catalog reads hydrate shares with
+    describe_table."""
 
     @server.tool()
     def discover(query: str, limit: int = 10) -> dict[str, list[dict[str, Any]]]:
@@ -265,16 +201,18 @@ def register_context_tools(server: MCPServer, run: RunQuery) -> None:
 
     @server.tool()
     def hydrate(ref: str) -> str:
-        """Read one table or view in full: row count, every column with its type, and join
-        candidates found from `<x>_id` columns. `ref` is a ref from discover (schema.table) or a
-        bare table name."""
+        """Read one table or view in full: exact row count, every column with its type and
+        whether it may be null, join candidates found from `<x>_id` columns, then the declared
+        keys and the indexes. `ref` is a ref from discover (schema.table) or a bare table name."""
         catalog = load_catalog(run)
         table = find_table(catalog, ref)
         count = run(f"SELECT count(*) FROM {table.sql_name}", 1).rows[0][0]
+        facts = table_facts(run, dialect, table)
         lines = [f"{table.ref} ({table.kind}, {count} rows, {len(table.columns)} columns)"]
-        lines.extend(f"  {column} {data_type}" for column, data_type in table.columns)
+        lines.extend(column_line(column) for column in facts.columns)
         lines.append("Join candidates (by _id column name; check the key values before joining):")
         lines.extend(f"  {line}" for line in join_candidates(catalog, table) or ["none found"])
+        lines.extend(key_lines(facts))
         return "\n".join(lines)
 
     @server.tool()

@@ -20,6 +20,12 @@ would send its own SQL); only MongoDB collections are listed by DAB's list tool.
 Every query is also stopped after the gateway's timeout (`QueryTimeout`), in the database where
 there is one, and fails with the gateway's message; the next query runs as usual.
 
+For Postgres and DuckDB databases the base tools also give the database's own facts, as on any
+other database (`data_agent.db_facts`, ADR-0003): `list_tables` adds each table's row estimate,
+`describe_table` and `explain_query` are served, and a timeout carries the query's plan and the
+indexes on the tables it reads. Their SQL passes the gateway's check and goes to DAB's query tool
+like any other query.
+
     python -m evals.dab_server --dab-root DAB --db-config DAB/query_x/db_config.yaml --log LOG \
         --workspace WORKSPACE
 """
@@ -41,20 +47,30 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
+from data_agent.db_facts import RunQuery, describe, plan_text, row_estimates, timeout_report
 from data_agent.engine import inject_limit, validate_sql
-from data_agent.gateway import MAX_ROWS, TIMEOUT_SECONDS
+from data_agent.gateway import MAX_ROWS, TIMEOUT_SECONDS, QueryResult
 from evals.dab import scaffold
 
 # DAB db_type -> sqlglot dialect. MongoDB is the one type that is not SQL; any other type is
 # refused, since the gateway could not check it.
 SQL_DIALECTS = {"sqlite": "sqlite", "duckdb": "duckdb", "postgres": "postgres"}
 NOT_SQL = frozenset({"mongo"})
-# The tables DAB's list tool returns for each SQL type, as a query whose first column is the name.
+# The tables DAB's list tool returns for each SQL type, as a query whose first column is the name
+# (and, where there are database facts, the second the table's type).
 LIST_TABLES = {
     "sqlite": "SELECT name FROM sqlite_master WHERE type = 'table'",
-    "duckdb": "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'",
-    "postgres": "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
+    "duckdb": (
+        "SELECT table_name, table_type FROM information_schema.tables "
+        "WHERE table_schema = 'main' ORDER BY table_name"
+    ),
+    "postgres": (
+        "SELECT table_name, table_type FROM information_schema.tables "
+        "WHERE table_schema = 'public' ORDER BY table_name"
+    ),
 }
+# The types whose catalogs `data_agent.db_facts` reads, with the schema DAB's tables are in.
+FACT_SCHEMAS = {"duckdb": "main", "postgres": "public"}
 # Tool results longer than this are saved to a file and previewed, as in DAB's own agent (its
 # PREVIEW_LENGTH); failures longer than this are cut.
 RESULT_CHARS = 10_000
@@ -178,7 +194,8 @@ class QueryTimeout:
                 self._opened = None
         error = "" if outcome["success"] else str(outcome["result"])
         if error and (interrupted.is_set() or any(name in error for name in SERVER_TIMEOUTS)):
-            return {"success": False, "result": f"Query timed out after {self.seconds:g}s"}
+            message = f"Query timed out after {self.seconds:g}s"
+            return {"success": False, "result": message, "timed_out": True}
         return outcome
 
 
@@ -188,6 +205,12 @@ def governed(sql: str, dialect: str) -> str:
         reason = verdict.blocked_reason or "not a read-only query"
         raise ToolError(f"Query blocked by the read-only gateway: {reason}")
     return inject_limit(sql, max_rows=MAX_ROWS, dialect=dialect)
+
+
+def as_result(rows: list[dict[str, Any]]) -> QueryResult:
+    """DAB's rows (a dict per row, in column order) as the gateway's result."""
+    columns = list(rows[0]) if rows else []
+    return QueryResult(columns=columns, rows=[tuple(row.values()) for row in rows])
 
 
 def finite(value: Any) -> Any:
@@ -254,6 +277,15 @@ class Results:
             f.write(text)
 
 
+def table_entry(name: str, kind: str, estimate: int | None) -> dict[str, Any]:
+    """A listed table with the database's row estimate ("unknown" when it has none); a view has
+    no rows of its own to estimate."""
+    if kind.upper() == "VIEW":
+        return {"name": name, "type": "view"}
+    rows = "unknown" if estimate is None else estimate
+    return {"name": name, "type": "table", "rows_estimate": rows}
+
+
 def build_server(
     query_tool: Any,
     list_tool: Any,
@@ -280,6 +312,41 @@ def build_server(
             raise ToolError(f"Query blocked: the read-only gateway cannot check {db_type} queries")
         return db_type
 
+    def with_facts(db_name: str) -> str:
+        """`db_name`'s dialect; only Postgres and DuckDB databases have facts to read."""
+        db_type = checkable(db_name)
+        if db_type not in FACT_SCHEMAS:
+            kind = db_type or "not a database DAB knows"
+            raise ToolError(
+                f"Error: this tool reads Postgres and DuckDB databases; {db_name} is {kind}"
+            )
+        return SQL_DIALECTS[db_type]
+
+    def sql_run(db_name: str, dialect: str) -> RunQuery:
+        """Runs a statement on `db_name` as query_database does, without keeping a variable;
+        callers hold `results.lock`."""
+
+        def run(sql: str, row_limit: int) -> QueryResult:
+            args = {"db_name": db_name, "query": governed(sql, dialect)}
+            outcome = timeout.run(lambda: query_tool.exec(args))
+            if not outcome["success"]:
+                raise ToolError(str(outcome["result"]))
+            return as_result(outcome["result"])
+
+        return run
+
+    def sql_explain(db_name: str, dialect: str) -> Callable[[str], str]:
+        """EXPLAIN (never ANALYZE) of a statement that passes the gateway's check first."""
+
+        def explain(sql: str) -> str:
+            args = {"db_name": db_name, "query": f"EXPLAIN {governed(sql, dialect)}"}
+            outcome = timeout.run(lambda: query_tool.exec(args))
+            if not outcome["success"]:
+                raise ToolError(str(outcome["result"]))
+            return plan_text(as_result(outcome["result"]))
+
+        return explain
+
     @server.tool(name="query_database", description=query_spec["description"])
     def query_database(
         db_name: Annotated[str, Field(description=query_args["db_name"].get("description"))],
@@ -291,7 +358,17 @@ def build_server(
         # An unknown db_name goes on to DAB's tool, which rejects it without running anything.
         with results.lock:
             args = {"db_name": db_name, "query": sql}
-            return results.reply(timeout.run(lambda: query_tool.exec(args)))
+            outcome = timeout.run(lambda: query_tool.exec(args))
+            if outcome.get("timed_out") and db_type in FACT_SCHEMAS:
+                dialect = SQL_DIALECTS[db_type]
+                outcome["result"] = timeout_report(
+                    outcome["result"],
+                    sql,
+                    dialect,
+                    sql_explain(db_name, dialect),
+                    sql_run(db_name, dialect),
+                )
+            return results.reply(outcome)
 
     @server.tool(name="list_tables", description=list_spec["description"])
     def list_tables(
@@ -301,13 +378,53 @@ def build_server(
         if db_type not in SQL_DIALECTS:
             with results.lock:
                 return results.reply(timeout.run(lambda: list_tool.exec({"db_name": db_name})))
-        sql = governed(LIST_TABLES[db_type], SQL_DIALECTS[db_type])
+        dialect = SQL_DIALECTS[db_type]
+        if db_type in FACT_SCHEMAS:
+            # With each table's type and row estimate.
+            with results.lock:
+                run = sql_run(db_name, dialect)
+                tables = run(LIST_TABLES[db_type], MAX_ROWS).rows
+                estimates = row_estimates(run, dialect)
+                schema = FACT_SCHEMAS[db_type]
+                listed = [
+                    table_entry(name, kind, estimates.get((schema, name))) for name, kind in tables
+                ]
+                return results.reply({"success": True, "result": listed})
+        sql = governed(LIST_TABLES[db_type], dialect)
         with results.lock:
             outcome = timeout.run(lambda: query_tool.exec({"db_name": db_name, "query": sql}))
             if outcome["success"]:
                 # Rows to names, as DAB's list tool returns them.
                 outcome["result"] = [next(iter(row.values())) for row in outcome["result"]]
             return results.reply(outcome)
+
+    @server.tool(name="describe_table")
+    def describe_table(db_name: str, table: str) -> str:
+        """One table or view of a Postgres or DuckDB database in detail, as the database reports
+        it: its row estimate, every column with its type and whether it may be null, declared
+        primary and foreign keys, and its indexes (name and definition).
+
+        On Postgres each column also shows `n_distinct` and `null_frac` from pg_stats (a negative
+        n_distinct is minus the distinct values' share of the rows); a table with no statistics
+        says so. DuckDB lists only indexes made with CREATE INDEX: the index behind a primary key
+        shows as the key.
+        """
+        dialect = with_facts(db_name)
+        with results.lock:
+            return describe(sql_run(db_name, dialect), dialect, table)
+
+    @server.tool(name="explain_query")
+    def explain_query(db_name: str, sql: str) -> str:
+        """The plan of a Postgres or DuckDB database for one read-only SQL query, without running
+        it (EXPLAIN, never ANALYZE), as the database prints it: each step with its estimated
+        rows, the join methods, and the join and filter conditions.
+
+        The query passes the same read-only checks as query_database; the plan is of the query
+        as query_database would run it, row cap included.
+        """
+        dialect = with_facts(db_name)
+        with results.lock:
+            return sql_explain(db_name, dialect)(sql)
 
     exec_description = f"{exec_spec['description']}\n\n{PRINT_NOTE.format(marker=marker)}"
 
