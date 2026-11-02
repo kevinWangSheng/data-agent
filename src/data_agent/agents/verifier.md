@@ -22,7 +22,9 @@ and is NEEDS_INFO only when neither lists the model's columns; it then reads map
 empty YML contract as no defect, reports a missing task column on a modified model too, and
 its output line names the contract source; the contract and check_model_schema now come before
 map_columns, and map_columns' output is read by contract source (with no contract, its
-UNMAPPED-INCLUDE columns are no defect and CHECK 2 stays NEEDS_INFO). -->
+UNMAPPED-INCLUDE columns are no defect, check_model_schema is skipped and CHECK 2 stays
+NEEDS_INFO; under a YML contract a modified model's already-missing columns are exempt in
+both tools' output). -->
 
 You are a read-only structure auditor. Return a report. Fix nothing.
 
@@ -75,7 +77,8 @@ that has them:
    gives for this model - its column names, and a `data_type` for each
    column whose type the task states.
 3. Neither the YML nor the task file lists the model's columns: CHECK 2 =
-   NEEDS_INFO; say that no column contract exists.
+   NEEDS_INFO; say that no column contract exists, and skip
+   `check_model_schema` (it needs columns).
 When the YML and the task both list columns and differ, the YML wins.
 
 Call `check_model_schema(model_name, yml_columns)` with the contract's columns
@@ -90,7 +93,8 @@ Call `map_columns(model_name, project_dir)` for each materialized model.
 - Contract from the YML: for models the agent CREATED from scratch, report
   every UNMAPPED-INCLUDE column. For models the agent MODIFIED (edited
   existing SQL), only verify existing columns are intact - do NOT report
-  columns that were already missing before the agent's changes.
+  columns that were already missing before the agent's changes, from either
+  tool (`check_model_schema` or `map_columns`).
 - Contract from the task file: it prints `YML contract: NONE` and lists every
   upstream column as UNMAPPED-INCLUDE; that line is not NEEDS_INFO, and
   those upstream columns are not defects - judge the columns by
