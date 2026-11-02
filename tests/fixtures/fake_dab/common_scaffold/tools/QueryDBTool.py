@@ -2,17 +2,32 @@
 
 Same interface: constructed from a db config, `get_spec()` returns an OpenAI-style function spec,
 `exec(args)` returns `{"success": bool, "result": ...}` and appends one JSON line per call to
-`log_path`. SQLite databases are queried for real; a "mongo" database echoes the query back.
+`log_path`. As in DAB, each database type's module under `db_utils` runs the query: SQLite and
+DuckDB databases are queried for real; "postgres" and "mongo" ones are fakes (see their modules).
 """
 
 import json
-import sqlite3
 from typing import Any
 
+from common_scaffold.tools.db_utils import duckdb_utils, mongo_utils, postgres_utils, sqlite_utils
 from common_scaffold.tools.db_utils.db_config import drop_dbs, load_db_clients, load_dbs
 
 DESCRIPTION = "FAKE-DAB query description."
 QUERY_ARG = "FAKE-DAB query argument."
+
+
+def run(client: dict[str, str], query: str) -> list[dict[str, Any]]:
+    match client["db_type"]:
+        case "sqlite":
+            return sqlite_utils.exec(client["db_path"], query)
+        case "duckdb":
+            return duckdb_utils.exec(client["db_path"], query)
+        case "postgres":
+            return postgres_utils.exec(client["db_name"], query)
+        case "mongo":
+            return mongo_utils.exec(client["db_name"], query)
+        case other:
+            raise ValueError(f"Unsupported db_type: {other}")
 
 
 class QueryDBTool:
@@ -49,16 +64,11 @@ class QueryDBTool:
         client = self.db_clients.get(args["db_name"])
         if client is None:
             return {"success": False, "result": f"Unknown `db_name`: {args['db_name']}"}
-        if client["db_type"] == "mongo":
-            return {"success": True, "result": [{"echo": args["query"]}]}
+        # As DAB: each type's module runs the query, and a failure becomes the error's text.
         try:
-            with sqlite3.connect(f"file:{client['db_path']}?mode=ro", uri=True) as conn:
-                cursor = conn.execute(args["query"])
-                columns = [c[0] for c in cursor.description]
-                rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
-            return {"success": False, "result": f"SQLite error: {e}"}
-        return {"success": True, "result": rows}
+            return {"success": True, "result": run(client, args["query"])}
+        except Exception as e:
+            return {"success": False, "result": str(e)}
 
     def clean_up(self) -> None:
         drop_dbs(self.db_config_path, self.db_clients)
