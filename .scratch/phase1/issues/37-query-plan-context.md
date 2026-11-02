@@ -1,10 +1,10 @@
 # 37 — 查询工具把执行计划、索引等确定性信息返回给模型
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 36（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-02
+Branch: worktree-37-query-plan-context
 
 ## Goal
 
@@ -143,10 +143,10 @@ agent 写 SQL 前就能拿到数据库自己报出的事实，包括行数、类
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1（eng:code-review；da-review 未完成）
+- Model spend: $0（没有调 agent 模型；Codex 审查的花费不在这里计）
+- Outcome: in-review
 - Human review minutes: —
 
 ## Comments
@@ -159,3 +159,41 @@ agent 写 SQL 前就能拿到数据库自己报出的事实，包括行数、类
   - 核对后确认：我们执行前确实不给索引、约束、行数估计和计划；三家现成做法（SignalPilot、Postgres MCP Pro、Google MCP Toolbox）都在基础层提供。
   - 因此改成现在的范围：基础层给事实，上下文层只留策略。
   - 用户同意，并接受代价：要改 ADR-0003，baseline 会变强，合入后要重跑合并验收。
+- 2026-11-02 实现（commits `8551baf`、`8659c4e`）：
+  - **新模块** `src/data_agent/db_facts.py`：行数估计、列/可空、主外键（`pg_get_constraintdef` / `duckdb_constraints()` 原文）、索引定义、Postgres `pg_stats`、计划文本、超时报告。catalog、`Table`、`find_table` 从 `context_tools.py` 移入这里，供 `describe_table`、`hydrate` 和 DAB 共用。
+  - **网关**：`Gateway.explain(sql, row_limit)` 先用 `check()` 检查内层 SQL（含行数上限），再在前面加 `EXPLAIN`（不带 ANALYZE），在原有只读连接和超时下执行；新增 `QueryTimedOut`。传入 `EXPLAIN …` 会被网关当作 Command 拦下。
+  - **超时报错**：MCP 框架前缀 `Error executing tool query_database: ` 之后，正文以 `Query timed out after Ns` 开头；接着是 `Plan (EXPLAIN, without running the query):` 和计划文本，再是 `Indexes on the tables this query reads (from pg_indexes|duckdb_indexes()…):`，每张表一行或多行 `表: 定义`，没有写 `none`。`EXPLAIN` 失败时只附 `EXPLAIN failed: 原因`。
+  - **DAB 包装层**（只对 postgres、duckdb）：
+    - `list_tables` 返回 `{"name","type","rows_estimate"}`，取不到写 `"unknown"`，视图不带；
+    - 新增 `describe_table(db_name, table)`、`explain_query(db_name, sql)`；
+    - 超时附计划和索引；
+    - 全部 SQL 经 `governed()` 后交给 `QueryDBTool.exec`；
+    - SQLite、Mongo 行为不变，调两个新工具返回可读错误。
+  - **Authority 之外的改动**：`NOTICE` 登记了 `db_facts.py` 里改写自 SignalPilot `postgres.py` 的行数估计和 `pg_indexes` 查询，工单要求登记，但它不在 Authority 列表里。假 DAB 的 `fake_sqlalchemy.py` 加了 EXPLAIN 和 catalog 的固定回答。
+- **测试**：
+  - `make check`：exit 0，1435 passed, 1 skipped。
+  - 本机临时 Postgres 17（`/tmp/da37-pg`，端口 54337，测完已停）上跑 `tests/test_db_facts.py tests/test_postgres.py tests/acceptance/test_seam_b_mcp_server.py -m integration`：28 passed。
+  - `tests/acceptance/` 没有改动，全部通过。
+  - 第一次 `make check` 有 3 个 `test_harbor_agent` 用例在 `uv build --wheel` 失败；单独重跑 54 passed，之后两次完整 `make check` 都全绿。判断是构建时我在改工作区文件，属于偶发，未确认。
+- **本地真实运行**：`uv run python /tmp/da37-run/client.py <worktree> /tmp/da37-run/shop.duckdb`，用 stdio 起 `data-agent mcp-server --config baseline --duckdb shop.duckdb`：
+  - tools: `['describe_table', 'explain_query', 'list_tables', 'query_database']`
+  - `list_tables`：`raw.orders (base table, ~37 rows): order_id, customer_ref, status, amount, order_date`
+  - `describe_table raw.orders`：`raw.orders (table, ~37 rows, 5 columns)`，各列 `, nullable`，`Keys: none declared`，`Indexes: none`
+  - `explain_query`（orders JOIN order_items）：DuckDB 原样计划，含 `HASH_JOIN`、`Conditions: order_id = order_id`、各节点 `~14 Rows` / `~74 Rows`
+  - `explain_query "EXPLAIN ANALYZE SELECT * FROM raw.orders"`：`is_error=True`，`Query blocked by the read-only gateway: Blocked: Command statements are not allowed (read-only mode)`
+- **审查**：
+  - `da-review main`：三次都因 "Selected model is at capacity" 中断，没有给出结论，需要主会话重跑。
+  - `eng:code-review main`（新上下文）：Standards 1 中 3 低，Spec 4 低，没有高危。
+    - 已修（`8659c4e`）：
+      - 超时时的计划按 `MAX_ROWS` 做，不是这条查询自己的 `row_limit`。改成透传 `row_limit`，加了先失败、修后通过的 Postgres 测试 `test_postgres_timeout_plans_the_query_with_its_own_row_limit`。
+      - `hydrate` 的列行改为复用 `column_line`。
+    - 不修：
+      - `context_tools` 保留 `Table`、`find_table` 的再导出（中）：调用方 `verifier_tools.py`（Must not edit）和 `evals/jaffle.py`（Authority 之外）还从旧路径导入。
+      - `sql_run`/`sql_explain` 以及两个 server 的 docstring 重复（低）：两个 server 签名不同，不值得抽公共代码。
+      - 分析过的空 Postgres 表显示 `rows unknown`（低）：工单要求照 SignalPilot 的 `NULLIF` 写法。
+      - `hydrate` 列行加了 `, nullable` 后缀（低）：工单要求 hydrate 补可空；原有 `列 类型` 原样留作前缀。
+      - DAB postgres/duckdb 的 `list_tables` 失败时直接抛 `ToolError`（低）：`results.reply` 失败时同样抛 `ToolError`，区别只是不截断长错误。
+- **未核实**：
+  - 本机 DAB clone 没有 `db_utils`，真实 DAB 的 `QueryDBTool` 能不能执行 `EXPLAIN` 只在假 DAB 上验证过，要靠服务器上 imdb query1 那次真实运行核实（工单的停止条件之一）。
+  - `evals/attribute.py` 只把 `list_tables` 的输出算作"见过的名字"，新工具输出里的名字只能靠它的猜测路径覆盖。`LISTED_TABLE` 正则对新格式仍然匹配。
+- 2026-11-02 主会话：da-review 在 Codex 容量满时三次中断，用 PR 上的 Codex GitHub app 审查代替（同工单 36）。
