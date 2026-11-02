@@ -23,6 +23,7 @@
 - 镜像 `python-data:3.12`（DAB 的 Dockerfile，`execute_python` 用）。
 - 容器 `da-dab-postgres`（`postgres:17`，127.0.0.1:15432）与 `da-dab-mongo`（`mongo:8`，127.0.0.1:37017，WiredTiger 缓存 0.5 GB）；数据卷 `da-dab-pgdata`、`da-dab-mongodata`，删掉容器和卷即可重来。DAB 装库要调 `psql` 和 `mongorestore`，服务器不装系统包，所以 `da-benchmarks/bin/` 里的同名包装脚本经 `docker exec` 在容器里跑它们（两个容器只读挂载 DAB 目录，路径与宿主机相同）。装库由 `evals/dab.py` 在每次会话开始前做、结束后删（同一时间只装着一个数据集），用时记在 trace 的 `dab_load` 事件里；装失败记 `infra_error`，不起会话。DAB 的工具服务器只连已装好的库：imdb 的 1.6 GB dump 装得比 SDK 等 MCP 服务器启动的约 30 秒久（工单 23）。
 - 连接设置（`PG_*`、`MONGO_URI`、`PG_CLIENT` 和 `bin/` 的 PATH）写在服务器 `~/.config/data-agent/dab.env`（600，密码随机生成、不打印）；`start <name> -- dab ...` 会额外读它，并用 `--with-requirements evals/dab-requirements.txt` 跑。删了 `dab.env` 而保留 Postgres 数据卷会对不上密码，要连卷一起删。
+- 查询超时（工单 36）：DAB 路径上每条查询（`query_database`、`list_tables`）最多跑 150 秒，和网关同一个 `TIMEOUT_SECONDS`；超时后 agent 收到和网关一样的错误 `Query timed out after 150s`，同一个库的下一条查询照常执行。DAB 每次查询都新开连接，`evals/dab_server.py` 启动时把 DAB 各库模块里的驱动名换成我们的包装（不改 DAB clone）。各库的停止方式：Postgres 在连接参数 `options` 里加 `-c statement_timeout`（保留 DAB 自己的只读选项），由服务端取消；MongoDB 给客户端 `timeoutMS`，pymongo 把它作为每次操作的 `maxTimeMS` 发给服务端；SQLite 和 DuckDB 在本进程里跑，由计时器对本次查询开的连接调 `interrupt()`。`--query-timeout` 只给测试调小。
 
 DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.txt python -m evals dab-score OUT --dab-root ../da-benchmarks/DataAgentBench [--baseline OUT_BASE] [--runs N] [--all-queries] [--strict] [--report PATH] [--seed 0] [--n-boot 10000]`。
 

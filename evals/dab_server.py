@@ -17,16 +17,24 @@ requests, not SQL, and go to DAB's tool as given. For the same reason `list_tabl
 database's tables with a query of ours through the gateway and DAB's query tool (DAB's list tool
 would send its own SQL); only MongoDB collections are listed by DAB's list tool.
 
+Every query is also stopped after the gateway's timeout (`QueryTimeout`), in the database where
+there is one, and fails with the gateway's message; the next query runs as usual.
+
     python -m evals.dab_server --dab-root DAB --db-config DAB/query_x/db_config.yaml --log LOG \
         --workspace WORKSPACE
 """
 
 import argparse
+import contextlib
+import functools
+import importlib
 import json
 import math
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Annotated, Any
 
 from mcp.server import MCPServer
@@ -34,7 +42,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from data_agent.engine import inject_limit, validate_sql
-from data_agent.gateway import MAX_ROWS
+from data_agent.gateway import MAX_ROWS, TIMEOUT_SECONDS
 from evals.dab import scaffold
 
 # DAB db_type -> sqlglot dialect. MongoDB is the one type that is not SQL; any other type is
@@ -57,6 +65,121 @@ PRINT_NOTE = (
     "printing {marker} followed by the result as JSON, e.g. print({marker!r} + json.dumps(x)); "
     "the JSON after the last {marker} becomes this tool's result."
 )
+
+
+# DAB's query module for each database type. Every call opens a new connection through the name the
+# module binds its driver to, so wrapping that name reaches every connection without changing DAB.
+DB_UTILS = "common_scaffold.tools.db_utils"
+# The driver errors our timeout raises in Postgres and MongoDB, as DAB's error text names them (it
+# returns text only, so text is what there is to match): Postgres's statement_timeout (in
+# SQLAlchemy's wording), and MongoDB's maxTimeMS or pymongo's socket giving up at `timeoutMS`.
+SERVER_TIMEOUTS = ("(psycopg2.errors.QueryCanceled)", "(ExecutionTimeout)", "(NetworkTimeout)")
+
+
+class Interruptible:
+    """A driver module (sqlite3, duckdb) whose `connect` hands each new connection to `opened`;
+    everything else is the module's own."""
+
+    def __init__(self, driver: ModuleType, opened: Callable[[Any], None]) -> None:
+        self._driver = driver
+        self._opened = opened
+
+    def connect(self, *args: Any, **kwargs: Any) -> Any:
+        con = self._driver.connect(*args, **kwargs)
+        self._opened(con)
+        return con
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._driver, name)
+
+
+class StatementTimeout:
+    """The sqlalchemy module, with every engine's connections opened with `statement_timeout`:
+    added to the connection's options (where DAB's URL makes the session read-only), as the
+    gateway does."""
+
+    def __init__(self, sqlalchemy: ModuleType, timeout_ms: int) -> None:
+        self._sqlalchemy = sqlalchemy
+        self._timeout_ms = timeout_ms
+
+    def create_engine(self, *args: Any, **kwargs: Any) -> Any:
+        engine = self._sqlalchemy.create_engine(*args, **kwargs)
+        self._sqlalchemy.event.listen(engine, "do_connect", self._add_timeout)
+        return engine
+
+    def _add_timeout(self, dialect: Any, record: Any, cargs: Any, cparams: dict[str, Any]) -> None:
+        given = str(cparams.get("options") or "")
+        cparams["options"] = f"{given} -c statement_timeout={self._timeout_ms}".strip()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._sqlalchemy, name)
+
+
+class QueryTimeout:
+    """Stops each query DAB's tools run after `seconds`, in the database where there is one:
+    Postgres connections get `statement_timeout`, MongoDB clients `timeoutMS` (pymongo sends it as
+    each operation's `maxTimeMS`). SQLite and DuckDB run in this process, so a timer interrupts the
+    connections the call opened. A stopped query fails with the gateway's message."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self._lock = threading.Lock()
+        self._opened: list[Any] | None = None  # connections the running call opened
+
+    def install(self) -> None:
+        """Wrap the drivers in DAB's query modules (imported with its tools). A module without the
+        expected name fails here, at start-up, rather than leaving its queries unbounded."""
+        timeout_ms = max(1, int(self.seconds * 1000))
+        wrappers: dict[str, tuple[str, Callable[[Any], Any]]] = {
+            "sqlite_utils": ("sqlite3", lambda driver: Interruptible(driver, self._track)),
+            "duckdb_utils": ("duckdb", lambda driver: Interruptible(driver, self._track)),
+            "postgres_utils": ("sqlalchemy", lambda driver: StatementTimeout(driver, timeout_ms)),
+            "mongo_utils": (
+                "MongoClient",
+                lambda client: functools.partial(client, timeoutMS=timeout_ms),
+            ),
+        }
+        for module_name, (attribute, wrap) in wrappers.items():
+            module = importlib.import_module(f"{DB_UTILS}.{module_name}")
+            setattr(module, attribute, wrap(getattr(module, attribute)))
+
+    def _track(self, con: Any) -> None:
+        with self._lock:
+            if self._opened is not None:
+                self._opened.append(con)
+
+    def _interrupt(self) -> bool:
+        """Interrupt the running call's connections; False if it opened none (Postgres, MongoDB)."""
+        with self._lock:
+            for con in self._opened or []:
+                # The query may have just finished and its connection closed; then nothing runs.
+                with contextlib.suppress(Exception):
+                    con.interrupt()
+            return bool(self._opened)
+
+    def run(self, call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        """`call`'s DAB outcome; one stopped by the timeout fails with the gateway's message, any
+        other failure keeps its own."""
+        interrupted = threading.Event()
+
+        def expire() -> None:
+            if self._interrupt():
+                interrupted.set()
+
+        with self._lock:
+            self._opened = []
+        timer = threading.Timer(self.seconds, expire)
+        timer.start()
+        try:
+            outcome = call()
+        finally:
+            timer.cancel()
+            with self._lock:
+                self._opened = None
+        error = "" if outcome["success"] else str(outcome["result"])
+        if error and (interrupted.is_set() or any(name in error for name in SERVER_TIMEOUTS)):
+            return {"success": False, "result": f"Query timed out after {self.seconds:g}s"}
+        return outcome
 
 
 def governed(sql: str, dialect: str) -> str:
@@ -132,7 +255,12 @@ class Results:
 
 
 def build_server(
-    query_tool: Any, list_tool: Any, exec_tool: Any, marker: str, workspace: Path
+    query_tool: Any,
+    list_tool: Any,
+    exec_tool: Any,
+    marker: str,
+    workspace: Path,
+    timeout: QueryTimeout,
 ) -> MCPServer:
     query_spec = query_tool.get_spec()["function"]
     list_spec = list_tool.get_spec()["function"]
@@ -162,7 +290,8 @@ def build_server(
             sql = governed(sql, SQL_DIALECTS[db_type])
         # An unknown db_name goes on to DAB's tool, which rejects it without running anything.
         with results.lock:
-            return results.reply(query_tool.exec({"db_name": db_name, "query": sql}))
+            args = {"db_name": db_name, "query": sql}
+            return results.reply(timeout.run(lambda: query_tool.exec(args)))
 
     @server.tool(name="list_tables", description=list_spec["description"])
     def list_tables(
@@ -171,10 +300,10 @@ def build_server(
         db_type = checkable(db_name)
         if db_type not in SQL_DIALECTS:
             with results.lock:
-                return results.reply(list_tool.exec({"db_name": db_name}))
+                return results.reply(timeout.run(lambda: list_tool.exec({"db_name": db_name})))
         sql = governed(LIST_TABLES[db_type], SQL_DIALECTS[db_type])
         with results.lock:
-            outcome = query_tool.exec({"db_name": db_name, "query": sql})
+            outcome = timeout.run(lambda: query_tool.exec({"db_name": db_name, "query": sql}))
             if outcome["success"]:
                 # Rows to names, as DAB's list tool returns them.
                 outcome["result"] = [next(iter(row.values())) for row in outcome["result"]]
@@ -199,8 +328,13 @@ def main() -> None:
     parser.add_argument("--db-config", type=Path, required=True)
     parser.add_argument("--log", type=Path, required=True, help="DAB's tool log (JSONL)")
     parser.add_argument("--workspace", type=Path, required=True, help="execute_python's directory")
+    parser.add_argument(
+        "--query-timeout", type=float, default=TIMEOUT_SECONDS, help="seconds a query may run"
+    )
     args = parser.parse_args()
     tools = scaffold(args.dab_root)
+    timeout = QueryTimeout(args.query_timeout)
+    timeout.install()
     config = str(args.db_config)
     # The runner loads the Postgres and MongoDB dumps before the session and drops them after it
     # (`evals.dab.load_databases`): a large dump loads for longer than the SDK waits for this
@@ -217,7 +351,9 @@ def main() -> None:
         log_path=str(args.log), name="execute_python", work_dir=args.workspace.resolve()
     )
     try:
-        server = build_server(query_tool, list_tool, exec_tool, tools.result_marker, args.workspace)
+        server = build_server(
+            query_tool, list_tool, exec_tool, tools.result_marker, args.workspace, timeout
+        )
         server.run("stdio")
     finally:
         exec_tool.clean_up()

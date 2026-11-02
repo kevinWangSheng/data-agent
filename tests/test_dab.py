@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -20,6 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
@@ -34,6 +36,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult, TextContent
 
 from data_agent import agent
+from data_agent.gateway import TIMEOUT_SECONDS
 from data_agent.run_config import load_config
 from evals import dab
 from evals.__main__ import main as evals_main
@@ -92,13 +95,13 @@ def dab_root(tmp_path: Path) -> Path:
 
 
 @asynccontextmanager
-async def dab_server(root: Path, log: Path) -> AsyncIterator[ClientSession]:
+async def dab_server(root: Path, log: Path, *extra: str) -> AsyncIterator[ClientSession]:
     config = root / "query_toyset" / "db_config.yaml"
     workspace = log.parent / "workspace"
     workspace.mkdir(exist_ok=True)
     params = StdioServerParameters(
         command=sys.executable,
-        args=[*dab.server_args(root, config, log, workspace)],
+        args=[*dab.server_args(root, config, log, workspace), *extra],
         env={**os.environ, **dab.server_env()},
         cwd=str(workspace),  # as for the agent: not the repo root
     )
@@ -301,6 +304,114 @@ async def test_mongo_queries_skip_the_sql_check(dab_root: Path, tmp_path: Path) 
         result = await session.call_tool("query_database", {"db_name": "articles_db", "sql": query})
     assert not result.is_error
     assert data_of(result) == [{"echo": query}]
+
+
+# --- the query timeout (ticket 36) ---
+
+
+def add_databases(root: Path) -> None:
+    """Give toyset a DuckDB file and a (fake) Postgres database too."""
+    dataset = root / "query_toyset"
+    duckdb.connect(str(dataset / "query_dataset" / "numbers.duckdb")).close()
+    config_path = dataset / "db_config.yaml"
+    config = json.loads(config_path.read_text())
+    config["db_clients"]["numbers_db"] = {
+        "db_type": "duckdb",
+        "db_path": "query_dataset/numbers.duckdb",
+    }
+    config["db_clients"]["films_db"] = {"db_type": "postgres", "db_name": "films"}
+    config_path.write_text(json.dumps(config))
+
+
+SHORT_TIMEOUT = ("--query-timeout", "0.5")
+# Per database: a query that runs for far longer than the short timeout, then a quick one and its
+# rows. The fake Postgres and MongoDB servers sleep for as long as the query asks, unless a
+# setting the connection was opened with stops them first.
+SLOW_THEN_QUICK = {
+    "prices_db": (
+        "SELECT count(*) AS n FROM prices a, prices b, prices c, (SELECT * FROM prices LIMIT 20) d",
+        "SELECT count(*) AS n FROM prices",
+        [{"n": 300}],
+    ),
+    "numbers_db": (
+        "SELECT count(*) AS n FROM range(100000) a, range(100000) b "
+        "WHERE (a.range * b.range) % 7 = 3",
+        "SELECT 42 AS n",
+        [{"n": 42}],
+    ),
+    "films_db": ("SELECT * FROM sleep_30", "SELECT * FROM sleep_0", [{"slept": 0.0}]),
+    "articles_db": (
+        '{"collection": "articles", "sleep": 30}',
+        '{"collection": "articles"}',
+        [{"echo": '{"collection": "articles"}'}],
+    ),
+}
+
+
+@pytest.mark.parametrize("db_name", list(SLOW_THEN_QUICK))
+async def test_a_slow_query_times_out_and_the_next_one_runs(
+    db_name: str, dab_root: Path, tmp_path: Path
+) -> None:
+    add_databases(dab_root)
+    slow, quick, rows = SLOW_THEN_QUICK[db_name]
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        started = time.monotonic()
+        stopped = await session.call_tool("query_database", {"db_name": db_name, "sql": slow})
+        elapsed = time.monotonic() - started
+        after = await session.call_tool("query_database", {"db_name": db_name, "sql": quick})
+    assert stopped.is_error
+    assert text_of(stopped).endswith(": Query timed out after 0.5s")
+    assert elapsed < 10
+    assert not after.is_error, text_of(after)
+    assert data_of(after) == rows
+
+
+async def test_a_mongo_client_side_timeout_is_a_timeout(dab_root: Path, tmp_path: Path) -> None:
+    """pymongo's socket can give up before the server's maxTimeMS answers."""
+    add_databases(dab_root)
+    query = '{"collection": "articles", "sleep": 30, "client_side": true}'
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        result = await session.call_tool("query_database", {"db_name": "articles_db", "sql": query})
+    assert text_of(result).endswith(": Query timed out after 0.5s")
+
+
+async def test_a_slow_failure_of_another_kind_keeps_its_own_error(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    """Only a stopped query is a timeout: an unreachable server after the deadline says so."""
+    add_databases(dab_root)
+    query = '{"collection": "articles", "unreachable": 1}'
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        result = await session.call_tool("query_database", {"db_name": "articles_db", "sql": query})
+    assert result.is_error
+    assert "(ServerSelectionTimeoutError)" in text_of(result)
+    assert "timed out after" not in text_of(result)
+
+
+async def test_postgres_connections_carry_the_statement_timeout(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    """The timeout is a server setting of the session, as in the gateway, and DAB's own read-only
+    option is kept."""
+    add_databases(dab_root)
+    setting = "SELECT setting FROM pg_settings WHERE name = '{}'"
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        timeout, read_only = [
+            await session.call_tool(
+                "query_database", {"db_name": "films_db", "sql": setting.format(name)}
+            )
+            for name in ("statement_timeout", "default_transaction_read_only")
+        ]
+    assert data_of(timeout) == [{"setting": "500"}]
+    assert data_of(read_only) == [{"setting": "on"}]
+
+
+async def test_the_timeout_defaults_to_the_gateways(dab_root: Path, tmp_path: Path) -> None:
+    add_databases(dab_root)
+    sql = "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"
+    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
+        result = await session.call_tool("query_database", {"db_name": "films_db", "sql": sql})
+    assert data_of(result) == [{"setting": str(TIMEOUT_SECONDS * 1000)}]
 
 
 PRINT = "import json\nprint('FAKE-RESULT:' + json.dumps({}))"
