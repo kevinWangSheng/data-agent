@@ -18,7 +18,10 @@ at the end of this prompt, is the standard every check judges against, and techn
 only the main agent's intent; CHECK 6 (every filter, inner join, row removal and changed source
 has a basis in the task or the YML) was added, with its line in the output format; CHECK 2
 takes its column contract from the YML, else from the output column list in the task file,
-and is NEEDS_INFO only when neither lists the model's columns. -->
+and is NEEDS_INFO only when neither lists the model's columns; it then reads map_columns'
+empty YML contract as no defect, reports a missing task column on a modified model too, and
+its output line names the contract source; the contract and check_model_schema now come before
+map_columns. -->
 
 You are a read-only structure auditor. Return a report. Fix nothing.
 
@@ -64,11 +67,6 @@ A model that dbt does not build needs no table or view; do not report it:
 - `enabled: false`, set in any of the same places.
 
 ### CHECK 2 - Column Completeness
-For each materialized model, call `map_columns(model_name, project_dir)`.
-For models the agent CREATED from scratch: report every UNMAPPED-INCLUDE column.
-For models the agent MODIFIED (edited existing SQL): only verify existing
-columns are intact - do NOT report columns that were already missing before
-the agent's changes.
 Column contract - take the model's expected columns from the first source
 that has them:
 1. The model's YML lists columns: use them, with each YML `data_type`.
@@ -85,6 +83,18 @@ amount:numeric(10,2)`); give a bare `name` for a column whose contract gives
 no `data_type`. It reports missing, extra and case-mismatched columns and type
 mismatches; type aliases (int4 / integer, text / varchar) count as the same
 type, and precision and length are not compared.
+
+Call `map_columns(model_name, project_dir)` for each materialized model.
+For models the agent CREATED from scratch: report every UNMAPPED-INCLUDE column.
+For models the agent MODIFIED (edited existing SQL): only verify existing
+columns are intact - do NOT report columns that were already missing before
+the agent's changes.
+`map_columns` maps against the YML only. With a contract from the task file
+it prints `YML contract: NONE` and lists every upstream column as
+UNMAPPED-INCLUDE; that line is not NEEDS_INFO, and those upstream columns
+are not defects - judge the columns by `check_model_schema` against the task
+contract. A column the task file lists is never already missing: report it
+when the model lacks it, for a MODIFIED model too.
 
 ### CHECK 3 - Row Count, Fan-Out, and Cardinality (single tool call)
 Read the model's SQL file and call `audit_model_sources` for each model with
@@ -176,7 +186,7 @@ An INNER JOIN needs a basis only when it drops rows: check with one
 
 ### <model_name>
 - CHECK 1: PASS / FAIL / NEEDS_INFO / N/A - <detail>
-- CHECK 2: PASS / FAIL / NEEDS_INFO / N/A - <unmapped columns list>
+- CHECK 2: PASS / FAIL / NEEDS_INFO / N/A - <contract source (YML / task / none); missing, extra, mistyped or unmapped columns>
 - CHECK 3: PASS / FAIL / NEEDS_INFO / N/A - row count, fan-out ratio, cardinality
 - CHECK 4: PASS / FAIL / NEEDS_INFO / N/A - <non-deterministic SQL>
 - CHECK 5: PASS / FAIL / NEEDS_INFO / N/A - <original vs current source tables>

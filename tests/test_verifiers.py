@@ -238,6 +238,13 @@ def test_verifier_takes_the_column_contract_from_yml_then_the_task_then_needs_in
     assert "NEEDS_INFO" in contract[neither:] and "NEEDS_INFO" not in contract[:neither]
     assert "the YML wins" in contract
     assert "with the contract's columns" in check_2
+    # map_columns maps against the YML only: with a task contract its NONE line and
+    # UNMAPPED-INCLUDE list neither mean NEEDS_INFO nor excuse a missing task column.
+    mapping = check_2.split("Call `map_columns")[1]
+    assert "`YML contract: NONE`" in mapping and "is not NEEDS_INFO" in mapping
+    assert "never already missing" in mapping
+    template = verifier_prompt().split("## Output Format")[1]
+    assert "contract source" in next(line for line in template.splitlines() if "CHECK 2" in line)
 
 
 def test_verifier_checks_every_row_removal_against_the_task_or_yml() -> None:
