@@ -1,6 +1,6 @@
 # 37 — 查询工具把执行计划、索引等确定性信息返回给模型
 
-Status: in-review
+Status: done
 Blocked by: 36（done）
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-02
@@ -146,7 +146,7 @@ agent 写 SQL 前就能拿到数据库自己报出的事实，包括行数、类
 - Attempts: 2
 - Review rounds: 2（第 1 轮 eng:code-review；退回第 1 轮修复后 eng:code-review 1 次、修复 1 次；da-review 两轮都因容量满中断）
 - Model spend: $0（没有调 agent 模型；Codex 审查的花费不在这里计）
-- Outcome: in-review
+- Outcome: merged (PR #36)
 - Human review minutes: —
 
 ## Comments
@@ -255,3 +255,9 @@ agent 写 SQL 前就能拿到数据库自己报出的事实，包括行数、类
   - `describe_table` 在 DuckDB 上也只按 schema 和表名找索引，ATTACH 的库会有同样的问题。网关和 DAB 都不 ATTACH，这次没改。
 - 2026-11-02 主会话：接受用 `to_regclass` 代替 `current_schemas(false)` 的偏离（数据库自己的查找，覆盖隐含的 `pg_temp`、`pg_catalog`）。
 - 2026-11-02 主会话：PR #36 在 `eb2da69` 上 CI 绿；Codex app 第一次审查 status failed，评论 `@codex review` 后重审 completed，没有新意见。等 `accept-1` 跑完后做服务器 imdb query1 真实运行，通过再合并。
+- 2026-11-02 主会话：服务器真实运行 `t37-real`（commit eb2da69；`evals dab --dab-root ../da-benchmarks/DataAgentBench --dataset imdb --query 1 --config no-context --runs 1 --out runs/t37-real --budget 4`，由另一会话在 21:37Z 启动，主会话没有重复启动）。
+  - 结果：exit 0，success，56 轮，约 11 分钟，实际价 $0.0221（cost_usd $0.0441）。`dab-score`：imdb query1 1/1。
+  - 工具表里有 `describe_table`、`explain_query`；agent 调了 `describe_table` 3 次（行数估计、类型、`Indexes: none` 都对），`explain_query` 0 次，`query_database` 49 次。
+  - 3 次超时（工单 36 是 2 次、8 分 24 秒），报错都带完整的 Postgres EXPLAIN 计划和索引段（表都解析成 `public.xxx`，均 `none`）：真实 DAB 的 `QueryDBTool` 能跑 `EXPLAIN` 和 `to_regclass`，停止条件不成立。
+  - 工单 36 留下的根因问题（Comments 第 1 条）：计划显示瓶颈不是两边套 `regexp_replace` 的连接（Postgres 仍走 Hash Join，代价几万），而是相关 `EXISTS` 子查询（SubPlan）对每一行候选都全表扫 `movie_keyword`（约 190 万行），估算代价约 1e11。
+  - 观察：agent 没有在写 SQL 前主动调 `explain_query`，仍写了相关子查询，超时后才改写。工具可用，但模型不会主动用；是否需要在 Skill 里补通用写法，按工单的约定，等开发集失败归因出现慢查询类问题再说。
