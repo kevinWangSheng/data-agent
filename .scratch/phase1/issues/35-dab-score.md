@@ -1,6 +1,6 @@
 # 35 — DAB 算分：用 DAB 自带的 validate.py 算 Pass@1，并和 baseline 配对比较
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 35-dab-score)
@@ -56,7 +56,7 @@ Branch: worktree-35-dab-score
   - [ ] 输出：终端汇总，外加一份 JSON 报告（逐个数据集、逐道题的通过数，Pass@1，比较结果）。
 - [ ] `docs/setup.md`：命令用法、口径、"不用来改 Skill"的规定。
 - [ ] `make check` 通过
-- [ ] （主会话）真实运行：在服务器上对已有的 DAB 输出（`runs/dab21-*`、`runs/t23b-*`）跑一次，贴出逐题结论。
+- [x] （主会话）真实运行：在服务器上对已有的 DAB 输出（`runs/dab21-*`、`runs/t23b-*`）跑一次，贴出逐题结论。
 
 ## Evidence required
 
@@ -98,3 +98,8 @@ Branch: worktree-35-dab-score
 - 2026-11-01 主会话：
   - 缺题默认口径定为"只算输出里出现的题"，`--all-queries` 是榜单口径。理由：本工单验收里"缺项按 0 算"指基础设施丢掉的运行，已实现；DAB 试跑只跑 query1，榜单口径会压到接近 0；正式评测跑全部题时两种口径相同。报告每行都注明覆盖了 clone 里多少题，不会被误当榜单分。正式评测报告用 `--all-queries`。
 - 2026-11-01 主会话：PR #33 CI 绿。Codex P1"`dab_score.py:53` 没传 `reason`，真 DAB 会 TypeError"不属实：服务器钉的 DAB 6ad9d68（`scripts/da-remote` 的 `dab_commit`）里入口是 `def validate(query_dir: Path, llm_answer: str, reason: str=None)`，已在 PR 回复。squash 合并。服务器真实运行待做（服务器正在跑 t32-screen2，跑完再 setup）。
+- 2026-11-02 主会话：服务器真实运行（commit d6a9a97，`da-remote start score35-<输出> -- dab-score runs/<输出> --dab-root ../da-benchmarks/DataAgentBench --report runs/score35-<输出>/report.json`）：
+  - dab21-file2 → stockindex query1 1/1；dab21-mongo → civic_unstructured query1 1/1；dab21-pg2 → bookreview query1 1/1；t23b-imdb → imdb query1 1/1；t23b-krama → krama query1 1/1。各题自带的 `validate.py` 都按预期签名跑通，没有触发签名不符的停止条件。
+  - dab21-pg（当时 exit 2）：`candidate: 1 missing run(s), counted as fails: bookreview query1 run0`，Pass@1 0.0000，exit 0，符合缺项默认按 0 算。
+  - dab21-file（当时 exit 1，没写 submission）：`dab-score: [Errno 2] No such file or directory: 'runs/dab21-file/submission.json'`，exit 2。
+  - 每行都注明 "over 1 of the clone's 104 queries"。注意：clone 里有 104 道题，HANDOFF §5 记的是 54 题，DAB 后来扩了题；正式评测的花费估算要按 104 算（第 15 项）。
