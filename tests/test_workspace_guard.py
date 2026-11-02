@@ -23,9 +23,13 @@ def workspace(tmp_path: Path) -> Path:
 
 
 async def decide(
-    workspace: Path, tool: str, tool_input: dict[str, Any], protected: tuple[Path, ...] = ()
+    workspace: Path,
+    tool: str,
+    tool_input: dict[str, Any],
+    protected: tuple[Path, ...] = (),
+    readable: tuple[Path, ...] = (),
 ) -> str:
-    guard = workspace_guard(workspace, protected)
+    guard = workspace_guard(workspace, protected, readable)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
         "session_id": "s",
@@ -199,3 +203,45 @@ async def test_files_beside_credentials_stay_readable(
 ) -> None:
     (with_credentials / "models" / "env_link.sql").unlink()
     assert await decide(with_credentials, tool, tool_input) == "none"
+
+
+@pytest.fixture
+def task_file(tmp_path: Path) -> Path:
+    """A task file outside the workspace (`agent.saved_task`), with a file beside it."""
+    directory = tmp_path / "task-dir"
+    directory.mkdir()
+    (directory / "task.md").write_text("Build the model.")
+    (directory / "other.md").write_text("not for the agent")
+    return directory / "task.md"
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input", "decision"),
+    [
+        ("Read", {"file_path": "{task}"}, "none"),
+        ("Read", {"file_path": "{task_dir}/../task-dir/task.md"}, "none"),
+        ("Write", {"file_path": "{task}", "content": "x"}, "deny"),
+        ("Edit", {"file_path": "{task}", "old_string": "B", "new_string": "R"}, "deny"),
+        ("Read", {"file_path": "{task_dir}/other.md"}, "deny"),
+        ("Read", {"file_path": "{task_dir}"}, "deny"),
+        ("Glob", {"pattern": "*", "path": "{task_dir}"}, "deny"),
+        ("Glob", {"pattern": "{task_dir}/*"}, "deny"),
+        ("Grep", {"pattern": "B", "path": "{task_dir}"}, "deny"),
+        ("Grep", {"pattern": "B", "path": "{task}"}, "deny"),
+        ("Grep", {"pattern": "B", "glob": "{task_dir}/*"}, "deny"),
+        # The workspace rules are unchanged.
+        ("Read", {"file_path": "../secret.env"}, "deny"),
+        ("Read", {"file_path": "models/orders.sql"}, "none"),
+    ],
+)
+async def test_the_task_file_may_only_be_read(
+    workspace: Path, task_file: Path, tool: str, tool_input: dict[str, Any], decision: str
+) -> None:
+    filled = {k: v.format(task=task_file, task_dir=task_file.parent) for k, v in tool_input.items()}
+    assert await decide(workspace, tool, filled, readable=(task_file,)) == decision
+
+
+async def test_the_task_file_is_denied_without_being_named_readable(
+    workspace: Path, task_file: Path
+) -> None:
+    assert await decide(workspace, "Read", {"file_path": str(task_file)}) == "deny"

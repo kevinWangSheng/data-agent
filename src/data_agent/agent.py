@@ -10,10 +10,11 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
-from collections.abc import AsyncGenerator, Mapping
-from contextlib import aclosing
+from collections.abc import AsyncGenerator, Iterator, Mapping
+from contextlib import aclosing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -133,10 +134,40 @@ working directory.
 <task>
 {task}
 </task>
-
+{task_file_note}
 End with a final message that lists the models you created or changed, how the last dbt run went, \
 then the assumptions you made.
 """
+
+
+# Added to DBT_PROMPT only when the verifier layer is on (ticket 32); otherwise the prompt is the
+# same as before, so runs without the layer stay comparable with earlier ones.
+TASK_FILE_NOTE = """
+The task above is also saved, read-only, at {path}. Re-read it there whenever you need its exact \
+wording, for example after your context is compacted.
+"""
+
+
+@contextmanager
+def saved_task(text: str, workspace: Path) -> Iterator[Path]:
+    """The task text, byte for byte, in a file of its own outside the workspace (whose contents
+    the grader reads), removed when the run ends. The verifiers judge the models against it.
+    Raises ConfigError when the temp dir is the workspace or inside it (`--workspace /tmp`)."""
+    base = Path(tempfile.gettempdir()).resolve()
+    root = workspace.resolve()
+    if base == root or root in base.parents:
+        raise ConfigError(
+            f"the temp dir {base} is inside the workspace {root}, so the task file would be too; "
+            "set TMPDIR to a directory outside the workspace"
+        )
+    directory = Path(tempfile.mkdtemp(prefix="data-agent-task-", dir=base))
+    path = directory / "task.md"
+    try:
+        path.write_bytes(text.encode())
+        path.chmod(0o444)
+        yield path
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 @dataclass(frozen=True)
@@ -589,11 +620,13 @@ def build_options(
     emit: Emit,
     spend: Spend | None = None,
     database_env: Mapping[str, str] | None = None,
+    task_file: Path | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
     its own cap becomes the backstop (`sdk_budget_usd`). `database_env` holds the Postgres
-    variable: it reaches the MCP server through the SDK subprocess's environment."""
+    variable: it reaches the MCP server through the SDK subprocess's environment. `task_file`
+    (`saved_task`, verifier runs only) is named in the verifiers' prompts and may be Read."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
@@ -612,13 +645,17 @@ def build_options(
         hooks = [HookMatcher(matcher="Bash", hooks=[bash_guard])]
     else:
         tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
-    guard = workspace_guard(task.workspace, protected=(task.duckdb,) if task.duckdb else ())
+    guard = workspace_guard(
+        task.workspace,
+        protected=(task.duckdb,) if task.duckdb else (),
+        readable=(task_file,) if task_file else (),
+    )
     hooks.append(HookMatcher(matcher="|".join(file_tools), hooks=[guard]))
     all_hooks: dict[HookEvent, list[HookMatcher]] = {"PreToolUse": hooks}
     agents = None
     if uses_verifiers(task.type, config):
         tools = [*tools, AGENT_TOOL]
-        agents = verifier_agents(MCP_SERVER)
+        agents = verifier_agents(MCP_SERVER, task_file)
         all_hooks |= verifier_hooks(emit)
     if spend is not None:
         for event, matchers in spend.hooks(emit).items():
@@ -781,7 +818,9 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     if task.postgres_env:
         secrets += url_secrets(env[task.postgres_env])
         names = url_names(env[task.postgres_env])
-    with EventLog(path, secrets=secrets, names=names) as log:
+    verified = uses_verifiers(task.type, config)
+    saving = saved_task(task.text, task.workspace) if verified else nullcontext()
+    with saving as task_file, EventLog(path, secrets=secrets, names=names) as log:
         log.emit(
             "version",
             git_commit=git_commit(),
@@ -798,10 +837,18 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
             workspace=task.workspace.resolve(),
             task=task.text,
             scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
+            task_file_note=TASK_FILE_NOTE.format(path=task_file) if task_file else "",
         )
         tools: dict[str, str] = {}
         options = build_options(
-            task, config, settings, stderr, log.emit, spend, database_env=database_env
+            task,
+            config,
+            settings,
+            stderr,
+            log.emit,
+            spend,
+            database_env=database_env,
+            task_file=task_file,
         )
         try:
             stream = query(prompt=prompt, options=options)

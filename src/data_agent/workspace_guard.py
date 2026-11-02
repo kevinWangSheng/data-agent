@@ -6,6 +6,9 @@ inside the workspace, or the call is denied. Write and Edit may also not touch a
 the database, which only `dbt run` may change. Credential files inside the workspace (`.env*`, keys)
 are off limits too: no tool may read or change them, and Grep may not search a directory holding
 one. Glob still lists them, as it shows names, not contents.
+
+A few files outside the workspace may be named `readable` (the run's task file, ticket 32): Read
+may open exactly those paths and nothing beside them; Write, Edit, Glob and Grep get no exception.
 """
 
 import fnmatch
@@ -73,19 +76,25 @@ def _holds_credentials(directory: Path) -> bool:
 
 
 def outside_paths(
-    tool: str, tool_input: dict[str, object], workspace: Path, protected: Sequence[Path] = ()
+    tool: str,
+    tool_input: dict[str, object],
+    workspace: Path,
+    protected: Sequence[Path] = (),
+    readable: Sequence[Path] = (),
 ) -> list[str]:
     """The path arguments of one tool call that reach outside `workspace` (already resolved), that
     reach a credential file, or that Write or Edit would use to change a `protected` file (already
-    resolved)."""
+    resolved). Read may also open a `readable` file (already resolved)."""
     bad: list[str] = []
     match tool:
         case "Read":
             raw = str(tool_input.get("file_path", ""))
-            if (
-                not raw
-                or not inside(resolve(workspace, raw), workspace)
-                or _names_credential(workspace, raw)
+            if not raw or (
+                resolve(workspace, raw) not in readable
+                and (
+                    not inside(resolve(workspace, raw), workspace)
+                    or _names_credential(workspace, raw)
+                )
             ):
                 bad.append(raw)
         case "Write" | "Edit":
@@ -116,16 +125,21 @@ def outside_paths(
     return bad
 
 
-def workspace_guard(workspace: Path, protected: Sequence[Path] = ()) -> HookCallback:
+def workspace_guard(
+    workspace: Path, protected: Sequence[Path] = (), readable: Sequence[Path] = ()
+) -> HookCallback:
     root = workspace.resolve()
     kept = [path.resolve() for path in protected]
+    readable_paths = [path.resolve() for path in readable]
 
     async def guard(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
         if hook_input["hook_event_name"] != "PreToolUse":
             return {}
-        bad = outside_paths(hook_input["tool_name"], hook_input["tool_input"], root, kept)
+        bad = outside_paths(
+            hook_input["tool_name"], hook_input["tool_input"], root, kept, readable_paths
+        )
         if not bad:
             return {}
         return {
