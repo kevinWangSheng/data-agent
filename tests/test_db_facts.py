@@ -197,7 +197,7 @@ async def test_a_timeout_reports_the_plan_and_the_indexes_of_the_tables_read(
 async def test_a_timeout_whose_explain_fails_gives_only_the_reason(
     keys_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def failing_explain(self: DuckDBGateway, sql: str) -> QueryResult:
+    def failing_explain(self: DuckDBGateway, sql: str, row_limit: int = 0) -> QueryResult:
         raise QueryFailed("planner gave up")
 
     monkeypatch.setattr(DuckDBGateway, "explain", failing_explain)
@@ -335,3 +335,18 @@ async def test_postgres_timeout_reports_the_plan_and_indexes(pg_url: str) -> Non
         "  facts37.orders: CREATE INDEX orders_customer ON facts37.orders USING btree (customer_id)"
         in text.splitlines()
     )
+
+
+@pytest.mark.integration
+async def test_postgres_timeout_plans_the_query_with_its_own_row_limit(pg_url: str) -> None:
+    """The plan is of the statement that timed out, row cap included."""
+    sql = (
+        "SELECT o.id FROM facts37.orders AS o, generate_series(1, 1000000000000) AS g "
+        "WHERE o.customer_id + g = o.id"
+    )
+    arguments = {"sql": sql, "row_limit": 5}
+    result = await pg_call(pg_url, "query_database", arguments, timeout=0.5)
+    text = message_of(result, "query_database")
+    plan = text[text.index("Plan (EXPLAIN") : text.index("Indexes on the tables")]
+    [limit] = [line for line in plan.splitlines() if line.startswith("Limit ")]
+    assert " rows=5 " in limit, limit

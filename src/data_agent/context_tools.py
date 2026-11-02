@@ -15,6 +15,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from data_agent.db_facts import (
     RunQuery,
     Table,
+    column_line,
     find_table,
     key_lines,
     literal,
@@ -207,12 +208,8 @@ def register_context_tools(server: MCPServer, run: RunQuery, dialect: str) -> No
         table = find_table(catalog, ref)
         count = run(f"SELECT count(*) FROM {table.sql_name}", 1).rows[0][0]
         facts = table_facts(run, dialect, table)
-        nullable = {column.name: column.nullable for column in facts.columns}
         lines = [f"{table.ref} ({table.kind}, {count} rows, {len(table.columns)} columns)"]
-        lines.extend(
-            f"  {column} {data_type}, {'nullable' if nullable.get(column, True) else 'not null'}"
-            for column, data_type in table.columns
-        )
+        lines.extend(column_line(column) for column in facts.columns)
         lines.append("Join candidates (by _id column name; check the key values before joining):")
         lines.extend(f"  {line}" for line in join_candidates(catalog, table) or ["none found"])
         lines.extend(key_lines(facts))

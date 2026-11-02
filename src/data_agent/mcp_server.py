@@ -48,10 +48,10 @@ def run_query(gateway: Gateway, sql: str, row_limit: int) -> QueryResult:
         raise tool_error(exc) from exc
 
 
-def run_explain(gateway: Gateway, sql: str) -> str:
+def run_explain(gateway: Gateway, sql: str, row_limit: int = MAX_ROWS) -> str:
     """The plan for `sql`, which passes the gateway's check first; errors as in run_query."""
     try:
-        return plan_text(gateway.explain(sql))
+        return plan_text(gateway.explain(sql, row_limit))
     except (QueryBlocked, QueryFailed) as exc:
         raise tool_error(exc) from exc
 
@@ -96,7 +96,7 @@ def build_server(
         try:
             return format_rows(gateway.query(sql, row_limit))
         except QueryTimedOut as exc:
-            explain = partial(run_explain, gateway)
+            explain = partial(run_explain, gateway, row_limit=row_limit)
             raise ToolError(timeout_report(str(exc), sql, gateway.dialect, explain, run)) from exc
         except (QueryBlocked, QueryFailed) as exc:
             raise tool_error(exc) from exc

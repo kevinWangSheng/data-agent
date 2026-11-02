@@ -43,7 +43,7 @@ class Gateway(Protocol):
 
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult: ...
 
-    def explain(self, sql: str) -> QueryResult: ...
+    def explain(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult: ...
 
 
 def check(sql: str, dialect: str, row_limit: int) -> str:
@@ -55,10 +55,10 @@ def check(sql: str, dialect: str, row_limit: int) -> str:
     return inject_limit(sql, max_rows=limit, dialect=dialect)
 
 
-def explain_statement(sql: str, dialect: str) -> str:
+def explain_statement(sql: str, dialect: str, row_limit: int = MAX_ROWS) -> str:
     """EXPLAIN (never ANALYZE: the query is planned, not run) of the statement as the gateway would
     run it. The statement itself passes the gateway's check first; EXPLAIN is only put in front."""
-    return f"EXPLAIN {check(sql, dialect, MAX_ROWS)}"
+    return f"EXPLAIN {check(sql, dialect, row_limit)}"
 
 
 class DuckDBGateway:
@@ -71,8 +71,8 @@ class DuckDBGateway:
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
         return self._execute(check(sql, self.dialect, row_limit))
 
-    def explain(self, sql: str) -> QueryResult:
-        return self._execute(explain_statement(sql, self.dialect))
+    def explain(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
+        return self._execute(explain_statement(sql, self.dialect, row_limit))
 
     def _execute(self, governed: str) -> QueryResult:
         # A connection per statement: DuckDB lets one process hold the write lock, and holding a
@@ -121,8 +121,8 @@ class PostgresGateway:
         with self._lock:
             return self._run(governed)
 
-    def explain(self, sql: str) -> QueryResult:
-        statement = explain_statement(sql, self.dialect)
+    def explain(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
+        statement = explain_statement(sql, self.dialect, row_limit)
         with self._lock:
             return self._run(statement)
 
