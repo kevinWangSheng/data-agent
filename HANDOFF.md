@@ -16,9 +16,14 @@
 > **编排会话进度（2026-11-02 更新）：**
 > - 已合并、`done`：工单 34（PR #32）、35（PR #33）、32（PR #31，初筛 16/18）、33（PR #34，初筛 6/6）、36（PR #35，imdb 从 96 分钟降到 8 分钟）。
 > - plan §10 第 9 项 DAB 试跑已完成（`runs/dabtrial2-*`，commit 56d5127）：34 次全部 exit 0；Pass@1（17 个数据集 × query1 × 1 次）baseline 10/17、no-context 8/17，样本太小，不作结论；实际价共 $1.59，约 $0.05/次；内存峰值约 1.7 GB。第一遍 `runs/dabtrial-*` 中途 Mongo 容器停了，9 次 infra_error，重启后重跑没复现。
-> - 正在跑：第 13 项合并验收 `accept-1`（commit e9facce，`ablate --split dev --config full --trials 3 --budget 16`，2026-11-02T11:45Z 开跑，闲时）。`--budget 16` 的 80% = $12.8 实际价，约等于 ¥300 止损线剩下的额度（开跑前开发集迭代累计实际价约 ¥206）。
->   - 跑完：对照 dev-3 full 按 ADR-0008"改动过关"三条判断（`evals accept`，按 ADR-0008 Update 人工豁免 `rerun-old`）；建回归集（dev-3 full 与合并版都 3/3 的题）；检查 full 不低于 dev-3 baseline。
-> - 余额：开跑前 ¥123.92。正式评测前要充值。
+> - 第 13 项合并验收 `accept-1` 跑完（commit e9facce，30 题 × 3，full，实际价 $8.90，全在闲时）：
+>   - ADR-0008 三条都过：总分 52/90 → 60/90（+8.9 分）；目标题（工单 32、33 的 8 题）15/24 → 20/24；回归集 12 题全 3/3。`evals accept` 判 `rerun-old`（dev-3 没有运行记录），按 ADR-0008 Update 一次性豁免，算通过。
+>   - 回归集：dev-3 full 与 accept-1 都 3/3 的 12 题，存于 `runs/accept-1/accept/regression.json`（另一会话也写了同样内容的 `evals/regression.json`，未提交）。
+>   - **最终消融前检查没过**：accept-1 full 60/90 低于 dev-3 baseline 62/90（−2.2 分，任务级配对 bootstrap 95% 区间 −11.1 到 +6.7，不显著）。
+>   - 开发集迭代累计实际花费约 ¥271，离 ¥300 止损线约剩 ¥29，不够 13b 的一次重跑（约 ¥65）。
+> - 工单 37 合入（PR #36，de30bf3）：服务器 `t37-real` imdb query1 1/1，真实 DAB 能跑 EXPLAIN 和 `to_regclass`；计划显示 imdb 慢在相关 EXISTS 子查询逐行全表扫 `movie_keyword`，不是 `regexp_replace` 连接。agent 没主动调 `explain_query`。
+> - **等人决定**：编排会话建议把止损线提到约 ¥420，在合入 37 后的 main 上一起跑 full 和 baseline（各 30 × 3，约 ¥130），同时完成 13b 和 full ≥ baseline 检查；仍低于 baseline 就不再修，如实记录，交给留出集消融。不提线的话，跳过 13b，把 2 分差距记为已知风险。
+> - 余额：accept-1 开跑前 ¥123.92，跑后约 ¥59（未直接核实）。正式评测前要充值。
 >
 > **对齐会话的话题（按 plan §10，一次一个）：**
 > - 第 5 项网页界面。从 `docs/research/2026-11-01-upstream-web-ui.md` 开始，先定三点：
