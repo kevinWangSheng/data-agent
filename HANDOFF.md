@@ -13,14 +13,12 @@
 > - 开发集迭代累计实际花费到 ¥300 就止损。
 > - 实现一律派到工单会话（`claude -p -w`），主会话只做编排。
 >
-> **编排会话待收尾：**
-> - 工单 34（估算口径修正）：实现会话已结束，最终回复在 `runs/ticket-34.jsonl`（本机，不进 git）。把 Comments、Ledger、Status 抄进工单，然后推分支、开 PR，按 AGENTS.md 第 6、7 步合并。
-> - 工单 35（DAB 算分）：同上，回复在 `runs/ticket-35.jsonl`。合并后由主会话在服务器上，对已有的 DAB 输出（`runs/dab21-*`、`runs/t23b-*`）跑一次真实运行。
-> - 工单 32（修复一）：PR #31 已开，工单里的结论已抄。服务器已 setup 到 `4634d50`，真实运行 `t32-real`（rfm × 1，full）已经启动。
->   - 用 `scripts/da-remote status t32-real` 看结果，`pull t32-real` 取回轨迹。
->   - 核对两点：验证者 Read 过 task.md；`verifier_end` 的报告里有 CHECK 6。
->   - 再跑初筛：`ablate --split dev --config full --trials 3`，每道目标题加一个 `--task`。目标题是 dbt-multi-warehouse-stock-rebalance、dbt-rfm-customer-segmentation、dbt-customer-cross-sell-insights、dbt-receivables-aging-buckets、web-session-quality-scoring、dbt-supplier-payment-optimization。必须 > 10/18。
->   - CI 绿、Codex 意见处理完、初筛通过，才能合并。
+> **编排会话进度（2026-11-02 更新）：**
+> - 已合并、`done`：工单 34（PR #32）、35（PR #33）、32（PR #31，初筛 16/18）、33（PR #34，初筛 6/6）、36（PR #35，imdb 从 96 分钟降到 8 分钟）。
+> - plan §10 第 9 项 DAB 试跑已完成（`runs/dabtrial2-*`，commit 56d5127）：34 次全部 exit 0；Pass@1（17 个数据集 × query1 × 1 次）baseline 10/17、no-context 8/17，样本太小，不作结论；实际价共 $1.59，约 $0.05/次；内存峰值约 1.7 GB。第一遍 `runs/dabtrial-*` 中途 Mongo 容器停了，9 次 infra_error，重启后重跑没复现。
+> - 正在跑：第 13 项合并验收 `accept-1`（commit e9facce，`ablate --split dev --config full --trials 3 --budget 16`，2026-11-02T11:45Z 开跑，闲时）。`--budget 16` 的 80% = $12.8 实际价，约等于 ¥300 止损线剩下的额度（开跑前开发集迭代累计实际价约 ¥206）。
+>   - 跑完：对照 dev-3 full 按 ADR-0008"改动过关"三条判断（`evals accept`，按 ADR-0008 Update 人工豁免 `rerun-old`）；建回归集（dev-3 full 与合并版都 3/3 的题）；检查 full 不低于 dev-3 baseline。
+> - 余额：开跑前 ¥123.92。正式评测前要充值。
 >
 > **对齐会话的话题（按 plan §10，一次一个）：**
 > - 第 5 项网页界面。从 `docs/research/2026-11-01-upstream-web-ui.md` 开始，先定三点：
@@ -29,12 +27,10 @@
 >   - Memory 和澄清是否进一期（澄清需要 agent 先加事件）。
 > - 工单 37（查询工具返回执行计划、索引）的 triage：工单里有 4 个待定点。原则已定：改写由模型做，工具只给确定性信息。
 > - 之后的话题：第 15 项正式评测总花费（等合并验收和 DAB 试跑的实测）；第 19–23 项交付（报告、README、转公开）。
->
-> **工单 32 合并后，编排会话接着做：**
-> - 派工单 33（修复二），跑它的初筛：workforce + pos × 3，必须 > 5/6。
-> - 33 合并后跑合并验收。
->
-> **工单 35 合并后：** 跑 DAB 试跑。17 个数据集各跑 query1，no-context 和 baseline 各 1 次，共 34 次，是小额运行。
+> - 新发现，待对齐会话定是否开工单（2026-11-02）：
+>   - `dab-score` 每个数据集只有 1 道题时，区间退化成一个点并标"significant"（试跑输出 "-11.76 points (95% CI -11.76 to -11.76; significant)"），应改成报"题数不够估计区间"。正式评测（全部题）不受影响。
+>   - DAB 的 Mongo 容器在试跑中途停止，原因查不到：`da-remote` 看不到容器退出状态，容器也没有重启策略。
+>   - DAB clone 现在有 104 道题（§5 写的是 54），第 15 项花费估算按 104 算。
 >
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
 >
