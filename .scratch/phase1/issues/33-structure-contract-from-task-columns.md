@@ -1,6 +1,6 @@
 # 33 — 没有 YML 时，结构验证者用题目的输出列当契约
 
-Status: in-progress
+Status: done
 Blocked by: 32
 Spec: ../spec.md
 Claimed by: claude (implement session)
