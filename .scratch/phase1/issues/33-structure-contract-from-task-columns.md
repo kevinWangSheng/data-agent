@@ -1,10 +1,10 @@
 # 33 — 没有 YML 时，结构验证者用题目的输出列当契约
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 32
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (implement session)
+Branch: worktree-33-structure-contract-from-task-columns
 
 ## Goal
 
@@ -69,10 +69,27 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0（工单 agent，只在本地）；服务器运行见 Comments
+- Outcome: CHECK 2 契约顺序 YML → 题目输出列 → NEEDS_INFO，已在提示词里实现并配测试；等主会话的服务器运行和初筛
 - Human review minutes: —
 
 ## Comments
+- 2026-11-01 工单 agent（主会话转抄）：
+  - 分支 `worktree-33-structure-contract-from-task-columns`，提交 187a662（CHECK 2 契约顺序 YML → 题目输出列 → NEEDS_INFO；冲突时以 YML 为准）、adc6093（审查修复）。
+  - 测试接缝选在提示词结构：`tests/test_verifiers.py::test_verifier_takes_the_column_contract_from_yml_then_the_task_then_needs_info` 检查三步的顺序和措辞、"YML 为准"的说法、没有 YML 时 map_columns 输出怎么读、CHECK 2 输出行写明契约来源。改提示词前失败（IndexError），改后通过；`tests/test_verifiers.py` 26 passed。
+  - make check：187a662 上 1402 passed，1 skipped，basedpyright 0 errors。adc6093 上 lint、格式、类型都干净；有 7 个失败，都在 `tests/test_harbor_agent.py`、`tests/test_packaging.py`，原因是 `uv build` 从 pypi 取 hatchling 时 "tls handshake eof"；单独重跑这两个文件 59 passed。属于网络问题，与代码无关（以 PR 的 CI 为准）。
+  - 本地真实运行（不调模型）：用 `agent.build_options(Task(type='dbt'), load_config('full'), …)` 构建验证者，打印 CHECK 2 一节：三步 1/2/3 顺序正确，有 "Call `check_model_schema(model_name, yml_columns)` with the contract's columns"；`parse_checks('- CHECK 2: FAIL - task; missing effective_date')` → `[{'model':'m','check':'CHECK 2','status':'FAIL'}]`。
+  - 第 1 轮审查：da-review 无问题。eng:code-review 的 Standards 和 Spec 都指出：map_columns 那一步仍然默认有 YML，没有 YML 时会打印 "YML contract: NONE"，把每个上游列都列成 UNMAPPED-INCLUDE，和题目契约冲突，容易引出 NEEDS_INFO；另外，改动模型的"之前就缺"豁免会放过缺失的 effective_date。adc6093 已修：
+    - 契约和 check_model_schema 挪到 map_columns 之前。
+    - 有题目契约时，"YML contract: NONE" 不算 NEEDS_INFO，上游的 UNMAPPED 列也不算缺陷。
+    - 题目列出的列，模型里没有就报出来，改动模型也一样。
+    - CHECK 2 输出行写明契约来源（YML / task / none）。
+    - 文件头的修改记录已更新。
+  - 第 2 轮审查：da-review 无问题。
+  - 不修的几处及理由：
+    - `check_model_schema` 的 docstring 和报错文字还写着 "YML"（`verifier_tools.py:1398、1407`）。Authority 只允许在入参变化时改这个文件，参数名 `yml_columns` 又被 `tests/acceptance/test_seam_b_mcp_server.py` 钉住。如果服务器运行里验证者因为这个措辞不肯传题目列，再开后续工单改 docstring。
+    - 测试里重复切分 CHECK 一节、测试钉死具体措辞：沿用 `test_verifiers.py` 的现有写法，属于判断，不算违反规范。
+    - frontmatter 的 description 只提 map_columns：这是上游文本，保持原样。
+- 2026-11-01 主会话：验收里写的"初筛开跑前和用户确认"按 plan §10 和 HANDOFF 的默认放行规则（2026-11-01，写在本工单之后）处理：初筛属于小额运行，直接跑，跑完汇报。dev-3 full 在这两道题上是 5/6（workforce 2/3，pos 3/3），所以过关要 6/6。
