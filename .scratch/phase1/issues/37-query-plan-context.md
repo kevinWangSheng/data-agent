@@ -1,6 +1,6 @@
 # 37 — 查询工具把执行计划、索引等确定性信息返回给模型
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 36（done）
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-02
@@ -143,8 +143,8 @@ agent 写 SQL 前就能拿到数据库自己报出的事实，包括行数、类
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1（eng:code-review；da-review 未完成）
+- Attempts: 2
+- Review rounds: 2（第 1 轮 eng:code-review；退回第 1 轮修复后 eng:code-review 1 次、修复 1 次；da-review 两轮都因容量满中断）
 - Model spend: $0（没有调 agent 模型；Codex 审查的花费不在这里计）
 - Outcome: in-review
 - Human review minutes: —
@@ -206,3 +206,51 @@ agent 写 SQL 前就能拿到数据库自己报出的事实，包括行数、类
     - 解析不到时照实写。
   - 测试：两个 schema 下各有一张同名表，各带不同索引；不带 schema 查询超时，报告只含搜索路径命中那张的索引。要求修复前失败。
   - 在原分支 `worktree-37-query-plan-context` 上修。
+- 2026-11-02 退回第 1 轮修复（commits `d09df23`、`eb2da69`，分支 `worktree-37-query-plan-context`）：
+  - **Postgres**：每个表名先按 Postgres 的规则处理大小写（不带引号的转小写，带引号的保留原样），再交给 `to_regclass` 解析。这是服务器自己的查找，按 search_path，也包括隐含的 `pg_temp`、`pg_catalog`。偏离了工单字面的"`current_schemas(false)` 的顺序"：字面做法会漏掉这两个隐含 schema，`to_regclass` 和数据库实际读哪张表一致。
+  - **DuckDB**：
+    - 不带 schema 的表名，先找临时对象，再找 `current_database().current_schema()`；
+    - `x.t` 先看当前库的 schema x，再看库 x 的 main schema（两者都存在时 DuckDB 自己会因歧义拒绝这条查询）；
+    - `d.s.t` 精确匹配；
+    - 结果带上所在的库，索引查询也按 `database_name` 过滤。
+  - **search_path 设置**：DuckDB 设了 `search_path` 时不去解析这个设置（它保存的文本在引号、库名和 schema 上有歧义；网关连接 `lock_configuration` 也设不了），不带 schema 的表名照实写 `not resolved: search_path is set (...)`。
+  - **报告格式**：每行用解析后的 `schema.table`；DuckDB 的表不在当前库时前面加库名。解析不到时写 `no table or view by this name`，不带 schema 的再加 ` on the search path`。
+  - **假 DAB**：`fake_sqlalchemy.py` 加了 `TO_REGCLASS` 的固定回答（只解析 `films`）；`pg_indexes` 的回答加了库名列。
+- **测试**：
+  - 新增：
+    - DuckDB 两个 schema 下的同名 `orders`，超时报告只含 `main.orders` 的索引；
+    - Postgres（integration）`search_path=facts37b,facts37`，只报 `facts37b.orders` 的索引；
+    - Postgres 大小写处理，以及解析不到时的写法；
+    - DuckDB ATTACH 第二个库：6 种写法（`orders`、`main.orders`、`aux.orders`、`keys.orders`、`aux.main.orders`、`aux.other.orders`），以及设了 search_path 的情况；
+    - DAB Postgres 超时：`sleep_30` 写明解析不到，`public.films` 带 `films_pkey`。
+  - 修复前失败、修复后通过：
+    - 两个新 Postgres 测试换成修复前的 `db_facts.py` 都失败：修复前把 `facts37.orders` 的 `orders_customer` 报给了实际读的 `facts37b.orders`；
+    - 6 个 ATTACH 用例换成 `d09df23` 的代码全部失败。
+  - DuckDB 同名 schema 测试修复前没有单独跑过；按 `d09df23` 之前的代码，它会多出一行 `other.orders` 的索引，标签也对不上，所以应当失败，未确认。
+  - 修复后的代码上：
+    - `make check`：exit 0，1445 passed, 1 skipped；
+    - 本机临时 Postgres 17（`/tmp/da37-pg`，端口 54337，测完已停）上跑 `tests/test_db_facts.py tests/test_postgres.py tests/acceptance/test_seam_b_mcp_server.py -m integration`：30 passed。
+  - `tests/acceptance/` 没有改动。
+- **本地真实运行**：
+  - 命令：`uv run python /tmp/da37-run2/client.py /tmp/da37-run2/same_name.duckdb`，通过 stdio 起 `data-agent mcp-server --config baseline`，库里 `main.orders` 有索引 `orders_customer`，`other.orders` 有索引 `other_orders_amount`。
+  - 不带 schema 的慢查询在 150s 时超时（`is_error=True, 150s`），报错里带 DuckDB 的计划（`BLOCKWISE_NL_JOIN`，`~1000000000000 Rows`），索引部分只有一行：
+    `main.orders: CREATE INDEX orders_customer ON orders(customer_id);`
+    没有 `other_orders_amount`。
+  - 在 `d09df23` 和 `eb2da69` 上各跑了一次，输出一样。
+- **审查**：
+  - `da-review main`：又因 "Selected model is at capacity" 中断，没有结论，仍需 PR 上的 Codex app 代替。
+  - `eng:code-review main`（Standards、Spec 两个子 agent，新上下文）：
+    - 已修（`eb2da69`）：
+      - 中：DuckDB 解析时丢了库，ATTACH 的库里同名 `main.orders` 的索引会混进来（Spec 子 agent 复现过），`d.t`、`d.s.t` 写法会被误读；
+      - 低：DuckDB `search_path` 设置的解析不可靠，改为照实写"未解析"；
+      - 低：DAB Postgres 超时的索引部分永远是 "could not be read"，而且没有测试；
+      - 低：search path 每张表读一次，改为每份报告读一次；
+      - 低：`as_written` 改名为 `identifier_name`。
+    - 不修：
+      - 方言分支重复（低）：改为 `PostgresNames` 和 `DuckDBNames` 两个类，`index_report` 里只剩一处分支；其余按方言的字典是第一轮的现状，不在这次退回范围内。
+      - `(库, schema, 表)` 元组没有复用 `Table`（低）：`Table` 不带库，也带列，不合适。
+      - 用 `to_regclass` 而不是 `current_schemas(false)`：Spec 子 agent 判为可接受的偏离，已写进本条。
+- **未核实**：
+  - 真实 DAB 的 `QueryDBTool` 能不能跑 `to_regclass` 的查询，只在假 DAB 上验证过，要靠服务器上 imdb query1 那次真实运行核实。
+  - `describe_table` 在 DuckDB 上也只按 schema 和表名找索引，ATTACH 的库会有同样的问题。网关和 DAB 都不 ATTACH，这次没改。
+- 2026-11-02 主会话：接受用 `to_regclass` 代替 `current_schemas(false)` 的偏离（数据库自己的查找，覆盖隐含的 `pg_temp`、`pg_catalog`）。
