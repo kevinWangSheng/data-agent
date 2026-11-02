@@ -1,6 +1,6 @@
 # 36 — DAB 路径的查询超时：和网关一样 150 秒，并在数据库端真正停下
 
-Status: in-progress
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 36-dab-query-timeout)
