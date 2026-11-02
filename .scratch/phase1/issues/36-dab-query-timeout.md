@@ -1,6 +1,6 @@
 # 36 — DAB 路径的查询超时：和网关一样 150 秒，并在数据库端真正停下
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 36-dab-query-timeout)
@@ -46,7 +46,7 @@ agent 在 DAB 上的每条查询最多跑 150 秒。超时后：
 - [ ] Postgres：测试证明超时设在数据库端（`statement_timeout` 或等价机制），不只是客户端放弃等待。
 - [ ] `docs/setup.md`：写明 DAB 路径的超时和各数据库的停止方式。
 - [ ] `make check` 通过
-- [ ] （主会话）真实运行：服务器上跑 imdb query1 × 1（no-context），贴出超时事件和总耗时。
+- [x] （主会话）真实运行：服务器上跑 imdb query1 × 1（no-context），贴出超时事件和总耗时。
 
 ## Evidence required
 
@@ -105,3 +105,5 @@ agent 在 DAB 上的每条查询最多跑 150 秒。超时后：
   - 分支 worktree-36-dab-query-timeout，提交 f96bdcc、3fb3754。
 - 2026-11-02 主会话：主会话补跑 `da-review main` 仍报 "Selected model is at capacity"，没出结论；以 PR #35 上的 Codex GitHub app 审查代替。
 - 2026-11-02 主会话：PR #35 CI 绿。Codex 首次审查没跑完，评论 `@codex review` 重跑。Codex P2"`call()` 抛异常时会走到 `outcome["success"]`，`UnboundLocalError` 盖掉原错误"（`evals/dab_server.py:174`）不属实：`run` 是 `try/finally`，没有 `except`；`call()` 抛异常时 `finally` 执行完会把原异常重新抛出，到不了第 177 行。用最小复现验证过（ConnectionError 原样传出）。已在 PR 回复，不修。
+- 2026-11-02 主会话：服务器真实运行 `da-remote start t36-real -- dab --dab-root ../da-benchmarks/DataAgentBench --dataset imdb --query 1 --config no-context --runs 1 --out runs/t36-real --budget 1`（commit 3fb3754）：exit 0，success，38 轮，$0.0191（实际价 $0.0095）。总耗时 8 分 24 秒（同一题在 DAB 试跑里是 96 分钟，其中 3 条查询各卡 1800 秒）。2 条查询超时，各在 150.2 秒返回 `Error executing tool query_database: Query timed out after 150s`，agent 改写后答完。数据库端是否已停掉仍未直接核实（`da-remote` 看不到 `pg_stat_activity`），由本地 postgres:17 实测（见上）支持。
+- 2026-11-02 主会话：PR #35 squash 合并为 5dcac6e。
