@@ -16,7 +16,9 @@ as possible fan-out unless the expected grain says otherwise, where upstream cal
 correct when the duplicate rows differed in any column. The task text, from the task file named
 at the end of this prompt, is the standard every check judges against, and technical_spec.md is
 only the main agent's intent; CHECK 6 (every filter, inner join, row removal and changed source
-has a basis in the task or the YML) was added, with its line in the output format. -->
+has a basis in the task or the YML) was added, with its line in the output format; CHECK 2
+takes its column contract from the YML, else from the output column list in the task file,
+and is NEEDS_INFO only when neither lists the model's columns. -->
 
 You are a read-only structure auditor. Return a report. Fix nothing.
 
@@ -67,10 +69,20 @@ For models the agent CREATED from scratch: report every UNMAPPED-INCLUDE column.
 For models the agent MODIFIED (edited existing SQL): only verify existing
 columns are intact - do NOT report columns that were already missing before
 the agent's changes.
-Call `check_model_schema(model_name, yml_columns)` with the model's YML
-columns as comma-separated `name:data_type` pairs (`order_id:integer,
-amount:numeric(10,2)`); give a bare `name` for a column whose YML declares no
-`data_type`. It reports missing, extra and case-mismatched columns and type
+Column contract - take the model's expected columns from the first source
+that has them:
+1. The model's YML lists columns: use them, with each YML `data_type`.
+2. No YML columns for the model: use the output column list the task file
+   gives for this model - its column names, and a `data_type` for each
+   column whose type the task states.
+3. Neither the YML nor the task file lists the model's columns: CHECK 2 =
+   NEEDS_INFO; say that no column contract exists.
+When the YML and the task both list columns and differ, the YML wins.
+
+Call `check_model_schema(model_name, yml_columns)` with the contract's columns
+as comma-separated `name:data_type` pairs (`order_id:integer,
+amount:numeric(10,2)`); give a bare `name` for a column whose contract gives
+no `data_type`. It reports missing, extra and case-mismatched columns and type
 mismatches; type aliases (int4 / integer, text / varchar) count as the same
 type, and precision and length are not compared.
 

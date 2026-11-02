@@ -224,6 +224,22 @@ def test_verifier_passes_yml_types_to_check_model_schema() -> None:
     assert "check_model_schema" in check_2 and "name:data_type" in check_2
 
 
+def test_verifier_takes_the_column_contract_from_yml_then_the_task_then_needs_info() -> None:
+    """Ticket 33: CHECK 2's contract is the model's YML columns; without them, the output column
+    list the task text gives (names, and types where the task gives them); only with neither is
+    CHECK 2 NEEDS_INFO. YML wins over the task when both exist."""
+    check_2 = " ".join(verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0].split())
+    contract = check_2.split("Column contract")[1].split("Call `check_model_schema`")[0]
+    yml, task, neither = (
+        contract.index(step) for step in ("1. The model's YML", "2. No YML", "3. Neither")
+    )
+    assert yml < task < neither
+    assert "task file" in contract[task:neither] and "data_type" in contract[task:neither]
+    assert "NEEDS_INFO" in contract[neither:] and "NEEDS_INFO" not in contract[:neither]
+    assert "the YML wins" in contract
+    assert "with the contract's columns" in check_2
+
+
 def test_verifier_checks_every_row_removal_against_the_task_or_yml() -> None:
     """Ticket 32: each filter, inner join, row removal and changed source needs a basis in the
     task text or the YML, or the check fails quoting the SQL."""
