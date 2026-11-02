@@ -524,6 +524,23 @@ async def test_a_duckdb_timeout_carries_the_plan_and_indexes(
     assert index in text.splitlines()
 
 
+async def test_a_postgres_timeout_carries_the_indexes_of_the_tables_it_resolves(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    """The fake server's search path resolves `films` only; the report says so for sleep_30."""
+    add_databases(dab_root)
+    sql = "SELECT * FROM sleep_30 CROSS JOIN films"
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        result = await session.call_tool("query_database", {"db_name": "films_db", "sql": sql})
+    assert result.is_error
+    text = text_of(result)
+    indexes = text[text.index("Indexes on the tables") :].splitlines()[1:]
+    assert indexes == [
+        "  sleep_30: no table or view by this name on the search path",
+        "  public.films: CREATE UNIQUE INDEX films_pkey ON public.films USING btree (id)",
+    ]
+
+
 async def test_postgres_connections_carry_the_statement_timeout(
     dab_root: Path, tmp_path: Path
 ) -> None:

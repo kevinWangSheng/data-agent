@@ -79,12 +79,19 @@ CATALOG: list[tuple[str, list[dict[str, Any]]]] = [
         "FROM pg_indexes",
         [
             {
+                "current_database": "films",
                 "schemaname": "public",
                 "tablename": "films",
                 "indexdef": "CREATE UNIQUE INDEX films_pkey ON public.films USING btree (id)",
             }
         ],
     ),
+    # The search path resolves only `films`; any other name is no table.
+    (
+        """TO_REGCLASS('"films"')""",
+        [{"current_database": "films", "nspname": "public", "relname": "films"}],
+    ),
+    ("TO_REGCLASS(", []),
     ("FROM pg_stats", [{"attname": "id", "n_distinct": -1.0, "null_frac": 0.0}]),
 ]
 

@@ -78,10 +78,24 @@ ORDER BY constraint_type DESC, constraint_index
 """,
 }
 
-# Index catalog per dialect: (source, schema column, table column, definition column, name column).
+# Index catalog per dialect: (source, database, schema, table, definition and name columns).
 INDEX_CATALOG = {
-    "postgres": ("pg_indexes", "schemaname", "tablename", "indexdef", "indexname"),
-    "duckdb": ("duckdb_indexes()", "schema_name", "table_name", "sql", "index_name"),
+    "postgres": (
+        "pg_indexes",
+        "current_database()",
+        "schemaname",
+        "tablename",
+        "indexdef",
+        "indexname",
+    ),
+    "duckdb": (
+        "duckdb_indexes()",
+        "database_name",
+        "schema_name",
+        "table_name",
+        "sql",
+        "index_name",
+    ),
 }
 
 # What a timeout report says about where its indexes come from.
@@ -189,12 +203,12 @@ def rows_label(estimate: int | None) -> str:
 
 
 def index_sql(dialect: str, condition: str) -> str:
-    """(schema, table, definition) of each index whose row meets `condition`, which names the
-    columns `{schema}` and `{table}`."""
-    source, schema, table, definition, name = INDEX_CATALOG[dialect]
-    where = condition.format(schema=schema, table=table)
+    """(database, schema, table, definition) of each index whose row meets `condition`, which
+    names the columns `{database}`, `{schema}` and `{table}`."""
+    source, database, schema, table, definition, name = INDEX_CATALOG[dialect]
+    where = condition.format(database=database, schema=schema, table=table)
     return (
-        f"SELECT {schema}, {table}, {definition} FROM {source} WHERE {where} "
+        f"SELECT {database}, {schema}, {table}, {definition} FROM {source} WHERE {where} "
         f"ORDER BY {schema}, {table}, {name}"
     )
 
@@ -207,7 +221,7 @@ def table_facts(run: RunQuery, dialect: str, table: Table) -> TableFacts:
     ]
     keys = [row[0] for row in run(KEYS_SQL[dialect].format(**names), MAX_ROWS).rows]
     condition = f"{{schema}} = {names['schema']} AND {{table}} = {names['table']}"
-    indexes = [row[2] for row in run(index_sql(dialect, condition), MAX_ROWS).rows]
+    indexes = [row[3] for row in run(index_sql(dialect, condition), MAX_ROWS).rows]
     stats = None
     if dialect == "postgres":
         rows = run(COLUMN_STATS_SQL.format(**names), MAX_ROWS).rows
@@ -259,16 +273,16 @@ def plan_text(result: QueryResult) -> str:
     return "\n".join(str(row[-1]) for row in result.rows)
 
 
-# Where an unqualified name is looked up. Postgres: `to_regclass` resolves a name exactly as the
-# planner does (search_path, implicit pg_catalog and pg_temp, case folding already applied by the
-# caller). DuckDB has no such function, so its search path is read and applied here.
+# Resolving the names a query reads to the tables it reads. Postgres: `to_regclass` looks a name up
+# exactly as the planner does (search_path, implicit pg_catalog and pg_temp; the caller has already
+# folded unquoted names). DuckDB has no such function, so its lookup order is applied here.
 RESOLVE_SQL = """
-SELECT n.nspname, c.relname
+SELECT current_database(), n.nspname, c.relname
 FROM pg_class AS c
 JOIN pg_namespace AS n ON n.oid = c.relnamespace
 WHERE c.oid = to_regclass({ref})
 """
-DUCKDB_PATH_SQL = "SELECT current_setting('search_path'), current_schema(), current_database()"
+DUCKDB_PATH_SQL = "SELECT current_setting('search_path'), current_database(), current_schema()"
 # Every table and view named like {name} (ignoring case, as DuckDB does), in any attached database.
 DUCKDB_CANDIDATES_SQL = """
 SELECT database_name, schema_name, table_name FROM duckdb_tables()
@@ -278,23 +292,42 @@ SELECT database_name, schema_name, view_name FROM duckdb_views()
 WHERE NOT internal AND lower(view_name) = lower({name})
 """
 
+# (database, schema, table): a table as the database resolved it.
+Resolved = tuple[str, str, str]
 
-def tables_read(sql: str, dialect: str) -> list[tuple[str, str]]:
-    """(schema or "", table) for each table `sql` names, in order and once each; CTE names and
-    table functions are left out. Postgres folds unquoted names to lower case, so they are folded
-    here too; DuckDB matches names ignoring case, so they are kept as written."""
+
+@dataclass
+class Named:
+    """A table name as a query writes it: catalog and schema are "" when left out."""
+
+    catalog: str
+    schema: str
+    name: str
+
+    @property
+    def written(self) -> str:
+        return ".".join(ref_part(part) for part in (self.catalog, self.schema, self.name) if part)
+
+
+def tables_read(sql: str, dialect: str) -> list[Named]:
+    """Each table `sql` names, in order and once each; CTE names and table functions are left
+    out. Postgres folds unquoted names to lower case, so they are folded here too; DuckDB matches
+    names ignoring case, so they are kept as written."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
     ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
-    tables: list[tuple[str, str]] = []
+    tables: list[Named] = []
     for node in tree.find_all(exp.Table):
-        named = (as_written(node.args.get("db"), dialect), as_written(node.this, dialect))
+        named = Named(
+            *(identifier_name(node.args.get(part), dialect) for part in ("catalog", "db", "this"))
+        )
         is_cte = not node.db and node.name.lower() in ctes
         if node.name and not is_cte and named not in tables:
             tables.append(named)
     return tables
 
 
-def as_written(identifier: exp.Expr | None, dialect: str) -> str:
+def identifier_name(identifier: exp.Expr | None, dialect: str) -> str:
+    """The name the database looks up: Postgres folds an unquoted identifier to lower case."""
     if not isinstance(identifier, exp.Identifier):
         return identifier.name if identifier is not None else ""
     if dialect == "postgres" and not identifier.quoted:
@@ -302,67 +335,86 @@ def as_written(identifier: exp.Expr | None, dialect: str) -> str:
     return identifier.name
 
 
-def duckdb_search_path(run: RunQuery) -> list[tuple[str, str]]:
-    """(database, schema) in the order DuckDB looks an unqualified name up: temporary objects first,
-    then the search_path setting, or the current schema when the setting is empty."""
-    [(setting, schema, database)] = run(DUCKDB_PATH_SQL, 1).rows
-    path = [("temp", "main")]
-    for entry in str(setting or "").split(","):
-        parts = [part.strip().strip('"') for part in entry.split(".")]
-        if len(parts) == 2:
-            path.append((parts[0], parts[1]))
-        elif parts[0]:
-            path.append((database, parts[0]))
-    if len(path) == 1:
-        path.append((database, schema))
-    return path
+class DuckDBNames:
+    """DuckDB's lookup: an unqualified name in temporary objects first, then the current database
+    and schema; `x.t` in schema x of those databases or in database x's main schema (DuckDB refuses
+    a query where both exist); `d.s.t` exactly. A search_path setting is not interpreted: when one
+    is set, unqualified names are left unresolved and the report says why."""
+
+    def __init__(self, run: RunQuery) -> None:
+        self.run = run
+        [(setting, database, schema)] = run(DUCKDB_PATH_SQL, 1).rows
+        self.search_path = str(setting or "")
+        self.current_database = database
+        self.path = [("temp", "main"), (database, schema)]
+
+    def resolve(self, named: Named) -> Resolved | None:
+        rows = self.run(DUCKDB_CANDIDATES_SQL.format(name=literal(named.name)), MAX_ROWS).rows
+        if named.catalog:
+            places = [(named.catalog, named.schema)]
+        elif named.schema:
+            places = [(database, named.schema) for database, _ in self.path]
+            places.append((named.schema, "main"))
+        else:
+            places = [] if self.search_path else self.path
+        for database, schema in places:
+            for row in rows:
+                if (row[0].lower(), row[1].lower()) == (database.lower(), schema.lower()):
+                    return (row[0], row[1], row[2])
+        return None
+
+    def unresolved(self, named: Named) -> str:
+        if named.schema:
+            return "no table or view by this name"
+        if self.search_path:
+            return f"not resolved: search_path is set ({self.search_path!r})"
+        return "no table or view by this name on the search path"
+
+    def label(self, table: Resolved) -> str:
+        parts = table if table[0] != self.current_database else table[1:]
+        return ".".join(ref_part(part) for part in parts)
 
 
-def resolve_table(run: RunQuery, dialect: str, schema: str, name: str) -> tuple[str, str] | None:
-    """The (schema, table) the database reads for a name as written, or None if it names none."""
-    if dialect == "postgres":
-        ref = f"{quote(schema)}.{quote(name)}" if schema else quote(name)
-        rows = run(RESOLVE_SQL.format(ref=literal(ref)), 1).rows
-        return (rows[0][0], rows[0][1]) if rows else None
-    candidates = run(DUCKDB_CANDIDATES_SQL.format(name=literal(name)), MAX_ROWS).rows
-    if schema:
-        path = duckdb_search_path(run)
-        databases = [database for database, _ in path]
-        hits = [row for row in candidates if row[1].lower() == schema.lower()]
-        # A qualified name is looked up in the databases on the path, in order.
-        hits.sort(key=lambda row: databases.index(row[0]) if row[0] in databases else len(path))
-        return (hits[0][1], hits[0][2]) if hits else None
-    for database, path_schema in duckdb_search_path(run):
-        for row_database, row_schema, row_table in candidates:
-            if (row_database, row_schema.lower()) == (database, path_schema.lower()):
-                return (row_schema, row_table)
-    return None
+class PostgresNames:
+    def __init__(self, run: RunQuery) -> None:
+        self.run = run
+
+    def resolve(self, named: Named) -> Resolved | None:
+        ref = ".".join(quote(part) for part in (named.catalog, named.schema, named.name) if part)
+        rows = self.run(RESOLVE_SQL.format(ref=literal(ref)), 1).rows
+        return (rows[0][0], rows[0][1], rows[0][2]) if rows else None
+
+    def unresolved(self, named: Named) -> str:
+        return "no table or view by this name" + ("" if named.schema else " on the search path")
+
+    def label(self, table: Resolved) -> str:
+        return f"{ref_part(table[1])}.{ref_part(table[2])}"
 
 
 def index_report(run: RunQuery, dialect: str, sql: str) -> list[str]:
-    """The indexes on each table `sql` reads, under the schema.table the database resolves its name
-    to; a name that resolves to no table says so."""
+    """The indexes on each table `sql` reads, under the name of the table the database resolves
+    it to; a name that resolves to no table says so."""
     tables = tables_read(sql, dialect)
     if not tables:
         return ["Indexes: the query reads no tables"]
-    resolved = {named: resolve_table(run, dialect, *named) for named in tables}
-    found = sorted({pair for pair in resolved.values() if pair is not None})
-    rows: list[tuple[str, str, str]] = []
+    names = PostgresNames(run) if dialect == "postgres" else DuckDBNames(run)
+    resolved = [(named, names.resolve(named)) for named in tables]
+    found = sorted({table for _, table in resolved if table is not None})
+    rows: list[tuple[str, ...]] = []
     if found:
-        pairs = " OR ".join(
-            f"({{schema}} = {literal(schema)} AND {{table}} = {literal(name)})"
-            for schema, name in found
+        condition = " OR ".join(
+            f"({{database}} = {literal(database)} AND {{schema}} = {literal(schema)} "
+            f"AND {{table}} = {literal(name)})"
+            for database, schema, name in found
         )
-        rows = [tuple(row) for row in run(index_sql(dialect, pairs), MAX_ROWS).rows]
+        rows = [tuple(row) for row in run(index_sql(dialect, condition), MAX_ROWS).rows]
     lines = [f"Indexes on the tables this query reads (from {INDEX_SOURCE[dialect]}):"]
-    for (schema, name), pair in resolved.items():
-        if pair is None:
-            written = f"{ref_part(schema)}.{ref_part(name)}" if schema else ref_part(name)
-            where = "" if schema else " on the search path"
-            lines.append(f"  {written}: no table or view by this name{where}")
+    for named, table in resolved:
+        if table is None:
+            lines.append(f"  {named.written}: {names.unresolved(named)}")
             continue
-        label = f"{ref_part(pair[0])}.{ref_part(pair[1])}"
-        definitions = [row[2] for row in rows if (row[0], row[1]) == pair]
+        definitions = [row[3] for row in rows if row[:3] == table]
+        label = names.label(table)
         lines.extend(f"  {label}: {definition}" for definition in definitions or ["none"])
     return lines
 

@@ -2,6 +2,7 @@
 what a timeout reports. Driven through the MCP server's tools, in-process, on a DuckDB file."""
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import duckdb
@@ -240,6 +241,68 @@ def test_the_index_report_says_when_a_name_resolves_to_no_table(keys_db: Path) -
     assert report[1:] == [
         "  nowhere.orders: no table or view by this name",
         "  ghosts: no table or view by this name on the search path",
+    ]
+
+
+ATTACHED_SQL = """
+ATTACH ':memory:' AS aux;
+CREATE TABLE aux.main.orders (id INTEGER, amount DECIMAL(10, 2));
+CREATE INDEX aux_orders_amount ON aux.main.orders (amount);
+"""
+
+
+@pytest.fixture
+def attached(keys_db: Path) -> Iterator[duckdb.DuckDBPyConnection]:
+    """keys_db with a second database attached that also has a main.orders, as a connection: the
+    gateway's connections cannot attach, so this runs the report's statements directly."""
+    con = duckdb.connect(str(keys_db))
+    try:
+        con.execute(ATTACHED_SQL)
+        yield con
+    finally:
+        con.close()
+
+
+def run_on(con: duckdb.DuckDBPyConnection) -> RunQuery:
+    def run(sql: str, row_limit: int) -> QueryResult:
+        cursor = con.execute(sql)
+        columns = [column[0] for column in cursor.description or []]
+        return QueryResult(columns=columns, rows=cursor.fetchall())
+
+    return run
+
+
+ORDERS_INDEX = "CREATE INDEX orders_customer ON orders(customer_id);"
+AUX_INDEX = "CREATE INDEX aux_orders_amount ON orders(amount);"
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        # Unqualified: the current database's, not the attached one's of the same schema.table.
+        ("SELECT * FROM orders", [f"  main.orders: {ORDERS_INDEX}"]),
+        # x.t: schema x of the current database, or database x's main schema.
+        ("SELECT * FROM main.orders", [f"  main.orders: {ORDERS_INDEX}"]),
+        ("SELECT * FROM aux.orders", [f"  aux.main.orders: {AUX_INDEX}"]),
+        ("SELECT * FROM keys.orders", [f"  main.orders: {ORDERS_INDEX}"]),
+        ("SELECT * FROM aux.main.orders", [f"  aux.main.orders: {AUX_INDEX}"]),
+        ("SELECT * FROM aux.other.orders", ["  aux.other.orders: no table or view by this name"]),
+    ],
+)
+def test_duckdb_names_resolve_to_one_database(
+    attached: duckdb.DuckDBPyConnection, sql: str, expected: list[str]
+) -> None:
+    assert index_report(run_on(attached), "duckdb", sql)[1:] == expected
+
+
+def test_a_set_duckdb_search_path_leaves_unqualified_names_unresolved(
+    attached: duckdb.DuckDBPyConnection,
+) -> None:
+    attached.execute("SET search_path = 'aux.main'")
+    report = index_report(run_on(attached), "duckdb", "SELECT * FROM orders, keys.main.orders")
+    assert report[1:] == [
+        "  orders: not resolved: search_path is set ('aux.main')",
+        f"  keys.main.orders: {ORDERS_INDEX}",
     ]
 
 
