@@ -1,6 +1,6 @@
 # 33 — 没有 YML 时，结构验证者用题目的输出列当契约
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 32
 Spec: ../spec.md
 Claimed by: claude (implement session)
@@ -93,3 +93,4 @@ Branch: worktree-33-structure-contract-from-task-columns
     - 测试里重复切分 CHECK 一节、测试钉死具体措辞：沿用 `test_verifiers.py` 的现有写法，属于判断，不算违反规范。
     - frontmatter 的 description 只提 map_columns：这是上游文本，保持原样。
 - 2026-11-01 主会话：验收里写的"初筛开跑前和用户确认"按 plan §10 和 HANDOFF 的默认放行规则（2026-11-01，写在本工单之后）处理：初筛属于小额运行，直接跑，跑完汇报。dev-3 full 在这两道题上是 5/6（workforce 2/3，pos 3/3），所以过关要 6/6。
+- 2026-11-02 主会话：PR #34 CI 绿。退回：PR #34 Codex P2（`src/data_agent/agents/verifier.md:95`）属实。契约第 3 步写着 YML 和题目都没有列时 CHECK 2 = NEEDS_INFO，但后面 map_columns 的规则（CREATED 的模型报告每个 UNMAPPED-INCLUDE 列）只在"题目给了契约"时豁免；没有契约时两条指令冲突，验证者仍可能把上游列报成 FAIL，而不是 NEEDS_INFO，引出不必要的模型改动。修法：给"没有契约"加一个明确分支，这时 map_columns 的 UNMAPPED 列不算缺陷，CHECK 2 只报 NEEDS_INFO；配测试。初筛 `t33-screen` 在 adc6093 上运行，两道目标题走的是题目契约分支，主会话会在轨迹里核对 CHECK 2 的契约来源；若核实属实，初筛结果对修复后的版本仍然有效。
