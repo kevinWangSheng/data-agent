@@ -9,8 +9,16 @@ import psycopg
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
+from psycopg.conninfo import make_conninfo
 
-from data_agent.gateway import DuckDBGateway, PostgresGateway, QueryFailed, QueryResult
+from data_agent.db_facts import RunQuery, index_report
+from data_agent.gateway import (
+    DuckDBGateway,
+    Gateway,
+    PostgresGateway,
+    QueryFailed,
+    QueryResult,
+)
 from data_agent.mcp_server import build_server
 from data_agent.run_config import load_config
 
@@ -54,6 +62,10 @@ async def call(
         return CallToolResult(content=[TextContent(type="text", text=str(exc))], is_error=True)
     assert isinstance(result, CallToolResult)
     return result
+
+
+def run_through(gateway: Gateway) -> RunQuery:
+    return lambda sql, row_limit: gateway.query(sql, row_limit)
 
 
 def message_of(result: CallToolResult, tool: str) -> str:
@@ -188,9 +200,46 @@ async def test_a_timeout_reports_the_plan_and_the_indexes_of_the_tables_read(
     assert "BLOCKWISE_NL_JOIN" in plan
     assert "~1000000000000 Rows" in plan
     indexes = text[text.index("Indexes on the tables") :].splitlines()[1:]
+    # Each table under the schema.table the database resolved it to, whether or not it was written.
     assert indexes == [
         "  main.orders: CREATE INDEX orders_customer ON orders(customer_id);",
-        "  customers: none",
+        "  main.customers: none",
+    ]
+
+
+SAME_NAME_SQL = """
+CREATE SCHEMA other;
+CREATE TABLE other.orders (id INTEGER, amount DECIMAL(10, 2));
+CREATE INDEX other_orders_amount ON other.orders (amount);
+"""
+
+
+async def test_a_timeout_reports_only_the_indexes_of_the_table_the_search_path_finds(
+    keys_db: Path,
+) -> None:
+    """Two schemas each have an `orders`; an unqualified `orders` reads main.orders, the one on
+    DuckDB's search path, so only its indexes are reported."""
+    con = duckdb.connect(str(keys_db))
+    try:
+        con.execute(SAME_NAME_SQL)
+    finally:
+        con.close()
+    sql = SLOW_SQL.replace("main.orders", "orders")
+    result = await call(keys_db, "query_database", {"sql": sql}, timeout=0.5)
+    text = message_of(result, "query_database")
+    indexes = text[text.index("Indexes on the tables") :].splitlines()[1:]
+    assert indexes == [
+        "  main.orders: CREATE INDEX orders_customer ON orders(customer_id);",
+        "  main.customers: none",
+    ]
+
+
+def test_the_index_report_says_when_a_name_resolves_to_no_table(keys_db: Path) -> None:
+    gateway = DuckDBGateway(keys_db)
+    report = index_report(run_through(gateway), "duckdb", "SELECT * FROM nowhere.orders, ghosts")
+    assert report[1:] == [
+        "  nowhere.orders: no table or view by this name",
+        "  ghosts: no table or view by this name on the search path",
     ]
 
 
@@ -350,3 +399,43 @@ async def test_postgres_timeout_plans_the_query_with_its_own_row_limit(pg_url: s
     plan = text[text.index("Plan (EXPLAIN") : text.index("Indexes on the tables")]
     [limit] = [line for line in plan.splitlines() if line.startswith("Limit ")]
     assert " rows=5 " in limit, limit
+
+
+@pytest.mark.integration
+async def test_postgres_timeout_reports_only_the_table_the_search_path_finds(pg_url: str) -> None:
+    """facts37b comes first on the search path, so an unqualified `orders` is facts37b.orders,
+    and facts37.orders's indexes stay out of the report."""
+    with psycopg.connect(pg_url, autocommit=True) as con:
+        con.execute(PG_SAME_NAME_SQL)  # pyright: ignore[reportArgumentType, reportCallIssue]
+    url = make_conninfo(pg_url, options="-c search_path=facts37b,facts37")
+    sql = (
+        "SELECT count(*) FROM orders AS o, generate_series(1, 1000000000000) AS g "
+        "WHERE o.amount + g = o.id"
+    )
+    result = await pg_call(url, "query_database", {"sql": sql}, timeout=0.5)
+    text = message_of(result, "query_database")
+    indexes = text[text.index("Indexes on the tables") :].splitlines()[1:]
+    assert indexes == [
+        "  facts37b.orders: CREATE INDEX orders_amount ON facts37b.orders USING btree (amount)"
+    ]
+
+
+PG_SAME_NAME_SQL = """
+DROP SCHEMA IF EXISTS facts37b CASCADE;
+CREATE SCHEMA facts37b;
+CREATE TABLE facts37b.orders (id integer, amount numeric(10, 2));
+CREATE INDEX orders_amount ON facts37b.orders (amount);
+"""
+
+
+@pytest.mark.integration
+def test_postgres_index_report_resolves_names_as_postgres_does(pg_url: str) -> None:
+    """Unquoted names fold to lower case; a name that resolves to nothing says so."""
+    run = run_through(PostgresGateway(pg_url))
+    report = index_report(run, "postgres", 'SELECT * FROM FACTS37.Orders, facts37."Orders"')
+    assert report[1:] == [
+        "  facts37.orders: CREATE INDEX orders_customer ON facts37.orders USING btree "
+        "(customer_id)",
+        "  facts37.orders: CREATE UNIQUE INDEX orders_pkey ON facts37.orders USING btree (id)",
+        "  facts37.Orders: no table or view by this name",
+    ]

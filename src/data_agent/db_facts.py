@@ -259,38 +259,111 @@ def plan_text(result: QueryResult) -> str:
     return "\n".join(str(row[-1]) for row in result.rows)
 
 
+# Where an unqualified name is looked up. Postgres: `to_regclass` resolves a name exactly as the
+# planner does (search_path, implicit pg_catalog and pg_temp, case folding already applied by the
+# caller). DuckDB has no such function, so its search path is read and applied here.
+RESOLVE_SQL = """
+SELECT n.nspname, c.relname
+FROM pg_class AS c
+JOIN pg_namespace AS n ON n.oid = c.relnamespace
+WHERE c.oid = to_regclass({ref})
+"""
+DUCKDB_PATH_SQL = "SELECT current_setting('search_path'), current_schema(), current_database()"
+# Every table and view named like {name} (ignoring case, as DuckDB does), in any attached database.
+DUCKDB_CANDIDATES_SQL = """
+SELECT database_name, schema_name, table_name FROM duckdb_tables()
+WHERE lower(table_name) = lower({name})
+UNION ALL
+SELECT database_name, schema_name, view_name FROM duckdb_views()
+WHERE NOT internal AND lower(view_name) = lower({name})
+"""
+
+
 def tables_read(sql: str, dialect: str) -> list[tuple[str, str]]:
     """(schema or "", table) for each table `sql` names, in order and once each; CTE names and
-    table functions are left out."""
+    table functions are left out. Postgres folds unquoted names to lower case, so they are folded
+    here too; DuckDB matches names ignoring case, so they are kept as written."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
     ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
     tables: list[tuple[str, str]] = []
     for node in tree.find_all(exp.Table):
-        named = (node.db, node.name)
+        named = (as_written(node.args.get("db"), dialect), as_written(node.this, dialect))
         is_cte = not node.db and node.name.lower() in ctes
         if node.name and not is_cte and named not in tables:
             tables.append(named)
     return tables
 
 
+def as_written(identifier: exp.Expr | None, dialect: str) -> str:
+    if not isinstance(identifier, exp.Identifier):
+        return identifier.name if identifier is not None else ""
+    if dialect == "postgres" and not identifier.quoted:
+        return identifier.name.lower()
+    return identifier.name
+
+
+def duckdb_search_path(run: RunQuery) -> list[tuple[str, str]]:
+    """(database, schema) in the order DuckDB looks an unqualified name up: temporary objects first,
+    then the search_path setting, or the current schema when the setting is empty."""
+    [(setting, schema, database)] = run(DUCKDB_PATH_SQL, 1).rows
+    path = [("temp", "main")]
+    for entry in str(setting or "").split(","):
+        parts = [part.strip().strip('"') for part in entry.split(".")]
+        if len(parts) == 2:
+            path.append((parts[0], parts[1]))
+        elif parts[0]:
+            path.append((database, parts[0]))
+    if len(path) == 1:
+        path.append((database, schema))
+    return path
+
+
+def resolve_table(run: RunQuery, dialect: str, schema: str, name: str) -> tuple[str, str] | None:
+    """The (schema, table) the database reads for a name as written, or None if it names none."""
+    if dialect == "postgres":
+        ref = f"{quote(schema)}.{quote(name)}" if schema else quote(name)
+        rows = run(RESOLVE_SQL.format(ref=literal(ref)), 1).rows
+        return (rows[0][0], rows[0][1]) if rows else None
+    candidates = run(DUCKDB_CANDIDATES_SQL.format(name=literal(name)), MAX_ROWS).rows
+    if schema:
+        path = duckdb_search_path(run)
+        databases = [database for database, _ in path]
+        hits = [row for row in candidates if row[1].lower() == schema.lower()]
+        # A qualified name is looked up in the databases on the path, in order.
+        hits.sort(key=lambda row: databases.index(row[0]) if row[0] in databases else len(path))
+        return (hits[0][1], hits[0][2]) if hits else None
+    for database, path_schema in duckdb_search_path(run):
+        for row_database, row_schema, row_table in candidates:
+            if (row_database, row_schema.lower()) == (database, path_schema.lower()):
+                return (row_schema, row_table)
+    return None
+
+
 def index_report(run: RunQuery, dialect: str, sql: str) -> list[str]:
-    """The indexes on each table `sql` reads, matched on the name as written (ignoring case), and
-    on the schema too when the query names one."""
+    """The indexes on each table `sql` reads, under the schema.table the database resolves its name
+    to; a name that resolves to no table says so."""
     tables = tables_read(sql, dialect)
     if not tables:
         return ["Indexes: the query reads no tables"]
-    names = ", ".join(literal(name.lower()) for _, name in tables)
-    rows = run(index_sql(dialect, f"lower({{table}}) IN ({names})"), MAX_ROWS).rows
+    resolved = {named: resolve_table(run, dialect, *named) for named in tables}
+    found = sorted({pair for pair in resolved.values() if pair is not None})
+    rows: list[tuple[str, str, str]] = []
+    if found:
+        pairs = " OR ".join(
+            f"({{schema}} = {literal(schema)} AND {{table}} = {literal(name)})"
+            for schema, name in found
+        )
+        rows = [tuple(row) for row in run(index_sql(dialect, pairs), MAX_ROWS).rows]
     lines = [f"Indexes on the tables this query reads (from {INDEX_SOURCE[dialect]}):"]
-    for schema, name in tables:
-        written = f"{schema}.{name}" if schema else name
-        found = [
-            definition
-            for row_schema, row_table, definition in rows
-            if row_table.lower() == name.lower()
-            and (not schema or row_schema.lower() == schema.lower())
-        ]
-        lines.extend(f"  {written}: {definition}" for definition in found or ["none"])
+    for (schema, name), pair in resolved.items():
+        if pair is None:
+            written = f"{ref_part(schema)}.{ref_part(name)}" if schema else ref_part(name)
+            where = "" if schema else " on the search path"
+            lines.append(f"  {written}: no table or view by this name{where}")
+            continue
+        label = f"{ref_part(pair[0])}.{ref_part(pair[1])}"
+        definitions = [row[2] for row in rows if (row[0], row[1]) == pair]
+        lines.extend(f"  {label}: {definition}" for definition in definitions or ["none"])
     return lines
 
 

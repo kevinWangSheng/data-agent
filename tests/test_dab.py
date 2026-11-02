@@ -520,7 +520,8 @@ async def test_a_duckdb_timeout_carries_the_plan_and_indexes(
     text = text_of(result)
     assert ": Query timed out after 0.5s\n\nPlan (EXPLAIN" in text
     assert "CROSS_PRODUCT" in text
-    assert "  orders: CREATE INDEX orders_customer ON orders(customer_id);" in text.splitlines()
+    index = "  main.orders: CREATE INDEX orders_customer ON orders(customer_id);"
+    assert index in text.splitlines()
 
 
 async def test_postgres_connections_carry_the_statement_timeout(
