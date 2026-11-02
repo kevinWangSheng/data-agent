@@ -103,3 +103,5 @@ agent 在 DAB 上的每条查询最多跑 150 秒。超时后：
       - 两个包装类形状相近、假驱动里的 sleep 代码重复、测试里 `elapsed < 10` 的墙钟断言：小的判断项，不改。
   - 待主会话：服务器上跑 imdb query1 × 1（no-context），贴超时事件和总耗时。
   - 分支 worktree-36-dab-query-timeout，提交 f96bdcc、3fb3754。
+- 2026-11-02 主会话：主会话补跑 `da-review main` 仍报 "Selected model is at capacity"，没出结论；以 PR #35 上的 Codex GitHub app 审查代替。
+- 2026-11-02 主会话：PR #35 CI 绿。Codex 首次审查没跑完，评论 `@codex review` 重跑。Codex P2"`call()` 抛异常时会走到 `outcome["success"]`，`UnboundLocalError` 盖掉原错误"（`evals/dab_server.py:174`）不属实：`run` 是 `try/finally`，没有 `except`；`call()` 抛异常时 `finally` 执行完会把原异常重新抛出，到不了第 177 行。用最小复现验证过（ConnectionError 原样传出）。已在 PR 回复，不修。
