@@ -1,6 +1,6 @@
 # 33 — 没有 YML 时，结构验证者用题目的输出列当契约
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 32
 Spec: ../spec.md
 Claimed by: claude (implement session)
@@ -69,8 +69,8 @@ Branch: worktree-33-structure-contract-from-task-columns
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
+- Attempts: 2
+- Review rounds: 3（退回后修了 1 轮；这一轮的 da-review 因 Codex 满载没出结论）
 - Model spend: $0（工单 agent，只在本地）；服务器运行见 Comments
 - Outcome: CHECK 2 契约顺序 YML → 题目输出列 → NEEDS_INFO，已在提示词里实现并配测试；等主会话的服务器运行和初筛
 - Human review minutes: —
@@ -94,3 +94,21 @@ Branch: worktree-33-structure-contract-from-task-columns
     - frontmatter 的 description 只提 map_columns：这是上游文本，保持原样。
 - 2026-11-01 主会话：验收里写的"初筛开跑前和用户确认"按 plan §10 和 HANDOFF 的默认放行规则（2026-11-01，写在本工单之后）处理：初筛属于小额运行，直接跑，跑完汇报。dev-3 full 在这两道题上是 5/6（workforce 2/3，pos 3/3），所以过关要 6/6。
 - 2026-11-02 主会话：PR #34 CI 绿。退回：PR #34 Codex P2（`src/data_agent/agents/verifier.md:95`）属实。契约第 3 步写着 YML 和题目都没有列时 CHECK 2 = NEEDS_INFO，但后面 map_columns 的规则（CREATED 的模型报告每个 UNMAPPED-INCLUDE 列）只在"题目给了契约"时豁免；没有契约时两条指令冲突，验证者仍可能把上游列报成 FAIL，而不是 NEEDS_INFO，引出不必要的模型改动。修法：给"没有契约"加一个明确分支，这时 map_columns 的 UNMAPPED 列不算缺陷，CHECK 2 只报 NEEDS_INFO；配测试。初筛 `t33-screen` 在 adc6093 上运行，两道目标题走的是题目契约分支，主会话会在轨迹里核对 CHECK 2 的契约来源；若核实属实，初筛结果对修复后的版本仍然有效。
+- 2026-11-02 工单 agent（退回后第 1 轮，主会话转抄）：
+  - 新提交：
+    - 575ffcc：修 PR #34 Codex P2。CHECK 2 的 map_columns 一段改成按契约来源分三支：YML / 题目 / 没有契约。没有契约时，UNMAPPED-INCLUDE 列不算缺陷，CREATED 的模型也一样，CHECK 2 = NEEDS_INFO，不判 FAIL。"报告每个 UNMAPPED-INCLUDE 列"只在 YML 契约下适用。
+    - 4c8af73：修审查意见，见下。
+  - 测试：`tests/test_verifiers.py::test_verifier_reads_map_columns_by_contract_source_so_no_contract_stays_needs_info`。改提示词前失败（ValueError），改后通过。`tests/test_verifiers.py` 27 passed。
+  - make check（4c8af73）：ruff "All checks passed!"，basedpyright "0 errors, 0 warnings, 0 notes"，pytest "1403 passed, 1 skipped, 25 deselected"。
+  - 本地真实运行（不调模型）：用测试里的 `verifier_prompt()`（走 `agent.build_options`）构建验证者，打印 map_columns 一段，三支顺序正确，"No contract" 一支写着 "CHECK 2 = NEEDS_INFO, never FAIL"。`parse_checks('### m\n- CHECK 2: NEEDS_INFO - none; no column contract exists')` 输出 `[{'model': 'm', 'check': 'CHECK 2', 'status': 'NEEDS_INFO'}]`。
+  - 审查：
+    - da-review main 跑了 3 次（575ffcc 上 2 次，4c8af73 上 1 次），每次都报 "ERROR: Selected model is at capacity"，Codex 没出结论。这一轮的 Codex 审查只能靠 PR 上的 GitHub app。
+    - eng:code-review main 已跑（Standards、Spec 两个子 agent）。修了的（4c8af73）：
+      - Spec c1：没有契约时，提示词仍让验证者调 `check_model_schema`。参数为空时，这个工具报错并让验证者传 "YML column names"。第 3 步现在写明跳过它。
+      - Spec c2：adc6093 把 check_model_schema 挪到前面以后，MODIFIED 模型"之前就缺的列不报"的豁免只写在 map_columns 后面，读起来不再覆盖 check_model_schema 的结果；main 上这条豁免在前面。现在写明豁免对两个工具的输出都适用。
+      - Standards：两个测试都在断言 map_columns 的措辞，map_columns 的断言已挪进新测试。变量 `none` 改名为 `no_contract_at`。
+      - 文件头修改记录已同步。
+  - 不修的几处及理由：
+    - Spec c3：第 2 步只认题目里"给这个模型的"输出列。题目列了列名却没写模型名时，验证者可能判成没有契约。这一点没对照 workforce-analytics 的题目原文核对（未确认），硬写放宽规则可能在多模型题上用错。主会话的服务器运行看到 CHECK 2 是否仍为 NEEDS_INFO，就能暴露这个问题；暴露了再开工单。
+    - `check_model_schema` 的参数名 `yml_columns`、docstring 和报错文字里的 "YML"：理由同上一轮。Authority 只允许在入参变化时改这个文件，而参数名被 acceptance 测试钉住。
+    - 测试里重复切分 CHECK 一节、YML / 题目 / 没有契约的三分支在契约和 map_columns 两处各写一遍、文件头修改记录变长：都属于判断，不算违反规范。三分支对应两个工具不同的读法，合成一张表会改动上游文本更多。
