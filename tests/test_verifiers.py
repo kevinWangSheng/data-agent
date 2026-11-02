@@ -224,6 +224,55 @@ def test_verifier_passes_yml_types_to_check_model_schema() -> None:
     assert "check_model_schema" in check_2 and "name:data_type" in check_2
 
 
+def test_verifier_takes_the_column_contract_from_yml_then_the_task_then_needs_info() -> None:
+    """Ticket 33: CHECK 2's contract is the model's YML columns; without them, the output column
+    list the task text gives (names, and types where the task gives them); only with neither is
+    CHECK 2 NEEDS_INFO. YML wins over the task when both exist."""
+    check_2 = " ".join(verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0].split())
+    contract = check_2.split("Column contract")[1].split("Call `check_model_schema`")[0]
+    yml, task, neither = (
+        contract.index(step) for step in ("1. The model's YML", "2. No YML", "3. Neither")
+    )
+    assert yml < task < neither
+    assert "task file" in contract[task:neither] and "data_type" in contract[task:neither]
+    assert "NEEDS_INFO" in contract[neither:] and "NEEDS_INFO" not in contract[:neither]
+    assert "the YML wins" in contract
+    assert "with the contract's columns" in check_2
+    # With no contract there are no columns to pass; check_model_schema would only error.
+    assert "skip `check_model_schema`" in contract[neither:]
+    template = verifier_prompt().split("## Output Format")[1]
+    assert "contract source" in next(line for line in template.splitlines() if "CHECK 2" in line)
+
+
+def test_verifier_reads_map_columns_by_contract_source_so_no_contract_stays_needs_info() -> None:
+    """Ticket 33, PR #34 review: reporting every UNMAPPED-INCLUDE column of a created model
+    holds only under a YML contract; with no contract at all those columns are no defect and
+    CHECK 2 is NEEDS_INFO, not FAIL. Under a YML contract a modified model's already-missing
+    columns stay exempt in both tools' output, as before check_model_schema moved first."""
+    check_2 = " ".join(verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0].split())
+    mapping = check_2.split("Call `map_columns")[1]
+    yml, task, no_contract_at = (
+        mapping.index(label)
+        for label in (
+            "- Contract from the YML:",
+            "- Contract from the task file:",
+            "- No contract:",
+        )
+    )
+    assert yml < task < no_contract_at
+    assert "report every UNMAPPED-INCLUDE column" in mapping[yml:task]
+    assert mapping.count("report every UNMAPPED-INCLUDE") == 1
+    assert "already missing" in mapping[yml:task] and "from either tool" in mapping[yml:task]
+    # map_columns maps against the YML only: with a task contract its NONE line and
+    # UNMAPPED-INCLUDE list neither mean NEEDS_INFO nor excuse a missing task column.
+    assert "`YML contract: NONE`" in mapping[task:no_contract_at]
+    assert "is not NEEDS_INFO" in mapping[task:no_contract_at]
+    assert "never already missing" in mapping[task:no_contract_at]
+    no_contract = mapping[no_contract_at:]
+    assert "not defects" in no_contract
+    assert "CHECK 2 = NEEDS_INFO" in no_contract and "never FAIL" in no_contract
+
+
 def test_verifier_checks_every_row_removal_against_the_task_or_yml() -> None:
     """Ticket 32: each filter, inner join, row removal and changed source needs a basis in the
     task text or the YML, or the check fails quoting the SQL."""
