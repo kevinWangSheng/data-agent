@@ -94,7 +94,7 @@ Status: ready-for-agent
 - **验证子 agent**（ADR-0002，plan §3）：结构、数值两个只读验证者，用 SDK `agents=` 定义，内容照 signalpilot-plugin 的 verifier / value-verifier，逐项给"通过 / 失败 / 需更多信息 / 不适用"。只用于 dbt 任务；查数任务用 sql-workflow 自带的验证步骤。开始与结束经 hooks 记成事件。
 - **只读网关**：原样复制 SignalPilot `engine/`（sqlglot，含其测试），对 DuckDB 与 Postgres 方言生效；被拦截的语句返回可读错误。数据库驱动 `duckdb`、`psycopg` 3，连接以只读方式打开。
 - **MCP server**（stdio，官方 `mcp` SDK 2.x）：
-  - 基础工具（所有配置都有）：执行查询（经网关）、列出表。
+  - 基础工具（所有配置都有）：执行查询（经网关）、列出表（带行数估计）、单表详情（类型、可空、主键、外键、索引、行数估计）、执行计划（只跑 `EXPLAIN`）；查询超时的报错附执行计划和相关表的索引（ADR-0003 Update 2026-11-02，工单 37）。
   - 上下文策略工具（ADR-0003，"关上下文策略"时不暴露）：discover 搜索只回引用加至多 200 字摘要；hydrate 按引用读单个对象全文；dictionary search 按关键词查列的真实取值；join 候选先按 `_id` 列匹配。
   - 验证工具（"关验证子 agent"时不暴露）：照 ADR-0002 移植 6 个（list_tables、map_columns、check_model_schema、audit_model_sources、verify_model_values、query_database），去掉存储与审计外壳，并改掉 DuckDB 专属写法使其在 Postgres 上可用。
   - 暴露哪些工具由运行配置决定。
