@@ -112,3 +112,7 @@ Branch: worktree-33-structure-contract-from-task-columns
     - Spec c3：第 2 步只认题目里"给这个模型的"输出列。题目列了列名却没写模型名时，验证者可能判成没有契约。这一点没对照 workforce-analytics 的题目原文核对（未确认），硬写放宽规则可能在多模型题上用错。主会话的服务器运行看到 CHECK 2 是否仍为 NEEDS_INFO，就能暴露这个问题；暴露了再开工单。
     - `check_model_schema` 的参数名 `yml_columns`、docstring 和报错文字里的 "YML"：理由同上一轮。Authority 只允许在入参变化时改这个文件，而参数名被 acceptance 测试钉住。
     - 测试里重复切分 CHECK 一节、YML / 题目 / 没有契约的三分支在契约和 map_columns 两处各写一遍、文件头修改记录变长：都属于判断，不算违反规范。三分支对应两个工具不同的读法，合成一张表会改动上游文本更多。
+- 2026-11-02 主会话：初筛 `t33-screen`（commit adc6093；`ablate --split dev --config full --task workforce-analytics --task pos-operations --trials 3 --budget 4`）：6/6（100%），过线（> 5/6）。workforce 3/3，pos 3/3。花费 $3.4308（含冒烟 $0.134），7 个事件文件都在高峰时段，实际价等于 cost_usd；单次约 $0.55，比 dev-3 高；跑完时累计花费超过 `--budget` 的 80%，护栏在全部 trial 结束后才报出，没有截断。这次初筛兼作验收里的真实运行（workforce 3 次）。
+  - 轨迹核对（结构验证者的 CHECK 2 输出行）：5 个 trial 的契约来源是题目（"contract: task" 等），pos 的 mNFfjqL 是 YML（主 agent 自己写了 YML）；所有模型 CHECK 2 都不是 NEEDS_INFO；workforce t8D34oZ 有 1 次 FAIL，修复后复查通过。
+  - 575ffcc、4c8af73 只改"没有契约"一支，以及 YML 契约下 MODIFIED 模型的豁免（只会减少 FAIL）。初筛里没有走"没有契约"一支的 trial，走 YML 契约的那个 trial 全是 PASS，所以初筛结果适用于合并版本。
+- 2026-11-02 主会话：PR #34 CI 绿；Codex 复审 4c8af73 无意见。squash 合并为 4a0fe81。
