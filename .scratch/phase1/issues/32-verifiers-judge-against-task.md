@@ -1,6 +1,6 @@
 # 32 — 验证者拿题目原文当标准
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -148,3 +148,5 @@ Branch: worktree-32-verifiers-judge-against-task
   - make check（`UV_OFFLINE=1`）：ruff、basedpyright 通过；1357 passed，1 skipped。
   - da-review：无可修问题。eng:code-review：Standards 无硬性违规；不改的几处——被拒绝的运行会留下空的 events 目录（无事件文件，无害）；临时目录等于 workspace 时报错写"inside"略不准，但给出了做法；三个测试重复同一个 monkeypatch，内联更清楚；`uses_verifiers` 多处调用是旧代码。Spec：无缺漏、无越界。
   - 已知限制：路径比较区分大小写，macOS 不区分大小写的卷上 `TMPDIR=/x/WS/tmp` 配 `--workspace /x/ws` 能绕过检查；Linux 和 Harbor 不受影响。
+- 2026-11-01 主会话：初筛 `t32-screen2`（commit 4634d50；`ablate --split dev --config full --trials 3`，6 道目标题）：16/18（88.9% ± 7.9），过线（> 10/18，dev-3 full 为 10/18）。逐题：multi-warehouse-stock-rebalance 3/3，rfm-customer-segmentation 2/3，customer-cross-sell-insights 3/3，receivables-aging-buckets 2/3，web-session-quality-scoring 3/3，supplier-payment-optimization 3/3。花费 cost_usd $3.4386，实际价 $1.7193（19 个事件文件全在闲时，含冒烟）。05e910c 只改 workspace 在临时目录内时的报错，Harbor 里不触发，初筛结果适用。
+- 2026-11-01 主会话：PR #31 CI 绿；Codex 复审 05e910c 无意见。squash 合并为 e09b7af。
