@@ -1,10 +1,10 @@
 # 36 — DAB 路径的查询超时：和网关一样 150 秒，并在数据库端真正停下
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 36-dab-query-timeout)
+Branch: worktree-36-dab-query-timeout
 
 ## Goal
 
@@ -64,10 +64,42 @@ agent 在 DAB 上的每条查询最多跑 150 秒。超时后：
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1（eng:code-review；da-review 因 Codex 满载未完成，主会话补跑）
 - Model spend: $0
-- Outcome: —
+- Outcome: 实现完成，待补跑 da-review 和服务器真实运行
 - Human review minutes: —
 
 ## Comments
+- 2026-11-02 工单 agent（主会话转抄）：
+  - 实现：DAB 每次查询都新开连接，所用驱动名在各库模块里固定（6ad9d68：`import sqlite3` / `import duckdb` / `import sqlalchemy` / `from pymongo import MongoClient`，从 GitHub 核对）。`evals/dab_server.py` 启动时把这些名字换成我们的包装，不改 DAB clone、不复制 DAB 代码。
+    - Postgres：在连接参数 `options` 里加 `-c statement_timeout`，保留 DAB 的 `default_transaction_read_only=on`，由服务端取消。
+    - MongoDB：客户端 `timeoutMS`，pymongo 作为 `maxTimeMS` 发给服务端。
+    - SQLite/DuckDB：计时器对本次查询开的连接调 `interrupt()`。
+    - 超时值复用 `TIMEOUT_SECONDS`；错误文本 `Query timed out after 150s`；`--query-timeout` 只给测试调小。
+  - 测试（假 DAB 改成和真 DAB 一样按库分模块；`tests/test_dab.py`）：
+    - 4 种库（SQLite、DuckDB、Postgres、Mongo）的慢查询都在约 0.5s 返回超时，同库下一条正常。
+    - Postgres 连接带 `statement_timeout=500` 且只读选项保留。
+    - 默认值等于 `TIMEOUT_SECONDS*1000`。
+    - Mongo 客户端侧 `NetworkTimeout` 也算超时。
+    - 截止后才发生的别种失败（连不上服务器）保留原错误。
+  - 真实运行（本地 postgres:17 + SQLAlchemy 2.0.41 + psycopg2 2.9.9；按 DAB postgres exec 的形状写的探针，未用 pandas 读结果，因为 PyPI 不通；容器已停）：
+    - 会话设置 `statement_timeout=2000`、`default_transaction_read_only=on`。
+    - `SELECT pg_sleep(30)` 在 2.02s 被服务端取消，原错误 `(psycopg2.errors.QueryCanceled) canceling statement due to statement timeout`。
+    - 经 `QueryTimeout.run` 返回 `Query timed out after 2s`（2.03s）。
+    - `pg_stat_activity` 里没有残留的 pg_sleep；下一条 `SELECT 1` 正常。
+  - 未确认：真 pymongo 4.13.2 的 `timeoutMS`/`maxTimeMS` 行为没有实测（PyPI 不通），只由假 DAB 覆盖。
+  - make check：1411 passed, 1 skipped（3fb3754）。
+  - 审查：
+    - da-review main 三次都报 "Selected model is at capacity"，未完成，需补跑。
+    - eng:code-review（Standards + Spec）已修：
+      - 过期标志只在计时器真正中断了 SQLite/DuckDB 连接时才算超时，Postgres/Mongo 截止后别种失败保留原错误。
+      - 加 Mongo `NetworkTimeout`。
+      - 超时错误按 DAB 带括号的写法匹配。
+      - 变量改名 `attribute`。
+    - eng:code-review 不修：
+      - 和 `gateway.py` 重复的 options 拼接、超时文本：要改 `src/`，Authority 不允许。
+      - Mongo 的 `list_tables` 不需要单独处理：DAB 的 `MongoListDBTool.exec` 就在 `mongo_utils` 里用 `MongoClient`，已被覆盖。
+      - 两个包装类形状相近、假驱动里的 sleep 代码重复、测试里 `elapsed < 10` 的墙钟断言：小的判断项，不改。
+  - 待主会话：服务器上跑 imdb query1 × 1（no-context），贴超时事件和总耗时。
+  - 分支 worktree-36-dab-query-timeout，提交 f96bdcc、3fb3754。
