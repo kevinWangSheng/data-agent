@@ -366,6 +366,28 @@ async def test_a_slow_query_times_out_and_the_next_one_runs(
     assert data_of(after) == rows
 
 
+async def test_a_mongo_client_side_timeout_is_a_timeout(dab_root: Path, tmp_path: Path) -> None:
+    """pymongo's socket can give up before the server's maxTimeMS answers."""
+    add_databases(dab_root)
+    query = '{"collection": "articles", "sleep": 30, "client_side": true}'
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        result = await session.call_tool("query_database", {"db_name": "articles_db", "sql": query})
+    assert text_of(result).endswith(": Query timed out after 0.5s")
+
+
+async def test_a_slow_failure_of_another_kind_keeps_its_own_error(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    """Only a stopped query is a timeout: an unreachable server after the deadline says so."""
+    add_databases(dab_root)
+    query = '{"collection": "articles", "unreachable": 1}'
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", *SHORT_TIMEOUT) as session:
+        result = await session.call_tool("query_database", {"db_name": "articles_db", "sql": query})
+    assert result.is_error
+    assert "(ServerSelectionTimeoutError)" in text_of(result)
+    assert "timed out after" not in text_of(result)
+
+
 async def test_postgres_connections_carry_the_statement_timeout(
     dab_root: Path, tmp_path: Path
 ) -> None:

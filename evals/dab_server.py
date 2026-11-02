@@ -70,9 +70,10 @@ PRINT_NOTE = (
 # DAB's query module for each database type. Every call opens a new connection through the name the
 # module binds its driver to, so wrapping that name reaches every connection without changing DAB.
 DB_UTILS = "common_scaffold.tools.db_utils"
-# The driver errors a server-side timeout raises, as DAB's error text names them: Postgres's
-# statement_timeout and MongoDB's maxTimeMS.
-SERVER_TIMEOUTS = ("QueryCanceled", "ExecutionTimeout")
+# The driver errors our timeout raises in Postgres and MongoDB, as DAB's error text names them (it
+# returns text only, so text is what there is to match): Postgres's statement_timeout (in
+# SQLAlchemy's wording), and MongoDB's maxTimeMS or pymongo's socket giving up at `timeoutMS`.
+SERVER_TIMEOUTS = ("(psycopg2.errors.QueryCanceled)", "(ExecutionTimeout)", "(NetworkTimeout)")
 
 
 class Interruptible:
@@ -138,29 +139,32 @@ class QueryTimeout:
                 lambda client: functools.partial(client, timeoutMS=timeout_ms),
             ),
         }
-        for module_name, (name, wrap) in wrappers.items():
+        for module_name, (attribute, wrap) in wrappers.items():
             module = importlib.import_module(f"{DB_UTILS}.{module_name}")
-            setattr(module, name, wrap(getattr(module, name)))
+            setattr(module, attribute, wrap(getattr(module, attribute)))
 
     def _track(self, con: Any) -> None:
         with self._lock:
             if self._opened is not None:
                 self._opened.append(con)
 
-    def _interrupt(self) -> None:
+    def _interrupt(self) -> bool:
+        """Interrupt the running call's connections; False if it opened none (Postgres, MongoDB)."""
         with self._lock:
             for con in self._opened or []:
                 # The query may have just finished and its connection closed; then nothing runs.
                 with contextlib.suppress(Exception):
                     con.interrupt()
+            return bool(self._opened)
 
     def run(self, call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-        """`call`'s DAB outcome; one stopped by the timeout fails with the gateway's message."""
-        expired = threading.Event()
+        """`call`'s DAB outcome; one stopped by the timeout fails with the gateway's message, any
+        other failure keeps its own."""
+        interrupted = threading.Event()
 
         def expire() -> None:
-            expired.set()
-            self._interrupt()
+            if self._interrupt():
+                interrupted.set()
 
         with self._lock:
             self._opened = []
@@ -173,7 +177,7 @@ class QueryTimeout:
             with self._lock:
                 self._opened = None
         error = "" if outcome["success"] else str(outcome["result"])
-        if error and (expired.is_set() or any(name in error for name in SERVER_TIMEOUTS)):
+        if error and (interrupted.is_set() or any(name in error for name in SERVER_TIMEOUTS)):
             return {"success": False, "result": f"Query timed out after {self.seconds:g}s"}
         return outcome
 
