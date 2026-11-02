@@ -254,3 +254,4 @@ agent 写 SQL 前就能拿到数据库自己报出的事实，包括行数、类
   - 真实 DAB 的 `QueryDBTool` 能不能跑 `to_regclass` 的查询，只在假 DAB 上验证过，要靠服务器上 imdb query1 那次真实运行核实。
   - `describe_table` 在 DuckDB 上也只按 schema 和表名找索引，ATTACH 的库会有同样的问题。网关和 DAB 都不 ATTACH，这次没改。
 - 2026-11-02 主会话：接受用 `to_regclass` 代替 `current_schemas(false)` 的偏离（数据库自己的查找，覆盖隐含的 `pg_temp`、`pg_catalog`）。
+- 2026-11-02 主会话：PR #36 在 `eb2da69` 上 CI 绿；Codex app 第一次审查 status failed，评论 `@codex review` 后重审 completed，没有新意见。等 `accept-1` 跑完后做服务器 imdb query1 真实运行，通过再合并。
