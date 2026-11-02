@@ -17,6 +17,9 @@ License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-
 - src/data_agent/verifier_tools.py <- signalpilot/gateway/gateway/mcp/tools/model_map.py and
   model_verify.py (map_columns, check_model_schema, audit_model_sources, verify_model_values),
   ported to this server's gateway and modified as noted at its top.
+- src/data_agent/db_facts.py: the Postgres row-estimate query (`n_live_tup`, falling back to
+  `pg_class.reltuples`) and the `pg_indexes` read <- signalpilot/gateway/gateway/connectors/
+  drivers/postgres.py (`_get_schema_impl`), modified as noted at its top.
 
 ## signalpilot-plugin
 

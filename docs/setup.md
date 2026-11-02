@@ -24,6 +24,15 @@
 - 容器 `da-dab-postgres`（`postgres:17`，127.0.0.1:15432）与 `da-dab-mongo`（`mongo:8`，127.0.0.1:37017，WiredTiger 缓存 0.5 GB）；数据卷 `da-dab-pgdata`、`da-dab-mongodata`，删掉容器和卷即可重来。DAB 装库要调 `psql` 和 `mongorestore`，服务器不装系统包，所以 `da-benchmarks/bin/` 里的同名包装脚本经 `docker exec` 在容器里跑它们（两个容器只读挂载 DAB 目录，路径与宿主机相同）。装库由 `evals/dab.py` 在每次会话开始前做、结束后删（同一时间只装着一个数据集），用时记在 trace 的 `dab_load` 事件里；装失败记 `infra_error`，不起会话。DAB 的工具服务器只连已装好的库：imdb 的 1.6 GB dump 装得比 SDK 等 MCP 服务器启动的约 30 秒久（工单 23）。
 - 连接设置（`PG_*`、`MONGO_URI`、`PG_CLIENT` 和 `bin/` 的 PATH）写在服务器 `~/.config/data-agent/dab.env`（600，密码随机生成、不打印）；`start <name> -- dab ...` 会额外读它，并用 `--with-requirements evals/dab-requirements.txt` 跑。删了 `dab.env` 而保留 Postgres 数据卷会对不上密码，要连卷一起删。
 - 查询超时（工单 36）：DAB 路径上每条查询（`query_database`、`list_tables`）最多跑 150 秒，和网关同一个 `TIMEOUT_SECONDS`；超时后 agent 收到和网关一样的错误 `Query timed out after 150s`，同一个库的下一条查询照常执行。DAB 每次查询都新开连接，`evals/dab_server.py` 启动时把 DAB 各库模块里的驱动名换成我们的包装（不改 DAB clone）。各库的停止方式：Postgres 在连接参数 `options` 里加 `-c statement_timeout`（保留 DAB 自己的只读选项），由服务端取消；MongoDB 给客户端 `timeoutMS`，pymongo 把它作为每次操作的 `maxTimeMS` 发给服务端；SQLite 和 DuckDB 在本进程里跑，由计时器对本次查询开的连接调 `interrupt()`。`--query-timeout` 只给测试调小。
+- 数据库事实（工单 37）：Postgres、DuckDB 库上，`list_tables` 每张表多给 `rows_estimate`（取不到写 `"unknown"`，视图不给），另有 `describe_table(db_name, table)`、`explain_query(db_name, sql)`，超时报错附计划和索引，内容同下面"数据库事实工具"。所有配置都带，不受层开关控制。这些 SQL 都先过 `governed()`，再交给 DAB 的 `QueryDBTool.exec`；SQLite、MongoDB 行为不变，对它们调两个新工具返回可读错误。
+
+数据库事实工具（工单 37，ADR-0003 Update 2026-11-02）：数据库自己报出的事实属于基础工具层，所有配置（含 `baseline`、`no-context`）都有，只做 Postgres 和 DuckDB。取数代码在 `src/data_agent/db_facts.py`，所用 SQL 都是普通 SELECT，经只读网关执行。
+
+- `list_tables`：每张表带行数估计 `~N rows`。Postgres 取 `pg_stat_user_tables.n_live_tup`，为 0 时取 `pg_class.reltuples`，都没有写 `rows unknown`；DuckDB 取 `duckdb_tables().estimated_size`。视图不带。
+- `describe_table(table)`：列（类型、可空）、声明的主键和外键（数据库自己的定义文本）、索引定义、行数估计。Postgres 每列再带 `pg_stats` 的 `n_distinct`、`null_frac`；表在 `pg_stats` 里没有统计时写 `Column statistics: none in pg_stats for this table`，不现场扫表。DuckDB 的 `duckdb_indexes()` 只列 `CREATE INDEX` 建的索引，主键背后的索引以主键的形式出现。
+- `explain_query(sql)`：SQL 先过网关同一套检查（含行数上限），再在前面加 `EXPLAIN` 执行，不带 `ANALYZE`；在网关的只读连接和超时下跑，照原样返回数据库的计划文本。传入 `EXPLAIN ...` 本身会被网关拦下。
+- `query_database` 超时：报错是 `Query timed out after 150s`，空一行后是 `Plan (EXPLAIN, without running the query):` 和计划文本，再是 `Indexes on the tables this query reads (from pg_indexes):`（DuckDB 为 `duckdb_indexes()`），每张涉及的表一行或多行 `表: 索引定义`，没有索引写 `none`（表名用 sqlglot 从 SQL 里取，跳过 CTE 和表函数）。`EXPLAIN` 本身失败时只附 `EXPLAIN failed: 原因`。MCP 框架会在报错前加 `Error executing tool query_database: `。
+- `hydrate`（上下文层）在原有输出上，每列加 `, nullable` 或 `, not null`，末尾加 `Keys:`、`Indexes:` 两段，和 `describe_table` 共用取数代码；行数仍是精确的 `count(*)`。
 
 DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.txt python -m evals dab-score OUT --dab-root ../da-benchmarks/DataAgentBench [--baseline OUT_BASE] [--runs N] [--all-queries] [--strict] [--report PATH] [--seed 0] [--n-boot 10000]`。
 

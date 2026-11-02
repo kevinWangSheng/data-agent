@@ -28,6 +28,10 @@ class QueryFailed(Exception):
     """The statement passed the gateway but the database rejected it."""
 
 
+class QueryTimedOut(QueryFailed):
+    """The statement ran past the gateway's timeout and was stopped."""
+
+
 @dataclass(frozen=True)
 class QueryResult:
     columns: list[str]
@@ -39,6 +43,8 @@ class Gateway(Protocol):
 
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult: ...
 
+    def explain(self, sql: str) -> QueryResult: ...
+
 
 def check(sql: str, dialect: str, row_limit: int) -> str:
     """The statement as it may run: blocked ones raise, the rest get the row cap."""
@@ -49,6 +55,12 @@ def check(sql: str, dialect: str, row_limit: int) -> str:
     return inject_limit(sql, max_rows=limit, dialect=dialect)
 
 
+def explain_statement(sql: str, dialect: str) -> str:
+    """EXPLAIN (never ANALYZE: the query is planned, not run) of the statement as the gateway would
+    run it. The statement itself passes the gateway's check first; EXPLAIN is only put in front."""
+    return f"EXPLAIN {check(sql, dialect, MAX_ROWS)}"
+
+
 class DuckDBGateway:
     dialect = "duckdb"
 
@@ -57,7 +69,12 @@ class DuckDBGateway:
         self.timeout_seconds = timeout_seconds
 
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
-        governed = check(sql, self.dialect, row_limit)
+        return self._execute(check(sql, self.dialect, row_limit))
+
+    def explain(self, sql: str) -> QueryResult:
+        return self._execute(explain_statement(sql, self.dialect))
+
+    def _execute(self, governed: str) -> QueryResult:
         # A connection per statement: DuckDB lets one process hold the write lock, and holding a
         # read-only connection open would keep `dbt run` (the only write path) from writing.
         # External access off: a file or network reader the denylist misses still cannot run.
@@ -77,7 +94,7 @@ class DuckDBGateway:
             columns = [column[0] for column in cursor.description or []]
             return QueryResult(columns=columns, rows=cursor.fetchall())
         except duckdb.InterruptException as exc:
-            raise QueryFailed(f"Query timed out after {self.timeout_seconds}s") from exc
+            raise QueryTimedOut(f"Query timed out after {self.timeout_seconds}s") from exc
         except duckdb.Error as exc:
             raise QueryFailed(str(exc)) from exc
         finally:
@@ -104,6 +121,11 @@ class PostgresGateway:
         with self._lock:
             return self._run(governed)
 
+    def explain(self, sql: str) -> QueryResult:
+        statement = explain_statement(sql, self.dialect)
+        with self._lock:
+            return self._run(statement)
+
     def _run(self, governed: str) -> QueryResult:
         con = self._connect()
         try:
@@ -112,7 +134,7 @@ class PostgresGateway:
             columns = [column.name for column in cursor.description or []]
             return QueryResult(columns=columns, rows=cursor.fetchall())
         except psycopg.errors.QueryCanceled as exc:
-            raise QueryFailed(f"Query timed out after {self.timeout_seconds}s") from exc
+            raise QueryTimedOut(f"Query timed out after {self.timeout_seconds}s") from exc
         except psycopg.Error as exc:
             raise QueryFailed(str(exc).strip()) from exc
         finally:
