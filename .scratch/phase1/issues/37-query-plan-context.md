@@ -1,6 +1,6 @@
 # 37 — 查询工具把执行计划、索引等确定性信息返回给模型
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 36（done）
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-02
@@ -197,3 +197,12 @@ agent 写 SQL 前就能拿到数据库自己报出的事实，包括行数、类
   - 本机 DAB clone 没有 `db_utils`，真实 DAB 的 `QueryDBTool` 能不能执行 `EXPLAIN` 只在假 DAB 上验证过，要靠服务器上 imdb query1 那次真实运行核实（工单的停止条件之一）。
   - `evals/attribute.py` 只把 `list_tables` 的输出算作"见过的名字"，新工具输出里的名字只能靠它的猜测路径覆盖。`LISTED_TABLE` 正则对新格式仍然匹配。
 - 2026-11-02 主会话：da-review 在 Codex 容量满时三次中断，用 PR 上的 Codex GitHub app 审查代替（同工单 36）。
+- 2026-11-02 退回（第 1 轮）：Codex P2（PR #36，`src/data_agent/db_facts.py:283`）属实。
+  - `index_report` 处理不带 schema 的表名时，`not schema` 恒为真，所有同名表的索引都会被列出（`db_facts.py:287-291`）；查询实际只读搜索路径上第一个命中的那张。
+  - DuckDB 的索引定义不一定带 schema，模型分不清哪条索引属于哪张表，违反"只返回确定性事实"。
+  - 要求：
+    - 不带 schema 的表名按数据库自己的解析规则定到一张表：Postgres 用 `current_schemas(false)` 的顺序，DuckDB 用 `current_schema()` 或其搜索路径；
+    - 报告里写出解析后的 `schema.table`；
+    - 解析不到时照实写。
+  - 测试：两个 schema 下各有一张同名表，各带不同索引；不带 schema 查询超时，报告只含搜索路径命中那张的索引。要求修复前失败。
+  - 在原分支 `worktree-37-query-plan-context` 上修。
