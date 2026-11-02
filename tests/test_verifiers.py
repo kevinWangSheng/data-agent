@@ -247,6 +247,28 @@ def test_verifier_takes_the_column_contract_from_yml_then_the_task_then_needs_in
     assert "contract source" in next(line for line in template.splitlines() if "CHECK 2" in line)
 
 
+def test_verifier_reads_map_columns_by_contract_source_so_no_contract_stays_needs_info() -> None:
+    """Ticket 33, PR #34 review: reporting every UNMAPPED-INCLUDE column of a created model
+    holds only under a YML contract; with no contract at all those columns are no defect and
+    CHECK 2 is NEEDS_INFO, not FAIL."""
+    check_2 = " ".join(verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0].split())
+    mapping = check_2.split("Call `map_columns")[1]
+    yml, task, none = (
+        mapping.index(label)
+        for label in (
+            "- Contract from the YML:",
+            "- Contract from the task file:",
+            "- No contract:",
+        )
+    )
+    assert yml < task < none
+    assert "report every UNMAPPED-INCLUDE column" in mapping[yml:task]
+    assert mapping.count("report every UNMAPPED-INCLUDE") == 1
+    no_contract = mapping[none:]
+    assert "not defects" in no_contract
+    assert "CHECK 2 = NEEDS_INFO" in no_contract and "never FAIL" in no_contract
+
+
 def test_verifier_checks_every_row_removal_against_the_task_or_yml() -> None:
     """Ticket 32: each filter, inner join, row removal and changed source needs a basis in the
     task text or the YML, or the check fails quoting the SQL."""
