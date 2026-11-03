@@ -1,0 +1,14 @@
+[
+  "dbt-cart-abandonment-recovery",
+  "dbt-customer-churn-cohorts",
+  "dbt-daily-order-summary",
+  "dbt-fix-cac-payback-waterfall",
+  "dbt-fix-daily-cohorts",
+  "dbt-fix-refund-reconciliation",
+  "dbt-fraud-detection-model",
+  "dbt-price-elasticity",
+  "dbt-product-affinity",
+  "dbt-session-attribution",
+  "deferred-revenue-recognition",
+  "pos-operations"
+]

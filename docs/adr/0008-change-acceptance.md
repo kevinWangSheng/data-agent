@@ -55,3 +55,11 @@ dev-3（2026-10-21/22，开发集 30 题 × 3 次）里 `full` 57.8% 比 `baseli
     - benchmark 钉在 `a3278ad`。
   - `evals accept` 会因此判 `rerun-old`。这一次按本条人工豁免，并写进工单 Comments。之后的验收照常适用复用条件。
 - **开发集诊断消融不跑**（工单 31 wontfix）：每一层的贡献只在最终留出集 6 配置消融里测。
+
+## Update 2026-11-03：止损线提到 ¥420
+
+accept-1（第 13 项）过了改动验收三条，但 full 60/90 低于 dev-3 baseline 62/90（不显著）；工单 37 又改了基础工具层，需要在新 main 上重跑（plan §10 第 13b 项）。到这时开发集迭代累计实际花费约 ¥271，剩下的额度不够 full 与 baseline 各 30 题 × 3（约 ¥130）。
+
+- 人决定把上面"止损"里的 ¥300 提到 ¥420，账户已充值。其余止损条件不变。
+- 13b 一次跑 full 和 baseline：full 对 accept-1 full 按"改动过关"三条判断，回归集用 `evals/regression.json`（即 accept-1 的回归集）；full 对 baseline 是最终消融前检查。
+- full 低于 baseline 时不直接记为已知风险后冻结：一期验收要求 full 超过 baseline，由人决定再修一轮还是冻结。
