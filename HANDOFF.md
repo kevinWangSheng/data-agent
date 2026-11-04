@@ -23,6 +23,11 @@
 >   - 开发集迭代累计实际花费约 ¥271，离 ¥300 止损线约剩 ¥29，不够 13b 的一次重跑（约 ¥65）。
 > - 工单 37 合入（PR #36，de30bf3）：服务器 `t37-real` imdb query1 1/1，真实 DAB 能跑 EXPLAIN 和 `to_regclass`；计划显示 imdb 慢在相关 EXISTS 子查询逐行全表扫 `movie_keyword`，不是 `regexp_replace` 连接。agent 没主动调 `explain_query`。
 > - **人已决定（2026-11-03）**：止损线从 ¥300 提到 ¥420，已充值。跑第 13b 项：在当前 origin/main（含工单 37）上开发集 30 题 × 3，full 与 baseline 一起跑（`runs/accept-2`），尽量放在 DeepSeek 闲时；跑完用 `evals accept` 判 full 对 accept-1 full（ADR-0008 三条，回归集 `evals/regression.json`）和 full 对 baseline。full 高于 baseline 才建议冻结进第 15 项；持平或略低就用 `evals diverge` 读分歧题交人定；明显更低就停下。冻结由人决定。回归集已提交为 `evals/regression.json`。
+> - **13b `accept-2` 跑完（2026-11-04，commit 0b5597d，与 de30bf3 代码相同）**：full 56/90，baseline 62/90。实际价 $15.74（约 ¥115；115 个事件文件在闲时，67 个跨进高峰）。开发集迭代累计约 ¥386，离 ¥420 约剩 ¥34。
+>   - full 对 accept-1 full：`evals accept` 判 fail：总分 60→56，目标题 20/24→17/24；回归集 cart-abandonment、pos-operations 各 2/3，要补跑。
+>   - full 对 baseline：−6.7 分（区间 −16.7 到 +4.4，不显著），属于情况 b。baseline 两轮都是 62；full 三轮是 52、60、56。
+>   - 分歧题读完：`runs/accept-2/reading/summary.md`。full 输的四类原因：① `dictionary_search` 没有查询超时，挂满 1800s，后面常跟着 DuckDB 文件锁（只有 full 有这个工具，accept-2 有 5 个 trial 挂住、4 个输）；② 验证者看到了问题，却放行，或者主 agent 不理会它报的 FAIL；③ spec 把误读固化下来（division-by-zero 三次都一样）；④ 题面和评分器不一致（marketing-attribution 一直 0/3）。full 稳定赢的只有 test-orders-filter（Skill 规则）。
+>   - **等人决定**：修一轮还是冻结。没有自动冻结，也没有进第 15 项。
 > - ~~等人决定~~（已决定，见上）：编排会话建议把止损线提到约 ¥420，在合入 37 后的 main 上一起跑 full 和 baseline（各 30 × 3，约 ¥130），同时完成 13b 和 full ≥ baseline 检查；仍低于 baseline 就不再修，如实记录，交给留出集消融。不提线的话，跳过 13b，把 2 分差距记为已知风险。
 > - 余额：accept-1 开跑前 ¥123.92，跑后约 ¥59（未直接核实）。正式评测前要充值。
 >
