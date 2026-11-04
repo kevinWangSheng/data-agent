@@ -45,6 +45,11 @@ class Gateway(Protocol):
 
     def explain(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult: ...
 
+    def catalog_key(self) -> object | None:
+        """A value that changes whenever the database's catalog may have changed, for the catalog
+        cache; None when the gateway has no cheap way to tell and the cache must expire by age."""
+        ...
+
 
 def check(sql: str, dialect: str, row_limit: int) -> str:
     """The statement as it may run: blocked ones raise, the rest get the row cap."""
@@ -73,6 +78,13 @@ class DuckDBGateway:
 
     def explain(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
         return self._execute(explain_statement(sql, self.dialect, row_limit))
+
+    def catalog_key(self) -> object | None:
+        """(mtime_ns, size) of the database file and of its write-ahead log: a write by any
+        process (`dbt run`) changes one of them, so the catalog is re-read without a TTL."""
+        return tuple(
+            file_stamp(path) for path in (self.path, self.path.with_name(self.path.name + ".wal"))
+        )
 
     def _execute(self, governed: str) -> QueryResult:
         # A connection per statement: DuckDB lets one process hold the write lock, and holding a
@@ -126,6 +138,9 @@ class PostgresGateway:
         with self._lock:
             return self._run(statement)
 
+    def catalog_key(self) -> object | None:
+        return None  # No cheap change signal: the catalog cache expires by age instead.
+
     def _run(self, governed: str) -> QueryResult:
         con = self._connect()
         try:
@@ -157,6 +172,15 @@ class PostgresGateway:
         con.read_only = True
         self._con = con
         return con
+
+
+def file_stamp(path: Path) -> tuple[int, int] | None:
+    """(mtime_ns, size) of a file; None when there is no such file."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
 
 
 def reason(exc: psycopg.Error) -> str:

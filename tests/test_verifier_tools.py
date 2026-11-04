@@ -15,6 +15,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult, TextContent
 
 from data_agent import verifier_tools
+from data_agent.db_facts import load_catalog
 from data_agent.gateway import DuckDBGateway, QueryResult
 from data_agent.mcp_server import run_query
 from data_agent.verifier_tools import source_relations, yml_columns
@@ -248,8 +249,10 @@ def test_audit_reports_sampled_statistics_as_a_sample(
     def run(sql: str, row_limit: int) -> QueryResult:
         return run_query(gateway, sql, row_limit)
 
-    model = verifier_tools.resolve(verifier_tools.load_catalog(run), "m")
-    text = "\n".join(verifier_tools.audit(run, model, ["m"], sample_nulls=True))
+    model = verifier_tools.resolve(load_catalog(run), "m")
+    text = "\n".join(
+        verifier_tools.audit(run, lambda: load_catalog(run), model, ["m"], sample_nulls=True)
+    )
     assert "over a sample of the first 4 rows" in text
     assert "empty: 0 distinct, 4 nulls (100.0%)" in text
     assert "Grain key: id (10 distinct = row count, unique)" in text
@@ -396,8 +399,10 @@ def test_audit_finds_a_grain_key_past_the_fifth_column(tmp_path: Path) -> None:
     def run(sql: str, row_limit: int) -> QueryResult:
         return run_query(gateway, sql, row_limit)
 
-    model = verifier_tools.resolve(verifier_tools.load_catalog(run), "m")
-    text = "\n".join(verifier_tools.audit(run, model, ["m"], sample_nulls=True))
+    model = verifier_tools.resolve(load_catalog(run), "m")
+    text = "\n".join(
+        verifier_tools.audit(run, lambda: load_catalog(run), model, ["m"], sample_nulls=True)
+    )
     assert "Grain key: row_id (3 distinct = row count, unique)" in text
 
 
@@ -529,8 +534,10 @@ def test_audit_skips_distinct_counts_of_types_that_cannot_be_compared(tmp_path: 
         assert 'DISTINCT "payload"' not in sql
         return run_query(gateway, sql, row_limit)
 
-    model = verifier_tools.resolve(verifier_tools.load_catalog(run), "m")
-    text = "\n".join(verifier_tools.audit(run, model, ["m"], sample_nulls=True))
+    model = verifier_tools.resolve(load_catalog(run), "m")
+    text = "\n".join(
+        verifier_tools.audit(run, lambda: load_catalog(run), model, ["m"], sample_nulls=True)
+    )
     assert "payload: distinct not counted (JSON), 0 nulls" in text
     assert "Grain key: id" in text
 
@@ -553,8 +560,10 @@ def verify(db: Path, model: str, sources: list[str], sql: str | None) -> str:
     def run(statement: str, row_limit: int) -> QueryResult:
         return run_query(gateway, statement, row_limit)
 
-    table = verifier_tools.resolve(verifier_tools.load_catalog(run), model)
-    return "\n".join(verifier_tools.verify_values(run, table, sources, sql))
+    table = verifier_tools.resolve(load_catalog(run), model)
+    return "\n".join(
+        verifier_tools.verify_values(run, lambda: load_catalog(run), table, sources, sql)
+    )
 
 
 ORDERS_SQL = """

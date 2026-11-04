@@ -10,9 +10,14 @@ Keys come from `pg_get_constraintdef`; DuckDB reads its own `duckdb_tables()`,
 `duckdb_constraints()` and `duckdb_indexes()`. Every statement is a plain SELECT run through the
 gateway like any other.
 
-The catalog (`load_catalog`) and ref lookup (`find_table`) are shared with the context tools.
+The catalog (`load_catalog`) and ref lookup (`find_table`) are shared with the context tools and
+the verifier tools, which all read it through one `CatalogCache` per server process. The cache
+follows SignalPilot's schema cache (`gateway/connectors/schema_cache.py`, ideas only): it holds
+the rows already read and nothing else, so no database connection stays open between calls.
 """
 
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -23,6 +28,8 @@ from data_agent.gateway import MAX_ROWS, QueryResult
 
 # Runs one statement through the gateway; blocks and database errors raise ToolError.
 RunQuery = Callable[[str, int], QueryResult]
+
+CATALOG_TTL_SECONDS = 300.0  # SignalPilot schema_cache's default
 
 CATALOG_SQL = """
 SELECT c.table_schema, c.table_name, t.table_type, c.column_name, c.data_type
@@ -128,6 +135,10 @@ class Table:
         return f"{quote(self.schema)}.{quote(self.name)}"
 
 
+# The catalog as of now: the cache's `get`, or `load_catalog` bound to a `run` in tests.
+LoadCatalog = Callable[[], list[Table]]
+
+
 @dataclass
 class Column:
     name: str
@@ -171,6 +182,40 @@ def load_catalog(run: RunQuery) -> list[Table]:
         if len(rows) < MAX_ROWS:
             return list(tables.values())
         offset += MAX_ROWS
+
+
+class CatalogCache:
+    """The catalog read once and reused while the database is unchanged. A gateway whose
+    `catalog_key` reports a value re-reads only when that value changes (DuckDB: the file's
+    stamp); one that reports None re-reads after `ttl_seconds` (Postgres). The key is taken
+    before the read, so a write during the read still shows on the next call."""
+
+    def __init__(
+        self,
+        run: RunQuery,
+        key: Callable[[], object | None],
+        ttl_seconds: float = CATALOG_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.run = run
+        self.key = key
+        self.ttl_seconds = ttl_seconds
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._tables: list[Table] | None = None
+        self._key: object | None = None
+        self._read_at = 0.0
+
+    def get(self) -> list[Table]:
+        with self._lock:
+            key = self.key()
+            fresh = key is not None or self.clock() - self._read_at < self.ttl_seconds
+            if self._tables is not None and key == self._key and fresh:
+                return self._tables
+            read_at = self.clock()
+            tables = load_catalog(self.run)
+            self._tables, self._key, self._read_at = tables, key, read_at
+            return tables
 
 
 def find_table(
@@ -244,10 +289,12 @@ def key_lines(facts: TableFacts) -> list[str]:
     return lines
 
 
-def describe(run: RunQuery, dialect: str, ref: str) -> str:
+def describe(run: RunQuery, dialect: str, ref: str, catalog: LoadCatalog | None = None) -> str:
     """One table or view: row estimate, columns (type, nullable, Postgres statistics), declared
-    keys and indexes."""
-    table = find_table(load_catalog(run), ref, hint="use a name from list_tables")
+    keys and indexes. `catalog` is the server's cache; a caller without one (the DAB eval server,
+    which serves many databases through DAB's own connections) reads the catalog afresh."""
+    tables = catalog() if catalog else load_catalog(run)
+    table = find_table(tables, ref, hint="use a name from list_tables")
     facts = table_facts(run, dialect, table)
     head = [table.kind]
     if table.kind != "view":
