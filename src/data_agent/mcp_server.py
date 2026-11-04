@@ -219,10 +219,14 @@ def build_server(
             and needle in name.lower()
         ]
         if not lines:
-            filters = [f"schema {wanted_schema!r}" if wanted_schema else ""]
-            filters.append(f"name containing {needle!r}" if needle else "")
-            wanted = " and ".join(part for part in filters if part)
-            return f"No tables found with {wanted}" if wanted else "No tables"
+            filters = []
+            if wanted_schema:
+                filters.append(f"schema {wanted_schema!r}")
+            if needle:
+                filters.append(f"name containing {needle!r}")
+            if not filters:
+                return "No tables"
+            return f"No tables found with {' and '.join(filters)}"
         return render_table_listing(lines, max_tables, columns, LIST_TABLES_CHAR_BUDGET)
 
     @server.tool()

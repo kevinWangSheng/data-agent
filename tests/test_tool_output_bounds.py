@@ -28,7 +28,7 @@ async def call(db: Path, tool: str, arguments: dict[str, object]) -> CallToolRes
     return result
 
 
-def table_lines(text: str) -> list[str]:
+def listed(text: str) -> list[str]:
     return [line for line in text.splitlines() if " (" in line]
 
 
@@ -77,7 +77,7 @@ def long_named_tables(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 async def test_list_tables_shows_200_tables_by_default_with_a_footer(many_tables: Path) -> None:
     text = text_of(await call(many_tables, "list_tables", {}))
-    lines = table_lines(text)
+    lines = listed(text)
     assert len(lines) == 200
     assert lines[0].startswith("a.t000 (base table, ~0 rows): id, name")
     assert lines[-1].startswith("b.t099 ")
@@ -88,13 +88,13 @@ async def test_list_tables_shows_200_tables_by_default_with_a_footer(many_tables
 
 async def test_list_tables_max_tables_and_no_footer_when_all_shown(many_tables: Path) -> None:
     text = text_of(await call(many_tables, "list_tables", {"max_tables": 300}))
-    assert len(table_lines(text)) == 300
+    assert len(listed(text)) == 300
     assert "more tables not shown" not in text
 
 
 async def test_list_tables_schema_filter_ignores_case(many_tables: Path) -> None:
     text = text_of(await call(many_tables, "list_tables", {"schema": "B"}))
-    lines = table_lines(text)
+    lines = listed(text)
     assert len(lines) == 100
     assert all(line.startswith("b.") for line in lines)
     assert "more tables not shown" not in text
@@ -102,7 +102,7 @@ async def test_list_tables_schema_filter_ignores_case(many_tables: Path) -> None
 
 async def test_list_tables_schema_and_name_filters_combine(many_tables: Path) -> None:
     text = text_of(await call(many_tables, "list_tables", {"schema": "c", "name_contains": "T09"}))
-    assert [line.split(" ")[0] for line in table_lines(text)] == [f"c.t09{i}" for i in range(10)]
+    assert [line.split(" ")[0] for line in listed(text)] == [f"c.t09{i}" for i in range(10)]
 
 
 async def test_list_tables_without_columns_gives_a_column_count(many_tables: Path) -> None:
@@ -114,7 +114,7 @@ async def test_list_tables_without_columns_gives_a_column_count(many_tables: Pat
 async def test_list_tables_drops_columns_before_tables(wide_tables: Path) -> None:
     text = text_of(await call(wide_tables, "list_tables", {}))
     assert len(text) <= LIST_TABLES_CHAR_BUDGET
-    lines = table_lines(text)
+    lines = listed(text)
     assert len(lines) == 40, text
     assert all(line.endswith("rows, 10 cols)") for line in lines)
     assert "more tables not shown" not in text
@@ -125,7 +125,7 @@ async def test_list_tables_drops_tables_when_names_alone_exceed_the_budget(
 ) -> None:
     text = text_of(await call(long_named_tables, "list_tables", {"max_tables": 300}))
     assert len(text) <= LIST_TABLES_CHAR_BUDGET
-    shown = len(table_lines(text))
+    shown = len(listed(text))
     assert 0 < shown < 300
     assert text.splitlines()[-1] == (
         f"{300 - shown} more tables not shown; narrow with schema= or name_contains="
