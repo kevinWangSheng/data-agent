@@ -16,6 +16,11 @@ Branch: —
 - 接口由这张工单提出，人审时确认。约定如下：
   - 快照、4 个工具、报告解析、两个钩子，各自有一个**纯函数**入口，返回结构化结果（dataclass 或 dict）；MCP 和钩子只是很薄的一层包装。测试直接测纯函数，钩子测试用构造好的 hook 输入，不调模型。
   - 新代码放在 `src/data_agent/verifier_v2/` 包里（模块拆分由本工单提出）。测试只从这个包 import。
+- spec 2026-11-04 修订后新增的测试，必须包含：
+  - Stop 钩子按模型分别记录状态：先验证 A、B，B 报 FAIL；之后只重新验证 A 并通过，B 仍然拦截；
+  - 4 个开着验证器的配置（full、no-skill、no-context、full-old-skill）都只注册一个 `verifier`；
+  - `compare_by_key` 的相等规则：DECIMAL、浮点、其他类型、NULL，各一个测试；
+  - 集成测试：`updatedInput` 整体替换 `Agent` 的 `prompt`。这条标 `integration`，不进 `make check`，测试体照 `docs/research/2026-11-04-agent-updatedinput-spike.md` 写。
 - 夹具：
   - 一个小 dbt 项目，带"改动前"和"改动后"两个版本，覆盖 spec 列出的全部改动类型；
   - 一个小 DuckDB 文件，包含粒度键有 NULL、有重复、窗口排序不唯一的数据；

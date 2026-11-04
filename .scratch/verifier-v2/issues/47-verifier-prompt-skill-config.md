@@ -25,6 +25,7 @@ Branch: —
   - FAIL 处理只引用系统提示词，不写第二遍。
 - 删除 `agents/value-verifier.md`，更新 `NOTICE`。
 - baseline 和 no-verifiers 的行为不变。
+- full-old-skill 的冻结版 Skill（`skills-frozen/`）不改，派单以系统提示词为准。它里面过时的 value-verifier 说法记为已知的干扰因素，留给最终报告。
 
 ## Authority
 

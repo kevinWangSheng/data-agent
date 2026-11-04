@@ -23,10 +23,11 @@ accept-2 里验证层花费大、信号弱：
 - **只保留一个验证子 agent**，拿掉值验证器。模型只做两件事：对照题面判断改动；从题面挑粒度键、写独立的参考 SQL。`maxTurns` 为 50，撞到上限按 NEEDS_INFO 处理。
 - **harness 钩子**（只在启用了验证器的配置里挂）：
   - 第一次派单用模板改写 prompt，再次派单的附加内容加上"未经核实"的标题；
-  - Stop 钩子：改过模型却没验证过、报告之后又改过模型、还有 FAIL，这三种情况拦截，最多拦 2 次，NEEDS_INFO 不拦；
+  - Stop 钩子按模型分别记录状态：任一模型改过却没验证过、报告之后又改过、最近一次报告还有 FAIL，就拦截。最多拦 2 次，NEEDS_INFO 不拦；
   - SubagentStop 记录每次验证调用的轮数。
 - **FAIL 处理只写在一处**（系统提示词）：先复现再做最小改动，复现不出来就带上反证再派一次。
-- **报告格式**：每行一条 `CHECK n: STATUS — 理由`，供钩子和事件解析。
+- **报告格式**：按模型分节（`### <model>`），节里每项检查一行 `CHECK n: STATUS — 理由`，供钩子按模型解析。
+- **配置**：按 `verifiers` 开关决定，开着的配置（full、no-skill、no-context、full-old-skill）都用新验证层。full-old-skill 的冻结版 Skill 不改，里面过时的 value-verifier 说法记为已知的干扰因素。
 
 ## Considered Options
 

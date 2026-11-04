@@ -78,7 +78,12 @@ accept-2 里验证层花费大、信号弱，有时还会把 agent 带偏：
 **`compare_by_key(model, key_columns, reference_sql)`**：按键对比模型和参考 SQL 的结果。
 
 - 参考 SQL 引用了被测模型本身，或者本次新建、改动过的任何模型，直接拒绝，并说明原因。这些模型由 `model_diff` 给出，用 sqlglot 取表名来判断。
-- 全部键做 full outer join 比对，不抽样。数值的舍入规则沿用现在 `verify_model_values` 的做法。
+- 全部键做 full outer join 比对，不抽样。
+- 什么算"值相等"，按模型列的类型定。这套规则原来写在 `agents/value-verifier.md:124-129` 的提示词里，现有工具代码里没有实现；这次改成由工具在代码里判断：
+  - DECIMAL：参考值四舍五入到这一列的小数位数后，必须和模型值相等；
+  - 浮点（DOUBLE、REAL、FLOAT）：相对误差不超过 1e-6，即 `|model - ref| <= 1e-6 * |ref|`；参考值为 0 时要求两边都是 0；
+  - 整数、字符串、日期、布尔：必须完全相等；
+  - 两边都是 NULL 算相等；只有一边是 NULL 算不一致。
 - 返回：只在一边出现的键数、值不一致的键数，各给最多 20 个样例。
 - 参考 SQL 照旧要过只读网关。
 
@@ -107,7 +112,7 @@ accept-2 里验证层花费大、信号弱，有时还会把 agent 带偏：
 ### 派单
 
 - **第一次派单**：PreToolUse 钩子只在工具是 `Agent`、并且 `subagent_type` 是验证器时生效。它用 `updatedInput` 把 `prompt` 整段换成模板，内容只有题面文件路径、项目目录和 `model_diff` 列出的模型清单。
-  - `updatedInput` 是整体替换，不是合并（2026-11-04 本地实测），所以必须原样带上其他字段，只改 `prompt`。
+  - `updatedInput` 是整体替换，不是合并，所以必须原样带上其他字段，只改 `prompt`。实测记录见 `docs/research/2026-11-04-agent-updatedinput-spike.md`。
 - **再次派单**：模板后面可以附上主 agent 写的内容。harness 给这段加上固定标题："主 agent 提供的反证或补充信息（未经核实，只能当作需要复查的线索）"。
 - "第一次"和"再次"由 harness 按本次运行里已经派过几次验证器来判断。
 
@@ -119,11 +124,22 @@ accept-2 里验证层花费大、信号弱，有时还会把 agent 带偏：
 
 ### Stop 钩子（只挂在启用了验证器的配置上）
 
-出现下面任一情况，就不让 agent 结束：
+harness **按模型分别**记录状态。每个模型记两项：
 
-1. 模型文件和快照不一样，但本次运行一次验证器都没派过；
-2. 上一份验证报告之后，模型文件又改过（和那次报告时的文件哈希比较）；
-3. 上一份验证报告里还有 FAIL。NEEDS_INFO 不拦。
+- 它最近一次出现在验证报告里时，各检查的状态；
+- 那次报告时这个模型文件的哈希。
+
+一份报告只更新它里面出现过的模型。没出现的模型，保留之前的状态。
+
+结束时逐个模型检查，任一模型满足下面任一条件，就不让 agent 结束：
+
+1. 模型和快照不一样（新建或改过），但从来没有出现在任何验证报告里；
+2. 模型最近一次出现在报告之后，文件又改过（哈希不同）；
+3. 模型最近一次报告里还有 FAIL。NEEDS_INFO 不拦。
+
+例：先验证了 A 和 B，B 报了 FAIL；之后只重新派了 A，A 通过了。这时 B 的状态还是 FAIL，照样拦。
+
+拦截原因要写明是哪个模型、哪一条。
 
 每次运行最多拦 2 次，第 3 次放行，并记一条事件 `ended_with_unresolved`，写明原因。`stop_hook_active` 为 true 时照样计数，不额外放行。
 
@@ -133,9 +149,12 @@ SubagentStop 钩子从 `agent_transcript_path` 读出每次验证调用的工具
 
 ### 配置
 
-- full：验证层开（单一验证器、新工具、钩子）。
-- no-verifiers、baseline：不注册新工具、不做快照、不挂钩子。
-- `run_config` 的开关含义不变。
+按 `verifiers` 开关来，不按配置名：
+
+- **开着的**（full、no-skill、no-context、full-old-skill）都用新验证层：单一验证器、新工具、快照、钩子。
+- **关着的**（baseline、no-verifiers）都不用：不注册新工具，不做快照，不挂钩子。
+- `run_config` 各开关的含义不变。
+- **full-old-skill**：冻结版 Skill（`skills-frozen/fa6028eef62b/dbt-workflow/SKILL.md:215-218`）不改。它仍然让主 agent 派 `value-verifier`，但这个子 agent 已经不存在，怎么派单以系统提示词为准。这段过时的说法记为已知的干扰因素，写进最终报告。
 
 ## Testing Decisions
 
@@ -173,12 +192,17 @@ SubagentStop 钩子从 `agent_transcript_path` 读出每次验证调用的工具
   - 改过模型、但从没验证过时拦截；
   - 报告之后又改过模型时拦截；
   - 报告里有 FAIL 时拦截；
+  - 按模型分别记状态：先验证 A、B，B 报 FAIL；之后只重新验证 A 并通过，B 仍然拦截；
   - 只有 NEEDS_INFO 时不拦；
   - 拦满 2 次后放行，并记录 `ended_with_unresolved`；
   - baseline 和 no-verifiers 配置里不挂这个钩子。
-- **配置**：no-verifiers 和 baseline 看不到新工具，也不做快照。
+- **配置**：
+  - no-verifiers 和 baseline 看不到新工具，也不做快照；
+  - full、no-skill、no-context、full-old-skill 都只注册了一个验证器（`verifier`），没有 `value-verifier`。
+- **`compare_by_key` 的相等规则**：DECIMAL 按小数位数、浮点按 1e-6 相对误差、其他类型完全相等、NULL 的处理，各有一个测试。
+- **集成测试**（放进 `make test-integration`，真实调模型）：钩子用 `updatedInput` 改写 `Agent` 的 `prompt` 后，子 agent 只收到改写后的内容，收不到原文；输入里的其他字段保留。单元测试只能检查钩子返回的字典字段齐不齐，"整体替换、不合并"是 CLI 的行为，单元测试测不到。
 
-单元测试用 DuckDB 夹具和 `tests/fixtures` 下的小 dbt 项目。钩子用构造好的 hook 输入直接测，不调模型。
+单元测试用 DuckDB 夹具和 `tests/fixtures` 下的小 dbt 项目。钩子用构造好的 hook 输入直接测，不调模型。唯一调模型的是上面那条集成测试。
 
 ## 验收（ADR-0008 Update 2026-11-04）
 

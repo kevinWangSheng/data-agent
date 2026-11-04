@@ -16,7 +16,9 @@ Branch: —
 - 快照范围：`dbt_project.yml`；`models/macros/snapshots/tests` 下的 `.sql` 和 `.yml`；`seeds/` 单个文件 ≤5 MB。不含 `dbt_packages/target/logs`。放在 workspace 外的运行临时目录。
 - `model_diff` 的解析方法：替换 `ref`/`source`，把 `config`/`var`/宏调用换成占位符，再用 sqlglot 解析；解析不了就退回文本 diff 并标"未解析"。
 - 列契约只认题面和快照里原有的 YML；窗口函数只查改动过的；粒度检查的豁免只认题面和原有 YML；`compare_by_key` 拒绝引用被测模型或其他改动过的模型，用 full outer join 覆盖全部键。
+- `compare_by_key` 的相等规则写进代码，照 spec：DECIMAL 按这一列的小数位数四舍五入后相等；浮点相对误差 ≤1e-6；其他类型完全相等；两边都是 NULL 算相等。现有工具里没有可以沿用的实现，规则原来写在 `agents/value-verifier.md:124-129` 的提示词里。
 - 所有 SQL 走只读网关；表目录用工单 39 的缓存。
+- 按 `verifiers` 开关注册，不按配置名：full、no-skill、no-context、full-old-skill 都注册新工具。
 
 ## Authority
 
