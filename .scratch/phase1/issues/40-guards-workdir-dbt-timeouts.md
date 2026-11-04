@@ -1,6 +1,6 @@
 # 40 — 守卫与工作目录：允许进项目目录跑 dbt、打印 DB_TYPE、Grep 不被样例 .env 误拦，dbt 解析不再被 60 秒掐断
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 40-guards-workdir-dbt-timeouts)
@@ -31,7 +31,7 @@ agent 能按题目要求打印 `DB_TYPE`；能在 dbt 项目目录里跑 dbt，�
 
 ## Authority
 
-- May edit：`src/data_agent/command_guard.py`、`src/data_agent/workspace_guard.py`、`src/data_agent/agent.py`（只改 SDK `env` 和给守卫传白名单）、`skills/dbt-workflow/validate_project.py`、`NOTICE`、`tests/`（`tests/acceptance/` 除外）
+- May edit：`src/data_agent/command_guard.py`、`src/data_agent/workspace_guard.py`、`src/data_agent/agent.py`（只改 SDK `env` 和给守卫传白名单；2026-11-04 退回后另允许：在 `run()` 校验 `--postgres-env` 的变量名）、`skills/dbt-workflow/validate_project.py`、`NOTICE`、`tests/`（`tests/acceptance/` 除外）
 - Must not edit：`skills/*/SKILL.md`、`src/data_agent/mcp_server.py`、`src/data_agent/configs/`、`evals/`、`tests/acceptance/`、其他工单的文件、`.claude/`、`CODING_STANDARDS.md`
 - Server access：none（服务器上的真实运行由主会话做）
 - Spend cap：$0.3（单题真实运行）
@@ -117,3 +117,5 @@ ripgrep semantics were checked against the local `rg` (`rg --hidden -g '*.env' -
 **Review 3, da-review on the final diff.** Same `.gitignore` point, same answer. New P2: a Postgres run started with `--postgres-env DB_TYPE` would let `echo $DB_TYPE` print the connection URL, and a database env could overwrite the Bash timeout variables. Not fixed: it needs the operator to pick that exact name, the fix is a validation in `run()` outside the "SDK env and allow-list only" authority on `agent.py`, and both fix rounds are used. Suggest a follow-up line rejecting a `--postgres-env` name in `PRINTABLE_VARIABLES` or starting with `BASH_`/`CLAUDE_`.
 
 **Known limitations for the main session.** `skills/dbt-workflow/SKILL.md:373` still says "default 60" for validate's timeout, and the dbt system prompt in `agent.py:130` still says to pass `--project-dir`; both are outside this ticket's Authority. The denial message teaches the `cd` form, so the agent will learn it on first refusal.
+- 2026-11-04 主会话：PR #41 CI 绿。Codex app 一条 P1，核对属实，**退回**：
+  - 退回：`run()`（`agent.py:817-821`）把 `--postgres-env` 指定的变量原样放进 SDK env；若操作者传 `--postgres-env DB_TYPE`，`PRINTABLE_VARIABLES` 会让 `echo $DB_TYPE` 把带密码的 Postgres URL 打给模型。这是工单会话在 Comments 里自己也指出的那条。修法：在 `run()` 里加一条校验，`--postgres-env` 的名字在 `PRINTABLE_VARIABLES` 里、或以 `BASH_`/`CLAUDE_` 开头时抛 `ConfigError`（后者防数据库 env 覆盖本工单设的 Bash 超时和 cwd 变量），配一个修复前会失败的测试。Authority 已为此放开一行。在原分支 `worktree-40-guards-workdir-dbt-timeouts` 上接着修，修完提交，重新跑两道审查后把 Comments/Ledger 写进最终回复。
