@@ -103,3 +103,20 @@ def test_installed_wheel_loads_the_verifier_agents(tmp_path: Path) -> None:
     proc = run_installed(tmp_path, site, probe)
     assert proc.returncode == 0, proc.stderr
     assert Path(proc.stdout.strip()).is_relative_to(site)
+
+
+def test_runtime_requirements_include_pytz() -> None:
+    """DuckDB's Python client needs `pytz` to hand back a TIMESTAMPTZ value. Locally it rides in
+    on the dev group (dbt), so only the no-dev export Harbor installs from shows it missing."""
+    uv = shutil.which("uv")
+    assert uv is not None
+    proc = subprocess.run(
+        [uv, "export", "--frozen", "--no-dev", "--no-emit-project"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    names = {line.split("==")[0].strip() for line in proc.stdout.splitlines() if "==" in line}
+    assert "pytz" in names

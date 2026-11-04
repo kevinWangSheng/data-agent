@@ -632,6 +632,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "mcp" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "pytz" },
     { name = "sqlglot" },
 ]
 
@@ -654,6 +655,7 @@ requires-dist = [
     { name = "duckdb", specifier = "==1.2.2" },
     { name = "mcp", specifier = ">=2.2,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "pytz", specifier = ">=2025.2" },
     { name = "sqlglot", specifier = "==30.8.0" },
 ]
 
