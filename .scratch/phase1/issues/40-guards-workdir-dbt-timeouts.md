@@ -1,6 +1,6 @@
 # 40 — 守卫与工作目录：允许进项目目录跑 dbt、打印 DB_TYPE、Grep 不被样例 .env 误拦，dbt 解析不再被 60 秒掐断
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 40-guards-workdir-dbt-timeouts)
@@ -78,7 +78,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 2
 - Review rounds: 4 修复轮（首轮 2 + 退回轮 2）；6 次审查
 - Model spend: $0 (unit tests and local runs only; data-agent model calls only, read from run event files)
-- Outcome: in-review，branch `worktree-40-guards-workdir-dbt-timeouts`（b482143 之上新增 88429c2、48983dc、3a8fa22）；服务器真实运行待主会话
+- Outcome: done（PR #41）；服务器 dbt-fix-daily-cohorts full 1/1，DB_TYPE 可打印、validate 38 s 通过；agent 仍用 --project-dir（系统提示词待改）
 - Human review minutes: —
 
 ## Comments
@@ -148,3 +148,4 @@ Grep {glob: '*.sql'} / {glob: '!*.env'} / {type: sql} -> allow
 **Review 3, da-review on the final diff (3a8fa22), report only, both fix rounds used.** P2: `--postgres-env` set to `DATA_AGENT_MODEL`, `DATA_AGENT_BASE_URL`, or `PATH` still passes. True, but these break the run loudly (wrong model name or no subprocess) rather than leak the URL, and need the operator to choose that name. Follow-up candidate: also reject `DATA_AGENT_*` and `PATH`. P2: `_credentials_below` walks the whole Grep path on every call without early exit. True; the previous `_holds_credentials` also walked but stopped at the first hit. Benchmark workspaces are small and no timeout was seen in tests. Follow-up candidate if large workspaces appear: cache per guard instance.
 
 **Known limitations carried over.** `skills/dbt-workflow/SKILL.md:373` still says validate's default is 60; the dbt system prompt still says to pass `--project-dir`. Both outside Authority.
+- 2026-11-04 主会话：服务器真实运行 `t40-real`（commit 3a8fa22；`ablate --split dev --config full --task dbt-fix-daily-cohorts --trials 1 --budget 2`）：reward 1（1/1），54 轮，cost_usd $0.0833；连冒烟实际价 $0.0971（闲时）。轨迹（`runs/t40-real/jobs/full/dbt-fix-daily-cohorts__dyUWt4t/agent/events/`）：`echo $DB_TYPE` 放行，输出 `duckdb`；validate 调用 38.4 s，报告 `Status: PASS`、`Parse time: 38240ms`（accept-2 同题 trial 9FNRgGg 首次 60 s 超时）；守卫共拦 4 次（`echo "DB_TYPE=$DB_TYPE"; echo ...; ls` 多命令、Bash 里用 python 读 tool-results 文件各 1 次等）。**没有用到 `cd … && dbt`**：agent 用 `dbt run --project-dir dbt_models_duckdb --profiles-dir dbt_models_duckdb`，并 Edit 了 `/app/dbt_models_duckdb/profiles.yml`。原因是 `agent.py:130` 的 dbt 系统提示词仍教 `--project-dir`、`SKILL.md:373` 仍写 validate 默认 60 s，都在本工单 Authority 之外（工单会话已列为已知限制）。建议对齐会话决定是否开一张小工单改这两处。PR #41 在 3a8fa22 上 CI 绿、Codex app 无新意见，squash 合入。
