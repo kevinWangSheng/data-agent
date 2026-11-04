@@ -1,0 +1,13 @@
+name: v2shop
+version: "1.0.0"
+config-version: 2
+profile: v2shop
+
+model-paths: ["models"]
+
+models:
+  v2shop:
+    +materialized: table
+    marts:
+      daily_sales:
+        +materialized: table
