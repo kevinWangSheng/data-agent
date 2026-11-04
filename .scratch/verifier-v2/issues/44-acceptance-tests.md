@@ -153,3 +153,6 @@ All checks passed! / 186 files already formatted / 0 errors, 0 warnings, 0 notes
 
 - PR #40 已开，CI 和 Codex app 意见待看。**按 plan 第 86 行，这个 PR 由人审验收测试后才合入**，主会话不合。
 - 上面"需要人看的决定"第 6 条（`seam_support.VERIFIER_TOOLS` 断言 on 配置含 `verify_model_values`，45 拿掉该工具时会红）要在派 45 前定：扩 45 的 Authority 一行，或主会话改 `seam_support`。
+- 2026-11-04 主会话：PR #40 CI 绿。Codex app 第一次审查 failed，评论 `@codex review` 后完成，两条 P2，都核对过，不退回：
+  1. `test_verifier_v2.py:205` 快照测试没覆盖"seed 超过 5 MB 只记文件名和哈希"（spec Implementation Decisions 第 42 行）。属实但不在「Testing Decisions」里，工单要求只写 Testing Decisions 的条目；要不要补一条，人审 PR 时定。
+  2. `test_verifier_v2.py:475` 报告解析没有"缩进的 CHECK 行不算"的负例（spec 第 109 行"收紧成行首匹配"）。同上，不在 Testing Decisions 里，交人审时定。
