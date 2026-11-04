@@ -69,7 +69,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
 
-from data_agent.context_tools import RunQuery, Table, is_text, literal, load_catalog, quote
+from data_agent.context_tools import LoadCatalog, RunQuery, Table, is_text, literal, quote
 
 SKIP_DIRS = frozenset({".claude", "dbt_packages", "target", "__pycache__", "logs"})
 BINARY_TYPES = frozenset({"BLOB", "BYTEA", "BINARY", "VARBINARY", "IMAGE"})
@@ -531,12 +531,17 @@ def upstream_columns(
 
 
 def map_model(
-    run: RunQuery, project: Path, model_name: str, sql_path: Path, exclude: set[str]
+    run: RunQuery,
+    load: LoadCatalog,
+    project: Path,
+    model_name: str,
+    sql_path: Path,
+    exclude: set[str],
 ) -> list[str]:
     sql = read_text(sql_path)
     contract = yml_columns(project, model_name)
     mapped = {column.lower() for column in contract}
-    catalog = load_catalog(run)
+    catalog = load()
     relations = dbt_relations(project)
     upstreams: list[tuple[str, list[Table], str]] = []  # (label, catalog hits, name)
     for ref in sorted(set(REF_RE.findall(sql))):
@@ -602,8 +607,10 @@ def ratio_note(model_rows: int, source_rows: int) -> str:
     return f"ratio {ratio:.2f}x  {note}"
 
 
-def audit(run: RunQuery, model: Table, sources: list[str], sample_nulls: bool) -> list[str]:
-    catalog = load_catalog(run)
+def audit(
+    run: RunQuery, load: LoadCatalog, model: Table, sources: list[str], sample_nulls: bool
+) -> list[str]:
+    catalog = load()
     model_rows = row_count(run, model)
     lines = [f"Source audit for model '{model.ref}' ({model_rows} rows):", "", "Sources:"]
     for name in sources[:MAX_SOURCES]:
@@ -1177,13 +1184,14 @@ def measure(
 
 def verify_values(
     run: RunQuery,
+    load: LoadCatalog,
     model: Table,
     sources: list[str],
     sql: str | None = None,
     relations: Relations | None = None,
     dialect: str = DIALECT,
 ) -> list[str]:
-    catalog = load_catalog(run)
+    catalog = load()
     roles, note = column_roles(model, sql, catalog, relations, dialect)
     metrics = roles.metrics
     if not metrics:
@@ -1362,10 +1370,11 @@ def same_type(declared: str, actual: str, dialect: str = DIALECT) -> bool:
 
 
 def register_verifier_tools(
-    server: MCPServer, run: RunQuery, workspace: Path | None, dialect: str
+    server: MCPServer, run: RunQuery, load: LoadCatalog, workspace: Path | None, dialect: str
 ) -> None:
     """Add the verification tools to `server`; called only when the run config turns the verifier
-    layer on. With a `workspace`, map_columns reads only dbt projects inside it. `dialect` is the
+    layer on. `load` is the server's cached catalog, shared with the base and context tools.
+    With a `workspace`, map_columns reads only dbt projects inside it. `dialect` is the
     gateway's: model SQL and declared types are read in it, and rewritten counts written in it."""
     root = workspace.resolve() if workspace else None
 
@@ -1391,7 +1400,7 @@ def register_verifier_tools(
         if sql_path is None:
             raise ToolError(f"Error: no SQL file for model {model_name!r} in {project_dir!r}")
         excluded = {name.lower() for name in split_names(exclude)}
-        return "\n".join(map_model(run, project, model_name, sql_path, excluded))
+        return "\n".join(map_model(run, load, project, model_name, sql_path, excluded))
 
     @server.tool()
     def check_model_schema(model_name: str, yml_columns: str) -> str:
@@ -1406,7 +1415,7 @@ def register_verifier_tools(
             raise ToolError(
                 "Error: yml_columns is empty; pass the YML column names, comma-separated"
             )
-        model = resolve(load_catalog(run), model_name)
+        model = resolve(load(), model_name)
         actual_types = {column.lower(): data_type for column, data_type in model.columns}
         wrong_types = [
             f"{name} (expected {data_type}, actual {actual_types[name.lower()]})"
@@ -1447,8 +1456,8 @@ def register_verifier_tools(
         sources = split_names(source_tables)
         if not sources:
             raise ToolError("Error: source_tables is empty; name at least one upstream table")
-        model = resolve(load_catalog(run), model_name)
-        return "\n".join(audit(run, model, sources, sample_nulls))
+        model = resolve(load(), model_name)
+        return "\n".join(audit(run, load, model, sources, sample_nulls))
 
     @server.tool()
     def verify_model_values(model_name: str, source_tables: str = "", project_dir: str = "") -> str:
@@ -1469,7 +1478,7 @@ def register_verifier_tools(
         (n_*, num_*, count_*, *_count) are compared, exactly, with COUNT(*). Sums and averages
         get no verdict.
         """
-        model = resolve(load_catalog(run), model_name)
+        model = resolve(load(), model_name)
         sql = None
         relations = None
         if project_dir:
@@ -1480,4 +1489,4 @@ def register_verifier_tools(
             path = next((path for path in paths if path), None)
             sql = read_text(path) if path else None
         sources = split_names(source_tables)
-        return "\n".join(verify_values(run, model, sources, sql, relations, dialect))
+        return "\n".join(verify_values(run, load, model, sources, sql, relations, dialect))

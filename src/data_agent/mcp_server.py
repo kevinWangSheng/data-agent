@@ -7,7 +7,14 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.context_tools import register_context_tools
-from data_agent.db_facts import describe, plan_text, row_estimates, rows_label, timeout_report
+from data_agent.db_facts import (
+    CatalogCache,
+    describe,
+    plan_text,
+    row_estimates,
+    rows_label,
+    timeout_report,
+)
 from data_agent.gateway import (
     MAX_ROWS,
     Gateway,
@@ -84,6 +91,8 @@ def build_server(
     bounds the files a tool may read (map_columns)."""
     server = MCPServer("data-agent")
     run = partial(run_query, gateway)
+    # One catalog per server process, shared by every tool that looks a table up.
+    catalog = CatalogCache(run, gateway.catalog_key).get
 
     @server.tool()
     def query_database(sql: str, row_limit: int = 1000) -> str:
@@ -132,7 +141,7 @@ def build_server(
         says so. DuckDB lists only indexes made with CREATE INDEX: the index behind a primary key
         shows as the key.
         """
-        return describe(run, gateway.dialect, table)
+        return describe(run, gateway.dialect, table, catalog)
 
     @server.tool()
     def explain_query(sql: str) -> str:
@@ -146,7 +155,7 @@ def build_server(
         return run_explain(gateway, sql)
 
     if config.context:
-        register_context_tools(server, run, gateway.dialect)
+        register_context_tools(server, run, catalog, gateway.dialect)
     if config.verifiers and verifier_tools:
-        register_verifier_tools(server, partial(run_query, gateway), workspace, gateway.dialect)
+        register_verifier_tools(server, run, catalog, workspace, gateway.dialect)
     return server

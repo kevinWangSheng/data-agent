@@ -12,7 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 from psycopg.conninfo import make_conninfo
 
-from data_agent.db_facts import RunQuery, index_report
+from data_agent.db_facts import CatalogCache, RunQuery, index_report
 from data_agent.gateway import (
     DuckDBGateway,
     Gateway,
@@ -502,3 +502,26 @@ def test_postgres_index_report_resolves_names_as_postgres_does(pg_url: str) -> N
         "  facts37.orders: CREATE UNIQUE INDEX orders_pkey ON facts37.orders USING btree (id)",
         "  facts37.Orders: no table or view by this name",
     ]
+
+
+@pytest.mark.integration
+def test_postgres_catalog_is_kept_for_the_ttl(pg_url: str) -> None:
+    """Postgres has no file to stamp, so the catalog is reread only after the TTL (ticket 39)."""
+    gateway = PostgresGateway(pg_url)
+    reads = 0
+
+    def run(sql: str, row_limit: int) -> QueryResult:
+        nonlocal reads
+        reads += "JOIN information_schema.tables AS t" in sql
+        return gateway.query(sql, row_limit)
+
+    now = [0.0]
+    cache = CatalogCache(run, gateway.catalog_key, ttl_seconds=300, clock=lambda: now[0])
+    first = cache.get()
+    assert any(table.ref == "facts37.orders" for table in first)
+    now[0] = 299
+    assert cache.get() is first
+    assert reads == 1
+    now[0] = 300
+    assert cache.get() is not first
+    assert reads == 2

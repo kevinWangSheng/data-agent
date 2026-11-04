@@ -13,13 +13,13 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.db_facts import (
+    LoadCatalog,
     RunQuery,
     Table,
     column_line,
     find_table,
     key_lines,
     literal,
-    load_catalog,
     quote,
     table_facts,
 )
@@ -172,10 +172,12 @@ def search_values(run: RunQuery, table: Table, keyword: str) -> list[str]:
     return lines
 
 
-def register_context_tools(server: MCPServer, run: RunQuery, dialect: str) -> None:
+def register_context_tools(
+    server: MCPServer, run: RunQuery, catalog: LoadCatalog, dialect: str
+) -> None:
     """Add the context-strategy tools to `server`; called only when the run config turns the
-    context layer on. `dialect` is the gateway's, for the catalog reads hydrate shares with
-    describe_table."""
+    context layer on. `catalog` is the server's cached catalog, shared with describe_table and
+    the verifier tools; `dialect` is the gateway's, for the table facts hydrate reads."""
 
     @server.tool()
     def discover(query: str, limit: int = 10) -> dict[str, list[dict[str, Any]]]:
@@ -188,7 +190,7 @@ def register_context_tools(server: MCPServer, run: RunQuery, dialect: str) -> No
         terms = terms_of(query)
         if not terms:
             raise ToolError("Error: query has no words to search for")
-        scored = [(*score(table, terms), table) for table in load_catalog(run)]
+        scored = [(*score(table, terms), table) for table in catalog()]
         ranked = sorted(
             (item for item in scored if item[0] > 0), key=lambda item: (-item[0], item[2].ref)
         )
@@ -204,14 +206,14 @@ def register_context_tools(server: MCPServer, run: RunQuery, dialect: str) -> No
         """Read one table or view in full: exact row count, every column with its type and
         whether it may be null, join candidates found from `<x>_id` columns, then the declared
         keys and the indexes. `ref` is a ref from discover (schema.table) or a bare table name."""
-        catalog = load_catalog(run)
-        table = find_table(catalog, ref)
+        tables = catalog()
+        table = find_table(tables, ref)
         count = run(f"SELECT count(*) FROM {table.sql_name}", 1).rows[0][0]
         facts = table_facts(run, dialect, table)
         lines = [f"{table.ref} ({table.kind}, {count} rows, {len(table.columns)} columns)"]
         lines.extend(column_line(column) for column in facts.columns)
         lines.append("Join candidates (by _id column name; check the key values before joining):")
-        lines.extend(f"  {line}" for line in join_candidates(catalog, table) or ["none found"])
+        lines.extend(f"  {line}" for line in join_candidates(tables, table) or ["none found"])
         lines.extend(key_lines(facts))
         return "\n".join(lines)
 
@@ -227,7 +229,7 @@ def register_context_tools(server: MCPServer, run: RunQuery, dialect: str) -> No
         if len(keyword) > KEYWORD_CHARS:
             raise ToolError(f"Error: keyword is longer than {KEYWORD_CHARS} characters")
         lines: list[str] = []
-        for table in load_catalog(run):
+        for table in catalog():
             lines.extend(search_values(run, table, keyword))
             if len(lines) > COLUMNS_SHOWN:
                 lines = lines[:COLUMNS_SHOWN]
