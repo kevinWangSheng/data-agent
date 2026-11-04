@@ -464,3 +464,21 @@ def test_scan_prints_a_small_project_whole(tmp_path: Path) -> None:
         "DB HINTS: use list_tables and query_database to check lookup joins, staging-vs-raw gaps, "
         "and parent-child driving tables.",
     ]
+
+
+def test_scan_names_the_step_1_sections_the_summary_had_to_cut(tmp_path: Path) -> None:
+    """The five Step 1 sections are meant to come whole; when they alone overflow the summary,
+    the summary says which were cut instead of trailing off silently."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    models = "".join(f"  - name: planned_model_{i:04d}\n" for i in range(300))
+    (project / "models" / "planned.yml").write_text(f"version: 2\nmodels:\n{models}")
+    output = scan(project)
+    report_path = project / ".data-agent" / "scan" / "dbt_shop.md"
+    assert len(output) <= 20_000, len(output)
+    assert output.splitlines()[-1] == f"Full report: {report_path}"
+    assert report_path.read_text().count("planned_model_") >= 300
+    warning = [line for line in output.splitlines() if line.startswith("WARNING: the Step 1")]
+    assert len(warning) == 1, output[-2000:]
+    assert "MODELS TO BUILD, DEPENDENCIES, REQUIRED COLUMNS" in warning[0]
+    assert "STUBS TO REWRITE" not in warning[0]

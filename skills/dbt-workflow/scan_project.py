@@ -452,7 +452,8 @@ def split_sections(report: str) -> list[list[str]]:
 def summary(report: str, path: Path) -> str:
     """The report within SUMMARY_CHAR_BUDGET characters, ending with the report's path. A report
     that fits is printed whole. Otherwise the PRIORITY_SECTIONS come first, then the other sections
-    in order, cut at a whole line with a note of how many lines the report file still holds."""
+    in order, cut at a whole line with a note of how many lines the report file still holds. When
+    the priority sections alone do not fit, the note also names the ones that were cut."""
     path_line = f"Full report: {path}"
     whole = report.rstrip("\n") + "\n\n" + path_line
     if len(whole) <= SUMMARY_CHAR_BUDGET:
@@ -460,14 +461,28 @@ def summary(report: str, path: Path) -> str:
     sections = split_sections(report)
     title, rest = sections[:1], sections[1:]
     priority = [
-        section
+        (heading, section)
         for heading in PRIORITY_SECTIONS
         for section in rest
         if section[0].startswith(heading)
     ]
-    ordered = title + priority + [section for section in rest if section not in priority]
+    priority_sections = [section for _, section in priority]
+    ordered = title + priority_sections + [s for s in rest if s not in priority_sections]
     lines = [line for section in ordered for line in section]
-    reserve = len(f"… {len(lines)} more lines in {path}") + 1 + len(path_line) + 1
+
+    def warning(headings: list[str]) -> str:
+        return (
+            "WARNING: the Step 1 sections alone exceed the summary budget; cut or missing above: "
+            + ", ".join(headings)
+            + ". Read them in the full report."
+        )
+
+    reserve = (
+        len(f"… {len(lines)} more lines in {path}")
+        + len(warning(list(PRIORITY_SECTIONS)))
+        + len(path_line)
+        + 3
+    )
     used = 0
     shown = 0
     for line in lines:
@@ -479,6 +494,15 @@ def summary(report: str, path: Path) -> str:
     while kept and not kept[-1]:
         kept.pop()
     kept.append(f"… {len(lines) - shown} more lines in {path}")
+    # Where each priority section ends in `lines`: the ones ending past the cut are incomplete.
+    end = len(title[0]) if title else 0
+    cut = []
+    for heading, section in priority:
+        end += len(section)
+        if end > shown:
+            cut.append(heading)
+    if cut:
+        kept.append(warning(cut))
     return "\n".join(kept) + "\n\n" + path_line
 
 
