@@ -44,10 +44,11 @@ Interface fixed here (all paths are `Path`; results are plain dicts and lists):
 - `record_report(state, report, workspace) -> state` and `stop_decision(state, workspace,
   snapshot) -> {"block": bool, "reasons": [{"model", "rule": 1|2|3, "detail"}]}`; `state`
   starts as `{}` and is opaque.
-- `run_hooks(config, *, workspace, snapshot, task_file, emit, max_blocks=2) ->
-  {HookEvent: [HookMatcher]}` with PreToolUse, SubagentStop and Stop when `config.verifiers` is
-  on, `{}` otherwise. Stop blocks at most `max_blocks` times, then lets the run end and emits
-  `ended_with_unresolved`. SubagentStop emits `verifier_end` with `turns` and `tool_calls`.
+- `run_hooks(config, *, workspace, snapshot, task_file, emit) -> {HookEvent: [HookMatcher]}`
+  with PreToolUse, SubagentStop and Stop when `config.verifiers` is on, `{}` otherwise. Stop
+  blocks at most twice, then lets the run end and emits `ended_with_unresolved`. SubagentStop
+  feeds the report into the Stop state and emits `verifier_end` with `turns`, `tool_calls` and
+  `checks` (the `models` mapping of `parse_report`).
 - `agent.run` takes the snapshot through `verifier_v2.take_snapshot` (looked up on the package,
   so a test can replace it) only when the config's verifier layer is on.
 - The verifier configs define exactly one subagent, `verifier`, with `maxTurns` 50.
@@ -175,7 +176,7 @@ def changes(diff: dict[str, Any], category: str) -> list[dict[str, Any]]:
     return [c for c in diff["changes"] if c["category"] == category]
 
 
-def text(change: dict[str, Any], side: str) -> str:
+def change_text(change: dict[str, Any], side: str) -> str:
     return str(change.get(side) or "").lower()
 
 
@@ -231,9 +232,11 @@ def test_model_diff_reports_a_removed_filter(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "stg_orders")
     assert diff["status"] == "changed" and diff["parsed"]
     removed = [c for c in changes(diff, "filter") if c["kind"] == "removed"]
-    assert any("cancelled" in text(c, "before") for c in removed), diff["changes"]
+    assert any("cancelled" in change_text(c, "before") for c in removed), diff["changes"]
     # The kept predicate is unchanged logic and must not appear.
-    assert not any("amount" in text(c, "before") + text(c, "after") for c in diff["changes"])
+    assert not any(
+        "amount" in change_text(c, "before") + change_text(c, "after") for c in diff["changes"]
+    )
 
 
 @tools_xfail
@@ -241,9 +244,9 @@ def test_model_diff_reports_a_swapped_source(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "stg_customers")
     sources = changes(diff, "source")
     assert sources, diff["changes"]
-    assert any("customers_v2" in text(c, "after") for c in sources)
+    assert any("customers_v2" in change_text(c, "after") for c in sources)
     assert any(
-        "customers" in text(c, "before") and "customers_v2" not in text(c, "before")
+        "customers" in change_text(c, "before") and "customers_v2" not in change_text(c, "before")
         for c in sources
     )
 
@@ -252,26 +255,29 @@ def test_model_diff_reports_a_swapped_source(edited: tuple[Path, Path]) -> None:
 def test_model_diff_reports_union_to_union_all(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "all_events")
     rows = changes(diff, "rows")
-    assert any("union all" in text(c, "after") for c in rows), diff["changes"]
-    assert any("union" in text(c, "before") and "union all" not in text(c, "before") for c in rows)
+    assert any("union all" in change_text(c, "after") for c in rows), diff["changes"]
+    assert any(
+        "union" in change_text(c, "before") and "union all" not in change_text(c, "before")
+        for c in rows
+    )
 
 
 @tools_xfail
 def test_model_diff_reports_an_added_limit(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "top_orders")
     added = [c for c in changes(diff, "rows") if c["kind"] == "added"]
-    assert any("limit" in text(c, "after") and "100" in text(c, "after") for c in added), diff[
-        "changes"
-    ]
+    assert any(
+        "limit" in change_text(c, "after") and "100" in change_text(c, "after") for c in added
+    ), diff["changes"]
 
 
 @tools_xfail
 def test_model_diff_reports_a_materialization_change(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "daily_sales")
     config = changes(diff, "config")
-    assert any("view" in text(c, "before") and "table" in text(c, "after") for c in config), diff[
-        "changes"
-    ]
+    assert any(
+        "view" in change_text(c, "before") and "table" in change_text(c, "after") for c in config
+    ), diff["changes"]
     # Its SQL is untouched: no window change (contract_check records that window as N/A).
     assert not changes(diff, "window")
 
@@ -503,9 +509,11 @@ DISPATCH = {
 }
 
 
-def rewrite(tool_input: dict[str, Any], dispatches_so_far: int, tmp_path: Path) -> dict[str, Any]:
+def rewrite(
+    tool_input: dict[str, Any], dispatches_so_far: int, tmp_path: Path, tool_name: str = "Agent"
+) -> dict[str, Any]:
     return rewrite_dispatch(
-        "Agent",
+        tool_name,
         tool_input,
         task_file=tmp_path / "task.md",
         project_dir=tmp_path / "ws" / "project",
@@ -554,35 +562,24 @@ def test_rewritten_input_keeps_the_other_fields(tmp_path: Path) -> None:
 @hooks_xfail
 def test_other_subagents_and_tools_are_not_rewritten(tmp_path: Path) -> None:
     assert rewrite(DISPATCH | {"subagent_type": "general-purpose"}, 0, tmp_path) == {}
-    read_input = {"file_path": "models/x.sql"}
-    assert (
-        rewrite_dispatch(
-            "Read",
-            read_input,
-            task_file=tmp_path / "task.md",
-            project_dir=tmp_path / "ws" / "project",
-            models=["customer_ltv"],
-            dispatches_so_far=0,
-        )
-        == {}
-    )
+    assert rewrite({"file_path": "models/x.sql"}, 0, tmp_path, tool_name="Read") == {}
 
 
 # --- Stop hook ------------------------------------------------------------------------------
 
 
-def tiny_project(root: Path, a: str, b: str) -> None:
+def tiny_project(root: Path, alpha: str, bravo: str) -> None:
     (root / "models").mkdir(parents=True)
     (root / "dbt_project.yml").write_text(
         'name: tiny\nversion: "1.0.0"\nconfig-version: 2\nprofile: tiny\nmodel-paths: ["models"]\n'
     )
-    (root / "models" / "a.sql").write_text(a)
-    (root / "models" / "b.sql").write_text(b)
+    (root / "models" / "alpha.sql").write_text(alpha)
+    (root / "models" / "bravo.sql").write_text(bravo)
 
 
 @pytest.fixture
 def two_models(tmp_path: Path) -> tuple[Path, Path]:
-    """(workspace, snapshot): models `a` and `b`, both changed since the snapshot."""
+    """(workspace, snapshot): models `alpha` and `bravo`, both changed since the snapshot."""
     workspace = tmp_path / "ws"
     snapshot = tmp_path / "run" / "snapshot"
     tiny_project(snapshot / "project", "SELECT 1 AS x\n", "SELECT 2 AS y\n")
@@ -600,7 +597,7 @@ def report(**statuses: str) -> str:
     )
 
 
-def rules(decision: dict[str, Any], model: str) -> set[int]:
+def blocking_rules(decision: dict[str, Any], model: str) -> set[int]:
     return {r["rule"] for r in decision["reasons"] if r["model"] == model}
 
 
@@ -609,44 +606,48 @@ def test_stop_blocks_a_changed_model_never_verified(two_models: tuple[Path, Path
     workspace, snapshot = two_models
     decision = stop_decision({}, workspace, snapshot)
     assert decision["block"] is True
-    assert rules(decision, "a") == {1} and rules(decision, "b") == {1}
+    assert blocking_rules(decision, "alpha") == {1}
+    assert blocking_rules(decision, "bravo") == {1}
 
 
 @hooks_xfail
 def test_stop_blocks_a_model_changed_after_its_report(two_models: tuple[Path, Path]) -> None:
     workspace, snapshot = two_models
-    state = record_report({}, report(a="PASS", b="PASS"), workspace)
+    state = record_report({}, report(alpha="PASS", bravo="PASS"), workspace)
     assert stop_decision(state, workspace, snapshot)["block"] is False
-    (workspace / "project" / "models" / "a.sql").write_text("SELECT 1 AS x, 'a2' AS tag\n")
+    (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 1 AS x, 'a2' AS tag\n")
     decision = stop_decision(state, workspace, snapshot)
     assert decision["block"] is True
-    assert rules(decision, "a") == {2} and not rules(decision, "b")
+    assert blocking_rules(decision, "alpha") == {2}
+    assert not blocking_rules(decision, "bravo")
 
 
 @hooks_xfail
 def test_stop_blocks_on_a_fail(two_models: tuple[Path, Path]) -> None:
     workspace, snapshot = two_models
-    state = record_report({}, report(a="PASS", b="FAIL"), workspace)
+    state = record_report({}, report(alpha="PASS", bravo="FAIL"), workspace)
     decision = stop_decision(state, workspace, snapshot)
     assert decision["block"] is True
-    assert rules(decision, "b") == {3} and not rules(decision, "a")
+    assert blocking_rules(decision, "bravo") == {3}
+    assert not blocking_rules(decision, "alpha")
 
 
 @hooks_xfail
 def test_stop_keeps_state_per_model(two_models: tuple[Path, Path]) -> None:
     """A and B verified, B fails; only A is re-verified and passes: B still blocks."""
     workspace, snapshot = two_models
-    state = record_report({}, report(a="PASS", b="FAIL"), workspace)
-    state = record_report(state, report(a="PASS"), workspace)
+    state = record_report({}, report(alpha="PASS", bravo="FAIL"), workspace)
+    state = record_report(state, report(alpha="PASS"), workspace)
     decision = stop_decision(state, workspace, snapshot)
     assert decision["block"] is True
-    assert rules(decision, "b") == {3} and not rules(decision, "a")
+    assert blocking_rules(decision, "bravo") == {3}
+    assert not blocking_rules(decision, "alpha")
 
 
 @hooks_xfail
 def test_stop_does_not_block_on_needs_info(two_models: tuple[Path, Path]) -> None:
     workspace, snapshot = two_models
-    state = record_report({}, report(a="NEEDS_INFO", b="PASS"), workspace)
+    state = record_report({}, report(alpha="NEEDS_INFO", bravo="PASS"), workspace)
     decision = stop_decision(state, workspace, snapshot)
     assert decision == {"block": False, "reasons": []}
 
@@ -688,20 +689,24 @@ async def test_stop_lets_the_run_end_after_two_blocks_and_records_it(
         agent_id="a1",
         agent_type="verifier",
         agent_transcript_path=str(TRANSCRIPT),
-        last_assistant_message=report(a="PASS", b="FAIL"),
+        last_assistant_message=report(alpha="PASS", bravo="FAIL"),
         stop_hook_active=False,
     )
     [end] = [e for e in events if e["type"] == "verifier_end"]
     assert (end["turns"], end["tool_calls"]) == (3, 4)
+    assert end["checks"]["bravo"][2] == "FAIL" and end["checks"]["alpha"][2] == "PASS"
 
+    # The report reached the Stop state: alpha is verified, bravo blocks on its FAIL (rule 3),
+    # not on never having been verified.
     first = await call_hooks(hooks, "Stop", stop_hook_active=False)
-    assert first["decision"] == "block" and "b" in first["reason"]
+    assert first["decision"] == "block"
+    assert "bravo" in first["reason"] and "alpha" not in first["reason"]
     second = await call_hooks(hooks, "Stop", stop_hook_active=True)
     assert second["decision"] == "block"
     third = await call_hooks(hooks, "Stop", stop_hook_active=True)
     assert "decision" not in third
     [unresolved] = [e for e in events if e["type"] == "ended_with_unresolved"]
-    assert "b" in unresolved["reason"]
+    assert "bravo" in unresolved["reason"] and "alpha" not in unresolved["reason"]
 
 
 @hooks_xfail

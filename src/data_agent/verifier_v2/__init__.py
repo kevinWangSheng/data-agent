@@ -19,7 +19,7 @@ Every function here is pure (or a thin wrapper): the MCP tools and the SDK hooks
 inputs and outputs. All SQL reaches the database through the read-only gateway.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +28,7 @@ from claude_agent_sdk.types import HookEvent
 
 from data_agent.gateway import Gateway
 from data_agent.run_config import RunConfig
-
-Emit = Callable[..., None]
+from data_agent.verifiers import Emit
 
 
 def take_snapshot(workspace: Path, dest: Path) -> Path:
@@ -39,7 +38,8 @@ def take_snapshot(workspace: Path, dest: Path) -> Path:
 
 
 def model_diff(workspace: Path, snapshot: Path, dialect: str = "duckdb") -> list[dict[str, Any]]:
-    """New and changed models between `snapshot` and `workspace`, with their changes by category."""
+    """New and changed models between `snapshot` and `workspace`, with their changes by category.
+    `dialect` is the gateway's: the SQL is parsed in it (spec "工具": 解析方法)."""
     raise NotImplementedError
 
 
@@ -113,8 +113,8 @@ def run_hooks(
     snapshot: Path,
     task_file: Path,
     emit: Emit,
-    max_blocks: int = 2,
 ) -> dict[HookEvent, list[HookMatcher]]:
     """The v2 hooks for one run: PreToolUse (dispatch rewrite), SubagentStop (report and turn
-    count into `verifier_end`), Stop (block). Empty when `config.verifiers` is off."""
+    count into `verifier_end` and the Stop state), Stop (block, at most twice per run). Empty
+    when `config.verifiers` is off."""
     raise NotImplementedError
