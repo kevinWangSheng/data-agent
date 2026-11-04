@@ -1,6 +1,6 @@
 # 42 — dictionary_search 改成预建采样字典：搜索不再现扫全库
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: 39
 Spec: ../spec.md
 Claimed by: —

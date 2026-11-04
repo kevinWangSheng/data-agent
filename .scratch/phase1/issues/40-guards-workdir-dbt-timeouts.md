@@ -1,6 +1,6 @@
 # 40 — 守卫与工作目录：允许进项目目录跑 dbt、打印 DB_TYPE、Grep 不被样例 .env 误拦，dbt 解析不再被 60 秒掐断
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
 Claimed by: —

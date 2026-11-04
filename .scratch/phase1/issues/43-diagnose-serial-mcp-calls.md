@@ -1,6 +1,6 @@
 # 43 — 诊断：同一轮发出的多个 MCP 工具调用为什么一个接一个执行
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
 Claimed by: —

@@ -1,6 +1,6 @@
 # 41 — 工具输出加上限：list_tables、query_database 照 SignalPilot 截断，scan 只打印摘要
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: 39
 Spec: ../spec.md
 Claimed by: —

@@ -1,6 +1,6 @@
 # 39 — 表目录缓存：元数据工具不再每次重读整个 information_schema
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
 Claimed by: —

@@ -1,6 +1,6 @@
 # 38 — 运行时依赖补上 `pytz`：带时区的时间戳列能查
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
 Claimed by: —
