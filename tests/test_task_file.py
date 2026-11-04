@@ -143,7 +143,8 @@ async def test_runs_without_the_verifier_layer_keep_the_prompt_and_write_no_file
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, task_type: str, config: str
 ) -> None:
     seen = await run_capturing(monkeypatch, tmp_path, task_type, config)
-    assert seen["temp_files"] == []
+    # The dictionary file of a context run (ticket 42) is the only other file a run writes there.
+    assert [name for name in seen["temp_files"] if "task" in name] == []
     before = DBT_PROMPT_BEFORE if task_type == "dbt" else QUERY_PROMPT_BEFORE
     run_config = load_config(config)
     expected = before.format(

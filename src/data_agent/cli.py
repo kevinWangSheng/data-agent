@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from data_agent.agent import ConfigError, Task, run
+from data_agent.context_tools import Dictionary
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_server
 from data_agent.run_config import CONFIG_NAMES, load_config
@@ -49,6 +50,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="leave out the verifier tools (for a run without the verifier subagents)",
     )
+    serve.add_argument(
+        "--dictionary",
+        type=Path,
+        help="value dictionary JSON written by `data-agent run`; built at startup when absent",
+    )
 
     run_cmd = commands.add_parser("run", help="run the agent on one task")
     task_arg = run_cmd.add_mutually_exclusive_group(required=True)
@@ -70,12 +76,18 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "mcp-server":
         if args.workspace is not None and not args.workspace.is_dir():
             serve.error(f"workspace directory not found: {args.workspace}")
+        if args.dictionary is not None and not args.dictionary.is_file():
+            serve.error(f"dictionary file not found: {args.dictionary}")
         gateway: Gateway = (
             DuckDBGateway(args.duckdb)
             if args.duckdb is not None
             else PostgresGateway(os.environ[args.postgres_env])
         )
-        build_server(gateway, config, args.workspace, not args.no_verifier_tools).run("stdio")
+        # Without the file (the server run on its own) build_server builds the dictionary.
+        dictionary = Dictionary.load(args.dictionary) if args.dictionary is not None else None
+        build_server(gateway, config, args.workspace, not args.no_verifier_tools, dictionary).run(
+            "stdio"
+        )
         return
 
     if not args.workspace.is_dir():

@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator, Iterator, Mapping
 from contextlib import aclosing, contextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, cast
@@ -44,7 +44,9 @@ from claude_agent_sdk._internal.client import InternalClient
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent.command_guard import command_guard
+from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
+from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.verifiers import (
     AGENT_TOOL,
@@ -149,25 +151,52 @@ wording, for example after your context is compacted.
 
 
 @contextmanager
-def saved_task(text: str, workspace: Path) -> Iterator[Path]:
-    """The task text, byte for byte, in a file of its own outside the workspace (whose contents
-    the grader reads), removed when the run ends. The verifiers judge the models against it.
-    Raises ConfigError when the temp dir is the workspace or inside it (`--workspace /tmp`)."""
+def run_directory(workspace: Path, prefix: str) -> Iterator[Path]:
+    """A directory of this run's own outside the workspace (whose contents the grader reads),
+    removed when the run ends. Raises ConfigError when the temp dir is the workspace or inside
+    it (`--workspace /tmp`)."""
     base = Path(tempfile.gettempdir()).resolve()
     root = workspace.resolve()
     if base == root or root in base.parents:
         raise ConfigError(
-            f"the temp dir {base} is inside the workspace {root}, so the task file would be too; "
-            "set TMPDIR to a directory outside the workspace"
+            f"the temp dir {base} is inside the workspace {root}, so the run's files would be "
+            "too; set TMPDIR to a directory outside the workspace"
         )
-    directory = Path(tempfile.mkdtemp(prefix="data-agent-task-", dir=base))
-    path = directory / "task.md"
+    directory = Path(tempfile.mkdtemp(prefix=prefix, dir=base))
     try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@contextmanager
+def saved_task(text: str, workspace: Path) -> Iterator[Path]:
+    """The task text, byte for byte, in a read-only file of its own outside the workspace. The
+    verifiers judge the models against it."""
+    with run_directory(workspace, "data-agent-task-") as directory:
+        path = directory / "task.md"
         path.write_bytes(text.encode())
         path.chmod(0o444)
         yield path
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
+
+
+@contextmanager
+def prebuilt_dictionary(gateway: Gateway, workspace: Path, emit: Emit) -> Iterator[Path]:
+    """The value dictionary (ticket 42), built before the agent starts and written as JSON
+    outside the workspace for the MCP server to read; its coverage is recorded as the
+    `dictionary` event. The build counts toward the run's time, not the agent's first tool
+    call; a signal during it cancels the build and ends the run."""
+    with run_directory(workspace, "data-agent-dictionary-") as directory:
+        dictionary = build_interruptible(DictionaryBuild(gateway))
+        coverage = dictionary.coverage
+        emit(
+            "dictionary",
+            **{k: v for k, v in asdict(coverage).items() if k != "not_profiled"},
+            tables_not_profiled=len(coverage.not_profiled),
+        )
+        path = directory / "dictionary.json"
+        dictionary.save(path)
+        yield path
 
 
 @dataclass(frozen=True)
@@ -494,6 +523,14 @@ class Task:
         assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
         return ("--duckdb", str(self.duckdb.resolve()))
 
+    def gateway(self, env: Mapping[str, str]) -> Gateway:
+        """The harness's own gateway to the data source (the dictionary build); the MCP server
+        opens its own."""
+        if self.postgres_env:
+            return PostgresGateway(env[self.postgres_env])
+        assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
+        return DuckDBGateway(self.duckdb)
+
 
 @dataclass(frozen=True)
 class Outcome:
@@ -621,12 +658,15 @@ def build_options(
     spend: Spend | None = None,
     database_env: Mapping[str, str] | None = None,
     task_file: Path | None = None,
+    dictionary: Path | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
     its own cap becomes the backstop (`sdk_budget_usd`). `database_env` holds the Postgres
     variable: it reaches the MCP server through the SDK subprocess's environment. `task_file`
-    (`saved_task`, verifier runs only) is named in the verifiers' prompts and may be Read."""
+    (`saved_task`, verifier runs only) is named in the verifiers' prompts and may be Read.
+    `dictionary` (`prebuilt_dictionary`, context runs only) is the value dictionary file the
+    MCP server serves dictionary_search from."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
@@ -636,6 +676,7 @@ def build_options(
             # A run without the verifier subagents gets no verifier tools either (the ablation).
             *(() if uses_verifiers(task.type, config) else ("--no-verifier-tools",)),
             *("--workspace", str(task.workspace.resolve())),
+            *(("--dictionary", str(dictionary)) if dictionary else ()),
         ],
     }
     if task.type == "dbt":
@@ -840,30 +881,37 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
             task_file_note=TASK_FILE_NOTE.format(path=task_file) if task_file else "",
         )
         tools: dict[str, str] = {}
-        options = build_options(
-            task,
-            config,
-            settings,
-            stderr,
-            log.emit,
-            spend,
-            database_env=database_env,
-            task_file=task_file,
+        building = (
+            prebuilt_dictionary(task.gateway(env), task.workspace, log.emit)
+            if config.context
+            else nullcontext()
         )
-        try:
-            stream = query(prompt=prompt, options=options)
-            async with aclosing(capped(stream, spend)) as messages:
-                async for message in messages:
-                    if isinstance(message, ResultMessage):
-                        final = message
-                    else:
-                        record_message(log, message, tools)
-        except Exception as exc:
-            # A failed run ends with a ResultMessage and then a ResultError, whose details the
-            # result event already holds. Anything else (the SDK also raises plain Exceptions,
-            # e.g. an `initialize` timeout) means the run itself broke.
-            if final is None:
-                log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
+        with building as dictionary:
+            options = build_options(
+                task,
+                config,
+                settings,
+                stderr,
+                log.emit,
+                spend,
+                database_env=database_env,
+                task_file=task_file,
+                dictionary=dictionary,
+            )
+            try:
+                stream = query(prompt=prompt, options=options)
+                async with aclosing(capped(stream, spend)) as messages:
+                    async for message in messages:
+                        if isinstance(message, ResultMessage):
+                            final = message
+                        else:
+                            record_message(log, message, tools)
+            except Exception as exc:
+                # A failed run ends with a ResultMessage and then a ResultError, whose details
+                # the result event already holds. Anything else (the SDK also raises plain
+                # Exceptions, e.g. an `initialize` timeout) means the run itself broke.
+                if final is None:
+                    log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
         stopped = spend.result_fields() if spend is not None and spend.stopped else None
         log.emit("result", **(stopped or ended_by_sdk(final, settings.model, spend)))
     if stopped is not None:
