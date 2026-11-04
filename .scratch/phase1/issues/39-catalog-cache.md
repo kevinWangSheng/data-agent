@@ -1,10 +1,10 @@
 # 39 — 表目录缓存：元数据工具不再每次重读整个 information_schema
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 39-catalog-cache)
+Branch: worktree-39-catalog-cache
 
 ## Goal
 
@@ -62,10 +62,22 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0 (data-agent model calls only; no model call in the ticket session)
+- Outcome: in-review，branch `worktree-39-catalog-cache`（commits 7eff120、31a5fbf）；服务器真实运行待主会话
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-04 工单会话（worktree 39-catalog-cache，commits 7eff120、31a5fbf）。照 SignalPilot schema_cache 的思路写，未复制代码，不登记 NOTICE。
+  - 改动：`gateway.py` 加 `Gateway.catalog_key()`，DuckDB 返回库文件和 `.wal` 的 `(mtime_ns, size)`，Postgres 返回 `None`；`db_facts.py` 加 `CatalogCache(run, key, ttl_seconds=300, clock)`，有键的网关只在键变时重读，无键的按 TTL，键在读之前、同一把锁下取，只存 `list[Table]`，`describe` 多一个可选的 `catalog`；`mcp_server.py` 每个服务进程一份缓存，交给 `describe_table`、上下文工具和验证工具；`verifier_tools.py` 的 `map_model`/`audit`/`verify_values`/`register_verifier_tools` 改收一个 `load` 可调用对象。
+  - 单元测试 `uv run pytest tests/test_catalog_cache.py -q` → 5 passed in 2.15s（两次 describe_table 只读 1 次目录；另一连接建表后下次可见；子进程读写打开并建表成功；无键时 TTL 299 s 不重读、300 s 重读；hydrate + check_model_schema + discover + describe_table 合计 1 次目录读）。
+  - `make check` → 1450 passed, 1 skipped, 37 deselected in 421.87s，ruff/format/basedpyright 全过。`tests/acceptance` 原样 39 passed, 15 deselected。
+  - 本地真实运行（stdio 起 `data-agent mcp-server --config full --duckdb <shop 夹具>`，连续两次 describe_table）：`describe_table(raw.orders): 131.8 ms`，`describe_table(raw.customers): 57.9 ms`；第二次剩下的耗时是单表 facts 查询（COLUMNS_SQL、keys、indexes），不是目录读。
+  - 失效键实测：另一连接建表后 `catalog_key` 的 mtime_ns 变、size 不变，键有效。
+  - 工单未列出的调用方：`evals/dab_server.py:414` 也调 `describe`，而 `evals/` 不在 Authority 内，所以 `describe` 的 `catalog` 参数可选，没有缓存时按原来方式重读。verifier_tools 三个函数原本只收 `run`，加 `load` 参数是换成带缓存版本的最小改动。
+  - 审查 1（`da-review main`，Codex）：无发现。审查 2（`eng:code-review main`）：无 hard violation、无阻塞缺陷。已修：`LoadCatalog` 改在 `Table` 之后定义；verifier_tools 直接从 db_facts 导入 `LoadCatalog`。不修：verifier_tools 里参数叫 `load` 而不是 `catalog`（该模块里 `catalog` 已是表列表的名字）；`(run, load)` 成对传递的 data clump，超出 Authority；`describe` 的可选参数，待 `evals/` 可改时改成必填（建议记到工单 41 或 42）。
+  - 验收项"第二次不再查 information_schema"按 Goal 理解为不再读整个目录；describe_table 第二次仍会为单张表跑一次 `information_schema.columns` 过滤查询，不是本工单要缓存的对象。
+  - 工单会话未能跑 Postgres 集成测试（source env 文件被权限拦截）。
+- 2026-11-04 主会话：Postgres 集成测试用临时 `postgres:17` 容器（127.0.0.1:15439，跑完删除）：`uv run pytest tests/test_db_facts.py tests/test_postgres.py -q -m integration` → 21 passed, 39 deselected in 5.94s，含 `test_postgres_catalog_is_kept_for_the_ttl`。PR #39。服务器真实运行 dbt-customer-cross-sell-insights × 1 排在 `t38-real` 之后。

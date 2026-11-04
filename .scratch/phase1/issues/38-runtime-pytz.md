@@ -1,10 +1,10 @@
 # 38 — 运行时依赖补上 `pytz`：带时区的时间戳列能查
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 38-runtime-pytz)
+Branch: worktree-38-runtime-pytz
 
 ## Goal
 
@@ -56,10 +56,17 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0 (no model calls in this ticket; data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
+- Outcome: in-review, branch `worktree-38-runtime-pytz`（commits 5ba2ccc、a9289ae）
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-04 工单会话（worktree 38-runtime-pytz）：
+  - 改动：`pyproject.toml` 加 `pytz>=2025.2`；`uv.lock` 只多两行（`uv lock` "Resolved 150 packages"，没有别的版本变化，停止条件不成立）；`tests/test_packaging.py` 测试 A；`tests/test_gateway.py` 测试 B。
+  - 测试 A 修复前（`uv run pytest tests/test_packaging.py::test_runtime_requirements_include_pytz tests/test_gateway.py -q`）：`AssertionError: assert 'pytz' in {...}`，1 failed, 2 passed；修复后 3 passed in 1.71s。
+  - `make check`：ruff / format / basedpyright 全过；1447 passed, 1 skipped, 36 deselected in 405.96s。`tests/acceptance`：39 passed, 15 deselected。
+  - 顺带检查：`src/data_agent/` 运行时 import 的第三方包只有 claude-agent-sdk、duckdb、mcp、psycopg、sqlglot，都在 no-dev 导出里；`pytz` 是唯一靠 dev 组带进来的，不需要主会话决定。
+  - 审查第 1 轮：`da-review main`（Codex）无可操作缺陷。`eng:code-review main` Standards：无硬性违规，修了 `tests/test_gateway.py` 模块 docstring（a9289ae）；不修：`test_packaging.py` 两处 `uv` 子进程重复（两条不同子命令，抽 helper 过度）、`pytz` 只写下限（工单要求）、按 `==` 解析导出（标准 requirements 格式）。Spec：无阻塞；测试 B 调的是 `DuckDBGateway.query` 而非 MCP 工具，不改，因为工单点名 `DuckDBGateway` 且 pytz 报错发生在网关取数处；测试 B 在 main 上本地也能过（dbt 带来 pytz），守卫靠测试 A。
