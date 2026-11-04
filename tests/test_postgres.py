@@ -185,13 +185,19 @@ async def test_run_without_the_database_variable_in_its_env_is_a_config_error(
 
 
 @pytest.mark.parametrize(
-    "name", ["DB_TYPE", "BASH_MAX_TIMEOUT_MS", "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"]
+    "name",
+    [
+        "DB_TYPE",
+        "BASH_MAX_TIMEOUT_MS",
+        "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR",
+        "ANTHROPIC_BASE_URL",
+    ],
 )
-async def test_run_rejects_a_database_variable_the_agent_could_print_or_that_configures_bash(
+async def test_run_rejects_a_database_variable_the_agent_could_print_or_that_configures_the_cli(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
 ) -> None:
-    """A printable name would let `echo $DB_TYPE` show the URL; a BASH_/CLAUDE_ name would
-    override the Bash timeout and cwd settings the harness relies on."""
+    """A printable name would let `echo $DB_TYPE` show the URL; a BASH_/CLAUDE_ name or one the
+    SDK env sets would override the CLI settings the harness relies on (the database env wins)."""
 
     def no_query(**_: Any) -> AsyncIterator[Any]:
         raise AssertionError("the run must not start")

@@ -249,6 +249,8 @@ def with_sample_env(workspace: Path) -> Path:
         {"pattern": "select", "glob": "*.sql"},
         {"pattern": "select", "glob": "*.{sql,yml}"},
         {"pattern": "select", "glob": "models/**/*.sql"},
+        # A path glob whose last segment cannot match the file name keeps nothing of it.
+        {"pattern": "select", "glob": "dbt_packages/*.sql"},
         {"pattern": "select", "glob": "!*.env"},
         {"pattern": "select", "type": "sql"},
         {"pattern": "select", "type": "yaml"},
@@ -290,6 +292,10 @@ async def test_grep_runs_when_its_filter_skips_every_credential_file(
         # In a glob with a slash, `*` does not cross a slash, so this skips nothing nested.
         {"pattern": "PASSWORD", "glob": "!dbt_packages/*.env"},
         {"pattern": "PASSWORD", "glob": "!dbt_packages/*/*.env"},
+        # Where ripgrep anchors a path glob depends on how the search path was given, so an
+        # including one may keep the credential file.
+        {"pattern": "PASSWORD", "glob": "*/dbt_packages/**"},
+        {"pattern": "PASSWORD", "glob": "dbt_packages/*.env"},
     ],
 )
 async def test_grep_that_would_read_a_credential_file_is_denied_naming_it(
