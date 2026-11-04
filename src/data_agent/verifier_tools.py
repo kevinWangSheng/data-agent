@@ -69,7 +69,8 @@ from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
 
-from data_agent.context_tools import LoadCatalog, RunQuery, Table, is_text, literal, quote
+from data_agent.context_tools import RunQuery, Table, is_text, literal, quote
+from data_agent.db_facts import LoadCatalog
 
 SKIP_DIRS = frozenset({".claude", "dbt_packages", "target", "__pycache__", "logs"})
 BINARY_TYPES = frozenset({"BLOB", "BYTEA", "BINARY", "VARBINARY", "IMAGE"})

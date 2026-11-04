@@ -28,8 +28,6 @@ from data_agent.gateway import MAX_ROWS, QueryResult
 
 # Runs one statement through the gateway; blocks and database errors raise ToolError.
 RunQuery = Callable[[str, int], QueryResult]
-# The catalog as of now: the cache's `get`, or `load_catalog` bound to a `run` in tests.
-LoadCatalog = Callable[[], "list[Table]"]
 
 CATALOG_TTL_SECONDS = 300.0  # SignalPilot schema_cache's default
 
@@ -135,6 +133,10 @@ class Table:
     @property
     def sql_name(self) -> str:
         return f"{quote(self.schema)}.{quote(self.name)}"
+
+
+# The catalog as of now: the cache's `get`, or `load_catalog` bound to a `run` in tests.
+LoadCatalog = Callable[[], list[Table]]
 
 
 @dataclass
