@@ -111,25 +111,33 @@ def _expand_braces(pattern: str) -> list[str]:
     ]
 
 
-def _glob_matches(pattern: str, path: Path) -> bool:
-    """Whether ripgrep's `--glob` would include `path` (relative to the search root). A pattern
-    without a slash matches the file name at any depth; with one it matches the whole relative
-    path. `*` is let match across slashes, so a doubtful pattern counts as matching."""
+def _glob_matches(pattern: str, path: Path, fold_case: bool) -> bool:
+    """Whether a ripgrep glob matches `path` (relative to the search root). A pattern without a
+    slash matches the file name at any depth; with one it matches the whole relative path. `*`
+    is let match across slashes, so a doubtful pattern counts as matching."""
     target = str(path) if "/" in pattern else path.name
+    if fold_case:
+        target = target.lower()
     return any(
-        fnmatch.fnmatchcase(target.lower(), expanded.lower())
+        fnmatch.fnmatchcase(target, expanded.lower() if fold_case else expanded)
         for expanded in _expand_braces(pattern)
     )
 
 
 def _filter_skips(path: Path, glob: str | None, file_type: str | None) -> bool:
-    """Grep's `glob` or `type` filter leaves `path` out of the search."""
+    """Grep's `glob` or `type` filter leaves `path` out of the search. Whether Grep matches
+    globs case-sensitively is not known, so a file counts as skipped only if it is skipped either
+    way: an including pattern is matched ignoring case, an excluding one (`!...`) respecting it."""
     if glob:
-        negated = glob.startswith("!")
-        if _glob_matches(glob.removeprefix("!"), path) == negated:
+        if glob.startswith("!"):
+            if _glob_matches(glob[1:], path, fold_case=False):
+                return True
+        elif not _glob_matches(glob, path, fold_case=True):
             return True
     patterns = GREP_TYPES.get(file_type or "")
-    return patterns is not None and not any(_glob_matches(p, path) for p in patterns)
+    return patterns is not None and not any(
+        _glob_matches(p, path, fold_case=True) for p in patterns
+    )
 
 
 def _is_saved_tool_result(path: Path) -> bool:

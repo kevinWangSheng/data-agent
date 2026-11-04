@@ -295,6 +295,25 @@ async def test_grep_that_would_read_a_credential_file_is_denied_naming_it(
     assert str(with_sample_env.resolve()) not in reason
 
 
+@pytest.mark.parametrize(
+    ("tool_input", "decision"),
+    [
+        # An excluding glob must match the name exactly to count; an including one is matched
+        # ignoring case, so either way an upper-case credential file is never read.
+        ({"pattern": "KEY", "glob": "!*.env"}, "deny"),
+        ({"pattern": "KEY", "glob": "*.env"}, "deny"),
+        ({"pattern": "KEY", "glob": "*.sql"}, "none"),
+        ({"pattern": "KEY", "type": "sql"}, "none"),
+    ],
+)
+async def test_grep_filters_are_matched_without_trusting_the_case(
+    with_sample_env: Path, tool_input: dict[str, Any], decision: str
+) -> None:
+    upper = with_sample_env / "dbt_packages" / "dbt_utils" / "integration_tests" / ".env"
+    (upper / "SNOWFLAKE.ENV").write_text("SNOWFLAKE_PASSWORD=sample")
+    assert await decide(with_sample_env, "Grep", tool_input) == decision
+
+
 @pytest.fixture
 def tool_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Where Claude Code stores a tool's over-long output, under the home directory."""
