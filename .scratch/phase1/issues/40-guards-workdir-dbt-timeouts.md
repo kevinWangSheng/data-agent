@@ -1,6 +1,6 @@
 # 40 — 守卫与工作目录：允许进项目目录跑 dbt、打印 DB_TYPE、Grep 不被样例 .env 误拦，dbt 解析不再被 60 秒掐断
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 40-guards-workdir-dbt-timeouts)
@@ -75,10 +75,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2（修复轮）；3 次审查
+- Attempts: 2
+- Review rounds: 4 修复轮（首轮 2 + 退回轮 2）；6 次审查
 - Model spend: $0 (unit tests and local runs only; data-agent model calls only, read from run event files)
-- Outcome: in-review，branch `worktree-40-guards-workdir-dbt-timeouts`（commits 4225e9c、58009b3、b482143）；服务器真实运行待主会话
+- Outcome: in-review，branch `worktree-40-guards-workdir-dbt-timeouts`（b482143 之上新增 88429c2、48983dc、3a8fa22）；服务器真实运行待主会话
 - Human review minutes: —
 
 ## Comments
@@ -119,3 +119,32 @@ ripgrep semantics were checked against the local `rg` (`rg --hidden -g '*.env' -
 **Known limitations for the main session.** `skills/dbt-workflow/SKILL.md:373` still says "default 60" for validate's timeout, and the dbt system prompt in `agent.py:130` still says to pass `--project-dir`; both are outside this ticket's Authority. The denial message teaches the `cd` form, so the agent will learn it on first refusal.
 - 2026-11-04 主会话：PR #41 CI 绿。Codex app 一条 P1，核对属实，**退回**：
   - 退回：`run()`（`agent.py:817-821`）把 `--postgres-env` 指定的变量原样放进 SDK env；若操作者传 `--postgres-env DB_TYPE`，`PRINTABLE_VARIABLES` 会让 `echo $DB_TYPE` 把带密码的 Postgres URL 打给模型。这是工单会话在 Comments 里自己也指出的那条。修法：在 `run()` 里加一条校验，`--postgres-env` 的名字在 `PRINTABLE_VARIABLES` 里、或以 `BASH_`/`CLAUDE_` 开头时抛 `ConfigError`（后者防数据库 env 覆盖本工单设的 Bash 超时和 cwd 变量），配一个修复前会失败的测试。Authority 已为此放开一行。在原分支 `worktree-40-guards-workdir-dbt-timeouts` 上接着修，修完提交，重新跑两道审查后把 Comments/Ledger 写进最终回复。
+
+### 2026-11-04 工单会话，退回修复（commits 88429c2、48983dc、3a8fa22）
+
+**退回项（Codex P1，`--postgres-env DB_TYPE`）。** `run()` 在检查变量是否设置之前先校验名字：在 `PRINTABLE_VARIABLES` 里、在 `settings.sdk_env()` 的键里、或以 `BASH_`/`CLAUDE_` 开头，都抛 `ConfigError`（`agent.py:817-830`）。测试 `tests/test_postgres.py::test_run_rejects_a_database_variable_the_agent_could_print_or_that_configures_the_cli`，四个用例 `DB_TYPE`、`BASH_MAX_TIMEOUT_MS`、`CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR`、`ANTHROPIC_BASE_URL`；修复前三个用例全部 `DID NOT RAISE ConfigError`。
+
+**Step 3 真实运行**（临时 workspace，含 `dbt_packages/dbt_utils/integration_tests/.env/postgres.env` 和 `models/sub/.env`）：
+
+```
+--postgres-env DB_TYPE            -> ConfigError: DB_TYPE cannot hold the Postgres URL: the agent may print it, or it configures the Claude Code CLI; use another --postgres-env name
+--postgres-env ANTHROPIC_BASE_URL -> ConfigError (same text)
+--postgres-env DA_TEST_URL        -> run started
+Grep {pattern}                                   -> deny: ... denied: . (holds credential files dbt_packages/dbt_utils/integration_tests/.env/postgres.env; add a glob or type that skips them)
+Grep {glob: '!dbt_packages/*.env'}               -> deny
+Grep {glob: '!models/*.env'}                     -> deny
+Grep {path: dbt_packages, glob: 'dbt_packages/**'} -> deny
+Grep {glob: '*/dbt_packages/**'}                 -> deny
+Grep {glob: 'models/**/*.sql'}                   -> allow
+Grep {glob: '*.sql'} / {glob: '!*.env'} / {type: sql} -> allow
+```
+
+**Checks.** `make check`: 1533 passed, 1 skipped (`/tmp/wt40-check4.txt`). `uv run pytest tests/acceptance`: 39 passed, unchanged. Guard and postgres test files: 234 passed.
+
+**Review 1, da-review (Codex) on 88429c2.** P1: `fnmatch` lets `*` cross `/`, so `glob="!models/*.env"` counted as excluding `models/sub/.env` while ripgrep still reads it. Confirmed with local `rg` (and found that where rg anchors a slash glob depends on how the search path is passed). Fixed in 48983dc. P2 honor `.gitignore`: not fixed, same reason as before (ticket stop condition; denial is the safe side). P2 credential-named directory as `path` denied even with a filter: not fixed, the ticket says "`path` 本身是凭据文件，照旧拒绝".
+
+**Review 2, eng:code-review on 48983dc.** Spec axis: the mirror-image defect, an including slash glob that fails to match counted as skipping the file (`glob="*/dbt_packages/**"` or `path=dbt_packages, glob="dbt_packages/**"` allowed a search that reads the credential). Standards axis: `--postgres-env ANTHROPIC_BASE_URL` passed the check and would override the SDK endpoint, since the database env is merged last. Both fixed in 3a8fa22: `_glob_matches` now judges a slash glob only by its last segment (if that cannot match the file name, the glob cannot match under any anchoring; otherwise the answer is unknown and `_filter_skips` reads it the safe way: including keeps, excluding is ignored), and `run()` also rejects names in `sdk_env()`. Other standards items (Data Clumps on `glob, file_type`, `TOOL_RESULTS` None wildcard, module size) were judgement calls from earlier commits, not changed. Codex's second pass on 48983dc raised the same including-glob P1 (covered by 3a8fa22) and a P2 that `dbt_packages/*.env` over-denies; not fixed, over-denial is the safe direction and the hint teaches name globs.
+
+**Review 3, da-review on the final diff (3a8fa22), report only, both fix rounds used.** P2: `--postgres-env` set to `DATA_AGENT_MODEL`, `DATA_AGENT_BASE_URL`, or `PATH` still passes. True, but these break the run loudly (wrong model name or no subprocess) rather than leak the URL, and need the operator to choose that name. Follow-up candidate: also reject `DATA_AGENT_*` and `PATH`. P2: `_credentials_below` walks the whole Grep path on every call without early exit. True; the previous `_holds_credentials` also walked but stopped at the first hit. Benchmark workspaces are small and no timeout was seen in tests. Follow-up candidate if large workspaces appear: cache per guard instance.
+
+**Known limitations carried over.** `skills/dbt-workflow/SKILL.md:373` still says validate's default is 60; the dbt system prompt still says to pass `--project-dir`. Both outside Authority.
