@@ -1,10 +1,10 @@
 # 42 — dictionary_search 改成预建采样字典：搜索不再现扫全库
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 39
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (fable-5.1)
+Branch: worktree-42-dictionary-search-prebuilt
 
 ## Goal
 
@@ -87,10 +87,47 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0（工单会话无模型调用；本地真实运行和初筛的花费由主会话记）
+- Outcome: in-review，branch `worktree-42-dictionary-search-prebuilt`（commits e2c9710、0ed8073、eba56ef）；本地真实运行与初筛待主会话
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-04 工单会话（worktree 42-dictionary-search-prebuilt，commits e2c9710、0ed8073、eba56ef）
+
+改动：
+- `gateway.py`: a `Session` protocol (one read-only connection, `query` / `interrupt` / `close`) with DuckDB and Postgres implementations. Every session statement still passes `check()` and the per-statement timeout. The per-statement helpers were extracted so the session shares them instead of copying them.
+- `context_tools.py`: ktx's sampling constants (registered in `NOTICE`), `DictionaryBuild` (base tables sorted by schema and name, one `LIMIT 10000` statement per table, 60 s total with a timer that interrupts mid-statement, 10 s per statement, cancel from any thread), `Dictionary` with JSON save/load and `search()` that appends coverage and ktx-style miss reasons. `dictionary_search` reads only the dictionary.
+- `agent.py`: the build runs before the SDK `query()`, writes `dictionary.json` to a temp dir outside the workspace, emits a `dictionary` event with the coverage, and passes `--dictionary` to the MCP server. SIGINT and SIGTERM cancel the build and end the run.
+- `cli.py` / `mcp_server.py`: `--dictionary` flag; a server started without it and with the context layer on builds at startup. baseline and no-context build nothing.
+
+**Step 3, real behaviour (model-free; the model run is left to the main session, see below).** `uv run python runs/t42-real/demo.py runs/t42-real/shop.duckdb` on the shop fixture:
+
+```
+build wall time: 0.036 s
+coverage: tables_total=9, tables_profiled=9, columns_profiled=34, sample_rows=10000, timed_out=False, not_profiled=[], columns_excluded=14, columns_high_cardinality=0
+
+$ dictionary_search('c0001')  [24 ms round trip, via the real stdio server with --dictionary]
+raw.orders.customer_ref: 'c0001' (3), ' C0001' (2), 'C0001' (2)
+Coverage: 9 of 9 base tables sampled (up to 10000 rows each), 34 columns kept, 14 skipped by name (ID-like), 0 over 200 distinct values; built in 0.0 s
+
+$ dictionary_search('zebra')  [2 ms]
+No sampled value contains 'zebra' (value_not_in_sample). The dictionary holds the 100 most frequent values of each categorical column in the first 10000 rows of a table, and never ID-like columns (_id, _key, _uuid, email, …): confirm with query_database on the column you expect, e.g. SELECT DISTINCT col FROM t WHERE lower(col) LIKE '%…%'.
+Coverage: 9 of 9 base tables sampled ...
+```
+
+**Unit tests:** `tests/test_dictionary.py`, 26 tests, all passing: build rules, high cardinality, 10,000-row sample, time limit (fake clock, mid-statement, during connect, during catalog read), failed connection, file released to another process (subprocess), cancel within 2 s with connection closed, SIGINT/SIGTERM cancel, hits, miss reasons, search after renaming the db file, bounds, JSON round trip, `--dictionary` file is what the server searches, standalone server builds at startup, `run` emits the `dictionary` event and passes the path, baseline/no-context build nothing. `make check`: ruff, format, basedpyright 0 errors, 1476 passed. `tests/acceptance/`: 39 passed, 15 deselected (Postgres, no server here).
+
+**Model run not done here:** the classifier denied `. ~/.config/data-agent/env` in this worktree session. Command for the main session (spend well under the $0.3 cap):
+
+```
+set -a && . ~/.config/data-agent/env && set +a && uv run data-agent run --task "How many orders in raw.orders belong to customer C0001 across its dirty customer_ref spellings? Call dictionary_search with keyword 'c0001' first, then count with one SQL query. Answer with the number." --type query --workspace runs/t42-real/workspace --duckdb runs/t42-real/shop.duckdb --config full --events-dir runs/t42-real/events
+```
+
+The `dictionary` event in the event file carries `elapsed_seconds`, `tables_profiled`, `tables_total`, `columns_profiled`, `timed_out`, `tables_not_profiled`, `columns_excluded`, `columns_high_cardinality`, `error`.
+
+**Review round 1 (`da-review main`, Codex):** P1 deadline could overshoot by one statement: fixed, a timer now interrupts the session at the limit (commit 0ed8073). P2 skipped columns and reasons not reported: fixed, coverage counts columns skipped by name and by cardinality. P1 Postgres enum columns show as `USER-DEFINED` and are not sampled: not fixed. ktx reads `format_type()`, which names an enum by its type name, so ktx's own regex misses them too, and the catalog query is in `db_facts.py`, outside Authority. Known limitation.
+
+**Review round 2 (`eng:code-review main`):** Spec: connect time not under the timer: fixed (eba56ef). `value_not_in_sample` printed when zero tables were sampled: fixed. Standards: `PostgresSession.query` copied `PostgresGateway._run`: fixed with a shared helper, same shape as the DuckDB side. `Sampled` renamed `TableSample`. Not fixed: `literal` re-export in `context_tools.py` (removing it needs a one-line import change in `verifier_tools.py`, outside Authority; suggest doing it in a later ticket); `context_tools.py` is now 560 lines (a `dictionary.py` would fix it, but the file name is outside Authority); `build_server(dictionary=...)` parameter (it is the wiring); `clock` parameter (the test seam); `dialect` class attribute on sessions (mirrors the gateway classes); the gateway helper extraction goes past "只加会话接口" but leaves behaviour unchanged and avoids duplicating the statement path. The type regex is ktx's verbatim, so the NOTICE wording stands.
