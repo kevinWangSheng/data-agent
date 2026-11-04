@@ -20,6 +20,12 @@ License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-
 - src/data_agent/db_facts.py: the Postgres row-estimate query (`n_live_tup`, falling back to
   `pg_class.reltuples`) and the `pg_indexes` read <- signalpilot/gateway/gateway/connectors/
   drivers/postgres.py (`_get_schema_impl`), modified as noted at its top.
+- src/data_agent/mcp_server.py: the list_tables rendering (`render_table_listing`, `missing_line`,
+  the 200-table and 36,000-character limits) <- signalpilot/gateway/gateway/mcp/tools/schema/
+  catalog.py (`_render_table_listing`, `_missing_line`); the query_database display cap in
+  `format_rows` (50-row floor, 12,000-character budget, 400-row maximum, `[INCOMPLETE DISPLAY]`
+  notice) <- signalpilot/gateway/gateway/mcp/tools/query.py (`query_database`); modified as noted
+  at its top.
 
 ## signalpilot-plugin
 

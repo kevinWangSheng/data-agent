@@ -18,6 +18,11 @@
 # Only a model's own description is shown, not one of its columns'.
 # The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
 # The snapshots hint says `dbt snapshot` cannot run here (data-agent's Bash allows no snapshot).
+# The full report goes to `.data-agent/scan/<project directory name>.md` under the given directory;
+# standard output is a summary of at most 20,000 characters whose last line is the report's path. A
+# report that fits is printed whole. Otherwise the five sections the Skill's Step 1 records (STUBS TO
+# REWRITE, MODELS TO BUILD, DEPENDENCIES, REQUIRED COLUMNS, AVAILABLE MACROS) come first, then the
+# other sections in order, cut at whole lines with `… N more lines in <report path>`.
 """Pre-scan a dbt project and emit a structured context block.
 
 Used by the dbt-workflow SKILL.md via !`python3 scan_project.py` to inject
@@ -31,6 +36,7 @@ analyze_project_db / list_tables MCP tools.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import re
@@ -406,21 +412,93 @@ def scan_packages(work_dir: Path) -> str:
 
 # ── Main ──────────────────────────────────────────────────────────────────
 
-def main():
-    # Find the dbt project directory
-    work_dir = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
+SUMMARY_CHAR_BUDGET = 20_000
+# The sections the dbt-workflow Skill's Step 1 records; the summary keeps them whole and first.
+PRIORITY_SECTIONS = (
+    "STUBS TO REWRITE",
+    "MODELS TO BUILD",
+    "DEPENDENCIES",
+    "REQUIRED COLUMNS",
+    "AVAILABLE MACROS",
+)
 
-    # Look for dbt_project.yml to confirm we're in a dbt project
-    if not _has_project(work_dir, work_dir):
-        # Try common subdirectories
-        for subdir in work_dir.iterdir():
-            if subdir.is_dir() and _has_project(subdir, work_dir):
-                work_dir = subdir
-                break
+
+def find_project(root: Path) -> Path | None:
+    """`root` itself when it holds a dbt_project.yml, else the first subdirectory that does."""
+    if _has_project(root, root):
+        return root
+    for subdir in root.iterdir():
+        if subdir.is_dir() and _has_project(subdir, root):
+            return subdir
+    return None
+
+
+def report_path(root: Path, work_dir: Path) -> Path:
+    return root / ".data-agent" / "scan" / f"{work_dir.name}.md"
+
+
+def split_sections(report: str) -> list[list[str]]:
+    """The report's sections: each starts at a line with text in column 0 (a heading) and holds
+    the indented and blank lines after it."""
+    sections: list[list[str]] = []
+    for line in report.splitlines():
+        if sections and (not line or line[0] == " "):
+            sections[-1].append(line)
         else:
-            print("(no dbt_project.yml found — skip project scan)")
-            return
+            sections.append([line])
+    return sections
 
+
+def summary(report: str, path: Path) -> str:
+    """The report within SUMMARY_CHAR_BUDGET characters, ending with the report's path. A report
+    that fits is printed whole. Otherwise the PRIORITY_SECTIONS come first, then the other sections
+    in order, cut at a whole line with a note of how many lines the report file still holds."""
+    path_line = f"Full report: {path}"
+    whole = report.rstrip("\n") + "\n\n" + path_line
+    if len(whole) <= SUMMARY_CHAR_BUDGET:
+        return whole
+    sections = split_sections(report)
+    title, rest = sections[:1], sections[1:]
+    priority = [
+        section
+        for heading in PRIORITY_SECTIONS
+        for section in rest
+        if section[0].startswith(heading)
+    ]
+    ordered = title + priority + [section for section in rest if section not in priority]
+    lines = [line for section in ordered for line in section]
+    reserve = len(f"… {len(lines)} more lines in {path}") + 1 + len(path_line) + 1
+    used = 0
+    shown = 0
+    for line in lines:
+        if used + len(line) + 1 > SUMMARY_CHAR_BUDGET - reserve:
+            break
+        used += len(line) + 1
+        shown += 1
+    kept = lines[:shown]
+    while kept and not kept[-1]:
+        kept.pop()
+    kept.append(f"… {len(lines) - shown} more lines in {path}")
+    return "\n".join(kept) + "\n\n" + path_line
+
+
+def main():
+    root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
+    work_dir = find_project(root)
+    if work_dir is None:
+        print("(no dbt_project.yml found — skip project scan)")
+        return
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        print_report(work_dir)
+    report = buffer.getvalue()
+    path = report_path(root, work_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report, encoding="utf-8")
+    print(summary(report, path))
+
+
+def print_report(work_dir: Path) -> None:
     # Scan YML
     yml_models: set[str] = set()
     all_columns: dict[str, list[str]] = {}
