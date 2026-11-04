@@ -123,11 +123,15 @@ def _grep_globs(glob: str) -> list[str]:
     return pieces
 
 
-def _glob_matches(pattern: str, path: Path) -> bool:
+def _glob_matches(pattern: str, path: Path, certain: bool = False) -> bool:
     """Whether a ripgrep `--glob` (case-sensitive) matches `path`, relative to the search root.
     A pattern without a slash matches the file name at any depth; with one it matches the whole
     relative path, from the root (`/x`) or any depth (`**/x`). `*` is let match across slashes,
-    so a doubtful pattern counts as matching."""
+    so a doubtful pattern counts as matching. With `certain`, only a file-name pattern can match:
+    ripgrep's `*` stops at a slash, and where it anchors a path pattern depends on how the search
+    path was given, so `!models/*.env` must not count as skipping `models/sub/.env`."""
+    if certain and "/" in pattern.removeprefix("**/"):
+        return False
     targets = [str(path)] if "/" in pattern else [path.name]
     if pattern.startswith("**/"):
         pattern = pattern[3:]
@@ -145,8 +149,9 @@ def _filter_skips(path: Path, glob: str | None, file_type: str | None) -> bool:
     decision = None
     globs = _grep_globs(glob) if glob else []
     for pattern in globs:
-        if _glob_matches(pattern.removeprefix("!"), path):
-            decision = "skip" if pattern.startswith("!") else "keep"
+        excluding = pattern.startswith("!")
+        if _glob_matches(pattern.removeprefix("!"), path, certain=excluding):
+            decision = "skip" if excluding else "keep"
     if decision is None and any(not pattern.startswith("!") for pattern in globs):
         decision = "skip"
     if decision is not None:
