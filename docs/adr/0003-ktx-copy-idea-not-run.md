@@ -19,3 +19,19 @@ ktx（TS ~115k 行 + Python ~10k 行）需要 LLM 驱动的 ingest、embedding �
 
 - 上下文层消融衡量的是"策略"的贡献，不再包含"给不给事实"；`baseline` 变强，消融数字和 dev-3 不可直接比。
 - 工单 37 合入后要在新 main 上重跑合并验收（plan §10 第 13b 项）。
+
+## Update 2026-11-04：`dictionary_search` 改成预建字典
+
+accept-2 里，`dictionary_search` 在调用时把所有表的所有文本列现扫一遍，没有总时限。在约 2400 个模型的 dbt 库上，6 次调用跑满了 Claude Code 的 1800 秒上限，被放弃的扫描还占着库文件，后面的 `dbt run` 拿不到写锁。原因是只抄了 ktx 的工具契约，没抄它的前提：ktx 在 scan 阶段预建采样字典，搜索时只读字典（`packages/cli/src/context/scan/data-dictionary.ts:9-34`、`sl/dictionary-search.ts`，ktx@49a4ae6）。
+
+决定（工单 42）：
+- agent 开跑前由 harness 建字典，只在开了上下文层的配置里建。只扫基础表，不扫视图。
+- 收列规则和上限用 ktx 默认值：只收类别型文本或布尔列；按 ktx 的列名规则排除 `_id`、`_at`、`email` 一类列；不同值超过 200 的列跳过；每列最多 100 个值；每张表采样 10000 行。
+- 总时限 60 秒，单条语句 10 秒。时限用完就保留已建好的部分，搜索结果说明覆盖范围。
+- 建字典用只读连接，建完立即关闭；建的过程可以被取消。搜索只读内存里的字典，不连库。
+- 返回覆盖范围（扫了几张表、几列，采样多少行，跳过的列和原因）和未命中原因（值不在样本里、表没扫到），照 ktx 的 `searched` / `misses` 字段。ID 类值请用 `query_database` 查。
+
+## Consequences（2026-11-04）
+
+- `dictionary_search` 只能搜到样本里的值，罕见值可能搜不到；未命中原因会告诉 agent 去哪一列用 SQL 确认。
+- 上下文层的配置开跑会多花建字典的时间，最多 60 秒。
