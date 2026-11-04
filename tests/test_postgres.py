@@ -184,6 +184,26 @@ async def test_run_without_the_database_variable_in_its_env_is_a_config_error(
     assert not (tmp_path / "events").exists()
 
 
+@pytest.mark.parametrize(
+    "name", ["DB_TYPE", "BASH_MAX_TIMEOUT_MS", "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"]
+)
+async def test_run_rejects_a_database_variable_the_agent_could_print_or_that_configures_bash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+) -> None:
+    """A printable name would let `echo $DB_TYPE` show the URL; a BASH_/CLAUDE_ name would
+    override the Bash timeout and cwd settings the harness relies on."""
+
+    def no_query(**_: Any) -> AsyncIterator[Any]:
+        raise AssertionError("the run must not start")
+
+    monkeypatch.setattr(agent, "query", no_query)
+    task = Task(text="q", type="query", workspace=tmp_path, postgres_env=name)
+    env = {"DATA_AGENT_API_KEY": "sk-test", name: "postgresql://u:pw@h/db"}
+    with pytest.raises(ConfigError, match=name):
+        await agent.run(task, load_config("full"), tmp_path / "events", env)
+    assert not (tmp_path / "events").exists()
+
+
 def test_postgres_skill_names_only_real_tools_and_no_scoring() -> None:
     text = (SKILLS_DIR / "postgres-sql" / "SKILL.md").read_text()
     assert text.startswith("---\nname: postgres-sql\n")

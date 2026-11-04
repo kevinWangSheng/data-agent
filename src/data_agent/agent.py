@@ -815,6 +815,15 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
     settings = ModelSettings.from_env(env)
     database_env: dict[str, str] = {}
     if task.postgres_env:
+        # The URL variable goes into the SDK env as is: a printable name would let `echo $VAR`
+        # show the URL to the model; a BASH_/CLAUDE_ name would override the CLI settings above.
+        if task.postgres_env in PRINTABLE_VARIABLES or task.postgres_env.startswith(
+            ("BASH_", "CLAUDE_")
+        ):
+            raise ConfigError(
+                f"{task.postgres_env} cannot hold the Postgres URL: the agent may print it, or "
+                "it configures the Claude Code CLI; use another --postgres-env name"
+            )
         if not env.get(task.postgres_env):
             raise ConfigError(f"{task.postgres_env} (the Postgres URL) is not set")
         # Only this variable: the server would otherwise read the parent's, or none.
