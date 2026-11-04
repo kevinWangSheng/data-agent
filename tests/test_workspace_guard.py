@@ -140,6 +140,29 @@ def test_dbt_runs_guard_file_writes_and_bash(tmp_path: Path) -> None:
     assert not {"Write", "Edit", "Bash"} & set(query_tools)
 
 
+async def test_dbt_runs_let_bash_print_db_type_and_wait_for_validate(tmp_path: Path) -> None:
+    """The Bash guard gets the harness's variable list, and Bash's default timeout outlasts
+    validate_project.py's 300-second cap, so a slow dbt parse is never cut off mid-run."""
+    task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
+    settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
+    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
+    assert options.env["BASH_DEFAULT_TIMEOUT_MS"] == "360000"
+    assert options.env["BASH_MAX_TIMEOUT_MS"] == "600000"
+    matchers = (options.hooks or {}).get("PreToolUse", [])
+    bash_hooks = [hook for m in matchers if m.matcher == "Bash" for hook in m.hooks]
+    assert len(bash_hooks) == 1
+    hook_input: Any = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s",
+        "transcript_path": "t",
+        "cwd": str(tmp_path),
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo $DB_TYPE"},
+        "tool_use_id": "u",
+    }
+    assert await bash_hooks[0](hook_input, "u", {"signal": None}) == {}
+
+
 async def test_denial_does_not_write_the_workspace_path(workspace: Path) -> None:
     """The reason reaches the event file, which is published; it names no absolute path."""
     guard = workspace_guard(workspace)
@@ -203,6 +226,108 @@ async def test_files_beside_credentials_stay_readable(
 ) -> None:
     (with_credentials / "models" / "env_link.sql").unlink()
     assert await decide(with_credentials, tool, tool_input) == "none"
+
+
+@pytest.fixture
+def with_sample_env(workspace: Path) -> Path:
+    """A dbt project whose package ships sample dotenv files, as dbt_utils does."""
+    samples = workspace / "dbt_packages" / "dbt_utils" / "integration_tests" / ".env"
+    samples.mkdir(parents=True)
+    (samples / "postgres.env").write_text("PGPASSWORD=sample")
+    (samples / "duckdb.env").write_text("DUCKDB_PATH=sample")
+    (workspace / "models" / "schema.yml").write_text("version: 2")
+    return workspace
+
+
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        {"pattern": "select", "glob": "*.sql"},
+        {"pattern": "select", "glob": "*.{sql,yml}"},
+        {"pattern": "select", "glob": "models/**/*.sql"},
+        {"pattern": "select", "glob": "!*.env"},
+        {"pattern": "select", "type": "sql"},
+        {"pattern": "select", "type": "yaml"},
+        {"pattern": "select", "path": "dbt_packages", "type": "sql"},
+        {"pattern": "select", "type": "env", "glob": "*.sql"},
+        # ripgrep applies both filters, so either one is enough to skip the files.
+        {"pattern": "select", "type": "sql", "glob": "*.env"},
+    ],
+)
+async def test_grep_runs_when_its_filter_skips_every_credential_file(
+    with_sample_env: Path, tool_input: dict[str, Any]
+) -> None:
+    assert await decide(with_sample_env, "Grep", tool_input) == "none"
+
+
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        {"pattern": "PASSWORD"},
+        {"pattern": "PASSWORD", "path": "dbt_packages"},
+        {"pattern": "PASSWORD", "glob": "*.env"},
+        {"pattern": "PASSWORD", "glob": "*"},
+        {"pattern": "PASSWORD", "glob": "**/*"},
+        {"pattern": "PASSWORD", "glob": "!*.sql"},
+        {"pattern": "PASSWORD", "glob": "dbt_packages/**"},
+        {"pattern": "PASSWORD", "type": "env"},
+    ],
+)
+async def test_grep_that_would_read_a_credential_file_is_denied_naming_it(
+    with_sample_env: Path, tool_input: dict[str, Any]
+) -> None:
+    guard = workspace_guard(with_sample_env)
+    hook_input: Any = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s",
+        "transcript_path": "t",
+        "cwd": str(with_sample_env),
+        "tool_name": "Grep",
+        "tool_input": tool_input,
+        "tool_use_id": "u",
+    }
+    output: Any = await guard(hook_input, "u", {"signal": None})
+    specific = output["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    reason = specific["permissionDecisionReason"]
+    assert "dbt_packages/dbt_utils/integration_tests/.env/postgres.env" in reason
+    assert "glob" in reason and "type" in reason
+    assert str(with_sample_env.resolve()) not in reason
+
+
+@pytest.fixture
+def tool_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Where Claude Code stores a tool's over-long output, under the home directory."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    saved = tmp_path / "home" / ".claude" / "projects" / "-tmp-ws" / "tool-results"
+    saved.mkdir(parents=True)
+    (saved / "r.txt").write_text("dbt run output")
+    (saved / "escape.txt").symlink_to(tmp_path / "secret.env")
+    return saved
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input", "decision"),
+    [
+        ("Read", {"file_path": "~/.claude/projects/-tmp-ws/tool-results/r.txt"}, "none"),
+        ("Read", {"file_path": "{saved}/r.txt"}, "none"),
+        ("Grep", {"pattern": "dbt", "path": "{saved}/r.txt"}, "none"),
+        ("Grep", {"pattern": "dbt", "path": "{saved}"}, "none"),
+        ("Grep", {"pattern": "dbt", "path": "{saved}", "glob": "*.txt"}, "none"),
+        ("Write", {"file_path": "{saved}/r.txt", "content": "x"}, "deny"),
+        ("Edit", {"file_path": "{saved}/r.txt", "old_string": "a", "new_string": "b"}, "deny"),
+        ("Read", {"file_path": "{saved}/escape.txt"}, "deny"),
+        ("Read", {"file_path": "{saved}/../other.txt"}, "deny"),
+        ("Read", {"file_path": "~/.claude/projects/-tmp-ws/memory.md"}, "deny"),
+        ("Glob", {"pattern": "*", "path": "{saved}"}, "deny"),
+        ("Grep", {"pattern": "dbt", "path": "{saved}", "glob": "../*"}, "deny"),
+    ],
+)
+async def test_saved_tool_results_may_be_read_and_searched_only(
+    workspace: Path, tool_results: Path, tool: str, tool_input: dict[str, Any], decision: str
+) -> None:
+    filled = {k: v.format(saved=tool_results) for k, v in tool_input.items()}
+    assert await decide(workspace, tool, filled) == decision
 
 
 @pytest.fixture

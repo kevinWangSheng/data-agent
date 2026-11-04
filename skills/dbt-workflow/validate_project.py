@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copied from SignalPilot-Labs/signalpilot-plugin skills/dbt-workflow/validate_project.py
+# (Apache-2.0; see NOTICE). Modified for data-agent: the default timeout is 300 seconds instead of
+# 60, since a full re-parse of a dbt project (every time the target changes) often takes longer.
 """Run dbt parse and surface structural errors.
 
 Runs `dbt parse` as a subprocess against a project directory and parses the
@@ -34,7 +37,7 @@ _ORPHAN_PATCH = re.compile(
     re.IGNORECASE,
 )
 
-_DEFAULT_TIMEOUT = 60
+_DEFAULT_TIMEOUT = 300
 
 
 def validate(project_dir: Path, timeout: int = _DEFAULT_TIMEOUT) -> dict:

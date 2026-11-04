@@ -82,6 +82,9 @@ QUERY_BUILTIN_TOOLS: list[str] = list(GUARDED_TOOLS)
 # and Edit in the workspace and off the database file; the command guard lets Bash run only dbt and
 # the dbt-workflow scripts, so reads still go through the gateway.
 DBT_BUILTIN_TOOLS: list[str] = [*GUARDED_TOOLS, *WRITE_TOOLS, "Bash"]
+# Environment variables Bash may print (`echo $VAR`, `printenv VAR`): the benchmark tasks ask the
+# agent to print DB_TYPE first; no task asks for another.
+PRINTABLE_VARIABLES = ("DB_TYPE",)
 # Denied outright as well as left out of the tools: benchmark solutions are public, and the official
 # data-eng-bench configs turn web lookup off the same way (`disallowed_tools: WebSearch,WebFetch`).
 WEB_TOOLS: list[str] = ["WebSearch", "WebFetch"]
@@ -542,6 +545,11 @@ class ModelSettings:
             # Subagents (the verifiers) run in the foreground. Launched in the background, they
             # end the main turn before their reports are in and split the run into several results.
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+            # Bash waits longer than validate_project.py's 300-second cap on dbt parse (which is
+            # a full re-parse whenever the target changes), so the CLI never moves a running dbt
+            # to the background, where it would keep the database lock.
+            "BASH_DEFAULT_TIMEOUT_MS": "360000",
+            "BASH_MAX_TIMEOUT_MS": "600000",
         }
 
 
@@ -641,7 +649,7 @@ def build_options(
     if task.type == "dbt":
         tools = DBT_BUILTIN_TOOLS
         file_tools = (*GUARDED_TOOLS, *WRITE_TOOLS)
-        bash_guard = command_guard(task.workspace, dbt_scripts(config))
+        bash_guard = command_guard(task.workspace, dbt_scripts(config), PRINTABLE_VARIABLES)
         hooks = [HookMatcher(matcher="Bash", hooks=[bash_guard])]
     else:
         tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
