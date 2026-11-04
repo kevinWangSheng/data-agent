@@ -95,6 +95,8 @@ def test_build_skips_id_like_names_non_text_types_and_views(tmp_path: Path) -> N
     assert columns_of(dictionary, "main.v") == set()
     assert entry(dictionary, "main.t", "flag") == [("True", 1)]
     assert dictionary.coverage.tables_total == 1  # views are not base tables
+    assert dictionary.coverage.columns_excluded == 5  # by name; the non-text types do not count
+    assert "5 skipped by name" in dictionary.coverage.line()
 
 
 def test_build_skips_high_cardinality_columns_and_stores_at_most_100_values(
@@ -110,6 +112,8 @@ def test_build_skips_high_cardinality_columns_and_stores_at_most_100_values(
     assert len(entry(dictionary, "main.t", "wide")) == VALUES_STORED
     assert len(entry(dictionary, "main.t", "edge")) == VALUES_STORED
     assert dictionary.coverage.columns_profiled == 2
+    assert dictionary.coverage.columns_high_cardinality == 1
+    assert f"1 over {CARDINALITY_THRESHOLD} distinct values" in dictionary.coverage.line()
 
 
 def test_build_samples_only_the_first_10000_rows(tmp_path: Path) -> None:
@@ -197,6 +201,42 @@ class SlowSession(DuckDBSession):
 class SlowGateway(DuckDBGateway):
     def session(self, timeout_seconds: float) -> SlowSession:
         return SlowSession(self.path, timeout_seconds)
+
+
+class SlowSampleSession(DuckDBSession):
+    """Slow for the sample statements only, so the catalog is read and the sampling hangs."""
+
+    def query(self, sql: str, row_limit: int = 10_000) -> QueryResult:
+        if "information_schema" not in sql:
+            super().query("SELECT count(*) FROM range(1000000000000)", 1)
+        return super().query(sql, row_limit)
+
+
+class SlowSampleGateway(DuckDBGateway):
+    def session(self, timeout_seconds: float) -> SlowSampleSession:
+        return SlowSampleSession(self.path, timeout_seconds)
+
+
+def test_time_limit_interrupts_a_running_statement(shop: Path) -> None:
+    """The deadline holds mid-statement: a sample started at 59 s does not run 10 s more."""
+    started = time.monotonic()
+    dictionary = DictionaryBuild(SlowSampleGateway(shop), time_limit=0.5).run()
+    assert time.monotonic() - started < 2.0
+    assert dictionary.coverage.timed_out is True
+    assert dictionary.coverage.tables_profiled == 0
+    assert len(dictionary.coverage.not_profiled) == dictionary.coverage.tables_total == 9
+    proc = open_read_write_elsewhere(shop)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_time_limit_during_the_catalog_read_is_a_failed_build(shop: Path) -> None:
+    started = time.monotonic()
+    dictionary = DictionaryBuild(SlowGateway(shop), time_limit=0.5).run()
+    assert time.monotonic() - started < 2.0
+    assert dictionary.entries == []
+    assert dictionary.coverage.timed_out is True
+    assert dictionary.coverage.error is not None
+    assert "time limit" in dictionary.search("x")
 
 
 def test_cancel_interrupts_the_statement_and_closes_the_connection(shop: Path) -> None:

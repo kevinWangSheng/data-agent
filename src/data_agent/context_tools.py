@@ -169,11 +169,6 @@ def join_candidates(catalog: list[Table], table: Table) -> list[str]:
     return lines
 
 
-def is_candidate(column: str, data_type: str) -> bool:
-    """ktx `isKtxDataDictionaryCandidate`: a categorical type whose name is not ID-like."""
-    return bool(CANDIDATE_TYPES.match(data_type)) and not EXCLUDED_NAME.search(column)
-
-
 def sample_sql(table: Table, columns: list[str]) -> str:
     """One statement per table: the first SAMPLE_ROWS rows of its candidate columns. A plain
     LIMIT, never USING SAMPLE or TABLESAMPLE, which may read the whole table."""
@@ -204,6 +199,10 @@ class Coverage:
     elapsed_seconds: float
     timed_out: bool
     not_profiled: list[str] = field(default_factory=list)  # refs, in catalog order
+    # Skipped columns of the sampled tables, by reason: a categorical type with an ID-like name,
+    # and more than CARDINALITY_THRESHOLD distinct values in the sample.
+    columns_excluded: int = 0
+    columns_high_cardinality: int = 0
     error: str | None = None  # the build could not read the catalog: nothing was sampled
 
     def line(self) -> str:
@@ -214,8 +213,9 @@ class Coverage:
             )
         text = (
             f"Coverage: {self.tables_profiled} of {self.tables_total} base tables sampled "
-            f"(up to {self.sample_rows} rows each), {self.columns_profiled} columns, "
-            f"built in {self.elapsed_seconds:.1f} s"
+            f"(up to {self.sample_rows} rows each), {self.columns_profiled} columns kept, "
+            f"{self.columns_excluded} skipped by name (ID-like), {self.columns_high_cardinality} "
+            f"over {CARDINALITY_THRESHOLD} distinct values; built in {self.elapsed_seconds:.1f} s"
         )
         if self.timed_out:
             text += f"; stopped by the {TIME_LIMIT_SECONDS:.0f} s time limit"
@@ -297,19 +297,36 @@ def short(value: object) -> str:
     return repr(text if len(text) <= VALUE_CHARS else text[:VALUE_CHARS] + "…")
 
 
-def sample_table(session: Session, table: Table) -> list[Entry]:
-    """The table's dictionary entries: one per candidate column the sample kept."""
-    columns = [column for column, data_type in table.columns if is_candidate(column, data_type)]
+@dataclass
+class Sampled:
+    """One table's sample: its dictionary entries and the columns skipped, by reason."""
+
+    entries: list[Entry] = field(default_factory=list)
+    excluded: int = 0  # categorical type, ID-like name
+    high_cardinality: int = 0
+
+
+def sample_table(session: Session, table: Table) -> Sampled:
+    sampled = Sampled()
+    columns: list[str] = []
+    for column, data_type in table.columns:
+        if not CANDIDATE_TYPES.match(data_type):
+            continue
+        if EXCLUDED_NAME.search(column):
+            sampled.excluded += 1
+        else:
+            columns.append(column)
     if not columns:
-        return []
+        return sampled
     rows = session.query(sample_sql(table, columns), SAMPLE_ROWS).rows
-    entries: list[Entry] = []
     for index, column in enumerate(columns):
         counts = Counter(str(row[index]) for row in rows if row[index] is not None)
-        if not counts or len(counts) > CARDINALITY_THRESHOLD:
-            continue
-        entries.append(Entry(table.ref, column, len(counts), counts.most_common(VALUES_STORED)))
-    return entries
+        if len(counts) > CARDINALITY_THRESHOLD:
+            sampled.high_cardinality += 1
+        elif counts:
+            entry = Entry(table.ref, column, len(counts), counts.most_common(VALUES_STORED))
+            sampled.entries.append(entry)
+    return sampled
 
 
 class DictionaryCancelled(Exception):
@@ -318,8 +335,10 @@ class DictionaryCancelled(Exception):
 
 class DictionaryBuild:
     """One build over one read-only session: base tables in (schema, name) order, until all are
-    read or `time_limit` runs out. `cancel` (from any thread, before or during `run`) interrupts
-    the running statement; `run` then closes the session and raises DictionaryCancelled."""
+    read or `time_limit` runs out. The limit holds mid-statement: a timer interrupts the session
+    when it is reached, and what was built by then is kept. `cancel` (from any thread, before or
+    during `run`) interrupts the running statement; `run` then closes the session and raises
+    DictionaryCancelled."""
 
     def __init__(
         self,
@@ -333,11 +352,19 @@ class DictionaryBuild:
         self.statement_timeout = statement_timeout
         self.clock = clock
         self._cancel = threading.Event()
+        self._expired = threading.Event()
         self._session: Session | None = None
         self._lock = threading.Lock()
 
     def cancel(self) -> None:
         self._cancel.set()
+        self._interrupt()
+
+    def _expire(self) -> None:
+        self._expired.set()
+        self._interrupt()
+
+    def _interrupt(self) -> None:
         with self._lock:
             if self._session is not None:
                 self._session.interrupt()
@@ -352,14 +379,19 @@ class DictionaryBuild:
             return self.failed(str(exc), started)
         with self._lock:
             self._session = session
+        timer = threading.Timer(self.time_limit, self._expire)
+        timer.start()
         try:
             tables = [t for t in load_catalog(session.query) if t.kind == "table"]
             return self.sample(session, sorted(tables, key=lambda t: (t.schema, t.name)), started)
         except QueryInterrupted:
-            raise DictionaryCancelled from None
+            if self._cancel.is_set():
+                raise DictionaryCancelled from None
+            return self.failed("the time limit ran out while reading the catalog", started)
         except (QueryBlocked, QueryFailed) as exc:
             return self.failed(str(exc), started)
         finally:
+            timer.cancel()
             with self._lock:
                 self._session = None
             session.close()
@@ -369,6 +401,7 @@ class DictionaryBuild:
     def sample(self, session: Session, tables: list[Table], started: float) -> Dictionary:
         entries: list[Entry] = []
         not_profiled: list[str] = []
+        excluded = high_cardinality = 0
         timed_out = False
         for table in tables:
             if self._cancel.is_set():
@@ -378,14 +411,20 @@ class DictionaryBuild:
                 not_profiled.append(table.ref)
                 continue
             try:
-                found = sample_table(session, table)
+                sampled = sample_table(session, table)
             except QueryInterrupted:
-                raise DictionaryCancelled from None
+                if self._cancel.is_set():
+                    raise DictionaryCancelled from None
+                timed_out = True  # the timer stopped this statement; the rest are not sampled
+                not_profiled.append(table.ref)
+                continue
             except (QueryBlocked, QueryFailed):
                 # A statement that timed out or failed: the table is left out, the build goes on.
                 not_profiled.append(table.ref)
                 continue
-            entries.extend(found)
+            entries.extend(sampled.entries)
+            excluded += sampled.excluded
+            high_cardinality += sampled.high_cardinality
         coverage = Coverage(
             tables_total=len(tables),
             tables_profiled=len(tables) - len(not_profiled),
@@ -394,11 +433,15 @@ class DictionaryBuild:
             elapsed_seconds=self.clock() - started,
             timed_out=timed_out,
             not_profiled=not_profiled,
+            columns_excluded=excluded,
+            columns_high_cardinality=high_cardinality,
         )
         return Dictionary(coverage, entries)
 
     def failed(self, error: str, started: float) -> Dictionary:
-        coverage = Coverage(0, 0, 0, SAMPLE_ROWS, self.clock() - started, False, error=error)
+        elapsed = self.clock() - started
+        timed_out = self._expired.is_set()
+        coverage = Coverage(0, 0, 0, SAMPLE_ROWS, elapsed, timed_out, error=error)
         return Dictionary(coverage, [])
 
 
