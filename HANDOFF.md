@@ -42,6 +42,38 @@
 >   - `dab-score` 每个数据集只有 1 道题时，区间退化成一个点并标"significant"（试跑输出 "-11.76 points (95% CI -11.76 to -11.76; significant)"），应改成报"题数不够估计区间"。正式评测（全部题）不受影响。
 >   - DAB 的 Mongo 容器在试跑中途停止，原因查不到：`da-remote` 看不到容器退出状态，容器也没有重启策略。
 >   - DAB clone 现在有 104 道题（§5 写的是 54），第 15 项花费估算按 104 算。
+> - **accept-2 根因审查（2026-11-04，对齐会话）**：读完全部 180 个 trial，按工具、验证层、harness 三块和上游对照。完整报告（带 file:line 和实测数）在 `runs/accept-2/reading/design-audit/`，**只在本机，不进 git**；结论以本节为准。
+>   - 三类共同根因：
+>     - 抄了上游接口，丢了上游控制规模的设计（输出上限、预建字典、表目录缓存、改动前快照），在约 2400 个模型的 dbt 库上就挂住、输出超长或变慢；
+>     - 能算出来的事实（主键 NULL 和重复、改动前后的差异）交给了模型判断；
+>     - 本地测试环境和容器不一样（依赖、工作目录、dbt 增量解析）。
+>   - 问题清单（按对评测的影响排序）：
+>     1. `dictionary_search` 挂满 1800s：调用时遍历所有表的所有文本列现扫，没有总时限（`src/data_agent/context_tools.py:219-235`）；工具是同步函数，在线程里跑，客户端放弃后服务端仍在读库，之后 `dbt run` 报 "Conflicting lock"（取消有没有传到服务端未确认）。ktx@49a4ae6 是在 scan 阶段预建采样字典，搜索时只读字典（`packages/cli/src/context/scan/data-dictionary.ts:9-34`、`sl/dictionary-search.ts`）。full 有 5 个 trial 挂住，只过 1 个；同题的其他 trial 过 16/18；约占 6.7 分差距的一半。
+>     2. 验证层花费大、信号弱：
+>        - 全部 PASS 的 trial 成功率 63%，full 整体是 62%；34 个失败 trial 里只有 10 个收到过 FAIL；验证器占 full 运行时间的 1/3，花费约占 35–55%（估算，未确认）。
+>        - CHECK 5/6 拿主 agent 自己的说法当"原样"，会让 agent 删掉原有过滤条件（division-by-zero），或驳回本来正确的推导（inventory-turnover）。
+>        - 主键 NULL 由模型判断，曾给 256 行 NULL 判 PASS（pos-operations）。
+>        - 派单消息带着主 agent 自己的假设；FAIL 只靠提示词约束；Skill 和系统提示词对 FAIL 之后怎么做说法不一致。
+>        - 上游 SignalPilot 的 benchmark 版有 `prebuild_state.md` 和主键、NULL 子检查，我们没带。
+>     3. 输出超长，模型读不到：
+>        - `list_tables` 一次返回 66.5 万字符，两种配置共 125/180 个 trial 遇到，210 次调用只拿回报错。SignalPilot 是最多 200 张表、约 3.6 万字符，有 `schema=` 和 `columns=false`，结尾说明还有多少没显示（`signalpilot/gateway/gateway/mcp/tools/schema/catalog.py:204` 起）。
+>        - scan 输出 758KB，模型只看到 2KB 预览，Skill 却要求 "Read the ENTIRE output"。
+>        - `query_database` 只限行数、不限字符数。
+>        - Claude Code 把超长输出存成文件，workspace 守卫又不让读（41 次）。
+>     4. 表目录不缓存：每次调用都重读 `information_schema`，每条语句新开一个 DuckDB 连接；`describe_table` 中位数 14 秒、最慢 81 秒；验证工具累计约 49 个工具小时。SignalPilot 缓存 300 秒。
+>     5. 工作目录和 dbt 解析：守卫不许 `cd`，profile 里的相对路径 `../database` 在 97/180 个 trial 里失效，agent 只好改 `profiles.yml`；镜像用 `--target dev` 构建，`vars_hash` 里含 target，所以每个 trial 第一次跑 dbt 都完整重新解析，要 60–75 秒，validate 的 60 秒上限超时 18/91 次（本地复现过）。
+>     6. 守卫误拦：dbt_utils 自带的样例 `.env` 让整个 dbt 项目目录不能 Grep（205 次）；`echo $DB_TYPE` 在 180 个 trial 里全被拦，103 道题里有 94 道要求这样做。拦截共 757 次，和得分的相关很弱，代价主要是间接的。
+>     7. 运行时缺 `pytz`：只通过开发依赖（dbt）装进来，容器安装用 `--no-dev`（`evals/harbor_agent.py:153`），带时区的时间戳列查询会报错，共 38 次，pos-operations 占 26 次。
+>     8. 同一轮的多个 MCP 调用串行执行（21 个调用耗时 340 秒），原因未确认，可能和工具没标 `readOnlyHint` 有关。
+>   - 修 agent 救不回来的（记成已知限制，按 ADR-0005 不追）：6 道两种配置都 0 分的题里，5 道主要卡在题面和评分器不一致，分别是 cohort-retention、cltv-forecasting、inventory-turnover、fifo-inventory-cogs、promotional-lift；fifo 的 DuckDB 期望值看起来自相矛盾，参考解答本地跑不了，未确认。tier-migration 主要是 agent 自己用了 `count(distinct)`。marketing-attribution 同理，之前已经定过不修。
+>   - 分类：
+>     - 已经可以定、上游有先例：7、3（`list_tables` 和 `query_database` 的输出上限）、4、6 的 Grep 规则。
+>     - 要先讨论：1（照 ktx 预建字典，还是从 full 里拿掉）、5 和 6 的 `echo` 白名单（会改 command_guard 的安全边界）、3 的 scan 输出摘要（要改 Skill）、2（验证层重新设计，ADR 级别）。
+>     - 先查清原因：8；1 里取消有没有传到服务端。
+>   - 建议顺序：1 → 3 → 4 → 5/6/7 → 2 → 8。3 到 7 对 baseline 也有影响，修完 full 和 baseline 要一起重跑才能比较。
+>   - **等人决定**：
+>     - 修一轮还是冻结（上面 13b 的决定还没做）；
+>     - 修完怎么验证：止损线还剩约 ¥34，只够在少量题上初筛；完整对照约 ¥115，超出止损线。
 >
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
 >
