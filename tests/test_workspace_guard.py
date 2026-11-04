@@ -8,7 +8,7 @@ import pytest
 from data_agent import agent
 from data_agent.agent import ModelSettings, Task
 from data_agent.run_config import load_config
-from data_agent.workspace_guard import workspace_guard
+from data_agent.workspace_guard import GREP_TYPES, workspace_guard
 
 
 @pytest.fixture
@@ -148,6 +148,8 @@ async def test_dbt_runs_let_bash_print_db_type_and_wait_for_validate(tmp_path: P
     options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
     assert options.env["BASH_DEFAULT_TIMEOUT_MS"] == "360000"
     assert options.env["BASH_MAX_TIMEOUT_MS"] == "600000"
+    # Else the CLI carries a `cd dir && ...` into the next Bash call, which the guard cannot see.
+    assert options.env["CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"] == "1"
     matchers = (options.hooks or {}).get("PreToolUse", [])
     bash_hooks = [hook for m in matchers if m.matcher == "Bash" for hook in m.hooks]
     assert len(bash_hooks) == 1
@@ -201,6 +203,8 @@ def with_credentials(workspace: Path) -> Path:
         ("Grep", {"pattern": "KEY", "path": ".env"}),
         ("Grep", {"pattern": "KEY"}),
         ("Grep", {"pattern": "KEY", "path": "config", "glob": "*.local"}),
+        # `**/` matches zero directories too, so the root `.env` is reached.
+        ("Grep", {"pattern": "KEY", "glob": "**/.env*"}),
         ("Write", {"file_path": ".env", "content": "x"}),
         ("Edit", {"file_path": "config/.env.local", "old_string": "x", "new_string": "y"}),
     ],
@@ -250,8 +254,13 @@ def with_sample_env(workspace: Path) -> Path:
         {"pattern": "select", "type": "yaml"},
         {"pattern": "select", "path": "dbt_packages", "type": "sql"},
         {"pattern": "select", "type": "env", "glob": "*.sql"},
-        # ripgrep applies both filters, so either one is enough to skip the files.
-        {"pattern": "select", "type": "sql", "glob": "*.env"},
+        {"pattern": "select", "type": "sql", "glob": "!*.env"},
+        # Grep passes each whitespace- or comma-separated piece as its own glob.
+        {"pattern": "select", "glob": "*.sql *.yml"},
+        {"pattern": "select", "glob": "*.sql,*.yml"},
+        # ripgrep lets the last matching glob decide.
+        {"pattern": "select", "glob": "*.env !*.env"},
+        *({"pattern": "select", "type": name} for name in GREP_TYPES),
     ],
 )
 async def test_grep_runs_when_its_filter_skips_every_credential_file(
@@ -270,7 +279,13 @@ async def test_grep_runs_when_its_filter_skips_every_credential_file(
         {"pattern": "PASSWORD", "glob": "**/*"},
         {"pattern": "PASSWORD", "glob": "!*.sql"},
         {"pattern": "PASSWORD", "glob": "dbt_packages/**"},
+        {"pattern": "PASSWORD", "glob": "**/*.env"},
         {"pattern": "PASSWORD", "type": "env"},
+        # An including glob keeps a file whatever `type` says (ripgrep checks globs first).
+        {"pattern": "PASSWORD", "type": "sql", "glob": "*.env"},
+        {"pattern": "PASSWORD", "glob": "*.sql *.env"},
+        {"pattern": "PASSWORD", "glob": "*.sql,*.env"},
+        {"pattern": "PASSWORD", "glob": "!*.env *.env"},
     ],
 )
 async def test_grep_that_would_read_a_credential_file_is_denied_naming_it(
@@ -298,15 +313,14 @@ async def test_grep_that_would_read_a_credential_file_is_denied_naming_it(
 @pytest.mark.parametrize(
     ("tool_input", "decision"),
     [
-        # An excluding glob must match the name exactly to count; an including one is matched
-        # ignoring case, so either way an upper-case credential file is never read.
+        # Globs are case-sensitive (Grep passes `--glob`), so `!*.env` leaves SNOWFLAKE.ENV in.
         ({"pattern": "KEY", "glob": "!*.env"}, "deny"),
         ({"pattern": "KEY", "glob": "*.env"}, "deny"),
         ({"pattern": "KEY", "glob": "*.sql"}, "none"),
         ({"pattern": "KEY", "type": "sql"}, "none"),
     ],
 )
-async def test_grep_filters_are_matched_without_trusting_the_case(
+async def test_grep_filters_are_matched_case_sensitively(
     with_sample_env: Path, tool_input: dict[str, Any], decision: str
 ) -> None:
     upper = with_sample_env / "dbt_packages" / "dbt_utils" / "integration_tests" / ".env"

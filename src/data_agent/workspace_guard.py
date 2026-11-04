@@ -111,33 +111,48 @@ def _expand_braces(pattern: str) -> list[str]:
     ]
 
 
-def _glob_matches(pattern: str, path: Path, fold_case: bool) -> bool:
-    """Whether a ripgrep glob matches `path` (relative to the search root). A pattern without a
-    slash matches the file name at any depth; with one it matches the whole relative path. `*`
-    is let match across slashes, so a doubtful pattern counts as matching."""
-    target = str(path) if "/" in pattern else path.name
-    if fold_case:
-        target = target.lower()
-    return any(
-        fnmatch.fnmatchcase(target, expanded.lower() if fold_case else expanded)
-        for expanded in _expand_braces(pattern)
-    )
+def _grep_globs(glob: str) -> list[str]:
+    """The `--glob` arguments Grep (Claude Code 2.1) makes of its `glob` parameter: split on
+    whitespace, and each piece without braces on commas."""
+    pieces: list[str] = []
+    for word in glob.split():
+        if "{" in word and "}" in word:
+            pieces.append(word)
+        else:
+            pieces.extend(piece for piece in word.split(",") if piece)
+    return pieces
+
+
+def _glob_matches(pattern: str, path: Path) -> bool:
+    """Whether a ripgrep `--glob` (case-sensitive) matches `path`, relative to the search root.
+    A pattern without a slash matches the file name at any depth; with one it matches the whole
+    relative path, from the root (`/x`) or any depth (`**/x`). `*` is let match across slashes,
+    so a doubtful pattern counts as matching."""
+    targets = [str(path)] if "/" in pattern else [path.name]
+    if pattern.startswith("**/"):
+        pattern = pattern[3:]
+        targets.append(path.name)
+    for expanded in _expand_braces(pattern.removeprefix("/")):
+        if any(fnmatch.fnmatchcase(target, expanded) for target in targets):
+            return True
+    return False
 
 
 def _filter_skips(path: Path, glob: str | None, file_type: str | None) -> bool:
-    """Grep's `glob` or `type` filter leaves `path` out of the search. Whether Grep matches
-    globs case-sensitively is not known, so a file counts as skipped only if it is skipped either
-    way: an including pattern is matched ignoring case, an excluding one (`!...`) respecting it."""
-    if glob:
-        if glob.startswith("!"):
-            if _glob_matches(glob[1:], path, fold_case=False):
-                return True
-        elif not _glob_matches(glob, path, fold_case=True):
-            return True
+    """Grep's `glob` or `type` filter leaves `path` out of the search, as ripgrep decides it: the
+    last glob that matches decides; when none does and an including glob exists, the file is out;
+    a file an including glob keeps is searched whatever `type` says; `type` decides the rest."""
+    decision = None
+    globs = _grep_globs(glob) if glob else []
+    for pattern in globs:
+        if _glob_matches(pattern.removeprefix("!"), path):
+            decision = "skip" if pattern.startswith("!") else "keep"
+    if decision is None and any(not pattern.startswith("!") for pattern in globs):
+        decision = "skip"
+    if decision is not None:
+        return decision == "skip"
     patterns = GREP_TYPES.get(file_type or "")
-    return patterns is not None and not any(
-        _glob_matches(p, path, fold_case=True) for p in patterns
-    )
+    return patterns is not None and not any(_glob_matches(p, path) for p in patterns)
 
 
 def _is_saved_tool_result(path: Path) -> bool:
@@ -152,7 +167,9 @@ def _is_saved_tool_result(path: Path) -> bool:
 
 
 def _saved_results_root(path: Path) -> Path:
-    return Path(*path.parts[: path.parts.index("tool-results") + 1])
+    """The `tool-results` folder holding `path` (already a saved tool result or that folder)."""
+    home = Path.home().resolve()
+    return home.joinpath(*path.relative_to(home).parts[: len(TOOL_RESULTS)])
 
 
 def outside_paths(
@@ -198,7 +215,16 @@ def outside_paths(
                 if not inside(base, workspace):
                     bad.append(str(raw_base))
                 elif tool == "Grep":
-                    bad.extend(_grep_credentials(workspace, base, raw_base, tool_input))
+                    glob, file_type = tool_input.get("glob"), tool_input.get("type")
+                    bad.extend(
+                        _grep_credentials(
+                            workspace,
+                            base,
+                            str(raw_base or "."),
+                            str(glob) if glob else None,
+                            str(file_type) if file_type else None,
+                        )
+                    )
             pattern = tool_input.get("pattern" if tool == "Glob" else "glob")
             if pattern and not _glob_stays_inside(base, str(pattern), boundary):
                 bad.append(str(pattern))
@@ -208,22 +234,16 @@ def outside_paths(
 
 
 def _grep_credentials(
-    workspace: Path, base: Path, raw_base: object, tool_input: dict[str, object]
+    workspace: Path, base: Path, shown: str, glob: str | None, file_type: str | None
 ) -> list[str]:
-    """What a Grep of `base` (inside the workspace) would read of a credential file."""
-    shown = str(raw_base or ".")
+    """What a Grep of `base` (inside the workspace, given as `shown`) would read of a credential
+    file once its `glob` and `type` filters are applied."""
     if _names_credential(workspace, shown):
         return [shown]
     if not base.is_dir():
         return []
-    glob = tool_input.get("glob")
-    file_type = tool_input.get("type")
     reached = [
-        path
-        for path in _credentials_below(base)
-        if not _filter_skips(
-            path, str(glob) if glob else None, str(file_type) if file_type else None
-        )
+        path for path in _credentials_below(base) if not _filter_skips(path, glob, file_type)
     ]
     if not reached:
         return []

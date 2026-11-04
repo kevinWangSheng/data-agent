@@ -550,6 +550,9 @@ class ModelSettings:
             # to the background, where it would keep the database lock.
             "BASH_DEFAULT_TIMEOUT_MS": "360000",
             "BASH_MAX_TIMEOUT_MS": "600000",
+            # Every Bash call starts in the workspace: a `cd dir && dbt ...` does not carry into
+            # the next call, so the command guard can resolve paths from the workspace root.
+            "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1",
         }
 
 

@@ -89,7 +89,8 @@ def _split(command: str) -> tuple[str | None, list[list[str]]] | None:
     return directory, segments
 
 
-def _dbt_denial(args: list[str], base: Path, workspace: Path) -> str | None:
+def _dbt_denial(args: list[str], cwd: Path, workspace: Path) -> str | None:
+    """`cwd` is where the command runs (the workspace or the directory entered with `cd`)."""
     # The subcommand must come first: a global flag's value (`--log-level debug`) could otherwise
     # pass for it.
     subcommand = args[0] if args else None
@@ -108,19 +109,19 @@ def _dbt_denial(args: list[str], base: Path, workspace: Path) -> str | None:
         if flag in DIR_FLAGS:
             if not value:
                 value = args[i + 1] if i + 1 < len(args) else ""
-            if not inside(resolve(base, value), workspace):
+            if not inside(resolve(cwd, value), workspace):
                 return f"{flag} must stay inside the workspace"
     return None
 
 
 def _prints_variable(command: str, variables: Sequence[str]) -> bool:
-    """`command` is exactly `echo $VAR` or `printenv VAR` for one of `variables`."""
-    words = command.split()
-    return any(words in (["echo", f"${var}"], ["printenv", var]) for var in variables)
+    """`command` is exactly `echo $VAR` or `printenv VAR` for one of `variables`. Compared as a
+    string: split on whitespace, `printenv\\nDB_TYPE` would pass and dump the environment."""
+    return any(command.strip() in (f"echo ${var}", f"printenv {var}") for var in variables)
 
 
 def denial(
-    command: str, workspace: Path, scripts: Sequence[Path], variables: Sequence[str] = ()
+    command: str, workspace: Path, scripts: Sequence[Path], variables: Sequence[str]
 ) -> str | None:
     """Why `command` may not run, or None when it may. `workspace` is already resolved."""
     if _prints_variable(command, variables):
@@ -131,25 +132,25 @@ def denial(
     directory, segments = split
     # Paths in the command resolve from the directory entered, which must exist: Bash would stop
     # at a missing one, and only a real directory can be checked past its symlinks.
-    base = workspace if directory is None else resolve(workspace, directory)
-    if not (inside(base, workspace) and base.is_dir()):
+    cwd = workspace if directory is None else resolve(workspace, directory)
+    if not (inside(cwd, workspace) and cwd.is_dir()):
         return f"cd {directory} leaves the workspace or names no directory in it"
     (program, *args), *pagers = segments
     for pager, *pager_args in pagers:
         if pager not in PAGERS or not all(PAGER_ARG.fullmatch(arg) for arg in pager_args):
             return f"only tail or head with a line count may follow a pipe, not {pager!r}"
     if program == "dbt":
-        return _dbt_denial(args, base, workspace)
+        return _dbt_denial(args, cwd, workspace)
     if program == "python3" and args and scripts:
         allowed = {script.resolve() for script in scripts}
-        if resolve(base, args[0]) not in allowed:
+        if resolve(cwd, args[0]) not in allowed:
             return f"python3 may only run {', '.join(sorted(s.name for s in allowed))}"
         # The scripts take the project directory and, for validate, a timeout in seconds. The
         # project is always checked as a path: `123` may be a symlink out of the workspace.
         project, *timeout = args[1:] or ["."]
         if len(timeout) > 1 or (timeout and not timeout[0].isdigit()):
             return "the dbt-workflow scripts take a project directory and a timeout in seconds"
-        if not inside(resolve(base, project), workspace):
+        if not inside(resolve(cwd, project), workspace):
             return "the dbt-workflow scripts may only read the workspace"
         return None
     if program == "cd":
@@ -158,7 +159,7 @@ def denial(
 
 
 def command_guard(
-    workspace: Path, scripts: Sequence[Path], variables: Sequence[str] = ()
+    workspace: Path, scripts: Sequence[Path], variables: Sequence[str]
 ) -> HookCallback:
     """`variables` are the environment variables Bash may print, exactly as `echo $VAR` or
     `printenv VAR`; the harness names them."""

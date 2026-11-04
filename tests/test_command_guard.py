@@ -173,6 +173,10 @@ async def test_entering_a_project_directory_and_printing_db_type_run(
         "printenv",
         "printenv DB_TYPE HOME",
         "echo DB_TYPE $DB_TYPE",
+        # A newline is a command separator to Bash: `printenv` alone would dump the environment.
+        "printenv\nDB_TYPE",
+        "echo\n$DB_TYPE",
+        "echo  $DB_TYPE",
     ],
 )
 async def test_other_cd_and_variable_forms_are_denied(project: Path, command: str) -> None:
