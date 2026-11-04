@@ -9,6 +9,7 @@ dependencies = [
     "duckdb==1.2.2",
     "mcp>=2.2,<3",
     "psycopg[binary]>=3.2,<4",
+    "pytz>=2025.2",
     "sqlglot==30.8.0",
 ]
 
