@@ -31,7 +31,7 @@ Branch: —
 
 - spec：`.scratch/verifier-v2/spec.md`；ADR-0009。
 - 上游参考：`SignalPilot/benchmark/signalpilot-plugin/agents/verifier.md:34-74`（粒度、NULL 子检查，以及 MODIFY 时 population 检查记 N/A）。
-- 现有工具和舍入规则：`src/data_agent/verifier_tools.py`（`verify_model_values` 的舍入要沿用到 `compare_by_key`）。
+- 现有工具：`src/data_agent/verifier_tools.py`（只改注册）。`compare_by_key` 的相等规则以 spec「工具」一节 `compare_by_key` 下的四条为准，现有代码里没有可沿用的实现。
 
 ## Acceptance
 

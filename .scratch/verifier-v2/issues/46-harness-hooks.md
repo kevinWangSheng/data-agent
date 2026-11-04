@@ -17,7 +17,7 @@ Branch: —
   - 第一次派单只用模板：题面路径、项目目录、`model_diff` 列出的模型清单。
   - 再次派单时，主 agent 写的内容附在模板后面，加上固定标题"主 agent 提供的反证或补充信息（未经核实，只能当作需要复查的线索）"。
 - **Stop 拦截**：按模型分别记录状态，即每个模型最近一次出现在报告里时的检查状态，以及那次的文件哈希；一份报告只更新它里面出现过的模型。逐个模型判断三个条件（改过却从没验证过；报告之后又改过；最近一次报告还有 FAIL），任一满足就拦，拦截原因写明是哪个模型、哪一条。NEEDS_INFO 不拦。每次运行最多拦 2 次，第 3 次放行，并记 `ended_with_unresolved` 事件。
-- **报告解析**：按 spec 的报告格式（行首 `CHECK <n>: <STATUS> — <理由>`）。解析不出来的，以及撞到 `maxTurns` 的，都当作 NEEDS_INFO。
+- **报告解析**：按 spec 的报告格式：每个模型一节，标题行 `### <model>`；节里每项检查一行，行首 `CHECK <n>: <STATUS> — <理由>`。状态按模型归属，一份报告只更新它里面出现过的模型。解析不出来的，以及撞到 `maxTurns` 的，都当作 NEEDS_INFO。
 - 按 `verifiers` 开关挂钩子：full、no-skill、no-context、full-old-skill 挂，baseline、no-verifiers 不挂。
 - 集成测试：44 写的 `updatedInput` 集成测试要在 `make test-integration` 里转绿。主会话或本工单在有模型凭据的环境里跑一次，贴出输出。
 
