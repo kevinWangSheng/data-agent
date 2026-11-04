@@ -1,4 +1,5 @@
-"""The read-only gateway's own contract: a runaway query is stopped, not left to hang the server."""
+"""The read-only gateway's own contract: a runaway query is stopped, not left to hang the server,
+and every DuckDB column type the data sources use comes back as a Python value."""
 
 import time
 from pathlib import Path
