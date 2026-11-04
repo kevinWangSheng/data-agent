@@ -4,16 +4,16 @@
 
 ## 结论
 
-**根因：Claude Code 的工具调度器只并行执行"concurrency-safe"的工具，而 MCP 工具只有带 `readOnlyHint: true` 注解时才算 concurrency-safe。我们的 11 个工具都没有注解，所以 CLI 把它们一个接一个地发给服务器。** 服务器端（mcp 2.3.0 的 stdio 分发、`anyio` 线程池、DuckDB 网关）本身是并行的，已用本地复现排除。
+**根因：Claude Code（CLI 2.1.301，SDK 0.2.168）的工具调度器只并行执行"concurrency-safe"的工具。对我们这种用户配置的 stdio MCP 服务器，一个 MCP 工具是否 concurrency-safe 由 `readOnlyHint` 注解决定（判定式是 `mayOverlap || readOnlyHint`，`mayOverlap` 只对 CLI 内部登记的服务器为真，对我们恒为假）。我们的 11 个工具都没有注解，所以 CLI 把它们一个接一个地发给服务器。** 服务器端（mcp 2.3.0 的 stdio 分发、`anyio` 线程池、DuckDB 网关）本身是并行的，已用本地复现排除。
 
 四条假设的判定：
 
 | # | 假设 | 判定 | 证据 |
 |---|---|---|---|
-| 1 | CLI 只并行执行标了 `readOnlyHint` 的 MCP 工具 | **证实（根因）** | CLI 二进制源码 §2.1；复现 B、C 的 A/B 对照 §3.2、§3.3 |
+| 1 | CLI 只并行执行标了 `readOnlyHint` 的 MCP 工具 | **证实（根因；对本配置成立，见 §2.1(a) 的 `mayOverlap` 例外）** | CLI 二进制源码 §2.1；复现 B、C 的 A/B 对照 §3.2、§3.3 |
 | 2 | MCP Python 服务端按顺序处理 stdio 请求 | 排除 | `tools/call` 每个请求 `start_soon` 一个任务，只有 `initialize` 是 inline §2.2；复现 A 4 个并发调用 0.43 s 完成 §3.1 |
 | 3 | `anyio.to_thread.run_sync` 的线程上限或全局锁让同步工具排队 | 排除 | 默认 limiter 40 个线程，没有全局锁 §2.3；复现 A |
-| 4 | 网关的锁 | DuckDB 排除；Postgres 是次级限制 | DuckDB 每条语句开关一个连接，没有锁；Postgres 网关一把 `threading.Lock` 串行化所有语句 §2.4 |
+| 4 | 网关的锁 | DuckDB 排除；Postgres 是次级限制（只看了源码，没有测） | DuckDB 每条语句开关一个连接，没有锁；Postgres 网关一把 `threading.Lock` 串行化所有语句 §2.4 |
 
 修法：给所有工具加 `ToolAnnotations(readOnlyHint=True)`（草稿见 §4）。本地用真实服务器验证：4 个 `query_database` 从 7.5 s 串行变成 2.7 s 并行（§3.3）。
 
@@ -69,14 +69,14 @@ async processQueue(){for(let e of this.tools){if(e.status!=="queued")continue;
 
 ### 2.4 网关（假设 4）
 
-- DuckDB：`src/data_agent/gateway.py:82-84` 每条语句 `duckdb.connect(..., read_only=True)`，`finally` 里 `con.close()`，没有锁。多个只读连接可以并存（复现 A、C 证明）。
-- Postgres：`gateway.py:117,121,126` 一把 `threading.Lock` 包住 `query()` 和 `explain()`，一个连接。即使 CLI 并行发出，Postgres 上的语句仍会在网关里排队。这是修完根因之后的次级限制，只影响 Postgres 运行。
+- DuckDB：`src/data_agent/gateway.py:82-84` 每条语句 `duckdb.connect(..., read_only=True)`，`finally` 里 `con.close()`（`:102`），没有锁。多个只读连接可以并存（复现 A、C 证明）。
+- Postgres：`gateway.py:117,121,126` 一把 `threading.Lock` 包住 `query()` 和 `explain()`，一个连接。即使 CLI 并行发出，Postgres 上的语句仍会在网关里排队。这是修完根因之后的次级限制，只影响 Postgres 运行。本工单只从源码判断，没有对 Postgres 跑复现（推断）。
 
 ## 3. 复现
 
-脚本在 `.scratch/43-serial-mcp/`（不提交）。都在本 worktree 根目录运行，用 `.venv/bin/python -I`。没有调模型，花费 $0。
+脚本在 `.scratch/43-serial-mcp/`（按工单约定不提交；本节写明每个脚本做什么，照着能重写）。都在本 worktree 根目录运行，用 `.venv/bin/python -I`。没有调模型，花费 $0。§2.1 的字节偏移用 `ctx.py` 得到：把二进制整个读进内存，`re.finditer` 找模式，打印前后各 300 字节和 `m.start()`；等价一行：`python -c "d=open(CLI,'rb').read();i=d.find(b'isConcurrencySafe(){return');print(i,d[i-300:i+300])"`。
 
-### 3.1 复现 A：服务器端是否并行（排除假设 2–4）
+### 3.1 复现 A：服务器端是否并行（排除假设 2、3 和 4 的 DuckDB 部分）
 
 `repro_server.py`：用 `mcp` 的 `stdio_client` 起真实的 `python -m data_agent mcp-server --config full --duckdb shop.duckdb`（和 `agent.py` 一样的启动方式；`shop.duckdb` 由 `tests/fixtures/shop.sql` 生成），`initialize` 后先单独调一次 `query_database`，再 `asyncio.gather` 并发调 4 次，SQL 是约 0.5 s 的 `range(40000000)` 聚合。
 
@@ -135,7 +135,7 @@ sleep_ro,0.21,3.21
 sleep_ro,0.21,3.21
 ```
 
-同一个 CLI、同一个服务器、同一条含 3 个 `tool_use` 的消息：无注解时第 k 个在第 k−1 个结束后才开始（间隔 0.02–0.08 s，就是调度器本身的开销），有注解时三个同时开始。这也解释了线上观察到的"13–20 s 一个"：那是 `verify_model_values` 自身的耗时，调度器只是不让它们重叠。
+同一个 CLI、同一个服务器、同一条含 3 个 `tool_use` 的消息：无注解时第 k 个在第 k−1 个结束后才开始（间隔 0.02–0.08 s，就是调度器本身的开销），有注解时三个同时开始。由此推断线上观察到的"13–20 s 一个"是 `verify_model_values` 自身的耗时，调度器只是不让它们重叠；本工单没有测 `verify_model_values` 的单次耗时（推断，未测）。
 
 ### 3.3 复现 C：CLI 端，真实服务器，注解只在内存里打上（验证修法）
 
@@ -163,38 +163,47 @@ query_database,0.14,2.70
 
 所有工具都只读（SQL 全走只读网关；`map_columns` 只读 workspace 里的文件），所以全部标 `readOnlyHint=True` 是如实的。mcp 2.3.0 的 `MCPServer.tool()` 接受 `annotations: ToolAnnotations | None`（`mcp/server/mcpserver/server.py:669-674`，`:730` 传给 `add_tool`）；`ToolAnnotations` 从 `mcp.types` 导入（定义在 `mcp_types/_types.py:1365`）。
 
-改动面：`src/data_agent/mcp_server.py` 4 处（`:88,104,124,137`），`src/data_agent/context_tools.py` 3 处（`:180,202,218`），`src/data_agent/verifier_tools.py` 4 处（`:1380,1396,1442,1453`）。每处把 `@server.tool()` 换成 `@server.tool(annotations=READ_ONLY)`：
+`READ_ONLY` 不能放在 `mcp_server.py`：它导入 `context_tools` 和 `verifier_tools`，反向导入会循环。所以放一个新的小模块，三个文件都从它导入：
+
+```diff
+--- /dev/null
++++ b/src/data_agent/tool_annotations.py
+@@
++"""Annotations the MCP tools declare to the client."""
++
++from mcp.types import ToolAnnotations
++
++# Every tool is read-only (SQL goes through the read-only gateway; map_columns only reads
++# workspace files). Claude Code runs an MCP tool concurrently with others in the same turn
++# only when it carries readOnlyHint; without it the calls of one turn run one at a time.
++READ_ONLY = ToolAnnotations(readOnlyHint=True)
+```
+
+然后 11 处装饰器都是同一行替换，加三处 import（`mcp_server.py:88,104,124,137`；`context_tools.py:180,202,218`；`verifier_tools.py:1380,1396,1442,1453`），以 `query_database` 为例：
 
 ```diff
 --- a/src/data_agent/mcp_server.py
 +++ b/src/data_agent/mcp_server.py
 @@
- from mcp.server import MCPServer
- from mcp.server.mcpserver.exceptions import ToolError
-+from mcp.types import ToolAnnotations
-@@
-+# Every tool is read-only (SQL goes through the read-only gateway; map_columns only reads
-+# workspace files). Claude Code runs an MCP tool concurrently with others in the same turn
-+# only when it carries readOnlyHint; without it the calls of one turn run one at a time.
-+READ_ONLY = ToolAnnotations(readOnlyHint=True)
+ from data_agent.run_config import RunConfig
++from data_agent.tool_annotations import READ_ONLY
+ from data_agent.verifier_tools import register_verifier_tools
 @@
 -    @server.tool()
 +    @server.tool(annotations=READ_ONLY)
      def query_database(sql: str, row_limit: int = 1000) -> str:
 ```
 
-（其余 10 处同样替换；`context_tools.py` 和 `verifier_tools.py` 从 `data_agent.mcp_server` 导入 `READ_ONLY` 会造成循环导入，`mcp_server.py` 已经导入它们，所以 `READ_ONLY` 放在一个两边都能导入的位置，例如 `gateway.py` 旁边新建的小模块，或者各文件各自定义。）
-
 配套测试：`build_server(...)` 后 `tools/list` 里每个工具 `annotations.readOnlyHint is True`（复现 A 的 `list_tools` 就是这个检查；现在输出全是 `None`，改完应全为 `True`）。
 
-**预期效果。** 同一轮的一批 MCP 调用并发执行，墙钟从"每个耗时之和"降到"最慢一个的耗时加排队"。按审计里的样本：21 个 `verify_model_values` 各 13–20 s 共 340 s，若并发受限于服务器 40 个线程和机器 CPU，理想情况降到几十秒；4 个 `query_database` 一批从 4 倍降到约 1 倍。`audit-harness.md` 第 2 条的 578 s 验证器墙钟里，大头应是这个。具体数字要在一个任务上重测。
+**预期效果。** 同一轮的一批 MCP 调用并发执行，墙钟从"每个耗时之和"降到"最慢一个的耗时加排队"。按审计里的样本：21 个 `verify_model_values` 各 13–20 s 共 340 s，并发受限于服务器 40 个线程和机器 CPU，估计降到几十秒（估算，未测）；4 个 `query_database` 一批从 4 倍降到约 1 倍（复现 C 测得）。`audit-harness.md` 第 2 条的 578 s 验证器墙钟里有多少是这个，要在一个任务上重测才知道。
 
 **代价与风险。**
 
 - 并发查询会同时打开多个 DuckDB 只读连接，CPU 和内存同时被多条查询占用；单条查询变慢（DuckDB 本身多线程，N 条并发时各自分到的核变少）。总墙钟仍应下降。复现 C 里 4 条并发每条 2.4–2.6 s，比串行时的单条 1.4–2.6 s 略慢。
-- Postgres 运行不受益：网关的 `threading.Lock`（`gateway.py:117`）仍把语句串行化。要并行需要连接池或每语句一连接，这是另一个改动，不在本工单内。
+- Postgres 运行不受益（§2.4 的锁）。要并行需要连接池或每语句一连接，这是另一个改动，不在本工单内。
 - `dictionary_search` 这类长扫描（审计第 1 条）并发后会同时占住多个连接，`dbt run` 等写锁的概率上升；第 1 条的修复（有界扫描、可取消）应先做或同时做。
-- `readOnlyHint` 同时进入 CLI 的 `isReadOnly()`：在 `plan`/auto 权限模式下只读工具会被自动放行。我们用 `dontAsk` 加显式允许，没有变化；如果以后换权限模式要知道这一点。
+- `readOnlyHint` 同时影响权限（§2.1(c)）：换成 `plan`/auto 权限模式时只读工具会被自动放行；现在的 `dontAsk` 加显式允许不受影响。
 - 不 safe 的工具会堵住队列里它后面的所有工具（§2.1(b) 的 `break`）。只要有一个工具漏标注解，同一批里它之后的调用都会等它。所以要全部标，并用测试锁住。
 
 ## 5. 未确认
