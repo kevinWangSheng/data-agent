@@ -212,19 +212,10 @@ class PostgresGateway:
     def _run(self, governed: str) -> QueryResult:
         con = self._connect()
         try:
-            # Not LiteralString: the statement is the agent's, and the gateway has just checked it.
-            cursor = con.execute(governed)  # pyright: ignore[reportArgumentType, reportCallIssue]
-            columns = [column.name for column in cursor.description or []]
-            return QueryResult(columns=columns, rows=cursor.fetchall())
-        except psycopg.errors.QueryCanceled as exc:
-            raise QueryTimedOut(f"Query timed out after {self.timeout_seconds}s") from exc
-        except psycopg.Error as exc:
-            raise QueryFailed(str(exc).strip()) from exc
+            return run_postgres(con, governed, self.timeout_seconds)
         finally:
             if con.closed:
                 self._con = None
-            else:
-                con.rollback()
 
     def session(self, timeout_seconds: float) -> "PostgresSession":
         return PostgresSession(self._url, timeout_seconds)
@@ -250,9 +241,26 @@ def connect_postgres(url: str, timeout_seconds: float) -> psycopg.Connection[tup
     return con
 
 
+def run_postgres(
+    con: psycopg.Connection[tuple[Any, ...]], governed: str, timeout_seconds: float
+) -> QueryResult:
+    """One statement in a READ ONLY transaction that is rolled back afterwards."""
+    try:
+        # Not LiteralString: the statement is the agent's, and the gateway has just checked it.
+        cursor = con.execute(governed)  # pyright: ignore[reportArgumentType, reportCallIssue]
+        columns = [column.name for column in cursor.description or []]
+        return QueryResult(columns=columns, rows=cursor.fetchall())
+    except psycopg.errors.QueryCanceled as exc:
+        raise QueryTimedOut(f"Query timed out after {timeout_seconds}s") from exc
+    except psycopg.Error as exc:
+        raise QueryFailed(str(exc).strip()) from exc
+    finally:
+        if not con.closed:
+            con.rollback()
+
+
 class PostgresSession:
-    """One read-only connection of its own for a batch of statements; see `Session`. Each
-    statement runs in a READ ONLY transaction rolled back afterwards, as in the gateway."""
+    """One read-only connection of its own for a batch of statements; see `Session`."""
 
     dialect = "postgres"
 
@@ -266,18 +274,11 @@ class PostgresSession:
         if self._interrupted:
             raise QueryInterrupted("Session interrupted")
         try:
-            cursor = self._con.execute(governed)  # pyright: ignore[reportArgumentType, reportCallIssue]
-            columns = [column.name for column in cursor.description or []]
-            return QueryResult(columns=columns, rows=cursor.fetchall())
-        except psycopg.errors.QueryCanceled as exc:
+            return run_postgres(self._con, governed, self.timeout_seconds)
+        except QueryTimedOut as exc:
             if self._interrupted:
                 raise QueryInterrupted("Session interrupted") from exc
-            raise QueryTimedOut(f"Query timed out after {self.timeout_seconds}s") from exc
-        except psycopg.Error as exc:
-            raise QueryFailed(str(exc).strip()) from exc
-        finally:
-            if not self._con.closed:
-                self._con.rollback()
+            raise
 
     def interrupt(self) -> None:
         self._interrupted = True

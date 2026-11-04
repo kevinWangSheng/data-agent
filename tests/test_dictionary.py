@@ -225,6 +225,27 @@ def test_time_limit_interrupts_a_running_statement(shop: Path) -> None:
     assert dictionary.coverage.timed_out is True
     assert dictionary.coverage.tables_profiled == 0
     assert len(dictionary.coverage.not_profiled) == dictionary.coverage.tables_total == 9
+    # Nothing was sampled, so a miss is not_profiled, never value_not_in_sample.
+    text = dictionary.search("gold")
+    assert "not_profiled" in text
+    assert "value_not_in_sample" not in text
+    proc = open_read_write_elsewhere(shop)
+    assert proc.returncode == 0, proc.stderr
+
+
+class SlowConnectGateway(DuckDBGateway):
+    """Connecting takes a second (a Postgres connect may wait up to its 10 s timeout)."""
+
+    def session(self, timeout_seconds: float) -> DuckDBSession:
+        time.sleep(1.0)
+        return super().session(timeout_seconds)
+
+
+def test_time_limit_counts_the_connect(shop: Path) -> None:
+    dictionary = DictionaryBuild(SlowConnectGateway(shop), time_limit=0.5).run()
+    assert dictionary.entries == []
+    assert dictionary.coverage.timed_out is True
+    assert dictionary.coverage.error is not None
     proc = open_read_write_elsewhere(shop)
     assert proc.returncode == 0, proc.stderr
 

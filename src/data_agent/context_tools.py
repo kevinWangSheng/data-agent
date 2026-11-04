@@ -268,7 +268,7 @@ class Dictionary:
         for those that were not. Either way the agent is told to confirm with query_database."""
         coverage = self.coverage
         lines: list[str] = []
-        if coverage.error is None:
+        if coverage.tables_profiled > 0:
             lines.append(
                 f"No sampled value contains {keyword!r} (value_not_in_sample). The dictionary "
                 f"holds the {VALUES_STORED} most frequent values of each categorical column in "
@@ -298,7 +298,7 @@ def short(value: object) -> str:
 
 
 @dataclass
-class Sampled:
+class TableSample:
     """One table's sample: its dictionary entries and the columns skipped, by reason."""
 
     entries: list[Entry] = field(default_factory=list)
@@ -306,8 +306,8 @@ class Sampled:
     high_cardinality: int = 0
 
 
-def sample_table(session: Session, table: Table) -> Sampled:
-    sampled = Sampled()
+def sample_table(session: Session, table: Table) -> TableSample:
+    sampled = TableSample()
     columns: list[str] = []
     for column, data_type in table.columns:
         if not CANDIDATE_TYPES.match(data_type):
@@ -373,15 +373,19 @@ class DictionaryBuild:
         started = self.clock()
         if self._cancel.is_set():
             raise DictionaryCancelled
-        try:
-            session = self.gateway.session(self.statement_timeout)
-        except QueryFailed as exc:
-            return self.failed(str(exc), started)
-        with self._lock:
-            self._session = session
+        # The timer runs from here: connecting (a Postgres connect waits up to 10 s) counts too.
         timer = threading.Timer(self.time_limit, self._expire)
         timer.start()
         try:
+            session = self.gateway.session(self.statement_timeout)
+        except QueryFailed as exc:
+            timer.cancel()
+            return self.failed(str(exc), started)
+        with self._lock:
+            self._session = session
+        try:
+            if self._expired.is_set():
+                return self.failed("the time limit ran out while connecting", started)
             tables = [t for t in load_catalog(session.query) if t.kind == "table"]
             return self.sample(session, sorted(tables, key=lambda t: (t.schema, t.name)), started)
         except QueryInterrupted:
