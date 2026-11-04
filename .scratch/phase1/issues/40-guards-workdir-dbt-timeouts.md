@@ -1,10 +1,10 @@
 # 40 — 守卫与工作目录：允许进项目目录跑 dbt、打印 DB_TYPE、Grep 不被样例 .env 误拦，dbt 解析不再被 60 秒掐断
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 40-guards-workdir-dbt-timeouts)
+Branch: worktree-40-guards-workdir-dbt-timeouts
 
 ## Goal
 
@@ -75,10 +75,45 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2（修复轮）；3 次审查
+- Model spend: $0 (unit tests and local runs only; data-agent model calls only, read from run event files)
+- Outcome: in-review，branch `worktree-40-guards-workdir-dbt-timeouts`（commits 4225e9c、58009b3、b482143）；服务器真实运行待主会话
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-04 工单会话（worktree 40-guards-workdir-dbt-timeouts，commits 4225e9c、58009b3、b482143）
+
+改动：`command_guard.py` 放开 `cd <workspace 内目录> && <dbt 命令或 dbt-workflow 脚本>`，路径按该目录解析；单独 `cd`、`cd ..`、`cd /tmp`、符号链接出去、`cd x && rm` 都拒绝，拒绝提示写出允许写法；`echo $DB_TYPE`、`printenv DB_TYPE` 整串精确匹配放行，变量表是必填参数。`workspace_guard.py` Grep 的 `glob`/`type` 能排除目录下全部凭据文件就放行，按 ripgrep 语义（`glob` 按空白和逗号拆成多个 `--glob`，最后匹配的 glob 生效，包含型 glob 优先于 `--type`），拒绝时列出凭据路径；Read/Grep 可读 `~/.claude/projects/<任意>/tool-results/`，Write/Edit/Glob 不行。`agent.py` 加 `PRINTABLE_VARIABLES = ("DB_TYPE",)`，SDK env 加 `BASH_DEFAULT_TIMEOUT_MS=360000`、`BASH_MAX_TIMEOUT_MS=600000`，**另加了工单没写的 `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1`**：工单会话在 Claude Code 2.1.317 二进制里核实，不设它时成功的 `cd` 会带到下一次 Bash 调用，与"cwd 始终是 workspace 根"的前提冲突。`validate_project.py` 默认超时 300 s，文件头加注释，`NOTICE` 改为 "modified as noted at its top"。
+
+**Step 3, real run.** `uv run python /tmp/wt40-demo/demo.py` (temp workspace with `dbt_models_duckdb/`, a dbt_utils-style `.env/postgres.env`, and a symlink out):
+
+```
+Bash  'echo $DB_TYPE'                                   -> allow
+Bash  'printenv DB_TYPE'                                -> allow
+Bash  'echo $HOME'                                      -> deny
+Bash  'cd dbt_models_duckdb && dbt run --select daily_cohorts' -> allow
+Bash  'cd dbt_models_duckdb && python3 .../validate_project.py .' -> allow
+Bash  'cd dbt_models_duckdb'                            -> deny: cd may only precede a dbt command, as `cd <dir> && dbt ...`.
+Bash  'cd .. && dbt run'                                -> deny: cd .. leaves the workspace or names no directory in it.
+Bash  'cd outside && dbt run'                           -> deny (symlink out)
+Bash  'cd dbt_models_duckdb && rm -rf models'           -> deny: 'rm' is not allowed.
+Grep  {path: dbt_models_duckdb}                         -> deny: holds credential files dbt_models_duckdb/dbt_packages/dbt_utils/integration_tests/.env/postgres.env; add a glob or type that skips them
+Grep  {path: dbt_models_duckdb, glob: '*.sql'}          -> allow
+Grep  {path: dbt_models_duckdb, type: 'yaml'}           -> allow
+Read  ~/.claude/projects/demo/tool-results/r.txt        -> allow
+Write ~/.claude/projects/demo/tool-results/r.txt        -> deny
+```
+
+ripgrep semantics were checked against the local `rg` (`rg --hidden -g '*.env' --type sql` still reads `.env/x.env`; `-g '!*.env' -g '*.env'` reads it; reversed order does not).
+
+**Checks.** `make check`: 1523 passed, 1 skipped. `uv run pytest tests/acceptance`: 39 passed, unchanged. Targeted files `test_command_guard.py`, `test_workspace_guard.py`: 210 passed.
+
+**Review 1, da-review (Codex), round 1.** P1 case-folding let `!*.env` skip `POSTGRES.ENV`: fixed in `58009b3`, later tightened to case-sensitive matching after confirming the Grep tool passes `--glob`. P2 honor `.gitignore`: not fixed. The ticket's stop condition says the glob/type rule is the agreed scope and simulating ripgrep's ignore logic is out. Denial is the safe direction and the hint tells the agent how to proceed.
+
+**Review 2, eng:code-review, Spec axis.** Three real defects, all fixed in `b482143`: newline bypass in the variable match (`printenv\nDB_TYPE` would have dumped the environment), multi-pattern `glob` treated as one pattern, and `type` wrongly overriding an including glob. Plus the cwd-persistence premise, fixed by the env variable above. Standards axis: made `variables` required, flattened `_grep_credentials` parameters, derived the tool-results root from the layout constant, renamed `base` to `cwd`, tests now cover every `GREP_TYPES` entry. Not changed: module split of `workspace_guard.py` (a new module is outside Authority) and the DB_TYPE constant being benchmark-driven (user decision in the ticket).
+
+**Review 3, da-review on the final diff.** Same `.gitignore` point, same answer. New P2: a Postgres run started with `--postgres-env DB_TYPE` would let `echo $DB_TYPE` print the connection URL, and a database env could overwrite the Bash timeout variables. Not fixed: it needs the operator to pick that exact name, the fix is a validation in `run()` outside the "SDK env and allow-list only" authority on `agent.py`, and both fix rounds are used. Suggest a follow-up line rejecting a `--postgres-env` name in `PRINTABLE_VARIABLES` or starting with `BASH_`/`CLAUDE_`.
+
+**Known limitations for the main session.** `skills/dbt-workflow/SKILL.md:373` still says "default 60" for validate's timeout, and the dbt system prompt in `agent.py:130` still says to pass `--project-dir`; both are outside this ticket's Authority. The denial message teaches the `cd` form, so the agent will learn it on first refusal.

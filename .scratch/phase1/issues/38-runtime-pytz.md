@@ -1,6 +1,6 @@
 # 38 — 运行时依赖补上 `pytz`：带时区的时间戳列能查
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 38-runtime-pytz)
@@ -59,7 +59,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (no model calls in this ticket; data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review, branch `worktree-38-runtime-pytz`（commits 5ba2ccc、a9289ae）
+- Outcome: done（PR #37）；服务器 pos-operations full 1/1，无 pytz 报错
 - Human review minutes: —
 
 ## Comments
@@ -70,3 +70,4 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
   - `make check`：ruff / format / basedpyright 全过；1447 passed, 1 skipped, 36 deselected in 405.96s。`tests/acceptance`：39 passed, 15 deselected。
   - 顺带检查：`src/data_agent/` 运行时 import 的第三方包只有 claude-agent-sdk、duckdb、mcp、psycopg、sqlglot，都在 no-dev 导出里；`pytz` 是唯一靠 dev 组带进来的，不需要主会话决定。
   - 审查第 1 轮：`da-review main`（Codex）无可操作缺陷。`eng:code-review main` Standards：无硬性违规，修了 `tests/test_gateway.py` 模块 docstring（a9289ae）；不修：`test_packaging.py` 两处 `uv` 子进程重复（两条不同子命令，抽 helper 过度）、`pytz` 只写下限（工单要求）、按 `==` 解析导出（标准 requirements 格式）。Spec：无阻塞；测试 B 调的是 `DuckDBGateway.query` 而非 MCP 工具，不改，因为工单点名 `DuckDBGateway` 且 pytz 报错发生在网关取数处；测试 B 在 main 上本地也能过（dbt 带来 pytz），守卫靠测试 A。
+- 2026-11-04 主会话：服务器真实运行 `t38-real`（commit a9289ae；`ablate --split dev --config full --task pos-operations --trials 1 --budget 2`）：pos-operations reward 1（1/1），冒烟 cohort-retention-matrix reward 0；实际价 $0.2759（cost_usd $0.5519，全在闲时）；内存峰值 2168 MB。轨迹核对：`agent/setup/install.log:35` 有 `+ pytz==2026.5`；整个 trial 里 "pytz" 只出现这一处，"Invalid Input Error" 0 次；查询结果里有带时区的时间戳值（如 `2026-11-04T19:29:15.176383+00:00`）。PR #37 CI 绿、Codex app 无意见，squash 合入。
