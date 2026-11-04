@@ -195,6 +195,17 @@ def test_snapshot_keeps_logic_files_outside_the_workspace(tmp_path: Path) -> Non
     (project / "target" / "manifest.json").write_text("{}")
     (project / "logs").mkdir()
     (project / "logs" / "dbt.log").write_text("log")
+    # One file of each kind the spec's snapshot scope names (spec "快照": 范围).
+    logic = {
+        "macros/clean.sql": "{% macro clean(x) %}trim({{ x }}){% endmacro %}\n",
+        "snapshots/orders_snapshot.sql": "{% snapshot orders_snapshot %}{% endsnapshot %}\n",
+        "tests/assert_positive.sql": "SELECT * FROM {{ ref('stg_orders') }} WHERE amount < 0\n",
+        "tests/schema.yml": "version: 2\n",
+        "seeds/countries.csv": "code,name\nDE,Germany\n",
+    }
+    for relative, content in logic.items():
+        (project / relative).parent.mkdir(parents=True, exist_ok=True)
+        (project / relative).write_text(content)
     dest = tmp_path / "run" / "snapshot"
 
     snapshot = take_snapshot(workspace, dest)
@@ -205,6 +216,8 @@ def test_snapshot_keeps_logic_files_outside_the_workspace(tmp_path: Path) -> Non
     assert (copied / "dbt_project.yml").read_text() == (BEFORE / "dbt_project.yml").read_text()
     for relative in ("models/schema.yml", "models/staging/stg_orders.sql"):
         assert (copied / relative).read_text() == (BEFORE / relative).read_text()
+    for relative, content in logic.items():
+        assert (copied / relative).read_text() == content, relative
     assert not (copied / "dbt_packages").exists()
     assert not (copied / "target").exists()
     assert not (copied / "logs").exists()
@@ -320,7 +333,9 @@ def test_grain_facts_ignores_an_exemption_only_the_agent_wrote(
 def test_contract_check_uses_the_snapshot_yml(
     edited: tuple[Path, Path], gateway: DuckDBGateway
 ) -> None:
-    columns = contract_check(*edited, gateway, ["stg_orders"])["stg_orders"]["columns"]
+    checks = contract_check(*edited, gateway, ["stg_orders"])["stg_orders"]
+    assert checks["exists"]["status"] == "PASS"
+    columns = checks["columns"]
     assert columns["status"] == "FAIL"
     assert columns["source"] == "snapshot_yml"
     assert "status" in columns["missing"]
@@ -460,6 +475,7 @@ def test_report_parser_recognizes_the_four_statuses() -> None:
     parsed = parse_report(FOUR_STATUSES)
     assert parsed["parsed"] is True
     assert parsed["models"] == {"customer_ltv": {1: "PASS", 2: "FAIL", 3: "NEEDS_INFO", 4: "N/A"}}
+    assert parsed["overall"] == "FAIL"
 
 
 @hooks_xfail
@@ -727,6 +743,8 @@ async def test_new_tools_follow_the_verifiers_switch(db: Path) -> None:
     for name in CONFIG_NAMES:
         async with mcp_server(name, db) as session:
             names = {tool.name for tool in (await session.list_tools()).tools}
+        # The value verifier's tool goes with it (spec "工具": 保留的旧工具).
+        assert "verify_model_values" not in names, name
         if load_config(name).verifiers:
             assert names >= NEW_TOOLS, name
         else:
