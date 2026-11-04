@@ -1,10 +1,10 @@
 # 41 — 工具输出加上限：list_tables、query_database 照 SignalPilot 截断，scan 只打印摘要
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 39
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 41-tool-output-bounds)
+Branch: 41-tool-output-bounds
 
 ## Goal
 
@@ -86,10 +86,42 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1（Codex 1 条已修；eng:code-review 2 处清理已修，其余写明理由不修）
+- Model spend: $0（工单会话无模型调用；初筛花费由主会话记）
+- Outcome: in-review，branch `worktree-41-tool-output-bounds`（commits 3d2284a、0d18c9a、3de27a6）；初筛待主会话
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-04 工单会话（worktree 41-tool-output-bounds，commits 3d2284a、0d18c9a、3de27a6）
+
+改动：`mcp_server.py` 的 `list_tables` 照 SignalPilot 限 200 张表、36,000 字符，加 `schema=`、`columns=`、`max_tables=`，结尾说明还有多少没显示；`query_database` 照 SignalPilot 限 400 行 / 50 行后 12,000 字符并带 `[INCOMPLETE DISPLAY]` 提示；`scan_project.py` 标准输出限 20,000 字符、前 5 节在前、最后一行是完整报告路径（`<project_directory>/.data-agent/scan/<name>.md`）；`SKILL.md` 对应三处改法；`NOTICE` 登记复制自 SignalPilot 的部分。
+
+**Step 3 real run (2026-11-04).**
+
+Scan on a copy of `tests/fixtures/dbt_shop`:
+
+```
+uv run python skills/dbt-workflow/scan_project.py /tmp/scan41/dbt_shop > /tmp/scan41_after.txt
+diff /tmp/scan41_before.txt /tmp/scan41_after.txt
+31a32
+> Full report: /private/tmp/scan41/dbt_shop/.data-agent/scan/dbt_shop.md
+diff /tmp/scan41_before.txt /tmp/scan41/dbt_shop/.data-agent/scan/dbt_shop.md   # identical
+```
+
+Scan on dbt_shop plus 800 orphan SQL files: stdout 19,9xx chars (20,749 bytes), report file 41,916 bytes. Heading order in stdout: title, STUBS TO REWRITE, MODELS TO BUILD, DEPENDENCIES, REQUIRED COLUMNS, then the deps note, COMPLETE MODELS, SQL FILES WITHOUT YML cut at `… 422 more lines in <path>`, last line `Full report: <path>`.
+
+Tools over stdio (`data-agent mcp-server --config full --duckdb` on a 300-table file, 3 schemas):
+
+```
+list_tables {}                                   -> 7864 chars, 201 lines; last: "100 more tables not shown; narrow with schema= or name_contains="
+list_tables {schema: B, columns: false, max_tables: 3} -> "b.t000 (base table, ~0 rows, 2 cols)" ... "97 more tables not shown; ..."
+query_database SELECT range AS n FROM range(1000) -> 400 rows, "(1000 rows)", "[INCOMPLETE DISPLAY] 1000 rows total; only the first 400 are shown above. ... OFFSET 400 ..."
+```
+
+`make check`: ruff and format clean, basedpyright 0 errors, 1467 passed, 1 skipped (includes `tests/acceptance/`, untouched).
+
+**Codex review (`da-review main`), 1 finding.** P1: when the five Step 1 sections alone exceed 20,000 chars the summary cut them silently. Fixed in 0d18c9a: the summary appends `WARNING: the Step 1 sections alone exceed the summary budget; cut or missing above: <sections>. Read them in the full report.` with a test (300 YML-only models). This goes beyond the ticket's stop condition, which was about the real project; the check-on-the-real-project still belongs to the main session's 初筛.
+
+**eng:code-review main.** Standards: no hard violations. Fixed: test helper that shared the name of a production function, and a placeholder-then-filter construction in the empty-result message (3de27a6). Not fixed: the budget-fill loops in `format_rows` and `render_table_listing` are each copied verbatim from a different SignalPilot function with different shapes (floor and max rows vs tail reserve), so sharing a helper would change the copied code; the `(full, compact)` tuple and the six-argument `table_lines` are local to one module and small. Spec: no missing acceptance item; Authority respected (SKILL.md hunks at original lines 42, 52–54, 99). Decisions to record: a report that fits in 20,000 chars is printed whole, so the dbt_shop output is unchanged (reordering happens only when cutting); `list_tables` prints no `Tables: N` header (ticket fixes only numbers and truncation order); `max_tables < 1` is a tool error, as upstream's `list_tables` returns; the report is written under the directory passed to the scan, which the Skill calls `<project_directory>`. When the dbt project is a subdirectory of the workspace, that is the workspace; when the project is the argument, `.data-agent/scan/` lands inside the project tree. 未确认 whether the eval grader objects to an extra dot-directory there.
