@@ -1,6 +1,6 @@
 # 39 — 表目录缓存：元数据工具不再每次重读整个 information_schema
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 39-catalog-cache)
@@ -65,7 +65,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only; no model call in the ticket session)
-- Outcome: in-review，branch `worktree-39-catalog-cache`（commits 7eff120、31a5fbf）；服务器真实运行待主会话
+- Outcome: done（PR #39）；服务器 cross-sell full 1/1，describe_table 8.45 s、验证工具 5–8 s
 - Human review minutes: —
 
 ## Comments
@@ -81,3 +81,4 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
   - 验收项"第二次不再查 information_schema"按 Goal 理解为不再读整个目录；describe_table 第二次仍会为单张表跑一次 `information_schema.columns` 过滤查询，不是本工单要缓存的对象。
   - 工单会话未能跑 Postgres 集成测试（source env 文件被权限拦截）。
 - 2026-11-04 主会话：Postgres 集成测试用临时 `postgres:17` 容器（127.0.0.1:15439，跑完删除）：`uv run pytest tests/test_db_facts.py tests/test_postgres.py -q -m integration` → 21 passed, 39 deselected in 5.94s，含 `test_postgres_catalog_is_kept_for_the_ttl`。PR #39。服务器真实运行 dbt-customer-cross-sell-insights × 1 排在 `t38-real` 之后。
+- 2026-11-04 主会话：服务器真实运行 `t39-real`（commit 31a5fbf；`ablate --split dev --config full --task dbt-customer-cross-sell-insights --trials 1 --budget 2`）：reward 1（1/1），120 轮，cost_usd $0.2029；连冒烟实际价 $0.1756（全在闲时）。事件文件 `runs/t39-real/jobs/full/dbt-customer-cross-sell-insights__M26LSax/agent/events/` 的单次工具耗时（tool_start 到 tool_end）：`describe_table` n=2 中位数 8.45 s、最大 9.40 s（accept-2 中位数 14 s）；验证工具 `audit_model_sources` n=4 中位数 7.99 s、`check_model_schema` n=4 5.69 s、`verify_model_values` n=4 5.09 s、`map_columns` n=4 1.46 s（accept-2 单次中位数 27–85 s）；`list_tables` n=5 1.95 s；`query_database` n=105 0.82 s。两次验证者调用各 127 s 和 138 s，报告全 PASS/N/A。另：`dictionary_search` 1 次挂满 1800.99 s，是工单 42 的问题，与本工单无关。PR #39 CI 绿、Codex app 无意见，squash 合入。
