@@ -18,8 +18,9 @@ async def decide(
     tool: str = "Bash",
     scripts: tuple[Path, ...] = SCRIPTS,
     background: bool = False,
+    variables: tuple[str, ...] = ("DB_TYPE",),
 ) -> tuple[str, str]:
-    guard = command_guard(workspace, scripts)
+    guard = command_guard(workspace, scripts, variables)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
         "session_id": "s",
@@ -113,7 +114,7 @@ async def test_dbt_and_the_workflow_scripts_run(tmp_path: Path, command: str) ->
         "dbt run --project-dir /tmp/elsewhere",
         "dbt run --profiles-dir=/tmp/elsewhere",
         "DBT_PROFILES_DIR=/tmp dbt run",
-        "cd models && dbt run",
+        "cd .. && dbt run",
         "dbt",
         "",
         "dbt run 'unclosed",
@@ -123,6 +124,71 @@ async def test_everything_else_is_denied_with_a_reason(tmp_path: Path, command: 
     decision, reason = await decide(tmp_path, command)
     assert decision == "deny"
     assert "dbt" in reason
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    """A workspace holding a dbt project directory and a symlink out of the workspace."""
+    (tmp_path / "dbt_models_duckdb").mkdir()
+    (tmp_path / "outside").symlink_to(tmp_path.parent)
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd dbt_models_duckdb && dbt run --select x",
+        "cd ./dbt_models_duckdb && dbt parse 2>&1 | tail -50",
+        f"cd dbt_models_duckdb && python3 {SCRIPTS[1]} . 300",
+        # Relative paths in the command resolve from the directory entered.
+        "cd dbt_models_duckdb && dbt run --project-dir . --profiles-dir ..",
+        "echo $DB_TYPE",
+        "printenv DB_TYPE",
+    ],
+)
+async def test_entering_a_project_directory_and_printing_db_type_run(
+    project: Path, command: str
+) -> None:
+    decision, _ = await decide(project, command)
+    assert decision == "none"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd dbt_models_duckdb",
+        "cd .. && dbt run",
+        "cd /tmp && dbt run",
+        "cd outside && dbt run",
+        "cd missing && dbt run",
+        "cd dbt_models_duckdb && rm -rf y",
+        "cd dbt_models_duckdb && cd .. && dbt run",
+        "cd dbt_models_duckdb && dbt run --profiles-dir ../..",
+        f"cd dbt_models_duckdb && python3 {SCRIPTS[1]} ../.. 300",
+        "cd dbt_models_duckdb && echo $DB_TYPE",
+        "cd dbt_models_duckdb; dbt run",
+        "echo $HOME",
+        "echo $DB_TYPE; ls",
+        "echo $DB_TYPE && dbt run",
+        "printenv",
+        "printenv DB_TYPE HOME",
+        "echo DB_TYPE $DB_TYPE",
+        # A newline is a command separator to Bash: `printenv` alone would dump the environment.
+        "printenv\nDB_TYPE",
+        "echo\n$DB_TYPE",
+        "echo  $DB_TYPE",
+    ],
+)
+async def test_other_cd_and_variable_forms_are_denied(project: Path, command: str) -> None:
+    decision, reason = await decide(project, command)
+    assert decision == "deny"
+    assert "cd <dir> &&" in reason
+
+
+async def test_without_a_variable_allow_list_nothing_is_printed(tmp_path: Path) -> None:
+    decision, reason = await decide(tmp_path, "echo $DB_TYPE", variables=())
+    assert decision == "deny"
+    assert "DB_TYPE" not in reason
 
 
 NUMERIC_PROJECT = (f"python3 {SCRIPTS[0]} 123", f"python3 {SCRIPTS[1]} 123 60")

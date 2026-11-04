@@ -32,7 +32,7 @@ no per-file copyright header.
 - skills/dbt-workflow/SKILL.md, skills/dbt-write/SKILL.md, skills/dbt-debugging/SKILL.md <- skills/
   (same paths), modified as noted at the top of each file.
 - skills/dbt-workflow/scan_project.py <- skills/dbt-workflow/scan_project.py, modified as noted at
-  its top; skills/dbt-workflow/validate_project.py <- same path, unmodified.
+  its top; skills/dbt-workflow/validate_project.py <- same path, modified as noted at its top.
 - src/data_agent/agents/verifier.md, src/data_agent/agents/value-verifier.md <- agents/ (same
   names), modified as noted at the top of each file.
 - skills-frozen/fa6028eef62b/ is an unmodified copy of skills/ at that Skill version; the files

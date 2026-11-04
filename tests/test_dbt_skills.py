@@ -1,5 +1,6 @@
 """The Skills preloaded for dbt runs and the scripts dbt-workflow runs."""
 
+import importlib.util
 import json
 import re
 import shutil
@@ -29,6 +30,29 @@ SIGNALPILOT_ONLY = {
     "fix_date_spine_hazards",
     "TaskCreate",
 }
+
+
+VALIDATE = SKILLS_DIR / "dbt-workflow" / "validate_project.py"
+
+
+def test_validate_waits_five_minutes_for_dbt_parse_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full re-parse of a dbt project can take minutes; 60 seconds cut 18 of 91 calls short."""
+    spec = importlib.util.spec_from_file_location("validate_project", VALIDATE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls: list[dict[str, object]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(module.shutil, "which", lambda _: "/usr/bin/dbt")
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module.validate(tmp_path)["success"]
+    assert calls[0]["timeout"] == 300
 
 
 def scan(project: Path) -> str:

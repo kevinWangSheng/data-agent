@@ -8,7 +8,7 @@ import pytest
 from data_agent import agent
 from data_agent.agent import ModelSettings, Task
 from data_agent.run_config import load_config
-from data_agent.workspace_guard import workspace_guard
+from data_agent.workspace_guard import GREP_TYPES, workspace_guard
 
 
 @pytest.fixture
@@ -140,6 +140,31 @@ def test_dbt_runs_guard_file_writes_and_bash(tmp_path: Path) -> None:
     assert not {"Write", "Edit", "Bash"} & set(query_tools)
 
 
+async def test_dbt_runs_let_bash_print_db_type_and_wait_for_validate(tmp_path: Path) -> None:
+    """The Bash guard gets the harness's variable list, and Bash's default timeout outlasts
+    validate_project.py's 300-second cap, so a slow dbt parse is never cut off mid-run."""
+    task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
+    settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
+    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
+    assert options.env["BASH_DEFAULT_TIMEOUT_MS"] == "360000"
+    assert options.env["BASH_MAX_TIMEOUT_MS"] == "600000"
+    # Else the CLI carries a `cd dir && ...` into the next Bash call, which the guard cannot see.
+    assert options.env["CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"] == "1"
+    matchers = (options.hooks or {}).get("PreToolUse", [])
+    bash_hooks = [hook for m in matchers if m.matcher == "Bash" for hook in m.hooks]
+    assert len(bash_hooks) == 1
+    hook_input: Any = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s",
+        "transcript_path": "t",
+        "cwd": str(tmp_path),
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo $DB_TYPE"},
+        "tool_use_id": "u",
+    }
+    assert await bash_hooks[0](hook_input, "u", {"signal": None}) == {}
+
+
 async def test_denial_does_not_write_the_workspace_path(workspace: Path) -> None:
     """The reason reaches the event file, which is published; it names no absolute path."""
     guard = workspace_guard(workspace)
@@ -178,6 +203,8 @@ def with_credentials(workspace: Path) -> Path:
         ("Grep", {"pattern": "KEY", "path": ".env"}),
         ("Grep", {"pattern": "KEY"}),
         ("Grep", {"pattern": "KEY", "path": "config", "glob": "*.local"}),
+        # `**/` matches zero directories too, so the root `.env` is reached.
+        ("Grep", {"pattern": "KEY", "glob": "**/.env*"}),
         ("Write", {"file_path": ".env", "content": "x"}),
         ("Edit", {"file_path": "config/.env.local", "old_string": "x", "new_string": "y"}),
     ],
@@ -203,6 +230,147 @@ async def test_files_beside_credentials_stay_readable(
 ) -> None:
     (with_credentials / "models" / "env_link.sql").unlink()
     assert await decide(with_credentials, tool, tool_input) == "none"
+
+
+@pytest.fixture
+def with_sample_env(workspace: Path) -> Path:
+    """A dbt project whose package ships sample dotenv files, as dbt_utils does."""
+    samples = workspace / "dbt_packages" / "dbt_utils" / "integration_tests" / ".env"
+    samples.mkdir(parents=True)
+    (samples / "postgres.env").write_text("PGPASSWORD=sample")
+    (samples / "duckdb.env").write_text("DUCKDB_PATH=sample")
+    (workspace / "models" / "schema.yml").write_text("version: 2")
+    return workspace
+
+
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        {"pattern": "select", "glob": "*.sql"},
+        {"pattern": "select", "glob": "*.{sql,yml}"},
+        {"pattern": "select", "glob": "models/**/*.sql"},
+        # A path glob whose last segment cannot match the file name keeps nothing of it.
+        {"pattern": "select", "glob": "dbt_packages/*.sql"},
+        {"pattern": "select", "glob": "!*.env"},
+        {"pattern": "select", "type": "sql"},
+        {"pattern": "select", "type": "yaml"},
+        {"pattern": "select", "path": "dbt_packages", "type": "sql"},
+        {"pattern": "select", "type": "env", "glob": "*.sql"},
+        {"pattern": "select", "type": "sql", "glob": "!*.env"},
+        # Grep passes each whitespace- or comma-separated piece as its own glob.
+        {"pattern": "select", "glob": "*.sql *.yml"},
+        {"pattern": "select", "glob": "*.sql,*.yml"},
+        # ripgrep lets the last matching glob decide.
+        {"pattern": "select", "glob": "*.env !*.env"},
+        {"pattern": "select", "glob": "!**/*.env"},
+        *({"pattern": "select", "type": name} for name in GREP_TYPES),
+    ],
+)
+async def test_grep_runs_when_its_filter_skips_every_credential_file(
+    with_sample_env: Path, tool_input: dict[str, Any]
+) -> None:
+    assert await decide(with_sample_env, "Grep", tool_input) == "none"
+
+
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        {"pattern": "PASSWORD"},
+        {"pattern": "PASSWORD", "path": "dbt_packages"},
+        {"pattern": "PASSWORD", "glob": "*.env"},
+        {"pattern": "PASSWORD", "glob": "*"},
+        {"pattern": "PASSWORD", "glob": "**/*"},
+        {"pattern": "PASSWORD", "glob": "!*.sql"},
+        {"pattern": "PASSWORD", "glob": "dbt_packages/**"},
+        {"pattern": "PASSWORD", "glob": "**/*.env"},
+        {"pattern": "PASSWORD", "type": "env"},
+        # An including glob keeps a file whatever `type` says (ripgrep checks globs first).
+        {"pattern": "PASSWORD", "type": "sql", "glob": "*.env"},
+        {"pattern": "PASSWORD", "glob": "*.sql *.env"},
+        {"pattern": "PASSWORD", "glob": "*.sql,*.env"},
+        {"pattern": "PASSWORD", "glob": "!*.env *.env"},
+        # In a glob with a slash, `*` does not cross a slash, so this skips nothing nested.
+        {"pattern": "PASSWORD", "glob": "!dbt_packages/*.env"},
+        {"pattern": "PASSWORD", "glob": "!dbt_packages/*/*.env"},
+        # Where ripgrep anchors a path glob depends on how the search path was given, so an
+        # including one may keep the credential file.
+        {"pattern": "PASSWORD", "glob": "*/dbt_packages/**"},
+        {"pattern": "PASSWORD", "glob": "dbt_packages/*.env"},
+    ],
+)
+async def test_grep_that_would_read_a_credential_file_is_denied_naming_it(
+    with_sample_env: Path, tool_input: dict[str, Any]
+) -> None:
+    guard = workspace_guard(with_sample_env)
+    hook_input: Any = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s",
+        "transcript_path": "t",
+        "cwd": str(with_sample_env),
+        "tool_name": "Grep",
+        "tool_input": tool_input,
+        "tool_use_id": "u",
+    }
+    output: Any = await guard(hook_input, "u", {"signal": None})
+    specific = output["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    reason = specific["permissionDecisionReason"]
+    assert "dbt_packages/dbt_utils/integration_tests/.env/postgres.env" in reason
+    assert "glob" in reason and "type" in reason
+    assert str(with_sample_env.resolve()) not in reason
+
+
+@pytest.mark.parametrize(
+    ("tool_input", "decision"),
+    [
+        # Globs are case-sensitive (Grep passes `--glob`), so `!*.env` leaves SNOWFLAKE.ENV in.
+        ({"pattern": "KEY", "glob": "!*.env"}, "deny"),
+        ({"pattern": "KEY", "glob": "*.env"}, "deny"),
+        ({"pattern": "KEY", "glob": "*.sql"}, "none"),
+        ({"pattern": "KEY", "type": "sql"}, "none"),
+    ],
+)
+async def test_grep_filters_are_matched_case_sensitively(
+    with_sample_env: Path, tool_input: dict[str, Any], decision: str
+) -> None:
+    upper = with_sample_env / "dbt_packages" / "dbt_utils" / "integration_tests" / ".env"
+    (upper / "SNOWFLAKE.ENV").write_text("SNOWFLAKE_PASSWORD=sample")
+    assert await decide(with_sample_env, "Grep", tool_input) == decision
+
+
+@pytest.fixture
+def tool_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Where Claude Code stores a tool's over-long output, under the home directory."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    saved = tmp_path / "home" / ".claude" / "projects" / "-tmp-ws" / "tool-results"
+    saved.mkdir(parents=True)
+    (saved / "r.txt").write_text("dbt run output")
+    (saved / "escape.txt").symlink_to(tmp_path / "secret.env")
+    return saved
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input", "decision"),
+    [
+        ("Read", {"file_path": "~/.claude/projects/-tmp-ws/tool-results/r.txt"}, "none"),
+        ("Read", {"file_path": "{saved}/r.txt"}, "none"),
+        ("Grep", {"pattern": "dbt", "path": "{saved}/r.txt"}, "none"),
+        ("Grep", {"pattern": "dbt", "path": "{saved}"}, "none"),
+        ("Grep", {"pattern": "dbt", "path": "{saved}", "glob": "*.txt"}, "none"),
+        ("Write", {"file_path": "{saved}/r.txt", "content": "x"}, "deny"),
+        ("Edit", {"file_path": "{saved}/r.txt", "old_string": "a", "new_string": "b"}, "deny"),
+        ("Read", {"file_path": "{saved}/escape.txt"}, "deny"),
+        ("Read", {"file_path": "{saved}/../other.txt"}, "deny"),
+        ("Read", {"file_path": "~/.claude/projects/-tmp-ws/memory.md"}, "deny"),
+        ("Glob", {"pattern": "*", "path": "{saved}"}, "deny"),
+        ("Grep", {"pattern": "dbt", "path": "{saved}", "glob": "../*"}, "deny"),
+    ],
+)
+async def test_saved_tool_results_may_be_read_and_searched_only(
+    workspace: Path, tool_results: Path, tool: str, tool_input: dict[str, Any], decision: str
+) -> None:
+    filled = {k: v.format(saved=tool_results) for k, v in tool_input.items()}
+    assert await decide(workspace, tool, filled) == decision
 
 
 @pytest.fixture
