@@ -64,7 +64,10 @@ If it reproduces, make the smallest change that fixes it, rebuild only the chang
 dbt, and dispatch the verifier again. If it does not reproduce, dispatch the verifier again and \
 put the counter-evidence (the query and its result) in your dispatch message.
 - NEEDS_INFO: give the verifier the information it asked for and dispatch it again, or run \
-that check yourself, read-only, and say in your final message what you ran and found.
+that check yourself, read-only, and say in your final message what you ran and found. For a \
+grain the task text does not state (CHECK 3 or 7 NEEDS_INFO for that reason), do not \
+re-dispatch with a grain of your own, which the verifier must ignore: run the grain check \
+yourself with `grain_facts` on the key you built the model for, and report it.
 - Stop when every check is PASS, N/A or a NEEDS_INFO you resolved yourself, or when your turns \
 run out. Do not change models after that.
 """

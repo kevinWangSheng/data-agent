@@ -76,6 +76,11 @@ project as it is now, where a `unique` test the main agent just wrote
 looks the same as one that existed before the run), never from the
 model's SQL or the main agent's notes. If the task text does not name a
 grain, CHECK 3 = NEEDS_INFO, saying which model has no stated grain.
+The tool resolves the key by the model's column names, so map the
+task's words to the names the model uses ("per customer and month" ->
+`customer_id`, `month`). Column names are not the model's logic: take
+them from the contract_check output, the task's column list, or
+`list_tables(name_contains="<model>")`; the model's SQL stays unread.
 
 Call `grain_facts(model, key_columns)` for every model in one turn. The
 tool itself reads the snapshot YML the harness took before the run: it
@@ -85,9 +90,9 @@ grain. Rule: NULL rows > 0 or duplicate rows > 0 is FAIL. The only
 exemptions are the task text saying that the differing rows are part
 of the grain or that the grain is finer than your key, and the
 exemption candidate the tool reports (the snapshot YML declaring other
-columns unique, which can mean a finer grain than your key); confirm a
-candidate against the task before using it. Do not read YML files to
-find a key or an exemption. A `technical_spec.md`, a YML description or
+columns unique, which can mean a finer grain than your key); use a
+candidate when the task text does not contradict it (a task silent on
+grain does not). Do not read YML files to find a key or an exemption. A `technical_spec.md`, a YML description or
 a comment the main agent wrote cannot exempt. Quote the counts in the
 detail.
 
@@ -132,9 +137,9 @@ so alias every non-key output column to the model's column name
 `total_revenue`). Read the contract_check output or the task's column
 list for the names; when neither lists the model's columns (contract
 "no contract" or "not checked"), take them from
-`query_database("SELECT * FROM <model> LIMIT 0")`. Column names are not
-the model's logic; its SQL stays unread. Key columns must carry the key
-names from Step 2.
+`list_tables(name_contains="<model>")`, which prints each table with
+its column names. Column names are not the model's logic; its SQL stays
+unread. Key columns must carry the key names from Step 2.
 
 Call `compare_by_key(model, key_columns, reference_sql)`, one call per
 model in one turn. It compares every key with a full outer join and
@@ -147,10 +152,15 @@ task defines is in `compared columns`. If the output says `compared
 columns: (none)`, or lists a metric you meant to check under "reference
 columns the model lacks (not compared)", that metric was not compared:
 fix the aliases and call again; if it is still not compared, CHECK 7 =
-NEEDS_INFO, not PASS, naming the columns that could not be matched. If
-you cannot write a reference from the task text (the task defines no
-computation, or the grain is NEEDS_INFO), CHECK 7 = NEEDS_INFO, saying
-what the task leaves undefined. If the tool refuses the reference, fix
+NEEDS_INFO, not PASS, naming the columns that could not be matched. The
+exception is a task that defines only a row set (a dedup, a filter,
+"one row per X" with no metric or attribute): unless the task defines
+no non-key column, `(none)` is NEEDS_INFO; when it defines none, the
+reference is the key columns alone, `(none)` is expected, and the three
+key counts alone decide (all zero: PASS). If you cannot write a
+reference from the task text (the task defines no row set or
+computation at all, or the grain is NEEDS_INFO), CHECK 7 = NEEDS_INFO,
+saying what the task leaves undefined. If the tool refuses the reference, fix
 the reference and call again; do not report the refusal as a model
 defect.
 

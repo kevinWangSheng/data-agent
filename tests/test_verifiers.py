@@ -186,7 +186,10 @@ def test_verifier_aliases_reference_columns_and_needs_info_when_none_compared() 
     text = step(4)
     assert "alias every non-key output column to the model's column name" in text
     assert "Read the contract_check output or the task's column list for the names" in text
-    assert "SELECT * FROM <model> LIMIT 0" in text
+    # A `LIMIT 0` query prints no header (format_rows says only "Query returned 0 rows"), so the
+    # fallback column source is list_tables, which prints every column name.
+    assert 'list_tables(name_contains="<model>")' in text
+    assert "LIMIT 0" not in text
     none_compared = render_compare(_compare_result(compared=[], unmatched=["revenue"]))
     assert "compared columns: (none)" in none_compared
     assert "`compared columns: (none)`" in text
@@ -208,6 +211,33 @@ def _compare_result(compared: list[str], unmatched: list[str]) -> dict[str, Any]
         "mismatched": 0,
         "samples": {"only_in_model": [], "only_in_reference": [], "mismatched": []},
     }
+
+
+def test_verifier_compares_keys_alone_when_the_task_defines_no_non_key_column() -> None:
+    """A task that only defines a row set (dedup, filter, "one row per X") gives a reference with
+    key columns only; `compared columns: (none)` is then the expected shape, and the key counts
+    alone decide, not NEEDS_INFO."""
+    text = step(4)
+    assert "unless the task defines no non-key column" in text
+    assert "the three key counts alone decide" in text
+
+
+def test_verifier_maps_the_tasks_grain_words_to_column_names_without_reading_sql() -> None:
+    """grain_facts resolves the key by the built model's column names (an unknown name is a
+    ToolError), and a task says "per customer and month" without naming columns, so Step 2 must
+    say where the names come from and that names are not logic."""
+    text = step(2)
+    assert "Column names are not the model's logic" in text
+    assert "contract_check output, the task's column list" in text
+    assert 'list_tables(name_contains="<model>")' in text
+
+
+def test_verifier_exemption_candidate_needs_only_no_contradiction_from_the_task() -> None:
+    """Spec: the snapshot YML can exempt on its own; a task silent on grain cannot "confirm"
+    anything, so confirming means the task text does not contradict the candidate."""
+    text = step(2)
+    assert "the task text does not contradict it" in text
+    assert "confirm a candidate against the task" not in text
 
 
 def test_verifier_treats_the_main_agents_counter_evidence_as_unverified() -> None:
@@ -254,6 +284,10 @@ def test_system_prompt_holds_the_fail_rules_once() -> None:
     assert "does not reproduce" in fail and "counter-evidence" in fail
     needs = flat.split("- NEEDS_INFO:")[1]
     assert "information it asked for" in needs and "run that check yourself" in needs
+    # The verifier takes the grain key from the task text only, so re-dispatching with a grain
+    # the main agent supplies is a loop; a grain NEEDS_INFO is the main agent's own check.
+    assert "grain" in needs.split("- Stop when")[0]
+    assert "run the grain check yourself" in needs.split("- Stop when")[0]
     # A NEEDS_INFO the main agent resolved itself is an exit (the Stop hook never blocks on it).
     assert "a NEEDS_INFO you resolved yourself" in needs.split("- Stop when")[1]
     assert "`verifier`" in flat and "value-verifier" not in flat
