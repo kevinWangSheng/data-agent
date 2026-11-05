@@ -1,6 +1,6 @@
 # 54 — trial 截止时间：剩余不足时不再派验证器，到点自己停下
 
-Status: in-review
+Status: done
 Blocked by: 51
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§2）
 Claimed by: claude (worktree 54-trial-deadline, 2026-11-05)

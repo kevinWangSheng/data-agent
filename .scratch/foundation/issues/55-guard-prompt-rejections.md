@@ -1,6 +1,6 @@
 # 55 — 守卫误拦和提示：开头几步不再被拦，拒绝提示给出正确写法
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§6）
 Claimed by: claude (worktree 55-guard-prompt-rejections, 2026-11-05)
