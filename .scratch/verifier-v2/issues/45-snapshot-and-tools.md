@@ -1,6 +1,6 @@
 # 45 — 快照与 4 个确定性验证工具
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 44（done）, 39（phase1，done）
 Spec: ../spec.md
 Claimed by: claude (worktree 45-snapshot-and-tools)
@@ -132,3 +132,12 @@ Rejected: the reference SQL reads stg_orders: a reference must not read the mode
 - 与 48（PR #45）的关系：后合入的那张给 4 个新工具加 `annotations=READ_ONLY`，48 的测试会把漏的抓出来。
 - 服务器真实运行排在 `t48-real` 之后。
 - 2026-11-05 主会话：服务器真实运行 `t45-real`（commit e7ef157；`ablate --split dev --config full --task dbt-cart-abandonment-recovery --trials 1 --budget 2`）：reward 1（1/1），实际价 $0.2460（2 个事件文件在高峰）。`status` 事件列出的工具含 `model_diff`、`contract_check`、`grain_facts`、`compare_by_key`，不含 `verify_model_values`。验证者调用了 `contract_check`（3 个模型 exists/columns 全 PASS、window N/A）和 `grain_facts`（`mart_ecommerce__recovery_scorecard` 按 cart_id：NULL 0、重复 0，"exemption source in the snapshot YML: none"，说明快照存在且被读到）；`model_diff`、`compare_by_key` 这一局没被调用（验证者提示词还是 v1，47 才改）。value-verifier 子 agent 报告 `verify_model_values` 不可用、只能用 `query_database` 自己算，这是预期内的过渡状态，47 拿掉该验证者。真实镜像上 2335 模型项目的快照耗时没有单独记录（事件流里没有快照事件），未确认。PR #46 CI 待看，Codex app 三次都 "unknown error"。
+- 2026-11-05 主会话：PR #46 CI 绿；主会话已把 main（含 48）并进分支（16738ce），4 个新工具带 `annotations=READ_ONLY`，`make check` 1624 passed。Codex app 3 次 unknown error，按人 2026-11-05 的决定改用 Fable 5.1 只读审查，7 条意见逐条核对后 **退回**（第 1 轮）：
+  - 退回 1（P1）：`verifier_v2/compare.py:198-219` 的 FULL OUTER JOIN 用 `IS NOT DISTINCT FROM` 做连接条件，Postgres 拒绝（审查者在 postgres:17 实测：`FULL JOIN is only supported with merge-joinable or hash-joinable join conditions`），所以 `compare_by_key` 在 Postgres 上每次都是工具错误，且没有 Postgres 测试覆盖。修法：每个键用 `m.k = r.k OR (m.k IS NULL AND r.k IS NULL)`，或两边 COALESCE 到哨兵值；补一个 Postgres 下的测试（现有 `tests/test_postgres.py` 的模式）。
+  - 退回 2（P2）：`verifier_v2/yaml_lite.py:29-40,141` 遇到块标量（`description: |`、`>-`）、多行普通标量、流式映射（`{combination_of_columns: [a, b]}`）、锚点、以 `[` 开头的值时整份文件静默解析成 `{}`，`contract_check` 于是报"snapshot YML has no entry"、`grain_facts` 报无豁免，把假事实当真事实。最低要求：解析不了时工具明说"snapshot YML could not be read"；块标量和流式映射在真实 dbt 项目里常见，应支持。
+  - 退回 3（P2）：`compare.py:66-74` 与 `sql.py:144-151` 的拒绝检查只比裸表名，丢掉 schema：模型 `orders` 读 `source('raw','orders')` 时，参考 SQL `FROM raw.orders` 会被当成"reads orders"拒绝。引用带限定名且目录知道模型 schema 时按 (schema, name) 比较。
+  - 退回 4（P2）：`contract.py:33-41`、`model_diff.py:74-79`：模型标为未解析时 windows 为空，窗口检查却断言"no window function was added or changed"记 N/A，应改成"not checked: model SQL not parsed"。
+  - 退回 6（P3，顺手修）：`contract.py:35,53` 窗口映射按文件名 stem 做键，`models` 传 `main.orders` 或别名时查不到，误报 N/A；统一走 `find_model` 的结果或 stem。
+  - 退回 7（P3，顺手修）：`grain.py:49-50` 快照 YML 里 unique+not_null 的列在建出来的模型里不存在时整次调用抛 ToolError，应作为事实报出（missing key column），不吞掉 NULL/重复计数。
+  - 不退回 5（P3）：DuckDB `query_table('my_model')` 以字符串读表，绕过 sqlglot 的拒绝检查。记为已知限制；若改动只是在参考 SQL 里拒绝 `query_table(` 文本，可以顺手加。
+  - 审查者核过没问题的：键列与模型名经目录解析并加引号、SCALE_SQL 字面量转义、所有语句走 Queryable/网关、相等规则与 spec 一致、CTE 遮蔽处理、快照范围与 5 MB seed 规则、MCP server 包住工具异常。
