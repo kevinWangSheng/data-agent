@@ -98,3 +98,4 @@ verify_model_values  {'readOnlyHint': True}
 ### 2026-11-05 主会话
 
 - 分支已 push，PR #45 已开。服务器真实运行（cross-sell × 1）排在 `t49-screen` 之后，服务器同一时间只跑一批。
+- 2026-11-05 主会话：服务器真实运行 `t48-real`（commit fdb9d15；`ablate --split dev --config full --task dbt-customer-cross-sell-insights --trials 1 --budget 2`）：reward 1（1/1），trial 墙钟 767 s（accept-2 同题三个 full trial 是 938、1010、3609 s）。实际价 $0.3785（2 个事件文件都在高峰），内存峰值 1.9 GB。并发证据（`runs/t48-real/jobs/full/dbt-customer-cross-sell-insights__LkVZv8y/agent/events/`）：167 次 MCP 调用；同一秒内发出 ≥3 个调用的批次 30 个。按"批内结束时间跨度 ÷ 批总时长"看（串行时各调用依次结束，比值接近 1；并发时一起结束，比值接近 0）：accept-2 三个 trial 的中位数是 0.70、0.66、0.70；t48-real 是 0.32，其中 6 个 `hydrate` 一批总时长 7.3 s、结束时间跨度 1.0 s（0.13），3 个 `query_database` 一批 5.5 s、跨度 0（0.00）。注意 `tool_start` 时间戳是整条消息到达时一起记的，所以"同时开始"本身不能证明并发，结束时间的聚集才能。PR #45 CI 绿，Codex app 第一次 Failed，已评论重试。
