@@ -1,6 +1,6 @@
 # 49 — 提示词和 Skill 不再教 agent 改 `profiles.yml`；不 Read dbt 生成的大 JSON
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 49-dbt-prompt-no-profiles-edit)
@@ -57,7 +57,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 1（eng:code-review 已修；`da-review` 工单会话 2 次、主会话 1 次都报 Codex "at capacity"，改看 PR 上的 Codex app 审查）
 - Model spend: $0（工单会话无模型调用；初筛花费由主会话记）
-- Outcome: in-review，branch `worktree-49-dbt-prompt-no-profiles-edit`（commits 724bfba、51bd7a0），PR #44；初筛 `t49-screen` 进行中
+- Outcome: done，PR #44 squash 合入；初筛 t49-screen 3/3，profiles.yml 0 次改动
 - Human review minutes: —
 
 ## Comments
@@ -100,3 +100,4 @@ End with a final message that lists the models you created or changed, how the l
 - 主会话在 worktree 里再跑 `da-review main`，第三次仍 "at capacity"；改以 PR #44 上的 Codex app 审查代替。
 - 初筛 `t49-screen` 开跑：服务器 setup 到 51bd7a0，`ablate --split dev --task dbt-fix-daily-cohorts --out runs/t49-screen --budget 2 --config full --trials 3`。对照 accept-2 full 同题 3/3（trial 7n8t9SV、84NpxAx、9FNRgGg 都 reward 1.0）。
 - 2026-11-05 主会话：初筛 `t49-screen`（commit 51bd7a0；`ablate --split dev --config full --task dbt-fix-daily-cohorts --trials 3 --budget 2`）：成功 **3/3**（trial ffjEhFL、joNQgrn、nN5SMyU 都 reward 1.0；accept-2 full 同题 3/3）。过程指标（机械计数，`runs/t49-screen/jobs/full/*/agent/events/`）：`profiles.yml` Edit 0 次；`--project-dir` 0 次；`cd <dir> && dbt` 3、4、3 次；Read `target/*.json` 0 次；"exceeds maximum allowed tokens" 0 次。实际价 $0.3599（4 个事件文件全在高峰）。内存峰值 2.9 GB。过线。
+- 2026-11-05 主会话：Codex 不可用（本地 3 次 at capacity，PR #44 的 app 审查 3 次 unknown error），按人 2026-11-05 的决定改用 Fable 5.1 只读审查。结果：无 P1/P2；核实了 `cd proj && dbt run` 过守卫、每次 Bash 都从 workspace 起步、`validate_project.py` 默认 300、新测试查的是正文不是文件头注释、`DBT_PROMPT_BEFORE` 是逐字节比较所以必须更新。三条 P3 都不修，记为后续：① `skills/dbt-workflow/validate_project.py:200` 上游文案 "Fix profiles.yml - dbt cannot find a valid profile" 与提示词的 "Do not edit profiles.yml" 相抵，缺 profile 时 agent 可能二选一；② SKILL.md 写 "default 300" 但脚本把任何值封顶在 300，传 600 会被静默截断；③ `agent.py:135` "run them as cd … && dbt" 的 "them" 也指 dbt-workflow 脚本，脚本是以项目目录为参数的，措辞略含糊。①②③ 交对齐会话定是否开小工单。PR #44 squash 合入。
