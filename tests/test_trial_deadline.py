@@ -27,6 +27,7 @@ from data_agent.agent import Outcome, Task
 from data_agent.run_config import load_config
 from data_agent.verifier_v2 import run_hooks
 from data_agent.verifier_v2.hooks import VERIFY_MIN_REMAINING_S
+from data_agent.verifiers import VERIFIER_NAMES
 
 VERIFIER = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "go"}}
 DEADLINE = 10_000.0
@@ -77,7 +78,7 @@ def hooks_at(
     )
 
 
-@pytest.mark.parametrize("agent_type", ["verifier", "value-verifier"])
+@pytest.mark.parametrize("agent_type", VERIFIER_NAMES)
 async def test_a_verifier_dispatch_is_denied_with_too_little_time_left(
     edited: tuple[Path, Path], agent_type: str
 ) -> None:
