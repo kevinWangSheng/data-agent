@@ -5,6 +5,7 @@ and caps the row count. Only then does the statement reach the database, over a 
 connection.
 """
 
+import contextlib
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,10 +33,27 @@ class QueryTimedOut(QueryFailed):
     """The statement ran past the gateway's timeout and was stopped."""
 
 
+class QueryInterrupted(QueryFailed):
+    """The session was interrupted: the running statement was stopped and no more may run."""
+
+
 @dataclass(frozen=True)
 class QueryResult:
     columns: list[str]
     rows: list[tuple[Any, ...]]
+
+
+class Session(Protocol):
+    """One read-only connection held open for a batch of statements (the dictionary build).
+    Each statement passes the gateway's check and timeout like any other; `interrupt` (from any
+    thread) stops the running statement and makes later ones fail; `close` releases the
+    connection and must be called by the thread that queries."""
+
+    def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult: ...
+
+    def interrupt(self) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class Gateway(Protocol):
@@ -44,6 +62,10 @@ class Gateway(Protocol):
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult: ...
 
     def explain(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult: ...
+
+    def session(self, timeout_seconds: float) -> Session:
+        """Open one read-only connection for a batch of statements; raises QueryFailed."""
+        ...
 
     def catalog_key(self) -> object | None:
         """A value that changes whenever the database's catalog may have changed, for the catalog
@@ -86,32 +108,78 @@ class DuckDBGateway:
             file_stamp(path) for path in (self.path, self.path.with_name(self.path.name + ".wal"))
         )
 
+    def session(self, timeout_seconds: float) -> "DuckDBSession":
+        return DuckDBSession(self.path, timeout_seconds)
+
     def _execute(self, governed: str) -> QueryResult:
         # A connection per statement: DuckDB lets one process hold the write lock, and holding a
         # read-only connection open would keep `dbt run` (the only write path) from writing.
-        # External access off: a file or network reader the denylist misses still cannot run.
+        con = connect_duckdb(self.path)
         try:
-            con = duckdb.connect(
-                str(self.path),
-                read_only=True,
-                config={"enable_external_access": False, "lock_configuration": True},
-            )
-        except duckdb.Error as exc:
-            raise QueryFailed(str(exc)) from exc
-        # DuckDB has no statement timeout; interrupt the connection from a timer thread instead.
-        timer = threading.Timer(self.timeout_seconds, con.interrupt)
-        timer.start()
-        try:
-            cursor = con.execute(governed)
-            columns = [column[0] for column in cursor.description or []]
-            return QueryResult(columns=columns, rows=cursor.fetchall())
-        except duckdb.InterruptException as exc:
-            raise QueryTimedOut(f"Query timed out after {self.timeout_seconds}s") from exc
-        except duckdb.Error as exc:
-            raise QueryFailed(str(exc)) from exc
+            return run_duckdb(con, governed, self.timeout_seconds)
         finally:
-            timer.cancel()
             con.close()
+
+
+def connect_duckdb(path: Path) -> duckdb.DuckDBPyConnection:
+    """A read-only connection. External access off: a file or network reader the denylist
+    misses still cannot run."""
+    try:
+        return duckdb.connect(
+            str(path),
+            read_only=True,
+            config={"enable_external_access": False, "lock_configuration": True},
+        )
+    except duckdb.Error as exc:
+        raise QueryFailed(str(exc)) from exc
+
+
+def run_duckdb(
+    con: duckdb.DuckDBPyConnection, governed: str, timeout_seconds: float
+) -> QueryResult:
+    # DuckDB has no statement timeout; interrupt the connection from a timer thread instead.
+    timer = threading.Timer(timeout_seconds, con.interrupt)
+    timer.start()
+    try:
+        cursor = con.execute(governed)
+        columns = [column[0] for column in cursor.description or []]
+        return QueryResult(columns=columns, rows=cursor.fetchall())
+    except duckdb.InterruptException as exc:
+        raise QueryTimedOut(f"Query timed out after {timeout_seconds}s") from exc
+    except duckdb.Error as exc:
+        raise QueryFailed(str(exc)) from exc
+    finally:
+        timer.cancel()
+
+
+class DuckDBSession:
+    """One read-only connection for a batch of statements; see `Session`. The connection is
+    opened here, so the caller holds it from construction to `close`."""
+
+    dialect = "duckdb"
+
+    def __init__(self, path: Path, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        self._interrupted = False
+        self._con = connect_duckdb(path)
+
+    def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
+        governed = check(sql, self.dialect, row_limit)
+        if self._interrupted:
+            raise QueryInterrupted("Session interrupted")
+        try:
+            return run_duckdb(self._con, governed, self.timeout_seconds)
+        except QueryTimedOut as exc:
+            if self._interrupted:
+                raise QueryInterrupted("Session interrupted") from exc
+            raise
+
+    def interrupt(self) -> None:
+        self._interrupted = True
+        self._con.interrupt()
+
+    def close(self) -> None:
+        self._con.close()
 
 
 class PostgresGateway:
@@ -144,34 +212,83 @@ class PostgresGateway:
     def _run(self, governed: str) -> QueryResult:
         con = self._connect()
         try:
-            # Not LiteralString: the statement is the agent's, and the gateway has just checked it.
-            cursor = con.execute(governed)  # pyright: ignore[reportArgumentType, reportCallIssue]
-            columns = [column.name for column in cursor.description or []]
-            return QueryResult(columns=columns, rows=cursor.fetchall())
-        except psycopg.errors.QueryCanceled as exc:
-            raise QueryTimedOut(f"Query timed out after {self.timeout_seconds}s") from exc
-        except psycopg.Error as exc:
-            raise QueryFailed(str(exc).strip()) from exc
+            return run_postgres(con, governed, self.timeout_seconds)
         finally:
             if con.closed:
                 self._con = None
-            else:
-                con.rollback()
+
+    def session(self, timeout_seconds: float) -> "PostgresSession":
+        return PostgresSession(self._url, timeout_seconds)
 
     def _connect(self) -> psycopg.Connection[tuple[Any, ...]]:
         if self._con is not None and not self._con.closed:
             return self._con
-        timeout_ms = max(1, int(self.timeout_seconds * 1000))
+        self._con = connect_postgres(self._url, self.timeout_seconds)
+        return self._con
+
+
+def connect_postgres(url: str, timeout_seconds: float) -> psycopg.Connection[tuple[Any, ...]]:
+    """A read-only connection whose statements the server stops after `timeout_seconds`."""
+    timeout_ms = max(1, int(timeout_seconds * 1000))
+    try:
+        # Added to the URL's own options (a search_path, say) rather than replacing them.
+        given = str(conninfo_to_dict(url).get("options") or "")
+        options = f"{given} -c statement_timeout={timeout_ms}".strip()
+        con = psycopg.connect(url, options=options, connect_timeout=10)
+    except psycopg.Error as exc:
+        raise QueryFailed(f"Could not connect to the Postgres database: {reason(exc)}") from exc
+    con.read_only = True
+    return con
+
+
+def run_postgres(
+    con: psycopg.Connection[tuple[Any, ...]], governed: str, timeout_seconds: float
+) -> QueryResult:
+    """One statement in a READ ONLY transaction that is rolled back afterwards."""
+    try:
+        # Not LiteralString: the statement is the agent's, and the gateway has just checked it.
+        cursor = con.execute(governed)  # pyright: ignore[reportArgumentType, reportCallIssue]
+        columns = [column.name for column in cursor.description or []]
+        return QueryResult(columns=columns, rows=cursor.fetchall())
+    except psycopg.errors.QueryCanceled as exc:
+        raise QueryTimedOut(f"Query timed out after {timeout_seconds}s") from exc
+    except psycopg.Error as exc:
+        raise QueryFailed(str(exc).strip()) from exc
+    finally:
+        if not con.closed:
+            con.rollback()
+
+
+class PostgresSession:
+    """One read-only connection of its own for a batch of statements; see `Session`."""
+
+    dialect = "postgres"
+
+    def __init__(self, url: str, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        self._interrupted = False
+        self._con = connect_postgres(url, timeout_seconds)
+
+    def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
+        governed = check(sql, self.dialect, row_limit)
+        if self._interrupted:
+            raise QueryInterrupted("Session interrupted")
         try:
-            # Added to the URL's own options (a search_path, say) rather than replacing them.
-            given = str(conninfo_to_dict(self._url).get("options") or "")
-            options = f"{given} -c statement_timeout={timeout_ms}".strip()
-            con = psycopg.connect(self._url, options=options, connect_timeout=10)
-        except psycopg.Error as exc:
-            raise QueryFailed(f"Could not connect to the Postgres database: {reason(exc)}") from exc
-        con.read_only = True
-        self._con = con
-        return con
+            return run_postgres(self._con, governed, self.timeout_seconds)
+        except QueryTimedOut as exc:
+            if self._interrupted:
+                raise QueryInterrupted("Session interrupted") from exc
+            raise
+
+    def interrupt(self) -> None:
+        self._interrupted = True
+        # Cancels over a connection of its own, so it is safe from another thread; an error means
+        # the connection is already gone and nothing is running on it.
+        with contextlib.suppress(psycopg.Error):
+            self._con.cancel_safe()
+
+    def close(self) -> None:
+        self._con.close()
 
 
 def file_stamp(path: Path) -> tuple[int, int] | None:

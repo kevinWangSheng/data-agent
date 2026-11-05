@@ -6,7 +6,12 @@ from pathlib import Path
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from data_agent.context_tools import register_context_tools
+from data_agent.context_tools import (
+    Dictionary,
+    DictionaryBuild,
+    build_interruptible,
+    register_context_tools,
+)
 from data_agent.db_facts import (
     CatalogCache,
     describe,
@@ -84,11 +89,14 @@ def build_server(
     config: RunConfig,
     workspace: Path | None = None,
     verifier_tools: bool = True,
+    dictionary: Dictionary | None = None,
 ) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
     `config` turns that layer on, so a run with it off cannot see them; `verifier_tools=False`
     also leaves out the verifier tools for a run whose task type has no verifiers. `workspace`
-    bounds the files a tool may read (map_columns)."""
+    bounds the files a tool may read (map_columns). `dictionary` is the prebuilt value
+    dictionary the context layer searches (`data-agent run` builds it before the agent starts);
+    a server with that layer on and no dictionary builds one now, before it serves."""
     server = MCPServer("data-agent")
     run = partial(run_query, gateway)
     # One catalog per server process, shared by every tool that looks a table up.
@@ -155,7 +163,9 @@ def build_server(
         return run_explain(gateway, sql)
 
     if config.context:
-        register_context_tools(server, run, catalog, gateway.dialect)
+        if dictionary is None:
+            dictionary = build_interruptible(DictionaryBuild(gateway))
+        register_context_tools(server, run, catalog, gateway.dialect, dictionary)
     if config.verifiers and verifier_tools:
         register_verifier_tools(server, run, catalog, workspace, gateway.dialect)
     return server

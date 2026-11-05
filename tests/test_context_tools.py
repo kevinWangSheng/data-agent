@@ -132,25 +132,8 @@ async def test_catalog_past_the_gateway_row_cap_is_complete(tmp_path: Path) -> N
     assert "100 columns" in text_of(hydrated)
 
 
-async def test_dictionary_search_shows_every_column_despite_many_values(tmp_path: Path) -> None:
-    db = tmp_path / "values.duckdb"
-    con = duckdb.connect(str(db))
-    try:
-        con.execute(
-            "CREATE TABLE items AS SELECT 'gold-' || range AS a_text, 'gold_tier' AS z_tier "
-            "FROM range(10001)"
-        )
-    finally:
-        con.close()
-    async with mcp_server(db) as session:
-        result = await session.call_tool("dictionary_search", {"keyword": "gold"})
-    text = text_of(result)
-    assert "main.items.z_tier: 'gold_tier' (10001)" in text
-    assert "9981 more" in text
-
-
-async def test_dictionary_search_on_a_table_too_wide_for_one_statement(tmp_path: Path) -> None:
-    """501 text columns: more than one statement fits under the gateway's size and row caps."""
+async def test_dictionary_search_on_a_wide_table(tmp_path: Path) -> None:
+    """501 text columns are sampled in one statement."""
     db = tmp_path / "wide.duckdb"
     con = duckdb.connect(str(db))
     try:
@@ -163,23 +146,6 @@ async def test_dictionary_search_on_a_table_too_wide_for_one_statement(tmp_path:
         result = await session.call_tool("dictionary_search", {"keyword": "gold"})
     assert not result.is_error, text_of(result)
     assert "main.wide.text_column_500: 'gold' (1)" in text_of(result)
-
-
-async def test_dictionary_search_output_is_bounded(tmp_path: Path) -> None:
-    db = tmp_path / "many.duckdb"
-    con = duckdb.connect(str(db))
-    try:
-        long_value = "gold" + "x" * 500
-        columns = ", ".join(f"'{long_value}' AS c{j:02d}" for j in range(60))
-        con.execute(f"CREATE TABLE many AS SELECT {columns}")
-    finally:
-        con.close()
-    async with mcp_server(db) as session:
-        result = await session.call_tool("dictionary_search", {"keyword": "gold"})
-    lines = text_of(result).splitlines()
-    assert len(lines) == 51
-    assert "more specific keyword" in lines[-1]
-    assert all(len(line) < 200 for line in lines)
 
 
 async def test_hydrate_ambiguous_bare_name_lists_the_refs(tmp_path: Path) -> None:
@@ -215,7 +181,7 @@ async def test_dictionary_search_without_matches(shop: Path, keyword: str) -> No
     async with mcp_server(shop) as session:
         result = await session.call_tool("dictionary_search", {"keyword": keyword})
     assert not result.is_error, text_of(result)
-    assert "No values" in text_of(result)
+    assert "value_not_in_sample" in text_of(result)
 
 
 async def test_hydrate_finds_a_discovered_name_with_surrounding_spaces(tmp_path: Path) -> None:

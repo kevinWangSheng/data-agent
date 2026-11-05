@@ -38,6 +38,17 @@ no per-file copyright header.
 - skills-frozen/fa6028eef62b/ is an unmodified copy of skills/ at that Skill version; the files
   above keep the same upstream source and notices there.
 
+## ktx
+
+Source: https://github.com/Kaelio/ktx, commit 49a4ae6
+License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-file copyright header.
+
+- src/data_agent/context_tools.py: the data-dictionary sampling settings (cardinality threshold,
+  values stored per column, sample size, the 21 column-name exclude patterns) and the categorical
+  column-type pattern <- packages/cli/src/context/scan/data-dictionary.ts
+  (`defaultKtxDataDictionarySettings`, `categoricalCandidateTypes`), copied as constants; the
+  build and search around them are this repo's (ideas from `sl/dictionary-search.ts`).
+
 ------------------------------------------------------------------------------
 data-eng-bench (https://github.com/Snowflake-Labs/data-eng-bench)
 Apache License 2.0, commit a3278ad102829a6084dde086244a0ef665a8011c
