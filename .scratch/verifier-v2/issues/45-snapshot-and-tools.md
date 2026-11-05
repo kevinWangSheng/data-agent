@@ -1,6 +1,6 @@
 # 45 — 快照与 4 个确定性验证工具
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 44（done）, 39（phase1，done）
 Spec: ../spec.md
 Claimed by: claude (worktree 45-snapshot-and-tools)
@@ -57,10 +57,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1（eng:code-review Standards + Spec，4 条 spec 问题已修；Codex `da-review` 工单会话 3 次、主会话 1 次都 "at capacity"，改看 PR 上的 Codex app）
+- Attempts: 2
+- Review rounds: 2（第 1 轮 eng:code-review 4 条 spec 已修 + Fable 退回 7 条；第 2 轮 eng:code-review Standards 1 硬 + 6 smell、Spec 1 P2 + 1 P3，全部已修或写明理由；Codex 5 次 at capacity）
 - Model spend: $0（无模型调用）
-- Outcome: in-review，branch `worktree-45-snapshot-and-tools`（commits 9d7bf06、7fc40d2，主会话补 1 个删 seam B 测试的提交），PR #46；服务器真实运行待主会话
+- Outcome: in-review，branch `worktree-45-snapshot-and-tools`（9d7bf06、7fc40d2、e7ef157、16738ce 合 main、退回轮 19f68db、7ba87fc），PR #46；t45-real 1/1
 - Human review minutes: —
 
 ## Comments
@@ -141,3 +141,22 @@ Rejected: the reference SQL reads stg_orders: a reference must not read the mode
   - 退回 7（P3，顺手修）：`grain.py:49-50` 快照 YML 里 unique+not_null 的列在建出来的模型里不存在时整次调用抛 ToolError，应作为事实报出（missing key column），不吞掉 NULL/重复计数。
   - 不退回 5（P3）：DuckDB `query_table('my_model')` 以字符串读表，绕过 sqlglot 的拒绝检查。记为已知限制；若改动只是在参考 SQL 里拒绝 `query_table(` 文本，可以顺手加。
   - 审查者核过没问题的：键列与模型名经目录解析并加引号、SCALE_SQL 字面量转义、所有语句走 Queryable/网关、相等规则与 spec 一致、CTE 遮蔽处理、快照范围与 5 MB seed 规则、MCP server 包住工具异常。
+
+### 2026-11-05 工单会话（退回第 1 轮修复，commits 19f68db、7ba87fc）
+
+`make check` 干净（1638 passed、16 xfailed）。Postgres 集成测试在本机 Postgres 17 scratch 库 `da_t45_scratch` 通过（`DATA_AGENT_TEST_POSTGRES_URL`，`uv run pytest tests/test_verifier_v2_tools.py -m integration -k postgres` 1 passed）。
+
+**逐项修法**
+- 退回 1：join 改成两个普通等式 `(m.k IS NULL) = (r.k IS NULL) AND COALESCE(m.k, 哨兵) = COALESCE(r.k, 哨兵)`，哨兵是该键任一非 NULL 值，算在单行 CTE 里 CROSS JOIN 到两边，Postgres 走 Hash Full Join（EXPLAIN 实测）。审查者建议的 `a = b OR (a IS NULL AND b IS NULL)` 实测 Postgres 17 同样拒绝。DuckDB 对 ON 里的标量子查询报 INTERNAL Error，所以哨兵放 CTE。某键两边全 NULL 时先探测，该键只按 NULL 标志连接（第 2 轮 Spec P2）。
+- 退回 2：`yaml_lite.py` 支持块标量（`|`、`>`、`-`/`+`）、带内容的流式映射、跨行流式列表、续行普通标量；锚点/别名/标签/`|2` 仍不支持但抛 `YamlLiteError`（带行号）。`contract_check` 的 columns 和 `grain_facts` 输出写明 "snapshot YML could not be read: 路径 (原因)"。`dbt_project.yml` 读不了仍回退 `{}`。
+- 退回 3：`sql.table_references` 返回 (schema, name)；带限定名的引用只在已知 schema 内拒绝，未建出的改动模型 schema 未知则任意限定名都拒绝。
+- 退回 4：未解析模型的窗口检查报 N/A，证据 "not checked: the model's SQL was not parsed …"。
+- 退回 6：`project.model_name` 把 `main.orders` 或别名解析回模型名。
+- 退回 7：`grain_facts` 新增 `missing_key_columns`，YML 里 unique+not_null 但模型没有的列作为事实报出并排除出计数。
+- 顺手 5：参考 SQL 文本里出现 `query_table(` 直接拒绝。
+
+**真实运行**（stdio，DuckDB 夹具 + 一个 YML 带锚点的第二项目）：`contract_check` 对未解析模型报 "not checked"、对读不了的 YML 写明路径和行号；`grain_facts` 报出 `return_id` 为 YML 有而模型缺的键列；`compare_by_key` 接受 `FROM raw.orders`、拒绝 `FROM orders` 和 `query_table(`。Postgres 前后对照：旧代码 `FULL JOIN is only supported with merge-joinable or hash-joinable join conditions`，新代码 `only_in_model 0 / only_in_reference 1 / mismatched 0`。
+
+**审查**：`da-review` 第 5 次 at capacity，跳过。eng:code-review Standards：`sql.table_names` 死代码已删，6 处 smell 已处理。Spec：P2（两边全 NULL 的键）已修配 DuckDB + Postgres 测试；P3（Postgres 测试覆盖复合键）已补。
+
+**不修**：(a) `dbt_project.yml` 读不了仍回退 `{}`，否则四个工具全部不可用；要显式报告可在后续加 `model_diff` 的 warnings。(b) `yaml_lite.py` 371 行、`project.py` 约 400 行，接近上限未越界，不拆。(c) 参考 SQL 每次调用多跑 1 次哨兵探测；无 ORDER BY 的 LIMIT 参考哨兵可能不同但结果仍正确。
