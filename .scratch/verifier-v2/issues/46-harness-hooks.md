@@ -1,6 +1,6 @@
 # 46 — harness 钩子：派单改写、Stop 拦截、轮数记录
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 45（done）
 Spec: ../spec.md
 Claimed by: claude (fable, worktree 46-harness-hooks)
@@ -64,9 +64,9 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 ## Ledger
 
 - Attempts: 1
-- Review rounds: 3（第 1 轮 Codex + eng:code-review，8703954；第 2 轮 Fable，7da7e94；退回第 1 轮：Codex at capacity，eng:code-review，6c5ab48）
+- Review rounds: 4（第 1 轮 Codex + eng:code-review，8703954；第 2 轮 Fable，7da7e94；退回第 1 轮 eng:code-review，6c5ab48；退回第 2 轮 eng:code-review，aa67771；Codex 两次 at capacity）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: in-review，退回第 1 轮已修，branch `worktree-46-harness-hooks`（385acb6、8703954、7da7e94、f63fdb9、6ae95cd、6c5ab48），PR #47；集成测试断言问题交人；服务器运行 t46-real 进行中
+- Outcome: in-review，两轮退回已修完，branch `worktree-46-harness-hooks`（385acb6 … 6c5ab48、c8ede0f、aa67771），PR #47；集成测试断言问题交人；t46-real 1/1（6c5ab48），t46-real2 在 aa67771 上复跑
 - Human review minutes: —
 
 ## Comments
@@ -158,3 +158,14 @@ Check customer_ltv; upstream is raw.orders
   - 顺手（P3）：`hooks.py:138-141` Stop 钩子把 `ValueError` 也接住并放行；`stop_decision` 路径设计上不抛 ValueError，抛了就是逻辑 bug，现在会静默放行。收窄到 `OSError`。
   - 顺手（P3）：`report.py:20-23` `1. CHECK 1: PASS`（编号列表在前）仍解析不到，与标题已接受列表编号不一致。允许行首列表编号。
 - 2026-11-05 主会话：服务器真实运行 `t46-real`（commit 6c5ab48，退回第 2 轮之前；`ablate --split dev --config full --task dbt-receivables-aging-buckets --trials 1 --budget 2`）：reward 1（1/1），实际价 $0.2554（2 个事件文件在高峰），内存峰值 1.9 GB。事件流（`runs/t46-real/jobs/full/dbt-receivables-aging-buckets__QSNyiwv/agent/events/`）：两个验证者各一对 `verifier_start`/`verifier_end`；`verifier`（v1 的 verifier.md 格式）解析出 `fact_receivables_aging` 6 个 CHECK（5 PASS、1 N/A），`overall PASS`，turns 8、tool_calls 20；`value-verifier` 解析出 3 个 CHECK，`overall PASS`，turns 12、tool_calls 32。没有 `ended_with_unresolved`、没有 `error` 事件，Stop 钩子没有拦（主 agent 改了模型、验证者报告 PASS、之后没再改）。`ablate` 收尾正常写出 `reports/`（补充提交 f63fdb9 的效果），`evals exited 0`。`tool_start` 记录的是改写前的 Agent 输入，派单改写是否生效这次运行看不出，由集成测试和本地钩子脚本证明。
+
+### 2026-11-05 工单会话（退回第 2 轮修复，commits c8ede0f、aa67771）
+
+验收文件未动。`make check`：1696 passed, 1 skipped, 1 xfailed。
+
+- 退回 A：每份 `verifier` 报告都取队首（最早未结派单）的指纹，报告只从队尾弹出一项，队首留到在飞数归零。顺序到达的两份报告都配到更早的指纹，中间的改动在两份报告后仍拦（只多报），再派一次且无在飞时才清掉。测试改成 `test_hooks_pair_reports_with_the_oldest_outstanding_dispatch`，新增 `test_hooks_pair_reports_arriving_out_of_order`（在旧 `popleft` 代码上失败）。
+- 顺手 队列泄漏：`deque(maxlen=MAX_OUTSTANDING_DISPATCHES=4)`。如实说明：永远不回报的派单和仍在飞的无法区分，会一直占队首多报 rule 2 直到 MAX_BLOCKS；上界只防无限增长，不是行为修复（SDK 子 agent 出错是否仍触发 SubagentStop 未核实）。
+- 顺手：Stop 只接 `OSError`，`ValueError` 抛出（`test_stop_hook_raises_on_a_logic_error`）；`CHECK_RE` 行首允许列表编号 `1.`/`1)`。
+- 真实行为（本地脚本）：乱序到达时 Stop 以 rule 2 拦；重新派单后放行；`2. CHECK 2: FAIL` 解析。
+- 审查：`da-review` at capacity；eng:code-review 已修（aa67771）：解析/取哈希抛错时派单项没弹出导致一直拦 rule 2（Spec P2，改成先弹出再解析，配测试）；配对测试最后一个断言被 MAX_BLOCKS 掩盖（加断言无 `ended_with_unresolved`）；队列上界注释如实；测试常量提出。
+- 不修：上界不解决泄漏，Stop 时清队列会让在飞的后台验证者漏报，按原样记已知限制；PreToolUse/SubagentStop 仍接 `(OSError, ValueError)`；取哈希失败的 `None` 队首对所有在飞报告"取现在"，已记 `error` 事件；`1.CHECK`、`**1.** CHECK` 不解析。
