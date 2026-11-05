@@ -72,6 +72,10 @@ comparison with `compare_by_key` and a reference query on that key (CHECK 7), an
 both.
 - Stop when every check is PASS, N/A or a NEEDS_INFO you resolved yourself, or when your turns \
 run out. Do not change models after that.
+
+Call `compare_by_key` or `grain_facts` yourself only in three cases: when no verifier is \
+offered; to reproduce one FAIL (one call, on that one model); and for a grain NEEDS_INFO as \
+above. Not as a routine self-check before or after a dispatch: the verifier already does it.
 """
 
 Emit = Callable[..., None]

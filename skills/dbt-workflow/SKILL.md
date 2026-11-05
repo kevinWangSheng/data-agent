@@ -19,14 +19,14 @@ specific macro, column or entity names were made generic; the rule for review ta
 names a task format. Step 8 dispatches the one `verifier` agent (ADR-0009: the harness
 rewrites the dispatch and blocks the run while a changed model is unverified or has a FAIL),
 uses its four verdicts (PASS, FAIL, NEEDS_INFO, N/A), takes its FAIL and NEEDS_INFO handling
-from the system prompt instead of restating it, and runs the main agent's own key-level check
-with compare_by_key when the tool is offered; the Tools section's verify_model_values entry
+from the system prompt instead of restating it, and leaves the main agent's own key-level check
+(with compare_by_key when the tool is offered) to runs without the verifier; the Tools section's verify_model_values entry
 (the removed value verifier's tool) takes the model's upstream tables and the project directory
 and compares the model SQL's own COUNTs exactly; sums and averages match only up to rounding;
 map_columns adds no domain prefix. After the first failure attribution: an edit is compared
 with the original predicate by predicate; rule-defined columns implement each factor as stated;
 Step 8 checks column types for every model the task asks for and adds a key-level check against
-an independent recomputation, which also gates the STOP. Step 8 treats technical_spec.md as the
+an independent recomputation, which gates the STOP only without the verifier. Step 8 treats technical_spec.md as the
 main agent's intent only, which the verifier does not need, as it judges against the task text. The Rules forbid
 Reading the JSON dbt writes under target/, and the validate section states this copy's 300 s
 default timeout. -->
@@ -255,7 +255,7 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
    the model's filters: counts, mins and maxes exactly, sums and averages up to
    rounding (equal at the column's DECIMAL places; a float column within
    1e-6 relative error). Anything more is a mismatch.
-   Then, whether or not the verifier ran, run the key-level check yourself:
+   Then, still without the verifier, run the key-level check yourself:
    totals can match while single keys are wrong, and a check that reuses the
    model's expression repeats its error. For every model the task asks for,
    write a reference query straight from the task's and YML's written rules
@@ -276,17 +276,18 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
    FAIL and NEEDS_INFO as the system prompt's "Verification before delivery"
    section says; this Skill adds no FAIL rules of its own. If a check is
    PASS or N/A, accept it - do NOT override the verifier or "fix" something
-   it approved, unless your key-level check shows a difference there. If the
-   model's row count differs from your technical spec but CHECK 3 (grain) and
-   CHECK 7 (key-level comparison) are PASS, update your spec to match reality.
+   it approved. If the model's row count differs from your technical spec
+   but CHECK 3 (grain) and CHECK 7 (key-level comparison) are PASS, update
+   your spec to match reality.
    For ANY fix, update `technical_spec.md` FIRST, then rewrite the SQL from
    the updated spec, and rebuild as the system prompt says.
 4. STOP when the latest report shows every check PASS or N/A for every model
-   you created or changed and your key-level check matches. Once
-   verification passes, do NOT modify any model files - the task is
-   complete. No further investigation, no "what if" queries, no source table
-   changes. The verifier and your key-level check are the final authority;
-   the run cannot end while a model you changed is unverified or has a FAIL.
+   you created or changed. Without the verifier, STOP when your own checks
+   in step 2 all match. Once verification passes, do NOT modify any model
+   files - the task is complete. No further investigation, no "what if"
+   queries, no source table changes. With the verifier, its latest report
+   is the final authority; the run cannot end while a model you changed is
+   unverified or has a FAIL.
 
 ---
 
