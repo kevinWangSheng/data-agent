@@ -11,12 +11,12 @@ from claude_agent_sdk.types import HookEvent
 
 from data_agent.run_config import load_config
 from data_agent.verifier_v2 import run_hooks
+from data_agent.verifier_v2.dispatch import AGAIN_MODELS_LABEL, FIRST_MODELS_LABEL
 from data_agent.verifier_v2.project import referenced_models
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "verifier_v2"
 TRANSCRIPT = FIXTURES / "verifier_transcript.jsonl"
 VERIFIER = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "again"}}
-MODELS_LINE = "Models model_diff lists as new or changed: "
 
 # `b` refs `a`, `d` refs `b` (so `a`'s downstream is b and d); `c` and `e` stand alone; `raw`
 # is untouched since the snapshot, so it is never listed even though `e` refs it.
@@ -45,14 +45,17 @@ def run(tmp_path: Path) -> tuple[Path, Path, dict[HookEvent, list[HookMatcher]]]
     workspace, snapshot = tmp_path / "ws", tmp_path / "run" / "snapshot"
     tiny_project(snapshot / "project", {"raw": WORKSPACE_MODELS["raw"]})
     tiny_project(workspace / "project", WORKSPACE_MODELS)
-    hooks = run_hooks(
+    return workspace, snapshot, hooks_for(workspace, snapshot)
+
+
+def hooks_for(workspace: Path, snapshot: Path) -> dict[HookEvent, list[HookMatcher]]:
+    return run_hooks(
         load_config("full"),
         workspace=workspace,
         snapshot=snapshot,
-        task_file=tmp_path / "task.md",
+        task_file=workspace.parent / "task.md",
         emit=lambda type, **fields: None,
     )
-    return workspace, snapshot, hooks
 
 
 async def call(
@@ -70,8 +73,9 @@ async def dispatch(hooks: dict[HookEvent, list[HookMatcher]]) -> list[str]:
     """The models the rewritten dispatch prompt lists."""
     output = await call(hooks, "PreToolUse", **VERIFIER)
     prompt = output["hookSpecificOutput"]["updatedInput"]["prompt"]
-    [line] = [line for line in prompt.splitlines() if line.startswith(MODELS_LINE)]
-    return line.removeprefix(MODELS_LINE).split(", ")
+    labels = tuple(f"{label}: " for label in (FIRST_MODELS_LABEL, AGAIN_MODELS_LABEL))
+    [line] = [line for line in prompt.splitlines() if line.startswith(labels)]
+    return line.split(": ", 1)[1].split(", ")
 
 
 async def report(hooks: dict[HookEvent, list[HookMatcher]], **statuses: str) -> None:
@@ -97,6 +101,17 @@ ALL_PASS = dict.fromkeys("abcde", "PASS")
 async def test_first_dispatch_lists_every_changed_model(run: Any) -> None:
     _, _, hooks = run
     assert await dispatch(hooks) == ["a", "b", "c", "d", "e"]
+
+
+async def test_only_the_first_dispatch_says_the_list_is_what_changed(run: Any) -> None:
+    """A later list holds only the models to verify again: it must not read as "these are the
+    changed models" (spec review, round 2)."""
+    _, _, hooks = run
+    first = (await call(hooks, "PreToolUse", **VERIFIER))["hookSpecificOutput"]
+    second = (await call(hooks, "PreToolUse", **VERIFIER))["hookSpecificOutput"]
+    assert f"{FIRST_MODELS_LABEL}: " in first["updatedInput"]["prompt"]
+    assert FIRST_MODELS_LABEL not in second["updatedInput"]["prompt"]
+    assert f"{AGAIN_MODELS_LABEL}: " in second["updatedInput"]["prompt"]
 
 
 async def test_redispatch_lists_a_changed_model_and_its_downstream(run: Any) -> None:
@@ -202,14 +217,31 @@ async def test_redispatch_lists_a_model_whose_refs_cannot_be_read(tmp_path: Path
         workspace / "project",
         {"a": "SELECT 1 AS x\n", "c": "SELECT 3\n", "via_macro": "SELECT * FROM {{ up('a') }}\n"},
     )
-    hooks = run_hooks(
-        load_config("full"),
-        workspace=workspace,
-        snapshot=snapshot,
-        task_file=tmp_path / "task.md",
-        emit=lambda type, **fields: None,
-    )
+    hooks = hooks_for(workspace, snapshot)
     await dispatch(hooks)
     await report(hooks, a="PASS", c="PASS", via_macro="PASS")
     edit(workspace, "a", "SELECT 2 AS x\n")
     assert await dispatch(hooks) == ["a", "via_macro"]
+
+
+async def test_redispatch_follows_refs_through_an_unchanged_model(tmp_path: Path) -> None:
+    """`a` changed -> `mid` (untouched since the snapshot) refs a -> `top` (changed) refs mid:
+    top's output follows a, so it is listed; mid is not, being no changed model (spec review,
+    round 2)."""
+    workspace, snapshot = tmp_path / "ws", tmp_path / "snapshot"
+    mid = "SELECT * FROM {{ ref('a') }}\n"
+    tiny_project(snapshot / "project", {"a": "SELECT 0 AS x\n", "mid": mid})
+    tiny_project(
+        workspace / "project",
+        {
+            "a": "SELECT 1 AS x\n",
+            "mid": mid,
+            "top": "SELECT * FROM {{ ref('mid') }}\n",
+            "c": "SELECT 3\n",
+        },
+    )
+    hooks = hooks_for(workspace, snapshot)
+    assert await dispatch(hooks) == ["a", "c", "top"]
+    await report(hooks, a="PASS", c="PASS", top="PASS")
+    edit(workspace, "a", "SELECT 2 AS x\n")
+    assert await dispatch(hooks) == ["a", "top"]
