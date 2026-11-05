@@ -1,6 +1,6 @@
 # 50 — compare_by_key 的两个根因：参考 SQL 的执行计划、每次调用重复扫项目
 
-Status: in-progress
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (main session, 2026-11-05)
@@ -30,11 +30,11 @@ compare_by_key 一次调用只执行一遍参考 SQL 和模型，而且参考 SQ
 
 ## Acceptance
 
-- [ ] 现有 compare_by_key 测试（DuckDB 和 Postgres）不改一字全部通过。
-- [ ] 新测试：一次调用里，含参考 SQL 的语句只有 1 条。
-- [ ] 新测试：一次调用遍历项目的次数和已改模型数无关。
-- [ ] `make check` 通过。
-- [ ] 本地真实样例复测（pos-operations 工作区、cross-sell 超时的那条参考 SQL）：每次调用 ≤5 s，结果和现有实现一致（现有实现能跑完时）。
+- [x] 现有 compare_by_key 测试（DuckDB 和 Postgres）不改一字全部通过。
+- [x] 新测试：一次调用里，含参考 SQL 的语句只有 1 条。
+- [x] 新测试：一次调用遍历项目的次数和已改模型数无关。
+- [x] `make check` 通过。
+- [x] 本地真实样例复测（pos-operations 工作区、cross-sell 超时的那条参考 SQL）：每次调用 ≤5 s，结果和现有实现一致（现有实现能跑完时）。
 
 ## Stop conditions
 
@@ -48,9 +48,9 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 ## Ledger
 
 - Attempts: 1
-- Review rounds: 1（eng:code-review 新上下文 + da-review）
+- Review rounds: 2（eng:code-review 新上下文；da-review 和 Codex app 都是 at capacity / unknown error，由 fable 只读审查代替）
 - Model spend: $0
-- Outcome: —
+- Outcome: accepted，PR #49 squash 合入 595ebc5
 - Human review minutes: —
 
 ## Comments
@@ -87,3 +87,11 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
   - 取整损失检查现在要等整条语句跑完才报错。语句跑完时报错内容和 main 一致。要提前检查，参考 SQL 就得再执行一遍，正是本工单要去掉的。
   - 模型被读两次：探测只是对模型的 `LIMIT 1`。要并进主语句，得为任意类型造一个非空常量当哨兵，更脆弱。
 - 没发现问题：计数和样例、NULL 键、重复键、Postgres 兼容、符号链接、别名优先级都和 main 一致（审查用 main 对照分支实际跑过）。
+
+**审查第 2 轮（fable，代替 Codex）**
+- da-review 报 "model is at capacity" 中断；PR 上 Codex app 两次失败（第二次是 "An unknown error occurred"）。
+- fable 只读审查：main 和分支差分对照，DuckDB、Postgres 各 29 个用例，计数、样例集合、报错都一致，没有正确性问题。
+- 一条性能小意见：没有已改模型时仍会遍历一次工作区。已修（37eb9f6）。
+- 已知且和 main 相同、不在本工单范围：比较列名叫 `present` 时，`__m_present` / `__r_present` 会重名（Postgres 报 ambiguous）。
+
+**合并**：PR #49，CI 绿，squash 合入 595ebc5。下一步：在新 main 上重跑工单 47 的初筛。
