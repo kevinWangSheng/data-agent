@@ -135,6 +135,17 @@ class Stop(Exception):
         self.code = code
 
 
+def agent_kwarg(value: str) -> str:
+    """A `--agent-kwarg` as given, once it is `KEY=VALUE` with a key other than run_config: each
+    job's run config is its `--config`, which a kwarg must not override (ticket 54)."""
+    key, sep, _ = value.partition("=")
+    if not sep or not key.strip():
+        raise argparse.ArgumentTypeError(f"expected KEY=VALUE, got {value!r}")
+    if key.strip() == "run_config":
+        raise argparse.ArgumentTypeError("--config sets run_config; an agent kwarg cannot")
+    return value
+
+
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     parser = commands.add_parser("ablate", help="run the configs on a split, write the table")
     parser.add_argument("--tasks-dir", type=Path, required=True, help="data-eng-bench tasks/")
@@ -157,6 +168,15 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
         default=FAIL_FAST,
         metavar="N",
         help=f"stop the batch after N infrastructure errors in a row (default {FAIL_FAST})",
+    )
+    parser.add_argument(
+        "--agent-kwarg",
+        action="append",
+        default=[],
+        type=agent_kwarg,
+        metavar="KEY=VALUE",
+        help="repeatable: passed to Harbor as `--ak KEY=VALUE` (e.g. agent_timeout_sec=1500); "
+        "run_config comes from --config",
     )
     parser.add_argument(
         "--skip-smoke",
@@ -383,11 +403,13 @@ def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:
 def harbor_run_args(
     args: argparse.Namespace, jobs: Path, config: str, tasks: list[str], trials: int
 ) -> list[str]:
-    """`harbor run` of the config on `tasks`, `trials` each, as job `jobs/<config>`."""
+    """`harbor run` of the config on `tasks`, `trials` each, as job `jobs/<config>`, with the
+    `--agent-kwarg`s after its run config."""
     return [
         *("run", "--config", str(JOB_CONFIG), "--path", str(args.tasks_dir)),
         *("-o", str(jobs), "--job-name", config, "-k", str(trials)),
         *("--ak", f"run_config={config}"),
+        *(a for kwarg in args.agent_kwarg for a in ("--ak", kwarg)),
         *(("-m", args.model) if args.model else ()),
         *(a for task in tasks for a in ("-i", task)),
     ]
