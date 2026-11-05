@@ -66,7 +66,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 2（第 1 轮 Codex `da-review` + eng:code-review，已修 8703954；第 2 轮 Codex at capacity，Fable 只读审查，已修 7da7e94）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: in-review，branch `worktree-46-harness-hooks`（385acb6、8703954、7da7e94），PR #47；集成测试与服务器运行待主会话
+- Outcome: 退回第 1 轮进行中，branch `worktree-46-harness-hooks`（385acb6、8703954、7da7e94、补充 f63fdb9），PR #47；集成测试断言问题交人，服务器运行待退回轮后
 - Human review minutes: —
 
 ## Comments
@@ -128,3 +128,9 @@ Check customer_ltv; upstream is raw.orders
   - 顺手（P3）：`hooks.py:98,112` `record_report`/`stop_decision` 里的异常没接住（如 `stop.py:35` 读文件时文件被删），SDK 会转成 error 控制响应，CLI 怎么处理未核实，Stop 钩子可能变成静默放行。接住后用现有 `error` 事件记录，Stop 钩子出错时不拦（不把运行卡死），SubagentStop 出错时不改状态。
   - 不退回（P3）：`hit_max_turns` 按 `turns >= 50` 数而 harness 没设上限，47 设 `maxTurns` 时一并处理，已在工单会话的"不修"里。
   - 宏和 schema.yml 改动不进指纹，符合 spec，记已知限制。
+
+### 2026-11-05 工单会话（补充项，commit f63fdb9）
+
+- `evals/process.py` 新增 `verifier_checks(event)`，把 `verifier_end.checks` 归一成 `{model, check, status}` 行：旧列表原样返回；v2 映射按模型顺序、编号升序展开。`trial_metrics` 对归一后的行统计。`evals/atif.py` 的 `extra["checks"]` 走同一函数，两种输入都输出列表形状。
+- 测试：`tests/test_eval_process.py`（列表、映射各一例，归一函数的排序与空值）、`tests/test_eval_atif.py` 加映射一例；实现前红、实现后绿。`uv run pytest tests/test_eval_process.py tests/test_eval_atif.py -q`：15 passed。`make check`：1674 passed, 1 skipped, 1 xfailed。
+- 之前"不修"清单里 `evals/process.py:52`、`evals/atif.py:150` 一条已解决，`ablate` 收尾在 v2 运行上不再抛错。`atif` 展开成行而不是透传映射，让旧运行和 v2 运行形状一致。未跑审查（补充项，不算退回轮）。
