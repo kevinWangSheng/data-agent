@@ -27,7 +27,9 @@ AGENTS_DIR = Path(__file__).resolve().parent / "agents"
 VERIFIER_NAMES = ("verifier",)
 # The Agent tool (Task before Claude Code 2.1) that dispatches subagents.
 AGENT_TOOL = "Agent"
-READ_TOOLS = ("Read", "Glob", "Grep")
+# Read is for the task file; no Glob or Grep, since the prompt forbids reading the models' SQL and
+# the project's YML (ticket 47 return round 4).
+READ_TOOLS = ("Read",)
 # The verifier's turn cap (spec "验证器"); `verifier_v2.hooks` reads a call that reaches it as
 # NEEDS_INFO.
 VERIFIER_MAX_TURNS = 50

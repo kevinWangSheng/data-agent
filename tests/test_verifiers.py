@@ -315,6 +315,59 @@ def test_system_prompt_limits_the_main_agents_own_compare_and_grain_calls() -> N
     assert "Not as a routine self-check" in rule
 
 
+def section(heading: str) -> str:
+    text = verifier_prompt().split(f"## {heading}\n")[1].split("\n## ")[0]
+    return " ".join(text.split())
+
+
+def test_verifier_has_read_for_the_task_file_and_no_search_tools(tmp_path: Path) -> None:
+    """Ticket 47 return round 4: Glob and Grep served only the reading of SQL and YML the prompt
+    forbids (cross-sell spent 14 turns on Read/Glob/Grep); Read stays for the task file. The main
+    agent's tools are not the verifier's and keep them."""
+    built = options(tmp_path, "dbt", "full")
+    tools = set((built.agents or {})["verifier"].tools or [])
+    assert "Read" in tools
+    assert not tools & {"Glob", "Grep"}
+    assert {"Glob", "Grep"} <= set(built.tools or [])
+    assert "Read the task file" in section("Rules")
+    assert "Read files." not in section("Rules")
+
+
+def test_verifier_hands_the_reference_to_compare_by_key_without_probing_the_model() -> None:
+    """Ticket 47 return round 4: t47-screen2's verifier spent 226 queries dry-running references,
+    121 looking at the models' output and 33 on the catalog. compare_by_key reports SQL errors
+    itself; the changed models are as off-limits as their SQL; column names come from the three
+    sources Step 2 names; query_database is for the source-table facts a task rule needs."""
+    text = step(4)
+    assert "check your query runs" not in text
+    assert "do not run it with `query_database` first" in text
+    assert "Do not query the models this run created or changed or their output" in text
+    assert "`SELECT * ... LIMIT`" in text
+    assert "not from `information_schema` or any other catalog" in text
+    assert "Use `query_database` only for facts about the source tables that a task rule needs" in (
+        text
+    )
+
+
+def test_verifier_verifies_only_the_models_the_dispatch_lists() -> None:
+    """Ticket 47 return round 4, with ticket 57's re-dispatch list: models model_diff or
+    contract_check show beyond the dispatch keep their earlier report."""
+    text = section("Task")
+    assert "Verify only the models the dispatch message lists" in text
+    assert "keep their earlier report: do not verify or report them" in text
+
+
+def test_verifier_report_gives_examples_only_for_a_fail() -> None:
+    """Ticket 47 return round 4: pos reports ran to 22-30 k characters (60-95 s to generate).
+    Check lines carry the status and the key counts; examples only for a FAIL, at most 3; the
+    Summary is one line per status. The parsed layout is unchanged (the template test above)."""
+    text = section("Output Format")
+    assert "the status and the key counts" in text
+    assert "Give examples only for a FAIL, at most 3 per check; none for a PASS" in text
+    assert "one line per status, without repeating the checks' details" in text
+    assert "first examples" not in verifier_prompt()
+
+
 async def fire(
     hooks: dict[HookEvent, list[HookMatcher]], event: HookEvent, hook_input: Any
 ) -> None:
