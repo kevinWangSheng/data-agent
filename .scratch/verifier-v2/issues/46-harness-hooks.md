@@ -1,6 +1,6 @@
 # 46 — harness 钩子：派单改写、Stop 拦截、轮数记录
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 45（done）
 Spec: ../spec.md
 Claimed by: claude (fable, worktree 46-harness-hooks)
@@ -64,9 +64,9 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 ## Ledger
 
 - Attempts: 1
-- Review rounds: 2（第 1 轮 Codex `da-review` + eng:code-review，已修 8703954；第 2 轮 Codex at capacity，Fable 只读审查，已修 7da7e94）
+- Review rounds: 3（第 1 轮 Codex + eng:code-review，8703954；第 2 轮 Fable，7da7e94；退回第 1 轮：Codex at capacity，eng:code-review，6c5ab48）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: 退回第 1 轮进行中，branch `worktree-46-harness-hooks`（385acb6、8703954、7da7e94、补充 f63fdb9），PR #47；集成测试断言问题交人，服务器运行待退回轮后
+- Outcome: in-review，退回第 1 轮已修，branch `worktree-46-harness-hooks`（385acb6、8703954、7da7e94、f63fdb9、6ae95cd、6c5ab48），PR #47；集成测试断言问题交人；服务器运行 t46-real 进行中
 - Human review minutes: —
 
 ## Comments
@@ -134,3 +134,21 @@ Check customer_ltv; upstream is raw.orders
 - `evals/process.py` 新增 `verifier_checks(event)`，把 `verifier_end.checks` 归一成 `{model, check, status}` 行：旧列表原样返回；v2 映射按模型顺序、编号升序展开。`trial_metrics` 对归一后的行统计。`evals/atif.py` 的 `extra["checks"]` 走同一函数，两种输入都输出列表形状。
 - 测试：`tests/test_eval_process.py`（列表、映射各一例，归一函数的排序与空值）、`tests/test_eval_atif.py` 加映射一例；实现前红、实现后绿。`uv run pytest tests/test_eval_process.py tests/test_eval_atif.py -q`：15 passed。`make check`：1674 passed, 1 skipped, 1 xfailed。
 - 之前"不修"清单里 `evals/process.py:52`、`evals/atif.py:150` 一条已解决，`ablate` 收尾在 v2 运行上不再抛错。`atif` 展开成行而不是透传映射，让旧运行和 v2 运行形状一致。未跑审查（补充项，不算退回轮）。
+
+### 2026-11-05 工单会话（退回第 1 轮修复，commits 6ae95cd、6c5ab48）
+
+验收文件未动（`git diff f63fdb9..HEAD -- tests/acceptance` 为空）。`make check`：1690 passed, 1 skipped, 1 xfailed。
+
+- 退回 1：`report.py` 的 `CHECK_RE` 编号后允许 ` - 标题`（`-`、`–`、`—`）再接 `:`，加粗照旧容忍。
+- 退回 2：`stop.py` 只对 workspace 里仍存在的模型判规则 2、3；`record_report` 把已不存在的模型从状态里去掉；原锁住旧行为的测试改成 `test_stop_forgets_a_reported_model_deleted_since`。
+- 顺手 1：PreToolUse 改写派单时取 `model_hashes` 入队，SubagentStop 取队首。SDK 的两个钩子输入无法互相对应（`tool_use_id` 对 `agent_id`），按派单顺序配对；两个验证者同时在飞时报告可能配到更早的指纹，只会多报规则 2 不会漏报。
+- 顺手 2：`report.model_name` 去掉列表编号和 `Model:`/`Table:`/`Relation:` 标签（含加粗），再取首词、去路径/schema/`.sql`；有 `workspace` 时再走 45 的 `project.model_name`。`parse_report` 加可选 `workspace=`。
+- 顺手 3：hooks 里取哈希、解析报告、Stop 判定接住 `OSError`/`ValueError`，用现有 `error` 事件记录（`source="verifier_v2"`）。Stop 出错放行；SubagentStop 出错状态不变。
+- 测试：`tests/test_verifier_v2_hooks.py` 每项都配（标题 8 例、标签同名模型 3 例、alias/大小写、删除后不拦、派单时指纹、两验证者并行、异常各一）。
+- 真实行为（本地脚本）：`### Model: <m>` 节和 `- CHECK 1 - Table Existence: PASS - found` 都解析；派单后报告前改 `customer_ltv.sql` 触发规则 2；删掉模型后 Stop 放行；模型文件不可读时 Stop 放行并记 `error` 事件。
+- 审查：`da-review` at capacity；eng:code-review 已修（6c5ab48）：`### **Model:** orders` 解析成空名；模型叫 `table`/`model` 被剥空；并行验证者单一指纹变量漏报（改成排队）；SubagentStop 报告解析两次。
+- 不修：检查标题里含冒号或括号形式不解析（verifier.md 没有这种形式）；有 workspace 时恰有模型叫 `summary` 会把 `### Summary` 当成它；派单钩子里 `changed_models` 仍在 try 外（失败时宁可报错也不让原 prompt 直达验证者）；`verifier_end.checks` 带 `Summary` 节，退回前就如此。
+
+### 2026-11-05 主会话
+
+- 退回轮已 push 到 PR #47，等 CI。服务器真实运行 `t46-real`（dbt-receivables-aging-buckets × 1，full）在 6c5ab48 上开跑。Fable 复审退回轮 diff。
