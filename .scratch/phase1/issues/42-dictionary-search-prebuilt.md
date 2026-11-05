@@ -1,6 +1,6 @@
 # 42 — dictionary_search 改成预建采样字典：搜索不再现扫全库
 
-Status: in-review
+Status: done
 Blocked by: 39
 Spec: ../spec.md
 Claimed by: claude (fable-5.1)
@@ -89,8 +89,8 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 - Attempts: 1
 - Review rounds: 2
-- Model spend: $0（工单会话无模型调用；本地真实运行和初筛的花费由主会话记）
-- Outcome: in-review，branch `worktree-42-dictionary-search-prebuilt`（commits e2c9710、0ed8073、eba56ef）；本地真实运行与初筛待主会话
+- Model spend: 本地真实运行 $0.0041 + 初筛实际价 $1.1954（cost_usd $2.3907）
+- Outcome: done（PR #43）；初筛 11/12，无挂住、无锁冲突，建字典 13–18 s
 - Human review minutes: —
 
 ## Comments
@@ -132,3 +132,4 @@ The `dictionary` event in the event file carries `elapsed_seconds`, `tables_prof
 
 **Review round 2 (`eng:code-review main`):** Spec: connect time not under the timer: fixed (eba56ef). `value_not_in_sample` printed when zero tables were sampled: fixed. Standards: `PostgresSession.query` copied `PostgresGateway._run`: fixed with a shared helper, same shape as the DuckDB side. `Sampled` renamed `TableSample`. Not fixed: `literal` re-export in `context_tools.py` (removing it needs a one-line import change in `verifier_tools.py`, outside Authority; suggest doing it in a later ticket); `context_tools.py` is now 560 lines (a `dictionary.py` would fix it, but the file name is outside Authority); `build_server(dictionary=...)` parameter (it is the wiring); `clock` parameter (the test seam); `dialect` class attribute on sessions (mirrors the gateway classes); the gateway helper extraction goes past "只加会话接口" but leaves behaviour unchanged and avoids duplicating the statement path. The type regex is ktx's verbatim, so the NOTICE wording stands.
 - 2026-11-04 主会话：本地真实运行（worktree 42，`data-agent run --config full --duckdb runs/t42-real/shop.duckdb`，题目：数 C0001 各种脏拼写的订单数，先调 dictionary_search）：事件文件 `runs/t42-real/events/run-20261104T220302Z-4a4bc3a3.jsonl` 的 `dictionary` 事件：`tables_total=9, tables_profiled=9, columns_profiled=34, sample_rows=10000, elapsed_seconds=0.187, timed_out=false, columns_excluded=14, columns_high_cardinality=0`。`dictionary_search('c0001')` 返回 `raw.orders.customer_ref: 'c0001' (3), ' C0001' (2), 'C0001' (2)` 加覆盖范围一行（"9 of 9 base tables sampled ... built in 0.2 s"）。agent 另用 DISTINCT 查询找到字典没收的第 4 种拼写 `C-0001 `（字典只存前 100 个最常见值、按包含匹配，`C-0001` 不含 `c0001`，符合设计），答 9；4 轮，cost_usd $0.0041。PR #43 已开；初筛排在 `t41-screen` 之后。
+- 2026-11-04 主会话：初筛 `t42-screen`（commit eba56ef；`ablate --split dev --config full --task dbt-cart-abandonment-recovery --task dbt-customer-cross-sell-insights --task dbt-multi-warehouse-stock-rebalance --task dbt-receivables-aging-buckets --trials 3 --budget 8`）：成功 **11/12**（cart 3/3、cross-sell 2/3、stock-rebalance 3/3、receivables 3/3；accept-2 full 7/12），过线。12 个 trial 里最长单次工具调用 288.7 s（都是 `Agent` 验证者），没有 1800 s 挂住；"Conflicting lock" 0 次。每个 trial 的 `dictionary` 事件：建字典 13.2–17.7 s，803/803 张基表，3,162 列，`timed_out=false`，无错误。连冒烟实际价 $1.1954（cost_usd $2.3907，13 个事件文件全在闲时）。观察：12 个 trial 里 `dictionary_search` 只被调用 1 次，工具本身不再是风险，但模型几乎不用它。PR #43 CI 绿、Codex app 无意见，squash 合入。
