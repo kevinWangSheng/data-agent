@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -116,3 +116,8 @@ hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
 - 测试：两个新测试先红后绿；旧 grain 测试去掉对 "original YML" 的断言。
 - 真实行为（无模型）：六个配置的 agents/maxTurns/系统提示词输出与上一轮相同；`load_definition("verifier")` 的 prompt 含新句子、不含 "original YML"；工具表不变。
 - 审查：`da-review` at capacity；eng:code-review（Standards、Spec）已修（cc65d28）：参考列部分匹配仍会"全 0 即 PASS" → PASS 要求题面每个指标都在 compared columns；contract_check 为 N/A 时没给列名来源 → 加 `LIMIT 0` 查询；豁免措辞与工具输出不符 → 改；测试引用的工具输出串与 `render.py` 无绑定 → 用 `render_compare` 渲染；docstring 引用退回轮 → 删。不修：第 1 步与第 2 步对快照 YML 的解释角度不同但不矛盾；测试按整句断言与既有风格一致；"confirm a candidate against the task" 比 spec 严一点是已审内容；YML 禁读是提示词规则，验证者仍有 Read/Glob/Grep。
+- 2026-11-05 主会话：Fable 复审退回轮 diff（8bde360..cc65d28）。核过没问题的：提示词引用的工具输出字符串都在 `render.py`/`contract.py` 里原样存在；题面无指标已被"题面无计算 → NEEDS_INFO"覆盖；两边都 NULL 的列算比较过；模板 CHECK 7 行不会被解析成状态；没有措辞再让键来自项目 YML 或模型的 GROUP BY；系统提示词无冲突。**退回**（第 2 轮，最后一轮）：
+  - 退回 A（P2）：`verifier.md:133-135` 的 `query_database("SELECT * FROM <model> LIMIT 0")` 取不到列名：`inject_limit` 保留 `LIMIT 0`，`mcp_server.format_rows`（`mcp_server.py:93-95`）零行时只返回 `Query returned 0 rows`，不打表头。场景：无 contract、题面无列表时验证者按建议查询得到空，只能猜别名或违规读模型 SQL。修法：改成 `list_tables(name_contains="<model>")`（列出列名且在验证者工具表里），或 `LIMIT 1`（有行才打表头）；`describe_table` 不在验证者工具表里，不要指向它。
+  - 顺手（P3）：`verifier.md:144-150` 题面只定义行集（去重、过滤、"每 X 一行"而无指标）时参考 SQL 只有键列，`compared columns: (none)` 按新规则变 NEEDS_INFO，而键的两侧比对本来就能定胜负。改成："(none) 记 NEEDS_INFO，除非题面没有定义任何非键列，这时只看键的计数。"
+  - 顺手（P3）：`verifier.md:73-78` 第 2 步说键只从题面取，但 `grain_facts` 按建出来的模型列名解析、名字不存在就 ToolError；题面说"每客户每月一行"没给列名，验证者得把它对到 `customer_id`/`month`。把第 4 步"列名不是逻辑，可以从 contract_check/题面/查询取列名，不读 SQL"那句同样写进第 2 步。
+  - 顺手（P3）：`verifier.md:88-89` 和 `verifiers.py:66-67` 的 "confirm a candidate against the task" 在题面对粒度沉默时不可判定，spec 第 73 行允许快照 YML 自行豁免。写明确认的含义是"题面不与之矛盾"。另：粒度 NEEDS_INFO 时系统提示词的第一个选项（补信息再派）是死路，因为验证者必须忽略派单消息里给的粒度；在 VERIFIERS_PROMPT 加一句让主 agent 对粒度类 NEEDS_INFO 直接走第二个选项（自己跑检查），避免循环。
