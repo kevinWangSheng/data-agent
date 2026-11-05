@@ -88,7 +88,7 @@ def run_hooks(
     # The bound only keeps the queue from growing without limit.
     dispatched: deque[dict[str, str] | None] = deque(maxlen=MAX_OUTSTANDING_DISPATCHES)
 
-    def remaining_s() -> float | None:
+    def short_on_time_s() -> float | None:
         """Seconds left when too few are left for a verifier run, else None."""
         if deadline is None:
             return None
@@ -103,7 +103,7 @@ def run_hooks(
     ) -> HookJSONOutput:
         nonlocal dispatches
         fields: dict[str, Any] = dict(hook_input)
-        if (left := remaining_s()) is not None:
+        if (left := short_on_time_s()) is not None:
             denied = deny_dispatch(
                 str(fields.get("tool_name") or ""),
                 dict(fields.get("tool_input") or {}),
@@ -185,7 +185,7 @@ def run_hooks(
         if not decision["block"]:
             return {}
         reason = describe(decision["reasons"])
-        if (left := remaining_s()) is not None:
+        if (left := short_on_time_s()) is not None:
             emit("ended_unverified", reason=reason, reasons=decision["reasons"], remaining_s=left)
             return {}
         blocks += 1

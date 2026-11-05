@@ -47,7 +47,7 @@ from data_agent import verifier_v2
 from data_agent.command_guard import command_guard
 from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
-from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
+from data_agent.gateway import TIMEOUT_SECONDS, DuckDBGateway, Gateway, PostgresGateway
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
@@ -466,20 +466,29 @@ class Spend:
 
     def result_fields(self) -> dict[str, Any]:
         """The result event of a run this cap stopped; the SDK never sent its own."""
-        uncached, cached, output = self.tokens()
         cost = self.cost_usd()
+        return self.stopped_fields(
+            "error_max_budget_usd",
+            "budget_exhausted",
+            f"spend ${cost:.4f} at the price table passed the ${self.budget} budget",
+        )
+
+    def stopped_fields(self, subtype: str, terminal_reason: str, error: str) -> dict[str, Any]:
+        """The result event of a run the harness stopped itself, priced from what this cap
+        counted."""
+        uncached, cached, output = self.tokens()
         return {
-            "subtype": "error_max_budget_usd",
+            "subtype": subtype,
             "is_error": True,
             "num_turns": len(self.main),
-            "terminal_reason": "budget_exhausted",
+            "terminal_reason": terminal_reason,
             "uncached_input_tokens": uncached,
             "cached_input_tokens": cached,
             "output_tokens": output,
-            "cost_usd": cost,
+            "cost_usd": self.cost_usd(),
             "sdk_cost_usd": None,
             "cost_basis": "price_table",
-            "errors": [f"spend ${cost:.4f} at the price table passed the ${self.budget} budget"],
+            "errors": [error],
         }
 
 
@@ -932,8 +941,8 @@ def ended_by_sdk(message: ResultMessage | None, model: str, spend: Spend | None)
 
 
 # How long before the trial deadline the run stops itself (ticket 54): the gateway's statement
-# timeout (`gateway.py`), so a query started just before still ends before Harbor's own timeout.
-DEADLINE_MARGIN_S = 150.0
+# timeout, so a query started just before still ends before Harbor's own timeout.
+DEADLINE_MARGIN_S = float(TIMEOUT_SECONDS)
 
 
 def track_open_calls(message: Any, open_calls: dict[str, str]) -> None:
@@ -964,20 +973,8 @@ def deadline_fields(spend: Spend | None, open_calls: Mapping[str, str]) -> dict[
             "open_tool_calls": open_tool_calls,
             "errors": [f"{error}; the model has no price, so its spend was not counted"],
         }
-    uncached, cached, output = spend.tokens()
-    return {
-        "subtype": "error_deadline",
-        "is_error": True,
-        "num_turns": len(spend.main),
-        "terminal_reason": "deadline",
-        "uncached_input_tokens": uncached,
-        "cached_input_tokens": cached,
-        "output_tokens": output,
-        "cost_usd": spend.cost_usd(),
-        "sdk_cost_usd": None,
-        "cost_basis": "price_table",
-        "open_tool_calls": open_tool_calls,
-        "errors": [error],
+    return spend.stopped_fields("error_deadline", "deadline", error) | {
+        "open_tool_calls": open_tool_calls
     }
 
 
