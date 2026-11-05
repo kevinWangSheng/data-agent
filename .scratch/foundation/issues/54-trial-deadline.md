@@ -118,3 +118,8 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
   - `da-review main` (Codex, completed, no capacity problem) on fadacd6: [P1] "Include agent kwargs in the ablation reuse key": rerunning an existing `--out` with another `agent_timeout_sec` would reuse jobs run under a different timeout. True; fixed in aed2b62. It goes slightly beyond "只加透传", but it is part of the flag's correctness and stays inside ablate.py.
   - Confirming `da-review main` on aed2b62: "No discrete, actionable correctness issues were found."
 - Next step (main session): server run, e.g. `python -m evals ablate --split dev --task pos-operations --config full --trials 1 --agent-kwarg agent_timeout_sec=1500 ...` via `da-remote start`. Expected: `result(deadline)` at about 1350 s, no `AgentTimeoutError`, spend recorded, reward scored normally.
+
+### 2026-11-05 主会话（服务器真实运行，aed2b62）
+
+- `t54-real`：`ablate … --task pos-operations --out runs/t54-real --budget 2 --config full --trials 1 --agent-kwarg agent_timeout_sec=1500`。1/1，$0.1686，Harbor 0 异常。568 s 时两次派验证器被拒（"Only 929 s are left before the trial deadline … finish with the results you have and end the run."），588 s 记 `ended_unverified`，随后 `result`（terminal_reason completed），正常退出，花费已记。没走到 T−150 s。
+- `t54-real2`：同上，`agent_timeout_sec=600`，专门验到点停止。455 s 写出 `result`（subtype `error_deadline`，terminal_reason `deadline`，cost_usd 0.1247），Harbor 0 异常、无 `AgentTimeoutError`，花费已记。reward 0（600 s 做不完这题，符合预期）。

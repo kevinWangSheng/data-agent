@@ -216,3 +216,13 @@ baseline 和 no-verifiers 照旧：no-verifiers 仍带 Skill 的无验证者回�
 - Codex 不可用，Fable 审查（PR #48，497bbca）：approve，无 P1/P2。逐条核对过退回要求，也核对了 full、no-skill、no-verifiers、baseline 几种配置拼出的提示词：no-verifiers 不注册 `compare_by_key`，回退会走抽 3–5 个键那条路，没有发现互相矛盾的地方。工单会话写的 6 条不修理由经核对都属实。
 - 三条 P3 不修，记成已知限制：① 测试只断言固定短语 "whether or not the verifier"，钉不住"验证器分支里不再出现键级自查"；② 非粒度类的 CHECK 7 NEEDS_INFO，和"三种情况"写法有张力，现在默认再派，要不要放宽交人定；③ `no_verifier_fallback` 按 " 3. " 切分依赖现在的排布。
 - 合入前提不变：51、52 合入后在新 main 上跑过线初筛（5 题 × 3），≥8/15 且验证器墙钟中位数 ≤155 s。
+
+### 2026-11-05 主会话（过线初筛 `t47-screen2`，5ab5f6a）
+
+`ablate … --task dbt-fix-division-by-zero --task pos-operations --task dbt-customer-cross-sell-insights --task web-session-quality-scoring --task dbt-receivables-aging-buckets --out runs/t47-screen2 --budget 8 --config full --trials 3`：$2.76，总时长 2h10m，2 次 `AgentTimeoutError`（pos-operations，工单 54 处理）。
+
+- 成功 **13/15**（pass@3 5/5），过第一条线（t47-screen 11/15，accept-2 7/15）。
+- 每 trial 验证器墙钟中位数：工单 51 报告口径 **359 s**；按本工单原口径（主 agent 层 Agent 调用起止取并集，15 个 trial 全部有验证器，分母 15）**365 s**；被截断 2 次（都在 pos-operations）。第二条线 ≤155 s **两种口径都没过**（t47-screen 317 s / 719 s，accept-2 311 s）。
+- 每题：receivables 93–117 s、division-by-zero 113–377 s、cross-sell 284–365 s、web 429–925 s、pos 1757–2574 s。
+- 服务器单次耗时：`grain_facts` p50 1.1 s / p90 3.6 s（323 次），`compare_by_key` p50 10.5 s / p90 27.2 s（382 次）。
+- 已退回 3 轮，不再退回；是否合入交人决定。
