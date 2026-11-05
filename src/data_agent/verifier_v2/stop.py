@@ -33,28 +33,21 @@ def model_hashes(workspace: Path) -> dict[str, str]:
         for name, path in model_files(project, config).items():
             sql = path.read_bytes()
             digest = hashlib.sha256(sql)
-            digest.update(
-                repr(model_config(config, project, path, sql.decode("utf-8", "replace"))).encode()
-            )
+            settings = model_config(config, project, path, sql.decode("utf-8", "replace")).lines()
+            digest.update("\n".join(sorted(settings.values())).encode())
             hashes.setdefault(name, digest.hexdigest())
     return hashes
 
 
-def record_report(
-    state: Mapping[str, Any], report: str, workspace: Path, hit_max_turns: bool = False
-) -> dict[str, Any]:
+def record_report(state: Mapping[str, Any], report: str, workspace: Path) -> dict[str, Any]:
     """`state` with the models the report names set to their statuses and current fingerprint;
-    the other models keep what they had. A model the report names but the workspace lacks gets
-    hash None, so rule 2 fires if it appears later. A report cut off at the verifier's turn cap
-    counts as NEEDS_INFO (spec "验证器"), so its FAIL lines are recorded as NEEDS_INFO."""
+    the other models keep what they had. A section whose heading is no model in the workspace
+    (the report's `### Summary`, a model since deleted) records nothing."""
     hashes = model_hashes(workspace)
     updated = dict(state)
     for model, checks in parse_report(report)["models"].items():
-        if hit_max_turns:
-            checks = {
-                n: "NEEDS_INFO" if status == "FAIL" else status for n, status in checks.items()
-            }
-        updated[model] = {"checks": dict(checks), "sha256": hashes.get(model)}
+        if model in hashes:
+            updated[model] = {"checks": dict(checks), "sha256": hashes[model]}
     return updated
 
 

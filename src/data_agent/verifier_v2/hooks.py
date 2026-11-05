@@ -84,9 +84,10 @@ def run_hooks(
         hit_max_turns = (summary["turns"] or 0) >= VERIFIER_MAX_TURNS
         parsed = parse_report(report, hit_max_turns=hit_max_turns)
         # Only the v2 verifier's reports count as verification; the value verifier's (until
-        # ticket 47 removes it) are recorded but satisfy no Stop rule.
+        # ticket 47 removes it) are recorded but satisfy no Stop rule. A call at the turn cap is
+        # NEEDS_INFO as a whole (`overall`); the check lines it did write stand.
         if fields["agent_type"] == REWRITTEN_SUBAGENT:
-            state = record_report(state, report, workspace, hit_max_turns=hit_max_turns)
+            state = record_report(state, report, workspace)
         emit(
             "verifier_end",
             verifier=fields["agent_type"],

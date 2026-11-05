@@ -7,19 +7,24 @@ import re
 from pathlib import Path
 from typing import Any
 
+from data_agent.verifier_v2.project import bare_name
+
 # `### <model>` on its own line.
 MODEL_RE = re.compile(r"^###\s+(.+?)\s*$")
 # `CHECK <n>: <STATUS>` at the start of a line, so a check quoted inside another line's reason is
 # not read as a verdict. A list bullet before it and `**` bold around the two tokens are allowed.
-CHECK_RE = re.compile(r"^\s*(?:[-*]\s+)?\**CHECK\s*(\d+)\**\s*:\s*\**(PASS|FAIL|NEEDS_INFO|N/A)\b")
+CHECK_RE = re.compile(
+    r"^\s*(?:[-*]\s+)?\**CHECK\s*(\d+)\**\s*:\**\s*\**(PASS|FAIL|NEEDS_INFO|N/A)\b"
+)
 
 
 def model_name(heading: str) -> str:
-    """The model a `### ...` heading names, as `model_files` keys it: without backticks or bold,
-    a directory prefix, or a `.sql` suffix."""
-    name = heading.strip().strip("`*").strip()
+    """The model a `### ...` heading names, as `model_files` keys it: the heading's first word,
+    without backticks or bold, a directory or schema prefix, or a `.sql` suffix."""
+    words = heading.strip().strip("`*").split()
+    name = words[0].strip("`*") if words else ""
     name = name.replace("\\", "/").rsplit("/", 1)[-1]
-    return name.removesuffix(".sql")
+    return bare_name(name.removesuffix(".sql"))
 
 
 def parse_report(report: str, hit_max_turns: bool = False) -> dict[str, Any]:

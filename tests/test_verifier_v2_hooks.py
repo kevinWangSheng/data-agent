@@ -40,6 +40,8 @@ def test_parse_report_reads_checks_only_at_line_start_under_a_heading() -> None:
         ("### `orders.sql`", "- **CHECK 2**: **FAIL** - bold, as the old prompt's output"),
         ("### models/marts/orders", "CHECK 2: FAIL — a path"),
         ("### **orders**", "* CHECK 2: FAIL — a star bullet"),
+        ("### `orders` (changed)", "**CHECK 2:** FAIL — bold closed after the colon"),
+        ("### main.orders", "CHECK 2: FAIL — schema-qualified"),
     ],
 )
 def test_parse_report_normalizes_headings_and_allows_bold(heading: str, line: str) -> None:
@@ -89,6 +91,18 @@ def test_stop_blocks_a_reported_model_reconfigured_since(edited: tuple[Path, Pat
     assert [(r["model"], r["rule"]) for r in decision["reasons"]] == [("alpha", 2)]
 
 
+def test_stop_fingerprint_ignores_vars_order(edited: tuple[Path, Path]) -> None:
+    """model_diff compares configuration order-insensitively; so does the fingerprint."""
+    workspace, snapshot = edited
+    (workspace / "project" / "models" / "alpha.sql").write_text("SELECT {{ var('a') }} AS x\n")
+    project_file = workspace / "project" / "dbt_project.yml"
+    project_file.write_text(project_file.read_text() + "vars:\n  a: 1\n  b: 2\n")
+    state = record_report({}, "### alpha\nCHECK 1: PASS — ok\n", workspace)
+    reordered = project_file.read_text().replace("  a: 1\n  b: 2\n", "  b: 2\n  a: 1\n")
+    project_file.write_text(reordered)
+    assert stop_decision(state, workspace, snapshot)["block"] is False
+
+
 def test_stop_blocks_a_reported_model_deleted_since(edited: tuple[Path, Path]) -> None:
     workspace, snapshot = edited
     state = record_report({}, "### alpha\nCHECK 1: PASS — ok\n", workspace)
@@ -97,10 +111,13 @@ def test_stop_blocks_a_reported_model_deleted_since(edited: tuple[Path, Path]) -
     assert [(r["model"], r["rule"]) for r in decision["reasons"]] == [("alpha", 2)]
 
 
-def test_record_report_keeps_a_model_the_workspace_lacks(edited: tuple[Path, Path]) -> None:
+def test_record_report_skips_sections_that_name_no_model(edited: tuple[Path, Path]) -> None:
+    """The report's `### Summary` and a model the workspace lacks record nothing: a FAIL line
+    under them would otherwise block the run with nothing to fix."""
     workspace, _ = edited
-    state = record_report({}, "### phantom\nCHECK 1: FAIL — missing\n", workspace)
-    assert state == {"phantom": {"checks": {1: "FAIL"}, "sha256": None}}
+    report = "### alpha\nCHECK 1: PASS — ok\n### Summary\nCHECK 1: FAIL — alpha, see above\n"
+    state = record_report({}, report, workspace)
+    assert set(state) == {"alpha"} and state["alpha"]["checks"] == {1: "PASS"}
 
 
 async def call(
@@ -173,8 +190,9 @@ async def test_subagent_stop_reads_a_call_at_the_turn_cap_as_needs_info(
         "NEEDS_INFO",
     )
     assert end["checks"] == {"alpha": {1: "PASS", 2: "FAIL"}}
-    # The model reached the Stop state as verified, its FAIL read as NEEDS_INFO: no block.
-    assert await call(hooks, "Stop", stop_hook_active=False) == {}
+    # The check lines it wrote stand (spec: only a capped call with no report is NEEDS_INFO).
+    blocked = await call(hooks, "Stop", stop_hook_active=False)
+    assert blocked["decision"] == "block" and "alpha: rule 3" in blocked["reason"]
 
 
 async def test_value_verifier_reports_are_recorded_but_verify_nothing(
