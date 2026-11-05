@@ -21,7 +21,6 @@ out to 74; customer C0001 has 9 orders, shown as 18 in customer_orders_fanout.
 
 import json
 import os
-import re
 import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -395,15 +394,3 @@ async def test_audit_model_sources(db_args: list[str]) -> None:
     assert "74" not in text_of(ok)
     assert not is_tool_error(bad), text_of(bad)
     assert "74" in text_of(bad) and "37" in text_of(bad)
-
-
-async def test_verify_model_values(db_args: list[str]) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
-        ok = await call(session, "verify_model_values", {"model_name": "customer_orders"})
-        bad = await call(session, "verify_model_values", {"model_name": "customer_orders_fanout"})
-    assert not is_tool_error(ok), text_of(ok)
-    assert "n_orders" in text_of(ok)
-    assert re.search(r"\b9\b", text_of(ok))
-    assert not re.search(r"\b18\b", text_of(ok))
-    assert not is_tool_error(bad), text_of(bad)
-    assert re.search(r"\b18\b", text_of(bad))

@@ -1,5 +1,8 @@
 """The verifier subagents' tools (ADR-0002): map_columns, check_model_schema, audit_model_sources,
-verify_model_values. list_tables and query_database, the other two, are base tools.
+and the verifier v2 tools model_diff, contract_check, grain_facts, compare_by_key (ADR-0009,
+ticket 45; implemented in `verifier_v2/`). list_tables and query_database, the other two, are
+base tools. verify_model_values is no longer registered (its value verifier went with ADR-0009);
+its code below stays until the value verifier's prompt is removed.
 
 Ported from SignalPilot's gateway (`gateway/mcp/tools/model_map.py` and `model_verify.py`, see
 NOTICE). Like upstream they report observations and leave the verdict to the verifier. Changes:
@@ -54,6 +57,7 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
 
 import contextlib
 import json
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -69,9 +73,20 @@ from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
 
+from data_agent import verifier_v2 as v2
 from data_agent.context_tools import RunQuery, Table, is_text, literal, quote
 from data_agent.db_facts import LoadCatalog
 from data_agent.tool_annotations import READ_ONLY
+from data_agent.verifier_v2.db import RunQueryable
+from data_agent.verifier_v2.render import (
+    render_compare,
+    render_contract,
+    render_grain,
+    render_model_diff,
+)
+
+# Set by `data-agent run` for the MCP server: the directory `verifier_v2.take_snapshot` filled.
+SNAPSHOT_ENV = "DATA_AGENT_SNAPSHOT_DIR"
 
 SKIP_DIRS = frozenset({".claude", "dbt_packages", "target", "__pycache__", "logs"})
 BINARY_TYPES = frozenset({"BLOB", "BYTEA", "BINARY", "VARBINARY", "IMAGE"})
@@ -187,6 +202,18 @@ def resolve(catalog: list[Table], name: str) -> Table:
 
 def split_names(text: str) -> list[str]:
     return [name.strip() for name in text.split(",") if name.strip()]
+
+
+def parse_task_columns(text: str) -> dict[str, list[str]]:
+    """`model: col1, col2; other: col3` -> {model: [col1, col2], other: [col3]}."""
+    columns: dict[str, list[str]] = {}
+    for part in text.split(";"):
+        if ":" not in part:
+            continue
+        model, names = part.split(":", 1)
+        if model.strip():
+            columns[model.strip()] = split_names(names)
+    return columns
 
 
 def row_count(run: RunQuery, table: Table) -> int:
@@ -1461,34 +1488,92 @@ def register_verifier_tools(
         model = resolve(load(), model_name)
         return "\n".join(audit(run, load, model, sources, sample_nulls))
 
-    @server.tool(annotations=READ_ONLY)
-    def verify_model_values(model_name: str, source_tables: str = "", project_dir: str = "") -> str:
-        """Cross-check a model's metric values against its upstream data.
+    # Verifier v2 (ticket 45): the snapshot `data-agent run` took before the agent started, named
+    # by the environment because the server is started by the SDK with only its arguments. Without
+    # it (the server run on its own) the v2 tools say so when called.
+    snapshot = os.environ.get(SNAPSHOT_ENV)
+    snapshot_dir = Path(snapshot) if snapshot else None
+    v2_gateway = RunQueryable(run, dialect)
 
-        Takes the model's top row by its first metric and slices on that row's dimensions
-        (NULLs included), then counts COUNT(*) and COUNT(DISTINCT <_id column>) for the same
-        slice in each upstream table; a candidate it cannot slice on every dimension is marked
-        inconclusive, and a one-row model with no dimension is compared with the whole
-        upstreams. The counts skip the model's own filters.
-        Pass the model's upstreams (the tables in its FROM / ref() / source(), comma-separated)
-        as `source_tables`; without them the nearest finer-grained table that has the first
-        slice column stands in. Pass the dbt project directory as `project_dir` so the model's
-        SQL is read: the dimensions are its GROUP BY columns, and a metric whose outermost
-        aggregate is COUNT(...) is compared exactly with the same COUNT (DISTINCT, CASE WHEN or
-        FILTER included) over each upstream. Without it, or when the SQL does not parse, text,
-        date and id columns are the dimensions and only integer metrics named as counts
-        (n_*, num_*, count_*, *_count) are compared, exactly, with COUNT(*). Sums and averages
-        get no verdict.
+    def v2_paths() -> tuple[Path, Path]:
+        if root is None or snapshot_dir is None:
+            raise ToolError(
+                "Error: this server has no workspace or no snapshot of it; the tool needs both "
+                f"(--workspace and {SNAPSHOT_ENV}, set by `data-agent run`)"
+            )
+        return root, snapshot_dir
+
+    @server.tool(annotations=READ_ONLY)
+    def model_diff() -> str:
+        """List every dbt model created, changed or removed since the run started, and for each
+        the before/after facts that differ, by category: `source` (ref/source tables), `filter`
+        (WHERE and HAVING predicates, one per line), `join`, `rows` (DISTINCT, QUALIFY, UNION vs
+        UNION ALL, LIMIT, row_number() = 1), `grain` (GROUP BY), `window` (window functions) and
+        `config` (materialization, where, vars in dbt_project.yml; the model's config()). Facts
+        only: unchanged models and unchanged logic are not shown. A model whose SQL has Jinja
+        statements or does not parse is marked 未解析 and shown as a line diff instead.
         """
-        model = resolve(load(), model_name)
-        sql = None
-        relations = None
-        if project_dir:
-            project = dbt_project(project_dir)
-            relations = dbt_relations(project)
-            # The model may be built under an alias: its SQL file has the model's name.
-            paths = (model_sql(project, name) for name in relations.models_named(model.name))
-            path = next((path for path in paths if path), None)
-            sql = read_text(path) if path else None
-        sources = split_names(source_tables)
-        return "\n".join(verify_values(run, load, model, sources, sql, relations, dialect))
+        workspace, snapshot_path = v2_paths()
+        return render_model_diff(v2.model_diff(workspace, snapshot_path, dialect))
+
+    @server.tool(annotations=READ_ONLY)
+    def contract_check(models: str, task_columns: str = "") -> str:
+        """For each model (comma-separated) report three facts: whether it exists in the
+        database; whether its columns meet the contract, which is the columns the task text
+        requires (`task_columns`, as `model: col1, col2; other_model: col3`) plus the columns the
+        project's YML declared before the run started (YML the agent wrote or changed is not a
+        contract); and, for window functions the agent added or changed, whether their ORDER BY
+        is unique within each partition (an unchanged window is N/A).
+        """
+        workspace, snapshot_path = v2_paths()
+        names = split_names(models)
+        if not names:
+            raise ToolError("Error: models is empty; name the models to check")
+        return render_contract(
+            v2.contract_check(
+                workspace,
+                snapshot_path,
+                v2_gateway,
+                names,
+                parse_task_columns(task_columns),
+                catalog=load,
+            )
+        )
+
+    @server.tool(annotations=READ_ONLY)
+    def grain_facts(model: str, key_columns: str) -> str:
+        """Count the rows of `model` whose grain key is NULL and the duplicate rows per key.
+        The key is `key_columns` (comma-separated) plus any column the project's original YML
+        tests both unique and not_null. Also says whether the original YML declares a
+        different or finer grain (with the file), the only exemption source besides the task
+        text; YML or notes the agent wrote cannot exempt. NULL or duplicates above 0 is a FAIL
+        unless exempted.
+        """
+        workspace, snapshot_path = v2_paths()
+        keys = split_names(key_columns)
+        if not keys:
+            raise ToolError("Error: key_columns is empty; name the grain key")
+        return render_grain(
+            v2.grain_facts(workspace, snapshot_path, v2_gateway, model, keys, catalog=load)
+        )
+
+    @server.tool(annotations=READ_ONLY)
+    def compare_by_key(model: str, key_columns: str, reference_sql: str) -> str:
+        """Compare `model` with an independent `reference_sql` over every key (FULL OUTER JOIN,
+        no sampling) and report how many keys are only in the model, only in the reference, or
+        differ in a value, with up to 20 examples of each. The reference must be written from
+        the task text and read only tables that existed before the run: one that reads the
+        model or any model created or changed in this run is refused. Values compare by the
+        model column's type: DECIMAL after rounding the reference to the column's scale,
+        floating point within a relative 1e-6, everything else exactly; NULL equals NULL.
+        """
+        workspace, snapshot_path = v2_paths()
+        keys = split_names(key_columns)
+        if not keys:
+            raise ToolError("Error: key_columns is empty; name the grain key")
+        changed = [d["model"] for d in v2.model_diff(workspace, snapshot_path, dialect)]
+        return render_compare(
+            v2.compare_by_key(
+                v2_gateway, model, keys, reference_sql, changed, catalog=load, workspace=workspace
+            )
+        )
