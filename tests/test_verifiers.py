@@ -339,7 +339,7 @@ def test_verifier_hands_the_reference_to_compare_by_key_without_probing_the_mode
     itself; the changed models are as off-limits as their SQL; column names come from the three
     sources Step 2 names; query_database is for the source-table facts a task rule needs."""
     text = step(4)
-    assert "check your query runs" not in text
+    assert "check your query runs" not in verifier_prompt()
     assert "do not run it with `query_database` first" in text
     assert "Do not query the models this run created or changed or their output" in text
     assert "`SELECT * ... LIMIT`" in text
@@ -350,11 +350,13 @@ def test_verifier_hands_the_reference_to_compare_by_key_without_probing_the_mode
 
 
 def test_verifier_verifies_only_the_models_the_dispatch_lists() -> None:
-    """Ticket 47 return round 4, with ticket 57's re-dispatch list: models model_diff or
-    contract_check show beyond the dispatch keep their earlier report."""
+    """Ticket 47 return round 4, with ticket 57's re-dispatch list: models model_diff lists
+    beyond the dispatch are not verified or reported (contract_check only reports the models it
+    is given)."""
     text = section("Task")
     assert "Verify only the models the dispatch message lists" in text
-    assert "keep their earlier report: do not verify or report them" in text
+    assert "outside this dispatch: do not verify or report them" in text
+    assert "Judge each listed change of the dispatched models" in step(3)
 
 
 def test_verifier_report_gives_examples_only_for_a_fail() -> None:
@@ -362,7 +364,7 @@ def test_verifier_report_gives_examples_only_for_a_fail() -> None:
     Check lines carry the status and the key counts; examples only for a FAIL, at most 3; the
     Summary is one line per status. The parsed layout is unchanged (the template test above)."""
     text = section("Output Format")
-    assert "the status and the key counts" in text
+    assert "the status and the tool's counts (for CHECK 5 and 6, the change at issue)" in text
     assert "Give examples only for a FAIL, at most 3 per check; none for a PASS" in text
     assert "one line per status, without repeating the checks' details" in text
     assert "first examples" not in verifier_prompt()

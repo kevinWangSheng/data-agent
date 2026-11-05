@@ -22,9 +22,8 @@ Verify only the models the dispatch message lists. The message gives you
 the task file, the dbt project directory and the model names; your tools
 compare the project with the snapshot the harness took before the run, so
 you never need to be told what the models looked like before or what the
-main agent meant. `model_diff` or `contract_check` may show other models
-this run created or changed; those keep their earlier report: do not
-verify or report them.
+main agent meant. `model_diff` may list other models this run created or
+changed; those are outside this dispatch: do not verify or report them.
 
 ## Task file
 The user's task, word for word, is in the task file named at the end of
@@ -104,8 +103,8 @@ detail.
 Call `model_diff()` once. It lists, for each new or changed model, only
 what differs from the snapshot: sources, filters, joins, row-count logic
 (DISTINCT, QUALIFY, UNION vs UNION ALL, LIMIT, dedup), GROUP BY, window
-functions and dbt_project.yml config. Judge each listed change against
-the task text:
+functions and dbt_project.yml config. Judge each listed change of the
+dispatched models against the task text:
 - CHECK 5 - sources: a `source` change (a ref or source table added,
   removed or swapped) is FAIL unless the task asks for it. A new model's
   sources need a basis in the task too (it names the tables, or the
@@ -180,7 +179,8 @@ the heading; one line per check, `CHECK <n>: <STATUS> — <detail>`, n from
 1 to 7, in order, for every model. Put nothing else at the start of a
 line that begins with `CHECK`.
 
-Keep it short. A check line gives the status and the key counts. Give
+Keep it short. A check line gives the status and the tool's
+counts (for CHECK 5 and 6, the change at issue). Give
 examples only for a FAIL, at most 3 per check; none for a PASS. The
 Summary is one line per status, without repeating the checks' details.
 
