@@ -217,16 +217,17 @@ def test_dbt_defaults_to_the_target_the_image_parsed_with(local: Local) -> None:
     on each trial's first call (43-83 s). DBT_TARGET is dbt's own variable for `--target`."""
     cls, tmp_path = local
     env = LocalEnvironment(container_env(tmp_path, 0, jsonl(result_event())))
-    seen: dict[str, str] = {}
+    run_envs: list[dict[str, str]] = []
     original = env.exec
 
     async def spy(command: str, **kwargs: Any) -> ExecResult:
-        seen.update(kwargs.get("env") or {})
+        if "data-agent' run " in command or "data-agent run " in command:
+            run_envs.append(kwargs.get("env") or {})
         return await original(command, **kwargs)
 
     env.exec = spy  # type: ignore[method-assign]
     run(make_agent(cls, tmp_path), env)
-    assert seen["DBT_TARGET"] == "dev"
+    assert [e.get("DBT_TARGET") for e in run_envs] == ["dev"]
 
 
 def test_an_unfinished_agent_is_left_to_the_verifier(local: Local) -> None:

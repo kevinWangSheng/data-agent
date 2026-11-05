@@ -540,7 +540,7 @@ def _model_yml_index(work_dir: Path) -> dict[str, tuple[str, list[str]]]:
                 names = [md.get("name", "") for md in data["models"]]
                 rel = str(yf.relative_to(work_dir))
                 for m in (n for n in names if isinstance(n, str)):
-                    index[m] =(rel, [n for n in names if n != m])
+                    index[m] = (rel, [n for n in names if n != m])
         except Exception:
             pass
     return index
