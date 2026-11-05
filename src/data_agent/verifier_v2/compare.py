@@ -26,11 +26,13 @@ from data_agent.verifier_v2.db import (
     column_named,
     find_model,
     quote,
-    workspace_alias,
+    workspace_aliases,
 )
 from data_agent.verifier_v2.project import bare_name
 
 SAMPLE_LIMIT = 20
+# The `__kind` of a joined row that differs; NULL for a matching one.
+ONLY_MODEL, ONLY_REFERENCE, MISMATCH = 1, 2, 3
 DOUBLE_TYPE = {"duckdb": "DOUBLE", "postgres": "DOUBLE PRECISION"}
 RELATIVE_TOLERANCE = "1e-6"
 DECIMAL_RE = re.compile(r"^(decimal|numeric)(?:\s*\(\s*(\d+)\s*,\s*(\d+)\s*\))?", re.IGNORECASE)
@@ -162,76 +164,51 @@ def _compare_by_key(
         )
         for k in keys
     ]
-    sentinels = _sentinels(table, reference_sql, pairs, gateway)
-    joined = _joined_sql(table, reference_sql, pairs, sentinels, compared, gateway)
-    both = '"__m_present" AND "__r_present"'
-    any_mismatch = (
-        "NOT (" + " AND ".join(quote(f"__eq_{c}") for c, _, _ in compared) + ")"
-        if compared
-        else "FALSE"
-    )
-    key_list = ", ".join(quote(k) for k in keys)
+    sentinels = _model_has_key_values(table, pairs, gateway)
+    statement = _comparison_sql(table, reference_sql, pairs, sentinels, compared, gateway)
+    result = gateway.query(statement, 3 * SAMPLE_LIMIT)
+    at = {column: index for index, column in enumerate(result.columns)}
+    first = result.rows[0]
+    for index, key in enumerate(pairs):
+        example = first[at[f"__lossy_{index}"]]
+        if example is not None:
+            raise ToolError(
+                f"Error: the reference key {key.model} has values the model's {key.data_type} "
+                f"key cannot hold exactly (for example {example}); cast or round the key in "
+                "the reference SQL to the model's type, or fix the reference"
+            )
+    by_kind: dict[int, list[tuple[Any, ...]]] = {ONLY_MODEL: [], ONLY_REFERENCE: [], MISMATCH: []}
+    for row in result.rows:
+        if row[at["__kind"]] is not None:
+            by_kind[row[at["__kind"]]].append(row)
 
-    def distinct_keys(condition: str) -> str:
-        # Keys, not rows: a key repeated on either side still counts once (DISTINCT treats
-        # NULL key values as equal).
-        return f"(SELECT COUNT(*) FROM (SELECT DISTINCT {key_list} FROM j WHERE {condition}) AS k)"
+    def key_of(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {key: row[at[_key_column(index).strip('"')]] for index, key in enumerate(keys)}
 
-    only_model, only_reference = '"__r_present" IS NULL', '"__m_present" IS NULL'
-    counts = gateway.query(
-        f"{joined} SELECT {distinct_keys(only_model)}, {distinct_keys(only_reference)}, "
-        f"{distinct_keys(f'{both} AND {any_mismatch}')}",
-        1,
-    ).rows[0]
-    only_in_model = gateway.query(
-        f'{joined} SELECT {key_list} FROM j WHERE "__r_present" IS NULL ORDER BY {key_list} '
-        f"LIMIT {SAMPLE_LIMIT}",
-        SAMPLE_LIMIT,
-    )
-    only_in_reference = gateway.query(
-        f'{joined} SELECT {key_list} FROM j WHERE "__m_present" IS NULL ORDER BY {key_list} '
-        f"LIMIT {SAMPLE_LIMIT}",
-        SAMPLE_LIMIT,
-    )
     mismatches: list[dict[str, Any]] = []
-    if compared:
-        value_list = ", ".join(
-            f"{quote(f'__m_{c}')}, {quote(f'__r_{c}')}, {quote(f'__eq_{c}')}"
-            for c, _, _ in compared
-        )
-        rows = gateway.query(
-            f"{joined} SELECT {key_list}, {value_list} FROM j WHERE {both} AND {any_mismatch} "
-            f"ORDER BY {key_list} LIMIT {SAMPLE_LIMIT}",
-            SAMPLE_LIMIT,
-        ).rows
-        for row in rows:
-            key = dict(zip(keys, row[: len(keys)], strict=True))
-            values = row[len(keys) :]
-            for index, (column, _, _) in enumerate(compared):
-                model_value, reference_value, equal = values[3 * index : 3 * index + 3]
-                if not equal and len(mismatches) < SAMPLE_LIMIT:
-                    mismatches.append(
-                        {
-                            "key": key,
-                            "column": column,
-                            "model": model_value,
-                            "reference": reference_value,
-                        }
-                    )
+    for row in by_kind[MISMATCH]:
+        for column, _, _ in compared:
+            if not row[at[f"__eq_{column}"]] and len(mismatches) < SAMPLE_LIMIT:
+                mismatches.append(
+                    {
+                        "key": key_of(row),
+                        "column": column,
+                        "model": row[at[f"__m_{column}"]],
+                        "reference": row[at[f"__r_{column}"]],
+                    }
+                )
     return {
         "accepted": True,
         "relation": table.ref,
         "dialect": dialect,
         "compared_columns": [c for c, _, _ in compared],
         "unmatched_reference_columns": unmatched,
-        "only_in_model": int(counts[0] or 0),
-        "only_in_reference": int(counts[1] or 0),
-        "mismatched": int(counts[2] or 0),
+        "only_in_model": int(first[at["__n_only_model"]] or 0),
+        "only_in_reference": int(first[at["__n_only_reference"]] or 0),
+        "mismatched": int(first[at["__n_mismatched"]] or 0),
         "samples": {
-            "only_in_model": [dict(zip(keys, row, strict=True)) for row in only_in_model.rows],
-            "only_in_reference": [
-                dict(zip(keys, row, strict=True)) for row in only_in_reference.rows
-            ],
+            "only_in_model": [key_of(row) for row in by_kind[ONLY_MODEL]],
+            "only_in_reference": [key_of(row) for row in by_kind[ONLY_REFERENCE]],
             "mismatched": mismatches,
         },
     }
@@ -258,14 +235,18 @@ def _forbidden(
 
     forbid(model, table.schema)
     forbid(table.name, table.schema)
+    # One read of the workspace for every changed model, not one per model (ticket 50).
+    aliases = (
+        workspace_aliases(workspace, list(changed_models)) if workspace and changed_models else {}
+    )
     for changed in changed_models:
         try:
-            built: Table | None = find_model(load, workspace, changed)
+            built: Table | None = find_model(load, workspace, changed, aliases)
         except ToolError:
             built = None
         schema = built.schema if built else None
         forbid(changed, schema)
-        alias = workspace_alias(workspace, changed) if workspace else None
+        alias = aliases.get(changed)
         if alias:
             forbid(alias, schema)
     return forbidden
@@ -288,15 +269,21 @@ def _as_model_type(expression: str, data_type: str) -> str:
     return f"CAST({expression} AS {data_type})" if _castable(data_type) else expression
 
 
-def _sentinel_select(model: str, reference: str, pairs: list[Key]) -> str:
-    """One row: per key, any non-NULL value of it from the `model` relation, else from the
-    `reference` one (both FROM-clause text), in the model key's type."""
-    return ", ".join(
-        f"COALESCE((SELECT {key.model} FROM {model} WHERE {key.model} IS NOT NULL LIMIT 1), "
-        f"(SELECT {_as_model_type(key.reference, key.data_type)} FROM {reference} "
-        f"WHERE {key.reference} IS NOT NULL LIMIT 1)) AS {key.sentinel}"
+def _key_column(index: int) -> str:
+    """The quoted name of the `index`-th key in the comparison statement's rows."""
+    return quote(f"__k_{index}")
+
+
+def _model_has_key_values(table: Table, pairs: list[Key], gateway: Queryable) -> list[bool]:
+    """Per key, whether the model holds a non-NULL value of it, read from the model alone.
+    When it holds none, the NULL flags alone pair rows exactly (a reference row pairs only
+    when its key is NULL too), so the reference is never needed for the sentinel."""
+    probes = ", ".join(
+        f"(SELECT {key.model} FROM {table.sql_name} WHERE {key.model} IS NOT NULL LIMIT 1) "
+        "IS NOT NULL"
         for key in pairs
     )
+    return [bool(value) for value in gateway.query(f"SELECT {probes}", 1).rows[0]]
 
 
 def _lossy_example(reference: str, key: Key) -> str:
@@ -316,29 +303,7 @@ def _lossy_example(reference: str, key: Key) -> str:
     )
 
 
-def _sentinels(
-    table: Table, reference_sql: str, pairs: list[Key], gateway: Queryable
-) -> list[bool]:
-    """Per key, whether a sentinel exists: False when the key is NULL on every row of both
-    sides, in which case the NULL flags alone decide the join. Raises ToolError when a
-    reference key holds a value the cast to the model key's type would change."""
-    reference = f"({reference_sql}) AS ref_"
-    selected = ", ".join(
-        f"{key.sentinel} IS NOT NULL, {_lossy_example(reference, key)}" for key in pairs
-    )
-    sentinel = _sentinel_select(table.sql_name, reference, pairs)
-    row = gateway.query(f"SELECT {selected} FROM (SELECT {sentinel}) AS s", 1).rows[0]
-    for key, example in zip(pairs, row[1::2], strict=True):
-        if example is not None:
-            raise ToolError(
-                f"Error: the reference key {key.model} has values the model's {key.data_type} "
-                f"key cannot hold exactly (for example {example}); cast or round the key in "
-                "the reference SQL to the model's type, or fix the reference"
-            )
-    return [bool(value) for value in row[0::2]]
-
-
-def _joined_sql(
+def _comparison_sql(
     table: Table,
     reference_sql: str,
     pairs: list[Key],
@@ -346,19 +311,23 @@ def _joined_sql(
     compared: list[tuple[str, str, str]],
     gateway: Queryable,
 ) -> str:
-    """`WITH m0, r0, s, m, r, j` where j is the FULL OUTER JOIN of model (m) and reference (r)
-    on the keys (`pairs`: quoted model key, reference key, sentinel column, model key type),
-    with both values and an equality flag per compared column.
+    """One statement for the whole comparison. Its first row carries the three distinct-key
+    counts (`__n_only_model`, `__n_only_reference`, `__n_mismatched`) and, per key, a value the
+    cast to the model key's type would change (`__lossy_<i>`); its rows carry up to
+    SAMPLE_LIMIT differing joined rows per `__kind`, ordered by the key.
 
-    NULL keys pair with NULL keys. Postgres runs a FULL JOIN only on merge- or hash-joinable
-    conditions, which `IS NOT DISTINCT FROM` and `a = b OR (a IS NULL AND b IS NULL)` are not
-    (it refuses the query), so each key joins on two plain equalities: the NULL flags, and the
-    values with NULL replaced by a sentinel of the key's own type. The sentinel (`s`, one row)
-    is any non-NULL value of that key on either side, carried onto both m and r by a cross
-    join so the condition reads only each side's columns; the flag equality keeps a NULL from
-    pairing with a real key equal to the sentinel. A key with no non-NULL value anywhere
-    (`sentinels` False) joins on the flags alone, which both sides then always satisfy. The
-    reference key is cast to the model key's type wherever the two meet."""
+    The model (m0) and the reference (r0) are MATERIALIZED CTEs, so each is evaluated once and
+    planned on its own: inlined into this statement, a reference that ran in 0.5 s alone was
+    planned into one that ran past the timeout (ticket 50).
+
+    j is the FULL OUTER JOIN of model (m) and reference (r) on the keys, with both values and an
+    equality flag per compared column. NULL keys pair with NULL keys. Postgres runs a FULL JOIN
+    only on merge- or hash-joinable conditions, which `IS NOT DISTINCT FROM` and `a = b OR (a IS
+    NULL AND b IS NULL)` are not, so each key joins on two plain equalities: the NULL flags, and
+    the values with NULL replaced by a sentinel of the key's own type, any non-NULL model value
+    of it (`s`, one row, carried onto both sides by a cross join so the condition reads only
+    each side's columns). A key the model holds no value of (`sentinels` False) joins on the
+    flags alone. The reference key is cast to the model key's type wherever the two meet."""
 
     def cast_reference(key: Key) -> str:
         return _as_model_type(f"r.{key.reference}", key.data_type)
@@ -373,31 +342,58 @@ def _joined_sql(
         )
         for key, has_sentinel in zip(pairs, sentinels, strict=True)
     )
-    key_select = ", ".join(
-        f"COALESCE(m.{key.model}, {cast_reference(key)}) AS {key.model}" for key in pairs
+    sentinel_select = ", ".join(
+        f"(SELECT {key.model} FROM m0 WHERE {key.model} IS NOT NULL LIMIT 1) AS {key.sentinel}"
+        for key in pairs
     )
-    value_select = ", ".join(
-        f"m.{quote(c)} AS {quote(f'__m_{c}')}, r.{quote(r)} AS {quote(f'__r_{c}')}, "
+    # Keys go by position (`__k_<i>`), so a key named like one of the statement's own columns
+    # (`__kind`, `__rn`, a count) cannot be read as it.
+    key_select = ", ".join(
+        f"COALESCE(m.{key.model}, {cast_reference(key)}) AS {_key_column(index)}"
+        for index, key in enumerate(pairs)
+    )
+    value_select = "".join(
+        f", m.{quote(c)} AS {quote(f'__m_{c}')}, r.{quote(r)} AS {quote(f'__r_{c}')}, "
         f"{_equality(table, c, r, data_type, gateway)} AS {quote(f'__eq_{c}')}"
         for c, r, data_type in compared
     )
-    selected = ", ".join(
-        part
-        for part in (
-            'm."__m_present"',
-            'r."__r_present"',
-            key_select,
-            value_select,
+    any_mismatch = (
+        "NOT (" + " AND ".join(quote(f"__eq_{c}") for c, _, _ in compared) + ")"
+        if compared
+        else "FALSE"
+    )
+    key_list = ", ".join(_key_column(index) for index in range(len(pairs)))
+
+    def distinct_keys(kind: int) -> str:
+        # Keys, not rows: a key repeated on either side still counts once (DISTINCT treats
+        # NULL key values as equal).
+        return (
+            f"(SELECT COUNT(*) FROM (SELECT DISTINCT {key_list} FROM d "
+            f'WHERE "__kind" = {kind}) AS k)'
         )
-        if part
+
+    lossy = ", ".join(
+        f"{_lossy_example('r0', key)} AS {quote(f'__lossy_{index}')}"
+        for index, key in enumerate(pairs)
     )
     return (
-        f"WITH m0 AS (SELECT * FROM {table.sql_name}), "
-        f"r0 AS (SELECT ref_.* FROM ({reference_sql}) AS ref_), "
-        f"s AS (SELECT {_sentinel_select('m0', 'r0', pairs)}), "
+        f"WITH m0 AS MATERIALIZED (SELECT * FROM {table.sql_name}), "
+        f"r0 AS MATERIALIZED (SELECT ref_.* FROM ({reference_sql}) AS ref_), "
+        f"s AS (SELECT {sentinel_select}), "
         f'm AS (SELECT m0.*, TRUE AS "__m_present", s.* FROM m0 CROSS JOIN s), '
         f'r AS (SELECT r0.*, TRUE AS "__r_present", s.* FROM r0 CROSS JOIN s), '
-        f"j AS (SELECT {selected} FROM m FULL OUTER JOIN r ON {on})"
+        f'j AS (SELECT m."__m_present", r."__r_present", {key_select}{value_select} '
+        f"FROM m FULL OUTER JOIN r ON {on}), "
+        f'd AS MATERIALIZED (SELECT j.*, CASE WHEN "__r_present" IS NULL THEN {ONLY_MODEL} '
+        f'WHEN "__m_present" IS NULL THEN {ONLY_REFERENCE} '
+        f'WHEN {any_mismatch} THEN {MISMATCH} END AS "__kind" FROM j), '
+        f'c AS (SELECT {distinct_keys(ONLY_MODEL)} AS "__n_only_model", '
+        f'{distinct_keys(ONLY_REFERENCE)} AS "__n_only_reference", '
+        f'{distinct_keys(MISMATCH)} AS "__n_mismatched", {lossy}), '
+        f"x AS (SELECT * FROM (SELECT d.*, ROW_NUMBER() OVER "
+        f'(PARTITION BY "__kind" ORDER BY {key_list}) AS "__rn" FROM d '
+        f'WHERE "__kind" IS NOT NULL) AS y WHERE "__rn" <= {SAMPLE_LIMIT}) '
+        f'SELECT c.*, x.* FROM c LEFT JOIN x ON TRUE ORDER BY x."__kind", x."__rn"'
     )
 
 
