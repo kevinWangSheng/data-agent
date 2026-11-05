@@ -1,6 +1,6 @@
 # 45 — 快照与 4 个确定性验证工具
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 44（done）, 39（phase1，done）
 Spec: ../spec.md
 Claimed by: claude (worktree 45-snapshot-and-tools)
@@ -160,3 +160,9 @@ Rejected: the reference SQL reads stg_orders: a reference must not read the mode
 **审查**：`da-review` 第 5 次 at capacity，跳过。eng:code-review Standards：`sql.table_names` 死代码已删，6 处 smell 已处理。Spec：P2（两边全 NULL 的键）已修配 DuckDB + Postgres 测试；P3（Postgres 测试覆盖复合键）已补。
 
 **不修**：(a) `dbt_project.yml` 读不了仍回退 `{}`，否则四个工具全部不可用；要显式报告可在后续加 `model_diff` 的 warnings。(b) `yaml_lite.py` 371 行、`project.py` 约 400 行，接近上限未越界，不拆。(c) 参考 SQL 每次调用多跑 1 次哨兵探测；无 ORDER BY 的 LIMIT 参考哨兵可能不同但结果仍正确。
+- 2026-11-05 主会话：PR #46 在 7ba87fc 上 CI 绿。Fable 5.1 复审退回轮的 diff（`git diff 16738ce..HEAD`），两条 P2 都是第 1 轮修复引入的回归，审查者实测过，**退回**（第 2 轮，最后一轮）：
+  - 退回 A（P2）：`compare.py:69-82` 与 `sql.py:149`：带数据库限定名的引用绕过自读拒绝。DuckDB 把 `<dbname>.<table>` 解析到默认 schema，新检查却把第一段当 schema。实测：模型 `m1` 建在 `cmp.duckdb` 的 `main`，参考 `SELECT * FROM cmp.m1` 被接受，模型和自己比出 0/0/0。退回前按裸名比较会拒绝。修法：限定名的第一段不是已知 schema（或等于数据库名）时按未限定处理。
+  - 退回 B（P2）：`compare.py:230-236,275-277`：哨兵 COALESCE 要求两边键类型相同，旧的 `IS NOT DISTINCT FROM` 允许 DuckDB 隐式转换。模型键 INTEGER、参考键 VARCHAR（staging 模型把原始文本 id 转型，或 VALUES 参考）时 DuckDB 报 `Cannot mix values of type INTEGER and VARCHAR in COALESCE`，Postgres 17 报 `COALESCE types integer and text cannot be matched`。`QueryFailed` 在 `compare_by_key` 和 `verifier_tools.py:1561-1580` 都没接住，MCP 只给 `Error executing tool compare_by_key`，没有原因。修法：哨兵和 ON 里两边键都 CAST 成模型列的类型；`QueryFailed` 转成带原因的 `ToolError`。两种数据库各配一个类型不一致的测试。
+  - 顺手（P3）：`yaml_lite.py:215-239` 嵌套块序列 `- - 1` 被静默读成字符串 `'- 1 - 2'`，应抛 `YamlLiteError`。
+  - 不退回（P3）：`yaml_lite.py:148-158` `_strip_comment` 把普通标量里的撇号当引号开头，`description: it's fine # a comment` 把注释带进值。只影响标量文本，不影响结构，记已知限制。
+  - 复审核过没问题的：DuckDB 1.2.2 与 Postgres 17 上 join 语义（NULL 配 NULL、NULL 不与等于哨兵的真值配对、复合键任意位置 NULL、某键两边全 NULL、空参考、FLOAT/DOUBLE、BOOLEAN、int/numeric、text/varchar、带 CTE 和 LIMIT 的参考）；拒绝逻辑（`main.m1`、`cmp.main.m1`、`M1`、`"M1"`、裸 `m1`、`query_table(` 都拒绝，`raw.orders` 式其他 schema 放行）；`yaml_lite` 对 30 个片段与 PyYAML 6.0.3 一致，锚点、`|2`、tab 带行号抛错；无进程崩溃路径。
