@@ -1,10 +1,10 @@
 # 48 — MCP 工具全部标 `readOnlyHint`，同一轮的调用并发执行
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 48-mcp-read-only-hint)
+Branch: worktree-48-mcp-read-only-hint
 
 ## Goal
 
@@ -54,10 +54,47 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1（Codex 无意见；eng:code-review 无硬问题）
 - Model spend: $0
-- Outcome: —
+- Outcome: in-review，branch `worktree-48-mcp-read-only-hint`（commit fdb9d15）；真实运行待主会话
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（worktree 48-mcp-read-only-hint）
+
+**改动**（fdb9d15）：新建 `src/data_agent/tool_annotations.py`，一个常量 `READ_ONLY`；`mcp_server.py`、`context_tools.py`、`verifier_tools.py` 的 11 处注册都传 `annotations=READ_ONLY`，只动装饰器和 import；`tests/test_mcp_server.py` 新增按全部配置参数化的测试，断言列出的每个工具都是只读。
+
+**与工单草稿的一处不同**：常量用 Python 字段名 `read_only_hint=True`，不是 `readOnlyHint=True`。mcp 2.3.0 的 pydantic 字段是 snake_case，`readOnlyHint` 是线上别名，basedpyright 不接受别名写法。stdio 证据确认线上名是 `readOnlyHint`。
+
+**测试**：`make check` 在分支上：ruff 通过、193 files already formatted、basedpyright 0 errors、`1586 passed, 1 skipped, 38 deselected, 40 xfailed in 451.40s`。修前 `uv run pytest tests/test_mcp_server.py -k annotated` 在 6 个配置上都红（`first extra item: 'query_database'`），修后 13 passed。
+
+**真实 stdio 运行**：`data-agent mcp-server --config full --duckdb <tmp file>`，客户端脚本发 `tools/list`，每个工具的 annotations：
+
+```
+query_database       {'readOnlyHint': True}
+list_tables          {'readOnlyHint': True}
+describe_table       {'readOnlyHint': True}
+explain_query        {'readOnlyHint': True}
+discover             {'readOnlyHint': True}
+hydrate              {'readOnlyHint': True}
+dictionary_search    {'readOnlyHint': True}
+map_columns          {'readOnlyHint': True}
+check_model_schema   {'readOnlyHint': True}
+audit_model_sources  {'readOnlyHint': True}
+verify_model_values  {'readOnlyHint': True}
+```
+
+**审查第 1 轮**
+- `da-review main`（Codex）：11 个工具标注一致，覆盖全部配置，无意见。
+- `eng:code-review main` Standards：无硬问题。三条判断题都不改：11 处相同装饰器改动可以包一层（审查者同意显式更清楚）；单常量模块可以放进 `context_tools.py`（工单要求新模块）；`dict.fromkeys` 断言略巧但失败 diff 有用。审查者确认没有工具体有写路径，`CatalogCache.get` 有锁，并发调用不会在目录上竞争。
+- `eng:code-review main` Spec：11 处全改，每个工具至少在一个配置里出现所以测试覆盖全部，无越权。两条小注：snake_case 字段名（见上）；测试查的是 Python 属性不是线上别名。不改：stdio 输出锁住了线上别名，工单的 Evidence 把这项查验分给真实运行。
+
+**已知限制**（按工单）：Postgres 运行不受益（网关锁），不动。
+
+**交接提醒**：工单 45 新加的 4 个验证工具也必须带 `annotations=READ_ONLY`，否则新测试会红。
+
+### 2026-11-05 主会话
+
+- 分支已 push，PR #45 已开。服务器真实运行（cross-sell × 1）排在 `t49-screen` 之后，服务器同一时间只跑一批。

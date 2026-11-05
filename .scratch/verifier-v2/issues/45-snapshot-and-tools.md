@@ -1,10 +1,10 @@
 # 45 — 快照与 4 个确定性验证工具
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 44（done）, 39（phase1，done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 45-snapshot-and-tools)
+Branch: worktree-45-snapshot-and-tools
 
 ## Goal
 

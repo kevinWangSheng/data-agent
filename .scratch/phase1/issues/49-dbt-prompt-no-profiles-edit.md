@@ -1,10 +1,10 @@
 # 49 — 提示词和 Skill 不再教 agent 改 `profiles.yml`；不 Read dbt 生成的大 JSON
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 49-dbt-prompt-no-profiles-edit)
+Branch: worktree-49-dbt-prompt-no-profiles-edit
 
 ## Goal
 
@@ -54,10 +54,48 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1（eng:code-review 已修；`da-review` 工单会话 2 次、主会话 1 次都报 Codex "at capacity"，改看 PR 上的 Codex app 审查）
+- Model spend: $0（工单会话无模型调用；初筛花费由主会话记）
+- Outcome: in-review，branch `worktree-49-dbt-prompt-no-profiles-edit`（commits 724bfba、51bd7a0），PR #44；初筛 `t49-screen` 进行中
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（worktree 49-dbt-prompt-no-profiles-edit）
+
+**改动**
+- `src/data_agent/agent.py` `DBT_PROMPT`：教 `cd <project_dir> && dbt ...`，profile 相对路径在项目目录下解析，不要改 `profiles.yml`；不再出现 `--project-dir`/`--profiles-dir`。
+- `skills/dbt-workflow/SKILL.md`：validate 段 default 300；Rules 加一条不 Read `target/` 下的 JSON（`run_results.json`、`manifest.json`、`catalog.json`）；文件头注释登记这两处改动（CODING_STANDARDS 对上游复制件的要求，这是工单两处之外的第三处，属于文档义务）。
+- `tests/test_dbt_skills.py`：三条验收各一个测试。`tests/test_task_file.py`：固定的提示词副本更新成新措辞。
+
+**真实运行证据**
+- 基线 `uv run pytest tests/test_dbt_skills.py tests/test_task_file.py -q` 54 passed；新测试先红后绿，57 passed。
+- `make check`：ruff、format 通过；basedpyright 0 errors；`1583 passed, 1 skipped, 38 deselected, 40 xfailed in 429.04s`。
+- 守卫核对（`command_guard.denial`，workspace 内有 `proj/`）：`cd proj && dbt run` → None；`cd proj && dbt run --select fct_x 2>&1 | tail -50` → None；单独 `cd proj` → 拒绝。停止条件未触发。
+- 渲染后的 `DBT_PROMPT`（server=data，database=DuckDB，workspace=/work/ws，带脚本）：
+
+```
+Task type: dbt
+Database: DuckDB. dbt writes to it through the project's profile; you read it only through the `data` MCP tools.
+Workspace (your working directory; the dbt project is this directory or one inside it): /work/ws
+Bash runs only dbt commands and the dbt-workflow scripts. When the project is in a subdirectory, run them as `cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project directory. Do not edit `profiles.yml`.
+
+<task>
+<task text>
+</task>
+
+End with a final message that lists the models you created or changed, how the last dbt run went, then the assumptions you made.
+```
+
+**审查结果与处理**
+- `da-review main`：两次都 "Selected model is at capacity"，没有产出。
+- `eng:code-review main`：Spec 轴无缺项、无越权；Standards 轴 1 条硬问题、3 条判断题。
+  - 修了（51bd7a0）：SKILL.md 文件头没登记新改动；`assert "60" not in section` 太脆，改成 `"(default 300)" in` / `"default 60" not in`；`"cd " in text` 收紧成完整的 `cd <project_dir> && dbt ...`。
+  - 不修：`DBT_PROMPT_BEFORE` 改名（与 `QUERY_PROMPT_BEFORE` 成对，注释已说明）；测试夹具里重复提示词句子（夹具就是为了冻结措辞抓漂移）。
+  - 记录：Rules 那条多列了 `catalog.json`，同类文件同一规则。
+
+### 2026-11-05 主会话
+
+- 主会话在 worktree 里再跑 `da-review main`，第三次仍 "at capacity"；改以 PR #44 上的 Codex app 审查代替。
+- 初筛 `t49-screen` 开跑：服务器 setup 到 51bd7a0，`ablate --split dev --task dbt-fix-daily-cohorts --out runs/t49-screen --budget 2 --config full --trials 3`。对照 accept-2 full 同题 3/3（trial 7n8t9SV、84NpxAx、9FNRgGg 都 reward 1.0）。
