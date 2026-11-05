@@ -892,6 +892,44 @@ def test_another_model_on_the_same_out_stops(
     assert len(harbor.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ((), ("--agent-kwarg", "agent_timeout_sec=1500")),
+        (("--agent-kwarg", "agent_timeout_sec=1500"), ()),
+        (("--agent-kwarg", "agent_timeout_sec=1500"), ("--agent-kwarg", "agent_timeout_sec=900")),
+    ],
+)
+def test_other_agent_kwargs_on_the_same_out_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    first: tuple[str, ...],
+    second: tuple[str, ...],
+) -> None:
+    """Ticket 54: finished jobs are reused, so a call with another agent kwarg (a shorter
+    timeout) would otherwise report trials run under the first one."""
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *first) == 0
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *second) == 2
+    assert "another --out" in capsys.readouterr().err
+    assert len(harbor.calls) == 1
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *first) == 0
+    assert len(harbor.calls) == 1
+
+
+def test_a_request_file_from_before_agent_kwargs_is_still_reused(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """A run without agent kwargs records the request as before, so an OUT written before them
+    stays reusable."""
+    out = tmp_path / "out"
+    assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full") == 0
+    assert set(json.loads((out / "request.json").read_text())) == {"model"}
+
+
 def test_the_wheel_cache_is_filled_once_before_the_first_harbor_job(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,

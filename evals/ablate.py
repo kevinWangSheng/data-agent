@@ -7,8 +7,8 @@ the holdout, always whole; with `--split dev`, the dev set or the `--task`s chos
     OUT/dropped/<config>/     result.json and event files of trials a resume deleted, kept for the
                               spend guard and `evals accept`
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
-    OUT/request.json          the model (dev: also the split and tasks) the first invocation
-                              asked for; another request is refused
+    OUT/request.json          the model (dev: also the split and tasks; any --agent-kwarg) the
+                              first invocation asked for; another request is refused
     OUT/records/<UTC time>.json  new on every invocation check_record lets through: start
                               time, benchmark commit, machine
     OUT/smoke/<UTC time>/<config>/  the preflight's smoke job, one dev task once
@@ -343,14 +343,20 @@ def check_conditions(config: str, job: Path, trials: list[Trial]) -> None:
         )
 
 
-def check_request(out: Path, model: str | None, split: str, tasks: list[str]) -> None:
+def check_request(
+    out: Path, model: str | None, split: str, tasks: list[str], agent_kwargs: list[str]
+) -> None:
     """OUT holds one request: finished jobs are reused, so another --model would otherwise get
     the table of the model OUT was first run with, and other tasks would meet jobs that never
-    cover them. A holdout request records the model only, since the holdout is always run whole."""
+    cover them. A holdout request records the model only, since the holdout is always run whole.
+    The `--agent-kwarg`s are part of it when there are any (ticket 54: another timeout is
+    another run), so an OUT written before them stays reusable."""
     path = out / "request.json"
     now: dict[str, Any] = {"model": model or DEFAULT_MODEL}
     if split != "holdout":
         now |= {"split": split, "tasks": tasks}
+    if agent_kwargs:
+        now |= {"agent_kwargs": agent_kwargs}
     if not path.is_file():
         path.write_text(json.dumps(now) + "\n")
         return
@@ -781,7 +787,7 @@ def run(args: argparse.Namespace) -> int:
         record = make_record(args, configs)
         check_record(args.out, args.tasks_dir, record)
         record_path = write_record(args.out, record, stamp)
-        check_request(args.out, args.model, args.split, tasks)
+        check_request(args.out, args.model, args.split, tasks, args.agent_kwarg)
         print(f"record: {record_path}", flush=True)
         prepared: list[bool] = []
 
