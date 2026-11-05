@@ -1,6 +1,6 @@
 # 45 — 快照与 4 个确定性验证工具
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 44（done）, 39（phase1，done）
 Spec: ../spec.md
 Claimed by: claude (worktree 45-snapshot-and-tools)
@@ -57,10 +57,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2（第 1 轮 eng:code-review 4 条 spec 已修 + Fable 退回 7 条；第 2 轮 eng:code-review Standards 1 硬 + 6 smell、Spec 1 P2 + 1 P3，全部已修或写明理由；Codex 5 次 at capacity）
+- Attempts: 3
+- Review rounds: 3（第 1 轮 eng:code-review 4 条 spec 已修 + Fable 退回 7 条；第 2 轮 eng:code-review 已修 + Fable 复审退回 2 条 P2；第 3 轮 eng:code-review Standards 5 判断项（3 修 2 说明）、Spec 2 P2 已修、2 P3 记已知限制；Codex 6 次 at capacity）
 - Model spend: $0（无模型调用）
-- Outcome: in-review，branch `worktree-45-snapshot-and-tools`（9d7bf06、7fc40d2、e7ef157、16738ce 合 main、退回轮 19f68db、7ba87fc），PR #46；t45-real 1/1
+- Outcome: in-review，branch `worktree-45-snapshot-and-tools`（…7ba87fc、退回第 2 轮 d194583、1d3924f），PR #46；t45-real 1/1
 - Human review minutes: —
 
 ## Comments
@@ -166,3 +166,20 @@ Rejected: the reference SQL reads stg_orders: a reference must not read the mode
   - 顺手（P3）：`yaml_lite.py:215-239` 嵌套块序列 `- - 1` 被静默读成字符串 `'- 1 - 2'`，应抛 `YamlLiteError`。
   - 不退回（P3）：`yaml_lite.py:148-158` `_strip_comment` 把普通标量里的撇号当引号开头，`description: it's fine # a comment` 把注释带进值。只影响标量文本，不影响结构，记已知限制。
   - 复审核过没问题的：DuckDB 1.2.2 与 Postgres 17 上 join 语义（NULL 配 NULL、NULL 不与等于哨兵的真值配对、复合键任意位置 NULL、某键两边全 NULL、空参考、FLOAT/DOUBLE、BOOLEAN、int/numeric、text/varchar、带 CTE 和 LIMIT 的参考）；拒绝逻辑（`main.m1`、`cmp.main.m1`、`M1`、`"M1"`、裸 `m1`、`query_table(` 都拒绝，`raw.orders` 式其他 schema 放行）；`yaml_lite` 对 30 个片段与 PyYAML 6.0.3 一致，锚点、`|2`、tab 带行号抛错；无进程崩溃路径。
+
+### 2026-11-05 工单会话（退回第 2 轮修复，commits d194583、1d3924f）
+
+`make check` 干净（1643 passed、1 skipped、16 xfailed）。Postgres 集成测试在 `da_t45_scratch` 通过（`-m "integration or not integration"` 49 passed）。
+
+**逐项修法**
+- 退回 A：拒绝检查多一条规则：限定名第一段不是目录里已知 schema 时按未限定处理（DuckDB 不允许建和数据库同名的 schema，所以不需要单独判"等于数据库名"）。测试 `test_compare_by_key_refuses_the_model_under_its_database_name`：`cmp.cmp_model`、`"cmp".cmp_model` 拒绝，`raw.orders` 仍放行。
+- 退回 B：哨兵子查询、ON 里的 COALESCE、键输出列三处，参考键一律 `CAST(... AS <模型列类型>)`；Postgres information_schema 给不出可 CAST 写法的类型（`ARRAY`、`USER-DEFINED`）和丢长度的类型（`character`、`bit`）不加 CAST。`compare_by_key` 外层把 `QueryBlocked`/`QueryFailed` 转成带数据库原因的 `ToolError`。DuckDB 与 Postgres 各一个类型不一致测试（VARCHAR 参考键对 INTEGER 模型键 1/1/1；`'one'` 报转换错误的 ToolError；Postgres char(3) 键照旧配对）。
+- 顺手：`yaml_lite._sequence` 遇 `- - 1` 抛 `YamlLiteError`（带行号）。
+- 不动：`_strip_comment` 撇号，按主会话决定记已知限制。
+
+**真实运行**（stdio MCP server）：`FROM cmp.cmp_model` 回 Rejected；`main.orders` vs `raw.orders` 0/0/0；VARCHAR 参考键 vs INTEGER 模型键回 1/1/1；`'one'` 回 `Error executing tool compare_by_key: Query error: Conversion Error: Could not convert string 'one' to INT32`。直连 gateway 和 MCP 两条路径都带原因。
+
+**审查**：`da-review` 第 6 次 at capacity。eng:code-review（`7ba87fc...HEAD`）：
+- Standards：无硬违规；5 条判断项修 3（错误文案不说 rejected、同时接 `QueryBlocked`、`Key` 改 NamedTuple），不修 2（公共 `compare_by_key` 作为错误边界包一层；注释措辞已改）。
+- Spec：2 条 P2 已修（1d3924f）：CAST 静默四舍五入造成假 PASS（`CAST(2.6 AS INTEGER)` = 3）→ 哨兵探测查询里对每个可 CAST 的键查"CAST 前后文本不同"的参考值，有则抛 ToolError 点名键、类型和示例值，让参考 SQL 自己 CAST；Postgres `char(n)` 键被截成 `char(1)` → 见退回 B 的不加 CAST 集合。复审剩 2 条 P3 记已知限制：(a) 文本往返也会拒绝无损的加宽转换（INTEGER 参考对 DOUBLE 键、DATE 对 TIMESTAMP），结果是带指令的 ToolError 不是错值，为避免两种数据库规则分叉先不做；(b) 探测子查询对参考 SQL 每个键多扫一遍（K+3 次），常态下 EXISTS 也要全扫，保留。
+- 顺带：`only_in_reference` 的样本显示 CAST 后的键值（`'03'` 显示为 `3`），记录不改。`compare.py` 448 行，不拆。
