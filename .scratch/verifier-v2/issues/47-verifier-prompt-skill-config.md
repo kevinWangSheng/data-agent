@@ -1,10 +1,10 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 46（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 47, 2026-11-05)
+Branch: worktree-47-verifier-prompt-skill-config
 
 ## Goal
 
@@ -66,10 +66,38 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1（Codex at capacity ×2，Fable 只读审查 + eng:code-review Standards/Spec，已修 8bde360）
+- Model spend: $0（工单会话无模型调用）
+- Outcome: in-review，branch `worktree-47-verifier-prompt-skill-config`（ad09e0a、8bde360），PR #48；初筛待主会话
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（worktree 47-verifier-prompt-skill-config）
+
+**改动**
+- `src/data_agent/verifiers.py`：一个验证者，工具 `list_tables`、`query_database` 加 4 个 v2 工具，`maxTurns=50`，FAIL 和 NEEDS_INFO 规则只在系统提示词里有一份。
+- `src/data_agent/agents/verifier.md`：按 spec 的 4 步和钩子能解析的 CHECK 1–7 报告重写。`value-verifier.md` 删除，`NOTICE` 更新。
+- `skills/dbt-workflow/SKILL.md` 第 8 步：一个验证者，有 `compare_by_key` 时做键级核对，FAIL 处理引用系统提示词。无验证者的回退文本从 main 原样恢复，no-verifiers 配置不变。文件头改动说明只改第 8 步相关句子。
+- 测试：验收测试去 xfail；单元测试跟随新提示词和第 8 步。
+
+**第 3 步真实行为**（无模型；`uv run python -I /tmp/t47-real.py` 对六个配置 build options）：
+
+```
+full            agents=['verifier'] maxTurns=[50] verifiers_prompt=True
+no-skill        agents=['verifier'] maxTurns=[50] verifiers_prompt=True
+no-context      agents=['verifier'] maxTurns=[50] verifiers_prompt=True
+full-old-skill  agents=['verifier'] maxTurns=[50] verifiers_prompt=True
+baseline        agents=[] maxTurns=[] verifiers_prompt=False
+no-verifiers    agents=[] maxTurns=[] verifiers_prompt=False
+verifier.tools: ['Read', 'Glob', 'Grep', 'mcp__data__list_tables', 'mcp__data__query_database', 'mcp__data__model_diff', 'mcp__data__contract_check', 'mcp__data__grain_facts', 'mcp__data__compare_by_key']
+hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
+```
+
+验收测试 `test_verifier_configs_define_one_verifier` 去 xfail 后先红（`assert set(options.agents) == {"verifier"}`）后绿。`make check`：ruff、format、basedpyright 干净；`1693 passed, 1 skipped, 38 deselected in 301.48s`。
+
+**审查第 1 轮**：`da-review main` 两次 at capacity，Fable 只读审查代替，加 `eng:code-review main`（Standards、Spec）。
+- 已修（8bde360）：第 8 步在括号里复述 FAIL 规则、无验证者回退文本被改写（Standards 1、Spec 1/2）；系统提示词的停止句没给"主 agent 自己解决了 NEEDS_INFO"留出口（Fable 1）；报告模板原样复制会解析成 PASS，改成 `<PASS|FAIL|NEEDS_INFO|N/A>`（Fable 4）；第 8 步行数句点名 CHECK 3 而它现在是粒度检查，改成 CHECK 3 和 7（Fable 3）；改动说明换行（Standards 4）。
+- 不修，Authority 外：Skill `## Tools` 一节仍把 `verify_model_values` 写成"value-verifier 在第 8 步用"（Standards 3、Fable 2），运行时无害（有"仅当在你的工具列表里"的限定，且工具未注册），需后续工单；`verifier_v2/dispatch.py`、`hooks.py` 里"until ticket 47 removes it"的过时注释同理。
+- 不修，设计如此：`VERIFIER_MAX_TURNS` 在 `verifiers.py` 和 `verifier_v2/hooks.py` 各定义一份（hooks 导入 verifiers，反向会循环；hooks.py 在 Authority 外），有测试钉住两者相等。`VERIFIER_NAMES` 仍是单元素元组，`agent.py` 和 `hooks.py` 按成员判断。验证者工具表不含 `map_columns`、`check_model_schema`、`audit_model_sources`：spec 的"保留的旧工具"指 server 保留（已保留），4 步不需要它们（Spec 4）。
