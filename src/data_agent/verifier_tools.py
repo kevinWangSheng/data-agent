@@ -71,6 +71,7 @@ from sqlglot.optimizer.scope import Scope, build_scope
 
 from data_agent.context_tools import RunQuery, Table, is_text, literal, quote
 from data_agent.db_facts import LoadCatalog
+from data_agent.tool_annotations import READ_ONLY
 
 SKIP_DIRS = frozenset({".claude", "dbt_packages", "target", "__pycache__", "logs"})
 BINARY_TYPES = frozenset({"BLOB", "BYTEA", "BINARY", "VARBINARY", "IMAGE"})
@@ -1387,7 +1388,7 @@ def register_verifier_tools(
             raise ToolError(f"Error: {project_dir!r} is not a dbt project (no dbt_project.yml)")
         return project
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def map_columns(model_name: str, project_dir: str, exclude: str = "") -> str:
         """Map a dbt model's upstream columns against its YML contract.
 
@@ -1403,7 +1404,7 @@ def register_verifier_tools(
         excluded = {name.lower() for name in split_names(exclude)}
         return "\n".join(map_model(run, load, project, model_name, sql_path, excluded))
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def check_model_schema(model_name: str, yml_columns: str) -> str:
         """Compare a built model's columns with the comma-separated column list from its YML:
         matching, missing, extra and case-mismatched columns, and wrong types. Give a column as
@@ -1449,7 +1450,7 @@ def register_verifier_tools(
             ]
         )
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def audit_model_sources(model_name: str, source_tables: str, sample_nulls: bool = True) -> str:
         """Row counts of a model and its upstream tables (comma-separated `source_tables`, at
         most 10) with model/source ratios, sample rows, and per-column distinct and NULL counts,
@@ -1460,7 +1461,7 @@ def register_verifier_tools(
         model = resolve(load(), model_name)
         return "\n".join(audit(run, load, model, sources, sample_nulls))
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def verify_model_values(model_name: str, source_tables: str = "", project_dir: str = "") -> str:
         """Cross-check a model's metric values against its upstream data.
 

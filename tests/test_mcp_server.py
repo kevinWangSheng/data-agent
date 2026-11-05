@@ -13,6 +13,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult, TextContent
 
+from data_agent.gateway import DuckDBGateway
+from data_agent.mcp_server import build_server
+from data_agent.run_config import CONFIG_NAMES, load_config
+
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
 
 
@@ -133,3 +137,17 @@ async def test_row_limit_caps_rows(tmp_path: Path, row_limit: int, shown: str) -
         )
     assert not result.is_error, text_of(result)
     assert shown in text_of(result)
+
+
+@pytest.mark.parametrize("config", CONFIG_NAMES)
+async def test_every_tool_is_annotated_read_only(config: str, tmp_path: Path) -> None:
+    # Claude Code runs an MCP tool concurrently with the other calls of the same turn only when it
+    # carries readOnlyHint; one tool without it stalls every call queued behind it, so all must
+    # have it (docs/research/2026-11-04-serial-mcp-calls.md §2.1).
+    server = build_server(
+        DuckDBGateway(make_db(tmp_path / "x.duckdb")), load_config(config), workspace=tmp_path
+    )
+    tools = await server.list_tools()
+    assert tools
+    hints = {tool.name: tool.annotations and tool.annotations.read_only_hint for tool in tools}
+    assert hints == dict.fromkeys(hints, True)

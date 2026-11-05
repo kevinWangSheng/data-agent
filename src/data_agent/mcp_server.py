@@ -35,6 +35,7 @@ from data_agent.gateway import (
     QueryTimedOut,
 )
 from data_agent.run_config import RunConfig
+from data_agent.tool_annotations import READ_ONLY
 from data_agent.verifier_tools import register_verifier_tools
 
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
@@ -179,7 +180,7 @@ def build_server(
     # One catalog per server process, shared by every tool that looks a table up.
     catalog = CatalogCache(run, gateway.catalog_key).get
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def query_database(sql: str, row_limit: int = 1000) -> str:
         """Run one read-only SQL query (SELECT only) and return the rows as text.
 
@@ -195,7 +196,7 @@ def build_server(
         except (QueryBlocked, QueryFailed) as exc:
             raise tool_error(exc) from exc
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def list_tables(
         schema: str | None = None,
         name_contains: str | None = None,
@@ -237,7 +238,7 @@ def build_server(
             return f"No tables found with {' and '.join(filters)}"
         return render_table_listing(lines, max_tables, columns, LIST_TABLES_CHAR_BUDGET)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def describe_table(table: str) -> str:
         """One table or view in detail, as the database reports it: its row estimate, every
         column with its type and whether it may be null, declared primary and foreign keys, and
@@ -250,7 +251,7 @@ def build_server(
         """
         return describe(run, gateway.dialect, table, catalog)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def explain_query(sql: str) -> str:
         """The database's plan for one read-only SQL query, without running it (EXPLAIN, never
         ANALYZE), as the database prints it: each step with its estimated rows, the join methods,
