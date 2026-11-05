@@ -17,11 +17,11 @@ HEADING_PREFIX_RE = re.compile(
     r"^(?:\d+[.)]\s*|\**(?:model|table|relation)\b\**\s*:?\**\s*)+(?=\S)", re.I
 )
 # `CHECK <n>: <STATUS>` at the start of a line, so a check quoted inside another line's reason is
-# not read as a verdict. A list bullet before it, `**` bold around the tokens, and the check's
-# title between the number and the colon (`CHECK 1 - Table Existence: PASS`, as the verifier's
-# own instructions head each check) are allowed.
+# not read as a verdict. A list bullet or number before it, `**` bold around the tokens, and the
+# check's title between the number and the colon (`CHECK 1 - Table Existence: PASS`, as the
+# verifier's own instructions head each check) are allowed.
 CHECK_RE = re.compile(
-    r"^\s*(?:[-*]\s+)?\**CHECK\s*(\d+)\**(?:\s*[-–—]\s*[^:\n]*?)?\**\s*:\**\s*\**"  # noqa: RUF001
+    r"^\s*(?:(?:[-*]|\d+[.)])\s+)?\**CHECK\s*(\d+)\**(?:\s*[-–—]\s*[^:\n]*?)?\**\s*:\**\s*\**"  # noqa: RUF001
     r"(PASS|FAIL|NEEDS_INFO|N/A)\b"
 )
 

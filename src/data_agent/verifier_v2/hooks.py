@@ -37,6 +37,8 @@ from data_agent.verifier_v2.stop import (
 from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES, Emit
 
 MAX_BLOCKS = 2
+# How many verifier dispatches may await a report before the oldest is presumed lost.
+MAX_OUTSTANDING_DISPATCHES = 4
 # The verifier's turn cap (spec "验证器"); a call that reaches it is read as NEEDS_INFO.
 VERIFIER_MAX_TURNS = 50
 BLOCK_INSTRUCTION = (
@@ -61,11 +63,16 @@ def run_hooks(
     blocks = 0
     state: dict[str, Any] = {}
     # The model fingerprints at each verifier dispatch whose report has not arrived, oldest
-    # first. The SDK gives no field linking a SubagentStop to its PreToolUse, so a report takes
-    # the oldest outstanding dispatch's fingerprints: with two verifiers in flight that can
-    # pair a report with an earlier dispatch, which over-reports an edit (rule 2), never
-    # misses one. An empty entry (hashing failed) means "hash now".
-    dispatched: deque[dict[str, str] | None] = deque()
+    # first. The SDK gives no field linking a SubagentStop to its PreToolUse, and reports may
+    # arrive in any order, so every report takes the *oldest* outstanding dispatch's
+    # fingerprints, and an entry leaves the queue only from the newest end, so the oldest stays
+    # until no dispatch is outstanding: with two verifiers in flight that can pair a report with
+    # an earlier dispatch, which over-reports an edit (rule 2), never misses one. An empty entry
+    # (hashing failed) means "hash now".
+    # A dispatch that never reports (whether the SDK fires SubagentStop for a subagent that
+    # errors is unverified) would otherwise pin its stale fingerprints at the head for the rest
+    # of the run, so the queue holds at most MAX_OUTSTANDING_DISPATCHES.
+    dispatched: deque[dict[str, str] | None] = deque(maxlen=MAX_OUTSTANDING_DISPATCHES)
 
     def failed(hook: str, exc: Exception) -> None:
         emit("error", source="verifier_v2", hook=hook, error=f"{exc!r}")
@@ -114,7 +121,9 @@ def run_hooks(
         try:
             parsed = parse_report(report, hit_max_turns=hit_max_turns, workspace=workspace)
             if fields["agent_type"] == REWRITTEN_SUBAGENT:
-                hashes = (dispatched.popleft() if dispatched else None) or model_hashes(workspace)
+                hashes = (dispatched[0] if dispatched else None) or model_hashes(workspace)
+                if dispatched:
+                    dispatched.pop()
                 state = record_checks(state, parsed["models"], hashes)
         except (OSError, ValueError) as exc:
             failed("SubagentStop", exc)
@@ -138,7 +147,7 @@ def run_hooks(
         nonlocal blocks
         try:
             decision = stop_decision(state, workspace, snapshot)
-        except (OSError, ValueError) as exc:
+        except OSError as exc:  # the workspace, not the state: a bug must not pass silently
             failed("Stop", exc)
             return {}
         if not decision["block"]:

@@ -14,7 +14,7 @@ from claude_agent_sdk.types import HookEvent
 from data_agent.run_config import load_config
 from data_agent.verifier_v2 import parse_report, record_report, run_hooks, stop_decision
 from data_agent.verifier_v2.dispatch import UNVERIFIED_HEADING
-from data_agent.verifier_v2.hooks import VERIFIER_MAX_TURNS
+from data_agent.verifier_v2.hooks import MAX_OUTSTANDING_DISPATCHES, VERIFIER_MAX_TURNS
 from data_agent.verifier_v2.stop import model_hashes
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "verifier_v2"
@@ -51,6 +51,8 @@ def test_parse_report_reads_checks_only_at_line_start_under_a_heading() -> None:
         ("### 1. orders", "CHECK 2: FAIL — a numbered heading"),
         ("### Model `orders`", "CHECK 2: FAIL — a label without a colon"),
         ("### **Model:** orders", "CHECK 2: FAIL — a bold label"),
+        ("### orders", "2. CHECK 2: FAIL — a numbered list"),
+        ("### orders", "1) **CHECK 2**: FAIL — a numbered list with a parenthesis"),
     ],
 )
 def test_parse_report_normalizes_headings_and_allows_bold(heading: str, line: str) -> None:
@@ -293,24 +295,61 @@ async def test_hooks_fingerprint_models_at_dispatch_time(edited: tuple[Path, Pat
     assert blocked["decision"] == "block" and "alpha: rule 2" in blocked["reason"]
 
 
-async def test_hooks_pair_each_report_with_its_own_dispatch(edited: tuple[Path, Path]) -> None:
-    """Two verifiers in flight: the first report takes the first dispatch's fingerprints, so an
-    edit between the two dispatches still counts as a change after that report; the second
-    report, on the edited file, clears it. (The SDK gives no field linking a SubagentStop to
-    its PreToolUse, so reports are paired with dispatches in order.)"""
+VERIFIER = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "go"}}
+ALPHA_PASS = "### alpha\nCHECK 1: PASS — ok\n"
+
+
+async def test_hooks_pair_reports_with_the_oldest_outstanding_dispatch(
+    edited: tuple[Path, Path],
+) -> None:
+    """Two verifiers in flight: every report takes the oldest outstanding dispatch's fingerprints
+    (the SDK gives no field linking a SubagentStop to its PreToolUse), so an edit between the two
+    dispatches still counts as a change after both reports. A dispatch with none outstanding
+    pairs with its own fingerprints and clears it."""
     workspace, _ = edited
-    events: list[dict[str, Any]] = []
-    hooks = hooks_for(edited, events)
-    verifier = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "go"}}
-    await call(hooks, "PreToolUse", **verifier)
+    hooks = hooks_for(edited, [])
+    await call(hooks, "PreToolUse", **VERIFIER)
     (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
-    await call(hooks, "PreToolUse", **verifier)
-    report = "### alpha\nCHECK 1: PASS — ok\n"
-    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, report))
+    await call(hooks, "PreToolUse", **VERIFIER)
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
     blocked = await call(hooks, "Stop", stop_hook_active=False)
     assert blocked["decision"] == "block" and "alpha: rule 2" in blocked["reason"]
-    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, report))
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
+    blocked = await call(hooks, "Stop", stop_hook_active=True)
+    assert blocked["decision"] == "block" and "alpha: rule 2" in blocked["reason"]
+    await call(hooks, "PreToolUse", **VERIFIER)
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
     assert await call(hooks, "Stop", stop_hook_active=True) == {}
+
+
+async def test_hooks_pair_reports_arriving_out_of_order(edited: tuple[Path, Path]) -> None:
+    """Dispatch 1 (alpha as v1), edit alpha to v2, dispatch 2; dispatch 2 reports first and names
+    no model, then dispatch 1 reports alpha PASS. That report verified v1, so the run must still
+    block on alpha (rule 2): v2 was never verified."""
+    workspace, _ = edited
+    hooks = hooks_for(edited, [])
+    await call(hooks, "PreToolUse", **VERIFIER)
+    (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
+    await call(hooks, "PreToolUse", **VERIFIER)
+    other = "### same\nCHECK 1: PASS — ok\n"
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, other))
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
+    blocked = await call(hooks, "Stop", stop_hook_active=False)
+    assert blocked["decision"] == "block" and "alpha: rule 2" in blocked["reason"]
+
+
+async def test_hooks_drop_dispatches_that_never_report(edited: tuple[Path, Path]) -> None:
+    """A dispatch whose SubagentStop never comes would otherwise keep its stale fingerprints at
+    the head of the queue for every later report. The queue holds at most
+    MAX_OUTSTANDING_DISPATCHES; beyond that the oldest is dropped."""
+    workspace, _ = edited
+    hooks = hooks_for(edited, [])
+    await call(hooks, "PreToolUse", **VERIFIER)  # never reports
+    (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
+    for _ in range(MAX_OUTSTANDING_DISPATCHES):
+        await call(hooks, "PreToolUse", **VERIFIER)
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
+    assert await call(hooks, "Stop", stop_hook_active=False) == {}
 
 
 def broken(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -329,6 +368,23 @@ async def test_stop_hook_lets_the_run_end_when_the_decision_fails(
     [error] = events
     assert error["type"] == "error" and error["source"] == "verifier_v2"
     assert error["hook"] == "Stop" and "vanished" in error["error"]
+
+
+async def test_stop_hook_raises_on_a_logic_error(
+    edited: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the workspace can fail under the Stop hook (OSError); anything else is a bug that
+    must not turn into a silent pass."""
+
+    def bug(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise ValueError("bad state")
+
+    monkeypatch.setattr("data_agent.verifier_v2.hooks.stop_decision", bug)
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
+    with pytest.raises(ValueError, match="bad state"):
+        await call(hooks, "Stop", stop_hook_active=False)
+    assert events == []
 
 
 async def test_subagent_stop_keeps_its_state_when_recording_fails(
