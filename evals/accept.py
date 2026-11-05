@@ -35,6 +35,7 @@ from typing import Any
 from evals.ablate import has_versions, header
 from evals.harbor import Trial, event_files, load_trials
 from evals.metrics import is_success
+from evals.process import job_metrics, timing_markdown
 from evals.report import TRIALS_PER_TASK, check_complete, is_infra_error, split_trials
 
 MAX_AGE = timedelta(days=14)
@@ -154,6 +155,8 @@ def evaluate(
         "reuse_problems": problems,
         "rerun_tasks": rerun_tasks,
         "conditions": conditions,
+        # Observed only: no condition reads it (ticket 51). Dev trials only, checked above.
+        "timing": {"old": job_metrics(old)["timing"], "new": job_metrics(new)["timing"]},
     }
 
 
@@ -304,4 +307,6 @@ def render(result: dict[str, Any]) -> str:
         lines.append(f"  {row['task']}: {row['round']}{rerun} -> {row['status']}")
     if result["rerun_tasks"]:
         lines.append(f"rerun these tasks on the new version: {' '.join(result['rerun_tasks'])}")
+    timing = result["timing"]
+    lines += ["", *timing_markdown([("old", timing["old"]), ("new", timing["new"])])]
     return "\n".join(lines)
