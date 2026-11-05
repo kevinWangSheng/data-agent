@@ -473,6 +473,12 @@ async def test_grep_excluding_a_whole_directory_skips_the_credentials_in_it(
         # ripgrep reads `\e` as `e`, so this keeps both samples; fnmatch matches neither.
         r"*.\env",
         r"!**/dbt\_packages/**",
+        # ripgrep lets an alternative hold a slash; fnmatch saw `**,*.sql}` as the name.
+        "{dbt_packages/**,*.sql}",
+        "{*.sql,**/integration_tests/**}",
+        # ripgrep drops an empty alternative, so this skips only the `.bak` names.
+        "!postgres.env{,.bak} !duckdb.env{,.bak}",
+        "!{postgres,duckdb}.env{.bak,}",
     ],
 )
 async def test_grep_globs_ripgrep_reads_differently_skip_nothing(

@@ -17,6 +17,7 @@ Read and Grep may also open the files Claude Code saves an over-long tool output
 
 import fnmatch
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -48,6 +49,8 @@ GREP_TYPES = {
     "csv": ("*.csv",),
     "txt": ("*.txt",),
 }
+# A `{...}` group of a Grep glob, without nesting (ripgrep refuses nested groups).
+BRACE_GROUP = re.compile(r"\{([^{}]*)\}")
 # Where Claude Code saves a tool output too long to return inline, relative to the home directory.
 TOOL_RESULTS = (".claude", "projects", None, "tool-results")
 
@@ -137,7 +140,11 @@ def _glob_matches(pattern: str, path: Path) -> bool | None:
     or `**/` and a name) is matched against the name. A path pattern is only ruled out, when its
     last segment cannot match the name: ripgrep's `*` stops at a slash and where it anchors the
     rest depends on how the search path was given, so otherwise the answer is None. It is None
-    too when the name segment uses syntax fnmatch reads otherwise (`_name_matches`)."""
+    too when the name segment uses syntax fnmatch reads otherwise (`_name_matches`), and when a
+    `{...}` group holds a slash (ripgrep lets an alternative span directories) or an empty
+    alternative (which ripgrep drops)."""
+    if any("/" in group or "" in group.split(",") for group in BRACE_GROUP.findall(pattern)):
+        return None
     _, _, last = pattern.removeprefix("**/").rpartition("/")
     if last == "**":
         return None
