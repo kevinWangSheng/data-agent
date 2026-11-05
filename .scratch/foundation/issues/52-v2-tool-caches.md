@@ -124,3 +124,8 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
   - The single `files_under` delegate was flagged as a Middle Man: it is kept on purpose, because callers and an existing test patch it.
 
 **Pending (main session):** the Postgres integration tests (`make test-integration`), and the server `pos-operations` × 1 (full) run after 51 merges, with `grain_facts` single `duration_ms` ≤5 s.
+
+### 2026-11-05 主会话
+
+- Postgres 集成测试：在本机 Postgres 17 新建 scratch 库 `da_t52_scratch`，在 16a6048 上运行 `DATA_AGENT_TEST_POSTGRES_URL=postgresql://localhost/da_t52_scratch uv run pytest -q -m integration tests/test_verifier_v2_tools.py`，结果 `2 passed, 50 deselected`。注意：env 文件里没有 `DATA_AGENT_TEST_POSTGRES_URL`，所以 `make test-integration` 不会自动跑到这两个测试。
+- 服务器运行 pos-operations × 1 排在 51 合入之后。

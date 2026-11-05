@@ -1,6 +1,6 @@
 # 53 — dbt 固定开销：scan 每个 yml 只解析一次，评测适配层设 DBT_TARGET，Skill 不来回切 --vars
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§5）
 Claimed by: claude (worktree 53-dbt-fixed-overhead, 2026-11-05)
@@ -59,7 +59,8 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0
-- Outcome: implemented; local scan 19.6 s → 4.2 s with identical output; server check and the `DBT_TARGET` decision are still open
+- Outcome: done，PR #50 squash 合入；本地 scan 19.6 s → 4.2 s，输出不变；服务器 t53-real2 1/1，scan 7–9 s，首次 dbt 16 s 部分解析；保留 DBT_TARGET=dev
+- Model spend（主会话真实运行）: $0.1345
 - Human review minutes: —
 
 ## Comments
@@ -104,3 +105,8 @@ cmp of the two 10,537-line reports without the title line → IDENTICAL
 ### 2026-11-05 主会话
 
 - `DBT_TARGET=dev` 会盖掉 agent 自己选的 target，这个风险按 grilling 的决定保留。理由：工单 49 合入后，提示词和 Skill 已经不再教 agent 改 `profiles.yml`，t49-screen 里 `profiles.yml` 改动 0 次。工单会话统计的 21 次 `target: prod`，都来自工单 49 之前的运行。服务器上是否真的走部分解析，看下面的真实运行；如果仍然完整解析，就按 Stop condition 交人定。
+- 服务器真实运行 `t53-real2`（commit 3a1e09d）：`scripts/da-remote start t53-real2 -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task dbt-receivables-aging-buckets --out runs/t53-real2 --budget 2 --config full --trials 1`，结果 exit 0，reward 1（1/1），实际价 $0.1345（闲时），内存峰值 1.9 GB。第一次启动 `t53-real` 时我漏了 `--tasks-dir`/`--manifest`，evals 直接 exit 2，$0。
+  - scan 共 2 次，8.6 s 和 7.4 s（≤15 s；t47-screen 是 70–79 s）。
+  - 第一次 dbt 调用 `dbt ls` 用了 16.4 s，事件文件里 "Unable to do partial parsing" 出现 0 次。之前每个 trial 的第一次调用要 43–83 s。服务器上 `DBT_TARGET=dev` 生效。
+  - Skill 新加了一句"不来回切 `--vars`"，agent 仍切了一次：`dbt run --vars 'reference_date: …'` 用了 52.5 s，切回去后的下一次用了 52.9 s，其余 dbt run 是 22–23 s。这句没能完全约束住，记成观察，不在本工单范围内。
+- PR #50：CI 绿，Codex GitHub app 审查 3a1e09d 完成，没有意见。squash 合入。
