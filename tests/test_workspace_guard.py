@@ -594,3 +594,19 @@ async def test_grep_denial_offers_no_directory_glob_for_a_top_level_credential(
     ]
     assert 'type: "sql"' in reason
     assert "!**/" not in reason
+
+
+async def test_grep_exclusion_naming_a_directory_with_braces_decides_nothing(
+    workspace: Path,
+) -> None:
+    """Codex on ticket 55 return 1: ripgrep expands `{prod}` in `!**/secrets{prod}/**`, so the glob
+    misses the directory literally named `secrets{prod}` and its `.env` is read. The guard used to
+    match the braces literally and let the Grep run; the hint must not suggest such a glob."""
+    (workspace / "secrets{prod}").mkdir()
+    (workspace / "secrets{prod}" / ".env").write_text("KEY=x")
+    tool_input = {"pattern": "select", "glob": "!**/secrets{prod}/**"}
+    assert await decide(workspace, "Grep", tool_input) == "deny"
+    reason = (await hook_output(workspace, "Grep", {"pattern": "select"}))[
+        "permissionDecisionReason"
+    ]
+    assert "secrets{prod}/**" not in reason

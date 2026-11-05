@@ -162,10 +162,16 @@ def _below_directory(pattern: str, path: Path) -> bool:
     the search path) lies below such a directory. The leading `**/` lets the glob match wherever
     ripgrep starts, and ripgrep never enters a directory an excluding glob matches. Only the
     directories below the search path are compared: how Grep hands ripgrep the search path itself
-    (as given, absolute, with symlinks followed) is not known here."""
+    (as given, absolute, with symlinks followed) is not known here. A `{` or `}` rules it out:
+    ripgrep expands the group, fnmatch reads it literally."""
     middle = pattern.removeprefix("**/").removesuffix("/**")
     segments = middle.split("/")
-    if not (pattern.startswith("**/") and pattern.endswith("/**")) or "**" in segments:
+    if (
+        not (pattern.startswith("**/") and pattern.endswith("/**"))
+        or "**" in segments
+        or "{" in middle
+        or "}" in middle
+    ):
         return False
     parents, width = path.parts[:-1], len(segments)
     return any(
