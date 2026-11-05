@@ -1,6 +1,6 @@
 # 52 — v2 工具缓存快照 YML 和工作区模型文件，单次调用不再重读不变的东西
 
-Status: in-review
+Status: done
 Blocked by: —（服务器验证要用 51 的计时，排在 51 合入后）
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§3）
 Claimed by: claude (worktree 52-v2-tool-caches, 2026-11-05)
@@ -64,7 +64,8 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 2 (Fable in place of Codex; eng:code-review)
 - Model spend: $0 (no paid runs)
-- Outcome: implemented, local target met; server verification pending
+- Outcome: done，PR #52 squash 合入；本地 21 线程 grain_facts 0.45–0.57 s；t52-real 1/1（服务器 grain_facts 单次耗时留给 47 初筛）
+- Model spend（主会话真实运行）: $0.2993
 - Human review minutes: —
 
 ## Comments
@@ -129,3 +130,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 - Postgres 集成测试：在本机 Postgres 17 新建 scratch 库 `da_t52_scratch`，在 16a6048 上运行 `DATA_AGENT_TEST_POSTGRES_URL=postgresql://localhost/da_t52_scratch uv run pytest -q -m integration tests/test_verifier_v2_tools.py`，结果 `2 passed, 50 deselected`。注意：env 文件里没有 `DATA_AGENT_TEST_POSTGRES_URL`，所以 `make test-integration` 不会自动跑到这两个测试。
 - 服务器运行 pos-operations × 1 排在 51 合入之后。
+- 服务器真实运行 `t52-real`（1463023 = 16a6048 合 main a172093）：`scripts/da-remote start t52-real -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task pos-operations --out runs/t52-real --budget 2 --config full --trials 1`，exit 0，reward 1（1/1），实际价 $0.2993（闲时）。trial 墙钟 1418 s，验证器墙钟 535 s，超时 0 次，no duration 0 次。
+  - 这次 `grain_facts` 一次都没调用，所以单次 ≤5 s 那一条在这里测不出来。原因是 main 上的验证器还是旧版：派了 `verifier` 和 `value-verifier`，用的工具是 `check_model_schema`、`map_columns`、`audit_model_sources`，各 23 次。v2 单一验证器的提示词在工单 47（PR #48），还没合入。
+  - 处理方式：本工单是确定性修复，单元测试、本地复测（21 线程一批 0.45–0.57 s）和 Postgres 集成测试都已通过，先合入。`grain_facts` 和 `compare_by_key` 在服务器上的单次 `duration_ms`，放到工单 47 的过线初筛里看：那次初筛在 51、52、47 都合入后的 main 上跑，用的就是 v2 验证器。
+- PR #52：CI 绿，Codex GitHub app 审查 16a6048 完成，没有意见。squash 合入。
