@@ -1,6 +1,6 @@
 # 45 — 快照与 4 个确定性验证工具
 
-Status: in-review
+Status: done
 Blocked by: 44（done）, 39（phase1，done）
 Spec: ../spec.md
 Claimed by: claude (worktree 45-snapshot-and-tools)
@@ -60,7 +60,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 3
 - Review rounds: 3（第 1 轮 eng:code-review 4 条 spec 已修 + Fable 退回 7 条；第 2 轮 eng:code-review 已修 + Fable 复审退回 2 条 P2；第 3 轮 eng:code-review Standards 5 判断项（3 修 2 说明）、Spec 2 P2 已修、2 P3 记已知限制；Codex 6 次 at capacity）
 - Model spend: $0（无模型调用）
-- Outcome: in-review，branch `worktree-45-snapshot-and-tools`（…7ba87fc、退回第 2 轮 d194583、1d3924f），PR #46；t45-real 1/1
+- Outcome: done，PR #46 squash 合入（1d3924f 上 CI 绿）；t45-real 1/1；两轮退回已用完，之后的意见记已知限制
 - Human review minutes: —
 
 ## Comments
@@ -183,3 +183,4 @@ Rejected: the reference SQL reads stg_orders: a reference must not read the mode
 - Standards：无硬违规；5 条判断项修 3（错误文案不说 rejected、同时接 `QueryBlocked`、`Key` 改 NamedTuple），不修 2（公共 `compare_by_key` 作为错误边界包一层；注释措辞已改）。
 - Spec：2 条 P2 已修（1d3924f）：CAST 静默四舍五入造成假 PASS（`CAST(2.6 AS INTEGER)` = 3）→ 哨兵探测查询里对每个可 CAST 的键查"CAST 前后文本不同"的参考值，有则抛 ToolError 点名键、类型和示例值，让参考 SQL 自己 CAST；Postgres `char(n)` 键被截成 `char(1)` → 见退回 B 的不加 CAST 集合。复审剩 2 条 P3 记已知限制：(a) 文本往返也会拒绝无损的加宽转换（INTEGER 参考对 DOUBLE 键、DATE 对 TIMESTAMP），结果是带指令的 ToolError 不是错值，为避免两种数据库规则分叉先不做；(b) 探测子查询对参考 SQL 每个键多扫一遍（K+3 次），常态下 EXISTS 也要全扫，保留。
 - 顺带：`only_in_reference` 的样本显示 CAST 后的键值（`'03'` 显示为 `3`），记录不改。`compare.py` 448 行，不拆。
+- 2026-11-05 主会话：PR #46 在 1d3924f 上 CI 绿，squash 合入 main。两轮退回已用完；Fable 复审余下的 P3（撇号注释、加宽转换被拒、探测多扫一遍）记为已知限制。工单 46 可派。

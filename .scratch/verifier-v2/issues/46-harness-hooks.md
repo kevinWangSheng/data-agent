@@ -1,7 +1,7 @@
 # 46 — harness 钩子：派单改写、Stop 拦截、轮数记录
 
 Status: ready-for-agent
-Blocked by: 45
+Blocked by: 45（done）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
