@@ -1,6 +1,6 @@
 # 46 — harness 钩子：派单改写、Stop 拦截、轮数记录
 
-Status: in-review
+Status: done
 Blocked by: 45（done）
 Spec: ../spec.md
 Claimed by: claude (fable, worktree 46-harness-hooks)
@@ -66,7 +66,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 4（第 1 轮 Codex + eng:code-review，8703954；第 2 轮 Fable，7da7e94；退回第 1 轮 eng:code-review，6c5ab48；退回第 2 轮 eng:code-review，aa67771；Codex 两次 at capacity）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: in-review，两轮退回已修完，branch `worktree-46-harness-hooks`（385acb6 … 6c5ab48、c8ede0f、aa67771），PR #47；集成测试断言问题交人；t46-real 1/1（6c5ab48），t46-real2 在 aa67771 上复跑
+- Outcome: done，PR #47 squash 合入（aa67771 上 CI 绿）；t46-real 1/1、t46-real2 1/1（含 FAIL→修→再验→PASS 闭环）；集成测试 updatedInput 用例断言问题交人
 - Human review minutes: —
 
 ## Comments
@@ -169,3 +169,4 @@ Check customer_ltv; upstream is raw.orders
 - 真实行为（本地脚本）：乱序到达时 Stop 以 rule 2 拦；重新派单后放行；`2. CHECK 2: FAIL` 解析。
 - 审查：`da-review` at capacity；eng:code-review 已修（aa67771）：解析/取哈希抛错时派单项没弹出导致一直拦 rule 2（Spec P2，改成先弹出再解析，配测试）；配对测试最后一个断言被 MAX_BLOCKS 掩盖（加断言无 `ended_with_unresolved`）；队列上界注释如实；测试常量提出。
 - 不修：上界不解决泄漏，Stop 时清队列会让在飞的后台验证者漏报，按原样记已知限制；PreToolUse/SubagentStop 仍接 `(OSError, ValueError)`；取哈希失败的 `None` 队首对所有在飞报告"取现在"，已记 `error` 事件；`1.CHECK`、`**1.** CHECK` 不解析。
+- 2026-11-05 主会话：`t46-real2`（commit aa67771，最终提交；同一题 × 1 full）：reward 1（1/1），实际价 $0.2976（高峰），内存峰值 2.0 GB。这次跑出了闭环：第一次 `verifier` 报告 CHECK 2 FAIL（`overall FAIL`，turns 9），主 agent 修改后再派，第二次 6 个 CHECK 全 PASS/N/A（turns 7）；`value-verifier` PASS（turns 19）。没有 `ended_with_unresolved`、没有 `error` 事件，`evals exited 0`。PR #47 在 aa67771 上 CI 绿，两轮退回已用完，squash 合入。集成测试 `updatedInput` 用例的断言问题仍交人（见上），不阻塞合入。
