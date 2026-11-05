@@ -31,7 +31,7 @@ from data_agent.verifier_v2 import (
     yaml_lite,
 )
 from data_agent.verifier_v2 import sql as model_sql
-from data_agent.verifier_v2.project import model_alias, model_config, project_config
+from data_agent.verifier_v2.project import model_aliases, model_config, project_config
 from data_agent.verifier_v2.render import render_grain
 from data_agent.verifier_v2.snapshot import LARGE_SEEDS_FILE, SEED_SIZE_LIMIT
 
@@ -288,7 +288,7 @@ def test_model_config_resolves_down_the_directory_path(tmp_path: Path) -> None:
     assert set(daily.lines()) == {"materialized", "where", "vars"}
 
 
-def test_model_alias_from_config_call_or_yml(tmp_path: Path) -> None:
+def test_model_aliases_from_config_call_or_yml(tmp_path: Path) -> None:
     project = tmp_path / "p"
     (project / "models").mkdir(parents=True)
     (project / "dbt_project.yml").write_text("name: shop\n")
@@ -298,9 +298,11 @@ def test_model_alias_from_config_call_or_yml(tmp_path: Path) -> None:
     (project / "models" / "schema.yml").write_text(
         "models:\n  - name: b\n    config:\n      alias: b_table\n  - name: c\n"
     )
-    assert model_alias(project, "a") == "a_table"
-    assert model_alias(project, "b") == "b_table"
-    assert model_alias(project, "c") is None
+    assert model_aliases(project, ["a", "b", "c", "missing"]) == {
+        "a": "a_table",
+        "b": "b_table",
+        "c": None,
+    }
 
 
 # --- Snapshot and diff beyond the acceptance tests ----------------------------------------------
@@ -661,6 +663,24 @@ def test_compare_by_key_runs_the_reference_in_one_statement(cmp_db: Path) -> Non
     running = [s for s in gateway.statements if "ref_once_marker" in s and "WHERE 1 = 0" not in s]
     assert len(running) == 1, running
     assert "AS MATERIALIZED" in running[0]
+
+
+def test_compare_by_key_keeps_a_key_named_like_an_internal_column(cmp_db: Path) -> None:
+    """Review of ticket 50: a key column named `__kind` must not be read as the statement's own
+    row kind (it bucketed rows wrongly when keys kept their names in the joined rows)."""
+    con = duckdb.connect(str(cmp_db))
+    try:
+        con.execute('CREATE TABLE collkey ("__kind" INTEGER, v INTEGER)')
+        con.execute("INSERT INTO collkey VALUES (1, 5), (2, 6)")
+    finally:
+        con.close()
+    sql = 'SELECT * FROM (VALUES (1, 7), (3, 6)) AS r("__kind", v)'
+    result = compare_by_key(DuckDBGateway(cmp_db), "collkey", ["__kind"], sql)
+    assert result["samples"]["only_in_model"] == [{"__kind": 2}]
+    assert result["samples"]["only_in_reference"] == [{"__kind": 3}]
+    assert result["samples"]["mismatched"] == [
+        {"key": {"__kind": 1}, "column": "v", "model": 5, "reference": 7}
+    ]
 
 
 def test_compare_by_key_reads_the_project_once_whatever_the_changed_models(

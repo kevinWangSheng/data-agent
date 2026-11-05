@@ -183,7 +183,7 @@ def _compare_by_key(
             by_kind[row[at["__kind"]]].append(row)
 
     def key_of(row: tuple[Any, ...]) -> dict[str, Any]:
-        return {key: row[at[key]] for key in keys}
+        return {key: row[at[_key_column(index).strip('"')]] for index, key in enumerate(keys)}
 
     mismatches: list[dict[str, Any]] = []
     for row in by_kind[MISMATCH]:
@@ -267,6 +267,11 @@ def _as_model_type(expression: str, data_type: str) -> str:
     return f"CAST({expression} AS {data_type})" if _castable(data_type) else expression
 
 
+def _key_column(index: int) -> str:
+    """The quoted name of the `index`-th key in the comparison statement's rows."""
+    return quote(f"__k_{index}")
+
+
 def _model_has_key_values(table: Table, pairs: list[Key], gateway: Queryable) -> list[bool]:
     """Per key, whether the model holds a non-NULL value of it, read from the model alone.
     When it holds none, the NULL flags alone pair rows exactly (a reference row pairs only
@@ -339,8 +344,11 @@ def _comparison_sql(
         f"(SELECT {key.model} FROM m0 WHERE {key.model} IS NOT NULL LIMIT 1) AS {key.sentinel}"
         for key in pairs
     )
+    # Keys go by position (`__k_<i>`), so a key named like one of the statement's own columns
+    # (`__kind`, `__rn`, a count) cannot be read as it.
     key_select = ", ".join(
-        f"COALESCE(m.{key.model}, {cast_reference(key)}) AS {key.model}" for key in pairs
+        f"COALESCE(m.{key.model}, {cast_reference(key)}) AS {_key_column(index)}"
+        for index, key in enumerate(pairs)
     )
     value_select = "".join(
         f", m.{quote(c)} AS {quote(f'__m_{c}')}, r.{quote(r)} AS {quote(f'__r_{c}')}, "
@@ -352,7 +360,7 @@ def _comparison_sql(
         if compared
         else "FALSE"
     )
-    key_list = ", ".join(key.model for key in pairs)
+    key_list = ", ".join(_key_column(index) for index in range(len(pairs)))
 
     def distinct_keys(kind: int) -> str:
         # Keys, not rows: a key repeated on either side still counts once (DISTINCT treats

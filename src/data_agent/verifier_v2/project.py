@@ -400,8 +400,10 @@ def _entry_alias(entry: dict[str, Any]) -> str | None:
 
 
 def model_aliases(project: Path, models: list[str]) -> dict[str, str | None]:
-    """`model_alias` for each of `models` that has a SQL file in the project, reading the
-    project's files and YML once for all of them."""
+    """The relation name each of `models` that has a SQL file in the project is built as, when
+    the project renames it (None when it keeps its own name): `alias=` in its `{{ config(...)
+    }}`, which dbt lets override the YML, else `alias:` in its YML entry (directly or under
+    `config:`). The project's files and YML are read once for all of them."""
     files = model_files(project)
     aliases = {model: _sql_alias(files[model]) for model in models if model in files}
     if any(alias is None for alias in aliases.values()):
@@ -417,18 +419,3 @@ def model_aliases(project: Path, models: list[str]) -> dict[str, str | None]:
                     None,
                 )
     return aliases
-
-
-def model_alias(project: Path, model: str) -> str | None:
-    """The relation name the model is built as, when the project renames it: `alias:` in its
-    YML entry (directly or under `config:`), else `alias=` in its `{{ config(...) }}`, which dbt
-    lets override the YML; None when the model keeps its own name."""
-    path = model_files(project).get(model)
-    in_sql = _sql_alias(path) if path else None
-    if in_sql:
-        return in_sql
-    for entry in model_entries(project, model):
-        alias = _entry_alias(entry.data)
-        if alias:
-            return alias
-    return None
