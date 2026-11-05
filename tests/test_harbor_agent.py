@@ -324,6 +324,28 @@ def test_an_unknown_run_config_is_refused_before_any_trial() -> None:
     DataAgent.preflight({"run_config": "baseline"})
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "expected"), [({}, 4000.0), ({"agent_timeout_sec": "1500"}, 1500.0)]
+)
+def test_the_agent_timeout_reaches_the_cli(
+    local: Local, kwargs: dict[str, Any], expected: float
+) -> None:
+    """Ticket 54: Harbor's own timeout does not reach `run()`, so the trial's time limit is a
+    plain kwarg (Harbor's Cline agent does the same), 4000 s by default (data-eng-bench's
+    `task.toml`); `--ak` passes it as a string."""
+    cls, tmp_path = local
+    env = LocalEnvironment(container_env(tmp_path, 0, jsonl(result_event())))
+    run(make_agent(cls, tmp_path, **kwargs), env)
+    args = stub_args(tmp_path)
+    assert float(args[args.index("--agent-timeout-sec") + 1]) == expected
+
+
+@pytest.mark.parametrize("value", [0, -5])
+def test_a_non_positive_agent_timeout_is_refused_before_any_trial(value: float) -> None:
+    with pytest.raises(ValueError, match="agent_timeout_sec"):
+        DataAgent.preflight({"agent_timeout_sec": value})
+
+
 def test_tokens_and_cost_are_filled_back_into_harbors_result(tmp_path: Path) -> None:
     logs = tmp_path / "agent"
     (logs / "events").mkdir(parents=True)

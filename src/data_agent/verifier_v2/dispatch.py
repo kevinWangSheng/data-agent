@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from data_agent.verifiers import AGENT_TOOL
+from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES
 
 # Only this subagent's dispatch is rewritten: the v2 verifier (the value verifier, still defined
 # until ticket 47 removes it, keeps the main agent's prompt).
@@ -47,5 +47,25 @@ def rewrite_dispatch(
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
             "updatedInput": {**tool_input, "prompt": prompt},
+        }
+    }
+
+
+def deny_dispatch(
+    tool_name: str, tool_input: Mapping[str, Any], *, remaining_s: float
+) -> dict[str, Any]:
+    """`{}` unless this is the `Agent` tool dispatching a verifier; otherwise a PreToolUse output
+    that denies it, for a trial with too little time left for a verifier run (ticket 54)."""
+    if tool_name != AGENT_TOOL or tool_input.get("subagent_type") not in VERIFIER_NAMES:
+        return {}
+    reason = (
+        f"Only {remaining_s:.0f} s are left before the trial deadline, too little for a verifier "
+        "run. Do not verify again: finish with the results you have and end the run."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
         }
     }

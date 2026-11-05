@@ -7,8 +7,8 @@ the holdout, always whole; with `--split dev`, the dev set or the `--task`s chos
     OUT/dropped/<config>/     result.json and event files of trials a resume deleted, kept for the
                               spend guard and `evals accept`
     OUT/logs/<config>.log     Harbor's output; OUT/logs/guards.log the spend guard's and scrub's
-    OUT/request.json          the model (dev: also the split and tasks) the first invocation
-                              asked for; another request is refused
+    OUT/request.json          the model (dev: also the split and tasks; any --agent-kwarg) the
+                              first invocation asked for; another request is refused
     OUT/records/<UTC time>.json  new on every invocation check_record lets through: start
                               time, benchmark commit, machine
     OUT/smoke/<UTC time>/<config>/  the preflight's smoke job, one dev task once
@@ -135,6 +135,17 @@ class Stop(Exception):
         self.code = code
 
 
+def agent_kwarg(value: str) -> str:
+    """A `--agent-kwarg` as given, once it is `KEY=VALUE` with a key other than run_config: each
+    job's run config is its `--config`, which a kwarg must not override (ticket 54)."""
+    key, sep, _ = value.partition("=")
+    if not sep or not key.strip():
+        raise argparse.ArgumentTypeError(f"expected KEY=VALUE, got {value!r}")
+    if key.strip() == "run_config":
+        raise argparse.ArgumentTypeError("--config sets run_config; an agent kwarg cannot")
+    return value
+
+
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     parser = commands.add_parser("ablate", help="run the configs on a split, write the table")
     parser.add_argument("--tasks-dir", type=Path, required=True, help="data-eng-bench tasks/")
@@ -157,6 +168,15 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
         default=FAIL_FAST,
         metavar="N",
         help=f"stop the batch after N infrastructure errors in a row (default {FAIL_FAST})",
+    )
+    parser.add_argument(
+        "--agent-kwarg",
+        action="append",
+        default=[],
+        type=agent_kwarg,
+        metavar="KEY=VALUE",
+        help="repeatable: passed to Harbor as `--ak KEY=VALUE` (e.g. agent_timeout_sec=1500); "
+        "run_config comes from --config",
     )
     parser.add_argument(
         "--skip-smoke",
@@ -323,14 +343,20 @@ def check_conditions(config: str, job: Path, trials: list[Trial]) -> None:
         )
 
 
-def check_request(out: Path, model: str | None, split: str, tasks: list[str]) -> None:
+def check_request(
+    out: Path, model: str | None, split: str, tasks: list[str], agent_kwargs: list[str]
+) -> None:
     """OUT holds one request: finished jobs are reused, so another --model would otherwise get
     the table of the model OUT was first run with, and other tasks would meet jobs that never
-    cover them. A holdout request records the model only, since the holdout is always run whole."""
+    cover them. A holdout request records the model only, since the holdout is always run whole.
+    The `--agent-kwarg`s are part of it when there are any (ticket 54: another timeout is
+    another run), so an OUT written before them stays reusable."""
     path = out / "request.json"
     now: dict[str, Any] = {"model": model or DEFAULT_MODEL}
     if split != "holdout":
         now |= {"split": split, "tasks": tasks}
+    if agent_kwargs:
+        now |= {"agent_kwargs": agent_kwargs}
     if not path.is_file():
         path.write_text(json.dumps(now) + "\n")
         return
@@ -383,11 +409,13 @@ def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:
 def harbor_run_args(
     args: argparse.Namespace, jobs: Path, config: str, tasks: list[str], trials: int
 ) -> list[str]:
-    """`harbor run` of the config on `tasks`, `trials` each, as job `jobs/<config>`."""
+    """`harbor run` of the config on `tasks`, `trials` each, as job `jobs/<config>`, with the
+    `--agent-kwarg`s after its run config."""
     return [
         *("run", "--config", str(JOB_CONFIG), "--path", str(args.tasks_dir)),
         *("-o", str(jobs), "--job-name", config, "-k", str(trials)),
         *("--ak", f"run_config={config}"),
+        *(a for kwarg in args.agent_kwarg for a in ("--ak", kwarg)),
         *(("-m", args.model) if args.model else ()),
         *(a for task in tasks for a in ("-i", task)),
     ]
@@ -759,7 +787,7 @@ def run(args: argparse.Namespace) -> int:
         record = make_record(args, configs)
         check_record(args.out, args.tasks_dir, record)
         record_path = write_record(args.out, record, stamp)
-        check_request(args.out, args.model, args.split, tasks)
+        check_request(args.out, args.model, args.split, tasks, args.agent_kwarg)
         print(f"record: {record_path}", flush=True)
         prepared: list[bool] = []
 

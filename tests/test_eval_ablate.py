@@ -892,6 +892,44 @@ def test_another_model_on_the_same_out_stops(
     assert len(harbor.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ((), ("--agent-kwarg", "agent_timeout_sec=1500")),
+        (("--agent-kwarg", "agent_timeout_sec=1500"), ()),
+        (("--agent-kwarg", "agent_timeout_sec=1500"), ("--agent-kwarg", "agent_timeout_sec=900")),
+    ],
+)
+def test_other_agent_kwargs_on_the_same_out_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    first: tuple[str, ...],
+    second: tuple[str, ...],
+) -> None:
+    """Ticket 54: finished jobs are reused, so a call with another agent kwarg (a shorter
+    timeout) would otherwise report trials run under the first one."""
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *first) == 0
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *second) == 2
+    assert "another --out" in capsys.readouterr().err
+    assert len(harbor.calls) == 1
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", *first) == 0
+    assert len(harbor.calls) == 1
+
+
+def test_a_request_file_from_before_agent_kwargs_is_still_reused(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """A run without agent kwargs records the request as before, so an OUT written before them
+    stays reusable."""
+    out = tmp_path / "out"
+    assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full") == 0
+    assert set(json.loads((out / "request.json").read_text())) == {"model"}
+
+
 def test_the_wheel_cache_is_filled_once_before_the_first_harbor_job(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,
@@ -1335,3 +1373,55 @@ def test_a_dev_ablation_report_carries_timing(
     assert full["process"]["timing"]["trials"] == 3
     assert full["process"]["timing"]["tools"] is None  # the fake events predate tool_timing
     assert "| full | missing | | | | | | | |" in (reports / "ablation.md").read_text()
+
+
+def agent_kwargs(call: list[str]) -> list[str]:
+    return [call[i + 1] for i, a in enumerate(call) if a == "--ak"]
+
+
+def test_agent_kwargs_reach_every_harbor_run_as_is(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Ticket 54: `--agent-kwarg KEY=VALUE` (repeatable) becomes Harbor's `--ak KEY=VALUE`, on
+    the smoke run and every job alike, after the config's own `run_config`."""
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    extra = ("--config", "full", "--agent-kwarg", "agent_timeout_sec=1500")
+    assert run(monkeypatch, harbor, manifest, out, *extra, "--agent-kwarg", "note=a=b") == 0
+    assert len(harbor.smoke) == len(harbor.calls) == 1
+    for call in harbor.smoke + harbor.calls:
+        assert agent_kwargs(call) == ["run_config=full", "agent_timeout_sec=1500", "note=a=b"]
+
+
+def test_without_agent_kwargs_harbor_gets_only_the_run_config(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", "--config", "full") == 0
+    calls = harbor.smoke + harbor.calls
+    assert calls and all(agent_kwargs(call) == ["run_config=full"] for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("run_config=baseline", "--config sets run_config"),
+        (" run_config=baseline", "--config sets run_config"),
+        ("agent_timeout_sec", "KEY=VALUE"),
+        ("=1500", "KEY=VALUE"),
+    ],
+)
+def test_an_agent_kwarg_that_is_malformed_or_overrides_the_config_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+    message: str,
+) -> None:
+    harbor = FakeHarbor()
+    with pytest.raises(SystemExit) as exc:
+        run(monkeypatch, harbor, manifest, tmp_path / "out", "--agent-kwarg", value)
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+    assert harbor.calls == harbor.smoke == []
