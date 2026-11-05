@@ -1,6 +1,5 @@
 """Verifier tools beyond the acceptance tests, driven over stdio like seam B."""
 
-import json
 import os
 import shutil
 import sys
@@ -70,44 +69,6 @@ def metric_block(text: str, metric: str) -> str:
 
 
 UPSTREAMS = "stg_customers, stg_orders"
-
-
-async def test_verify_model_values_compares_against_named_upstreams(shop: Path) -> None:
-    result = await call(
-        shop,
-        "verify_model_values",
-        model_name="customer_orders",
-        source_tables=f"{UPSTREAMS}, nope",
-    )
-    text = text_of(result)
-    assert not result.is_error, text
-    assert "Candidates (named upstreams): main.stg_customers, main.stg_orders" in text
-    assert "Source nope: Error: no table or view 'nope'" in text
-    block = metric_block(text, "n_orders")
-    # customer_name is not in stg_orders; it is reached through stg_customers' unique key.
-    assert "sliced on customer_id; customer_name via main.stg_customers.customer_id" in block
-    assert "Model matches COUNT(*)" in block
-    assert "own filters" in text
-
-
-async def test_verify_model_values_calls_a_partial_slice_inconclusive(shop: Path) -> None:
-    result = await call(shop, "verify_model_values", model_name="customer_orders_fanout")
-    block = metric_block(text_of(result), "n_orders")
-    assert "not sliced on customer_name" in block and "inconclusive" in block
-    assert "→" not in block
-
-
-async def test_verify_model_values_holds_only_integer_metrics_against_row_counts(
-    shop: Path,
-) -> None:
-    result = await call(
-        shop, "verify_model_values", model_name="customer_orders_fanout", source_tables=UPSTREAMS
-    )
-    text = text_of(result)
-    assert "MISMATCH vs COUNT(*) (0.5x)" in metric_block(text, "n_orders")
-    total_amount = metric_block(text, "total_amount")
-    assert "COUNT(*): 9" in total_amount
-    assert "→" not in total_amount
 
 
 async def test_audit_model_sources_flags_fewer_model_rows(shop: Path) -> None:
@@ -191,20 +152,6 @@ def make_db(path: Path, sql: str) -> Path:
     return path
 
 
-async def test_verify_model_values_slices_on_the_whole_grouping_grain(tmp_path: Path) -> None:
-    db = make_db(
-        tmp_path / "grain.duckdb",
-        "CREATE TABLE orders (order_id INT, region VARCHAR, channel VARCHAR);"
-        "INSERT INTO orders VALUES (1, 'north', 'web'), (2, 'north', 'web'), (3, 'north', 'store');"
-        "CREATE TABLE by_channel AS SELECT region, channel, count(*) AS n_orders "
-        "FROM orders GROUP BY region, channel",
-    )
-    result = await call(db, "verify_model_values", model_name="by_channel", source_tables="orders")
-    block = metric_block(text_of(result), "n_orders")
-    assert "sliced on region, channel" in block
-    assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
-
-
 BRIDGE_SQL = """
 CREATE TABLE customers (customer_id VARCHAR, segment VARCHAR);
 INSERT INTO customers VALUES ('c1', 'retail'), ('c2', 'retail');
@@ -214,25 +161,6 @@ CREATE TABLE orders (order_id INT, customer_id VARCHAR);
 INSERT INTO orders VALUES (1, 'c1'), (2, 'c1');
 CREATE TABLE by_segment AS SELECT 'retail' AS segment, 2 AS n_orders;
 """
-
-
-async def test_verify_model_values_joins_only_through_a_unique_named_upstream(
-    tmp_path: Path,
-) -> None:
-    db = make_db(tmp_path / "bridge.duckdb", BRIDGE_SQL)
-    safe = await call(
-        db, "verify_model_values", model_name="by_segment", source_tables="orders, customers"
-    )
-    block = metric_block(text_of(safe), "n_orders")
-    assert "sliced on segment via main.customers.customer_id" in block
-    assert "COUNT(*): 2" in block
-    # crm_notes repeats customer c1, so joining through it would double the count.
-    unsafe = await call(
-        db, "verify_model_values", model_name="by_segment", source_tables="orders, crm_notes"
-    )
-    block = metric_block(text_of(unsafe), "n_orders")
-    assert "main.orders (2 rows) — no slice column and no safe join" in block
-    assert "COUNT(*): 4" not in block
 
 
 def test_audit_reports_sampled_statistics_as_a_sample(
@@ -315,65 +243,6 @@ def test_project_yaml_may_start_sequences_at_column_zero(tmp_path: Path) -> None
     assert source_relations(tmp_path) == {("src", "t"): ("landing", "t")}
 
 
-async def test_verify_model_values_slices_across_upstreams(tmp_path: Path) -> None:
-    db = make_db(
-        tmp_path / "across.duckdb",
-        "CREATE TABLE customers (customer_id VARCHAR, segment VARCHAR);"
-        "INSERT INTO customers VALUES ('c1', 'retail'), ('c2', 'wholesale');"
-        "CREATE TABLE orders (order_id INT, customer_id VARCHAR, region VARCHAR);"
-        "INSERT INTO orders VALUES (1, 'c1', 'north'), (2, 'c1', 'north'), (3, 'c2', 'north');"
-        "CREATE TABLE by_region_segment AS SELECT o.region, c.segment, count(*) AS n_orders "
-        "FROM orders o JOIN customers c USING (customer_id) GROUP BY o.region, c.segment",
-    )
-    result = await call(
-        db, "verify_model_values", model_name="by_region_segment", source_tables="orders, customers"
-    )
-    block = metric_block(text_of(result), "n_orders")
-    assert "main.orders (3 rows), sliced on region; segment via main.customers.customer_id" in block
-    assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
-
-
-async def test_verify_model_values_slices_on_an_integer_key(tmp_path: Path) -> None:
-    db = make_db(
-        tmp_path / "intkey.duckdb",
-        "CREATE TABLE orders (order_id INT, customer_id INT);"
-        "INSERT INTO orders VALUES (1, 7), (2, 7), (3, 8);"
-        "CREATE TABLE per_customer AS SELECT customer_id, count(*) AS n_orders "
-        "FROM orders GROUP BY customer_id",
-    )
-    result = await call(
-        db, "verify_model_values", model_name="per_customer", source_tables="orders"
-    )
-    text = text_of(result)
-    assert "### Metric: customer_id" not in text
-    block = metric_block(text, "n_orders")
-    assert "sliced on customer_id" in block
-    assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
-
-
-async def test_verify_model_values_keeps_a_null_dimension_in_the_slice(tmp_path: Path) -> None:
-    db = make_db(
-        tmp_path / "nulldim.duckdb",
-        "CREATE TABLE orders (order_id INT, region VARCHAR, channel VARCHAR);"
-        "INSERT INTO orders VALUES (1, 'north', NULL), (2, 'north', NULL), (3, 'north', NULL),"
-        " (4, 'north', 'web');"
-        "CREATE TABLE by_channel AS SELECT region, channel, count(*) AS n_orders "
-        "FROM orders GROUP BY region, channel;"
-        "CREATE TABLE by_channel_only AS SELECT channel, count(*) AS n_orders "
-        "FROM orders GROUP BY channel",
-    )
-    result = await call(db, "verify_model_values", model_name="by_channel", source_tables="orders")
-    text = text_of(result)
-    assert "channel IS NULL" in text
-    block = metric_block(text, "n_orders")
-    assert "sliced on region, channel" in block
-    assert "COUNT(*): 3" in block and "Model matches COUNT(*)" in block
-    only = await call(
-        db, "verify_model_values", model_name="by_channel_only", source_tables="orders"
-    )
-    assert "Model matches COUNT(*)" in metric_block(text_of(only), "n_orders")
-
-
 def test_model_sql_looks_only_under_the_model_paths(project: Path) -> None:
     (project / "analyses").mkdir()
     (project / "analyses" / "stg_orders.sql").write_text("SELECT 1 AS wrong")
@@ -406,73 +275,6 @@ def test_audit_finds_a_grain_key_past_the_fifth_column(tmp_path: Path) -> None:
     assert "Grain key: row_id (3 distinct = row count, unique)" in text
 
 
-async def test_verify_model_values_does_not_bridge_on_a_bare_id(tmp_path: Path) -> None:
-    db = make_db(
-        tmp_path / "bare_id.duckdb",
-        "CREATE TABLE orders (id INT, customer_id INT);"
-        "INSERT INTO orders VALUES (1, 2), (2, 2), (3, 1);"
-        "CREATE TABLE customers (id INT, name VARCHAR);"
-        "INSERT INTO customers VALUES (1, 'ann'), (2, 'bob');"
-        "CREATE TABLE by_name AS SELECT c.name, count(*) AS n_orders "
-        "FROM orders o JOIN customers c ON o.customer_id = c.id GROUP BY c.name",
-    )
-    result = await call(
-        db, "verify_model_values", model_name="by_name", source_tables="orders, customers"
-    )
-    block = metric_block(text_of(result), "n_orders")
-    # orders.id and customers.id are different entities' keys; joining on them proves nothing.
-    assert "main.orders (3 rows) — no slice column and no safe join" in block
-    assert "via main.customers.id" not in block
-
-
-async def test_verify_model_values_slices_on_a_timestamp(tmp_path: Path) -> None:
-    db = make_db(
-        tmp_path / "hourly.duckdb",
-        "CREATE TABLE events (event_id INT, region VARCHAR, hour TIMESTAMP);"
-        "INSERT INTO events VALUES (1, 'north', TIMESTAMP '2025-01-01 10:00:00'),"
-        " (2, 'north', TIMESTAMP '2025-01-01 10:00:00'),"
-        " (3, 'north', TIMESTAMP '2025-01-01 11:00:00');"
-        "CREATE TABLE hourly AS SELECT region, hour, count(*) AS n_events "
-        "FROM events GROUP BY region, hour",
-    )
-    result = await call(db, "verify_model_values", model_name="hourly", source_tables="events")
-    block = metric_block(text_of(result), "n_events")
-    assert "sliced on region, hour" in block
-    assert "COUNT(*): 2" in block and "Model matches COUNT(*)" in block
-
-
-async def test_verify_model_values_marks_an_unsliceable_grouping_column_inconclusive(
-    tmp_path: Path,
-) -> None:
-    db = make_db(
-        tmp_path / "blob.duckdb",
-        "CREATE TABLE events (event_id INT, region VARCHAR, tag BLOB);"
-        "INSERT INTO events VALUES (1, 'north', 'a'::BLOB), (2, 'north', 'a'::BLOB),"
-        " (3, 'north', 'b'::BLOB);"
-        "CREATE TABLE by_tag AS SELECT region, tag, count(*) AS n_events "
-        "FROM events GROUP BY region, tag",
-    )
-    result = await call(db, "verify_model_values", model_name="by_tag", source_tables="events")
-    block = metric_block(text_of(result), "n_events")
-    assert "not sliced on tag" in block and "inconclusive" in block
-    assert "→" not in block
-
-
-async def test_verify_model_values_compares_a_scalar_aggregate_with_the_whole_table(
-    tmp_path: Path,
-) -> None:
-    db = make_db(
-        tmp_path / "scalar.duckdb",
-        "CREATE TABLE events (event_id INT);"
-        "INSERT INTO events VALUES (1), (2), (3);"
-        "CREATE TABLE totals AS SELECT count(*) AS n_events FROM events",
-    )
-    result = await call(db, "verify_model_values", model_name="totals", source_tables="events")
-    block = metric_block(text_of(result), "n_events")
-    assert "Model value: 3" in block
-    assert "COUNT(*): 3" in block and "Model matches COUNT(*)" in block
-
-
 def test_source_relations_reads_a_schema_after_the_tables(tmp_path: Path) -> None:
     (tmp_path / "sources.yml").write_text(
         "version: 2\nsources:\n"
@@ -494,34 +296,6 @@ CREATE TABLE per_customer AS SELECT customer_id, sum(quantity)::BIGINT AS units,
 """
 
 
-async def test_verify_model_values_holds_only_counts_against_row_counts(tmp_path: Path) -> None:
-    db = make_db(tmp_path / "sums.duckdb", SUMS_SQL)
-    project = tmp_path / "proj"
-    (project / "models").mkdir(parents=True)
-    (project / "dbt_project.yml").write_text("name: proj\n")
-    (project / "models" / "per_customer.sql").write_text(
-        "SELECT customer_id, sum(quantity) AS units, count(*) AS orders_placed\n"
-        "FROM {{ ref('orders') }} GROUP BY customer_id\n"
-    )
-    # An integer SUM is not a row count, with or without the SQL.
-    bare = text_of(
-        await call(db, "verify_model_values", model_name="per_customer", source_tables="orders")
-    )
-    assert "→" not in metric_block(bare, "units")
-    assert "→" not in metric_block(bare, "orders_placed")
-    read = text_of(
-        await call(
-            db,
-            "verify_model_values",
-            model_name="per_customer",
-            source_tables="orders",
-            project_dir=str(project),
-        )
-    )
-    assert "→" not in metric_block(read, "units")
-    assert "Model matches COUNT(*)" in metric_block(read, "orders_placed")
-
-
 def test_audit_skips_distinct_counts_of_types_that_cannot_be_compared(tmp_path: Path) -> None:
     db = make_db(
         tmp_path / "json.duckdb",
@@ -540,18 +314,6 @@ def test_audit_skips_distinct_counts_of_types_that_cannot_be_compared(tmp_path: 
     )
     assert "payload: distinct not counted (JSON), 0 nulls" in text
     assert "Grain key: id" in text
-
-
-async def test_no_verifier_tools_flag_serves_only_the_other_tools(shop: Path) -> None:
-    async with mcp_server(shop, "--no-verifier-tools") as session:
-        names = {tool.name for tool in (await session.list_tools()).tools}
-    assert "query_database" in names
-    assert not names & {
-        "map_columns",
-        "check_model_schema",
-        "audit_model_sources",
-        "verify_model_values",
-    }
 
 
 def verify(db: Path, model: str, sources: list[str], sql: str | None) -> str:
@@ -804,106 +566,6 @@ ALIASED_COUNT = (
 )
 
 
-async def test_verify_model_values_reads_a_ref_through_the_model_alias(tmp_path: Path) -> None:
-    plain = ALIASED_COUNT.format(relation="orders_2024")
-    db = make_db(
-        tmp_path / "alias.duckdb",
-        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m_final AS {plain};",
-    )
-    project = aliased_project(
-        tmp_path,
-        ALIASED_COUNT.format(relation="{{ ref('stg_orders') }}"),
-        (
-            "models/stg_orders.sql",
-            "{{ config(materialized='table', alias='orders_2024') }}\nSELECT * FROM raw",
-        ),
-        (
-            "models/schema.yml",
-            "version: 2\nmodels:\n  - name: m\n    config:\n"
-            "      alias: m_final\n    columns:\n      - name: customer_id\n",
-        ),
-    )
-    result = await call(
-        db,
-        "verify_model_values",
-        model_name="m_final",
-        source_tables="orders_2024",
-        project_dir=str(project),
-    )
-    text = text_of(result)
-    assert "Model SQL read" in text, text
-    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions")
-    assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
-
-
-async def test_verify_model_values_reads_a_source_through_its_identifier(tmp_path: Path) -> None:
-    plain = ALIASED_COUNT.format(relation="orders_2024")
-    db = make_db(
-        tmp_path / "ident.duckdb",
-        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m AS {plain};",
-    )
-    project = aliased_project(
-        tmp_path,
-        ALIASED_COUNT.format(relation="{{ source('shop', 'orders') }}"),
-        (
-            "models/sources.yml",
-            "version: 2\nsources:\n  - name: shop\n    schema: main\n"
-            "    tables:\n      - name: orders\n        identifier: orders_2024\n",
-        ),
-    )
-    result = await call(
-        db,
-        "verify_model_values",
-        model_name="m",
-        source_tables="orders_2024",
-        project_dir=str(project),
-    )
-    text = text_of(result)
-    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions"), text
-    assert "Model matches COUNT(*) FILTER(WHERE status = 'placed')" in metric_block(text, "placed")
-
-
-async def test_verify_model_values_prefers_the_manifests_relation_names(tmp_path: Path) -> None:
-    plain = ALIASED_COUNT.format(relation="orders_2024")
-    db = make_db(
-        tmp_path / "manifest.duckdb",
-        f"{ORDERS_SQL}ALTER TABLE orders RENAME TO orders_2024;CREATE TABLE m AS {plain};",
-    )
-    manifest = {
-        "nodes": {
-            "model.aliased.stg_orders": {
-                "resource_type": "model",
-                "name": "stg_orders",
-                "alias": "orders_2024",
-                "schema": "main",
-            },
-            "model.aliased.m": {
-                "resource_type": "model",
-                "name": "m",
-                "alias": "m",
-                "schema": "main",
-            },
-        },
-        "sources": {},
-    }
-    project = aliased_project(
-        tmp_path,
-        ALIASED_COUNT.format(relation="{{ ref('stg_orders') }}"),
-        # The SQL file's alias is stale; the manifest is what dbt last compiled.
-        ("models/stg_orders.sql", "{{ config(alias='orders_old') }}\nSELECT * FROM raw"),
-        ("target/manifest.json", json.dumps(manifest)),
-    )
-    result = await call(
-        db,
-        "verify_model_values",
-        model_name="m",
-        source_tables="orders_2024",
-        project_dir=str(project),
-    )
-    text = text_of(result)
-    assert "Model matches COUNT(DISTINCT region)" in metric_block(text, "regions"), text
-
-
 async def test_check_model_schema_compares_nested_types_by_their_element_types(
     tmp_path: Path,
 ) -> None:
@@ -1033,3 +695,18 @@ def test_a_postgres_model_is_read_and_counted_in_postgres() -> None:
     }
     baseline = verifier_tools.baseline_sql(roles.counts["orders_2025"], orders, None, "postgres")
     assert baseline == "COUNT(*) FILTER(WHERE TO_CHAR(\"c\".\"ordered_at\", 'YYYY') = '2025')"
+
+
+async def test_no_verifier_tools_flag_serves_only_the_other_tools(shop: Path) -> None:
+    async with mcp_server(shop, "--no-verifier-tools") as session:
+        names = {tool.name for tool in (await session.list_tools()).tools}
+    assert "query_database" in names
+    assert not names & {
+        "map_columns",
+        "check_model_schema",
+        "audit_model_sources",
+        "model_diff",
+        "contract_check",
+        "grain_facts",
+        "compare_by_key",
+    }

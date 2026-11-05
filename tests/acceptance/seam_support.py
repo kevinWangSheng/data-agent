@@ -23,7 +23,15 @@ DATA_AGENT = Path(sys.executable).with_name("data-agent")
 # Tool names the run config switches on and off (spec: MCP server).
 CONTEXT_TOOLS = frozenset({"discover", "hydrate", "dictionary_search"})
 VERIFIER_TOOLS = frozenset(
-    {"map_columns", "check_model_schema", "audit_model_sources", "verify_model_values"}
+    {
+        "map_columns",
+        "check_model_schema",
+        "audit_model_sources",
+        "model_diff",
+        "contract_check",
+        "grain_facts",
+        "compare_by_key",
+    }
 )
 
 # Postgres variants read a connection string to a scratch database owned by this worktree.

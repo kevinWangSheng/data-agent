@@ -123,9 +123,6 @@ CHANGED_MODELS = {
     "customer_ltv",
 }
 
-tools_xfail = pytest.mark.xfail(
-    strict=True, raises=NotImplementedError, reason="ticket 45: snapshot and tools"
-)
 hooks_xfail = pytest.mark.xfail(
     strict=True, raises=NotImplementedError, reason="ticket 46: harness hooks"
 )
@@ -183,7 +180,6 @@ def change_text(change: dict[str, Any], side: str) -> str:
 # --- Snapshot and model_diff ----------------------------------------------------------------
 
 
-@tools_xfail
 def test_snapshot_keeps_logic_files_outside_the_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     project = workspace / "project"
@@ -227,7 +223,6 @@ def test_snapshot_keeps_logic_files_outside_the_workspace(tmp_path: Path) -> Non
     assert outside_paths("Read", read_input, workspace.resolve())
 
 
-@tools_xfail
 def test_model_diff_reports_a_removed_filter(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "stg_orders")
     assert diff["status"] == "changed" and diff["parsed"]
@@ -239,7 +234,6 @@ def test_model_diff_reports_a_removed_filter(edited: tuple[Path, Path]) -> None:
     )
 
 
-@tools_xfail
 def test_model_diff_reports_a_swapped_source(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "stg_customers")
     sources = changes(diff, "source")
@@ -251,7 +245,6 @@ def test_model_diff_reports_a_swapped_source(edited: tuple[Path, Path]) -> None:
     )
 
 
-@tools_xfail
 def test_model_diff_reports_union_to_union_all(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "all_events")
     rows = changes(diff, "rows")
@@ -262,7 +255,6 @@ def test_model_diff_reports_union_to_union_all(edited: tuple[Path, Path]) -> Non
     )
 
 
-@tools_xfail
 def test_model_diff_reports_an_added_limit(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "top_orders")
     added = [c for c in changes(diff, "rows") if c["kind"] == "added"]
@@ -271,7 +263,6 @@ def test_model_diff_reports_an_added_limit(edited: tuple[Path, Path]) -> None:
     ), diff["changes"]
 
 
-@tools_xfail
 def test_model_diff_reports_a_materialization_change(edited: tuple[Path, Path]) -> None:
     diff = diff_for(model_diff(*edited), "daily_sales")
     config = changes(diff, "config")
@@ -282,7 +273,6 @@ def test_model_diff_reports_a_materialization_change(edited: tuple[Path, Path]) 
     assert not changes(diff, "window")
 
 
-@tools_xfail
 def test_model_diff_falls_back_to_a_text_diff_for_jinja_control_flow(
     edited: tuple[Path, Path],
 ) -> None:
@@ -292,7 +282,6 @@ def test_model_diff_falls_back_to_a_text_diff_for_jinja_control_flow(
     assert diff["text_diff"] and "'review'" in diff["text_diff"]
 
 
-@tools_xfail
 def test_model_diff_leaves_out_untouched_models(edited: tuple[Path, Path]) -> None:
     diffs = model_diff(*edited)
     assert {d["model"] for d in diffs} == CHANGED_MODELS
@@ -302,7 +291,6 @@ def test_model_diff_leaves_out_untouched_models(edited: tuple[Path, Path]) -> No
 # --- grain_facts ----------------------------------------------------------------------------
 
 
-@tools_xfail
 def test_grain_facts_counts_null_keys(edited: tuple[Path, Path], gateway: DuckDBGateway) -> None:
     facts = grain_facts(*edited, gateway, "customer_ltv", ["customer_id"])
     assert facts["null_rows"] == 1
@@ -310,7 +298,6 @@ def test_grain_facts_counts_null_keys(edited: tuple[Path, Path], gateway: DuckDB
     assert facts["exemption"] is None
 
 
-@tools_xfail
 def test_grain_facts_exempts_duplicates_the_snapshot_yml_explains(
     edited: tuple[Path, Path], gateway: DuckDBGateway
 ) -> None:
@@ -323,7 +310,6 @@ def test_grain_facts_exempts_duplicates_the_snapshot_yml_explains(
     assert exemption["path"].endswith("schema.yml")
 
 
-@tools_xfail
 def test_grain_facts_ignores_an_exemption_only_the_agent_wrote(
     edited: tuple[Path, Path], gateway: DuckDBGateway
 ) -> None:
@@ -335,7 +321,6 @@ def test_grain_facts_ignores_an_exemption_only_the_agent_wrote(
 # --- contract_check -------------------------------------------------------------------------
 
 
-@tools_xfail
 def test_contract_check_uses_the_snapshot_yml(
     edited: tuple[Path, Path], gateway: DuckDBGateway
 ) -> None:
@@ -347,7 +332,6 @@ def test_contract_check_uses_the_snapshot_yml(
     assert "status" in columns["missing"]
 
 
-@tools_xfail
 def test_contract_check_uses_only_the_task_for_an_agent_written_yml(
     edited: tuple[Path, Path], gateway: DuckDBGateway
 ) -> None:
@@ -361,7 +345,6 @@ def test_contract_check_uses_only_the_task_for_an_agent_written_yml(
     assert "phantom_col" not in columns["evidence"]
 
 
-@tools_xfail
 def test_contract_check_marks_an_unchanged_window_na(
     edited: tuple[Path, Path], gateway: DuckDBGateway
 ) -> None:
@@ -370,7 +353,6 @@ def test_contract_check_marks_an_unchanged_window_na(
     assert window["functions"] == []
 
 
-@tools_xfail
 def test_contract_check_finds_a_changed_window_with_non_unique_ordering(
     edited: tuple[Path, Path], gateway: DuckDBGateway
 ) -> None:
@@ -396,14 +378,12 @@ def reference(column: str, *rows: tuple[int, str]) -> str:
     return f"SELECT * FROM (VALUES {values}) AS r(k, {column})"
 
 
-@tools_xfail
 def test_compare_by_key_rejects_a_reference_that_reads_the_model(gateway: DuckDBGateway) -> None:
     result = compare_by_key(gateway, "cmp_model", ["k"], "SELECT k, dec_v FROM cmp_model")
     assert result["accepted"] is False
     assert "cmp_model" in result["reason"]
 
 
-@tools_xfail
 def test_compare_by_key_rejects_a_reference_that_reads_a_changed_model(
     gateway: DuckDBGateway,
 ) -> None:
@@ -413,7 +393,6 @@ def test_compare_by_key_rejects_a_reference_that_reads_a_changed_model(
     assert "stg_orders" in result["reason"]
 
 
-@tools_xfail
 def test_compare_by_key_reports_one_sided_and_mismatched_keys(gateway: DuckDBGateway) -> None:
     sql = reference("int_v", (2, "7"), (3, "9"), (4, "1"))
     result = compare_by_key(gateway, "cmp_model", ["k"], sql)
@@ -425,7 +404,6 @@ def test_compare_by_key_reports_one_sided_and_mismatched_keys(gateway: DuckDBGat
     assert mismatch["key"] == {"k": 3} and mismatch["column"] == "int_v"
 
 
-@tools_xfail
 def test_compare_by_key_rounds_the_reference_to_the_decimal_scale(gateway: DuckDBGateway) -> None:
     equal = reference("dec_v", (1, "12.349"), (2, "0.104"), (3, "99.994"))
     assert compare_by_key(gateway, "cmp_model", ["k"], equal)["mismatched"] == 0
@@ -433,7 +411,6 @@ def test_compare_by_key_rounds_the_reference_to_the_decimal_scale(gateway: DuckD
     assert compare_by_key(gateway, "cmp_model", ["k"], off)["mismatched"] == 1
 
 
-@tools_xfail
 def test_compare_by_key_allows_1e6_relative_error_for_floats(gateway: DuckDBGateway) -> None:
     equal = reference("dbl_v", (1, "1000000.5"), (2, "0.0"), (3, "1e-9"))
     assert compare_by_key(gateway, "cmp_model", ["k"], equal)["mismatched"] == 0
@@ -442,7 +419,6 @@ def test_compare_by_key_allows_1e6_relative_error_for_floats(gateway: DuckDBGate
     assert compare_by_key(gateway, "cmp_model", ["k"], off)["mismatched"] == 2
 
 
-@tools_xfail
 def test_compare_by_key_needs_exact_equality_for_other_types(gateway: DuckDBGateway) -> None:
     assert compare_by_key(gateway, "cmp_model", ["k"], REFERENCE_ALL)["mismatched"] == 0
     off = REFERENCE_ALL.replace("'a'", "'A'").replace("DATE '2024-02-02'", "DATE '2024-02-03'")
@@ -454,7 +430,6 @@ def test_compare_by_key_needs_exact_equality_for_other_types(gateway: DuckDBGate
     }
 
 
-@tools_xfail
 def test_compare_by_key_treats_two_nulls_as_equal_and_one_as_a_mismatch(
     gateway: DuckDBGateway,
 ) -> None:
@@ -743,7 +718,6 @@ async def mcp_server(config: str, db: Path) -> AsyncIterator[ClientSession]:
         yield session
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 45: registers the new tools by the verifiers switch")
 async def test_new_tools_follow_the_verifiers_switch(db: Path) -> None:
     for name in CONFIG_NAMES:
         async with mcp_server(name, db) as session:
@@ -762,7 +736,6 @@ def dbt_task(tmp_path: Path, db: Path) -> Task:
     return Task(text="build the models", type="dbt", workspace=workspace, duckdb=db)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 45: snapshot only in verifier configs")
 async def test_snapshot_only_in_verifier_configs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, db: Path
 ) -> None:

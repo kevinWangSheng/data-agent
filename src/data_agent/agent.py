@@ -43,11 +43,13 @@ from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk._internal.client import InternalClient
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
+from data_agent import verifier_v2
 from data_agent.command_guard import command_guard
 from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
+from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
     AGENT_TOOL,
     VERIFIER_NAMES,
@@ -181,6 +183,15 @@ def saved_task(text: str, workspace: Path) -> Iterator[Path]:
         path.write_bytes(text.encode())
         path.chmod(0o444)
         yield path
+
+
+@contextmanager
+def taken_snapshot(workspace: Path) -> Iterator[Path]:
+    """The dbt projects' logic files as they are before the agent starts (ticket 45, spec
+    "快照"), kept outside the workspace for the MCP tools; the agent's Read cannot reach it.
+    `take_snapshot` is looked up on the package so a test can replace it."""
+    with run_directory(workspace, "data-agent-snapshot-") as directory:
+        yield verifier_v2.take_snapshot(workspace, directory / "snapshot")
 
 
 @contextmanager
@@ -670,6 +681,7 @@ def build_options(
     database_env: Mapping[str, str] | None = None,
     task_file: Path | None = None,
     dictionary: Path | None = None,
+    snapshot: Path | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
@@ -677,7 +689,9 @@ def build_options(
     variable: it reaches the MCP server through the SDK subprocess's environment. `task_file`
     (`saved_task`, verifier runs only) is named in the verifiers' prompts and may be Read.
     `dictionary` (`prebuilt_dictionary`, context runs only) is the value dictionary file the
-    MCP server serves dictionary_search from."""
+    MCP server serves dictionary_search from. `snapshot` (`taken_snapshot`, verifier runs only)
+    is the directory the v2 tools compare the workspace against; it reaches the MCP server the
+    way the Postgres URL does, through the SDK subprocess's environment."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
@@ -712,9 +726,12 @@ def build_options(
     if spend is not None:
         for event, matchers in spend.hooks(emit).items():
             all_hooks.setdefault(event, []).extend(matchers)
+    server_env = dict(database_env or {})
+    if snapshot is not None:
+        server_env[SNAPSHOT_ENV] = str(snapshot)
     return ClaudeAgentOptions(
         model=settings.model,
-        env=settings.sdk_env() | dict(database_env or {}),
+        env=settings.sdk_env() | server_env,
         system_prompt=system_prompt(task.type, config, task.dialect),
         cwd=str(task.workspace.resolve()),
         tools=tools,
@@ -884,7 +901,12 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
         names = url_names(env[task.postgres_env])
     verified = uses_verifiers(task.type, config)
     saving = saved_task(task.text, task.workspace) if verified else nullcontext()
-    with saving as task_file, EventLog(path, secrets=secrets, names=names) as log:
+    snapshotting = taken_snapshot(task.workspace) if verified else nullcontext()
+    with (
+        saving as task_file,
+        snapshotting as snapshot,
+        EventLog(path, secrets=secrets, names=names) as log,
+    ):
         log.emit(
             "version",
             git_commit=git_commit(),
@@ -920,6 +942,7 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
                 database_env=database_env,
                 task_file=task_file,
                 dictionary=dictionary,
+                snapshot=snapshot,
             )
             try:
                 stream = query(prompt=prompt, options=options)
