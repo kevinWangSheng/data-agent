@@ -1,6 +1,6 @@
 # 55 — 守卫误拦和提示：开头几步不再被拦，拒绝提示给出正确写法
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§6）
 Claimed by: claude (worktree 55-guard-prompt-rejections, 2026-11-05)
@@ -114,3 +114,13 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
     - 不修：提示词里写死了 `echo $DB_TYPE`，没从 `PRINTABLE_VARIABLES` 生成。Authority 只允许改 `DBT_PROMPT` 文本，生成要改调用处；而且这句原文是 Q11/Q18 定下的。
     - 不修：`_shape_denial` 偏长、`_below_directory` 推导式偏密，属于判断项，文件仍能一遍读完。
 - 安全边界的变化只有两类：一是排除型 `!**/<dir>/**` 的放行（工单要求）；二是上面几种 fnmatch 与 ripgrep 解读不一致的 glob 改为拒绝，只会更严。
+
+### 2026-11-05 主会话（真实运行与退回第 1 轮）
+
+- PR #53：CI 绿；Codex GitHub app 审查了 b9a7dae，已完成，没有意见。
+- 服务器真实运行 `t55-real`（commit b9a7dae）：`scripts/da-remote start t55-real -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task dbt-fix-daily-cohorts --out runs/t55-real --budget 2 --config full --trials 1`，exit 0，reward 1（1/1），实际价 $0.1043（闲时）。守卫共拒绝 5 次（t47-screen 平均每个 trial 4.4 次），验收没过：
+  - 合成 echo：0 次（t47-screen 每个 trial 1 次）。这一类已经修好。
+  - Bash 串命令：2 次（seq 14、16）。`cd /app/dbt_models_duckdb && find models -name "*.sql" | head -200 && echo …`，以及 `… && cat dbt_project.yml && … && ls -la && cat profiles.yml 2>/dev/null`。拒绝提示写对了（点名 `*`、`&&`，并指向 Glob/Read/Grep），agent 第二次被拒后改用 Glob。提示词新加的那句没能阻止第一次。
+  - Grep：3 次（seq 69 path=/app，seq 185 path=/app/dbt_models_duckdb，seq 219 path=/app）。
+- **退回：Grep 拒绝提示建议的排除 glob 会把整个 dbt 项目排除掉。** seq 69 搜 `/app` 时，凭据文件都在 `/app/dbt_models_duckdb/dbt_packages/dbt_utils/integration_tests/.env/` 下，提示却给出 `glob: "!**/dbt_models_duckdb/**"`，也就是搜索路径下的顶层目录。照做的话，Grep 会跳过全部模型，等于告诉 agent 搜不了。agent 没照做，改用 Read 逐个读文件。修法：提示建议的排除目录必须只覆盖凭据文件、不覆盖项目的模型和 yml。例如选凭据文件路径上最靠近凭据、并且是所有凭据共同祖先的那个目录名（这里是 `!**/dbt_packages/**` 或 `!**/integration_tests/**`），并且要对实际文件树确认：照这个建议改后的 Grep 会被守卫放行，而 rg 仍能搜到 models/ 下的文件。没有这样的目录时，只给 `type: "sql"`。配一个修复前会失败的测试：搜索路径是项目上一层，凭据在 `<project>/dbt_packages/...` 下。
+- 状态改回 `ready-for-agent`，在原分支 `worktree-55-guard-prompt-rejections` 上修，这是第 1 轮退回。
