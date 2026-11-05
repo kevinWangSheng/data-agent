@@ -1,0 +1,13 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: orders
+      - name: customers
+      - name: customers_v2
+      - name: sales
+      - name: returns
+      - name: events_web
+      - name: events_app

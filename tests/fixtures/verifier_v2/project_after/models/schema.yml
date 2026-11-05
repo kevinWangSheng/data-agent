@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: stg_orders
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+      - name: status
+      - name: amount
+      - name: order_date
+  - name: daily_sales
+    description: One row per store per day.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [store_id, sale_date]
+    columns:
+      - name: store_id
+      - name: sale_date
+      - name: revenue
+      - name: running_revenue
+  # Written by the agent (not in the snapshot): neither a contract nor an exemption source.
+  - name: daily_returns
+    description: One row per store per day.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [store_id, return_date]
+  - name: customer_ltv
+    columns:
+      - name: customer_id
+      - name: lifetime_value
+      - name: bonus_col
+      - name: phantom_col
