@@ -236,7 +236,9 @@ def _forbidden(
     forbid(model, table.schema)
     forbid(table.name, table.schema)
     # One read of the workspace for every changed model, not one per model (ticket 50).
-    aliases = workspace_aliases(workspace, list(changed_models)) if workspace else {}
+    aliases = (
+        workspace_aliases(workspace, list(changed_models)) if workspace and changed_models else {}
+    )
     for changed in changed_models:
         try:
             built: Table | None = find_model(load, workspace, changed, aliases)
