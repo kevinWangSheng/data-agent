@@ -21,12 +21,11 @@ from data_agent.verifier_v2.db import (
 )
 from data_agent.verifier_v2.project import (
     ModelEntry,
-    dbt_projects,
     entries_in,
     model_name,
+    snapshot_documents,
     unique_not_null_columns,
     unreadable,
-    yml_documents,
 )
 
 
@@ -49,9 +48,7 @@ def grain_facts(
     columns and exemptions are therefore unknown."""
     load = catalog_loader(gateway, catalog)
     table = find_model(load, workspace, model)
-    documents = [
-        document for project in dbt_projects(snapshot) for document in yml_documents(project)
-    ]
+    documents = snapshot_documents(snapshot)
     entries: list[ModelEntry] = entries_in(documents, model_name(workspace, model, table.name))
     keys: dict[str, None] = {}
     for column in key_columns:

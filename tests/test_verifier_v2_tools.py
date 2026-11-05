@@ -106,10 +106,10 @@ def test_row_number_equals_one_in_where_is_a_rows_fact() -> None:
     assert model_sql.facts(nested, "duckdb")["window"]
 
 
-def test_table_names_leave_out_ctes_and_unparsable_sql() -> None:
-    sql = "WITH x AS (SELECT * FROM stg_orders) SELECT k FROM x JOIN cmp_model USING (k)"
-    assert model_sql.table_names(sql, "duckdb") == ["cmp_model", "stg_orders"]
-    assert model_sql.table_names("SELECT FROM WHERE (", "duckdb") is None
+def test_table_references_leave_out_ctes_and_unparsable_sql() -> None:
+    sql = "WITH x AS (SELECT * FROM raw.stg_orders) SELECT k FROM x JOIN cmp_model USING (k)"
+    assert model_sql.table_references(sql, "duckdb") == [(None, "cmp_model"), ("raw", "stg_orders")]
+    assert model_sql.table_references("SELECT FROM WHERE (", "duckdb") is None
 
 
 # --- YAML subset ------------------------------------------------------------------------------
@@ -527,6 +527,21 @@ def test_compare_by_key_pairs_null_keys_on_both_sides(cmp_db: Path) -> None:
     assert result["samples"]["only_in_model"] == [{"k": None}]
 
 
+def test_compare_by_key_pairs_a_key_column_that_is_null_everywhere(cmp_db: Path) -> None:
+    """A composite key whose column is NULL on every row of both sides (a nullable dimension in
+    the grain) has no sentinel value; the rows must still pair on the other columns."""
+    con = duckdb.connect(str(cmp_db))
+    try:
+        con.execute("CREATE TABLE all_null (a INTEGER, b VARCHAR, v INTEGER)")
+        con.execute("INSERT INTO all_null VALUES (1, NULL, 5), (2, NULL, 6)")
+    finally:
+        con.close()
+    sql = "SELECT * FROM (VALUES (1, CAST(NULL AS VARCHAR), 5), (2, NULL, 7)) AS r(a, b, v)"
+    result = compare_by_key(DuckDBGateway(cmp_db), "all_null", ["a", "b"], sql)
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (0, 0, 1)
+    assert result["samples"]["mismatched"][0]["key"] == {"a": 2, "b": None}
+
+
 def test_compare_by_key_rejects_query_table(cmp_db: Path) -> None:
     """DuckDB's query_table() names its table in a string sqlglot's table list cannot see."""
     sql = "SELECT k, int_v FROM query_table('cmp_model')"
@@ -578,6 +593,8 @@ def postgres_cmp(tmp_path: Path) -> PostgresGateway:
             "CREATE TABLE da_t45.cmp_model (k INTEGER, dec_v NUMERIC(10,2), "
             "dbl_v DOUBLE PRECISION, int_v INTEGER, str_v TEXT, day_v DATE)"
         )
+        con.execute("CREATE TABLE da_t45.all_null (a INTEGER, b TEXT, v INTEGER)")
+        con.execute("INSERT INTO da_t45.all_null VALUES (1, NULL, 5), (2, NULL, 6)")
         con.execute(
             "INSERT INTO da_t45.cmp_model VALUES "
             "(1, 12.35, 1000000.0, 5, 'a', DATE '2024-01-01'), "
@@ -613,6 +630,11 @@ def test_compare_by_key_full_joins_every_key_on_postgres(postgres_cmp: PostgresG
         (1, "dec_v"),
         (2, "str_v"),
     }
+    # A composite key with a column NULL on every row of both sides still pairs.
+    composite = "SELECT * FROM (VALUES (1, NULL::text, 5), (2, NULL::text, 7)) AS r(a, b, v)"
+    result = compare_by_key(postgres_cmp, "all_null", ["a", "b"], composite)
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (0, 0, 1)
+    assert result["samples"]["mismatched"][0]["key"] == {"a": 2, "b": None}
 
 
 # --- MCP wrappers over stdio ------------------------------------------------------------------

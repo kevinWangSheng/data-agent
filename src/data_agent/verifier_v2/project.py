@@ -276,6 +276,11 @@ def yml_documents(project: Path, config: dict[str, Any] | None = None) -> list[Y
     return documents
 
 
+def snapshot_documents(snapshot: Path) -> list[YmlFile]:
+    """Every project YML file under the snapshot, read once."""
+    return [document for project in dbt_projects(snapshot) for document in yml_documents(project)]
+
+
 def entries_in(documents: list[YmlFile], model: str) -> list[ModelEntry]:
     """The `models:` entries named `model` across the documents, in file order."""
     return [entry for document in documents for entry in document.entries(model)]
@@ -361,21 +366,31 @@ def _alias_owner(project: Path, names: dict[str, Path], alias: str) -> str | Non
     `alias:` in a YML entry (directly or under `config:`)."""
     wanted = alias.lower()
     for model, path in names.items():
-        call = sql_config_call(read_text(path))
-        in_sql = ALIAS_RE.search(call) if call else None
-        if in_sql and in_sql.group(1).lower() == wanted:
+        if (_sql_alias(path) or "").lower() == wanted:
             return model
     for document in yml_documents(project):
         for entry in _list(document.data.get("models")):
-            if not isinstance(entry, dict) or entry.get("name") is None:
-                continue
-            config = entry.get("config")
-            declared = entry.get("alias") or (
-                config.get("alias") if isinstance(config, dict) else None
-            )
-            if declared is not None and str(declared).lower() == wanted:
+            if (
+                isinstance(entry, dict)
+                and entry.get("name") is not None
+                and (_entry_alias(entry) or "").lower() == wanted
+            ):
                 return str(entry["name"])
     return None
+
+
+def _sql_alias(path: Path) -> str | None:
+    """`alias=` in the model file's `{{ config(...) }}`."""
+    call = sql_config_call(read_text(path))
+    match = ALIAS_RE.search(call) if call else None
+    return match.group(1) if match else None
+
+
+def _entry_alias(entry: dict[str, Any]) -> str | None:
+    """`alias:` in a YML model entry, directly or under `config:`."""
+    config = entry.get("config")
+    alias = entry.get("alias") or (config.get("alias") if isinstance(config, dict) else None)
+    return str(alias) if alias else None
 
 
 def model_alias(project: Path, model: str) -> str | None:
@@ -383,15 +398,11 @@ def model_alias(project: Path, model: str) -> str | None:
     YML entry (directly or under `config:`), else `alias=` in its `{{ config(...) }}`, which dbt
     lets override the YML; None when the model keeps its own name."""
     path = model_files(project).get(model)
-    call = sql_config_call(read_text(path)) if path else None
-    in_sql = ALIAS_RE.search(call) if call else None
+    in_sql = _sql_alias(path) if path else None
     if in_sql:
-        return in_sql.group(1)
+        return in_sql
     for entry in model_entries(project, model):
-        config = entry.data.get("config")
-        alias = entry.data.get("alias") or (
-            config.get("alias") if isinstance(config, dict) else None
-        )
+        alias = _entry_alias(entry.data)
         if alias:
-            return str(alias)
+            return alias
     return None

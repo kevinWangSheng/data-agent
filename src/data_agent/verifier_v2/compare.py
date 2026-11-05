@@ -27,6 +27,7 @@ from data_agent.verifier_v2.db import (
     quote,
     workspace_alias,
 )
+from data_agent.verifier_v2.project import bare_name
 
 SAMPLE_LIMIT = 20
 DOUBLE_TYPE = {"duckdb": "DOUBLE", "postgres": "DOUBLE PRECISION"}
@@ -110,7 +111,9 @@ def compare_by_key(
         else:
             unmatched.append(column)
     dialect = gateway.dialect
-    joined = _joined_sql(table, reference_sql, keys, reference_lower, compared, gateway)
+    pairs = [(quote(k), quote(reference_lower[k.lower()]), quote(f"__s_{k}")) for k in keys]
+    sentinels = _sentinels(table, reference_sql, pairs, gateway)
+    joined = _joined_sql(table, reference_sql, pairs, sentinels, compared, gateway)
     both = '"__m_present" AND "__r_present"'
     any_mismatch = (
         "NOT (" + " AND ".join(quote(f"__eq_{c}") for c, _, _ in compared) + ")"
@@ -210,28 +213,51 @@ def _forbidden(
             built: Table | None = find_model(load, workspace, changed)
         except ToolError:
             built = None
-        forbid(changed, built.schema if built else None)
+        schema = built.schema if built else None
+        forbid(changed, schema)
         alias = workspace_alias(workspace, changed) if workspace else None
         if alias:
-            forbid(alias, built.schema if built else None)
+            forbid(alias, schema)
     return forbidden
 
 
 def _bare(relation: str) -> str:
     """The relation's own name, lower-cased, without schema or database qualifiers."""
-    return relation.strip().rsplit(".", 1)[-1].strip('"').lower()
+    return bare_name(relation).lower()
+
+
+def _sentinel_select(model: str, reference: str, pairs: list[tuple[str, str, str]]) -> str:
+    """One row: per key, any non-NULL value of it from the `model` relation, else from the
+    `reference` one (both FROM-clause text)."""
+    return ", ".join(
+        f"COALESCE((SELECT {m} FROM {model} WHERE {m} IS NOT NULL LIMIT 1), "
+        f"(SELECT {r} FROM {reference} WHERE {r} IS NOT NULL LIMIT 1)) AS {s}"
+        for m, r, s in pairs
+    )
+
+
+def _sentinels(
+    table: Table, reference_sql: str, pairs: list[tuple[str, str, str]], gateway: Queryable
+) -> list[bool]:
+    """Per key, whether a sentinel exists: False when the key is NULL on every row of both
+    sides, in which case the NULL flags alone decide the join."""
+    selected = ", ".join(f"{s} IS NOT NULL" for _, _, s in pairs)
+    sentinel = _sentinel_select(table.sql_name, f"({reference_sql}) AS ref_", pairs)
+    row = gateway.query(f"SELECT {selected} FROM (SELECT {sentinel}) AS s", 1).rows[0]
+    return [bool(value) for value in row]
 
 
 def _joined_sql(
     table: Table,
     reference_sql: str,
-    keys: list[str],
-    reference_lower: dict[str, str],
+    pairs: list[tuple[str, str, str]],
+    sentinels: list[bool],
     compared: list[tuple[str, str, str]],
     gateway: Queryable,
 ) -> str:
     """`WITH m0, r0, s, m, r, j` where j is the FULL OUTER JOIN of model (m) and reference (r)
-    on the keys, with both values and an equality flag per compared column.
+    on the keys (`pairs`: quoted model key, reference key, sentinel column), with both values
+    and an equality flag per compared column.
 
     NULL keys pair with NULL keys. Postgres runs a FULL JOIN only on merge- or hash-joinable
     conditions, which `IS NOT DISTINCT FROM` and `a = b OR (a IS NULL AND b IS NULL)` are not
@@ -239,17 +265,12 @@ def _joined_sql(
     values with NULL replaced by a sentinel of the key's own type. The sentinel (`s`, one row)
     is any non-NULL value of that key on either side, carried onto both m and r by a cross
     join so the condition reads only each side's columns; the flag equality keeps a NULL from
-    pairing with a real key equal to the sentinel. A key with no non-NULL value anywhere has
-    no sentinel, and its NULLs stay unpaired."""
-    pairs = [(quote(k), quote(reference_lower[k.lower()]), quote(f"__s_{k}")) for k in keys]
-    sentinel_select = ", ".join(
-        f"COALESCE((SELECT {m} FROM m0 WHERE {m} IS NOT NULL LIMIT 1), "
-        f"(SELECT {r} FROM r0 WHERE {r} IS NOT NULL LIMIT 1)) AS {s}"
-        for m, r, s in pairs
-    )
+    pairing with a real key equal to the sentinel. A key with no non-NULL value anywhere
+    (`sentinels` False) joins on the flags alone, which both sides then always satisfy."""
     on = " AND ".join(
-        f"(m.{m} IS NULL) = (r.{r} IS NULL) AND COALESCE(m.{m}, m.{s}) = COALESCE(r.{r}, r.{s})"
-        for m, r, s in pairs
+        f"(m.{m} IS NULL) = (r.{r} IS NULL)"
+        + (f" AND COALESCE(m.{m}, m.{s}) = COALESCE(r.{r}, r.{s})" if has_sentinel else "")
+        for (m, r, s), has_sentinel in zip(pairs, sentinels, strict=True)
     )
     key_select = ", ".join(f"COALESCE(m.{m}, r.{r}) AS {m}" for m, r, _ in pairs)
     value_select = ", ".join(
@@ -270,7 +291,7 @@ def _joined_sql(
     return (
         f"WITH m0 AS (SELECT * FROM {table.sql_name}), "
         f"r0 AS (SELECT ref_.* FROM ({reference_sql}) AS ref_), "
-        f"s AS (SELECT {sentinel_select}), "
+        f"s AS (SELECT {_sentinel_select('m0', 'r0', pairs)}), "
         f'm AS (SELECT m0.*, TRUE AS "__m_present", s.* FROM m0 CROSS JOIN s), '
         f'r AS (SELECT r0.*, TRUE AS "__r_present", s.* FROM r0 CROSS JOIN s), '
         f"j AS (SELECT {selected} FROM m FULL OUTER JOIN r ON {on})"

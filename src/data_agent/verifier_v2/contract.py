@@ -16,12 +16,11 @@ from data_agent.verifier_v2.db import Queryable, catalog_loader, duplicate_rows,
 from data_agent.verifier_v2.model_diff import model_diff
 from data_agent.verifier_v2.project import (
     YmlFile,
-    dbt_projects,
     declared_columns,
     entries_in,
     model_name,
+    snapshot_documents,
     unreadable,
-    yml_documents,
 )
 
 
@@ -41,9 +40,7 @@ def contract_check(
     diff and the snapshot YML are looked up under its project name."""
     load = catalog_loader(gateway, catalog)
     diffs = {d["model"]: d for d in model_diff(workspace, snapshot, gateway.dialect)}
-    documents = [
-        document for project in dbt_projects(snapshot) for document in yml_documents(project)
-    ]
+    documents = snapshot_documents(snapshot)
     results: dict[str, dict[str, Any]] = {}
     for model in models:
         try:

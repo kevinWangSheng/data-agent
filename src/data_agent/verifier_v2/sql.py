@@ -141,13 +141,6 @@ def _unqualified(expression: exp.Expr) -> exp.Expr:
     )
 
 
-def table_names(sql: str, dialect: str) -> list[str] | None:
-    """The bare names of the tables a query reads (CTEs excluded), lower-cased; None when the
-    SQL does not parse."""
-    references = table_references(sql, dialect)
-    return None if references is None else [name for _, name in references]
-
-
 def table_references(sql: str, dialect: str) -> list[tuple[str | None, str]] | None:
     """(schema, name) of each table a query reads (CTEs excluded), lower-cased, the schema None
     when the reference is unqualified; None when the SQL does not parse."""
