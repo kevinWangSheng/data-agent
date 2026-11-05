@@ -92,14 +92,20 @@ def files_under(project: Path, directory: str, suffixes: tuple[str, ...] | None)
     root = project.resolve()
     if not base.is_dir() or not base.resolve().is_relative_to(root):
         return
+    # os.walk does not descend into symlinked directories, so only a symlinked file can lead
+    # out; resolving every file (an lstat per path component) made a 2377-file project cost
+    # seconds per walk (ticket 50).
     for current, dirnames, filenames in os.walk(base):
         dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
         for name in sorted(filenames):
             path = Path(current) / name
             if suffixes and path.suffix.lower() not in suffixes:
                 continue
-            if path.is_file() and path.resolve().is_relative_to(root):
-                yield path
+            if not path.is_file():
+                continue
+            if path.is_symlink() and not path.resolve().is_relative_to(root):
+                continue
+            yield path
 
 
 def model_files(project: Path, config: dict[str, Any] | None = None) -> dict[str, Path]:
@@ -393,16 +399,23 @@ def _entry_alias(entry: dict[str, Any]) -> str | None:
     return str(alias) if alias else None
 
 
-def model_alias(project: Path, model: str) -> str | None:
-    """The relation name the model is built as, when the project renames it: `alias:` in its
-    YML entry (directly or under `config:`), else `alias=` in its `{{ config(...) }}`, which dbt
-    lets override the YML; None when the model keeps its own name."""
-    path = model_files(project).get(model)
-    in_sql = _sql_alias(path) if path else None
-    if in_sql:
-        return in_sql
-    for entry in model_entries(project, model):
-        alias = _entry_alias(entry.data)
-        if alias:
-            return alias
-    return None
+def model_aliases(project: Path, models: list[str]) -> dict[str, str | None]:
+    """The relation name each of `models` that has a SQL file in the project is built as, when
+    the project renames it (None when it keeps its own name): `alias=` in its `{{ config(...)
+    }}`, which dbt lets override the YML, else `alias:` in its YML entry (directly or under
+    `config:`). The project's files and YML are read once for all of them."""
+    files = model_files(project)
+    aliases = {model: _sql_alias(files[model]) for model in models if model in files}
+    if any(alias is None for alias in aliases.values()):
+        documents = yml_documents(project)
+        for model, alias in aliases.items():
+            if alias is None:
+                aliases[model] = next(
+                    (
+                        found
+                        for entry in entries_in(documents, model)
+                        if (found := _entry_alias(entry.data))
+                    ),
+                    None,
+                )
+    return aliases

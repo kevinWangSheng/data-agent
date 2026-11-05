@@ -105,10 +105,65 @@
 > - 44 第 6 条的处理：45 的 Authority 加了一行，允许它在拿掉 `verify_model_values` 的同一提交里更新 `tests/acceptance/seam_support.py` 的 `VERIFIER_TOOLS`。
 > - **2026-11-05 晚：45、48、49 都已 `done` 合入 main**：49（PR #44 → d16aff5；初筛 daily-cohorts 3/3，`profiles.yml` 0 次改动，Read `target/*.json` 0 次）；48（PR #45 → d7b31da；cross-sell 1/1，同一轮 MCP 调用结束时间聚集，批内结束跨度比 0.32 对 accept-2 的 0.66–0.70）；45（PR #46 → 00959ec；cart-abandonment 1/1，`contract_check`、`grain_facts` 被调用；Fable 审查退回 2 轮：Postgres FULL JOIN、yaml_lite 静默 `{}`、按 schema 拒绝、CAST 类型，全部修完；余下 P3 记已知限制，见工单）。
 > - Codex 全天不可用（本地 6 次 at capacity，app 每个 PR 3 次 unknown error），三张都用 Fable 5.1 子 agent 审查代替（规则见上）。
-> - 46 已派（`claude -p -w 46-harness-hooks`，输出 `runs/dispatch/46-harness-hooks.txt`）。之后 47（初筛 5 题 × 3）。全部合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
+> - **46 harness 钩子 `done`**（PR #47 → 3c61284；Fable 审查退回 2 轮：`CHECK n - Title` 格式、删模型后一直拦、乱序报告配错指纹，全部修完；补充提交让 `evals/process.py`、`atif.py` 兼容 checks 映射；t46-real 1/1、t46-real2 1/1 且跑出 FAIL→修→再验→PASS 闭环）。
+> - **等人定**：集成测试 `test_updated_input_replaces_the_prompt_end_to_end`（44 的验收测试）两次都失败在"子 agent 原样回显"的断言上，替换本身已证实生效（输出无 `ORIGINAL-123`，内容来自改写 prompt）。建议改断言为"原 prompt 消失 + 任务文件内容或路径出现"；或保留 `xfail` 记已知限制。详见工单 46 Comments。
+> - 47 已派（`claude -p -w 47-verifier-prompt-skill-config`，输出 `runs/dispatch/47-verifier-prompt-skill-config.txt`）；初筛 5 题 × 3，成功 ≥8/15，验证器墙钟中位数 ≤155 s。合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
 > - 对齐会话待定的小项：49 的 Fable 审查三条 P3（`validate_project.py:200` 上游文案 "Fix profiles.yml" 与提示词相抵；validate 超时封顶 300 的措辞；提示词里 "them" 指代）；45 的 `verify_values` 死代码等 47 拿掉 value-verifier 时清理。
 > - 花费：今天服务器运行实际价约 $1.0（t49-screen $0.36、t48-real $0.38、t45-real $0.25，都在高峰），开发集累计约 ¥414，止损线 ¥500。
 > - 人确认（2026-11-05）与 45 并行开两张工单，都已 `ready-for-agent` 并派出：48 MCP 工具标 `readOnlyHint`（43 笔记 §4，确定性修复，真实运行 cross-sell × 1）；49 提示词和 Skill 不再教改 `profiles.yml`、validate 写 300 s、Skill 加『不 Read `target/*.json`』（改行为，初筛 daily-cohorts × 3 对照 accept-2 full）。48 与 45 都改 `verifier_tools.py`，后合入的解决冲突；49 与 47 都改 SKILL.md，49 先合。
+> - **工单 47 初筛 `t47-screen` 跑完（2026-11-05，8bde360，$2.10）**：通过率 11/15（accept-2 7/15），验证器墙钟中位数 317 s，第二条线 ≤155 s 没过（基线 311 s）。时间 65% 在 `compare_by_key`（171 次，单次 p50 141 s，9 次撞 150 s 超时）；pos-operations 两个 trial 撞 Harbor 4000 s agent 超时，主 agent 自己调了 41–44 次 `compare_by_key`。详细数在工单 47 Comments。
+> - **工单 50（另一会话，2026-11-05）**：`compare_by_key` 两个根因（参考 SQL 嵌入后优化器计划极差；每次调用重复遍历项目），PR #49 已由该会话 squash 合入 main（595ebc5），工单 50 `done`（2283778）。
+> - **47 的下一步**：50 合入后在新 main 上跑 47 的过线初筛（5 题 × 3 full，约 ¥18），≥8/15 且验证器墙钟中位数 ≤155 s 才合 PR #48（0126941，CI 绿）。然后冒烟（14c），再由人确认统一评估。
+> - **基础问题清单（人 2026-11-05 决定：新开会话先集中处理，再继续评测）**，都有 `runs/t47-screen` 的实测做依据：
+>   1. `compare_by_key` 慢：工单 50 在修，合入后用 t47-screen 的轨迹复测（单次 p50 141 s → 目标 ≤5 s）。
+>   2. Harbor 4000 s agent 总超时：验证器跑到一半被掐，trial 没有 `verifier_end`；要么超时值和验证器预算对齐，要么 Stop 规则在剩余时间不够时不再派验证器。
+>   3. 主 agent 把 `compare_by_key`、`grain_facts` 当常规检查用（pos-operations 派验证器前 41–44 次），花的是主 agent 的时间；Skill 第 8 步和 VERIFIERS_PROMPT 要定主 agent 自己调这两个工具的边界。
+>   4. `grain_facts` 服务器上中位数 92 s（本地快），原因没查清（工单 50 记为待定）。
+>   5. 网关 150 s 查询超时和验证工具的关系：工具内部一条语句超时就整次失败，验证器会重试同样的参考 SQL（9 次超时集中在 cross-sell）。
+>   6. 评测指标缺 p95/p99：`ablate` 报告只有总分和中位数；要加每 trial 墙钟、工具调用次数、验证器墙钟的 p50/p90/p95/p99 和超时计数，这样过线判定不用手算（本次是主会话用脚本从事件文件算的）。
+>   7. 集成测试 `test_updated_input_replaces_the_prompt_end_to_end` 的断言（原提示消失 + 任务文件内容出现，或保留 xfail）待人定。
+>   8. 对齐会话记的小项：`dab-score` 单题时区间退化成一个点；DAB Mongo 容器中途停止没有重启策略；工单 49 的三个 P3（`validate_project.py:200` 文案、超时夹到 300 s 的措辞、"them" 指代）。
+>
+> **基础问题取证完成（2026-11-05，对齐会话；详见 `docs/research/2026-11-05-foundation-latency-audit.md`，脚本在本机 `runs/t47-screen/foundation-audit/`）。** 上面清单的结论：1 已由工单 50 修；2 → 下面 #2；3 → #4；4 是排队假象（→ #3）；5 在工单 50 后基本消失，剩下的并入 #2；6 → #1；7、8 不变。改正两条：pos-operations 是 **3/3** 撞 4000 s；LQFt7xL 派前 0 次自查，"41–44 次"不普遍。
+> - 根因与修法（都还没写工单）：
+>   - **#1 计时口径**：`tool_end` 按批到达，并行调用的 p95/p99 全是假象（Glob p99 74 s，不重叠调用 0.4 s）。修法：PostToolUse 的 `duration_ms` 写 `tool_timing` 事件、补 `parent_tool_use_id`、`evals/process.py` 出 p50/p90/p95/p99 和超时数。确定性，$0。
+>   - **#2 截止时间**：agent 不知道 deadline，超时后进程没被杀、和评分同时跑，超时的 trial 不记花费。修法（Cline 先例）：kwarg `agent_timeout_sec`；剩不到 1000 s 不派验证器且 Stop 放行；到 3850 s 自己停并写 `result(deadline)`。改 harness 行为。
+>   - **#3 v2 工具缓存**：grain_facts 单次约 3.7 s（服务器），78 s 是一批调用抢 GIL 排队；每次都重新解析快照 YML、遍历工作区。修法：快照 YML 按进程缓存、`model_files` 按目录 mtime 缓存，本地 21 个一批 4.5 s → 0.6 s。确定性，$0。
+>   - **#4 删主 agent 例行自查**：工单 47 分支 `SKILL.md:258-275` 要求每个模型自己跑 compare_by_key，参考 SQL 写两遍。改成只在没有验证器、复现 FAIL、粒度类 NEEDS_INFO 时自己调。
+>   - **#5 dbt 固定开销**：`scan_project.py:576-590` 每个缺 SQL 的模型都重新解析全部 yml（scan 74 s → 约 8 s）；SDK env 加 `DBT_TARGET=dev` 避免每个 trial 第一次完整重新解析（推翻工单 40 的"避免不了"，本机验证，服务器未验证）；Skill 加"不来回切 `--vars`"。
+>   - **#6 守卫与提示**：15/15 个 trial 第一步就被拦。提示词一句（单独 echo，看目录用 Glob/Read）；排除型 glob 按 ripgrep 语义识别；拒绝提示写出具体原因；`TASK_FILE_NOTE` 写明用 Read。安全边界不变。
+>   - **#7 资源**：并发 4（配置）≠ plan 的 3；容器内 DuckDB threads=2、memory_limit ≈ 6.25 GiB/实例，临时文件不限。修法：并发 3、`connect_duckdb` 设 memory_limit 约 2 GB、temp 上限约 4 GB；先跑服务器只读检查（命令在笔记 §7）。CPU 争用只 +19%，不是主因。
+> - 建议顺序：#1 → #3、#5 → #2、#6、#7 → #4 → 在新 main 上跑工单 47 的过线初筛（5 题 × 3，约 ¥18），一次看出全部效果。
+> - **等人决定**（下一个对齐/编排会话先问）：见本文件"待决策"一节。
+>
+> **人已决定（2026-11-05）**：
+> - ① 范围：#1–#7 全部算进这一轮，要写 ADR-0008 Update。
+> - ② #4 作为工单 47 的特批第 3 轮退回，在 PR #48 里改。
+> - ③ 47 的过线初筛等 #1、#3、#4 合入后再跑。
+> - ④ 工单由对齐会话和人逐项讨论后写，从 #1 开始；编排会话同时用 `da-remote` 跑 #7 的服务器只读检查。
+> - 下面第 4–7 条仍待定，在对应话题讨论时再定。
+>
+> **2026-11-05 grilling 对齐完成（Q1–Q20 人都答 yes），工单已写好，编排会话从这里接手：**
+> - ADR-0008 Update 2026-11-05、plan §10 第 14b 项已更新。工单在 `.scratch/foundation/issues/`：
+>   - `ready-for-agent`，现在可以并行派：51 计时与分位数、52 v2 工具缓存、53 dbt 固定开销、55 守卫与提示，以及工单 47 的第 3 轮退回（Status 已改回 `ready-for-agent`，在原分支 `worktree-47-verifier-prompt-skill-config` 上修）。
+>   - 54 截止时间：`ready-for-agent`，`Blocked by: 51`，51 合入后再派。
+>   - 56 并发与 DuckDB 资源：`needs-info`。编排会话先用 `da-remote` 跑工单里写的服务器只读检查，结果贴进工单，再由人定 DuckDB 上限的数值。
+> - 冲突：51 和 54 都改 `agent.py`（54 排在 51 后面）；55 也改 `agent.py`（只动 `DBT_PROMPT`、`TASK_FILE_NOTE`）；53 和 47 都改 `SKILL.md`，后合入的解决冲突。
+> - 真实运行（主会话跑，都是小额，按默认放行规则不用再批）：51 receivables × 1；52 pos-operations × 1（排在 51 合入后，看 `duration_ms`）；53 receivables × 1；54 pos-operations × 1（`--ak agent_timeout_sec=1500`）；55 daily-cohorts × 1。
+> - 47 的过线初筛（5 题 × 3，约 ¥18）在 51、52 和 47 第 3 轮退回都合入后，在新 main 上跑；过线标准不变。之后全部工单合入、冒烟，统一评估仍须人确认。
+> - 第 4–6 条待决策已在 grilling 里定了（见工单 54、53、56）。
+> - **人已定（2026-11-05）**：集成测试 `test_updated_input_replaces_the_prompt_end_to_end`（`tests/acceptance/test_verifier_v2.py:778`）的断言改成"`ORIGINAL-123` 不出现，并且任务文件的内容或路径至少出现一个"（选项 A），不保留 `xfail`。人授权改这个验收测试；编排会话做这处小改动，source 模型 env 跑一次这个集成测试，结果记到工单 46 Comments。
+> - 仍待人定：工单 56 的 DuckDB `memory_limit`、`max_temp_directory_size` 数值（等服务器只读检查结果）。
+>
+> **待决策（原列表，第 1–3 条已按上面决定）：**
+> 1. **范围**：ADR-0008 Update 2026-11-04 定的是"修一轮，这是最后一轮"。#1–#7 算不算这一轮？算的话要写 ADR-0008 Update；不算，就只修影响过线的 #3、#4，其余记成已知限制。建议算进来：都是 $0 的确定性修复或提示词改动，不加评测花费。
+> 2. **#4 的去向**：工单 47 的两轮退回已用完。建议特批第 3 轮退回，在 PR #48 里删例行自查再跑过线初筛；另一种做法是 47 照原样合入，再开新工单。
+> 3. **工单 47 过线初筛的时机**：建议等 #1（计时）和 #3、#4 合入后再跑，一次判两条线并拿到准确的 p95；现在就在新 main 上跑，能单独看出工单 50 的效果，但要再花一次 ¥18。
+> 4. **#2 的参数和放法**：剩 1000 s 停派验证器、3850 s 自停，这两个数是从 t47-screen 的分布推的；自停算正常结束（不报 `AgentTimeoutError`）。
+> 5. **#5 `DBT_TARGET=dev` 放哪**：它是对 data-eng-bench 镜像构建方式的适配。建议放 `evals/harbor_agent.py`（评测适配层），不放 agent 本体和 Skill，以符合 ADR-0005。
+> 6. **#7 DuckDB 内存上限**：2 GB 可能让个别查询更多地写临时文件、变慢；要先看服务器只读检查的结果再定具体数值。
+> 7. 原有未决项：集成测试 `test_updated_input_replaces_the_prompt_end_to_end` 的断言（第 7 项）；开发集 30 题统一评估必须先问人；花费累计约 ¥414 / ¥500。
+> - **会话分工**：#1–#7 都还没有工单。按 11-01 的分工，工单由对齐会话和人逐项讨论后再写（一次一个，从 #1 开始），编排会话才能派。编排会话现在能做的只有：用 `da-remote` 跑 #7 的服务器只读检查；把工单 47 的状态和 PR #48 保持在当前位置。
 >
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
 >

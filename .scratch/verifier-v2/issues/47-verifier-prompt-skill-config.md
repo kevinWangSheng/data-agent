@@ -3,8 +3,8 @@
 Status: ready-for-agent
 Blocked by: 46（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 47, 2026-11-05)
+Branch: worktree-47-verifier-prompt-skill-config
 
 ## Goal
 
@@ -66,10 +66,100 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 3
+- Review rounds: 3（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；退回第 2 轮 eng:code-review，0126941；Codex 4 次 at capacity）
+- Model spend: $0（工单会话无模型调用）
+- Outcome: in-review，两轮退回已修完，branch `worktree-47-verifier-prompt-skill-config`（ad09e0a … cc65d28、626d226、0126941），PR #48；初筛过线判定需在 0126941 上重跑
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（worktree 47-verifier-prompt-skill-config）
+
+**改动**
+- `src/data_agent/verifiers.py`：一个验证者，工具 `list_tables`、`query_database` 加 4 个 v2 工具，`maxTurns=50`，FAIL 和 NEEDS_INFO 规则只在系统提示词里有一份。
+- `src/data_agent/agents/verifier.md`：按 spec 的 4 步和钩子能解析的 CHECK 1–7 报告重写。`value-verifier.md` 删除，`NOTICE` 更新。
+- `skills/dbt-workflow/SKILL.md` 第 8 步：一个验证者，有 `compare_by_key` 时做键级核对，FAIL 处理引用系统提示词。无验证者的回退文本从 main 原样恢复，no-verifiers 配置不变。文件头改动说明只改第 8 步相关句子。
+- 测试：验收测试去 xfail；单元测试跟随新提示词和第 8 步。
+
+**第 3 步真实行为**（无模型；`uv run python -I /tmp/t47-real.py` 对六个配置 build options）：
+
+```
+full            agents=['verifier'] maxTurns=[50] verifiers_prompt=True
+no-skill        agents=['verifier'] maxTurns=[50] verifiers_prompt=True
+no-context      agents=['verifier'] maxTurns=[50] verifiers_prompt=True
+full-old-skill  agents=['verifier'] maxTurns=[50] verifiers_prompt=True
+baseline        agents=[] maxTurns=[] verifiers_prompt=False
+no-verifiers    agents=[] maxTurns=[] verifiers_prompt=False
+verifier.tools: ['Read', 'Glob', 'Grep', 'mcp__data__list_tables', 'mcp__data__query_database', 'mcp__data__model_diff', 'mcp__data__contract_check', 'mcp__data__grain_facts', 'mcp__data__compare_by_key']
+hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
+```
+
+验收测试 `test_verifier_configs_define_one_verifier` 去 xfail 后先红（`assert set(options.agents) == {"verifier"}`）后绿。`make check`：ruff、format、basedpyright 干净；`1693 passed, 1 skipped, 38 deselected in 301.48s`。
+
+**审查第 1 轮**：`da-review main` 两次 at capacity，Fable 只读审查代替，加 `eng:code-review main`（Standards、Spec）。
+- 已修（8bde360）：第 8 步在括号里复述 FAIL 规则、无验证者回退文本被改写（Standards 1、Spec 1/2）；系统提示词的停止句没给"主 agent 自己解决了 NEEDS_INFO"留出口（Fable 1）；报告模板原样复制会解析成 PASS，改成 `<PASS|FAIL|NEEDS_INFO|N/A>`（Fable 4）；第 8 步行数句点名 CHECK 3 而它现在是粒度检查，改成 CHECK 3 和 7（Fable 3）；改动说明换行（Standards 4）。
+- 不修，Authority 外：Skill `## Tools` 一节仍把 `verify_model_values` 写成"value-verifier 在第 8 步用"（Standards 3、Fable 2），运行时无害（有"仅当在你的工具列表里"的限定，且工具未注册），需后续工单；`verifier_v2/dispatch.py`、`hooks.py` 里"until ticket 47 removes it"的过时注释同理。
+- 不修，设计如此：`VERIFIER_MAX_TURNS` 在 `verifiers.py` 和 `verifier_v2/hooks.py` 各定义一份（hooks 导入 verifiers，反向会循环；hooks.py 在 Authority 外），有测试钉住两者相等。`VERIFIER_NAMES` 仍是单元素元组，`agent.py` 和 `hooks.py` 按成员判断。验证者工具表不含 `map_columns`、`check_model_schema`、`audit_model_sources`：spec 的"保留的旧工具"指 server 保留（已保留），4 步不需要它们（Spec 4）。
+- 2026-11-05 主会话：PR #48 已开。Codex app 替代审查（Fable 5.1）。核过没问题的：verifier.md 的 `### <model>` + `CHECK n: STATUS — detail` 与 `report.py` 的 `MODEL_RE`/`CHECK_RE` 一致，`N/A` 能匹配，尖括号模板不会解析成 PASS，`### Summary` 不记录；4 步只用定义里有的工具，`task_columns` 格式与 `parse_task_columns` 一致；verifier.md 只依赖派单模板的三个字段，"主 agent 提供的反证"标题与 `UNVERIFIED_HEADING` 一致；系统提示词的 FAIL/NEEDS_INFO/Stop 措辞与 spec 和三条规则一致；第 8 步无针对题目的内容；配置文件未变。**退回**（第 1 轮）：
+  - 退回 1（P2）：`agents/verifier.md:131-146`（第 4 步）与 `verifier_v2/compare.py:144-154`：提示词没要求参考 SQL 的非键列用模型的列名，而工具只比较两边同名的列。场景：题面"每客户总收入"，验证者写 `SUM(amount) AS revenue`，模型列叫 `total_revenue`，工具回 "compared columns: (none)"，三个计数全 0，按"全 0 即 PASS"得出空洞的 CHECK 7 PASS。修法：第 4 步要求参考 SQL 的输出列别名成模型的列名；compared columns 为空时记 NEEDS_INFO 而不是 PASS。
+  - 退回 2（P2）：`agents/verifier.md:85-88`（第 2 步）允许粒度键"取自运行前就存在的 YML"，但验证者只能 Read 当前项目的 YML（快照目录被守卫拦，`model_diff` 不报 YML 改动），分不清是原有的还是主 agent 新写的。场景：题面没说粒度，主 agent 在新建的 schema.yml 里给粗键加 `unique` 测试，验证者拿它调 `grain_facts`，CHECK 3 按 agent 自己的定义通过，正是 ADR-0009 禁止的。修法：粒度键只从题面取，题面没有就 NEEDS_INFO；需要原有 YML 的豁免时依赖 `grain_facts` 自己从快照 YML 读出的 "exemption candidate" 行，不让验证者自己去读 YML 当键源。
+  - 不退回（P3）：Skill `## Tools` 仍写 `verify_model_values`（Authority 外，已记）；无验证者回退文本里的 "value CHECK 2" 编号（刻意原样恢复）；`hooks.py`、`dispatch.py` 里 "until ticket 47" 的过时注释（Authority 外）。这三条交对齐会话定是否开清理工单。
+  - 初筛 `t47-screen` 已在 8bde360 上开跑（主会话决定不等闲时，多花约 ¥15）；过线判定要在修后的提交上重跑，这次的数据只看墙钟和轮数分布。
+
+### 2026-11-05 工单会话（退回第 1 轮修复，commits e45d781、cc65d28）
+
+只动 `src/data_agent/agents/verifier.md` 和 `tests/test_verifiers.py`；`verifiers.py` 的系统提示词没有粒度或参考列的措辞，不需同步。`make check`：1695 passed, 1 skipped。`uv run pytest tests/acceptance -q -k verifier`：48 passed。
+
+- 退回 1，第 4 步：参考 SQL 的非键输出列别名成模型列名（例 `SUM(amount) AS total_revenue`）；列名来源是 `contract_check` 输出或题面列表，都没有时用 `query_database("SELECT * FROM <model> LIMIT 0")` 取列名，仍不读模型 SQL。PASS 条件改成"全 0 且题面定义的每个指标都在 `compared columns` 里"；`compared columns: (none)` 或指标落在 "reference columns the model lacks" 下，先修别名重调一次，仍没比到就 CHECK 7 = NEEDS_INFO。引用的字符串与 `render.py` 的 `render_compare` 输出一致（测试真实渲染对照）。模板 CHECK 7 行加 `<compared columns; …>`，仍以 `<` 开头不会被解析成 PASS。
+- 退回 2，第 2 步：粒度键只从题面取，明说不能从项目 YML 取；题面没说粒度就 CHECK 3 = NEEDS_INFO。豁免只有题面或 `grain_facts` 从快照 YML 报出的 "exemption candidate"（措辞改成与工具输出一致的 "declares other columns unique"）；"Do not read YML files to find a key or an exemption"。全文不再出现 "original YML"。
+- 测试：两个新测试先红后绿；旧 grain 测试去掉对 "original YML" 的断言。
+- 真实行为（无模型）：六个配置的 agents/maxTurns/系统提示词输出与上一轮相同；`load_definition("verifier")` 的 prompt 含新句子、不含 "original YML"；工具表不变。
+- 审查：`da-review` at capacity；eng:code-review（Standards、Spec）已修（cc65d28）：参考列部分匹配仍会"全 0 即 PASS" → PASS 要求题面每个指标都在 compared columns；contract_check 为 N/A 时没给列名来源 → 加 `LIMIT 0` 查询；豁免措辞与工具输出不符 → 改；测试引用的工具输出串与 `render.py` 无绑定 → 用 `render_compare` 渲染；docstring 引用退回轮 → 删。不修：第 1 步与第 2 步对快照 YML 的解释角度不同但不矛盾；测试按整句断言与既有风格一致；"confirm a candidate against the task" 比 spec 严一点是已审内容；YML 禁读是提示词规则，验证者仍有 Read/Glob/Grep。
+- 2026-11-05 主会话：Fable 复审退回轮 diff（8bde360..cc65d28）。核过没问题的：提示词引用的工具输出字符串都在 `render.py`/`contract.py` 里原样存在；题面无指标已被"题面无计算 → NEEDS_INFO"覆盖；两边都 NULL 的列算比较过；模板 CHECK 7 行不会被解析成状态；没有措辞再让键来自项目 YML 或模型的 GROUP BY；系统提示词无冲突。**退回**（第 2 轮，最后一轮）：
+  - 退回 A（P2）：`verifier.md:133-135` 的 `query_database("SELECT * FROM <model> LIMIT 0")` 取不到列名：`inject_limit` 保留 `LIMIT 0`，`mcp_server.format_rows`（`mcp_server.py:93-95`）零行时只返回 `Query returned 0 rows`，不打表头。场景：无 contract、题面无列表时验证者按建议查询得到空，只能猜别名或违规读模型 SQL。修法：改成 `list_tables(name_contains="<model>")`（列出列名且在验证者工具表里），或 `LIMIT 1`（有行才打表头）；`describe_table` 不在验证者工具表里，不要指向它。
+  - 顺手（P3）：`verifier.md:144-150` 题面只定义行集（去重、过滤、"每 X 一行"而无指标）时参考 SQL 只有键列，`compared columns: (none)` 按新规则变 NEEDS_INFO，而键的两侧比对本来就能定胜负。改成："(none) 记 NEEDS_INFO，除非题面没有定义任何非键列，这时只看键的计数。"
+  - 顺手（P3）：`verifier.md:73-78` 第 2 步说键只从题面取，但 `grain_facts` 按建出来的模型列名解析、名字不存在就 ToolError；题面说"每客户每月一行"没给列名，验证者得把它对到 `customer_id`/`month`。把第 4 步"列名不是逻辑，可以从 contract_check/题面/查询取列名，不读 SQL"那句同样写进第 2 步。
+  - 顺手（P3）：`verifier.md:88-89` 和 `verifiers.py:66-67` 的 "confirm a candidate against the task" 在题面对粒度沉默时不可判定，spec 第 73 行允许快照 YML 自行豁免。写明确认的含义是"题面不与之矛盾"。另：粒度 NEEDS_INFO 时系统提示词的第一个选项（补信息再派）是死路，因为验证者必须忽略派单消息里给的粒度；在 VERIFIERS_PROMPT 加一句让主 agent 对粒度类 NEEDS_INFO 直接走第二个选项（自己跑检查），避免循环。
+
+### 2026-11-05 工单会话（退回第 2 轮修复，commits 626d226、0126941）
+
+只动 `agents/verifier.md`、`verifiers.py`（VERIFIERS_PROMPT）、`tests/test_verifiers.py`。四项先写测试（5 个先红），改完全绿。`make check`：1698 passed, 1 skipped（两次）。`uv run pytest tests/acceptance -q -k verifier`：48 passed。
+
+- 退回 A：列名回退改成 `list_tables(name_contains="<model>")`，注明子串会匹配到别的表、取模型自己那行；删掉 `LIMIT 0`。测试断言不含 `LIMIT 0`。
+- 顺手 1：`compared columns: (none)` 记 NEEDS_INFO，除非题面没定义任何非键列，这时只看三个键计数。核过 `compare.py:141-178` 键列单独的参考能定行集题的胜负。
+- 顺手 2：第 2 步加"工具按模型列名解析键，把题面的话对到模型列名；列名不是逻辑，来源是 contract_check 输出、题面列表或 `list_tables`，不读 SQL"；第 4 步改为引用第 2 步。
+- 顺手 3："confirm a candidate against the task" 改成"题面不与之矛盾即可用"。VERIFIERS_PROMPT 加一句：粒度类 NEEDS_INFO 不要带自定粒度重派，主 agent 自己用 `grain_facts` 跑 CHECK 3、用 `compare_by_key` 加参考 SQL 跑 CHECK 7。核过主 agent 能调这两个工具（`mcp_server.py:269-270`、`agent.py:747`）。
+- 真实行为（无模型）：prompt 不含 `LIMIT 0`、不含 "confirm a candidate"，含 `list_tables(name_contains="<model>")` 和 "does not contradict"；VERIFIERS_PROMPT 含 "run the grain check yourself"；maxTurns 50，工具表不变。
+- 审查：`da-review` 第 4 次 at capacity。eng:code-review（Standards、Spec）同一条实质问题已修（0126941）：粒度句覆盖 CHECK 3 和 7 却只点名 `grain_facts`，CHECK 7 要用 `compare_by_key`。其余已修：豁免括注措辞；行集例外的双重否定；第 4 步重复列名来源；`list_tables` 子串多匹配注明；弱断言换具体句子；键列参考测试补真实渲染。不修：超宽行是报告模板和中文标题，本轮前就有；"defines no row set or computation" 是行集规则的直接推论。
+
+### 2026-11-05 主会话（初筛 `t47-screen`，8bde360，不作过线依据）
+
+5 题 × 3，full，实际价 $2.10（13 个事件文件在高峰）。结果拉回 `runs/t47-screen`。
+
+| 题 | 3 次结果 |
+|---|---|
+| dbt-customer-cross-sell-insights | 0、1、1 |
+| dbt-fix-division-by-zero | 0、0、1 |
+| dbt-receivables-aging-buckets | 1、1、1 |
+| pos-operations | 1、1、0 |
+| web-session-quality-scoring | 1、1、1 |
+
+- 通过率 11/15（accept-2 为 7/15），过第一条线。
+- 每 trial 验证器墙钟（Agent 调用起止取并集）中位数 **317 s**，第二条线 ≤155 s **没过**，与 accept-2 基线 311 s 持平。验证器单次调用 17 次，p50 313 s，p90 970 s，最长 2603 s（pos-operations）。
+- 时间去向（13 个已结束 trial，工具占用墙钟去重叠共 268 分钟）：`compare_by_key` 65%（171 次，单次 p50 141 s、p90 404 s，9 次撞网关 150 s 超时）；dbt 命令 17%；其余 10 种工具 18%。模型思考每 trial 3–13 分钟，不是瓶颈。
+- pos-operations 两个 trial（FMEvAdp 过、4V2pNtq 不过）在验证器跑到一半撞 Harbor 4000 s agent 超时（`result.json` 里 `AgentTimeoutError`），没有 `verifier_end`。主 agent 在派验证器前自己就调了 41–44 次 `compare_by_key`。
+- 原因已由工单 50 取证并修（PR #49，分支 `worktree-50-compare-by-key-perf`）：参考 SQL 嵌进现有语句后优化器计划极差（单独 0.5 s，嵌入后 300 s 超时），以及每次调用重复遍历 dbt 项目（pos-operations 一次 30 s）。修后本地 pos-operations 一次调用 1.8 s、cross-sell 那条 1.6 s。
+- 结论：提示词已定稿（0126941），再在 0126941 上重跑不会改变墙钟。**过线初筛等工单 50 合入后在新 main 上跑**（5 题 × 3，约 ¥18），两条线一起判。本工单保持 `in-review`。
+
+### 2026-11-05 主会话（退回第 3 轮，人特批；ADR-0008 Update 2026-11-05）
+
+依据：`docs/research/2026-11-05-foundation-latency-audit.md` §4。t47-screen 里主 agent 派验证器前的 compare_by_key/grain_facts 调用（pos 32/21/0、cross-sell 10/2/2、web 0/8/5）全是例行自查，没有一次是回应 FAIL；每个模型的参考 SQL 被主 agent 和验证器各写一遍。上游 SignalPilot 第 8 步没有主 agent 自查（`signalpilot-plugin/.../skills/dbt-workflow/SKILL.md:261-272`）。人 2026-11-05 定（grilling Q15）。
+
+**退回：删掉 Skill 第 8 步的主 agent 例行键级自查。**
+- `skills/dbt-workflow/SKILL.md`（0126941）第 8 步 2. 末尾"Then, whether or not the verifier ran, run the key-level check yourself: … as in step 3."（:258-273）删掉。只在无验证者回退时保留这段（"If no verifier is available" 一类的条件下，主 agent 自己做键级检查，写法照原文）。
+- 3. 里"unless your key-level check shows a difference there"、4. 里"and your key-level check matches"和"The verifier and your key-level check are the final authority"（:279-280、:284-289）改成不依赖主 agent 自查：有验证器时，STOP 只看最新报告。
+- 主 agent 自己调 `compare_by_key`/`grain_facts` 只在三种情况：没有验证器可用；复现某个 FAIL，只针对那一个模型、一次调用；粒度类 NEEDS_INFO（0126941 `verifiers.py` VERIFIERS_PROMPT 已有的写法，保留）。这一条写进第 8 步或 VERIFIERS_PROMPT，两处不重复。
+- 测试：`tests/test_dbt_skills.py` 断言第 8 步不再含"whether or not the verifier ran"，有验证器时 STOP 条件不提主 agent 自查；无验证者回退仍有键级检查；VERIFIERS_PROMPT 的三种情况都在。先红后绿。
+- Authority 不变（第 8 步、`verifiers.py`、`tests/`）。
+- 合入前的过线初筛（5 题 × 3）由主会话在 51、52 和本轮修复合入后，在新 main 上跑；过线标准不变。

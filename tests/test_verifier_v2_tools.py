@@ -31,7 +31,7 @@ from data_agent.verifier_v2 import (
     yaml_lite,
 )
 from data_agent.verifier_v2 import sql as model_sql
-from data_agent.verifier_v2.project import model_alias, model_config, project_config
+from data_agent.verifier_v2.project import model_aliases, model_config, project_config
 from data_agent.verifier_v2.render import render_grain
 from data_agent.verifier_v2.snapshot import LARGE_SEEDS_FILE, SEED_SIZE_LIMIT
 
@@ -288,7 +288,7 @@ def test_model_config_resolves_down_the_directory_path(tmp_path: Path) -> None:
     assert set(daily.lines()) == {"materialized", "where", "vars"}
 
 
-def test_model_alias_from_config_call_or_yml(tmp_path: Path) -> None:
+def test_model_aliases_from_config_call_or_yml(tmp_path: Path) -> None:
     project = tmp_path / "p"
     (project / "models").mkdir(parents=True)
     (project / "dbt_project.yml").write_text("name: shop\n")
@@ -298,9 +298,11 @@ def test_model_alias_from_config_call_or_yml(tmp_path: Path) -> None:
     (project / "models" / "schema.yml").write_text(
         "models:\n  - name: b\n    config:\n      alias: b_table\n  - name: c\n"
     )
-    assert model_alias(project, "a") == "a_table"
-    assert model_alias(project, "b") == "b_table"
-    assert model_alias(project, "c") is None
+    assert model_aliases(project, ["a", "b", "c", "missing"]) == {
+        "a": "a_table",
+        "b": "b_table",
+        "c": None,
+    }
 
 
 # --- Snapshot and diff beyond the acceptance tests ----------------------------------------------
@@ -633,6 +635,83 @@ def test_compare_by_key_reports_a_reference_the_gateway_blocks(cmp_db: Path) -> 
     blocked = "SELECT * FROM read_csv('/tmp/x.csv') AS r(k, int_v)"
     with pytest.raises(ToolError, match=r"(?i)read_csv"):
         compare_by_key(DuckDBGateway(cmp_db), "cmp_model", ["k"], blocked)
+
+
+class RecordingGateway:
+    """A DuckDB gateway that keeps every statement it runs."""
+
+    dialect = "duckdb"
+
+    def __init__(self, path: Path) -> None:
+        self._gateway = DuckDBGateway(path)
+        self.statements: list[str] = []
+
+    def query(self, sql: str, row_limit: int = 1000) -> Any:
+        self.statements.append(sql)
+        return self._gateway.query(sql, row_limit)
+
+
+def test_compare_by_key_runs_the_reference_in_one_statement(cmp_db: Path) -> None:
+    """Ticket 50: the reference is evaluated by one statement (besides the column header, which
+    `WHERE 1 = 0` keeps from running it), under a MATERIALIZED CTE: inlined into the counting
+    and sampling statements, a reference that runs in 0.5 s alone was planned into one that
+    timed out after 150 s, once per statement."""
+    gateway = RecordingGateway(cmp_db)
+    sql = "SELECT * FROM (VALUES (1, 5), (2, 8), (4, 0)) AS ref_once_marker(k, int_v)"
+    result = compare_by_key(gateway, "cmp_model", ["k"], sql)
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (1, 1, 1)
+    running = [s for s in gateway.statements if "ref_once_marker" in s and "WHERE 1 = 0" not in s]
+    assert len(running) == 1, running
+    assert "AS MATERIALIZED" in running[0]
+
+
+def test_compare_by_key_keeps_a_key_named_like_an_internal_column(cmp_db: Path) -> None:
+    """Review of ticket 50: a key column named `__kind` must not be read as the statement's own
+    row kind (it bucketed rows wrongly when keys kept their names in the joined rows)."""
+    con = duckdb.connect(str(cmp_db))
+    try:
+        con.execute('CREATE TABLE collkey ("__kind" INTEGER, v INTEGER)')
+        con.execute("INSERT INTO collkey VALUES (1, 5), (2, 6)")
+    finally:
+        con.close()
+    sql = 'SELECT * FROM (VALUES (1, 7), (3, 6)) AS r("__kind", v)'
+    result = compare_by_key(DuckDBGateway(cmp_db), "collkey", ["__kind"], sql)
+    assert result["samples"]["only_in_model"] == [{"__kind": 2}]
+    assert result["samples"]["only_in_reference"] == [{"__kind": 3}]
+    assert result["samples"]["mismatched"] == [
+        {"key": {"__kind": 1}, "column": "v", "model": 5, "reference": 7}
+    ]
+
+
+def test_compare_by_key_reads_the_project_once_whatever_the_changed_models(
+    cmp_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket 50: the refusal check reads each dbt project's files once per call, not once per
+    changed model (21 changed models in a 2377-file project took 30 s per call)."""
+    from data_agent.verifier_v2 import project as project_module
+
+    project = tmp_path / "ws" / "p"
+    (project / "models").mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: p\n")
+    names = [f"m{i}" for i in range(6)]
+    for name in names:
+        (project / "models" / f"{name}.sql").write_text("SELECT 1")
+    walks: list[str] = []
+    original = project_module.files_under
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        walks.append(str(args[1]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(project_module, "files_under", counted)
+    sql = "SELECT * FROM (VALUES (1, 5)) AS r(k, int_v)"
+    gateway = DuckDBGateway(cmp_db)
+    counts = []
+    for changed in (names[:1], names):
+        walks.clear()
+        compare_by_key(gateway, "cmp_model", ["k"], sql, changed, workspace=tmp_path / "ws")
+        counts.append(len(walks))
+    assert counts[0] == counts[1], counts
 
 
 # --- Against Postgres (return 1): the join condition must be one Postgres full-joins on ----
