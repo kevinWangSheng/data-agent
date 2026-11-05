@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from data_agent.verifier_v2.model_diff import model_diff
-from data_agent.verifier_v2.project import dbt_projects, model_config, model_files, project_config
+from data_agent.verifier_v2.project import (
+    dbt_projects,
+    model_config,
+    model_files,
+    project_config,
+    read_text,
+    referenced_models,
+)
 from data_agent.verifier_v2.report import parse_report
 
 RULES = {
@@ -88,6 +95,35 @@ def stop_decision(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> 
             checks = ", ".join(f"CHECK {n}" for n in failed)
             reasons.append({"model": model, "rule": 3, "detail": f"{RULES[3]} ({checks})"})
     return {"block": bool(reasons), "reasons": reasons}
+
+
+def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> list[str]:
+    """The models a verifier dispatch after the first lists, sorted: every model `stop_decision`
+    names (never reported, changed since its report, FAIL in it), every model whose last report
+    has a NEEDS_INFO (it does not block, but the main agent dispatches again for it), and, of
+    the changed models, those that `ref()` one of these, transitively: a model's fingerprint
+    covers only its own files, so an upstream edit leaves it unchanged. Empty when none."""
+    files: dict[str, Path] = {}
+    for project in dbt_projects(workspace):
+        for name, path in model_files(project).items():
+            files.setdefault(name, path)
+    again = {reason["model"] for reason in stop_decision(state, workspace, snapshot)["reasons"]}
+    again |= {
+        model
+        for model, record in state.items()
+        if model in files and "NEEDS_INFO" in record["checks"].values()
+    }
+    refs = {
+        model: referenced_models(read_text(files[model]))
+        for model in changed_models(workspace, snapshot)
+        if model in files
+    }
+    grew = True
+    while grew:
+        downstream = {model for model, used in refs.items() if used & again} - again
+        again |= downstream
+        grew = bool(downstream)
+    return sorted(again)
 
 
 def describe(reasons: list[dict[str, Any]]) -> str:

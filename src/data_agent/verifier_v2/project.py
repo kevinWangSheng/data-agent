@@ -282,6 +282,17 @@ def referenced_vars(sql: str) -> set[str]:
     return set(VAR_CALL_RE.findall(sql))
 
 
+# `ref('m')`, `ref("m")`, `ref('package', 'm')`; a version keyword (`ref('m', v=2)`) is not a
+# second quoted argument. A ref built at render time (`ref(var('x'))`, a macro that calls ref)
+# is not seen.
+REF_CALL_RE = re.compile(r"""\bref\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?""")
+
+
+def referenced_models(sql: str) -> set[str]:
+    """The model names a model's Jinja passes to `ref()`."""
+    return {second or first for first, second in REF_CALL_RE.findall(sql)}
+
+
 def _collect(node: dict[str, Any], values: dict[str, Any]) -> None:
     for key in CONFIG_KEYS:
         for form in (f"+{key}", key):
