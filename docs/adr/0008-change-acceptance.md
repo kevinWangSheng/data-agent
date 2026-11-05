@@ -92,3 +92,12 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
   - 报告写明回归题在 full 和 no-verifiers 两组里各自的结果。
 - **题面和评分器不一致的题**：cohort-retention-matrix、dbt-customer-cltv-forecasting、dbt-inventory-turnover-analysis、fifo-inventory-cogs、promotional-lift-analysis、dbt-fix-marketing-attribution。照常计分，不从分母里去掉，不作为任何工单的目标题，也不为它们写规则（Skill 不写针对某道题的内容）。在报告里列为已知限制。
 - **止损线**：开发集迭代的实际累计花费提到 ¥500，覆盖到冒烟测试为止。统一评估约 ¥170，开跑前由人确认时再定是否继续提高。
+
+## Update 2026-11-05：本轮加入 7 项基础修复
+
+工单 47 的初筛（`runs/t47-screen`）暴露出超时、尾延迟和固定开销问题，取证见 `docs/research/2026-11-05-foundation-latency-audit.md`。人决定（2026-11-05）把 7 项修复全部算进 Update 2026-11-04 的这一轮，不算新开一轮。冲突处以本节为准。
+
+- 工单：`.scratch/foundation/issues/` 下 51 计时、52 v2 工具缓存、53 dbt 固定开销、54 截止时间、55 守卫与提示、56 并发与 DuckDB 资源；删主 agent 例行自查（#4）作为工单 47 的特批第 3 轮退回。
+- 验证规则沿用 Update 2026-11-04：确定性修复用单元测试（含一个修复前会失败的测试）加单题真实运行；改变行为的工单跑目标题 × 3。本节的工单各自写明真实运行的题和验收数。
+- 工单 47 的过线初筛等 51、52 和 47 第 3 轮退回合入后再跑；过线标准不变（≥8/15，验证器墙钟中位数 ≤155 s），新报告里的 p95/p99 只用来观察。
+- 止损线 ¥500 不变。冒烟测试和统一评估的规则不变：全部工单（含本节）合入后冒烟，统一评估仍须人确认。

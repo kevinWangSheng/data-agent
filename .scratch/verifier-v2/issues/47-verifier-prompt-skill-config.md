@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -151,3 +151,15 @@ hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
 - pos-operations 两个 trial（FMEvAdp 过、4V2pNtq 不过）在验证器跑到一半撞 Harbor 4000 s agent 超时（`result.json` 里 `AgentTimeoutError`），没有 `verifier_end`。主 agent 在派验证器前自己就调了 41–44 次 `compare_by_key`。
 - 原因已由工单 50 取证并修（PR #49，分支 `worktree-50-compare-by-key-perf`）：参考 SQL 嵌进现有语句后优化器计划极差（单独 0.5 s，嵌入后 300 s 超时），以及每次调用重复遍历 dbt 项目（pos-operations 一次 30 s）。修后本地 pos-operations 一次调用 1.8 s、cross-sell 那条 1.6 s。
 - 结论：提示词已定稿（0126941），再在 0126941 上重跑不会改变墙钟。**过线初筛等工单 50 合入后在新 main 上跑**（5 题 × 3，约 ¥18），两条线一起判。本工单保持 `in-review`。
+
+### 2026-11-05 主会话（退回第 3 轮，人特批；ADR-0008 Update 2026-11-05）
+
+依据：`docs/research/2026-11-05-foundation-latency-audit.md` §4。t47-screen 里主 agent 派验证器前的 compare_by_key/grain_facts 调用（pos 32/21/0、cross-sell 10/2/2、web 0/8/5）全是例行自查，没有一次是回应 FAIL；每个模型的参考 SQL 被主 agent 和验证器各写一遍。上游 SignalPilot 第 8 步没有主 agent 自查（`signalpilot-plugin/.../skills/dbt-workflow/SKILL.md:261-272`）。人 2026-11-05 定（grilling Q15）。
+
+**退回：删掉 Skill 第 8 步的主 agent 例行键级自查。**
+- `skills/dbt-workflow/SKILL.md`（0126941）第 8 步 2. 末尾"Then, whether or not the verifier ran, run the key-level check yourself: … as in step 3."（:258-273）删掉。只在无验证者回退时保留这段（"If no verifier is available" 一类的条件下，主 agent 自己做键级检查，写法照原文）。
+- 3. 里"unless your key-level check shows a difference there"、4. 里"and your key-level check matches"和"The verifier and your key-level check are the final authority"（:279-280、:284-289）改成不依赖主 agent 自查：有验证器时，STOP 只看最新报告。
+- 主 agent 自己调 `compare_by_key`/`grain_facts` 只在三种情况：没有验证器可用；复现某个 FAIL，只针对那一个模型、一次调用；粒度类 NEEDS_INFO（0126941 `verifiers.py` VERIFIERS_PROMPT 已有的写法，保留）。这一条写进第 8 步或 VERIFIERS_PROMPT，两处不重复。
+- 测试：`tests/test_dbt_skills.py` 断言第 8 步不再含"whether or not the verifier ran"，有验证器时 STOP 条件不提主 agent 自查；无验证者回退仍有键级检查；VERIFIERS_PROMPT 的三种情况都在。先红后绿。
+- Authority 不变（第 8 步、`verifiers.py`、`tests/`）。
+- 合入前的过线初筛（5 题 × 3）由主会话在 51、52 和本轮修复合入后，在新 main 上跑；过线标准不变。
