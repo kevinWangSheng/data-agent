@@ -76,6 +76,7 @@ from sqlglot.optimizer.scope import Scope, build_scope
 from data_agent import verifier_v2 as v2
 from data_agent.context_tools import RunQuery, Table, is_text, literal, quote
 from data_agent.db_facts import LoadCatalog
+from data_agent.tool_annotations import READ_ONLY
 from data_agent.verifier_v2.db import RunQueryable
 from data_agent.verifier_v2.render import (
     render_compare,
@@ -1414,7 +1415,7 @@ def register_verifier_tools(
             raise ToolError(f"Error: {project_dir!r} is not a dbt project (no dbt_project.yml)")
         return project
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def map_columns(model_name: str, project_dir: str, exclude: str = "") -> str:
         """Map a dbt model's upstream columns against its YML contract.
 
@@ -1430,7 +1431,7 @@ def register_verifier_tools(
         excluded = {name.lower() for name in split_names(exclude)}
         return "\n".join(map_model(run, load, project, model_name, sql_path, excluded))
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def check_model_schema(model_name: str, yml_columns: str) -> str:
         """Compare a built model's columns with the comma-separated column list from its YML:
         matching, missing, extra and case-mismatched columns, and wrong types. Give a column as
@@ -1476,7 +1477,7 @@ def register_verifier_tools(
             ]
         )
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def audit_model_sources(model_name: str, source_tables: str, sample_nulls: bool = True) -> str:
         """Row counts of a model and its upstream tables (comma-separated `source_tables`, at
         most 10) with model/source ratios, sample rows, and per-column distinct and NULL counts,
@@ -1502,7 +1503,7 @@ def register_verifier_tools(
             )
         return root, snapshot_dir
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def model_diff() -> str:
         """List every dbt model created, changed or removed since the run started, and for each
         the before/after facts that differ, by category: `source` (ref/source tables), `filter`
@@ -1515,7 +1516,7 @@ def register_verifier_tools(
         workspace, snapshot_path = v2_paths()
         return render_model_diff(v2.model_diff(workspace, snapshot_path, dialect))
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def contract_check(models: str, task_columns: str = "") -> str:
         """For each model (comma-separated) report three facts: whether it exists in the
         database; whether its columns meet the contract, which is the columns the task text
@@ -1539,7 +1540,7 @@ def register_verifier_tools(
             )
         )
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def grain_facts(model: str, key_columns: str) -> str:
         """Count the rows of `model` whose grain key is NULL and the duplicate rows per key.
         The key is `key_columns` (comma-separated) plus any column the project's original YML
@@ -1556,7 +1557,7 @@ def register_verifier_tools(
             v2.grain_facts(workspace, snapshot_path, v2_gateway, model, keys, catalog=load)
         )
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def compare_by_key(model: str, key_columns: str, reference_sql: str) -> str:
         """Compare `model` with an independent `reference_sql` over every key (FULL OUTER JOIN,
         no sampling) and report how many keys are only in the model, only in the reference, or

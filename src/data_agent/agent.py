@@ -134,9 +134,9 @@ Task type: dbt
 Database: {database}. dbt writes to it through the project's profile; you read it only through the \
 `{server}` MCP tools.
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
-Bash runs only dbt commands{scripts}, from the working directory; for a project in a \
-subdirectory, pass --project-dir and --profiles-dir. Relative paths in a profile resolve from the \
-working directory.
+Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
+`cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
+directory. Do not edit `profiles.yml`.
 
 <task>
 {task}

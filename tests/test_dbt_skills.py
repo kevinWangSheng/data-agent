@@ -10,7 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from data_agent.agent import DBT_SKILLS, SKILLS_DIR, TASK_FILE_NOTE, dbt_scripts, load_skills
+from data_agent.agent import (
+    DBT_PROMPT,
+    DBT_SKILLS,
+    MCP_SERVER,
+    SKILLS_DIR,
+    TASK_FILE_NOTE,
+    dbt_scripts,
+    load_skills,
+)
 from data_agent.run_config import load_config
 from data_agent.verifiers import AGENTS_DIR, VERIFIERS_PROMPT
 
@@ -506,3 +514,37 @@ def test_scan_names_the_step_1_sections_the_summary_had_to_cut(tmp_path: Path) -
     assert len(warning) == 1, output[-2000:]
     assert "MODELS TO BUILD, DEPENDENCIES, REQUIRED COLUMNS" in warning[0]
     assert "STUBS TO REWRITE" not in warning[0]
+
+
+# Ticket 49: in accept-2, 97 of 180 trials edited `profiles.yml` because the prompt taught
+# `--project-dir`/`--profiles-dir` (whose relative paths then resolve from the workspace, not the
+# project). The guard allows `cd <dir> && dbt ...` inside the workspace, which needs neither.
+def test_dbt_prompt_teaches_cd_into_the_project_not_project_dir_flags() -> None:
+    text = DBT_PROMPT.format(
+        server=MCP_SERVER,
+        database="DuckDB",
+        workspace="/w",
+        task="t",
+        scripts="",
+        task_file_note="",
+    )
+    assert "--project-dir" not in text
+    assert "--profiles-dir" not in text
+    assert "`cd <project_dir> && dbt ...`" in text
+    assert "profiles.yml" in text and "do not edit" in text.lower()
+
+
+def test_workflow_validate_section_states_the_real_default_timeout() -> None:
+    """validate_project.py's default is 300 s; the Skill must not say 60."""
+    text = body("dbt-workflow").split("## Validate Project (Standalone)", 1)[1]
+    section = text.split("\n## ", 1)[0]
+    assert "(default 300)" in section
+    assert "default 60" not in section
+
+
+def test_workflow_forbids_reading_dbt_generated_json() -> None:
+    """`target/run_results.json` and `target/manifest.json` are single-line files too long for the
+    context (ticket 41 screening: two oversized Read errors). Results come from dbt's own output."""
+    rules = body("dbt-workflow").split("\n## Rules", 1)[1]
+    assert "target/" in rules
+    assert "run_results.json" in rules and "manifest.json" in rules

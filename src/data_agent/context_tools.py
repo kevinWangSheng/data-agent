@@ -43,6 +43,7 @@ from data_agent.db_facts import (
     table_facts,
 )
 from data_agent.gateway import Gateway, QueryBlocked, QueryFailed, QueryInterrupted, Session
+from data_agent.tool_annotations import READ_ONLY
 
 # `literal` is re-exported for verifier_tools, with the other db_facts names it imports here.
 __all__ = ["Table", "find_table", "literal", "register_context_tools"]
@@ -506,7 +507,7 @@ def register_context_tools(
     the verifier tools; `dialect` is the gateway's, for the table facts hydrate reads;
     `dictionary` is the prebuilt value dictionary dictionary_search answers from."""
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def discover(query: str, limit: int = 10) -> dict[str, list[dict[str, Any]]]:
         """Search table, view and column names; returns refs with a short summary, best first.
 
@@ -528,7 +529,7 @@ def register_context_tools(
             ]
         }
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def hydrate(ref: str) -> str:
         """Read one table or view in full: exact row count, every column with its type and
         whether it may be null, join candidates found from `<x>_id` columns, then the declared
@@ -544,7 +545,7 @@ def register_context_tools(
         lines.extend(key_lines(facts))
         return "\n".join(lines)
 
-    @server.tool()
+    @server.tool(annotations=READ_ONLY)
     def dictionary_search(keyword: str) -> str:
         """Find real values of categorical columns that contain `keyword` (ignores case), with
         their counts, to match dirty keys and enum spellings before filtering or joining.
