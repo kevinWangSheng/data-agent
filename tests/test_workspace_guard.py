@@ -29,6 +29,18 @@ async def decide(
     protected: tuple[Path, ...] = (),
     readable: tuple[Path, ...] = (),
 ) -> str:
+    output = await hook_output(workspace, tool, tool_input, protected, readable)
+    return output.get("permissionDecision", "none")
+
+
+async def hook_output(
+    workspace: Path,
+    tool: str,
+    tool_input: dict[str, Any],
+    protected: tuple[Path, ...] = (),
+    readable: tuple[Path, ...] = (),
+) -> dict[str, Any]:
+    """The guard's `hookSpecificOutput` for one call; empty when it lets the call run."""
     guard = workspace_guard(workspace, protected, readable)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
@@ -40,7 +52,7 @@ async def decide(
         "tool_use_id": "u",
     }
     output: Any = await guard(hook_input, "u", {"signal": None})
-    return output.get("hookSpecificOutput", {}).get("permissionDecision", "none")
+    return output.get("hookSpecificOutput", {})
 
 
 @pytest.mark.parametrize(
@@ -448,6 +460,27 @@ async def test_grep_excluding_a_whole_directory_skips_the_credentials_in_it(
     assert await decide(with_sample_env, "Grep", tool_input) == decision
 
 
+# Review of ticket 55: ripgrep reads `[^s]` as "not s" and `\.` as an escaped dot, where Python's
+# fnmatch reads a class holding `^` and a literal backslash. Such a glob decides nothing: an
+# excluding one skips no file, an including one keeps every file.
+@pytest.mark.parametrize(
+    "glob",
+    [
+        # fnmatch: `d` is in the class, so the directory is skipped; ripgrep: `d` is excluded.
+        "!**/[^d]bt_packages/**",
+        # Same for a file name: fnmatch skips postgres.env and duckdb.env, ripgrep neither.
+        "!*[^sb].env",
+        # ripgrep reads `\e` as `e`, so this keeps both samples; fnmatch matches neither.
+        r"*.\env",
+        r"!**/dbt\_packages/**",
+    ],
+)
+async def test_grep_globs_ripgrep_reads_differently_skip_nothing(
+    with_sample_env: Path, glob: str
+) -> None:
+    assert await decide(with_sample_env, "Grep", {"pattern": "select", "glob": glob}) == "deny"
+
+
 async def test_grep_excluding_a_directory_still_denies_a_credential_elsewhere(
     with_sample_env: Path,
 ) -> None:
@@ -457,25 +490,12 @@ async def test_grep_excluding_a_directory_still_denies_a_credential_elsewhere(
     assert await decide(with_sample_env, "Grep", tool_input) == "deny"
 
 
-async def grep_reason(workspace: Path, tool_input: dict[str, Any]) -> str:
-    guard = workspace_guard(workspace)
-    hook_input: Any = {
-        "hook_event_name": "PreToolUse",
-        "session_id": "s",
-        "transcript_path": "t",
-        "cwd": str(workspace),
-        "tool_name": "Grep",
-        "tool_input": tool_input,
-        "tool_use_id": "u",
-    }
-    output: Any = await guard(hook_input, "u", {"signal": None})
-    return output["hookSpecificOutput"]["permissionDecisionReason"]
-
-
 async def test_grep_denial_shows_a_filter_that_would_run(with_sample_env: Path) -> None:
     """Ticket 55: the denial names the files and gives filters the model can copy, and each of them
     does pass the guard."""
-    reason = await grep_reason(with_sample_env, {"pattern": "select"})
+    reason = (await hook_output(with_sample_env, "Grep", {"pattern": "select"}))[
+        "permissionDecisionReason"
+    ]
     assert 'type: "sql"' in reason
     assert 'glob: "!**/dbt_packages/**"' in reason
     for retry in ({"type": "sql"}, {"glob": "!**/dbt_packages/**"}):
@@ -486,6 +506,8 @@ async def test_grep_denial_offers_no_directory_glob_for_a_top_level_credential(
     with_credentials: Path,
 ) -> None:
     """A `.env` right in the search path lies in no directory to exclude; `type` still helps."""
-    reason = await grep_reason(with_credentials, {"pattern": "KEY"})
+    reason = (await hook_output(with_credentials, "Grep", {"pattern": "KEY"}))[
+        "permissionDecisionReason"
+    ]
     assert 'type: "sql"' in reason
     assert "!**/" not in reason

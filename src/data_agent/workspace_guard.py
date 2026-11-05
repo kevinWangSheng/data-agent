@@ -123,15 +123,28 @@ def _grep_globs(glob: str) -> list[str]:
     return pieces
 
 
+def _name_matches(name: str, pattern: str) -> bool | None:
+    """Whether one path segment `name` matches the glob segment `pattern` (case-sensitive), or
+    None where ripgrep reads the glob otherwise than fnmatch: `[^...]` (negation in ripgrep, a
+    class holding `^` in fnmatch) and a backslash (an escape in ripgrep, literal in fnmatch)."""
+    if "\\" in pattern or "[^" in pattern:
+        return None
+    return fnmatch.fnmatchcase(name, pattern)
+
+
 def _glob_matches(pattern: str, path: Path) -> bool | None:
     """Whether a ripgrep `--glob` (case-sensitive) matches `path`. A file-name pattern (no slash,
     or `**/` and a name) is matched against the name. A path pattern is only ruled out, when its
     last segment cannot match the name: ripgrep's `*` stops at a slash and where it anchors the
-    rest depends on how the search path was given, so otherwise the answer is None."""
+    rest depends on how the search path was given, so otherwise the answer is None. It is None
+    too when the name segment uses syntax fnmatch reads otherwise (`_name_matches`)."""
     _, _, last = pattern.removeprefix("**/").rpartition("/")
     if last == "**":
         return None
-    matched = any(fnmatch.fnmatchcase(path.name, p) for p in _expand_braces(last))
+    names = [_name_matches(path.name, p) for p in _expand_braces(last)]
+    if None in names:
+        return None
+    matched = any(names)
     if "/" in pattern.removeprefix("**/") and matched:
         return None
     return matched
@@ -150,7 +163,7 @@ def _below_directory(pattern: str, path: Path) -> bool:
     parents, width = path.parts[:-1], len(segments)
     return any(
         all(
-            fnmatch.fnmatchcase(part, segment)
+            _name_matches(part, segment) is True
             for part, segment in zip(window, segments, strict=True)
         )
         for window in (parents[i : i + width] for i in range(len(parents) - width + 1))
