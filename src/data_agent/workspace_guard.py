@@ -17,6 +17,7 @@ Read and Grep may also open the files Claude Code saves an over-long tool output
 
 import fnmatch
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -48,6 +49,8 @@ GREP_TYPES = {
     "csv": ("*.csv",),
     "txt": ("*.txt",),
 }
+# A `{...}` group of a Grep glob, without nesting (ripgrep refuses nested groups).
+BRACE_GROUP = re.compile(r"\{([^{}]*)\}")
 # Where Claude Code saves a tool output too long to return inline, relative to the home directory.
 TOOL_RESULTS = (".claude", "projects", None, "tool-results")
 
@@ -84,18 +87,18 @@ def _names_credential(base: Path, raw: str) -> bool:
     return is_credential(Path(raw).name) or is_credential(resolve(base, raw).name)
 
 
-def _credentials_below(directory: Path) -> list[Path]:
-    """Every credential file below `directory`, relative to it; symlinked directories are not
-    followed, and a credential-named directory counts with the files it holds."""
+def _files_below(directory: Path) -> list[Path]:
+    """Every file below `directory`, relative to it; symlinked directories are not followed."""
     found: list[Path] = []
     for root, _, files in os.walk(directory):
         relative = Path(root).relative_to(directory)
-        found.extend(
-            relative / name
-            for name in sorted(files)
-            if is_credential(name) or any(is_credential(part) for part in relative.parts)
-        )
+        found.extend(relative / name for name in sorted(files))
     return found
+
+
+def _is_credential_path(path: Path) -> bool:
+    """`path` names a credential file, or lies in a credential-named directory."""
+    return any(is_credential(part) for part in path.parts)
 
 
 def _expand_braces(pattern: str) -> list[str]:
@@ -123,18 +126,56 @@ def _grep_globs(glob: str) -> list[str]:
     return pieces
 
 
+def _name_matches(name: str, pattern: str) -> bool | None:
+    """Whether one path segment `name` matches the glob segment `pattern` (case-sensitive), or
+    None where ripgrep reads the glob otherwise than fnmatch: `[^...]` (negation in ripgrep, a
+    class holding `^` in fnmatch), a backslash (an escape in ripgrep, literal in fnmatch) and a
+    `{` or `}` left over (ripgrep expands a group, fnmatch reads it literally)."""
+    if any(syntax in pattern for syntax in ("\\", "[^", "{", "}")):
+        return None
+    return fnmatch.fnmatchcase(name, pattern)
+
+
 def _glob_matches(pattern: str, path: Path) -> bool | None:
     """Whether a ripgrep `--glob` (case-sensitive) matches `path`. A file-name pattern (no slash,
     or `**/` and a name) is matched against the name. A path pattern is only ruled out, when its
     last segment cannot match the name: ripgrep's `*` stops at a slash and where it anchors the
-    rest depends on how the search path was given, so otherwise the answer is None."""
+    rest depends on how the search path was given, so otherwise the answer is None. It is None
+    too when the name segment uses syntax fnmatch reads otherwise (`_name_matches`), and when a
+    `{...}` group holds a slash (ripgrep lets an alternative span directories) or an empty
+    alternative (which ripgrep drops)."""
+    if any("/" in group or "" in group.split(",") for group in BRACE_GROUP.findall(pattern)):
+        return None
     _, _, last = pattern.removeprefix("**/").rpartition("/")
     if last == "**":
         return None
-    matched = any(fnmatch.fnmatchcase(path.name, p) for p in _expand_braces(last))
+    names = [_name_matches(path.name, p) for p in _expand_braces(last)]
+    if None in names:
+        return None
+    matched = any(names)
     if "/" in pattern.removeprefix("**/") and matched:
         return None
     return matched
+
+
+def _below_directory(pattern: str, path: Path) -> bool:
+    """`pattern` is `**/<dir>/**` (`<dir>` one or more segments, no `**`) and `path` (relative to
+    the search path) lies below such a directory. The leading `**/` lets the glob match wherever
+    ripgrep starts, and ripgrep never enters a directory an excluding glob matches. Only the
+    directories below the search path are compared: how Grep hands ripgrep the search path itself
+    (as given, absolute, with symlinks followed) is not known here."""
+    middle = pattern.removeprefix("**/").removesuffix("/**")
+    segments = middle.split("/")
+    if not (pattern.startswith("**/") and pattern.endswith("/**")) or "**" in segments:
+        return False
+    parents, width = path.parts[:-1], len(segments)
+    return any(
+        all(
+            _name_matches(part, segment) is True
+            for part, segment in zip(window, segments, strict=True)
+        )
+        for window in (parents[i : i + width] for i in range(len(parents) - width + 1))
+    )
 
 
 def _filter_skips(path: Path, glob: str | None, file_type: str | None) -> bool:
@@ -142,11 +183,14 @@ def _filter_skips(path: Path, glob: str | None, file_type: str | None) -> bool:
     last glob that matches decides; when none does and an including glob exists, the file is out;
     a file an including glob keeps is searched whatever `type` says; `type` decides the rest.
     A path glob is read the safe way: an including one keeps the file, an excluding one is
-    ignored."""
+    ignored unless it is `!**/<dir>/**` and the file lies below such a directory."""
     decision = None
     globs = _grep_globs(glob) if glob else []
     for pattern in globs:
         excluding = pattern.startswith("!")
+        if excluding and _below_directory(pattern.removeprefix("!"), path):
+            decision = "skip"
+            continue
         matched = _glob_matches(pattern.removeprefix("!"), path)
         if matched is None:
             matched = not excluding
@@ -247,13 +291,40 @@ def _grep_credentials(
         return [shown]
     if not base.is_dir():
         return []
+    files = _files_below(base)
     reached = [
-        path for path in _credentials_below(base) if not _filter_skips(path, glob, file_type)
+        path
+        for path in files
+        if _is_credential_path(path) and not _filter_skips(path, glob, file_type)
     ]
     if not reached:
         return []
     names = ", ".join(str(Path(shown) / path) for path in reached)
-    return [f"{shown} (holds credential files {names}; add a glob or type that skips them)"]
+    examples = ['type: "sql"']
+    if retry := _excluding_retry(files, reached, glob, file_type):
+        examples.append(f'glob: "{retry}"')
+    return [
+        f"{shown} (holds credential files {names}; add a filter that skips them, for example "
+        f"{' or '.join(examples)})"
+    ]
+
+
+def _excluding_retry(
+    files: list[Path], reached: list[Path], glob: str | None, file_type: str | None
+) -> str | None:
+    """The call's `glob` with `!**/<dir>/**` added, `<dir>` being the closest directory below the
+    search path that holds every credential `reached`; None unless that glob then skips every
+    one of them and no other file among `files` (so it never hides the project's own models)."""
+    common = os.path.commonpath([path.parent for path in reached])
+    if common in ("", "."):
+        return None
+    pattern = f"**/{Path(common).name}/**"
+    retry = f"{glob} !{pattern}" if glob else f"!{pattern}"
+    if not all(_filter_skips(path, retry, file_type) for path in reached):
+        return None
+    if any(_below_directory(pattern, path) for path in files if not _is_credential_path(path)):
+        return None
+    return retry
 
 
 def workspace_guard(
