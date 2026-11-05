@@ -211,6 +211,24 @@ def test_model_settings_reach_the_agent_and_the_model_comes_from_harbor(local: L
     assert seen["DATA_AGENT_MODEL"] == "deepseek-v4-pro"
 
 
+def test_dbt_defaults_to_the_target_the_image_parsed_with(local: Local) -> None:
+    """data-eng-bench builds its image with `dbt ... --target dev` (base-image/Dockerfile:64) and
+    the target is part of dbt's partial-parse key, so a bare `dbt run` re-parsed the whole project
+    on each trial's first call (43-83 s). DBT_TARGET is dbt's own variable for `--target`."""
+    cls, tmp_path = local
+    env = LocalEnvironment(container_env(tmp_path, 0, jsonl(result_event())))
+    seen: dict[str, str] = {}
+    original = env.exec
+
+    async def spy(command: str, **kwargs: Any) -> ExecResult:
+        seen.update(kwargs.get("env") or {})
+        return await original(command, **kwargs)
+
+    env.exec = spy  # type: ignore[method-assign]
+    run(make_agent(cls, tmp_path), env)
+    assert seen["DBT_TARGET"] == "dev"
+
+
 def test_an_unfinished_agent_is_left_to_the_verifier(local: Local) -> None:
     """Exit 1 (turn or budget cap): an agent failure, scored by the verifier, never retried."""
     cls, tmp_path = local

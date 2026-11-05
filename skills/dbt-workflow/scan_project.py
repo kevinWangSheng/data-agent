@@ -23,6 +23,8 @@
 # report that fits is printed whole. Otherwise the five sections the Skill's Step 1 records (STUBS TO
 # REWRITE, MODELS TO BUILD, DEPENDENCIES, REQUIRED COLUMNS, AVAILABLE MACROS) come first, then the
 # other sections in order, cut at whole lines with `… N more lines in <report path>`.
+# MODELS TO BUILD parses each yml under models/ once into a model -> (yml, siblings) index instead
+# of re-parsing every yml for each missing model; the printed report is unchanged.
 """Pre-scan a dbt project and emit a structured context block.
 
 Used by the dbt-workflow SKILL.md via !`python3 scan_project.py` to inject
@@ -522,6 +524,28 @@ def main():
     print(summary(report, path))
 
 
+def _model_yml_index(work_dir: Path) -> dict[str, tuple[str, list[str]]]:
+    """Model name -> (the yml under models/ that defines it, the other models in that yml).
+
+    Each yml is parsed once. When several define a model, the last one walked wins."""
+    index: dict[str, tuple[str, list[str]]] = {}
+    for yf in (work_dir / "models").rglob("*.yml"):
+        if "dbt_packages" in str(yf) or not _inside(yf, work_dir):
+            continue
+        try:
+            import yaml
+            with open(yf) as f:
+                data = yaml.safe_load(f)
+            if data and "models" in data:
+                names = [md.get("name", "") for md in data["models"]]
+                rel = str(yf.relative_to(work_dir))
+                for m in (n for n in names if isinstance(n, str)):
+                    index[m] =(rel, [n for n in names if n != m])
+        except Exception:
+            pass
+    return index
+
+
 def print_report(work_dir: Path) -> None:
     # Scan YML
     yml_models: set[str] = set()
@@ -573,25 +597,11 @@ def print_report(work_dir: Path) -> None:
 
     print("MODELS TO BUILD (defined in YML but no SQL file — create EXACT filenames):")
     if missing_models:
+        model_ymls = _model_yml_index(work_dir)
         for m in sorted(missing_models):
             mat = all_materializations.get(m, "table")
-            # Find which YML file defines this model and list sibling models
-            yml_file = ""
-            siblings_in_yml = []
-            for yf in (work_dir / "models").rglob("*.yml"):
-                if "dbt_packages" in str(yf) or not _inside(yf, work_dir):
-                    continue
-                try:
-                    import yaml
-                    with open(yf) as f:
-                        data = yaml.safe_load(f)
-                    if data and "models" in data:
-                        names = [md.get("name", "") for md in data["models"]]
-                        if m in names:
-                            yml_file = str(yf.relative_to(work_dir))
-                            siblings_in_yml = [n for n in names if n != m]
-                except Exception:
-                    pass
+            # Which YML file defines this model, and its sibling models there
+            yml_file, siblings_in_yml = model_ymls.get(m, ("", []))
             sib_str = f"  siblings: {', '.join(siblings_in_yml)}" if siblings_in_yml else ""
             yml_str = f"  YML: {yml_file}" if yml_file else ""
             print(f"  → {m}.sql  (materialized={mat}){yml_str}")

@@ -85,6 +85,11 @@ DISCONNECTED = re.compile(
 )
 # The variables `data-agent run` reads its model from (agent.ModelSettings).
 MODEL_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_BASE_URL", "DATA_AGENT_MODEL")
+# data-eng-bench builds its image with `dbt ... --target dev` (base-image/Dockerfile:64), and the
+# target is part of dbt's partial-parse key: a dbt call without `--target` re-parsed the whole
+# project on each trial's first call. DBT_TARGET is dbt's environment variable for `--target`;
+# the agent's Bash and validate_project.py inherit it. Set here only, for data-eng-bench (ADR-0005).
+DBT_ENV = {"DBT_TARGET": "dev"}
 # Pinned like the other tools; the container has no uv of its own. install() uploads uv's static
 # Linux build for the container's `uname -m`, fetched here and checked against the release's
 # `<archive>.sha256`.
@@ -315,7 +320,9 @@ class DataAgent(BaseInstalledAgent):
         self.instruction = instruction
         try:
             await self.exec_as_agent(
-                environment, command=self._run_command(instruction), env=self._model_env()
+                environment,
+                command=self._run_command(instruction),
+                env=self._model_env() | DBT_ENV,
             )
         except NonZeroAgentExitCodeError as exc:
             result = await self._last_result(environment)
