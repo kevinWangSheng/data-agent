@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -101,3 +101,8 @@ hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
 - 已修（8bde360）：第 8 步在括号里复述 FAIL 规则、无验证者回退文本被改写（Standards 1、Spec 1/2）；系统提示词的停止句没给"主 agent 自己解决了 NEEDS_INFO"留出口（Fable 1）；报告模板原样复制会解析成 PASS，改成 `<PASS|FAIL|NEEDS_INFO|N/A>`（Fable 4）；第 8 步行数句点名 CHECK 3 而它现在是粒度检查，改成 CHECK 3 和 7（Fable 3）；改动说明换行（Standards 4）。
 - 不修，Authority 外：Skill `## Tools` 一节仍把 `verify_model_values` 写成"value-verifier 在第 8 步用"（Standards 3、Fable 2），运行时无害（有"仅当在你的工具列表里"的限定，且工具未注册），需后续工单；`verifier_v2/dispatch.py`、`hooks.py` 里"until ticket 47 removes it"的过时注释同理。
 - 不修，设计如此：`VERIFIER_MAX_TURNS` 在 `verifiers.py` 和 `verifier_v2/hooks.py` 各定义一份（hooks 导入 verifiers，反向会循环；hooks.py 在 Authority 外），有测试钉住两者相等。`VERIFIER_NAMES` 仍是单元素元组，`agent.py` 和 `hooks.py` 按成员判断。验证者工具表不含 `map_columns`、`check_model_schema`、`audit_model_sources`：spec 的"保留的旧工具"指 server 保留（已保留），4 步不需要它们（Spec 4）。
+- 2026-11-05 主会话：PR #48 已开。Codex app 替代审查（Fable 5.1）。核过没问题的：verifier.md 的 `### <model>` + `CHECK n: STATUS — detail` 与 `report.py` 的 `MODEL_RE`/`CHECK_RE` 一致，`N/A` 能匹配，尖括号模板不会解析成 PASS，`### Summary` 不记录；4 步只用定义里有的工具，`task_columns` 格式与 `parse_task_columns` 一致；verifier.md 只依赖派单模板的三个字段，"主 agent 提供的反证"标题与 `UNVERIFIED_HEADING` 一致；系统提示词的 FAIL/NEEDS_INFO/Stop 措辞与 spec 和三条规则一致；第 8 步无针对题目的内容；配置文件未变。**退回**（第 1 轮）：
+  - 退回 1（P2）：`agents/verifier.md:131-146`（第 4 步）与 `verifier_v2/compare.py:144-154`：提示词没要求参考 SQL 的非键列用模型的列名，而工具只比较两边同名的列。场景：题面"每客户总收入"，验证者写 `SUM(amount) AS revenue`，模型列叫 `total_revenue`，工具回 "compared columns: (none)"，三个计数全 0，按"全 0 即 PASS"得出空洞的 CHECK 7 PASS。修法：第 4 步要求参考 SQL 的输出列别名成模型的列名；compared columns 为空时记 NEEDS_INFO 而不是 PASS。
+  - 退回 2（P2）：`agents/verifier.md:85-88`（第 2 步）允许粒度键"取自运行前就存在的 YML"，但验证者只能 Read 当前项目的 YML（快照目录被守卫拦，`model_diff` 不报 YML 改动），分不清是原有的还是主 agent 新写的。场景：题面没说粒度，主 agent 在新建的 schema.yml 里给粗键加 `unique` 测试，验证者拿它调 `grain_facts`，CHECK 3 按 agent 自己的定义通过，正是 ADR-0009 禁止的。修法：粒度键只从题面取，题面没有就 NEEDS_INFO；需要原有 YML 的豁免时依赖 `grain_facts` 自己从快照 YML 读出的 "exemption candidate" 行，不让验证者自己去读 YML 当键源。
+  - 不退回（P3）：Skill `## Tools` 仍写 `verify_model_values`（Authority 外，已记）；无验证者回退文本里的 "value CHECK 2" 编号（刻意原样恢复）；`hooks.py`、`dispatch.py` 里 "until ticket 47" 的过时注释（Authority 外）。这三条交对齐会话定是否开清理工单。
+  - 初筛 `t47-screen` 已在 8bde360 上开跑（主会话决定不等闲时，多花约 ¥15）；过线判定要在修后的提交上重跑，这次的数据只看墙钟和轮数分布。
