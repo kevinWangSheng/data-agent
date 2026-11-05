@@ -151,7 +151,9 @@
 > - 冲突：51 和 54 都改 `agent.py`（54 排在 51 后面）；55 也改 `agent.py`（只动 `DBT_PROMPT`、`TASK_FILE_NOTE`）；53 和 47 都改 `SKILL.md`，后合入的解决冲突。
 > - 真实运行（主会话跑，都是小额，按默认放行规则不用再批）：51 receivables × 1；52 pos-operations × 1（排在 51 合入后，看 `duration_ms`）；53 receivables × 1；54 pos-operations × 1（`--ak agent_timeout_sec=1500`）；55 daily-cohorts × 1。
 > - 47 的过线初筛（5 题 × 3，约 ¥18）在 51、52 和 47 第 3 轮退回都合入后，在新 main 上跑；过线标准不变。之后全部工单合入、冒烟，统一评估仍须人确认。
-> - 第 4–6 条待决策已在 grilling 里定了（见工单 54、53、56）；第 7 条原有未决项不变。
+> - 第 4–6 条待决策已在 grilling 里定了（见工单 54、53、56）。
+> - **人已定（2026-11-05）**：集成测试 `test_updated_input_replaces_the_prompt_end_to_end`（`tests/acceptance/test_verifier_v2.py:778`）的断言改成"`ORIGINAL-123` 不出现，并且任务文件的内容或路径至少出现一个"（选项 A），不保留 `xfail`。人授权改这个验收测试；编排会话做这处小改动，source 模型 env 跑一次这个集成测试，结果记到工单 46 Comments。
+> - 仍待人定：工单 56 的 DuckDB `memory_limit`、`max_temp_directory_size` 数值（等服务器只读检查结果）。
 >
 > **待决策（原列表，第 1–3 条已按上面决定）：**
 > 1. **范围**：ADR-0008 Update 2026-11-04 定的是"修一轮，这是最后一轮"。#1–#7 算不算这一轮？算的话要写 ADR-0008 Update；不算，就只修影响过线的 #3、#4，其余记成已知限制。建议算进来：都是 $0 的确定性修复或提示词改动，不加评测花费。

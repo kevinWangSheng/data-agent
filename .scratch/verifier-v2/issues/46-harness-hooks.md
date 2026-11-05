@@ -170,3 +170,7 @@ Check customer_ltv; upstream is raw.orders
 - 审查：`da-review` at capacity；eng:code-review 已修（aa67771）：解析/取哈希抛错时派单项没弹出导致一直拦 rule 2（Spec P2，改成先弹出再解析，配测试）；配对测试最后一个断言被 MAX_BLOCKS 掩盖（加断言无 `ended_with_unresolved`）；队列上界注释如实；测试常量提出。
 - 不修：上界不解决泄漏，Stop 时清队列会让在飞的后台验证者漏报，按原样记已知限制；PreToolUse/SubagentStop 仍接 `(OSError, ValueError)`；取哈希失败的 `None` 队首对所有在飞报告"取现在"，已记 `error` 事件；`1.CHECK`、`**1.** CHECK` 不解析。
 - 2026-11-05 主会话：`t46-real2`（commit aa67771，最终提交；同一题 × 1 full）：reward 1（1/1），实际价 $0.2976（高峰），内存峰值 2.0 GB。这次跑出了闭环：第一次 `verifier` 报告 CHECK 2 FAIL（`overall FAIL`，turns 9），主 agent 修改后再派，第二次 6 个 CHECK 全 PASS/N/A（turns 7）；`value-verifier` PASS（turns 19）。没有 `ended_with_unresolved`、没有 `error` 事件，`evals exited 0`。PR #47 在 aa67771 上 CI 绿，两轮退回已用完，squash 合入。集成测试 `updatedInput` 用例的断言问题仍交人（见上），不阻塞合入。
+
+### 2026-11-05 人定
+
+集成测试 `test_updated_input_replaces_the_prompt_end_to_end` 的断言改成"`ORIGINAL-123` 不出现，并且任务文件内容（`Build customer_ltv.`）或路径（`task-v2-marker.md`）至少出现一个"，不保留 `xfail`。人授权修改这个验收测试；由编排会话改，并跑一次真实集成测试确认。
