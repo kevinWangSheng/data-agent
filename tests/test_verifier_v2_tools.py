@@ -601,6 +601,40 @@ def test_compare_by_key_casts_a_reference_key_of_another_type(cmp_db: Path) -> N
         compare_by_key(gateway, "cmp_model", ["k"], bad)
 
 
+def test_compare_by_key_refuses_a_reference_key_the_cast_would_round(cmp_db: Path) -> None:
+    """The cast must not pair keys that are not equal: CAST(2.6 AS INTEGER) is 3, and a DOUBLE
+    1.505 lands on a DECIMAL(5,2) key as 1.51. Such a reference is an error naming the value,
+    not a match; a reference key whose text survives the cast (a text '3') is fine, and so
+    is one the reference casts itself."""
+    con = duckdb.connect(str(cmp_db))
+    try:
+        con.execute("CREATE TABLE dec_key (k DECIMAL(5,2), v INTEGER)")
+        con.execute("INSERT INTO dec_key VALUES (1.50, 1)")
+    finally:
+        con.close()
+    gateway = DuckDBGateway(cmp_db)
+    rounded = "SELECT * FROM (VALUES (2.6, 7), (3.0, 1)) AS r(k, int_v)"
+    with pytest.raises(ToolError, match=r'"k".*INTEGER.*2\.6'):
+        compare_by_key(gateway, "cmp_model", ["k"], rounded)
+    for exact in (
+        "SELECT * FROM (VALUES ('3', 1)) AS r(k, int_v)",
+        "SELECT CAST(k AS INTEGER) AS k, int_v FROM (VALUES (3.0, 1)) AS r(k, int_v)",
+    ):
+        result = compare_by_key(gateway, "cmp_model", ["k"], exact)
+        counts = (result["only_in_model"], result["only_in_reference"], result["mismatched"])
+        assert counts == (2, 0, 1), exact
+    narrowed = "SELECT * FROM (VALUES (1.505, 1)) AS r(k, v)"
+    with pytest.raises(ToolError, match=r'"k".*DECIMAL\(5,2\).*1\.505'):
+        compare_by_key(gateway, "dec_key", ["k"], narrowed)
+
+
+def test_compare_by_key_reports_a_reference_the_gateway_blocks(cmp_db: Path) -> None:
+    """A reference the read-only gateway refuses is a tool error with the gateway's reason."""
+    blocked = "SELECT * FROM read_csv('/tmp/x.csv') AS r(k, int_v)"
+    with pytest.raises(ToolError, match=r"(?i)read_csv"):
+        compare_by_key(DuckDBGateway(cmp_db), "cmp_model", ["k"], blocked)
+
+
 # --- Against Postgres (return 1): the join condition must be one Postgres full-joins on ----
 
 
@@ -622,6 +656,8 @@ def postgres_cmp(tmp_path: Path) -> PostgresGateway:
         )
         con.execute("CREATE TABLE da_t45.all_null (a INTEGER, b TEXT, v INTEGER)")
         con.execute("INSERT INTO da_t45.all_null VALUES (1, NULL, 5), (2, NULL, 6)")
+        con.execute("CREATE TABLE da_t45.char_key (k CHAR(3), v INTEGER)")
+        con.execute("INSERT INTO da_t45.char_key VALUES ('abc', 1), ('abd', 2)")
         con.execute(
             "INSERT INTO da_t45.cmp_model VALUES "
             "(1, 12.35, 1000000.0, 5, 'a', DATE '2024-01-01'), "
@@ -681,6 +717,14 @@ def test_compare_by_key_casts_a_reference_key_of_another_type_on_postgres(
     bad = "SELECT * FROM (VALUES ('one'::text, 5)) AS r(k, int_v)"
     with pytest.raises(ToolError, match=r'invalid input syntax.*"one"'):
         compare_by_key(postgres_cmp, "cmp_model", ["k"], bad)
+    rounded = "SELECT * FROM (VALUES (2.6, 7)) AS r(k, int_v)"
+    with pytest.raises(ToolError, match=r'"k".*integer.*2\.6'):
+        compare_by_key(postgres_cmp, "cmp_model", ["k"], rounded)
+    # information_schema says `character` without the length, which CAST reads as char(1):
+    # a char(n) key is left uncast and pairs with a text reference as before.
+    chars = "SELECT * FROM (VALUES ('abc'::text, 1), ('abd', 3)) AS r(k, v)"
+    result = compare_by_key(postgres_cmp, "char_key", ["k"], chars)
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (0, 0, 1)
 
 
 # --- MCP wrappers over stdio ------------------------------------------------------------------
