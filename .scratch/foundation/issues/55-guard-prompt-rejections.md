@@ -161,3 +161,13 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - 未确认：Claude Code Grep 是否给 rg 传 `--hidden`。只影响 rg 实际跳过多少文件，不影响守卫的判定。
 - 服务器真实运行待主会话：`dbt-fix-daily-cohorts` × 1（full）。看 Grep `/app` 类拒绝在第一次拒绝之后是否消失，也就是 agent 是否照提示改用 `!**/.env/**`。
 - 合并后 origin/main 又前进到 18fb985（含 52）。与本分支没有重叠文件，`git merge-tree` 无冲突，没有再次合并。
+
+### 2026-11-05 主会话（服务器复测 `t55-real2`，109c4fc）
+
+`scripts/da-remote start t55-real2 -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task dbt-fix-daily-cohorts --out runs/t55-real2 --budget 2 --config full --trials 1`：1/1，$0.0796。
+
+- 守卫拒绝 4 次（t55-real 5 次；t47-screen 平均每 trial 4.4 次）。
+  - `echo $DB_TYPE` 合成：0 次（t47-screen 15/15 个 trial 都有）。
+  - Bash 串命令：3 次（seq 19、21 `cd … && find`/`cat … && ls`，seq 43 Bash 里跑 `grep`）。提示词那句没拦住，拒绝后 agent 改用 Glob/Read/Grep。
+  - Grep 被拦：1 次（seq 75，path 为项目目录）。之后 agent 改搜 `models/` 加 `glob: "**/*.yml"`，再没被拦（t55-real 3 次）。
+- 结论：Grep 类从每次都撞变成撞一次就绕开；Bash 串命令仍有，属于提示词没压住的部分，记为已知限制。
