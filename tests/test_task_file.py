@@ -19,15 +19,17 @@ from data_agent.run_config import load_config
 # Quotes, a trailing space and no final newline: the file must keep the text byte for byte.
 TASK_TEXT = 'Build `fct_orders`:\n  - "net" = gross - refunds \nKeep cancelled orders. ünïcode'
 
-# DBT_PROMPT before ticket 32, kept here so runs without the verifier layer can be compared to it.
+# DBT_PROMPT without the verifier layer's task-file note (ticket 32), kept here so runs without
+# the layer can be compared to it. Its dbt-command sentence follows ticket 49 (`cd`, no
+# profiles.yml edit).
 DBT_PROMPT_BEFORE = """\
 Task type: dbt
 Database: {database}. dbt writes to it through the project's profile; you read it only through the \
 `{server}` MCP tools.
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
-Bash runs only dbt commands{scripts}, from the working directory; for a project in a \
-subdirectory, pass --project-dir and --profiles-dir. Relative paths in a profile resolve from the \
-working directory.
+Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
+`cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
+directory. Do not edit `profiles.yml`.
 
 <task>
 {task}
