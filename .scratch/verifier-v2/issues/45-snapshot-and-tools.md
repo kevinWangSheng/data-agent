@@ -1,6 +1,6 @@
 # 45 — 快照与 4 个确定性验证工具
 
-Status: in-progress
+Status: in-review
 Blocked by: 44（done）, 39（phase1，done）
 Spec: ../spec.md
 Claimed by: claude (worktree 45-snapshot-and-tools)
@@ -57,10 +57,77 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1（eng:code-review Standards + Spec，4 条 spec 问题已修；Codex `da-review` 工单会话 3 次、主会话 1 次都 "at capacity"，改看 PR 上的 Codex app）
+- Model spend: $0（无模型调用）
+- Outcome: in-review，branch `worktree-45-snapshot-and-tools`（commits 9d7bf06、7fc40d2，主会话补 1 个删 seam B 测试的提交），PR #46；服务器真实运行待主会话
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（worktree 45-snapshot-and-tools）
+
+**结果**：44 里 24 个工单 45 的验收测试去掉 `xfail` 后全绿，另加 28 个单元测试（`tests/test_verifier_v2_tools.py`）。`make check` 干净（ruff、format、basedpyright，1615 passed）。一条测试工单会话无权修：`tests/acceptance/test_seam_b_mcp_server.py::test_verify_model_values` 调用已被拿掉的工具。
+
+**交主会话的两个决定**
+1. 删掉 seam B 的 `test_verify_model_values`（spec 说该工具已去掉；`test_new_tools_follow_the_verifiers_switch` 正是断言这一点）。
+2. 快照路径通过环境变量 `DATA_AGENT_SNAPSHOT_DIR` 传给 MCP server（在 `build_options` 里设，和 Postgres URL 同一方式），因为 `cli.py` 和 `mcp_server.py` 在 Authority 之外。要更干净可以加 `--snapshot` 参数，需扩范围。
+
+**第 3 步本地真实运行**（无服务器权限；stdio 驱动 MCP server 对 verifier_v2 夹具，快照取自 `project_before`，workspace 换成 `project_after`）：
+
+```
+tools: audit_model_sources, check_model_schema, compare_by_key, contract_check, describe_table, dictionary_search, discover, explain_query, grain_facts, hydrate, list_tables, map_columns, model_diff, query_database
+
+$ model_diff({})
+### all_events (changed, project project)
+- [rows] changed: UNION  ->  UNION ALL
+### conditional (changed, project project)
+未解析 (not parsed: Jinja statements or SQL sqlglot could not read); line diff against the snapshot:
+-WHERE status = 'pending'
++WHERE status IN ('pending', 'review')
+### customer_ltv (new, project project)
+- [source] added: stg_orders
+- [grain] added: GROUP BY customer_id
+- [config] added: materialized: table
+### daily_sales (changed, project project)
+- [config] changed: materialized: view  ->  materialized: table
+### ranked_orders (changed, project project)
+- [window] changed: ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date, order_id)  ->  ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date)
+### stg_customers (changed, project project)
+- [source] changed: raw.customers  ->  raw.customers_v2
+### stg_orders (changed, project project)
+- [filter] removed: WHERE status <> 'cancelled'
+### top_orders (changed, project project)
+- [rows] added: LIMIT 100
+
+$ contract_check(models="stg_orders, ranked_orders, customer_ltv", task_columns="customer_ltv: customer_id, lifetime_value")
+### stg_orders
+exists: PASS — main.stg_orders exists (table)
+columns: FAIL — contract from snapshot_yml: order_id, customer_id, status, amount, order_date; missing: status; extra: none
+window ordering: N/A — no window function was added or changed in this model
+### ranked_orders
+window ordering: FAIL — ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_date): 1 rows share their ORDER BY value (order_date) within PARTITION BY customer_id; the ordering is not unique
+### customer_ltv
+columns: PASS — contract from task: customer_id, lifetime_value; missing: none; extra: bonus_col
+
+$ grain_facts(model="daily_sales", key_columns="store_id")
+rows with a NULL key: 0
+duplicate rows (beyond the first per key): 1
+exemption candidate: the snapshot YML at project/models/schema.yml declares store_id, sale_date unique
+
+$ compare_by_key(model="cmp_model", key_columns="k", reference_sql="SELECT customer_id AS k, sum(amount) AS dec_v FROM stg_orders GROUP BY 1")
+Rejected: the reference SQL reads stg_orders: a reference must not read the model under test or any model created or changed in this run
+```
+
+**快照开销，合成 2356 模型项目**（真实镜像上的数字待服务器运行）：快照 2405 个文件、0.85 MB、0.69 s；`model_diff` 无改动 0.43 s，10 个改动 0.46 s。
+
+**审查**：Codex `da-review main` 三次 "Selected model is at capacity"，未跑。eng:code-review Standards：无硬问题；smell 已处理（共享计数帮助函数、只遍历一次表、kind 帮助函数、`workspace_alias` 改名、删未用的 `diffs` 参数）。按 Authority 不修：`verifier_tools.py` 里的 `verify_values` 及其帮助函数成了死代码，走 MCP 的测试已删，等 47 一起拿掉 value-verifier 提示词时清理。eng:code-review Spec：4 条都修了并配回归测试：粒度豁免只在 YML 点名键以外的列时成立；项目 `vars` 只作用于 SQL 里调了 `var()` 的模型；`compare_by_key` 拒绝带限定名的被测模型和别名下的改动模型；计数按不同键而不是 join 后的行。
+
+**设计说明**：YAML 用小型子集解析器 `verifier_v2/yaml_lite.py`（pyyaml 只是传递的 dev 依赖，`pyproject.toml` 在 Authority 外）。`model_diff` 也报告删除的模型（`status: "removed"`）和 SQL 内 `config()` 的改动。
+
+### 2026-11-05 主会话
+
+- 决定 1：照工单会话建议，主会话在 45 分支上删掉 seam B 的 `test_verify_model_values`（含未用的 `re` 导入），该文件 30 passed，`make check` 1615 passed、16 xfailed。决定 2：接受环境变量 `DATA_AGENT_SNAPSHOT_DIR`，与 Postgres URL 同一方式，不扩范围。
+- 主会话再跑 `da-review main` 第 4 次仍 "at capacity"；改看 PR #46 的 Codex app 审查。分支已 push，PR #46 已开。
+- 与 48（PR #45）的关系：后合入的那张给 4 个新工具加 `annotations=READ_ONLY`，48 的测试会把漏的抓出来。
+- 服务器真实运行排在 `t48-real` 之后。

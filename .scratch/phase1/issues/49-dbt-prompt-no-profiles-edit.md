@@ -99,3 +99,4 @@ End with a final message that lists the models you created or changed, how the l
 
 - 主会话在 worktree 里再跑 `da-review main`，第三次仍 "at capacity"；改以 PR #44 上的 Codex app 审查代替。
 - 初筛 `t49-screen` 开跑：服务器 setup 到 51bd7a0，`ablate --split dev --task dbt-fix-daily-cohorts --out runs/t49-screen --budget 2 --config full --trials 3`。对照 accept-2 full 同题 3/3（trial 7n8t9SV、84NpxAx、9FNRgGg 都 reward 1.0）。
+- 2026-11-05 主会话：初筛 `t49-screen`（commit 51bd7a0；`ablate --split dev --config full --task dbt-fix-daily-cohorts --trials 3 --budget 2`）：成功 **3/3**（trial ffjEhFL、joNQgrn、nN5SMyU 都 reward 1.0；accept-2 full 同题 3/3）。过程指标（机械计数，`runs/t49-screen/jobs/full/*/agent/events/`）：`profiles.yml` Edit 0 次；`--project-dir` 0 次；`cd <dir> && dbt` 3、4、3 次；Read `target/*.json` 0 次；"exceeds maximum allowed tokens" 0 次。实际价 $0.3599（4 个事件文件全在高峰）。内存峰值 2.9 GB。过线。
