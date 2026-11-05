@@ -50,10 +50,16 @@ def test_parse_report_reads_checks_only_at_line_start_under_a_heading() -> None:
         ("### Model: orders", "CHECK 2: FAIL — a labelled heading"),
         ("### 1. orders", "CHECK 2: FAIL — a numbered heading"),
         ("### Model `orders`", "CHECK 2: FAIL — a label without a colon"),
+        ("### **Model:** orders", "CHECK 2: FAIL — a bold label"),
     ],
 )
 def test_parse_report_normalizes_headings_and_allows_bold(heading: str, line: str) -> None:
     assert parse_report(f"{heading}\n{line}\n")["models"] == {"orders": {2: "FAIL"}}
+
+
+@pytest.mark.parametrize("heading", ["### table", "### Model: table", "### 2. Model table"])
+def test_parse_report_keeps_a_model_named_like_a_label(heading: str) -> None:
+    assert parse_report(f"{heading}\nCHECK 1: PASS — ok\n")["models"] == {"table": {1: "PASS"}}
 
 
 def test_parse_report_resolves_aliases_and_case_against_the_workspace(tmp_path: Path) -> None:
@@ -287,6 +293,26 @@ async def test_hooks_fingerprint_models_at_dispatch_time(edited: tuple[Path, Pat
     assert blocked["decision"] == "block" and "alpha: rule 2" in blocked["reason"]
 
 
+async def test_hooks_pair_each_report_with_its_own_dispatch(edited: tuple[Path, Path]) -> None:
+    """Two verifiers in flight: the first report takes the first dispatch's fingerprints, so an
+    edit between the two dispatches still counts as a change after that report; the second
+    report, on the edited file, clears it. (The SDK gives no field linking a SubagentStop to
+    its PreToolUse, so reports are paired with dispatches in order.)"""
+    workspace, _ = edited
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
+    verifier = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "go"}}
+    await call(hooks, "PreToolUse", **verifier)
+    (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
+    await call(hooks, "PreToolUse", **verifier)
+    report = "### alpha\nCHECK 1: PASS — ok\n"
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, report))
+    blocked = await call(hooks, "Stop", stop_hook_active=False)
+    assert blocked["decision"] == "block" and "alpha: rule 2" in blocked["reason"]
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, report))
+    assert await call(hooks, "Stop", stop_hook_active=True) == {}
+
+
 def broken(*args: Any, **kwargs: Any) -> dict[str, Any]:
     raise OSError("models/alpha.sql vanished mid-read")
 
@@ -308,7 +334,7 @@ async def test_stop_hook_lets_the_run_end_when_the_decision_fails(
 async def test_subagent_stop_keeps_its_state_when_recording_fails(
     edited: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("data_agent.verifier_v2.hooks.record_report", broken)
+    monkeypatch.setattr("data_agent.verifier_v2.hooks.record_checks", broken)
     events: list[dict[str, Any]] = []
     hooks = hooks_for(edited, events)
     report = "### alpha\nCHECK 1: PASS — ok\n"

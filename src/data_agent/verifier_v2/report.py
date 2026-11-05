@@ -11,8 +11,11 @@ from data_agent.verifier_v2 import project
 
 # `### <model>` on its own line.
 MODEL_RE = re.compile(r"^###\s+(.+?)\s*$")
-# What a heading may put before the model name: a list number (`1.`) or a label (`Model:`).
-HEADING_PREFIX_RE = re.compile(r"^(?:\d+[.)]\s*|(?:model|table|relation)\b\s*:?\s*)+", re.I)
+# What a heading may put before the model name: a list number (`1.`) or a label (`Model:`,
+# possibly bold). Something must follow, so a model named `table` keeps its name.
+HEADING_PREFIX_RE = re.compile(
+    r"^(?:\d+[.)]\s*|\**(?:model|table|relation)\b\**\s*:?\**\s*)+(?=\S)", re.I
+)
 # `CHECK <n>: <STATUS>` at the start of a line, so a check quoted inside another line's reason is
 # not read as a verdict. A list bullet before it, `**` bold around the tokens, and the check's
 # title between the number and the colon (`CHECK 1 - Table Existence: PASS`, as the verifier's

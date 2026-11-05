@@ -16,6 +16,7 @@ whose handling by the CLI is unverified. SubagentStop then leaves the state as i
 lets the run end rather than wedge it.
 """
 
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,7 @@ from data_agent.verifier_v2.stop import (
     changed_models,
     describe,
     model_hashes,
-    record_report,
+    record_checks,
     stop_decision,
 )
 from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES, Emit
@@ -59,9 +60,12 @@ def run_hooks(
     dispatches = 0
     blocks = 0
     state: dict[str, Any] = {}
-    # The model fingerprints when the verifier was last dispatched; None before the first
-    # dispatch (or when hashing failed), which `record_report` reads as "hash now".
-    dispatched_hashes: dict[str, str] | None = None
+    # The model fingerprints at each verifier dispatch whose report has not arrived, oldest
+    # first. The SDK gives no field linking a SubagentStop to its PreToolUse, so a report takes
+    # the oldest outstanding dispatch's fingerprints: with two verifiers in flight that can
+    # pair a report with an earlier dispatch, which over-reports an edit (rule 2), never
+    # misses one. An empty entry (hashing failed) means "hash now".
+    dispatched: deque[dict[str, str] | None] = deque()
 
     def failed(hook: str, exc: Exception) -> None:
         emit("error", source="verifier_v2", hook=hook, error=f"{exc!r}")
@@ -69,7 +73,7 @@ def run_hooks(
     async def dispatch(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
-        nonlocal dispatches, dispatched_hashes
+        nonlocal dispatches
         fields: dict[str, Any] = dict(hook_input)
         projects = dbt_projects(workspace)
         output = rewrite_dispatch(
@@ -83,10 +87,10 @@ def run_hooks(
         if output:
             dispatches += 1
             try:
-                dispatched_hashes = model_hashes(workspace)
+                dispatched.append(model_hashes(workspace))
             except (OSError, ValueError) as exc:
                 failed("PreToolUse", exc)
-                dispatched_hashes = None
+                dispatched.append(None)
         return output  # type: ignore[return-value]
 
     async def subagent_stop(
@@ -108,9 +112,10 @@ def run_hooks(
         # ticket 47 removes it) are recorded but satisfy no Stop rule. A call at the turn cap is
         # NEEDS_INFO as a whole (`overall`); the check lines it did write stand.
         try:
-            if fields["agent_type"] == REWRITTEN_SUBAGENT:
-                state = record_report(state, report, workspace, hashes=dispatched_hashes)
             parsed = parse_report(report, hit_max_turns=hit_max_turns, workspace=workspace)
+            if fields["agent_type"] == REWRITTEN_SUBAGENT:
+                hashes = (dispatched.popleft() if dispatched else None) or model_hashes(workspace)
+                state = record_checks(state, parsed["models"], hashes)
         except (OSError, ValueError) as exc:
             failed("SubagentStop", exc)
             parsed = parse_report(report, hit_max_turns=hit_max_turns)

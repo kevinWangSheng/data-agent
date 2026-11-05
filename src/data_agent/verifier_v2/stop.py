@@ -52,8 +52,18 @@ def record_report(
     nothing."""
     if hashes is None:
         hashes = model_hashes(workspace)
+    return record_checks(state, parse_report(report, workspace=workspace)["models"], hashes)
+
+
+def record_checks(
+    state: Mapping[str, Any],
+    models: Mapping[str, Mapping[int, str]],
+    hashes: Mapping[str, str],
+) -> dict[str, Any]:
+    """`record_report` on an already parsed report (`parse_report`'s `models`), for a caller
+    that parsed it for its own record."""
     updated = {model: record for model, record in state.items() if model in hashes}
-    for model, checks in parse_report(report, workspace=workspace)["models"].items():
+    for model, checks in models.items():
         if model in hashes:
             updated[model] = {"checks": dict(checks), "sha256": hashes[model]}
     return updated
