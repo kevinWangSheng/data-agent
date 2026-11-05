@@ -3,10 +3,20 @@ model files, the per-model configuration in `dbt_project.yml`, and what the proj
 declares about a model (columns, tests, unique combinations).
 
 Files are read as text; YML goes through `yaml_lite`. Nothing here touches the database.
+
+Two things are cached for the process (ticket 52), each behind a lock because MCP runs the
+synchronous tools in a thread pool: the snapshot's YML documents (the snapshot does not change
+after it is taken), and each workspace project's model-name -> file map, which is walked again
+when the mtime of a directory it walked, or of one on the way to a model-paths directory,
+changes (adding, removing or renaming a file changes its directory's mtime), or when one of
+them had changed just before the walk (`RACY_NS`). File contents in the workspace are not
+cached.
 """
 
 import os
 import re
+import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,7 +98,24 @@ def logic_dirs(config: dict[str, Any]) -> list[str]:
 def files_under(project: Path, directory: str, suffixes: tuple[str, ...] | None) -> Iterator[Path]:
     """Files under `project/directory` (SKIP_DIRS pruned), with one of `suffixes` or any when
     None; files a symlink would lead out of the project are skipped."""
+    return _walk_files(project, directory, suffixes, None)
+
+
+def _walk_files(
+    project: Path,
+    directory: str,
+    suffixes: tuple[str, ...] | None,
+    mtimes: dict[Path, int | None] | None,
+) -> Iterator[Path]:
+    """`files_under`, recording into `mtimes` (when given) the mtime of every directory it lists,
+    taken before the listing, and of each directory from `project` down to the start, so that a
+    later change to any of them shows as a different mtime."""
     base = project / directory
+    if mtimes is not None:
+        for step in (base, *base.parents):
+            mtimes[step] = _mtime(step)
+            if step == project:
+                break
     root = project.resolve()
     if not base.is_dir() or not base.resolve().is_relative_to(root):
         return
@@ -97,6 +124,10 @@ def files_under(project: Path, directory: str, suffixes: tuple[str, ...] | None)
     # seconds per walk (ticket 50).
     for current, dirnames, filenames in os.walk(base):
         dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
+        if mtimes is not None:
+            # os.walk lists a subdirectory after yielding its parent.
+            for name in dirnames:
+                mtimes[Path(current) / name] = _mtime(Path(current) / name)
         for name in sorted(filenames):
             path = Path(current) / name
             if suffixes and path.suffix.lower() not in suffixes:
@@ -108,14 +139,54 @@ def files_under(project: Path, directory: str, suffixes: tuple[str, ...] | None)
             yield path
 
 
+def _mtime(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+# File systems stamp mtimes with a coarse clock (a few ms on Linux, up to 2 s on FAT), so a file
+# added within the same tick as a walk can leave its directory's mtime as the walk recorded it.
+# A walk that saw a directory changed less than this before it started is not trusted, as git
+# treats a "racily clean" index entry.
+RACY_NS = 2 * 10**9
+
+
+@dataclass(frozen=True)
+class _ModelFiles:
+    walked_at: int  # time.time_ns() before the walk
+    mtimes: dict[Path, int | None]
+    models: dict[str, Path]
+
+    def current(self) -> bool:
+        return all(
+            _mtime(path) == mtime and (mtime is None or mtime < self.walked_at - RACY_NS)
+            for path, mtime in self.mtimes.items()
+        )
+
+
+_model_files_lock = threading.Lock()
+_model_files: dict[tuple[Path, tuple[str, ...]], _ModelFiles] = {}
+
+
 def model_files(project: Path, config: dict[str, Any] | None = None) -> dict[str, Path]:
-    """model name -> SQL file, for the models under the project's model-paths."""
+    """model name -> SQL file, for the models under the project's model-paths. Walked again
+    only when a directory the last walk listed changed (see the module docstring)."""
     config = project_config(project) if config is None else config
-    models: dict[str, Path] = {}
-    for directory in resource_dirs(config, "model-paths", RESOURCE_PATHS["model-paths"]):
-        for path in files_under(project, directory, (".sql",)):
-            models.setdefault(path.stem, path)
-    return models
+    directories = tuple(resource_dirs(config, "model-paths", RESOURCE_PATHS["model-paths"]))
+    key = (project, directories)
+    with _model_files_lock:
+        cached = _model_files.get(key)
+        if cached is None or not cached.current():
+            walked_at = time.time_ns()
+            mtimes: dict[Path, int | None] = {}
+            models: dict[str, Path] = {}
+            for directory in directories:
+                for path in _walk_files(project, directory, (".sql",), mtimes):
+                    models.setdefault(path.stem, path)
+            cached = _model_files[key] = _ModelFiles(walked_at, mtimes, models)
+        return dict(cached.models)
 
 
 def yml_files(project: Path, config: dict[str, Any] | None = None) -> list[Path]:
@@ -282,9 +353,22 @@ def yml_documents(project: Path, config: dict[str, Any] | None = None) -> list[Y
     return documents
 
 
+_snapshot_lock = threading.Lock()
+_snapshot_documents: dict[Path, list[YmlFile]] = {}
+
+
 def snapshot_documents(snapshot: Path) -> list[YmlFile]:
-    """Every project YML file under the snapshot, read once."""
-    return [document for project in dbt_projects(snapshot) for document in yml_documents(project)]
+    """Every project YML file under the snapshot, read once per process: the snapshot does not
+    change after it is taken (spec "快照")."""
+    with _snapshot_lock:
+        documents = _snapshot_documents.get(snapshot)
+        if documents is None:
+            documents = _snapshot_documents[snapshot] = [
+                document
+                for project in dbt_projects(snapshot)
+                for document in yml_documents(project)
+            ]
+        return list(documents)
 
 
 def entries_in(documents: list[YmlFile], model: str) -> list[ModelEntry]:
