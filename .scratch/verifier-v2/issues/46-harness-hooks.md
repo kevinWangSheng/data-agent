@@ -119,3 +119,4 @@ Check customer_ltv; upstream is raw.orders
 ### 2026-11-05 主会话
 
 - PR #47 已开。工单会话指出的 `evals/process.py:52`、`evals/atif.py:150` 按列表读 `verifier_end.checks` 的问题会让 `ablate` 收尾（`report.py` → `job_metrics`）在 v2 运行上抛错，服务器真实运行前必须修。在 Authority 加一行，交回同一工单会话补一个小提交：两处同时接受列表和映射（映射时取每个模型下各 check 的 status），配测试；不算退回轮。
+- 2026-11-05 主会话：集成测试 `test_updated_input_replaces_the_prompt_end_to_end`（主会话 source 模型 env，deepseek-flash）跑了 2 次都失败，但两次都证明替换生效：输出里没有 `ORIGINAL-123`，子 agent 的内容来自改写后的 prompt。第 1 次子 agent 没回显 `RECEIVED:`，而是照改写 prompt 的指令去读任务文件、核对 `model_diff` 列的模型，写了一份验证报告（第一条断言失败）；第 2 次回显了 `RECEIVED:Build customer_ltv.`，即读了任务文件回显其内容而不是 prompt 原文，可见文本里没有文件名 `task-v2-marker.md`（第三条断言失败）。原因：44 的 spike 用短字符串 `REPLACED-456` 做替换，真实改写 prompt 是一整段"先 Read 任务文件、验证这些模型"的指令，对模型的约束比 AgentDefinition 的"原样回显"强。这是 44 验收测试的断言设计问题，不是 46 的钩子问题；按 AGENTS 规矩不能改验收测试，**交人定**：改成断言"原 prompt 消失 + 任务文件内容或路径出现"，或记为已知限制、该用例保留 `xfail`。
