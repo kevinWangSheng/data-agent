@@ -171,6 +171,26 @@ def test_a_verifier_cut_off_ends_at_its_agent_call_or_the_trial_end(tmp_path: Pa
     assert row["verifier_unclosed"] == 2
 
 
+def test_parallel_verifiers_cut_off_end_at_their_own_agent_calls(tmp_path: Path) -> None:
+    """Two Agent calls dispatched together; their verifiers start in the same order. a1 is cut
+    off, a2 ends at 100 s. Paired in order, a1 takes v1 and ends when v1 returned (150 s);
+    paired with the latest call before it, it would take v2 and run to 400 s."""
+    events = [
+        {"type": "version", "ts": at(0)},
+        {"type": "tool_start", "ts": at(10), "tool": "Agent", "tool_use_id": "v1"},
+        {"type": "tool_start", "ts": at(10.5), "tool": "Agent", "tool_use_id": "v2"},
+        *verifier("a1", 11, None),
+        *verifier("a2", 12, 100),  # closed: still takes its own call, v2
+        {"type": "tool_end", "ts": at(150), "tool": "Agent", "tool_use_id": "v1"},
+        {"type": "tool_end", "ts": at(400), "tool": "Agent", "tool_use_id": "v2"},
+        {"type": "result", "ts": at(900)},
+    ]
+    row = trial_metrics(trial_with(tmp_path, *events))
+    # a1 takes v1 (ends 150); taking v2 (400) or the trial end would give more.
+    assert row["verifier_wall_s"] == 150.0 - 11.0
+    assert row["verifier_unclosed"] == 1
+
+
 def test_a_trial_without_verifiers_has_no_verifier_wall(tmp_path: Path) -> None:
     row = trial_metrics(trial_with(tmp_path, *parallel_batch(timed=True)))
     assert row["verifier_wall_s"] is None

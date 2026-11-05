@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import duckdb
+import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     HookContext,
@@ -16,8 +18,15 @@ from claude_agent_sdk import (
 )
 
 from data_agent import agent
-from data_agent.agent import ModelSettings, Task, record_message, tool_timing_hooks
+from data_agent.agent import (
+    TIMEOUT_TEXT,
+    ModelSettings,
+    Task,
+    record_message,
+    tool_timing_hooks,
+)
 from data_agent.events import EventLog
+from data_agent.gateway import DuckDBGateway, QueryTimedOut
 from data_agent.run_config import load_config
 
 BASE = {"session_id": "s", "transcript_path": "t", "cwd": "/w"}
@@ -130,6 +139,40 @@ async def test_a_gateway_timeout_is_marked_whether_the_call_failed_or_returned(
         },
     )
     assert [(e["failed"], e["timed_out"]) for e in events] == [(True, True), (False, True)]
+
+
+async def test_only_the_gateway_tools_can_time_out(tmp_path: Path) -> None:
+    """A Bash grep that prints the message, or a verifier report (the Agent call) quoting a
+    timeout its query_database call already counted, is no timeout of its own."""
+    message = "Query timed out after 150s"
+    events = await fire(
+        tmp_path,
+        {
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_input": {"command": "grep -r 'timed out' src"},
+            "tool_use_id": "c7",
+            "error": f"Exit code 1\nsrc/gateway.py: {message}",
+            "duration_ms": 40,
+        },
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "tool_input": {},
+            "tool_response": {"content": [{"type": "text", "text": f"CHECK 2: {message}"}]},
+            "tool_use_id": "c8",
+            "duration_ms": 300000,
+        },
+    )
+    assert [e["timed_out"] for e in events] == [False, False]
+
+
+def test_the_timeout_text_is_what_the_gateway_raises(tmp_path: Path) -> None:
+    db = tmp_path / "x.duckdb"
+    duckdb.connect(str(db)).close()
+    with pytest.raises(QueryTimedOut) as raised:
+        DuckDBGateway(db, timeout_seconds=0.5).query("SELECT count(*) FROM range(1000000000000)")
+    assert str(raised.value).startswith(TIMEOUT_TEXT)
 
 
 async def test_a_call_without_duration_records_none(tmp_path: Path) -> None:

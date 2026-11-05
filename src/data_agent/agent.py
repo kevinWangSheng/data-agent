@@ -769,8 +769,11 @@ def build_options(
 
 
 # The fixed start of the gateway's error for a statement cut off at its timeout
-# (`gateway.QueryTimedOut`); a call whose error or response holds it counts as timed out.
+# (`gateway.QueryTimedOut`; a test pins the two together). Only this run's MCP tools reach the
+# gateway, so only their errors or responses are read for it: a Bash grep, a Read of gateway.py or
+# an Agent report quoting the error is no timeout of its own.
 TIMEOUT_TEXT = "Query timed out after"
+GATEWAY_TOOLS = f"mcp__{MCP_SERVER}__"
 
 
 def tool_timing_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
@@ -783,16 +786,17 @@ def tool_timing_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
     ) -> HookJSONOutput:
         fields: dict[str, Any] = dict(hook_input)
         failed = fields.get("hook_event_name") == "PostToolUseFailure"
-        said = fields.get("error") if failed else fields.get("tool_response")
-        text = said if isinstance(said, str) else json.dumps(said, default=str)
+        tool = str(fields.get("tool_name"))
+        outcome = fields.get("error") if failed else fields.get("tool_response")
+        text = outcome if isinstance(outcome, str) else json.dumps(outcome, default=str)
         emit(
             "tool_timing",
-            tool=fields.get("tool_name"),
+            tool=tool,
             tool_use_id=fields.get("tool_use_id", tool_use_id),
             agent_id=fields.get("agent_id"),
             duration_ms=fields.get("duration_ms"),
             failed=failed,
-            timed_out=TIMEOUT_TEXT in text,
+            timed_out=tool.startswith(GATEWAY_TOOLS) and TIMEOUT_TEXT in text,
         )
         return {}
 

@@ -14,10 +14,9 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any
 
+from data_agent.verifiers import AGENT_TOOL
 from evals.harbor import Trial, last_event_file
 from evals.metrics import is_success
-
-AGENT_TOOL = "Agent"  # the tool that dispatches a subagent (data_agent.verifiers.AGENT_TOOL)
 
 EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 # The SDK ResultMessage subtypes of a run cut off by a limit (data_agent.agent's `Spend` writes the
@@ -65,42 +64,45 @@ def union_length(windows: list[tuple[float, float]]) -> float:
 
 
 def verifier_wall(
-    events: list[dict[str, Any]], trial_end: float | None
+    stamped: list[tuple[float, dict[str, Any]]], trial_end: float
 ) -> tuple[float | None, int]:
     """Seconds during which some verifier ran, and how many verifiers had no `verifier_end` (cut
-    off by a timeout). `verifier_start` and `verifier_end` pair by `agent_id`. An unclosed one ends
-    at the `tool_end` of the latest Agent call started before it (unless that came back first: a
-    background dispatch), else at the trial's last event. None when no verifier started."""
-    starts: dict[str, float] = {}
-    windows: list[tuple[float, float]] = []
-    agent_calls: dict[str, tuple[float, float | None]] = {}
-    for event in events:
-        when, kind = event_time(event), event.get("type")
-        if when is None:
-            continue
+    off by a timeout), from `(time, event)` pairs in file order. `verifier_start` and
+    `verifier_end` pair by `agent_id`. Verifiers and Agent calls pair in order: each verifier, by
+    start, takes the earliest Agent call started at or before it that no earlier verifier took.
+    An unclosed verifier ends when its Agent call returned (unless that came first: a background
+    dispatch), else at the trial's last event. None when no verifier started."""
+    starts: list[tuple[float, str]] = []
+    ends: dict[str, float] = {}
+    call_starts: list[tuple[float, str]] = []
+    call_ends: dict[str, float] = {}
+    for when, event in stamped:
+        kind = event.get("type")
         if kind == "verifier_start":
-            starts[str(event.get("agent_id"))] = when
-        elif kind == "verifier_end" and str(event.get("agent_id")) in starts:
-            windows.append((starts.pop(str(event.get("agent_id"))), when))
+            starts.append((when, str(event.get("agent_id"))))
+        elif kind == "verifier_end":
+            ends[str(event.get("agent_id"))] = when
         elif kind == "tool_start" and event.get("tool") == AGENT_TOOL:
-            agent_calls[str(event.get("tool_use_id"))] = (when, None)
-        elif kind == "tool_end" and str(event.get("tool_use_id")) in agent_calls:
-            call_id = str(event.get("tool_use_id"))
-            agent_calls[call_id] = (agent_calls[call_id][0], when)
-    if not starts and not windows:
+            call_starts.append((when, str(event.get("tool_use_id"))))
+        elif kind == "tool_end" and event.get("tool") == AGENT_TOOL:
+            call_ends[str(event.get("tool_use_id"))] = when
+    if not starts:
         return None, 0
-    claimed: set[str] = set()
-    for start in sorted(starts.values()):
-        before = [(at, i) for i, (at, _) in agent_calls.items() if at <= start and i not in claimed]
-        end = trial_end
-        if before:
-            call_id = max(before)[1]
-            claimed.add(call_id)
-            returned = agent_calls[call_id][1]
-            if returned is not None and returned > start:
-                end = returned
-        windows.append((start, max(start, end if end is not None else start)))
-    return union_length(windows), len(starts)
+    unclaimed = sorted(call_starts)
+    windows: list[tuple[float, float]] = []
+    unclosed = 0
+    for start, agent_id in sorted(starts):
+        call = next((c for c in unclaimed if c[0] <= start), None)
+        if call is not None:
+            unclaimed.remove(call)
+        if agent_id in ends:
+            windows.append((start, ends[agent_id]))
+            continue
+        unclosed += 1
+        returned = call_ends.get(call[1]) if call is not None else None
+        end = returned if returned is not None and returned > start else trial_end
+        windows.append((start, max(start, end)))
+    return union_length(windows), unclosed
 
 
 def trial_metrics(trial: Trial) -> dict[str, Any]:
@@ -120,7 +122,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     durations: dict[str, list[float]] | None = None
     timeouts: Counter[str] = Counter()
     untimed: Counter[str] = Counter()
-    timed: list[dict[str, Any]] = []
+    stamped: list[tuple[float, dict[str, Any]]] = []  # (time, event) of events with a timestamp
     if events is not None:
         with events.open(encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -130,8 +132,9 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
                     continue  # a line cut short by a killed run (as harbor_agent.parse_events)
                 if not isinstance(event, dict):
                     continue
-                if event_time(event) is not None:
-                    timed.append(event)
+                when = event_time(event)
+                if when is not None:
+                    stamped.append((when, event))
                 kind = event.get("type")
                 if kind == "result":
                     turns += int(event.get("num_turns") or 0)
@@ -154,9 +157,9 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
                         untimed[tool] += 1
                     if event.get("timed_out"):
                         timeouts[tool] += 1
-    times = [t for t in map(event_time, timed) if t is not None]
+    times = [when for when, _ in stamped]
     trial_end = max(times) if times else None
-    verifier_s, unclosed = verifier_wall(timed, trial_end)
+    verifier_s, unclosed = verifier_wall(stamped, trial_end) if trial_end is not None else (None, 0)
     return {
         "task": trial.task,
         "trial": trial.name,
@@ -211,8 +214,8 @@ def timing_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for row in timed:
             for tool, values in row["durations"].items():
                 pooled.setdefault(tool, []).extend(values)
-            timeouts.update(row["timeouts"] or {})
-            untimed.update(row.get("untimed") or {})
+            timeouts.update(row["timeouts"])
+            untimed.update(row["untimed"])
         names = pooled.keys() | timeouts.keys() | untimed.keys()
         tools = {
             tool: {
@@ -273,9 +276,9 @@ def timing_markdown(summaries: list[tuple[str, dict[str, Any] | None]]) -> list[
             MISSING if s.get(key) is None else str(s[key]) for key in ("timeouts", "untimed_calls")
         )
         lines.append(
-            f"| {name} | {quantile_cells(s.get('wall_s'))} | "
-            f"{quantile_cells(s.get('verifier_wall_s'))} | {s.get('verifier_unclosed', 0)} | "
-            f"{s.get('tool_calls', 0)} | {s.get('trials_timed', 0)}/{s.get('trials', 0)} | "
+            f"| {name} | {quantile_cells(s['wall_s'])} | "
+            f"{quantile_cells(s['verifier_wall_s'])} | {s['verifier_unclosed']} | "
+            f"{s['tool_calls']} | {s['trials_timed']}/{s['trials']} | "
             f"{timeouts} | {untimed} |"
         )
     lines += [
@@ -291,8 +294,7 @@ def timing_markdown(summaries: list[tuple[str, dict[str, Any] | None]]) -> list[
         for tool, t in tools.items():
             cells = " | ".join(seconds(t.get(key)) for key in QUANTILE_KEYS)
             lines.append(
-                f"| {name} | {tool} | {t['calls']} | {cells} | {t['timeouts']} | "
-                f"{t.get('untimed', 0)} |"
+                f"| {name} | {tool} | {t['calls']} | {cells} | {t['timeouts']} | {t['untimed']} |"
             )
     return lines
 
