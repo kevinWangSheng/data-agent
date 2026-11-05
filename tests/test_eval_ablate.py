@@ -1297,12 +1297,16 @@ def test_the_markdown_reports_timing_per_config_and_marks_what_is_missing() -> N
         "verifier_wall_s": {"p50": 150.0, "p90": 200.0, "p95": 210.0, "p99": 219.0},
         "verifier_unclosed": 1,
         "tool_calls": 140,
+        "trials": 3,
+        "trials_timed": 3,
         "timeouts": 2,
+        "untimed_calls": 0,
         "tools": {
-            "Bash": {"calls": 40, "p50": 2.0, "p90": 30.0, "p95": 45.0, "p99": 60.0, "timeouts": 0}
+            "Bash": {"calls": 40, "p50": 2.0, "p90": 30.0, "p95": 45.0, "p99": 60.0}
+            | {"timeouts": 0, "untimed": 0}
         },
     }
-    old_files = timed | {"tools": None, "timeouts": None}
+    old_files = timed | {"tools": None, "timeouts": None, "untimed_calls": None, "trials_timed": 0}
     rows = [
         ablation_row("full", timed),
         ablation_row("baseline", old_files),
@@ -1312,15 +1316,12 @@ def test_the_markdown_reports_timing_per_config_and_marks_what_is_missing() -> N
         {"split": "dev", "n_tasks": 1, "trials_per_task": 3}
         | {"reference": "full", "configs": rows, "contributions": []}
     )
-    assert (
-        "| full | 900.0 / 1200.0 / 1300.0 / 1390.0 | 150.0 / 200.0 / 210.0 / 219.0 | 1 | 140 | 2 |"
-        in text
-    )
-    assert "| baseline | 900.0 / 1200.0 / 1300.0 / 1390.0 |" in text
-    assert "| 1 | 140 | missing |" in text
-    assert "| no-skill | missing | missing | missing | missing | missing |" in text
-    assert "| full | Bash | 40 | 2.0 | 30.0 | 45.0 | 60.0 | 0 |" in text
-    assert "| baseline | missing | | | | | | |" in text
+    walls = "| 900.0 / 1200.0 / 1300.0 / 1390.0 | 150.0 / 200.0 / 210.0 / 219.0 |"
+    assert f"| full {walls} 1 | 140 | 3/3 | 2 | 0 |" in text
+    assert f"| baseline {walls} 1 | 140 | 0/3 | missing | missing |" in text
+    assert "| no-skill |" + " missing |" * 7 in text
+    assert "| full | Bash | 40 | 2.0 | 30.0 | 45.0 | 60.0 | 0 | 0 |" in text
+    assert "| baseline | missing | | | | | | | |" in text
 
 
 def test_a_dev_ablation_report_carries_timing(
@@ -1333,4 +1334,4 @@ def test_a_dev_ablation_report_carries_timing(
     full = json.loads((reports / "full" / "report.json").read_text())
     assert full["process"]["timing"]["trials"] == 3
     assert full["process"]["timing"]["tools"] is None  # the fake events predate tool_timing
-    assert "| full | missing | | | | | | |" in (reports / "ablation.md").read_text()
+    assert "| full | missing | | | | | | | |" in (reports / "ablation.md").read_text()

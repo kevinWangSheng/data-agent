@@ -14,6 +14,7 @@ from evals.harbor import Trial
 from evals.process import (
     job_metrics,
     percentiles,
+    timing_markdown,
     timing_summary,
     trial_metrics,
     verifier_checks,
@@ -204,6 +205,26 @@ def test_timing_summary_of_old_files_marks_durations_missing(tmp_path: Path) -> 
     summary = timing_summary(rows)
     assert summary["tools"] is None and summary["timeouts"] is None
     assert summary["tool_calls"] == 4
+
+
+def test_calls_without_a_duration_are_counted_not_dropped(tmp_path: Path) -> None:
+    events = [
+        {"type": "version", "ts": at(0)},
+        *call("Read", "r1", 1, 2, 500),
+        {"type": "tool_timing", "ts": at(3), "tool": "Read", "tool_use_id": "r2"},
+        {"type": "tool_timing", "ts": at(4), "tool": "Grep", "tool_use_id": "g1"},
+    ]
+    old = trial_with(tmp_path / "old", {"type": "version", "ts": at(0)})
+    rows = [trial_metrics(trial_with(tmp_path / "new", *events)), trial_metrics(old)]
+    assert rows[0]["untimed"] == {"Read": 1, "Grep": 1}
+    summary = timing_summary(rows)
+    assert (summary["trials_timed"], summary["trials"], summary["untimed_calls"]) == (1, 2, 2)
+    assert (summary["tools"]["Read"]["calls"], summary["tools"]["Read"]["untimed"]) == (2, 1)
+    assert summary["tools"]["Read"]["p50"] == 0.5
+    assert summary["tools"]["Grep"]["p50"] is None and summary["tools"]["Grep"]["calls"] == 1
+    text = "\n".join(timing_markdown([("new", summary)]))
+    assert "| 1/2 | 0 | 2 |" in text
+    assert "| new | Grep | 1 | missing | missing | missing | missing | 0 | 1 |" in text
 
 
 def test_job_and_task_metrics_carry_the_timing_summary(tmp_path: Path) -> None:

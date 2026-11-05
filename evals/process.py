@@ -110,13 +110,16 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     `tool_start` events (main agent and subagents); `durations` (seconds per call, by tool) and
     `timeouts` (calls by tool that hit the gateway's statement timeout) come from `tool_timing`
     events alone, never from `tool_end - tool_start` (a parallel batch's results come back
-    together), and are None for an event file written before them."""
+    together), and are None for an event file written before them. `untimed` counts by tool the
+    `tool_timing` events without a `duration_ms` (the SDK leaves it optional), so a gap shows
+    rather than shrinking the sample."""
     events = last_event_file(trial)
     turns, edits, calls, cost, tool_calls = 0, 0, 0, 0.0, 0
     checks: Counter[str] = Counter()
     stopped: str | None = None
     durations: dict[str, list[float]] | None = None
     timeouts: Counter[str] = Counter()
+    untimed: Counter[str] = Counter()
     timed: list[dict[str, Any]] = []
     if events is not None:
         with events.open(encoding="utf-8", errors="replace") as f:
@@ -147,6 +150,8 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
                     tool = str(event.get("tool"))
                     if event.get("duration_ms") is not None:
                         durations.setdefault(tool, []).append(float(event["duration_ms"]) / 1000)
+                    else:
+                        untimed[tool] += 1
                     if event.get("timed_out"):
                         timeouts[tool] += 1
     times = [t for t in map(event_time, timed) if t is not None]
@@ -168,6 +173,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
         "verifier_unclosed": unclosed,
         "durations": durations,
         "timeouts": dict(timeouts) if durations is not None else None,
+        "untimed": dict(untimed) if durations is not None else None,
         "events": str(events) if events else None,
     }
 
@@ -192,26 +198,30 @@ def percentiles(values: list[float]) -> dict[str, float] | None:
 
 def timing_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Timing over trial rows: percentiles of the trial wall and of the verifier wall (trials
-    with a verifier), total tool calls, and per tool its calls, percentiles and timeouts, pooled
-    from the trials that have `tool_timing` events. `tools` and `timeouts` are None when no trial
-    has any (old event files): missing, not zero."""
+    with a verifier), total tool calls, and per tool its calls, percentiles, timeouts and calls
+    without a duration, pooled from the trials that have `tool_timing` events (`trials_timed` of
+    `trials`: the rest are old event files). `tools`, `timeouts` and `untimed_calls` are None
+    when no trial has any: missing, not zero."""
     timed = [r for r in rows if r.get("durations") is not None]
     tools: dict[str, dict[str, Any]] | None = None
     if timed:
         pooled: dict[str, list[float]] = {}
         timeouts: Counter[str] = Counter()
+        untimed: Counter[str] = Counter()
         for row in timed:
             for tool, values in row["durations"].items():
                 pooled.setdefault(tool, []).extend(values)
             timeouts.update(row["timeouts"] or {})
-        names = sorted(pooled.keys() | timeouts.keys(), key=lambda t: (-len(pooled.get(t, [])), t))
+            untimed.update(row.get("untimed") or {})
+        names = pooled.keys() | timeouts.keys() | untimed.keys()
         tools = {
             tool: {
-                "calls": len(pooled.get(tool, [])),
+                "calls": len(pooled.get(tool, [])) + untimed[tool],
                 **(percentiles(pooled.get(tool, [])) or dict.fromkeys(QUANTILE_KEYS)),
                 "timeouts": timeouts[tool],
+                "untimed": untimed[tool],
             }
-            for tool in names
+            for tool in sorted(names, key=lambda t: (-len(pooled.get(t, [])) - untimed[t], t))
         }
     walls = [r["wall_s"] for r in rows if r.get("wall_s") is not None]
     verifiers = [r["verifier_wall_s"] for r in rows if r.get("verifier_wall_s") is not None]
@@ -223,6 +233,7 @@ def timing_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "verifier_unclosed": sum(r.get("verifier_unclosed") or 0 for r in rows),
         "tool_calls": sum(r.get("tool_calls") or 0 for r in rows),
         "timeouts": sum(t["timeouts"] for t in tools.values()) if tools is not None else None,
+        "untimed_calls": sum(t["untimed"] for t in tools.values()) if tools is not None else None,
         "tools": tools,
     }
 
@@ -244,37 +255,45 @@ def quantile_cells(stats: dict[str, Any] | None) -> str:
 def timing_markdown(summaries: list[tuple[str, dict[str, Any] | None]]) -> list[str]:
     """Markdown tables of named timing summaries (a config, an old/new job): the trial and
     verifier walls, calls and timeouts, then each tool's percentiles. A summary that is None
-    (no process metrics, e.g. a holdout report) or lacks tool timings shows `missing`."""
+    (no process metrics, e.g. a holdout report) or lacks tool timings shows `missing`; `timed
+    trials` says how many trials the tool times pool, `no duration` the calls left out."""
     lines = [
         "Timing, seconds as p50 / p90 / p95 / p99. Tool times are each call's own execution "
         "time (`tool_timing.duration_ms`); `missing` means the event files predate it.",
         "",
-        "| run | trial wall | verifier wall | verifiers cut off | tool calls | timeouts |",
-        "|---|---|---|---:|---:|---:|",
+        "| run | trial wall | verifier wall | verifiers cut off | tool calls | timed trials "
+        "| timeouts | no duration |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
     ]
     for name, s in summaries:
         if s is None:
-            lines.append(f"| {name} | {MISSING} | {MISSING} | {MISSING} | {MISSING} | {MISSING} |")
+            lines.append(f"| {name} |" + f" {MISSING} |" * 7)
             continue
-        timeouts = MISSING if s.get("timeouts") is None else str(s["timeouts"])
+        timeouts, untimed = (
+            MISSING if s.get(key) is None else str(s[key]) for key in ("timeouts", "untimed_calls")
+        )
         lines.append(
             f"| {name} | {quantile_cells(s.get('wall_s'))} | "
             f"{quantile_cells(s.get('verifier_wall_s'))} | {s.get('verifier_unclosed', 0)} | "
-            f"{s.get('tool_calls', 0)} | {timeouts} |"
+            f"{s.get('tool_calls', 0)} | {s.get('trials_timed', 0)}/{s.get('trials', 0)} | "
+            f"{timeouts} | {untimed} |"
         )
     lines += [
         "",
-        "| run | tool | calls | p50 | p90 | p95 | p99 | timeouts |",
-        "|---|---|---:|---:|---:|---:|---:|---:|",
+        "| run | tool | calls | p50 | p90 | p95 | p99 | timeouts | no duration |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for name, s in summaries:
         tools = s.get("tools") if s is not None else None
         if tools is None:
-            lines.append(f"| {name} | {MISSING} | | | | | | |")
+            lines.append(f"| {name} | {MISSING} | | | | | | | |")
             continue
         for tool, t in tools.items():
             cells = " | ".join(seconds(t.get(key)) for key in QUANTILE_KEYS)
-            lines.append(f"| {name} | {tool} | {t['calls']} | {cells} | {t['timeouts']} |")
+            lines.append(
+                f"| {name} | {tool} | {t['calls']} | {cells} | {t['timeouts']} | "
+                f"{t.get('untimed', 0)} |"
+            )
     return lines
 
 

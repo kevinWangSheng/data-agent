@@ -545,5 +545,5 @@ def test_reports_timing_of_both_jobs_and_marks_old_files_missing(
     assert main([*argv, "--regression", str(reg), "--target", "t1"]) == code
     text = capsys.readouterr().out
     assert "| run | trial wall | verifier wall |" in text
-    assert "| old | missing | | | | | | |" in text
-    assert "| new | Bash | 12 | 1.5 | 1.5 | 1.5 | 1.5 | 0 |" in text
+    assert "| old | missing | | | | | | | |" in text
+    assert "| new | Bash | 12 | 1.5 | 1.5 | 1.5 | 1.5 | 0 | 0 |" in text
