@@ -530,7 +530,7 @@ def test_dbt_prompt_teaches_cd_into_the_project_not_project_dir_flags() -> None:
     )
     assert "--project-dir" not in text
     assert "--profiles-dir" not in text
-    assert "cd " in text
+    assert "`cd <project_dir> && dbt ...`" in text
     assert "profiles.yml" in text and "do not edit" in text.lower()
 
 
@@ -538,8 +538,8 @@ def test_workflow_validate_section_states_the_real_default_timeout() -> None:
     """validate_project.py's default is 300 s; the Skill must not say 60."""
     text = body("dbt-workflow").split("## Validate Project (Standalone)", 1)[1]
     section = text.split("\n## ", 1)[0]
-    assert "300" in section
-    assert "60" not in section
+    assert "(default 300)" in section
+    assert "default 60" not in section
 
 
 def test_workflow_forbids_reading_dbt_generated_json() -> None:

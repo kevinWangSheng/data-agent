@@ -23,7 +23,9 @@ no domain prefix. After the first failure attribution: an edit is compared with 
 predicate by predicate; rule-defined columns implement each factor as stated; Step 8 checks
 column types for every model the task asks for and adds a key-level check against an
 independent recomputation, which also gates the STOP. Step 8 passes technical_spec.md to the
-verifiers as the main agent's intent only, as they judge against the task text. -->
+verifiers as the main agent's intent only, as they judge against the task text. The Rules forbid
+Reading the JSON dbt writes under target/, and the validate section states this copy's 300 s
+default timeout. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
