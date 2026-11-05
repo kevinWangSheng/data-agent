@@ -67,7 +67,9 @@ put the counter-evidence (the query and its result) in your dispatch message.
 that check yourself, read-only, and say in your final message what you ran and found. For a \
 grain the task text does not state (CHECK 3 or 7 NEEDS_INFO for that reason), do not \
 re-dispatch with a grain of your own, which the verifier must ignore: run the grain check \
-yourself with `grain_facts` on the key you built the model for, and report it.
+yourself with `grain_facts` on the key you built the model for (CHECK 3), and the key-level \
+comparison with `compare_by_key` and a reference query on that key (CHECK 7), and report \
+both.
 - Stop when every check is PASS, N/A or a NEEDS_INFO you resolved yourself, or when your turns \
 run out. Do not change models after that.
 """

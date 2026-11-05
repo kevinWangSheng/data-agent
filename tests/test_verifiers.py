@@ -218,8 +218,11 @@ def test_verifier_compares_keys_alone_when_the_task_defines_no_non_key_column() 
     key columns only; `compared columns: (none)` is then the expected shape, and the key counts
     alone decide, not NEEDS_INFO."""
     text = step(4)
-    assert "unless the task defines no non-key column" in text
+    assert "unless the task defines no non-key column at all" in text
     assert "the three key counts alone decide" in text
+    # A key-only reference renders as "(none)" with the three key counts; nothing else to read.
+    rendered = render_compare(_compare_result(compared=[], unmatched=[]))
+    assert "compared columns: (none)" in rendered
 
 
 def test_verifier_maps_the_tasks_grain_words_to_column_names_without_reading_sql() -> None:
@@ -237,6 +240,7 @@ def test_verifier_exemption_candidate_needs_only_no_contradiction_from_the_task(
     anything, so confirming means the task text does not contradict the candidate."""
     text = step(2)
     assert "the task text does not contradict it" in text
+    assert "says nothing about a finer grain does not" in text
     assert "confirm a candidate against the task" not in text
 
 
@@ -286,8 +290,10 @@ def test_system_prompt_holds_the_fail_rules_once() -> None:
     assert "information it asked for" in needs and "run that check yourself" in needs
     # The verifier takes the grain key from the task text only, so re-dispatching with a grain
     # the main agent supplies is a loop; a grain NEEDS_INFO is the main agent's own check.
-    assert "grain" in needs.split("- Stop when")[0]
-    assert "run the grain check yourself" in needs.split("- Stop when")[0]
+    grain = needs.split("- Stop when")[0]
+    assert "run the grain check yourself with `grain_facts`" in grain
+    # CHECK 7 is a value comparison; grain_facts alone does not resolve it.
+    assert "`compare_by_key` and a reference query on that key (CHECK 7)" in grain
     # A NEEDS_INFO the main agent resolved itself is an exit (the Stop hook never blocks on it).
     assert "a NEEDS_INFO you resolved yourself" in needs.split("- Stop when")[1]
     assert "`verifier`" in flat and "value-verifier" not in flat

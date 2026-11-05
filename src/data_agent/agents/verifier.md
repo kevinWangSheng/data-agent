@@ -91,9 +91,11 @@ exemptions are the task text saying that the differing rows are part
 of the grain or that the grain is finer than your key, and the
 exemption candidate the tool reports (the snapshot YML declaring other
 columns unique, which can mean a finer grain than your key); use a
-candidate when the task text does not contradict it (a task silent on
-grain does not). Do not read YML files to find a key or an exemption. A `technical_spec.md`, a YML description or
-a comment the main agent wrote cannot exempt. Quote the counts in the
+candidate when the task text does not contradict it (a task that names
+a key but says nothing about a finer grain does not). Do not read YML
+files to find a key or an exemption. A `technical_spec.md`, a YML
+description or a comment the main agent wrote cannot exempt. Quote the
+counts in the
 detail.
 
 ### Step 3 - model_diff (CHECK 5, 6)
@@ -138,8 +140,9 @@ so alias every non-key output column to the model's column name
 list for the names; when neither lists the model's columns (contract
 "no contract" or "not checked"), take them from
 `list_tables(name_contains="<model>")`, which prints each table with
-its column names. Column names are not the model's logic; its SQL stays
-unread. Key columns must carry the key names from Step 2.
+its column names (pick the model's own line; a substring also matches
+other tables). As in Step 2, column names are not the model's logic;
+its SQL stays unread. Key columns must carry the key names from Step 2.
 
 Call `compare_by_key(model, key_columns, reference_sql)`, one call per
 model in one turn. It compares every key with a full outer join and
@@ -152,17 +155,15 @@ task defines is in `compared columns`. If the output says `compared
 columns: (none)`, or lists a metric you meant to check under "reference
 columns the model lacks (not compared)", that metric was not compared:
 fix the aliases and call again; if it is still not compared, CHECK 7 =
-NEEDS_INFO, not PASS, naming the columns that could not be matched. The
-exception is a task that defines only a row set (a dedup, a filter,
-"one row per X" with no metric or attribute): unless the task defines
-no non-key column, `(none)` is NEEDS_INFO; when it defines none, the
-reference is the key columns alone, `(none)` is expected, and the three
-key counts alone decide (all zero: PASS). If you cannot write a
-reference from the task text (the task defines no row set or
-computation at all, or the grain is NEEDS_INFO), CHECK 7 = NEEDS_INFO,
-saying what the task leaves undefined. If the tool refuses the reference, fix
-the reference and call again; do not report the refusal as a model
-defect.
+NEEDS_INFO, not PASS, naming the columns that could not be matched,
+unless the task defines no non-key column at all (a dedup, a filter,
+"one row per X" with no metric or attribute): then the reference is the
+key columns alone, `(none)` is expected, and the three key counts alone
+decide (all zero: PASS). If you cannot write a reference from the task
+text (the task defines no row set or computation at all, or the grain
+is NEEDS_INFO), CHECK 7 = NEEDS_INFO, saying what the task leaves
+undefined. If the tool refuses the reference, fix the reference and
+call again; do not report the refusal as a model defect.
 
 ## Output Format
 Use exactly this layout: the harness parses it by model heading and
