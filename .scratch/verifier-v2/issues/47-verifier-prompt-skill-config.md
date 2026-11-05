@@ -132,3 +132,22 @@ hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
 - 顺手 3："confirm a candidate against the task" 改成"题面不与之矛盾即可用"。VERIFIERS_PROMPT 加一句：粒度类 NEEDS_INFO 不要带自定粒度重派，主 agent 自己用 `grain_facts` 跑 CHECK 3、用 `compare_by_key` 加参考 SQL 跑 CHECK 7。核过主 agent 能调这两个工具（`mcp_server.py:269-270`、`agent.py:747`）。
 - 真实行为（无模型）：prompt 不含 `LIMIT 0`、不含 "confirm a candidate"，含 `list_tables(name_contains="<model>")` 和 "does not contradict"；VERIFIERS_PROMPT 含 "run the grain check yourself"；maxTurns 50，工具表不变。
 - 审查：`da-review` 第 4 次 at capacity。eng:code-review（Standards、Spec）同一条实质问题已修（0126941）：粒度句覆盖 CHECK 3 和 7 却只点名 `grain_facts`，CHECK 7 要用 `compare_by_key`。其余已修：豁免括注措辞；行集例外的双重否定；第 4 步重复列名来源；`list_tables` 子串多匹配注明；弱断言换具体句子；键列参考测试补真实渲染。不修：超宽行是报告模板和中文标题，本轮前就有；"defines no row set or computation" 是行集规则的直接推论。
+
+### 2026-11-05 主会话（初筛 `t47-screen`，8bde360，不作过线依据）
+
+5 题 × 3，full，实际价 $2.10（13 个事件文件在高峰）。结果拉回 `runs/t47-screen`。
+
+| 题 | 3 次结果 |
+|---|---|
+| dbt-customer-cross-sell-insights | 0、1、1 |
+| dbt-fix-division-by-zero | 0、0、1 |
+| dbt-receivables-aging-buckets | 1、1、1 |
+| pos-operations | 1、1、0 |
+| web-session-quality-scoring | 1、1、1 |
+
+- 通过率 11/15（accept-2 为 7/15），过第一条线。
+- 每 trial 验证器墙钟（Agent 调用起止取并集）中位数 **317 s**，第二条线 ≤155 s **没过**，与 accept-2 基线 311 s 持平。验证器单次调用 17 次，p50 313 s，p90 970 s，最长 2603 s（pos-operations）。
+- 时间去向（13 个已结束 trial，工具占用墙钟去重叠共 268 分钟）：`compare_by_key` 65%（171 次，单次 p50 141 s、p90 404 s，9 次撞网关 150 s 超时）；dbt 命令 17%；其余 10 种工具 18%。模型思考每 trial 3–13 分钟，不是瓶颈。
+- pos-operations 两个 trial（FMEvAdp 过、4V2pNtq 不过）在验证器跑到一半撞 Harbor 4000 s agent 超时（`result.json` 里 `AgentTimeoutError`），没有 `verifier_end`。主 agent 在派验证器前自己就调了 41–44 次 `compare_by_key`。
+- 原因已由工单 50 取证并修（PR #49，分支 `worktree-50-compare-by-key-perf`）：参考 SQL 嵌进现有语句后优化器计划极差（单独 0.5 s，嵌入后 300 s 超时），以及每次调用重复遍历 dbt 项目（pos-operations 一次 30 s）。修后本地 pos-operations 一次调用 1.8 s、cross-sell 那条 1.6 s。
+- 结论：提示词已定稿（0126941），再在 0126941 上重跑不会改变墙钟。**过线初筛等工单 50 合入后在新 main 上跑**（5 题 × 3，约 ¥18），两条线一起判。本工单保持 `in-review`。

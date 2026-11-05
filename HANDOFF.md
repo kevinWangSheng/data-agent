@@ -111,6 +111,18 @@
 > - 对齐会话待定的小项：49 的 Fable 审查三条 P3（`validate_project.py:200` 上游文案 "Fix profiles.yml" 与提示词相抵；validate 超时封顶 300 的措辞；提示词里 "them" 指代）；45 的 `verify_values` 死代码等 47 拿掉 value-verifier 时清理。
 > - 花费：今天服务器运行实际价约 $1.0（t49-screen $0.36、t48-real $0.38、t45-real $0.25，都在高峰），开发集累计约 ¥414，止损线 ¥500。
 > - 人确认（2026-11-05）与 45 并行开两张工单，都已 `ready-for-agent` 并派出：48 MCP 工具标 `readOnlyHint`（43 笔记 §4，确定性修复，真实运行 cross-sell × 1）；49 提示词和 Skill 不再教改 `profiles.yml`、validate 写 300 s、Skill 加『不 Read `target/*.json`』（改行为，初筛 daily-cohorts × 3 对照 accept-2 full）。48 与 45 都改 `verifier_tools.py`，后合入的解决冲突；49 与 47 都改 SKILL.md，49 先合。
+> - **工单 47 初筛 `t47-screen` 跑完（2026-11-05，8bde360，$2.10）**：通过率 11/15（accept-2 7/15），验证器墙钟中位数 317 s，第二条线 ≤155 s 没过（基线 311 s）。时间 65% 在 `compare_by_key`（171 次，单次 p50 141 s，9 次撞 150 s 超时）；pos-operations 两个 trial 撞 Harbor 4000 s agent 超时，主 agent 自己调了 41–44 次 `compare_by_key`。详细数在工单 47 Comments。
+> - **工单 50（另一会话，2026-11-05）**：`compare_by_key` 两个根因（参考 SQL 嵌入后优化器计划极差；每次调用重复遍历项目），PR #49（37eb9f6）CI 绿、可合并，审查 1 轮已处理。本会话没动它。
+> - **47 的下一步**：50 合入后在新 main 上跑 47 的过线初筛（5 题 × 3 full，约 ¥18），≥8/15 且验证器墙钟中位数 ≤155 s 才合 PR #48（0126941，CI 绿）。然后冒烟（14c），再由人确认统一评估。
+> - **基础问题清单（人 2026-11-05 决定：新开会话先集中处理，再继续评测）**，都有 `runs/t47-screen` 的实测做依据：
+>   1. `compare_by_key` 慢：工单 50 在修，合入后用 t47-screen 的轨迹复测（单次 p50 141 s → 目标 ≤5 s）。
+>   2. Harbor 4000 s agent 总超时：验证器跑到一半被掐，trial 没有 `verifier_end`；要么超时值和验证器预算对齐，要么 Stop 规则在剩余时间不够时不再派验证器。
+>   3. 主 agent 把 `compare_by_key`、`grain_facts` 当常规检查用（pos-operations 派验证器前 41–44 次），花的是主 agent 的时间；Skill 第 8 步和 VERIFIERS_PROMPT 要定主 agent 自己调这两个工具的边界。
+>   4. `grain_facts` 服务器上中位数 92 s（本地快），原因没查清（工单 50 记为待定）。
+>   5. 网关 150 s 查询超时和验证工具的关系：工具内部一条语句超时就整次失败，验证器会重试同样的参考 SQL（9 次超时集中在 cross-sell）。
+>   6. 评测指标缺 p95/p99：`ablate` 报告只有总分和中位数；要加每 trial 墙钟、工具调用次数、验证器墙钟的 p50/p90/p95/p99 和超时计数，这样过线判定不用手算（本次是主会话用脚本从事件文件算的）。
+>   7. 集成测试 `test_updated_input_replaces_the_prompt_end_to_end` 的断言（原提示消失 + 任务文件内容出现，或保留 xfail）待人定。
+>   8. 对齐会话记的小项：`dab-score` 单题时区间退化成一个点；DAB Mongo 容器中途停止没有重启策略；工单 49 的三个 P3（`validate_project.py:200` 文案、超时夹到 300 s 的措辞、"them" 指代）。
 >
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
 >
