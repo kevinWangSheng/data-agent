@@ -103,7 +103,7 @@
 > - 人决定接受合入：41 输出上限（PR #42 → f03d694，已知限制：Read `target/run_results.json` 超长、scan 五节超预算切掉 AVAILABLE MACROS）；44 验证层 v2 验收测试（PR #40 → 3bc82c8，人审通过；Codex 两条 P2 不补，记已知限制）。合入后 main `make check` 1580 passed、40 xfailed。
 > - 44 第 6 条的处理：45 的 Authority 加了一行，允许它在拿掉 `verify_model_values` 的同一提交里更新 `tests/acceptance/seam_support.py` 的 `VERIFIER_TOOLS`。
 > - 45 已派（`claude -p -w 45-snapshot-and-tools`，输出在 `runs/dispatch/`）。之后 46 → 47（47 初筛 5 题 × 3）。全部合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
-> - 43 的修法（MCP 工具标 `readOnlyHint`）和 40 的尾巴（提示词与 SKILL.md 仍教改 `profiles.yml`）、41 的 Read `target/*.json` 守卫，都还等人或对齐会话定。
+> - 人确认（2026-11-05）与 45 并行开两张工单，都已 `ready-for-agent` 并派出：48 MCP 工具标 `readOnlyHint`（43 笔记 §4，确定性修复，真实运行 cross-sell × 1）；49 提示词和 Skill 不再教改 `profiles.yml`、validate 写 300 s、Skill 加『不 Read `target/*.json`』（改行为，初筛 daily-cohorts × 3 对照 accept-2 full）。48 与 45 都改 `verifier_tools.py`，后合入的解决冲突；49 与 47 都改 SKILL.md，49 先合。
 >
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
 >
