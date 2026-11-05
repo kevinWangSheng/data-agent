@@ -143,8 +143,21 @@ def test_verifier_picks_the_grain_key_from_the_task_and_applies_the_null_duplica
     assert "From the task text, decide each model's grain key" in text
     assert "never from the model's SQL" in text
     assert "NULL rows > 0 or duplicate rows > 0 is FAIL" in text
-    assert "The only exemptions are the task text or the original YML" in text
     assert "cannot exempt" in text and "technical_spec.md" in text
+
+
+def test_verifier_takes_the_grain_key_from_the_task_only_and_never_reads_yml_for_it() -> None:
+    """Return round 1, item 2 (ADR-0009): the verifier can only Read the project's YML, where
+    the main agent's new `unique` tests are indistinguishable from the original ones, so YML is
+    not a key source; a task that names no grain is NEEDS_INFO, and the only YML exemption is
+    the "exemption candidate" line grain_facts itself reads from the snapshot."""
+    text = step(2)
+    assert "Take the key from the task text only" in text
+    assert "not from any YML file in the project" in text
+    assert "If the task text does not name a grain, CHECK 3 = NEEDS_INFO" in text
+    assert "The only exemptions are the task text or the exemption candidate" in text
+    assert "Do not read YML files to find a key or an exemption" in text
+    assert "original YML" not in text
 
 
 def test_verifier_judges_only_the_changes_model_diff_lists() -> None:
@@ -162,6 +175,18 @@ def test_verifier_writes_the_reference_from_the_task_not_the_model() -> None:
     assert "must not read the model or any model this run created or changed" in text
     assert "any key only on one side or any value mismatch is FAIL" in text
     assert "do not report the refusal as a model defect" in text
+
+
+def test_verifier_aliases_reference_columns_and_needs_info_when_none_compared() -> None:
+    """Return round 1, item 1: compare_by_key compares only same-named columns, so a reference
+    whose metric is aliased differently compares nothing and three zero counts would read as a
+    hollow PASS."""
+    text = step(4)
+    assert "alias every non-key output column to the model's column name" in text
+    assert "Read the contract_check output or the task's column list for the names" in text
+    assert "`compared columns: (none)`" in text
+    assert "CHECK 7 = NEEDS_INFO, not PASS" in text
+    assert "All zero with at least one compared column: PASS" in text
 
 
 def test_verifier_treats_the_main_agents_counter_evidence_as_unverified() -> None:

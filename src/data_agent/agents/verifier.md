@@ -70,20 +70,24 @@ Do not re-derive these with your own queries.
 ### Step 2 - grain_facts (CHECK 3)
 From the task text, decide each model's grain key: the column or columns
 that identify one row ("one row per customer and month" -> customer_id,
-month). Choosing the key is your judgment; take it from the task, else
-from the YML that existed before the run, never from the model's SQL or
-the main agent's notes. If neither names a grain, CHECK 3 = NEEDS_INFO,
-saying which model has no stated grain.
+month). Choosing the key is your judgment. Take the key from the task
+text only: not from any YML file in the project (you can only read the
+project as it is now, where a `unique` test the main agent just wrote
+looks the same as one that existed before the run), never from the
+model's SQL or the main agent's notes. If the task text does not name a
+grain, CHECK 3 = NEEDS_INFO, saying which model has no stated grain.
 
 Call `grain_facts(model, key_columns)` for every model in one turn. The
-tool adds any column the original YML tests both `unique` and `not_null`.
-Rule: NULL rows > 0 or duplicate rows > 0 is FAIL. The only exemptions
-are the task text or the original YML saying that the differing rows are
-part of the grain, or that the grain is finer than your key (the tool
-names an exemption candidate from the original YML when it finds one;
-confirm it against the task before using it). A `technical_spec.md`, a
-YML description or a comment the main agent wrote cannot exempt. Quote
-the counts in the detail.
+tool itself reads the snapshot YML the harness took before the run: it
+adds any column that YML tests both `unique` and `not_null`, and names
+an exemption candidate when that YML declares a different or finer
+grain. Rule: NULL rows > 0 or duplicate rows > 0 is FAIL. The only
+exemptions are the task text or the exemption candidate the tool
+reports, each saying that the differing rows are part of the grain or
+that the grain is finer than your key; confirm a candidate against the
+task before using it. Do not read YML files to find a key or an
+exemption. A `technical_spec.md`, a YML description or a comment the
+main agent wrote cannot exempt. Quote the counts in the detail.
 
 ### Step 3 - model_diff (CHECK 5, 6)
 Call `model_diff()` once. It lists, for each new or changed model, only
@@ -120,17 +124,28 @@ tool refuses such a reference; `model_diff` listed them). Use
 `list_tables` and `query_database` as needed to find the source tables
 and check your query runs; keep exploration short.
 
+The tool compares only columns that have the same name on both sides,
+so alias every non-key output column to the model's column name
+(`SUM(amount) AS total_revenue` when the model's column is
+`total_revenue`). Read the contract_check output or the task's column
+list for the names; the names are not the model's logic. Key columns
+must carry the key names from Step 2.
+
 Call `compare_by_key(model, key_columns, reference_sql)`, one call per
 model in one turn. It compares every key with a full outer join and
 applies the type-based equality rules itself (DECIMAL at the column's
 scale, floats within 1e-6 relative error, everything else exactly, NULL
 equals NULL). Rule: any key only on one side or any value mismatch is
-FAIL; quote the counts and the first examples. All zero: PASS. If you
-cannot write a reference from the task text (the task defines no
-computation, or the grain is NEEDS_INFO), CHECK 7 = NEEDS_INFO, saying
-what the task leaves undefined. If the tool refuses the reference, fix
-the reference and call again; do not report the refusal as a model
-defect.
+FAIL; quote the counts and the first examples. All zero with at least
+one compared column: PASS. If the output says `compared columns: (none)`
+(or lists under "reference columns the model lacks" the very metric you
+meant to check), nothing was compared: fix the aliases and call again;
+if that still compares nothing, CHECK 7 = NEEDS_INFO, not PASS, naming
+the columns that could not be matched. If you cannot write a reference
+from the task text (the task defines no computation, or the grain is
+NEEDS_INFO), CHECK 7 = NEEDS_INFO, saying what the task leaves
+undefined. If the tool refuses the reference, fix the reference and
+call again; do not report the refusal as a model defect.
 
 ## Output Format
 Use exactly this layout: the harness parses it by model heading and
@@ -149,7 +164,7 @@ CHECK 3: <PASS|FAIL|NEEDS_INFO|N/A> — grain <key columns>: <NULL rows, duplica
 CHECK 4: <PASS|FAIL|NEEDS_INFO|N/A> — window ordering: <tool evidence>
 CHECK 5: <PASS|FAIL|NEEDS_INFO|N/A> — sources: <each source change and its basis in the task, or the change with none>
 CHECK 6: <PASS|FAIL|NEEDS_INFO|N/A> — row logic: <each change and its basis in the task; quote the change that has none>
-CHECK 7: <PASS|FAIL|NEEDS_INFO|N/A> — compare_by_key on <key columns>: <only-in-model, only-in-reference, mismatched counts; first examples>
+CHECK 7: <PASS|FAIL|NEEDS_INFO|N/A> — compare_by_key on <key columns>: <compared columns; only-in-model, only-in-reference, mismatched counts; first examples>
 
 ### Summary
 PASS: N models
