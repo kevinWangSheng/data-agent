@@ -82,12 +82,14 @@ tool itself reads the snapshot YML the harness took before the run: it
 adds any column that YML tests both `unique` and `not_null`, and names
 an exemption candidate when that YML declares a different or finer
 grain. Rule: NULL rows > 0 or duplicate rows > 0 is FAIL. The only
-exemptions are the task text or the exemption candidate the tool
-reports, each saying that the differing rows are part of the grain or
-that the grain is finer than your key; confirm a candidate against the
-task before using it. Do not read YML files to find a key or an
-exemption. A `technical_spec.md`, a YML description or a comment the
-main agent wrote cannot exempt. Quote the counts in the detail.
+exemptions are the task text saying that the differing rows are part
+of the grain or that the grain is finer than your key, and the
+exemption candidate the tool reports (the snapshot YML declaring other
+columns unique, which can mean a finer grain than your key); confirm a
+candidate against the task before using it. Do not read YML files to
+find a key or an exemption. A `technical_spec.md`, a YML description or
+a comment the main agent wrote cannot exempt. Quote the counts in the
+detail.
 
 ### Step 3 - model_diff (CHECK 5, 6)
 Call `model_diff()` once. It lists, for each new or changed model, only
@@ -128,8 +130,11 @@ The tool compares only columns that have the same name on both sides,
 so alias every non-key output column to the model's column name
 (`SUM(amount) AS total_revenue` when the model's column is
 `total_revenue`). Read the contract_check output or the task's column
-list for the names; the names are not the model's logic. Key columns
-must carry the key names from Step 2.
+list for the names; when neither lists the model's columns (contract
+"no contract" or "not checked"), take them from
+`query_database("SELECT * FROM <model> LIMIT 0")`. Column names are not
+the model's logic; its SQL stays unread. Key columns must carry the key
+names from Step 2.
 
 Call `compare_by_key(model, key_columns, reference_sql)`, one call per
 model in one turn. It compares every key with a full outer join and
@@ -137,15 +142,17 @@ applies the type-based equality rules itself (DECIMAL at the column's
 scale, floats within 1e-6 relative error, everything else exactly, NULL
 equals NULL). Rule: any key only on one side or any value mismatch is
 FAIL; quote the counts and the first examples. All zero with at least
-one compared column: PASS. If the output says `compared columns: (none)`
-(or lists under "reference columns the model lacks" the very metric you
-meant to check), nothing was compared: fix the aliases and call again;
-if that still compares nothing, CHECK 7 = NEEDS_INFO, not PASS, naming
-the columns that could not be matched. If you cannot write a reference
-from the task text (the task defines no computation, or the grain is
-NEEDS_INFO), CHECK 7 = NEEDS_INFO, saying what the task leaves
-undefined. If the tool refuses the reference, fix the reference and
-call again; do not report the refusal as a model defect.
+one compared column: PASS, but only when every metric or attribute the
+task defines is in `compared columns`. If the output says `compared
+columns: (none)`, or lists a metric you meant to check under "reference
+columns the model lacks (not compared)", that metric was not compared:
+fix the aliases and call again; if it is still not compared, CHECK 7 =
+NEEDS_INFO, not PASS, naming the columns that could not be matched. If
+you cannot write a reference from the task text (the task defines no
+computation, or the grain is NEEDS_INFO), CHECK 7 = NEEDS_INFO, saying
+what the task leaves undefined. If the tool refuses the reference, fix
+the reference and call again; do not report the refusal as a model
+defect.
 
 ## Output Format
 Use exactly this layout: the harness parses it by model heading and
