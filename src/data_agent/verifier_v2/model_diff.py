@@ -1,9 +1,14 @@
 """`model_diff` (spec "工具"): every new or changed model between the snapshot and the workspace,
 with its changes by category. Facts only, no judgment; unchanged models and unchanged logic are
 left out.
+
+The snapshot side (each project's configuration, model files, their text and resolved config)
+is read once per process (ticket 52): the snapshot does not change after it is taken. The
+workspace side is read on every call.
 """
 
 import difflib
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -30,22 +35,13 @@ def model_diff(workspace: Path, snapshot: Path, dialect: str = "duckdb") -> list
         relative = project.relative_to(workspace)
         snapshot_project = snapshot / relative
         after_config = project_config(project)
-        before_config = project_config(snapshot_project) if snapshot_project.is_dir() else {}
         after_files = model_files(project, after_config)
-        before_files = (
-            model_files(snapshot_project, before_config) if snapshot_project.is_dir() else {}
-        )
-        for name in sorted(set(after_files) | set(before_files)):
+        before_models = _snapshot_models(snapshot_project)
+        for name in sorted(set(after_files) | set(before_models)):
             after = after_files.get(name)
-            before = before_files.get(name)
             after_text = read_text(after) if after else None
-            before_text = read_text(before) if before else None
             after_cfg = model_config(after_config, project, after, after_text) if after else None
-            before_cfg = (
-                model_config(before_config, snapshot_project, before, before_text)
-                if before
-                else None
-            )
+            before_text, before_cfg = before_models.get(name, (None, None))
             if after_text == before_text and after_cfg == before_cfg:
                 continue
             entry = _entry(name, str(relative), before_text, after_text, dialect)
@@ -53,6 +49,26 @@ def model_diff(workspace: Path, snapshot: Path, dialect: str = "duckdb") -> list
             entry["changes"] += _config_call_changes(before_text, after_text)
             diffs.append(entry)
     return diffs
+
+
+_snapshot_lock = threading.Lock()
+_snapshot_cache: dict[Path, dict[str, tuple[str, ModelConfig]]] = {}
+
+
+def _snapshot_models(snapshot_project: Path) -> dict[str, tuple[str, ModelConfig]]:
+    """model name -> (SQL text, configuration) in a snapshot project; empty when the snapshot
+    has no such project. Read once per process."""
+    with _snapshot_lock:
+        models = _snapshot_cache.get(snapshot_project)
+        if models is None:
+            models = {}
+            if snapshot_project.is_dir():
+                config = project_config(snapshot_project)
+                for name, path in model_files(snapshot_project, config).items():
+                    text = read_text(path)
+                    models[name] = (text, model_config(config, snapshot_project, path, text))
+            _snapshot_cache[snapshot_project] = models
+        return models
 
 
 def _entry(
