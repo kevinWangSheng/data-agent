@@ -1,6 +1,6 @@
 # 55 — 守卫误拦和提示：开头几步不再被拦，拒绝提示给出正确写法
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§6）
 Claimed by: claude (worktree 55-guard-prompt-rejections, 2026-11-05)
@@ -63,10 +63,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2（Codex 不可用，由 Fable 代替；第 2 轮修复 b9a7dae 未再审，交 PR 上的 Codex GitHub app）
-- Model spend: $0（没有调数据 agent 模型；审查子 agent 的花费不在工单预算内）
-- Outcome: 实现完成，make check 绿；服务器真实运行待主会话
+- Attempts: 2
+- Review rounds: 4（前 2 轮 Fable 代替 Codex；退回第 1 轮：da-review（Codex）+ eng:code-review，修复提交 d52f05e、109c4fc，修复后没有再审）
+- Model spend: $0（没有调数据 agent 模型）
+- Outcome: 退回第 1 轮已修，make check 绿；服务器真实运行待主会话
 - Human review minutes: —
 
 ## Comments
@@ -124,3 +124,40 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
   - Grep：3 次（seq 69 path=/app，seq 185 path=/app/dbt_models_duckdb，seq 219 path=/app）。
 - **退回：Grep 拒绝提示建议的排除 glob 会把整个 dbt 项目排除掉。** seq 69 搜 `/app` 时，凭据文件都在 `/app/dbt_models_duckdb/dbt_packages/dbt_utils/integration_tests/.env/` 下，提示却给出 `glob: "!**/dbt_models_duckdb/**"`，也就是搜索路径下的顶层目录。照做的话，Grep 会跳过全部模型，等于告诉 agent 搜不了。agent 没照做，改用 Read 逐个读文件。修法：提示建议的排除目录必须只覆盖凭据文件、不覆盖项目的模型和 yml。例如选凭据文件路径上最靠近凭据、并且是所有凭据共同祖先的那个目录名（这里是 `!**/dbt_packages/**` 或 `!**/integration_tests/**`），并且要对实际文件树确认：照这个建议改后的 Grep 会被守卫放行，而 rg 仍能搜到 models/ 下的文件。没有这样的目录时，只给 `type: "sql"`。配一个修复前会失败的测试：搜索路径是项目上一层，凭据在 `<project>/dbt_packages/...` 下。
 - 状态改回 `ready-for-agent`，在原分支 `worktree-55-guard-prompt-rejections` 上修，这是第 1 轮退回。
+
+### 2026-11-05 工单会话（退回第 1 轮：ef3f702、7309b0a、d52f05e、109c4fc）
+
+- 合并 origin/main（cd921e6，含 51）：无冲突（ef3f702）。
+- 修复（7309b0a）：
+  - Grep 拒绝提示的排除 glob 改由新函数 `_excluding_retry` 计算（`workspace_guard.py`）。
+  - 取仍会读到的凭据文件的最深公共祖先目录，提示写成调用原有 `glob` 加上 `!**/<该目录名>/**`。
+  - 两个条件都满足才给出：守卫按这个 glob 重新判定后，每个凭据都会被跳过；同时它不跳过搜索路径下任何非凭据文件。否则只给 `type: "sql"`。
+  - 判定基于实际文件树，每次拒绝时现算。
+  - 在 t55-real 的文件树上，提示是 `!**/.env/**`：`integration_tests/` 里还有包自带的 models，所以按"只覆盖凭据"的规则不选它，也不选 `dbt_packages`。
+  - 只做了一个重构：原来的 `_credentials_below` 拆成 `_files_below` 和 `_is_credential_path`，走一遍目录树同时拿到全部文件和凭据文件，判定结果不变。
+- 新测试（tests/test_workspace_guard.py）：
+  - `test_grep_denial_excludes_only_the_directory_holding_the_credentials`：搜索路径是项目上一层，凭据在 `proj/dbt_packages/dbt_utils/integration_tests/.env/` 下。修复前失败，原代码给出 `glob: "!**/proj/**"`；Spec 审查也用 ef3f702 的旧代码复现了这一点。
+  - `test_the_suggested_exclusion_still_lets_ripgrep_read_the_models`：从拒绝提示里取出 glob，交给真实的 `rg --hidden --files` 跑。结果 `proj/models/` 下的文件仍能读到，没有任何 `.env`。没装 rg 时跳过。
+  - 只给 `type` 的两种情况：凭据和项目模型在同一目录；凭据分散在两个目录，搜索路径下没有公共祖先。两种情况的断言都是提示里没有 `glob:`。
+  - `test_grep_denial_keeps_the_glob_already_given`：调用原有的 glob 会保留在提示里。
+  - 本工单早先写的 `test_grep_denial_shows_a_filter_that_would_run` 的期望值从 `!**/dbt_packages/**` 改成 `!**/.env/**`（它不在 tests/acceptance/ 下）。
+- `make check`：exit=0，1775 passed、1 skipped、1 xfailed，ruff 和 basedpyright 0 错误（runs/t55-rg/make-check-r3c.txt）。
+- 本地真实行为：`uv run python runs/t55-rg/demo_r3.py`，在 t55-real 形状的 `/app` 树上调用真实的守卫 hook 和 rg 14.1.1：
+  - `Grep path=/app` → deny，提示 glob 为 `!**/.env/**`；照提示重试 → allow。
+  - `rg --hidden --files --glob '!**/.env/**' /app` → 列出 `dbt_models_duckdb/models/daily_cohorts.sql`、`dbt_project.yml`、`integration_tests/models/t.sql`，没有任何 `.env`。
+  - `path=/app/dbt_models_duckdb` 结果相同。
+- 审查 1（`da-review main`，Codex 这次可用，输出在 runs/t55-rg/da-review-r3.txt）：
+  - P1，已修（d52f05e）：`_below_directory`（本工单引入）把 `{}` 按字面匹配。实测 `!**/secrets{prod}/**` 守卫放行，而 rg 展开了花括号，读到 `secrets{prod}/.env`。现在含 `{` 或 `}` 的段不做判定，排除型 glob 不跳过任何文件，提示也不会给出这种 glob。配了修复前会失败的测试。
+  - P1，不修：Codex 称 `tests/test_workspace_guard.py:442` 会失败。不属实：该用例期望 `none`，实际通过；Spec 审查也独立确认了。
+- 审查 2（eng:code-review main）：
+  - Spec：返回要求已满足。
+    - 已修（109c4fc）："只给 type"测试原先只断言两个特定 glob 不出现，现在断言没有 `glob:`。
+    - 不修：退回意见括号里的例子是 `dbt_packages` 或 `integration_tests`，实现选的是 `.env`。理由：按退回给出的规则（最靠近凭据的公共祖先，不覆盖项目文件），`.env` 是更窄的选择。
+  - Standards：没有硬违规。
+    - 已修（109c4fc）：花括号规则并入 `_name_matches`，和 `\`、`[^` 放在同一份清单里。这样只会更严：剩余花括号的 glob 不做判定。
+    - 已修（109c4fc）：rg 测试改为从提示里取 glob，不再写死。
+    - 已修（109c4fc）：测试 docstring 改成描述行为，不再记录审查历史；变量 `p` 改名为 `path`。
+    - 不修：`glob` 和 `file_type` 成对传递（Data Clumps）。模块小，打包要改已有函数的签名，超出本次修复。
+- 未确认：Claude Code Grep 是否给 rg 传 `--hidden`。只影响 rg 实际跳过多少文件，不影响守卫的判定。
+- 服务器真实运行待主会话：`dbt-fix-daily-cohorts` × 1（full）。看 Grep `/app` 类拒绝在第一次拒绝之后是否消失，也就是 agent 是否照提示改用 `!**/.env/**`。
+- 合并后 origin/main 又前进到 18fb985（含 52）。与本分支没有重叠文件，`git merge-tree` 无冲突，没有再次合并。
