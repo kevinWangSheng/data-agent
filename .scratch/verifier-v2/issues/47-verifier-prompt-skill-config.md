@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -226,3 +226,20 @@ baseline 和 no-verifiers 照旧：no-verifiers 仍带 Skill 的无验证者回�
 - 每题：receivables 93–117 s、division-by-zero 113–377 s、cross-sell 284–365 s、web 429–925 s、pos 1757–2574 s。
 - 服务器单次耗时：`grain_facts` p50 1.1 s / p90 3.6 s（323 次），`compare_by_key` p50 10.5 s / p90 27.2 s（382 次）。
 - 已退回 3 轮，不再退回；是否合入交人决定。
+
+### 2026-11-05 主会话（退回第 4 轮，人特批）
+
+依据：`docs/research/2026-11-05-verifier-wall-root-cause.md`（5a33efd）。t47-screen2 的验证器 27 次调用共 740 轮，中位每次 21 轮，设计只需要约 5 轮。墙钟 71% 是模型在两批工具调用之间的生成时间。多出来的轮里，482 轮是 `query_database`/`list_tables` 探查。按类别分：1191 次 `query_database` 里，226 次是用 query_database 先干跑参考 SQL，121 次是 `SELECT * … LIMIT n` 看模型输出，33 次查目录。另外 cross-sell 有 14 轮 Read/Glob/Grep，而提示词写明不读模型 SQL（`verifier.md:83,145`）。pos 的报告有 22–30 k 字符，生成要 60–95 s。重派范围由工单 57 改（`verifier_v2/` 不在本工单 Authority 内）。人 2026-11-05 定：不设查询次数上限，按类别删掉无判定价值的查询；分两条线做，57 先合入。
+
+**退回：验证器少跑无用的轮，报告写短。**
+- `agents/verifier.md` 第 4 步（:125-134 一带）：
+  - 删掉 "and check your query runs"。参考 SQL 直接交给 `compare_by_key`，它会返回 SQL 错误，不要先用 `query_database` 干跑。
+  - 不许查询本次改动的模型或它们的输出（包括 `SELECT * … LIMIT`），和"不读模型 SQL"同一条理由。
+  - 列名只从 contract_check 输出、题面的列清单或 `list_tables(name_contains=…)` 取，不查 `information_schema` 之类的目录。
+  - `query_database` 只用于题面规则需要的源表事实（例如题面提到的状态列有哪些取值），写清楚这一用途，不给数字上限。
+- 验证器的工具列表只留 `Read`（用来读题面文件），去掉 `Glob`、`Grep`（分支上 `verifiers.py:30,96` 的 `READ_TOOLS`；只改验证器那一处，主 agent 不受影响）。提示词里相应的说法一并改。
+- 报告（:160-191 一带，格式和解析不变）：CHECK 行只写状态加关键计数；样例只在 FAIL 时给，每项最多 3 条；PASS 不写样例。`### Summary` 保留，每个状态一行，不重复各检查的细节。
+- 任务一节（:20-25）：只验派单列出的模型；`model_diff` 或 `contract_check` 列出的其他模型保留之前的报告，不验也不报。配合工单 57 的重派列表。
+- 测试：`tests/test_verifiers.py` 断言验证器的工具里没有 Glob/Grep；提示词不含 "check your query runs"；含"不查询改动模型"和"只验派单列出的模型"的说法；报告规则里写着样例只在 FAIL 时给。先红后绿。验收测试不动。
+- Authority 不变（`src/data_agent/agents/`、`verifiers.py`、`tests/`）。
+- 过线初筛（5 题 × 3）由主会话在工单 57 合入、本分支合并 main 之后跑，过线标准不变。另外按类别报告探查次数（干跑、看模型输出、查目录、源表探针），以及每次调用的轮数 p50/p90，和 t47-screen2 对比。
