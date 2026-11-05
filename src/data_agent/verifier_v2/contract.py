@@ -14,7 +14,15 @@ from data_agent.gateway import QueryBlocked, QueryFailed
 from data_agent.verifier_v2 import sql as model_sql
 from data_agent.verifier_v2.db import Queryable, catalog_loader, duplicate_rows, find_model, quote
 from data_agent.verifier_v2.model_diff import model_diff
-from data_agent.verifier_v2.project import dbt_projects, declared_columns, model_entries
+from data_agent.verifier_v2.project import (
+    YmlFile,
+    dbt_projects,
+    declared_columns,
+    entries_in,
+    model_name,
+    unreadable,
+    yml_documents,
+)
 
 
 def contract_check(
@@ -28,17 +36,14 @@ def contract_check(
     """model -> `{"exists", "columns", "window"}`, each `{"status": PASS|FAIL|N/A, "evidence"}`.
     `columns` adds `source` ("task" or "snapshot_yml"), `missing` and `extra`; `window` adds
     `functions`, the changed window functions it checked. `task_columns` maps a model to the
-    output columns the task text requires; `catalog` is the server's cache."""
+    output columns the task text requires; `catalog` is the server's cache. A model may be
+    named as in the project, with a schema qualifier, or by the alias it is built under; the
+    diff and the snapshot YML are looked up under its project name."""
     load = catalog_loader(gateway, catalog)
-    diffs = model_diff(workspace, snapshot, gateway.dialect)
-    windows = {
-        d["model"]: [
-            c["after"]
-            for c in d["changes"]
-            if c["category"] == "window" and c["kind"] in ("added", "changed")
-        ]
-        for d in diffs
-    }
+    diffs = {d["model"]: d for d in model_diff(workspace, snapshot, gateway.dialect)}
+    documents = [
+        document for project in dbt_projects(snapshot) for document in yml_documents(project)
+    ]
     results: dict[str, dict[str, Any]] = {}
     for model in models:
         try:
@@ -47,20 +52,26 @@ def contract_check(
         except ToolError as exc:
             table = None
             exists = {"status": "FAIL", "evidence": str(exc)}
+        name = model_name(workspace, model, table.name if table else None)
         results[model] = {
             "exists": exists,
-            "columns": _columns_check(snapshot, model, table, (task_columns or {}).get(model)),
-            "window": _window_check(gateway, table, windows.get(model, [])),
+            "columns": _columns_check(
+                snapshot, documents, name, table, (task_columns or {}).get(model)
+            ),
+            "window": _window_check(gateway, table, diffs.get(name)),
         }
     return results
 
 
 def _columns_check(
-    snapshot: Path, model: str, table: Table | None, task: Sequence[str] | None
+    snapshot: Path,
+    documents: list[YmlFile],
+    model: str,
+    table: Table | None,
+    task: Sequence[str] | None,
 ) -> dict[str, Any]:
-    snapshot_columns: list[str] = []
-    for project in dbt_projects(snapshot):
-        snapshot_columns += declared_columns(model_entries(project, model))
+    snapshot_columns = declared_columns(entries_in(documents, model))
+    not_read = unreadable(documents, snapshot)
     expected: dict[str, None] = {}
     for column in [*(task or []), *snapshot_columns]:
         expected.setdefault(column.strip(), None)
@@ -68,6 +79,15 @@ def _columns_check(
         source = "task"
     elif snapshot_columns:
         source = "snapshot_yml"
+    elif not_read:
+        return {
+            "status": "N/A",
+            "evidence": "not checked: the task names no columns for this model and the "
+            f"snapshot YML could not be read: {'; '.join(not_read)}",
+            "source": None,
+            "missing": [],
+            "extra": [],
+        }
     else:
         return {
             "status": "N/A",
@@ -94,6 +114,10 @@ def _columns_check(
         parts[0] += " (task columns plus the snapshot YML's)"
     parts.append(f"missing: {', '.join(missing) if missing else 'none'}")
     parts.append(f"extra: {', '.join(extra) if extra else 'none'}")
+    if not_read:
+        parts.append(
+            f"snapshot YML could not be read, its columns not included: {'; '.join(not_read)}"
+        )
     return {
         "status": "FAIL" if missing else "PASS",
         "evidence": "; ".join(parts),
@@ -103,7 +127,22 @@ def _columns_check(
     }
 
 
-def _window_check(gateway: Queryable, table: Table | None, windows: list[str]) -> dict[str, Any]:
+def _window_check(
+    gateway: Queryable, table: Table | None, diff: dict[str, Any] | None
+) -> dict[str, Any]:
+    if diff is not None and not diff["parsed"]:
+        return {
+            "status": "N/A",
+            "evidence": "not checked: the model's SQL was not parsed (Jinja statements or SQL "
+            "sqlglot could not read), so its window functions are unknown; see model_diff's "
+            "line diff",
+            "functions": [],
+        }
+    windows = [
+        c["after"]
+        for c in (diff["changes"] if diff else [])
+        if c["category"] == "window" and c["kind"] in ("added", "changed")
+    ]
     if not windows:
         return {
             "status": "N/A",

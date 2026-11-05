@@ -144,11 +144,18 @@ def _unqualified(expression: exp.Expr) -> exp.Expr:
 def table_names(sql: str, dialect: str) -> list[str] | None:
     """The bare names of the tables a query reads (CTEs excluded), lower-cased; None when the
     SQL does not parse."""
+    references = table_references(sql, dialect)
+    return None if references is None else [name for _, name in references]
+
+
+def table_references(sql: str, dialect: str) -> list[tuple[str | None, str]] | None:
+    """(schema, name) of each table a query reads (CTEs excluded), lower-cased, the schema None
+    when the reference is unqualified; None when the SQL does not parse."""
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
     except (SqlglotError, ValueError):
         return None
-    return [table.name.lower() for table in _tables_read(tree)]
+    return [(table.db.lower() or None, table.name.lower()) for table in _tables_read(tree)]
 
 
 def _tables_read(tree: exp.Expr) -> list[exp.Table]:

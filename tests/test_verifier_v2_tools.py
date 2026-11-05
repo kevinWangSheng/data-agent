@@ -14,15 +14,17 @@ import duckdb
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 
 from data_agent import agent
 from data_agent.agent import ModelSettings, Task
-from data_agent.gateway import DuckDBGateway
+from data_agent.gateway import DuckDBGateway, PostgresGateway
 from data_agent.run_config import load_config
 from data_agent.verifier_tools import SNAPSHOT_ENV, parse_task_columns
 from data_agent.verifier_v2 import (
     compare_by_key,
+    contract_check,
     grain_facts,
     model_diff,
     take_snapshot,
@@ -30,6 +32,7 @@ from data_agent.verifier_v2 import (
 )
 from data_agent.verifier_v2 import sql as model_sql
 from data_agent.verifier_v2.project import model_alias, model_config, project_config
+from data_agent.verifier_v2.render import render_grain
 from data_agent.verifier_v2.snapshot import LARGE_SEEDS_FILE, SEED_SIZE_LIMIT
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "verifier_v2"
@@ -147,10 +150,117 @@ def test_yaml_lite_reads_dbt_shapes() -> None:
     assert data["nothing"] is None
 
 
-def test_yaml_lite_treats_unsupported_input_as_empty() -> None:
+def test_yaml_lite_reads_block_scalars_flow_mappings_and_continued_scalars() -> None:
+    """Return 2 (ticket 45): shapes real dbt projects use must not turn the file into `{}`."""
+    data = yaml_lite.load(
+        "models:\n"
+        "  - name: orders\n"
+        "    description: |\n"
+        "      Literal text.\n"
+        "      # kept: not a comment\n"
+        "        indented\n"
+        "    config: {materialized: table, tags: [a, 'b']}\n"
+        "    data_tests:\n"
+        "      - dbt_utils.unique_combination_of_columns:\n"
+        "          combination_of_columns: [order_id,\n"
+        "                                   customer_id]\n"
+        "      - dbt_utils.unique_combination_of_columns: {combination_of_columns: [a, b]}\n"
+        "    columns:\n"
+        "      - name: order_id\n"
+        "        description: >-\n"
+        "          folded\n"
+        "          text\n"
+        "\n"
+        "          new paragraph\n"
+        "        tests: [unique, not_null]\n"
+        "      - name: note\n"
+        "        description: plain text that\n"
+        "          continues here\n"
+        "        tests:\n"
+        "          - not_null\n"
+        "sources:\n"
+        "  - name: raw\n"
+        "    tables: [{name: customers}, {name: orders, identifier: ord}]\n"
+    )
+    model = data["models"][0]
+    assert model["description"] == "Literal text.\n# kept: not a comment\n  indented\n"
+    assert model["config"] == {"materialized": "table", "tags": ["a", "b"]}
+    assert [
+        t["dbt_utils.unique_combination_of_columns"]["combination_of_columns"]
+        for t in model["data_tests"]
+    ] == [
+        ["order_id", "customer_id"],
+        ["a", "b"],
+    ]
+    assert model["columns"][0]["description"] == "folded text\nnew paragraph"
+    assert model["columns"][0]["tests"] == ["unique", "not_null"]
+    assert model["columns"][1]["description"] == "plain text that continues here"
+    assert model["columns"][1]["tests"] == ["not_null"]
+    assert data["sources"][0]["tables"] == [
+        {"name": "customers"},
+        {"name": "orders", "identifier": "ord"},
+    ]
     assert yaml_lite.load("") == {}
-    assert yaml_lite.load("key: &anchor value\nother: *anchor\n") == {}
-    assert yaml_lite.load("bad\n  indentation: here\n") == {}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "key: &anchor value\nother: *anchor\n",
+        "bad\n  indentation: here\n",
+        "key: |2\n  text\n",
+        "key: [a,\n",
+        "key: !!str 1\n",
+    ],
+)
+def test_yaml_lite_raises_on_unsupported_input(text: str) -> None:
+    """Return 2: what the subset cannot read is an error the tools report, not `{}`."""
+    with pytest.raises(yaml_lite.YamlLiteError, match="line 1"):
+        yaml_lite.load(text)
+
+
+def unreadable_snapshot(tmp_path: Path) -> tuple[Path, Path]:
+    """The fixture pair with the snapshot's schema.yml replaced by one the reader refuses."""
+    workspace, snapshot = tmp_path / "ws", tmp_path / "snap"
+    shutil.copytree(AFTER, workspace / "project")
+    shutil.copytree(BEFORE, snapshot / "project")
+    (snapshot / "project" / "models" / "schema.yml").write_text(
+        "version: 2\ndefaults: &d\n  x: 1\nmodels:\n  - name: stg_orders\n    <<: *d\n"
+    )
+    return workspace, snapshot
+
+
+def test_contract_check_says_when_the_snapshot_yml_could_not_be_read(
+    cmp_db: Path, tmp_path: Path
+) -> None:
+    """Return 2: an unreadable snapshot YML is reported, not taken as declaring nothing."""
+    workspace, snapshot = unreadable_snapshot(tmp_path)
+    gateway = DuckDBGateway(cmp_db)
+    results = contract_check(
+        workspace,
+        snapshot,
+        gateway,
+        ["stg_orders", "customer_ltv"],
+        {"customer_ltv": ["customer_id"]},
+    )
+    columns = results["stg_orders"]["columns"]
+    assert columns["status"] == "N/A"
+    assert "snapshot YML could not be read" in columns["evidence"]
+    assert "models/schema.yml" in columns["evidence"] and "line 2" in columns["evidence"]
+    with_task = results["customer_ltv"]["columns"]
+    assert with_task["status"] == "PASS" and with_task["source"] == "task"
+    assert "snapshot YML could not be read" in with_task["evidence"]
+
+
+def test_grain_facts_says_when_the_snapshot_yml_could_not_be_read(
+    cmp_db: Path, tmp_path: Path
+) -> None:
+    workspace, snapshot = unreadable_snapshot(tmp_path)
+    facts = grain_facts(workspace, snapshot, DuckDBGateway(cmp_db), "daily_sales", ["store_id"])
+    assert facts["exemption"] is None
+    assert len(facts["unreadable_yml"]) == 1
+    assert facts["unreadable_yml"][0].startswith("project/models/schema.yml (line 2")
+    assert "could not be read" in render_grain(facts)
 
 
 def test_model_config_resolves_down_the_directory_path(tmp_path: Path) -> None:
@@ -305,6 +415,64 @@ def test_grain_facts_does_not_exempt_on_a_primary_key_inside_the_key(cmp_db: Pat
     assert facts["null_rows"] == 1 and facts["duplicate_rows"] == 0
 
 
+def test_contract_check_says_not_checked_for_an_unparsed_model(
+    cmp_db: Path, edited: tuple[Path, Path]
+) -> None:
+    """Return 4: a model whose SQL was not parsed has unknown window functions; the check is
+    not checked, not "no window function was added or changed"."""
+    window = contract_check(*edited, DuckDBGateway(cmp_db), ["conditional"])["conditional"][
+        "window"
+    ]
+    assert window["status"] == "N/A"
+    assert "not checked" in window["evidence"] and "not parsed" in window["evidence"]
+
+
+def test_contract_check_finds_the_diff_under_a_qualified_name_or_alias(
+    cmp_db: Path, edited: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """Return 6: the changed window of ranked_orders is found when the model is named
+    `main.ranked_orders`, and when it is a model `rank` built under the alias ranked_orders."""
+    gateway = DuckDBGateway(cmp_db)
+    qualified = contract_check(*edited, gateway, ["main.ranked_orders"])["main.ranked_orders"]
+    assert qualified["window"]["status"] == "FAIL"
+    assert qualified["columns"]["source"] is None  # ranked_orders has no snapshot YML entry
+    stg = contract_check(*edited, gateway, ["main.stg_orders"])["main.stg_orders"]["columns"]
+    assert stg["source"] == "snapshot_yml" and "status" in stg["missing"]
+    workspace, snapshot = tmp_path / "ws2", tmp_path / "snap2"
+    for root, order_by in ((workspace, "order_date"), (snapshot, "order_date, order_id")):
+        (root / "p" / "models").mkdir(parents=True)
+        (root / "p" / "dbt_project.yml").write_text("name: p\n")
+        (root / "p" / "models" / "rank.sql").write_text(
+            "{{ config(alias='ranked_orders') }}\nSELECT *, row_number() OVER (PARTITION BY "
+            f"customer_id ORDER BY {order_by}) AS rn FROM {{{{ ref('stg_orders') }}}}\n"
+        )
+    aliased = contract_check(workspace, snapshot, gateway, ["ranked_orders"])["ranked_orders"]
+    assert aliased["exists"]["status"] == "PASS"
+    assert aliased["window"]["status"] == "FAIL", aliased["window"]
+    assert "order_date" in aliased["window"]["evidence"]
+
+
+def test_grain_facts_reports_a_declared_key_column_the_model_lacks(
+    cmp_db: Path, tmp_path: Path
+) -> None:
+    """Return 7: a column the snapshot YML tests unique+not_null but the built model does not
+    have is a fact about the model, not a tool error; the counts still come back."""
+    workspace, snapshot = tmp_path / "ws", tmp_path / "snap"
+    shutil.copytree(AFTER, workspace / "project")
+    shutil.copytree(BEFORE, snapshot / "project")
+    (snapshot / "project" / "models" / "returns.yml").write_text(
+        "version: 2\nmodels:\n  - name: daily_returns\n    columns:\n"
+        "      - name: return_id\n        tests: [unique, not_null]\n"
+    )
+    facts = grain_facts(workspace, snapshot, DuckDBGateway(cmp_db), "daily_returns", ["store_id"])
+    assert facts["key_columns"] == ["store_id"]
+    assert facts["missing_key_columns"] == ["return_id"]
+    assert (facts["null_rows"], facts["duplicate_rows"]) == (0, 1)
+    assert "return_id" in render_grain(facts)
+    with pytest.raises(ToolError, match="no column 'nope'"):
+        grain_facts(workspace, snapshot, DuckDBGateway(cmp_db), "daily_returns", ["nope"])
+
+
 def test_compare_by_key_refuses_the_model_under_a_qualified_name_or_alias(
     cmp_db: Path, tmp_path: Path
 ) -> None:
@@ -337,6 +505,114 @@ def test_compare_by_key_counts_keys_not_joined_rows(cmp_db: Path) -> None:
     sql = "SELECT * FROM (VALUES (1, 9), (1, 9), (2, 5), (4, 0)) AS r(k, v)"
     result = compare_by_key(DuckDBGateway(cmp_db), "dup_model", ["k"], sql)
     assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (1, 1, 1)
+
+
+def test_compare_by_key_pairs_null_keys_on_both_sides(cmp_db: Path) -> None:
+    """A NULL key pairs with a NULL key (as the values rule: NULL equals NULL); a NULL key on
+    one side only is one-sided. The pairing must not rely on a join condition Postgres refuses
+    (return 1), which the same scenario checks against Postgres below."""
+    con = duckdb.connect(str(cmp_db))
+    try:
+        con.execute("CREATE TABLE null_keys (k INTEGER, v INTEGER)")
+        con.execute("INSERT INTO null_keys VALUES (1, 1), (NULL, 2), (3, 3)")
+    finally:
+        con.close()
+    paired = "SELECT * FROM (VALUES (1, 1), (NULL, 2), (3, 9)) AS r(k, v)"
+    result = compare_by_key(DuckDBGateway(cmp_db), "null_keys", ["k"], paired)
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (0, 0, 1)
+    assert result["samples"]["mismatched"][0]["key"] == {"k": 3}
+    unpaired = "SELECT * FROM (VALUES (1, 1), (3, 3)) AS r(k, v)"
+    result = compare_by_key(DuckDBGateway(cmp_db), "null_keys", ["k"], unpaired)
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (1, 0, 0)
+    assert result["samples"]["only_in_model"] == [{"k": None}]
+
+
+def test_compare_by_key_rejects_query_table(cmp_db: Path) -> None:
+    """DuckDB's query_table() names its table in a string sqlglot's table list cannot see."""
+    sql = "SELECT k, int_v FROM query_table('cmp_model')"
+    result = compare_by_key(DuckDBGateway(cmp_db), "cmp_model", ["k"], sql)
+    assert result["accepted"] is False and "query_table" in result["reason"]
+
+
+def test_compare_by_key_compares_qualified_references_by_schema(cmp_db: Path) -> None:
+    """Return 3: a model `orders` built in main may be checked against `raw.orders`, the source
+    it reads; `orders` and `main.orders` are still the model itself, and a changed model whose
+    schema the catalog does not know is refused under any qualifier."""
+    con = duckdb.connect(str(cmp_db))
+    try:
+        con.execute("CREATE SCHEMA raw")
+        con.execute("CREATE TABLE raw.orders (k INTEGER, v INTEGER)")
+        con.execute("INSERT INTO raw.orders VALUES (1, 10), (2, 20)")
+        con.execute("CREATE TABLE orders AS SELECT * FROM raw.orders")
+    finally:
+        con.close()
+    gateway = DuckDBGateway(cmp_db)
+    source = compare_by_key(gateway, "main.orders", ["k"], "SELECT k, v FROM raw.orders")
+    assert source["accepted"] is True, source
+    assert (source["only_in_model"], source["only_in_reference"], source["mismatched"]) == (0, 0, 0)
+    for itself in ("SELECT k, v FROM orders", "SELECT k, v FROM main.orders"):
+        refused = compare_by_key(gateway, "main.orders", ["k"], itself)
+        assert refused["accepted"] is False and "orders" in refused["reason"], itself
+    ghost = compare_by_key(
+        gateway, "main.orders", ["k"], "SELECT k, v FROM raw.ghost", changed_models=["ghost"]
+    )
+    assert ghost["accepted"] is False and "raw.ghost" in ghost["reason"]
+
+
+# --- Against Postgres (return 1): the join condition must be one Postgres full-joins on ----
+
+
+@pytest.fixture
+def postgres_cmp(tmp_path: Path) -> PostgresGateway:
+    """cmp_model (one column per equality rule, one NULL key) in the scratch database named by
+    DATA_AGENT_TEST_POSTGRES_URL, as tests/test_postgres.py does."""
+    import psycopg
+
+    url = os.environ.get("DATA_AGENT_TEST_POSTGRES_URL")
+    if not url:
+        pytest.fail("DATA_AGENT_TEST_POSTGRES_URL is not set")
+    with psycopg.connect(url, autocommit=True) as con:
+        con.execute("DROP SCHEMA IF EXISTS da_t45 CASCADE")
+        con.execute("CREATE SCHEMA da_t45")
+        con.execute(
+            "CREATE TABLE da_t45.cmp_model (k INTEGER, dec_v NUMERIC(10,2), "
+            "dbl_v DOUBLE PRECISION, int_v INTEGER, str_v TEXT, day_v DATE)"
+        )
+        con.execute(
+            "INSERT INTO da_t45.cmp_model VALUES "
+            "(1, 12.35, 1000000.0, 5, 'a', DATE '2024-01-01'), "
+            "(2, 0.10, 0.0, 7, 'b', DATE '2024-02-02'), "
+            "(NULL, 99.99, 1e-9, NULL, NULL, DATE '2024-03-03')"
+        )
+    return PostgresGateway(url)
+
+
+@pytest.mark.integration
+def test_compare_by_key_full_joins_every_key_on_postgres(postgres_cmp: PostgresGateway) -> None:
+    """Postgres refuses `FULL JOIN ... ON a IS NOT DISTINCT FROM b` (only merge- or
+    hash-joinable conditions); the tool must still pair every key, NULL with NULL, and apply
+    the equality rules with the NUMERIC scale read from information_schema."""
+    reference = (
+        "SELECT * FROM (VALUES "
+        "(1, 12.345, 1000000.0000005, 5, 'a', DATE '2024-01-01'), "
+        "(2, 0.1, 0.0, 7, 'b', DATE '2024-02-02'), "
+        "(NULL, 99.99, 1e-9, NULL, NULL, DATE '2024-03-03'), "
+        "(4, 1.0, 1.0, 1, 'd', DATE '2024-04-04')"
+        ") AS r(k, dec_v, dbl_v, int_v, str_v, day_v)"
+    )
+    result = compare_by_key(postgres_cmp, "cmp_model", ["k"], reference)
+    assert result["accepted"] is True, result
+    assert result["dialect"] == "postgres"
+    assert result["compared_columns"] == ["dec_v", "dbl_v", "int_v", "str_v", "day_v"]
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (0, 1, 0)
+    assert result["samples"]["only_in_reference"] == [{"k": 4}]
+    off = reference.replace("12.345", "12.344").replace("'b'", "'B'")
+    result = compare_by_key(postgres_cmp, "cmp_model", ["k"], off)
+    assert result["mismatched"] == 2
+    assert {(m["key"]["k"], m["column"]) for m in result["samples"]["mismatched"]} == {
+        (1, "dec_v"),
+        (2, "str_v"),
+    }
 
 
 # --- MCP wrappers over stdio ------------------------------------------------------------------

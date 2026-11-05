@@ -55,8 +55,15 @@ def dbt_projects(root: Path) -> list[Path]:
 
 
 def project_config(project: Path) -> dict[str, Any]:
+    """dbt_project.yml as a dict; `{}` when it is missing or cannot be read (the diff then
+    falls back to dbt's default paths and sees no project-level configuration)."""
     path = project / PROJECT_FILE
-    data = yaml_lite.load(read_text(path)) if path.is_file() else {}
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml_lite.load(read_text(path))
+    except yaml_lite.YamlLiteError:
+        return {}
     return data if isinstance(data, dict) else {}
 
 
@@ -238,19 +245,56 @@ def _test_name(test: Any) -> str:
     return str(test)
 
 
+@dataclass(frozen=True)
+class YmlFile:
+    """One of a project's YML files as read: its document, or why it could not be read."""
+
+    path: Path
+    data: dict[str, Any]
+    error: str | None = None
+
+    def entries(self, model: str) -> list[ModelEntry]:
+        return [
+            ModelEntry(self.path, entry)
+            for entry in _list(self.data.get("models"))
+            if isinstance(entry, dict) and str(entry.get("name")) == model
+        ]
+
+
+def yml_documents(project: Path, config: dict[str, Any] | None = None) -> list[YmlFile]:
+    """The project's YML files read once, in file order; a file outside the YAML subset or that
+    does not parse keeps its error and an empty document, so the caller can say so instead of
+    treating it as declaring nothing."""
+    documents: list[YmlFile] = []
+    for path in yml_files(project, config):
+        try:
+            data = yaml_lite.load(read_text(path))
+        except yaml_lite.YamlLiteError as exc:
+            documents.append(YmlFile(path, {}, str(exc)))
+            continue
+        documents.append(YmlFile(path, data if isinstance(data, dict) else {}))
+    return documents
+
+
+def entries_in(documents: list[YmlFile], model: str) -> list[ModelEntry]:
+    """The `models:` entries named `model` across the documents, in file order."""
+    return [entry for document in documents for entry in document.entries(model)]
+
+
+def unreadable(documents: list[YmlFile], root: Path) -> list[str]:
+    """`path (reason)` for each document that could not be read, path relative to `root`."""
+    return [
+        f"{document.path.relative_to(root)} ({document.error})"
+        for document in documents
+        if document.error is not None
+    ]
+
+
 def model_entries(
     project: Path, model: str, config: dict[str, Any] | None = None
 ) -> list[ModelEntry]:
     """The `models:` entries named `model` in the project's YML files, in file order."""
-    entries: list[ModelEntry] = []
-    for path in yml_files(project, config):
-        data = yaml_lite.load(read_text(path))
-        if not isinstance(data, dict):
-            continue
-        for entry in _list(data.get("models")):
-            if isinstance(entry, dict) and str(entry.get("name")) == model:
-                entries.append(ModelEntry(path, entry))
-    return entries
+    return entries_in(yml_documents(project, config), model)
 
 
 def declared_columns(entries: list[ModelEntry]) -> list[str]:
@@ -281,6 +325,57 @@ def sql_config_call(sql: str) -> str | None:
 
 
 ALIAS_RE = re.compile(r"""alias\s*=\s*['"]([^'"]+)['"]""")
+
+
+def model_name(workspace: Path, name: str, relation: str | None = None) -> str:
+    """The name the project knows a model by (its file stem) for a name the verifier gives:
+    the name itself, the name with its schema qualifier dropped, or, when the model is built
+    under an alias (`relation`, the relation it was found as), the model that alias belongs
+    to. Falls back to the unqualified name."""
+    bare = bare_name(name)
+    candidates = [bare] + ([relation] if relation and relation.lower() != bare.lower() else [])
+    projects = dbt_projects(workspace)
+    files = [model_files(project) for project in projects]
+    for candidate in candidates:
+        for names in files:
+            if candidate in names:
+                return candidate
+            match = next((n for n in names if n.lower() == candidate.lower()), None)
+            if match is not None:
+                return match
+    for candidate in candidates:
+        for project, names in zip(projects, files, strict=True):
+            owner = _alias_owner(project, names, candidate)
+            if owner is not None:
+                return owner
+    return bare
+
+
+def bare_name(relation: str) -> str:
+    """The relation's own name without schema or database qualifiers or quotes."""
+    return relation.strip().rsplit(".", 1)[-1].strip('"')
+
+
+def _alias_owner(project: Path, names: dict[str, Path], alias: str) -> str | None:
+    """The model the project builds as `alias`: `alias=` in a model's `{{ config(...) }}`, else
+    `alias:` in a YML entry (directly or under `config:`)."""
+    wanted = alias.lower()
+    for model, path in names.items():
+        call = sql_config_call(read_text(path))
+        in_sql = ALIAS_RE.search(call) if call else None
+        if in_sql and in_sql.group(1).lower() == wanted:
+            return model
+    for document in yml_documents(project):
+        for entry in _list(document.data.get("models")):
+            if not isinstance(entry, dict) or entry.get("name") is None:
+                continue
+            config = entry.get("config")
+            declared = entry.get("alias") or (
+                config.get("alias") if isinstance(config, dict) else None
+            )
+            if declared is not None and str(declared).lower() == wanted:
+                return str(entry["name"])
+    return None
 
 
 def model_alias(project: Path, model: str) -> str | None:

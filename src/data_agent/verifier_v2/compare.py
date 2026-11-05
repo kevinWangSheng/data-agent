@@ -33,6 +33,8 @@ DOUBLE_TYPE = {"duckdb": "DOUBLE", "postgres": "DOUBLE PRECISION"}
 RELATIVE_TOLERANCE = "1e-6"
 DECIMAL_RE = re.compile(r"^(decimal|numeric)(?:\s*\(\s*(\d+)\s*,\s*(\d+)\s*\))?", re.IGNORECASE)
 FLOAT_RE = re.compile(r"^(double|real|float)", re.IGNORECASE)
+# DuckDB reads a table named by a string, which sqlglot's table list cannot see.
+QUERY_TABLE_RE = re.compile(r"\bquery_table\s*\(", re.IGNORECASE)
 # Postgres keeps a numeric column's scale here, not in data_type.
 SCALE_SQL = (
     "SELECT numeric_scale FROM information_schema.columns "
@@ -57,20 +59,26 @@ def compare_by_key(
     reference's non-key columns that the model also has. `workspace` lets the model and the
     changed models be known by their aliases too; `catalog` is the server's cache."""
     reference_sql = reference_sql.strip().rstrip(";")
-    tables = model_sql.table_names(reference_sql, gateway.dialect)
-    if tables is None:
+    if QUERY_TABLE_RE.search(reference_sql):
+        return {
+            "accepted": False,
+            "reason": "the reference SQL calls query_table(), which names its table in a string "
+            "the check cannot see through; write the table name in the FROM clause",
+        }
+    references = model_sql.table_references(reference_sql, gateway.dialect)
+    if references is None:
         return {"accepted": False, "reason": "the reference SQL could not be parsed"}
     load = catalog_loader(gateway, catalog)
     table = find_model(load, workspace, model)
-    # Bare, lower-cased relation names, as `table_names` reports them: the model as named and
-    # as built, every changed model as named and, when the workspace is known, as aliased.
-    forbidden = {_bare(model), table.name.lower()}
-    for changed in changed_models:
-        forbidden.add(_bare(changed))
-        alias = workspace_alias(workspace, changed) if workspace else None
-        if alias:
-            forbidden.add(_bare(alias))
-    hits = sorted({name for name in tables if name in forbidden})
+    forbidden = _forbidden(load, workspace, model, table, changed_models)
+    hits = sorted(
+        {
+            f"{schema}.{name}" if schema else name
+            for schema, name in references
+            if name in forbidden
+            and (schema is None or not forbidden[name] or schema in forbidden[name])
+        }
+    )
     if hits:
         return {
             "accepted": False,
@@ -176,6 +184,39 @@ def compare_by_key(
     }
 
 
+def _forbidden(
+    load: LoadCatalog,
+    workspace: Path | None,
+    model: str,
+    table: Table,
+    changed_models: Sequence[str],
+) -> dict[str, set[str]]:
+    """Lower-cased bare relation name -> the schemas it is known to be built in, for the model
+    as named and as built and for every changed model as named and (when the workspace is
+    known) as aliased. An unqualified reference to a forbidden name is refused in any schema; a
+    qualified one only in a known schema (or when none is known), so `raw.orders` may feed a
+    reference for a model `orders` built in another schema."""
+    forbidden: dict[str, set[str]] = {}
+
+    def forbid(name: str, schema: str | None) -> None:
+        schemas = forbidden.setdefault(_bare(name), set())
+        if schema:
+            schemas.add(schema.lower())
+
+    forbid(model, table.schema)
+    forbid(table.name, table.schema)
+    for changed in changed_models:
+        try:
+            built: Table | None = find_model(load, workspace, changed)
+        except ToolError:
+            built = None
+        forbid(changed, built.schema if built else None)
+        alias = workspace_alias(workspace, changed) if workspace else None
+        if alias:
+            forbid(alias, built.schema if built else None)
+    return forbidden
+
+
 def _bare(relation: str) -> str:
     """The relation's own name, lower-cased, without schema or database qualifiers."""
     return relation.strip().rsplit(".", 1)[-1].strip('"').lower()
@@ -189,14 +230,28 @@ def _joined_sql(
     compared: list[tuple[str, str, str]],
     gateway: Queryable,
 ) -> str:
-    """`WITH m, r, j` where j is the FULL OUTER JOIN of model and reference on the keys, with
-    both values and an equality flag per compared column."""
-    key_select = ", ".join(
-        f"COALESCE(m.{quote(k)}, r.{quote(reference_lower[k.lower()])}) AS {quote(k)}" for k in keys
+    """`WITH m0, r0, s, m, r, j` where j is the FULL OUTER JOIN of model (m) and reference (r)
+    on the keys, with both values and an equality flag per compared column.
+
+    NULL keys pair with NULL keys. Postgres runs a FULL JOIN only on merge- or hash-joinable
+    conditions, which `IS NOT DISTINCT FROM` and `a = b OR (a IS NULL AND b IS NULL)` are not
+    (it refuses the query), so each key joins on two plain equalities: the NULL flags, and the
+    values with NULL replaced by a sentinel of the key's own type. The sentinel (`s`, one row)
+    is any non-NULL value of that key on either side, carried onto both m and r by a cross
+    join so the condition reads only each side's columns; the flag equality keeps a NULL from
+    pairing with a real key equal to the sentinel. A key with no non-NULL value anywhere has
+    no sentinel, and its NULLs stay unpaired."""
+    pairs = [(quote(k), quote(reference_lower[k.lower()]), quote(f"__s_{k}")) for k in keys]
+    sentinel_select = ", ".join(
+        f"COALESCE((SELECT {m} FROM m0 WHERE {m} IS NOT NULL LIMIT 1), "
+        f"(SELECT {r} FROM r0 WHERE {r} IS NOT NULL LIMIT 1)) AS {s}"
+        for m, r, s in pairs
     )
     on = " AND ".join(
-        f"m.{quote(k)} IS NOT DISTINCT FROM r.{quote(reference_lower[k.lower()])}" for k in keys
+        f"(m.{m} IS NULL) = (r.{r} IS NULL) AND COALESCE(m.{m}, m.{s}) = COALESCE(r.{r}, r.{s})"
+        for m, r, s in pairs
     )
+    key_select = ", ".join(f"COALESCE(m.{m}, r.{r}) AS {m}" for m, r, _ in pairs)
     value_select = ", ".join(
         f"m.{quote(c)} AS {quote(f'__m_{c}')}, r.{quote(r)} AS {quote(f'__r_{c}')}, "
         f"{_equality(table, c, r, data_type, gateway)} AS {quote(f'__eq_{c}')}"
@@ -213,8 +268,11 @@ def _joined_sql(
         if part
     )
     return (
-        f'WITH m AS (SELECT *, TRUE AS "__m_present" FROM {table.sql_name}), '
-        f'r AS (SELECT ref_.*, TRUE AS "__r_present" FROM ({reference_sql}) AS ref_), '
+        f"WITH m0 AS (SELECT * FROM {table.sql_name}), "
+        f"r0 AS (SELECT ref_.* FROM ({reference_sql}) AS ref_), "
+        f"s AS (SELECT {sentinel_select}), "
+        f'm AS (SELECT m0.*, TRUE AS "__m_present", s.* FROM m0 CROSS JOIN s), '
+        f'r AS (SELECT r0.*, TRUE AS "__r_present", s.* FROM r0 CROSS JOIN s), '
         f"j AS (SELECT {selected} FROM m FULL OUTER JOIN r ON {on})"
     )
 

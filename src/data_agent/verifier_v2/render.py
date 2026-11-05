@@ -52,6 +52,11 @@ def render_grain(facts: dict[str, Any]) -> str:
         f"rows with a NULL key: {facts['null_rows']}",
         f"duplicate rows (beyond the first per key): {facts['duplicate_rows']}",
     ]
+    if facts["missing_key_columns"]:
+        lines.append(
+            "key columns the snapshot YML tests unique+not_null but the built model lacks "
+            f"(not counted): {', '.join(facts['missing_key_columns'])}"
+        )
     exemption = facts["exemption"]
     if exemption is None:
         lines.append(
@@ -61,6 +66,11 @@ def render_grain(facts: dict[str, Any]) -> str:
         lines.append(
             f"exemption candidate: the snapshot YML at {exemption['path']} declares "
             f"{', '.join(exemption['columns'])} unique"
+        )
+    if facts["unreadable_yml"]:
+        lines.append(
+            "snapshot YML could not be read, so its key columns and exemptions are unknown: "
+            + "; ".join(facts["unreadable_yml"])
         )
     return "\n".join(lines)
 

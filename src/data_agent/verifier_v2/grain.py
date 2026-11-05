@@ -22,8 +22,11 @@ from data_agent.verifier_v2.db import (
 from data_agent.verifier_v2.project import (
     ModelEntry,
     dbt_projects,
-    model_entries,
+    entries_in,
+    model_name,
     unique_not_null_columns,
+    unreadable,
+    yml_documents,
 )
 
 
@@ -35,19 +38,30 @@ def grain_facts(
     key_columns: Sequence[str],
     catalog: LoadCatalog | None = None,
 ) -> dict[str, Any]:
-    """`{"relation", "key_columns", "null_rows", "duplicate_rows", "exemption"}`. The key is the
-    given columns plus the snapshot YML's unique+not_null columns. `duplicate_rows` counts rows
-    beyond the first in each key group (rows with a NULL key are counted in `null_rows` only).
-    `exemption` is None, or `{"source": "snapshot_yml", "path", "columns"}` (path relative to the
-    snapshot) when the snapshot YML declares a different or finer grain than the key."""
+    """`{"relation", "key_columns", "missing_key_columns", "null_rows", "duplicate_rows",
+    "exemption", "unreadable_yml"}`. The key is the given columns plus the snapshot YML's
+    unique+not_null columns; of the latter, those the built model lacks are listed in
+    `missing_key_columns` (a fact about the model) and left out of the counts. `duplicate_rows`
+    counts rows beyond the first in each key group (rows with a NULL key are counted in
+    `null_rows` only). `exemption` is None, or `{"source": "snapshot_yml", "path", "columns"}`
+    (path relative to the snapshot) when the snapshot YML declares a different or finer grain
+    than the key. `unreadable_yml` lists snapshot YML files that could not be read, whose key
+    columns and exemptions are therefore unknown."""
     load = catalog_loader(gateway, catalog)
     table = find_model(load, workspace, model)
-    entries: list[ModelEntry] = []
-    for project in dbt_projects(snapshot):
-        entries += model_entries(project, model)
+    documents = [
+        document for project in dbt_projects(snapshot) for document in yml_documents(project)
+    ]
+    entries: list[ModelEntry] = entries_in(documents, model_name(workspace, model, table.name))
     keys: dict[str, None] = {}
-    for column in [*key_columns, *unique_not_null_columns(entries)]:
+    for column in key_columns:
         keys.setdefault(column_named(table, column), None)
+    missing: list[str] = []
+    for column in unique_not_null_columns(entries):
+        try:
+            keys.setdefault(column_named(table, column), None)
+        except ToolError:
+            missing.append(column)
     if not keys:
         raise ToolError("Error: key_columns is empty; name the grain key")
     quoted = [quote(column) for column in keys]
@@ -55,11 +69,13 @@ def grain_facts(
     return {
         "relation": table.ref,
         "key_columns": list(keys),
+        "missing_key_columns": missing,
         "null_rows": scalar_count(
             gateway, f"SELECT COUNT(*) FROM {table.sql_name} WHERE {any_null}"
         ),
         "duplicate_rows": duplicate_rows(gateway, table, quoted, where=f"NOT ({any_null})"),
         "exemption": _exemption(entries, list(keys), snapshot),
+        "unreadable_yml": unreadable(documents, snapshot),
     }
 
 
