@@ -103,7 +103,11 @@
 > **编排会话进度（2026-11-05 更新）：**
 > - 人决定接受合入：41 输出上限（PR #42 → f03d694，已知限制：Read `target/run_results.json` 超长、scan 五节超预算切掉 AVAILABLE MACROS）；44 验证层 v2 验收测试（PR #40 → 3bc82c8，人审通过；Codex 两条 P2 不补，记已知限制）。合入后 main `make check` 1580 passed、40 xfailed。
 > - 44 第 6 条的处理：45 的 Authority 加了一行，允许它在拿掉 `verify_model_values` 的同一提交里更新 `tests/acceptance/seam_support.py` 的 `VERIFIER_TOOLS`。
-> - 45 已派（`claude -p -w 45-snapshot-and-tools`，输出在 `runs/dispatch/`）。之后 46 → 47（47 初筛 5 题 × 3）。全部合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
+> - **2026-11-05 晚：45、48、49 都已 `done` 合入 main**：49（PR #44 → d16aff5；初筛 daily-cohorts 3/3，`profiles.yml` 0 次改动，Read `target/*.json` 0 次）；48（PR #45 → d7b31da；cross-sell 1/1，同一轮 MCP 调用结束时间聚集，批内结束跨度比 0.32 对 accept-2 的 0.66–0.70）；45（PR #46 → 00959ec；cart-abandonment 1/1，`contract_check`、`grain_facts` 被调用；Fable 审查退回 2 轮：Postgres FULL JOIN、yaml_lite 静默 `{}`、按 schema 拒绝、CAST 类型，全部修完；余下 P3 记已知限制，见工单）。
+> - Codex 全天不可用（本地 6 次 at capacity，app 每个 PR 3 次 unknown error），三张都用 Fable 5.1 子 agent 审查代替（规则见上）。
+> - 46 已派（`claude -p -w 46-harness-hooks`，输出 `runs/dispatch/46-harness-hooks.txt`）。之后 47（初筛 5 题 × 3）。全部合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
+> - 对齐会话待定的小项：49 的 Fable 审查三条 P3（`validate_project.py:200` 上游文案 "Fix profiles.yml" 与提示词相抵；validate 超时封顶 300 的措辞；提示词里 "them" 指代）；45 的 `verify_values` 死代码等 47 拿掉 value-verifier 时清理。
+> - 花费：今天服务器运行实际价约 $1.0（t49-screen $0.36、t48-real $0.38、t45-real $0.25，都在高峰），开发集累计约 ¥414，止损线 ¥500。
 > - 人确认（2026-11-05）与 45 并行开两张工单，都已 `ready-for-agent` 并派出：48 MCP 工具标 `readOnlyHint`（43 笔记 §4，确定性修复，真实运行 cross-sell × 1）；49 提示词和 Skill 不再教改 `profiles.yml`、validate 写 300 s、Skill 加『不 Read `target/*.json`』（改行为，初筛 daily-cohorts × 3 对照 accept-2 full）。48 与 45 都改 `verifier_tools.py`，后合入的解决冲突；49 与 47 都改 SKILL.md，49 先合。
 >
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
