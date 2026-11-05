@@ -431,3 +431,78 @@ def test_edit_changes_a_predicate_the_task_names_as_wrong() -> None:
     edit_rule = edit_rule.split("\n\n", 1)[0]
     assert "removal or correction" in edit_rule
     assert "keep every other predicate" in edit_rule
+
+
+def big_project(tmp_path: Path) -> Path:
+    """dbt_shop plus 800 orphan SQL files: a report far over the summary budget whose five
+    Step 1 sections stay small."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    for i in range(800):
+        (project / "models" / f"orphan_model_{i:04d}.sql").write_text("select 1 as x\n")
+    return project
+
+
+def test_scan_writes_the_full_report_and_prints_a_bounded_summary(tmp_path: Path) -> None:
+    project = big_project(tmp_path)
+    output = scan(project)
+    report_path = project / ".data-agent" / "scan" / "dbt_shop.md"
+    assert output.splitlines()[-1] == f"Full report: {report_path}"
+    assert len(output) <= 20_000, len(output)
+    report = report_path.read_text()
+    assert len(report) > 20_000
+    assert report.count("orphan_model_") == 800
+    assert "… " in output and f" more lines in {report_path}" in output
+    # The five Step 1 sections come first and whole, after the title line.
+    headings = [line for line in output.splitlines() if line and line[0] != " "]
+    assert headings[0].startswith("## dbt Project Scan: dbt_shop")
+    assert headings[1].startswith("STUBS TO REWRITE")
+    assert headings[2].startswith("MODELS TO BUILD")
+    assert headings[3].startswith("DEPENDENCIES")
+    assert headings[4].startswith("REQUIRED COLUMNS")
+    assert "COMPLETE MODELS" in output
+    # Lines the summary dropped are only in the report file.
+    assert output.count("orphan_model_") < 800
+
+
+def test_scan_prints_a_small_project_whole(tmp_path: Path) -> None:
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    output = scan(project)
+    report_path = project / ".data-agent" / "scan" / "dbt_shop.md"
+    report = report_path.read_text()
+    assert output == report.rstrip("\n") + f"\n\nFull report: {report_path}\n"
+    assert "more lines in" not in output
+    assert [line for line in report.splitlines() if line and line[0] != " "] == [
+        "## dbt Project Scan: dbt_shop",
+        "Do NOT run `dbt deps` — packages are pre-installed.",
+        "MODELS TO BUILD (defined in YML but no SQL file — create EXACT filenames):",
+        "STUBS TO REWRITE (SQL file exists but is incomplete):",
+        "COMPLETE MODELS (have a non-stub SQL file — call list_tables to confirm which are "
+        "materialized):",
+        "SIBLING PATTERNS (complete models in same directory — read for column conventions):",
+        "REFERENCING MODELS (models that ref() these — read for column conventions):",
+        "DEPENDENCIES: (check YML refs and existing SQL for dependency info)",
+        "REQUIRED COLUMNS: (read YML files for column specs)",
+        "AVAILABLE SOURCES:",
+        "DB HINTS: use list_tables and query_database to check lookup joins, staging-vs-raw gaps, "
+        "and parent-child driving tables.",
+    ]
+
+
+def test_scan_names_the_step_1_sections_the_summary_had_to_cut(tmp_path: Path) -> None:
+    """The five Step 1 sections are meant to come whole; when they alone overflow the summary,
+    the summary says which were cut instead of trailing off silently."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    models = "".join(f"  - name: planned_model_{i:04d}\n" for i in range(300))
+    (project / "models" / "planned.yml").write_text(f"version: 2\nmodels:\n{models}")
+    output = scan(project)
+    report_path = project / ".data-agent" / "scan" / "dbt_shop.md"
+    assert len(output) <= 20_000, len(output)
+    assert output.splitlines()[-1] == f"Full report: {report_path}"
+    assert report_path.read_text().count("planned_model_") >= 300
+    warning = [line for line in output.splitlines() if line.startswith("WARNING: the Step 1")]
+    assert len(warning) == 1, output[-2000:]
+    assert "MODELS TO BUILD, DEPENDENCIES, REQUIRED COLUMNS" in warning[0]
+    assert "STUBS TO REWRITE" not in warning[0]

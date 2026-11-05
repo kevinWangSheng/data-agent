@@ -1,4 +1,10 @@
-"""The data agent's MCP server (stdio). Every tool reaches the database through the gateway."""
+"""The data agent's MCP server (stdio). Every tool reaches the database through the gateway.
+
+The display bounds follow SignalPilot (Apache-2.0, see NOTICE): `render_table_listing` is adapted
+from `gateway/mcp/tools/schema/catalog.py` (`_render_table_listing`; no header lines, this server's
+table line, and the row estimate from `db_facts`), and the row display cap in `format_rows` from
+`gateway/mcp/tools/query.py` (`query_database`; the same floor, budget, maximum and notice).
+"""
 
 from functools import partial
 from pathlib import Path
@@ -34,7 +40,8 @@ from data_agent.verifier_tools import register_verifier_tools
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
 LIST_TABLES_SQL = """
 SELECT t.table_schema, t.table_name, t.table_type,
-       string_agg(c.column_name, ', ' ORDER BY c.ordinal_position) AS columns
+       string_agg(c.column_name, ', ' ORDER BY c.ordinal_position) AS columns,
+       count(*) AS column_count
 FROM information_schema.tables AS t
 JOIN information_schema.columns AS c
   ON c.table_catalog = t.table_catalog
@@ -68,20 +75,90 @@ def run_explain(gateway: Gateway, sql: str, row_limit: int = MAX_ROWS) -> str:
         raise tool_error(exc) from exc
 
 
+# Display caps on query_database (SignalPilot query.py): the first DISPLAY_FLOOR rows always show;
+# after that, rows keep printing within DISPLAY_CHAR_BUDGET characters, up to DISPLAY_MAX_ROWS.
+# `row_limit` still bounds what the database returns; this bounds what the model reads.
+DISPLAY_FLOOR = 50
+DISPLAY_CHAR_BUDGET = 12_000
+DISPLAY_MAX_ROWS = 400
+
+# Rendered size above which list_tables drops the column lists, then tables (SignalPilot
+# catalog.py). It sits under Claude Code's 25,000-token MCP output cap.
+LIST_TABLES_CHAR_BUDGET = 36_000
+LIST_TABLES_DEFAULT_MAX = 200
+
+
 def format_rows(result: QueryResult) -> str:
     if not result.rows:
         return "Query returned 0 rows"
     lines = [" | ".join(result.columns)]
     lines.append("-" * len(lines[0]))
-    lines.extend(" | ".join(str(value) for value in row) for row in result.rows)
-    lines.append(f"({len(result.rows)} rows)")
+    shown = 0
+    chars = 0
+    for row in result.rows:
+        if shown >= DISPLAY_MAX_ROWS:
+            break
+        line = " | ".join(str(value) for value in row)
+        if shown >= DISPLAY_FLOOR and chars + len(line) > DISPLAY_CHAR_BUDGET:
+            break
+        lines.append(line)
+        shown += 1
+        chars += len(line) + 1
+    total = len(result.rows)
+    lines.append(f"({total} rows)")
+    if total > shown:
+        lines.append(
+            f"[INCOMPLETE DISPLAY] {total} rows total; only the first {shown} are shown above. "
+            f"The remaining {total - shown} rows exist but are not displayed. "
+            f"Do not treat the list above as complete: re-run the query with a WHERE filter or "
+            f"OFFSET {shown} to see every remaining row before concluding anything about what the "
+            "full result does or does not contain."
+        )
     return "\n".join(lines)
+
+
+def missing_line(missing: int) -> str:
+    return f"{missing} more tables not shown; narrow with schema= or name_contains="
+
+
+def render_table_listing(
+    tables: list[tuple[str, str]], max_tables: int, columns: bool, budget: int
+) -> str:
+    """`tables` are (line with columns, line without) in display order. The first `max_tables`
+    render within `budget` characters: when the lines with columns do not fit, every line loses
+    its columns; when that still does not fit, tables drop from the end. Whenever a table is not
+    shown, the last line says how many and how to narrow the call."""
+    selected = tables[:max_tables]
+    body = [full if columns else compact for full, compact in selected]
+    if columns and sum(len(line) + 1 for line in body) > budget:
+        body = [compact for _, compact in selected]
+    tail_reserve = len(missing_line(len(tables))) + 1
+    used = 0
+    shown = 0
+    for line in body:
+        if used + len(line) + 1 > budget - tail_reserve:
+            break
+        used += len(line) + 1
+        shown += 1
+    body = body[:shown]
+    missing = len(tables) - shown
+    if missing > 0:
+        body.append(missing_line(missing))
+    return "\n".join(body)
 
 
 def table_kind(kind: str, estimate: int | None) -> str:
     """`base table, ~N rows`; a view, which has no rows of its own, stays `view`."""
     kind = kind.lower()
     return kind if kind == "view" else f"{kind}, {rows_label(estimate)}"
+
+
+def table_lines(
+    schema: str, name: str, kind: str, columns: str, column_count: int, estimate: int | None
+) -> tuple[str, str]:
+    """The table's line with its column names and its compact line with the column count."""
+    head = f"{schema}.{name} ({table_kind(kind, estimate)}"
+    return f"{head}): {columns}", f"{head}, {column_count} cols)"
 
 
 def build_server(
@@ -119,24 +196,46 @@ def build_server(
             raise tool_error(exc) from exc
 
     @server.tool()
-    def list_tables(name_contains: str | None = None) -> str:
+    def list_tables(
+        schema: str | None = None,
+        name_contains: str | None = None,
+        max_tables: int = LIST_TABLES_DEFAULT_MAX,
+        columns: bool = True,
+    ) -> str:
         """List the database's tables and views, one per line with their column names.
 
         Each table shows the database's own row estimate (`~N rows`, from its statistics, not
-        a count; `rows unknown` when it has none). Views have no estimate. Pass `name_contains`
-        to keep only tables whose name contains that text (ignores case).
+        a count; `rows unknown` when it has none). Views have no estimate.
+
+        Narrow a large listing. Pass `schema` to keep one schema and `name_contains` to keep
+        only tables whose name contains that text (both ignore case). Set `columns=false` for a
+        compact listing of names, estimates and column counts. At most `max_tables` tables
+        (default 200) appear, in (schema, name) order, and the reply never exceeds about 36,000
+        characters: when it would, the tool drops the column lists, then drops tables, and the
+        last line says how many tables are missing.
         """
+        if max_tables < 1:
+            raise ToolError("max_tables must be at least 1")
         tables = run_query(gateway, LIST_TABLES_SQL, row_limit=MAX_ROWS).rows
         estimates = row_estimates(run, gateway.dialect)
+        wanted_schema = (schema or "").strip().lower()
         needle = (name_contains or "").strip().lower()
         lines = [
-            f"{schema}.{name} ({table_kind(kind, estimates.get((schema, name)))}): {columns}"
-            for schema, name, kind, columns in tables
-            if needle in name.lower()
+            table_lines(table_schema, name, kind, cols, n, estimates.get((table_schema, name)))
+            for table_schema, name, kind, cols, n in tables
+            if (not wanted_schema or table_schema.lower() == wanted_schema)
+            and needle in name.lower()
         ]
         if not lines:
-            return f"No tables found whose name contains {needle!r}" if needle else "No tables"
-        return "\n".join(lines)
+            filters = []
+            if wanted_schema:
+                filters.append(f"schema {wanted_schema!r}")
+            if needle:
+                filters.append(f"name containing {needle!r}")
+            if not filters:
+                return "No tables"
+            return f"No tables found with {' and '.join(filters)}"
+        return render_table_listing(lines, max_tables, columns, LIST_TABLES_CHAR_BUDGET)
 
     @server.tool()
     def describe_table(table: str) -> str:

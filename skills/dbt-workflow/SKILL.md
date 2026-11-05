@@ -39,7 +39,10 @@ working on a dbt project - it contains rules that affect how you interpret every
 python3 "${CLAUDE_SKILL_DIR}/scan_project.py" "<project_directory>"
 ```
 Returns: models to build, stubs to rewrite, dependencies, required columns,
-sources, macros (with full definitions), and current_date hazards.
+sources, macros (with full definitions), and current_date hazards. Standard output is a
+summary (at most 20,000 characters; the five Step 1 sections come first and whole); the full
+report is written to the file named on the last line (`.data-agent/scan/<project>.md`). Where
+the summary says `… N more lines in <path>`, Grep that file for the detail you need.
 
 ### validate_project.py - dbt parse validator (Step 3)
 ```bash
@@ -49,9 +52,14 @@ Runs `dbt parse` and returns structured errors, warnings, and orphan patches.
 
 ### list_tables and query_database - DB hints (MCP tools, Step 1)
 Call `list_tables` for the tables that exist (materialized models included) and
-their columns. Use `query_database` (read-only SELECT) for the database-derived
-hints: lookup joins (`_id` columns with matching dimension tables), staging-vs-raw
-row gaps, and parent-child driving tables. Run alongside scan_project.py in Step 1.
+their columns. It shows at most 200 tables and about 36,000 characters; when its last
+line says `N more tables not shown`, call it again with `schema=` or `name_contains=`
+to narrow the listing (or `columns=false` for names and counts only). Use
+`query_database` (read-only SELECT) for the database-derived hints: lookup joins
+(`_id` columns with matching dimension tables), staging-vs-raw row gaps, and
+parent-child driving tables. It displays at most 400 rows; an `[INCOMPLETE DISPLAY]`
+line means more rows exist: re-run with a WHERE filter or the OFFSET it names. Run
+alongside scan_project.py in Step 1.
 
 ### map_columns - Upstream column mapper (MCP tool, Step 7) (a verification tool: use it only if it is in your tool list)
 Call `map_columns(model_name, project_dir)`.
@@ -96,7 +104,11 @@ before calling the other:
 2. `list_tables` — what is materialized, with columns; then `query_database` for the
    database hints (lookup joins, staging-vs-raw gaps, parent-child driving tables).
 
-Read the ENTIRE output of BOTH. Record:
+Read the scan summary in full; it starts with the five sections below. For anything it
+cuts (`… N more lines in <path>`), Grep the report file named on its last line rather
+than re-running the scan. When `list_tables` ends with `N more tables not shown`, call
+it again with `schema=` or `name_contains=` until you have seen the tables the task
+needs. Record:
 - STUBS TO REWRITE
 - MODELS TO BUILD
 - DEPENDENCIES
