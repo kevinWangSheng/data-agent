@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -66,10 +66,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1（Codex at capacity ×2，Fable 只读审查 + eng:code-review Standards/Spec，已修 8bde360）
+- Attempts: 2
+- Review rounds: 2（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；Codex 3 次 at capacity）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: in-review，branch `worktree-47-verifier-prompt-skill-config`（ad09e0a、8bde360），PR #48；初筛待主会话
+- Outcome: in-review，退回第 1 轮已修，branch `worktree-47-verifier-prompt-skill-config`（ad09e0a、8bde360、e45d781、cc65d28），PR #48；初筛过线判定需在 cc65d28 上重跑
 - Human review minutes: —
 
 ## Comments
@@ -106,3 +106,13 @@ hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
   - 退回 2（P2）：`agents/verifier.md:85-88`（第 2 步）允许粒度键"取自运行前就存在的 YML"，但验证者只能 Read 当前项目的 YML（快照目录被守卫拦，`model_diff` 不报 YML 改动），分不清是原有的还是主 agent 新写的。场景：题面没说粒度，主 agent 在新建的 schema.yml 里给粗键加 `unique` 测试，验证者拿它调 `grain_facts`，CHECK 3 按 agent 自己的定义通过，正是 ADR-0009 禁止的。修法：粒度键只从题面取，题面没有就 NEEDS_INFO；需要原有 YML 的豁免时依赖 `grain_facts` 自己从快照 YML 读出的 "exemption candidate" 行，不让验证者自己去读 YML 当键源。
   - 不退回（P3）：Skill `## Tools` 仍写 `verify_model_values`（Authority 外，已记）；无验证者回退文本里的 "value CHECK 2" 编号（刻意原样恢复）；`hooks.py`、`dispatch.py` 里 "until ticket 47" 的过时注释（Authority 外）。这三条交对齐会话定是否开清理工单。
   - 初筛 `t47-screen` 已在 8bde360 上开跑（主会话决定不等闲时，多花约 ¥15）；过线判定要在修后的提交上重跑，这次的数据只看墙钟和轮数分布。
+
+### 2026-11-05 工单会话（退回第 1 轮修复，commits e45d781、cc65d28）
+
+只动 `src/data_agent/agents/verifier.md` 和 `tests/test_verifiers.py`；`verifiers.py` 的系统提示词没有粒度或参考列的措辞，不需同步。`make check`：1695 passed, 1 skipped。`uv run pytest tests/acceptance -q -k verifier`：48 passed。
+
+- 退回 1，第 4 步：参考 SQL 的非键输出列别名成模型列名（例 `SUM(amount) AS total_revenue`）；列名来源是 `contract_check` 输出或题面列表，都没有时用 `query_database("SELECT * FROM <model> LIMIT 0")` 取列名，仍不读模型 SQL。PASS 条件改成"全 0 且题面定义的每个指标都在 `compared columns` 里"；`compared columns: (none)` 或指标落在 "reference columns the model lacks" 下，先修别名重调一次，仍没比到就 CHECK 7 = NEEDS_INFO。引用的字符串与 `render.py` 的 `render_compare` 输出一致（测试真实渲染对照）。模板 CHECK 7 行加 `<compared columns; …>`，仍以 `<` 开头不会被解析成 PASS。
+- 退回 2，第 2 步：粒度键只从题面取，明说不能从项目 YML 取；题面没说粒度就 CHECK 3 = NEEDS_INFO。豁免只有题面或 `grain_facts` 从快照 YML 报出的 "exemption candidate"（措辞改成与工具输出一致的 "declares other columns unique"）；"Do not read YML files to find a key or an exemption"。全文不再出现 "original YML"。
+- 测试：两个新测试先红后绿；旧 grain 测试去掉对 "original YML" 的断言。
+- 真实行为（无模型）：六个配置的 agents/maxTurns/系统提示词输出与上一轮相同；`load_definition("verifier")` 的 prompt 含新句子、不含 "original YML"；工具表不变。
+- 审查：`da-review` at capacity；eng:code-review（Standards、Spec）已修（cc65d28）：参考列部分匹配仍会"全 0 即 PASS" → PASS 要求题面每个指标都在 compared columns；contract_check 为 N/A 时没给列名来源 → 加 `LIMIT 0` 查询；豁免措辞与工具输出不符 → 改；测试引用的工具输出串与 `render.py` 无绑定 → 用 `render_compare` 渲染；docstring 引用退回轮 → 删。不修：第 1 步与第 2 步对快照 YML 的解释角度不同但不矛盾；测试按整句断言与既有风格一致；"confirm a candidate against the task" 比 spec 严一点是已审内容；YML 禁读是提示词规则，验证者仍有 Read/Glob/Grep。
