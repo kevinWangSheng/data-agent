@@ -115,7 +115,9 @@ def test_process_metrics_per_task_come_from_the_event_files(
 ) -> None:
     _, report, _ = diverge(tmp_path, *jobs)
     full = report["candidate"]
-    assert full["per_task"]["dbt-alpha"] == {
+    alpha = full["per_task"]["dbt-alpha"]
+    assert alpha["timing"]["trials"] == 2  # ticket 51; its contents are tested in test_eval_process
+    assert {key: value for key, value in alpha.items() if key != "timing"} == {
         "successes": 2,
         "trials": 2,
         "mean_turns": 13.0,

@@ -732,6 +732,8 @@ def build_options(
             )
             for event, matchers in v2_hooks.items():
                 all_hooks.setdefault(event, []).extend(matchers)
+    for event, matchers in tool_timing_hooks(emit).items():
+        all_hooks.setdefault(event, []).extend(matchers)
     if spend is not None:
         for event, matchers in spend.hooks(emit).items():
             all_hooks.setdefault(event, []).extend(matchers)
@@ -766,6 +768,40 @@ def build_options(
     )
 
 
+# The fixed start of the gateway's error for a statement cut off at its timeout
+# (`gateway.QueryTimedOut`); a call whose error or response holds it counts as timed out.
+TIMEOUT_TEXT = "Query timed out after"
+
+
+def tool_timing_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
+    """PostToolUse and PostToolUseFailure on every tool: one `tool_timing` event per call with
+    the SDK's `duration_ms` (execution time alone, per call, where `tool_end - tool_start` is a
+    whole parallel batch's), and `agent_id` when the call ran inside a subagent."""
+
+    async def record(
+        hook_input: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        fields: dict[str, Any] = dict(hook_input)
+        failed = fields.get("hook_event_name") == "PostToolUseFailure"
+        said = fields.get("error") if failed else fields.get("tool_response")
+        text = said if isinstance(said, str) else json.dumps(said, default=str)
+        emit(
+            "tool_timing",
+            tool=fields.get("tool_name"),
+            tool_use_id=fields.get("tool_use_id", tool_use_id),
+            agent_id=fields.get("agent_id"),
+            duration_ms=fields.get("duration_ms"),
+            failed=failed,
+            timed_out=TIMEOUT_TEXT in text,
+        )
+        return {}
+
+    return {
+        "PostToolUse": [HookMatcher(hooks=[record])],
+        "PostToolUseFailure": [HookMatcher(hooks=[record])],
+    }
+
+
 def events_file(events_dir: Path) -> Path:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return events_dir / f"run-{stamp}-{uuid.uuid4().hex[:8]}.jsonl"
@@ -791,7 +827,13 @@ def record_message(log: EventLog, message: Any, tools: dict[str, str]) -> None:
                 log.emit("thinking", text=block.thinking)
             elif isinstance(block, ToolUseBlock):
                 tools[block.id] = block.name
-                log.emit("tool_start", tool=block.name, tool_use_id=block.id, input=block.input)
+                log.emit(
+                    "tool_start",
+                    tool=block.name,
+                    tool_use_id=block.id,
+                    parent=message.parent_tool_use_id,
+                    input=block.input,
+                )
                 if block.name == QUERY_TOOL:
                     log.emit("sql", tool_use_id=block.id, sql=block.input.get("sql"))
     elif isinstance(message, UserMessage) and isinstance(message.content, list):
@@ -801,6 +843,7 @@ def record_message(log: EventLog, message: Any, tools: dict[str, str]) -> None:
                     "tool_end",
                     tool=tools.get(block.tool_use_id),
                     tool_use_id=block.tool_use_id,
+                    parent=message.parent_tool_use_id,
                     is_error=bool(block.is_error),
                     content=block.content,
                 )
