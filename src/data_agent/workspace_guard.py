@@ -137,16 +137,39 @@ def _glob_matches(pattern: str, path: Path) -> bool | None:
     return matched
 
 
+def _below_directory(pattern: str, path: Path) -> bool:
+    """`pattern` is `**/<dir>/**` (`<dir>` one or more segments, no `**`) and `path` (relative to
+    the search path) lies below such a directory. The leading `**/` lets the glob match wherever
+    ripgrep starts, and ripgrep never enters a directory an excluding glob matches. Only the
+    directories below the search path are compared: how Grep hands ripgrep the search path itself
+    (as given, absolute, with symlinks followed) is not known here."""
+    middle = pattern.removeprefix("**/").removesuffix("/**")
+    segments = middle.split("/")
+    if not (pattern.startswith("**/") and pattern.endswith("/**")) or "**" in segments:
+        return False
+    parents, width = path.parts[:-1], len(segments)
+    return any(
+        all(
+            fnmatch.fnmatchcase(part, segment)
+            for part, segment in zip(window, segments, strict=True)
+        )
+        for window in (parents[i : i + width] for i in range(len(parents) - width + 1))
+    )
+
+
 def _filter_skips(path: Path, glob: str | None, file_type: str | None) -> bool:
     """Grep's `glob` or `type` filter leaves `path` out of the search, as ripgrep decides it: the
     last glob that matches decides; when none does and an including glob exists, the file is out;
     a file an including glob keeps is searched whatever `type` says; `type` decides the rest.
     A path glob is read the safe way: an including one keeps the file, an excluding one is
-    ignored."""
+    ignored unless it is `!**/<dir>/**` and the file lies below such a directory."""
     decision = None
     globs = _grep_globs(glob) if glob else []
     for pattern in globs:
         excluding = pattern.startswith("!")
+        if excluding and _below_directory(pattern.removeprefix("!"), path):
+            decision = "skip"
+            continue
         matched = _glob_matches(pattern.removeprefix("!"), path)
         if matched is None:
             matched = not excluding
@@ -253,7 +276,15 @@ def _grep_credentials(
     if not reached:
         return []
     names = ", ".join(str(Path(shown) / path) for path in reached)
-    return [f"{shown} (holds credential files {names}; add a glob or type that skips them)"]
+    examples = ['type: "sql"']
+    # Excluding the top directories they sit in works only when none lies in the search path itself.
+    if all(len(path.parts) > 1 for path in reached):
+        tops = dict.fromkeys(path.parts[0] for path in reached)
+        examples.append(f'glob: "{" ".join(f"!**/{top}/**" for top in tops)}"')
+    return [
+        f"{shown} (holds credential files {names}; add a filter that skips them, for example "
+        f"{' or '.join(examples)})"
+    ]
 
 
 def workspace_guard(

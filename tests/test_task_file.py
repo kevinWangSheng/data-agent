@@ -21,7 +21,7 @@ TASK_TEXT = 'Build `fct_orders`:\n  - "net" = gross - refunds \nKeep cancelled o
 
 # DBT_PROMPT without the verifier layer's task-file note (ticket 32), kept here so runs without
 # the layer can be compared to it. Its dbt-command sentence follows ticket 49 (`cd`, no
-# profiles.yml edit).
+# profiles.yml edit) and ticket 55 (a lone `echo $DB_TYPE`, file tools instead of `ls`/`cat`).
 DBT_PROMPT_BEFORE = """\
 Task type: dbt
 Database: {database}. dbt writes to it through the project's profile; you read it only through the \
@@ -29,7 +29,9 @@ Database: {database}. dbt writes to it through the project's profile; you read i
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
 Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
 `cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
-directory. Do not edit `profiles.yml`.
+directory. Do not edit `profiles.yml`. When the task asks you to print `DB_TYPE`, run \
+`echo $DB_TYPE` as a Bash call of its own. List, read and search files with the Glob, Read and \
+Grep tools, not `ls` or `cat`.
 
 <task>
 {task}
@@ -188,3 +190,16 @@ def test_a_workspace_inside_the_temp_dir_still_gets_a_task_file_outside_it(
     with agent.saved_task(TASK_TEXT, workspace) as path:
         assert path.read_bytes() == TASK_TEXT.encode()
         assert workspace.resolve() not in path.parents
+
+
+# Ticket 55: in t47-screen every trial began with denials: `echo $DB_TYPE` joined to other
+# commands, `ls`/`cat` for files, and Glob or `cat` on the task file, which only Read may open.
+def test_the_dbt_prompt_teaches_a_lone_echo_and_the_file_tools() -> None:
+    text = " ".join(agent.DBT_PROMPT.split())
+    assert "`echo $DB_TYPE` as a Bash call of its own" in text
+    assert "Glob, Read and Grep tools, not `ls` or `cat`" in text
+
+
+def test_the_task_file_note_says_to_open_it_with_read() -> None:
+    note = " ".join(agent.TASK_FILE_NOTE.format(path="/tmp/t/task.md").split())
+    assert "with the Read tool" in note

@@ -54,10 +54,30 @@ RULE = (
 )
 SCRIPTS_RULE = ", or the dbt-workflow scan/validate script"
 VARIABLES_RULE = ", or exactly `echo ${var}` or `printenv {var}`"
+# What a denied program's job is done with instead (ticket 55: t47-screen trials kept trying
+# `ls`, `cat` and `cp` because the denial named no alternative).
+FILE_READING_PROGRAMS = frozenset(
+    {"ls", "cat", "head", "tail", "less", "more", "find", "grep", "rg", "tree", "wc", "file"}
+)
+FILE_READING_HINT = "list, read or search files with the Glob, Read or Grep tool"
+FILE_WRITING_PROGRAMS = frozenset({"cp", "mv", "mkdir", "touch", "tee", "sed"})
+FILE_WRITING_HINT = "create or change files with the Write or Edit tool"
+SHAPE_RULE = "Bash runs one command per call, optionally with 2>&1 and a pipe into tail or head"
+CHAR_NAMES = {"\n": "a newline", "\r": "a carriage return"}
 
 
 def _is_operator(token: str) -> bool:
     return bool(token) and set(token) <= OPERATOR_CHARS
+
+
+def _tokens(command: str) -> list[str] | None:
+    """The words and operators of `command`, or None when a quote is left open."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
 
 
 def _split(command: str) -> tuple[str | None, list[list[str]]] | None:
@@ -65,11 +85,8 @@ def _split(command: str) -> tuple[str | None, list[list[str]]] | None:
     the command uses anything beyond that, `2>&1` and `|`."""
     if FORBIDDEN_CHARS & set(command):
         return None
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
+    tokens = _tokens(command)
+    if tokens is None:
         return None
     directory = None
     if len(tokens) > 3 and tokens[0] == "cd" and tokens[2] == "&&":
@@ -120,6 +137,69 @@ def _prints_variable(command: str, variables: Sequence[str]) -> bool:
     return any(command.strip() in (f"echo ${var}", f"printenv {var}") for var in variables)
 
 
+def _program_hints(programs: Sequence[str]) -> list[str]:
+    """What to use instead of the denied `programs`."""
+    hints: list[str] = []
+    if FILE_READING_PROGRAMS & set(programs):
+        hints.append(FILE_READING_HINT)
+    if FILE_WRITING_PROGRAMS & set(programs):
+        hints.append(FILE_WRITING_HINT)
+    return hints
+
+
+def _operators(tokens: list[str]) -> list[str]:
+    """The operators in `tokens` beyond a leading `cd <dir> &&`, `2>&1` and `|`, as written; a
+    redirection into /dev/null is named whole (`2>/dev/null`)."""
+    found: list[str] = []
+    for i, token in enumerate(tokens):
+        before = tokens[i - 1] if i else ""
+        after = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if (
+            not _is_operator(token)
+            or token == "|"
+            or (token == ">&" and before == "2" and after == "1")
+            or (token == "&&" and i == 2 and tokens[0] == "cd")
+        ):
+            continue
+        if token.startswith(">") and after == "/dev/null":
+            token = f"{before if before.isdigit() else ''}{token}/dev/null"
+        found.append(f"`{token}`")
+    return list(dict.fromkeys(found))
+
+
+def _shape_denial(command: str, variables: Sequence[str]) -> str:
+    """Why `command` is not one command with at most `2>&1` and a pipe into tail or head: what in
+    it the guard refuses, and the form that would run."""
+    causes: list[str] = []
+    chars = [CHAR_NAMES.get(char, f"`{char}`") for char in sorted(FORBIDDEN_CHARS & set(command))]
+    if chars:
+        causes.append(f"{', '.join(chars)} {'is' if len(chars) == 1 else 'are'} not allowed")
+    tokens = _tokens(command)
+    if tokens is None:
+        causes.append("a quote is left open")
+        programs = command.split()[:1]
+    else:
+        programs = [
+            token
+            for i, token in enumerate(tokens)
+            if not _is_operator(token) and (i == 0 or _is_operator(tokens[i - 1]))
+        ]
+        if operators := _operators(tokens):
+            verb = "is" if len(operators) == 1 else "are"
+            causes.append(f"{', '.join(operators)} {verb} not allowed: {SHAPE_RULE}")
+    if not causes:
+        causes.append(SHAPE_RULE)
+    hints = [
+        f"run `echo ${var}` on its own, as a separate Bash call"
+        for var in variables
+        if f"${var}" in command
+    ]
+    if "--vars" in command and {"{", "}"} & set(command):
+        hints.append("write --vars as YAML without braces: --vars 'k: v'")
+    hints.extend(_program_hints(programs))
+    return "; ".join([*causes, *hints])
+
+
 def denial(
     command: str, workspace: Path, scripts: Sequence[Path], variables: Sequence[str]
 ) -> str | None:
@@ -128,7 +208,7 @@ def denial(
         return None
     split = _split(command)
     if split is None:
-        return "only a single command, 2>&1 and a pipe into tail or head are allowed"
+        return _shape_denial(command, variables)
     directory, segments = split
     # Paths in the command resolve from the directory entered, which must exist: Bash would stop
     # at a missing one, and only a real directory can be checked past its symlinks.
@@ -155,7 +235,7 @@ def denial(
         return None
     if program == "cd":
         return "cd may only precede a dbt command, as `cd <dir> && dbt ...`"
-    return f"{program!r} is not allowed"
+    return "; ".join([f"{program!r} is not allowed", *_program_hints([program])])
 
 
 def command_guard(

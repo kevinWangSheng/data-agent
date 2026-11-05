@@ -136,7 +136,9 @@ Database: {database}. dbt writes to it through the project's profile; you read i
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
 Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
 `cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
-directory. Do not edit `profiles.yml`.
+directory. Do not edit `profiles.yml`. When the task asks you to print `DB_TYPE`, run \
+`echo $DB_TYPE` as a Bash call of its own. List, read and search files with the Glob, Read and \
+Grep tools, not `ls` or `cat`.
 
 <task>
 {task}
@@ -150,8 +152,9 @@ then the assumptions you made.
 # Added to DBT_PROMPT only when the verifier layer is on (ticket 32); otherwise the prompt is the
 # same as before, so runs without the layer stay comparable with earlier ones.
 TASK_FILE_NOTE = """
-The task above is also saved, read-only, at {path}. Re-read it there whenever you need its exact \
-wording, for example after your context is compacted.
+The task above is also saved, read-only, at {path}. Open it with the Read tool (Glob and Bash \
+cannot reach it), and re-read it there whenever you need its exact wording, for example after \
+your context is compacted.
 """
 
 

@@ -413,3 +413,79 @@ async def test_the_task_file_is_denied_without_being_named_readable(
     workspace: Path, task_file: Path
 ) -> None:
     assert await decide(workspace, "Read", {"file_path": str(task_file)}) == "deny"
+
+
+# Ticket 55: in t47-screen the model added `glob: "!**/dbt_packages/**"` and was still denied. A
+# glob `**/<dir>/**` matches the directory wherever the search starts, and ripgrep never enters an
+# excluded directory, so the credential files in it are not read.
+@pytest.mark.parametrize(
+    ("tool_input", "decision"),
+    [
+        ({"pattern": "select", "glob": "!**/dbt_packages/**"}, "none"),
+        ({"pattern": "select", "glob": "!**/integration_tests/**"}, "none"),
+        ({"pattern": "select", "glob": "!**/dbt_utils/integration_tests/**"}, "none"),
+        ({"pattern": "select", "glob": "!**/dbt_*/**"}, "none"),
+        ({"pattern": "select", "path": "dbt_packages", "glob": "!**/dbt_utils/**"}, "none"),
+        ({"pattern": "select", "glob": "*.sql !**/dbt_packages/**"}, "none"),
+        # Another directory excluded: the samples are still searched.
+        ({"pattern": "select", "glob": "!**/models/**"}, "deny"),
+        ({"pattern": "select", "glob": "!**/dbt_utils/models/**"}, "deny"),
+        # Only the directories below the search path count: how Grep hands ripgrep the path
+        # itself (as given, absolute, symlinks followed) is not known to the guard.
+        ({"pattern": "select", "path": "dbt_packages", "glob": "!**/dbt_packages/**"}, "deny"),
+        # A later including glob that matches the directory brings it back (last match wins).
+        ({"pattern": "select", "glob": "!**/dbt_packages/** **/dbt_packages/**"}, "deny"),
+        ({"pattern": "select", "glob": "!**/dbt_packages/** dbt_packages/**"}, "deny"),
+        ({"pattern": "select", "glob": "!**/dbt_packages/**,**/*.env"}, "deny"),
+        # Without the leading `**/`, where the glob is anchored depends on the search path.
+        ({"pattern": "select", "glob": "!dbt_packages/**"}, "deny"),
+        ({"pattern": "select", "glob": "!**/**"}, "deny"),
+    ],
+)
+async def test_grep_excluding_a_whole_directory_skips_the_credentials_in_it(
+    with_sample_env: Path, tool_input: dict[str, Any], decision: str
+) -> None:
+    assert await decide(with_sample_env, "Grep", tool_input) == decision
+
+
+async def test_grep_excluding_a_directory_still_denies_a_credential_elsewhere(
+    with_sample_env: Path,
+) -> None:
+    (with_sample_env / "config").mkdir()
+    (with_sample_env / "config" / ".env").write_text("PGPASSWORD=x")
+    tool_input = {"pattern": "select", "glob": "!**/dbt_packages/**"}
+    assert await decide(with_sample_env, "Grep", tool_input) == "deny"
+
+
+async def grep_reason(workspace: Path, tool_input: dict[str, Any]) -> str:
+    guard = workspace_guard(workspace)
+    hook_input: Any = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s",
+        "transcript_path": "t",
+        "cwd": str(workspace),
+        "tool_name": "Grep",
+        "tool_input": tool_input,
+        "tool_use_id": "u",
+    }
+    output: Any = await guard(hook_input, "u", {"signal": None})
+    return output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+async def test_grep_denial_shows_a_filter_that_would_run(with_sample_env: Path) -> None:
+    """Ticket 55: the denial names the files and gives filters the model can copy, and each of them
+    does pass the guard."""
+    reason = await grep_reason(with_sample_env, {"pattern": "select"})
+    assert 'type: "sql"' in reason
+    assert 'glob: "!**/dbt_packages/**"' in reason
+    for retry in ({"type": "sql"}, {"glob": "!**/dbt_packages/**"}):
+        assert await decide(with_sample_env, "Grep", {"pattern": "select", **retry}) == "none"
+
+
+async def test_grep_denial_offers_no_directory_glob_for_a_top_level_credential(
+    with_credentials: Path,
+) -> None:
+    """A `.env` right in the search path lies in no directory to exclude; `type` still helps."""
+    reason = await grep_reason(with_credentials, {"pattern": "KEY"})
+    assert 'type: "sql"' in reason
+    assert "!**/" not in reason

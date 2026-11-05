@@ -228,5 +228,40 @@ async def test_without_the_skill_layer_no_script_runs_or_is_named(tmp_path: Path
     assert "dbt-workflow" not in reason
 
 
+# Ticket 55: the commands t47-screen trials were denied for most, each with what the denial must
+# name (the cause) and teach (the right form). The decisions themselves do not change.
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            'echo "DB_TYPE=$DB_TYPE"; echo DUCKDB_PATH; ls /app',
+            ["`$`", "`;`", "`echo $DB_TYPE` on its own", "Glob, Read or Grep"],
+        ),
+        ("echo $DB_TYPE && dbt run", ["`&&`", "`echo $DB_TYPE` on its own"]),
+        ("ls -R /app 2>/dev/null | head -50", ["`2>/dev/null`", "Glob, Read or Grep"]),
+        ("dbt run 2>/dev/null", ["`2>/dev/null`", "2>&1"]),
+        ("cat models/orders.sql", ["'cat'", "Glob, Read or Grep"]),
+        ("cp a.sql b.sql", ["'cp'", "Write or Edit"]),
+        ('dbt run --vars \'{"k": "v"}\'', ["`{`", "`}`", "--vars 'k: v'"]),
+        ("dbt run --select x*", ["`*`"]),
+        ("dbt run || true", ["`||`"]),
+        ("dbt run 'unclosed", ["quote"]),
+    ],
+)
+async def test_denials_name_the_cause_and_the_right_form(
+    tmp_path: Path, command: str, expected: list[str]
+) -> None:
+    decision, reason = await decide(tmp_path, command)
+    assert decision == "deny"
+    denied = reason.split(" Denied: ", 1)[1]
+    for text in expected:
+        assert text in denied, (text, denied)
+
+
+async def test_the_echo_hint_needs_a_printable_variable(tmp_path: Path) -> None:
+    _, reason = await decide(tmp_path, "echo $DB_TYPE; ls", variables=())
+    assert "DB_TYPE" not in reason
+
+
 async def test_other_tools_are_left_alone(tmp_path: Path) -> None:
     assert (await decide(tmp_path, "rm -rf /", tool="Read"))[0] == "none"
