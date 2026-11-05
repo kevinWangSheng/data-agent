@@ -87,18 +87,18 @@ def _names_credential(base: Path, raw: str) -> bool:
     return is_credential(Path(raw).name) or is_credential(resolve(base, raw).name)
 
 
-def _credentials_below(directory: Path) -> list[Path]:
-    """Every credential file below `directory`, relative to it; symlinked directories are not
-    followed, and a credential-named directory counts with the files it holds."""
+def _files_below(directory: Path) -> list[Path]:
+    """Every file below `directory`, relative to it; symlinked directories are not followed."""
     found: list[Path] = []
     for root, _, files in os.walk(directory):
         relative = Path(root).relative_to(directory)
-        found.extend(
-            relative / name
-            for name in sorted(files)
-            if is_credential(name) or any(is_credential(part) for part in relative.parts)
-        )
+        found.extend(relative / name for name in sorted(files))
     return found
+
+
+def _is_credential_path(path: Path) -> bool:
+    """`path` names a credential file, or lies in a credential-named directory."""
+    return any(is_credential(part) for part in path.parts)
 
 
 def _expand_braces(pattern: str) -> list[str]:
@@ -290,21 +290,40 @@ def _grep_credentials(
         return [shown]
     if not base.is_dir():
         return []
+    files = _files_below(base)
     reached = [
-        path for path in _credentials_below(base) if not _filter_skips(path, glob, file_type)
+        path
+        for path in files
+        if _is_credential_path(path) and not _filter_skips(path, glob, file_type)
     ]
     if not reached:
         return []
     names = ", ".join(str(Path(shown) / path) for path in reached)
     examples = ['type: "sql"']
-    # Excluding the top directories they sit in works only when none lies in the search path itself.
-    if all(len(path.parts) > 1 for path in reached):
-        tops = dict.fromkeys(path.parts[0] for path in reached)
-        examples.append(f'glob: "{" ".join(f"!**/{top}/**" for top in tops)}"')
+    if retry := _excluding_retry(files, reached, glob, file_type):
+        examples.append(f'glob: "{retry}"')
     return [
         f"{shown} (holds credential files {names}; add a filter that skips them, for example "
         f"{' or '.join(examples)})"
     ]
+
+
+def _excluding_retry(
+    files: list[Path], reached: list[Path], glob: str | None, file_type: str | None
+) -> str | None:
+    """The call's `glob` with `!**/<dir>/**` added, `<dir>` being the closest directory below the
+    search path that holds every credential `reached`; None unless that glob then skips every
+    one of them and no other file among `files` (so it never hides the project's own models)."""
+    common = os.path.commonpath([path.parent for path in reached])
+    if common in ("", "."):
+        return None
+    pattern = f"**/{Path(common).name}/**"
+    retry = f"{glob} !{pattern}" if glob else f"!{pattern}"
+    if not all(_filter_skips(path, retry, file_type) for path in reached):
+        return None
+    if any(_below_directory(pattern, p) for p in files if not _is_credential_path(p)):
+        return None
+    return retry
 
 
 def workspace_guard(

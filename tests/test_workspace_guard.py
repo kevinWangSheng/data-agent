@@ -1,5 +1,7 @@
 """Read, Glob, Grep, Write and Edit may only reach files inside the task workspace."""
 
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -503,9 +505,84 @@ async def test_grep_denial_shows_a_filter_that_would_run(with_sample_env: Path) 
         "permissionDecisionReason"
     ]
     assert 'type: "sql"' in reason
-    assert 'glob: "!**/dbt_packages/**"' in reason
-    for retry in ({"type": "sql"}, {"glob": "!**/dbt_packages/**"}):
+    assert 'glob: "!**/.env/**"' in reason
+    for retry in ({"type": "sql"}, {"glob": "!**/.env/**"}):
         assert await decide(with_sample_env, "Grep", {"pattern": "select", **retry}) == "none"
+
+
+@pytest.fixture
+def project_below(workspace: Path) -> Path:
+    """The t55-real tree: the search path is the dbt project's parent, and the package's sample
+    dotenv files sit beside the package's own models."""
+    project = workspace / "proj"
+    (project / "models").mkdir(parents=True)
+    (project / "models" / "cohorts.sql").write_text("select 1")
+    tests = project / "dbt_packages" / "dbt_utils" / "integration_tests"
+    (tests / "models").mkdir(parents=True)
+    (tests / "models" / "test_x.sql").write_text("select 1")
+    (tests / ".env").mkdir()
+    (tests / ".env" / "postgres.env").write_text("PGPASSWORD=sample")
+    (tests / ".env" / "duckdb.env").write_text("DUCKDB_PATH=sample")
+    return workspace
+
+
+async def test_grep_denial_excludes_only_the_directory_holding_the_credentials(
+    project_below: Path,
+) -> None:
+    """Return round 1 of ticket 55: searching the project's parent, the hint said
+    `!**/proj/**`, which skips the whole project. It now names the closest directory holding every
+    credential and nothing else, and that retry passes the guard."""
+    reason = (await hook_output(project_below, "Grep", {"pattern": "select", "path": "."}))[
+        "permissionDecisionReason"
+    ]
+    assert "!**/proj/**" not in reason
+    assert 'glob: "!**/.env/**"' in reason
+    retry = {"pattern": "select", "path": ".", "glob": "!**/.env/**"}
+    assert await decide(project_below, "Grep", retry) == "none"
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="needs ripgrep")
+def test_the_suggested_exclusion_still_lets_ripgrep_read_the_models(project_below: Path) -> None:
+    listed = subprocess.run(
+        ["rg", "--hidden", "--files", "--glob", "!**/.env/**", "."],
+        cwd=project_below,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert "./proj/models/cohorts.sql" in listed
+    assert not [path for path in listed if path.endswith(".env")]
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        # Beside the project's own models: excluding `proj` would skip them.
+        ["proj/.env"],
+        # In two places with no directory in common below the search path.
+        ["proj/config/.env", "other/.env"],
+    ],
+)
+async def test_grep_denial_offers_only_type_when_no_directory_holds_just_the_credentials(
+    project_below: Path, credentials: list[str]
+) -> None:
+    for name in credentials:
+        (project_below / name).parent.mkdir(parents=True, exist_ok=True)
+        (project_below / name).write_text("KEY=x")
+    (project_below / "proj" / "config" / "app.yml").parent.mkdir(exist_ok=True)
+    (project_below / "proj" / "config" / "app.yml").write_text("a: 1")
+    tool_input = {"pattern": "select", "glob": "!**/.env/**"}
+    reason = (await hook_output(project_below, "Grep", tool_input))["permissionDecisionReason"]
+    assert 'type: "sql"' in reason
+    assert "!**/proj/**" not in reason
+    assert "!**/other/**" not in reason
+
+
+async def test_grep_denial_keeps_the_glob_already_given(project_below: Path) -> None:
+    reason = (await hook_output(project_below, "Grep", {"pattern": "select", "glob": "!*.md"}))[
+        "permissionDecisionReason"
+    ]
+    assert 'glob: "!*.md !**/.env/**"' in reason
 
 
 async def test_grep_denial_offers_no_directory_glob_for_a_top_level_credential(
