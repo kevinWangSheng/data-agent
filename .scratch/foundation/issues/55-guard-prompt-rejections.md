@@ -1,10 +1,10 @@
 # 55 — 守卫误拦和提示：开头几步不再被拦，拒绝提示给出正确写法
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§6）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 55-guard-prompt-rejections, 2026-11-05)
+Branch: worktree-55-guard-prompt-rejections
 
 ## Goal
 

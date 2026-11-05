@@ -1,10 +1,10 @@
 # 52 — v2 工具缓存快照 YML 和工作区模型文件，单次调用不再重读不变的东西
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —（服务器验证要用 51 的计时，排在 51 合入后）
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§3）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 52-v2-tool-caches, 2026-11-05)
+Branch: worktree-52-v2-tool-caches
 
 ## Goal
 

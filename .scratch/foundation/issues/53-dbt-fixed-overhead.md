@@ -1,10 +1,10 @@
 # 53 — dbt 固定开销：scan 每个 yml 只解析一次，评测适配层设 DBT_TARGET，Skill 不来回切 --vars
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§5）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 53-dbt-fixed-overhead, 2026-11-05)
+Branch: worktree-53-dbt-fixed-overhead
 
 ## Goal
 

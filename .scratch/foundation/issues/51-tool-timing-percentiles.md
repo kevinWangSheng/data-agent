@@ -1,10 +1,10 @@
 # 51 — 工具计时改用 PostToolUse 的 duration_ms，报告出分位数
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§1）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 51-tool-timing-percentiles, 2026-11-05)
+Branch: worktree-51-tool-timing-percentiles
 
 ## Goal
 

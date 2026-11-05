@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
