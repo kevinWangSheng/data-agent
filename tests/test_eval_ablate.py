@@ -1280,3 +1280,58 @@ def test_a_new_out_records_whatever_benchmark_it_runs_on(
     monkeypatch.setattr(balance, "fetch", lambda: funded)
     monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: "0ther")
     assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+
+
+def ablation_row(config: str, timing: dict[str, Any] | None) -> dict[str, Any]:
+    row: dict[str, Any] = {"config": config, "accuracy": 50.0, "accuracy_stderr": 1.0}
+    row |= {"n_trials": 3, "cost_usd": 0.1, "uncached_input_tokens": 1, "cached_input_tokens": 1}
+    row |= {"output_tokens": 1}
+    if timing is not None:
+        row["process"] = {"timing": timing}
+    return row
+
+
+def test_the_markdown_reports_timing_per_config_and_marks_what_is_missing() -> None:
+    timed = {
+        "wall_s": {"p50": 900.0, "p90": 1200.0, "p95": 1300.0, "p99": 1390.0},
+        "verifier_wall_s": {"p50": 150.0, "p90": 200.0, "p95": 210.0, "p99": 219.0},
+        "verifier_unclosed": 1,
+        "tool_calls": 140,
+        "trials": 3,
+        "trials_timed": 3,
+        "timeouts": 2,
+        "untimed_calls": 0,
+        "tools": {
+            "Bash": {"calls": 40, "p50": 2.0, "p90": 30.0, "p95": 45.0, "p99": 60.0}
+            | {"timeouts": 0, "untimed": 0}
+        },
+    }
+    old_files = timed | {"tools": None, "timeouts": None, "untimed_calls": None, "trials_timed": 0}
+    rows = [
+        ablation_row("full", timed),
+        ablation_row("baseline", old_files),
+        ablation_row("no-skill", None),  # a holdout report: no process metrics
+    ]
+    text = ablate.markdown(
+        {"split": "dev", "n_tasks": 1, "trials_per_task": 3}
+        | {"reference": "full", "configs": rows, "contributions": []}
+    )
+    walls = "| 900.0 / 1200.0 / 1300.0 / 1390.0 | 150.0 / 200.0 / 210.0 / 219.0 |"
+    assert f"| full {walls} 1 | 140 | 3/3 | 2 | 0 |" in text
+    assert f"| baseline {walls} 1 | 140 | 0/3 | missing | missing |" in text
+    assert "| no-skill |" + " missing |" * 7 in text
+    assert "| full | Bash | 40 | 2.0 | 30.0 | 45.0 | 60.0 | 0 | 0 |" in text
+    assert "| baseline | missing | | | | | | | |" in text
+
+
+def test_a_dev_ablation_report_carries_timing(
+    monkeypatch: pytest.MonkeyPatch, dev_manifest: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    args = ("--split", "dev", "--task", "dbt-alpha", "--config", "full")
+    assert run(monkeypatch, FakeHarbor(), dev_manifest, out, *args) == 0
+    (reports,) = report_dirs(out)
+    full = json.loads((reports / "full" / "report.json").read_text())
+    assert full["process"]["timing"]["trials"] == 3
+    assert full["process"]["timing"]["tools"] is None  # the fake events predate tool_timing
+    assert "| full | missing | | | | | | | |" in (reports / "ablation.md").read_text()

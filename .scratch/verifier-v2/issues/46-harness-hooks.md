@@ -174,3 +174,4 @@ Check customer_ltv; upstream is raw.orders
 ### 2026-11-05 人定
 
 集成测试 `test_updated_input_replaces_the_prompt_end_to_end` 的断言改成"`ORIGINAL-123` 不出现，并且任务文件内容（`Build customer_ltv.`）或路径（`task-v2-marker.md`）至少出现一个"，不保留 `xfail`。人授权修改这个验收测试；由编排会话改，并跑一次真实集成测试确认。
+- 2026-11-05 编排会话：按人定改了 `tests/acceptance/test_verifier_v2.py` 的断言（原来的三条换成 `"ORIGINAL-123" not in seen`，以及 `"Build customer_ltv." in seen or "task-v2-marker.md" in seen`），没有加 `xfail`。source 模型 env 后跑 `uv run pytest -q -m integration tests/acceptance/test_verifier_v2.py -k test_updated_input_replaces_the_prompt_end_to_end`：`1 passed, 40 deselected in 201.10s`（输出存在 `runs/t46-itest/run1.txt`）。

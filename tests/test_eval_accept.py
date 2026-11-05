@@ -337,7 +337,7 @@ def test_text_output_lists_the_tasks_to_rerun(
     argv = ["accept", "--old", str(old), "--new", str(new), "--manifest", str(manifest)]
     argv += ["--regression", str(reg), "--target", "t1"]
     assert main(argv) == 1
-    assert capsys.readouterr().out.splitlines() == [
+    assert capsys.readouterr().out.split("\n\n")[0].splitlines() == [
         "verdict: rerun-old",
         "old results: rerun the old version",
         "  - the old job has no run record",
@@ -503,3 +503,47 @@ def test_reuse_needs_the_version_fields_every_run_writes(
     no_model = {"version": {k: v for k, v in VERSION.items() if k != "model"}}
     problems = rerun_old_because(tmp_path, manifest, capsys, no_model, no_model)
     assert problems == ["version field model: ['(missing)'] old, ['(missing)'] new"]
+
+
+def add_tool_timing(job: Path, ms: int) -> None:
+    """Append one timed Bash call to every trial's event file (ticket 51's `tool_timing`)."""
+    for events in job.glob("*/agent/events/run-1.jsonl"):
+        lines = [
+            {
+                "type": "tool_start",
+                "ts": "2026-10-20T10:00:01Z",
+                "tool": "Bash",
+                "tool_use_id": "b",
+            },
+            {
+                "type": "tool_timing",
+                "ts": "2026-10-20T10:00:02Z",
+                "tool": "Bash",
+                "tool_use_id": "b",
+            }
+            | {"duration_ms": ms, "failed": False, "timed_out": False},
+            {"type": "tool_end", "ts": "2026-10-20T10:01:01Z", "tool": "Bash", "tool_use_id": "b"},
+        ]
+        with events.open("a") as f:
+            f.writelines(json.dumps(line) + "\n" for line in lines)
+
+
+def test_reports_timing_of_both_jobs_and_marks_old_files_missing(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = write_job(tmp_path, "old", all_tasks(3), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(3), commit="c")
+    add_tool_timing(new, 1500)
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert result["timing"]["old"]["tools"] is None  # written before tool_timing
+    bash = result["timing"]["new"]["tools"]["Bash"]
+    assert bash["calls"] == 12 and bash["p50"] == 1.5 and bash["p99"] == 1.5
+    assert result["timing"]["new"]["wall_s"]["p50"] == 61.0
+
+    reg = tmp_path / "regression.json"
+    argv = ["accept", "--old", str(old), "--new", str(new), "--manifest", str(manifest)]
+    assert main([*argv, "--regression", str(reg), "--target", "t1"]) == code
+    text = capsys.readouterr().out
+    assert "| run | trial wall | verifier wall |" in text
+    assert "| old | missing | | | | | | | |" in text
+    assert "| new | Bash | 12 | 1.5 | 1.5 | 1.5 | 1.5 | 0 | 0 |" in text
