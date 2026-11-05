@@ -1,10 +1,13 @@
-"""The verifier subagents (ADR-0002, plan §3): structure and value auditors, read-only, defined
-with the SDK's `agents=` from the copied signalpilot-plugin prompts in `agents/`.
+"""The verifier subagent (ADR-0002, ADR-0009): one read-only auditor, defined with the SDK's
+`agents=` from the prompt in `agents/verifier.md`, which works through the v2 tools
+(`model_diff`, `contract_check`, `grain_facts`, `compare_by_key`) and judges only against the
+task text.
 
-They are offered only to dbt runs whose config turns the verifier layer on (query runs use
-sql-workflow's own checks). A SubagentStart hook records each one's start as a `verifier_start`
+It is offered only to dbt runs whose config turns the verifier layer on (query runs use
+sql-workflow's own checks). A SubagentStart hook records each call's start as a `verifier_start`
 event; its end, with the report parsed and the turns counted, is `verifier_v2.hooks`'s
-`verifier_end`.
+`verifier_end`. The FAIL and NEEDS_INFO rules for the main agent live in `VERIFIERS_PROMPT` and
+nowhere else (the Skill's Step 8 refers to it).
 """
 
 from collections.abc import Callable
@@ -21,41 +24,47 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import HookEvent
 
 AGENTS_DIR = Path(__file__).resolve().parent / "agents"
-VERIFIER_NAMES = ("verifier", "value-verifier")
+VERIFIER_NAMES = ("verifier",)
 # The Agent tool (Task before Claude Code 2.1) that dispatches subagents.
 AGENT_TOOL = "Agent"
 READ_TOOLS = ("Read", "Glob", "Grep")
-# MCP tools per verifier, by the server's tool names; the checks in each prompt name these.
+# The verifier's turn cap (spec "验证器"); `verifier_v2.hooks` reads a call that reaches it as
+# NEEDS_INFO.
+VERIFIER_MAX_TURNS = 50
+# MCP tools per verifier, by the server's tool names; the steps in the prompt name these.
 DATA_TOOLS = {
     "verifier": (
         "list_tables",
         "query_database",
-        "map_columns",
-        "check_model_schema",
-        "audit_model_sources",
+        "model_diff",
+        "contract_check",
+        "grain_facts",
+        "compare_by_key",
     ),
-    "value-verifier": ("list_tables", "query_database", "verify_model_values"),
 }
-# Ends each verifier's prompt in a run with a task file; the prompt's "Task file" section says how
+# Ends the verifier's prompt in a run with a task file; the prompt's "Task file" section says how
 # to use it.
 TASK_FILE_LINE = "\n\nTask file (read it first, with Read): `{path}`\n"
 
 # Appended to a dbt run's system prompt when the verifier layer is on, so the protocol holds with
-# or without the Skill layer.
+# or without the Skill layer. The only place the FAIL and NEEDS_INFO rules are written.
 VERIFIERS_PROMPT = """
 ## Verification before delivery
-Before your final message, dispatch the `verifier` (structure) and `value-verifier` (values) \
-agents IN PARALLEL with the Agent tool, both in one turn. Give each the dbt project directory and \
-the names of the models you created or changed; for a model you changed, also the tables its \
-SQL read from before your change. If you wrote a `technical_spec.md`, pass its path too: the \
-verifiers read it only as your intent and judge against the task text, which they read \
-themselves. Do not tell them what the columns mean or how you wrote the SQL.
+Before your final message, dispatch the `verifier` agent with the Agent tool. It is read-only \
+and judges against the task text, which it reads itself. The harness replaces your first \
+dispatch message with the task file, the project directory and the models `model_diff` lists \
+as new or changed, so write only a short request. Do not tell it what the columns mean or how \
+you wrote the SQL; `technical_spec.md` is your intent only and the verifier does not need it. \
+The run cannot end while a model you created or changed has no verifier report, was changed \
+after its last report, or still has a FAIL.
 
-Each report gives every check one of PASS, FAIL, NEEDS_INFO or N/A.
-- FAIL: first reproduce the failure yourself with one read-only query that shows the defect. Then \
-make the smallest change that fixes it, rebuild only the changed models with dbt, and send just \
-those models back to the verifier whose check failed.
-- NEEDS_INFO: give that verifier what it asked for and run it again, or run the check yourself.
+Its report gives every check (CHECK 1-7) of every model one of PASS, FAIL, NEEDS_INFO or N/A.
+- FAIL: first reproduce the failure yourself with one read-only query that shows the defect. \
+If it reproduces, make the smallest change that fixes it, rebuild only the changed models with \
+dbt, and dispatch the verifier again. If it does not reproduce, dispatch the verifier again and \
+put the counter-evidence (the query and its result) in your dispatch message.
+- NEEDS_INFO: give the verifier the information it asked for and dispatch it again, or run \
+that check yourself, read-only.
 - Stop when every check is PASS or N/A, or when your turns run out. Do not change models after \
 that.
 """
@@ -76,6 +85,7 @@ def load_definition(name: str, server: str, task_file: Path | None = None) -> Ag
         prompt=prompt,
         tools=[*READ_TOOLS, *(f"mcp__{server}__{tool}" for tool in DATA_TOOLS[name])],
         model="inherit",
+        maxTurns=VERIFIER_MAX_TURNS,
     )
 
 

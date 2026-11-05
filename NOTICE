@@ -20,6 +20,9 @@ License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-
 - src/data_agent/db_facts.py: the Postgres row-estimate query (`n_live_tup`, falling back to
   `pg_class.reltuples`) and the `pg_indexes` read <- signalpilot/gateway/gateway/connectors/
   drivers/postgres.py (`_get_schema_impl`), modified as noted at its top.
+- src/data_agent/agents/verifier.md: the report-validity wording ("Use PASS only when the
+  required evidence ran", one status per check) <- benchmark/signalpilot-plugin/agents/verifier.md;
+  the file's main source is signalpilot-plugin below.
 - src/data_agent/mcp_server.py: the list_tables rendering (`render_table_listing`, `missing_line`,
   the 200-table and 36,000-character limits) <- signalpilot/gateway/gateway/mcp/tools/schema/
   catalog.py (`_render_table_listing`, `_missing_line`); the query_database display cap in
@@ -39,8 +42,10 @@ no per-file copyright header.
   (same paths), modified as noted at the top of each file.
 - skills/dbt-workflow/scan_project.py <- skills/dbt-workflow/scan_project.py, modified as noted at
   its top; skills/dbt-workflow/validate_project.py <- same path, modified as noted at its top.
-- src/data_agent/agents/verifier.md, src/data_agent/agents/value-verifier.md <- agents/ (same
-  names), modified as noted at the top of each file.
+- src/data_agent/agents/verifier.md <- agents/verifier.md, rewritten for the v2 tools as noted at
+  its top; its report-validity wording also follows SignalPilot's benchmark/signalpilot-plugin/
+  agents/verifier.md (listed under SignalPilot above). agents/value-verifier.md was copied until
+  ADR-0009 removed the value verifier.
 - skills-frozen/fa6028eef62b/ is an unmodified copy of skills/ at that Skill version; the files
   above keep the same upstream source and notices there.
 

@@ -109,7 +109,7 @@ async def test_verifier_runs_save_the_task_text_outside_the_workspace(
     assert seen["content"] == TASK_TEXT.encode()
     assert seen["workspace"].resolve() not in task_file.resolve().parents
     agents = seen["options"].agents
-    assert set(agents) == {"verifier", "value-verifier"}
+    assert set(agents) == {"verifier"}
     for definition in agents.values():
         assert str(task_file) in definition.prompt
     # Nothing is left behind once the run ends.
