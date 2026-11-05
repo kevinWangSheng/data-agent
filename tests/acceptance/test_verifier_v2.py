@@ -817,6 +817,8 @@ async def test_updated_input_replaces_the_prompt_end_to_end(
     ):
         messages.append(message)
     seen = visible_text(messages)
-    assert "RECEIVED:" in seen, seen
-    assert "RECEIVED:ORIGINAL" not in seen, seen
-    assert "task-v2-marker.md" in seen, seen
+    # The rewritten prompt is a full "read the task file, verify these models" instruction, so the
+    # subagent may act on it instead of echoing. Replacement holds when the original prompt is gone
+    # and the task file's content or path reached the subagent (human decision 2026-11-05).
+    assert "ORIGINAL-123" not in seen, seen
+    assert "Build customer_ltv." in seen or "task-v2-marker.md" in seen, seen
