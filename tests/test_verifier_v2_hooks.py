@@ -34,6 +34,18 @@ def test_parse_report_reads_checks_only_at_line_start_under_a_heading() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("heading", "line"),
+    [
+        ("### `orders.sql`", "- **CHECK 2**: **FAIL** - bold, as the old prompt's output"),
+        ("### models/marts/orders", "CHECK 2: FAIL — a path"),
+        ("### **orders**", "* CHECK 2: FAIL — a star bullet"),
+    ],
+)
+def test_parse_report_normalizes_headings_and_allows_bold(heading: str, line: str) -> None:
+    assert parse_report(f"{heading}\n{line}\n")["models"] == {"orders": {2: "FAIL"}}
+
+
 def test_parse_report_overall_needs_info_when_any_check_does() -> None:
     assert parse_report("### m\nCHECK 1: PASS — ok\nCHECK 2: NEEDS_INFO — key?\n")["overall"] == (
         "NEEDS_INFO"
@@ -64,6 +76,17 @@ def test_stop_ignores_removed_and_untouched_models(edited: tuple[Path, Path]) ->
     workspace, snapshot = edited
     decision = stop_decision({}, workspace, snapshot)
     assert [(r["model"], r["rule"]) for r in decision["reasons"]] == [("alpha", 1)]
+
+
+def test_stop_blocks_a_reported_model_reconfigured_since(edited: tuple[Path, Path]) -> None:
+    """A dbt_project.yml change model_diff reports counts as a change to the model (rule 2)."""
+    workspace, snapshot = edited
+    state = record_report({}, "### alpha\nCHECK 1: PASS — ok\n", workspace)
+    assert stop_decision(state, workspace, snapshot)["block"] is False
+    with (workspace / "project" / "dbt_project.yml").open("a") as handle:
+        handle.write("models:\n  tiny:\n    alpha:\n      +materialized: view\n")
+    decision = stop_decision(state, workspace, snapshot)
+    assert [(r["model"], r["rule"]) for r in decision["reasons"]] == [("alpha", 2)]
 
 
 def test_stop_blocks_a_reported_model_deleted_since(edited: tuple[Path, Path]) -> None:
@@ -141,7 +164,7 @@ async def test_subagent_stop_reads_a_call_at_the_turn_cap_as_needs_info(
     )
     events: list[dict[str, Any]] = []
     hooks = hooks_for(edited, events)
-    report = "### alpha\nCHECK 1: PASS — ok\n"
+    report = "### alpha\nCHECK 1: PASS — ok\nCHECK 2: FAIL — cut off here\n"
     await call(hooks, "SubagentStop", **subagent_stop("verifier", transcript, report))
     [end] = events
     assert (end["turns"], end["hit_max_turns"], end["overall"]) == (
@@ -149,8 +172,22 @@ async def test_subagent_stop_reads_a_call_at_the_turn_cap_as_needs_info(
         True,
         "NEEDS_INFO",
     )
-    # The checks it did write still reach the Stop state: NEEDS_INFO does not block.
+    assert end["checks"] == {"alpha": {1: "PASS", 2: "FAIL"}}
+    # The model reached the Stop state as verified, its FAIL read as NEEDS_INFO: no block.
     assert await call(hooks, "Stop", stop_hook_active=False) == {}
+
+
+async def test_value_verifier_reports_are_recorded_but_verify_nothing(
+    edited: tuple[Path, Path],
+) -> None:
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
+    report = "### alpha\nCHECK 1: PASS — ok\n"
+    await call(hooks, "SubagentStop", **subagent_stop("value-verifier", TRANSCRIPT, report))
+    [end] = events
+    assert end["type"] == "verifier_end" and end["verifier"] == "value-verifier"
+    blocked = await call(hooks, "Stop", stop_hook_active=False)
+    assert blocked["decision"] == "block" and "alpha: rule 1" in blocked["reason"]
 
 
 async def test_subagent_stop_survives_an_unreadable_transcript(

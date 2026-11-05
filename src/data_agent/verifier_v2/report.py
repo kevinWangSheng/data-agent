@@ -7,12 +7,19 @@ import re
 from pathlib import Path
 from typing import Any
 
-STATUSES = ("PASS", "FAIL", "NEEDS_INFO", "N/A")
 # `### <model>` on its own line.
 MODEL_RE = re.compile(r"^###\s+(.+?)\s*$")
-# `CHECK <n>: <STATUS>` at the start of a line (a list bullet before it is allowed), so a check
-# quoted inside another line's reason is not read as a verdict.
-CHECK_RE = re.compile(r"^\s*(?:[-*]\s+)?CHECK\s*(\d+)\s*:\s*(PASS|FAIL|NEEDS_INFO|N/A)\b")
+# `CHECK <n>: <STATUS>` at the start of a line, so a check quoted inside another line's reason is
+# not read as a verdict. A list bullet before it and `**` bold around the two tokens are allowed.
+CHECK_RE = re.compile(r"^\s*(?:[-*]\s+)?\**CHECK\s*(\d+)\**\s*:\s*\**(PASS|FAIL|NEEDS_INFO|N/A)\b")
+
+
+def model_name(heading: str) -> str:
+    """The model a `### ...` heading names, as `model_files` keys it: without backticks or bold,
+    a directory prefix, or a `.sql` suffix."""
+    name = heading.strip().strip("`*").strip()
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    return name.removesuffix(".sql")
 
 
 def parse_report(report: str, hit_max_turns: bool = False) -> dict[str, Any]:
@@ -23,7 +30,7 @@ def parse_report(report: str, hit_max_turns: bool = False) -> dict[str, Any]:
     model: str | None = None
     for line in report.splitlines():
         if heading := MODEL_RE.match(line.strip()):
-            model = heading.group(1)
+            model = model_name(heading.group(1))
         elif (check := CHECK_RE.match(line)) and model is not None:
             models.setdefault(model, {})[int(check.group(1))] = check.group(2)
     parsed = bool(models)

@@ -3,7 +3,8 @@
 - PreToolUse on `Agent`: rewrites the verifier's dispatch (`rewrite_dispatch`), counting the
   dispatches so the first one is the template alone.
 - SubagentStop: records a verifier call as `verifier_end` (its report, the parsed checks, the
-  turns and tool calls from its transcript) and feeds the report into the Stop state.
+  turns and tool calls from its transcript) and feeds the v2 verifier's report into the Stop
+  state.
 - Stop: blocks the run while `stop_decision` names a model, at most MAX_BLOCKS times; the next
   attempt ends the run and records `ended_with_unresolved`.
 
@@ -17,12 +18,11 @@ from claude_agent_sdk import HookContext, HookInput, HookJSONOutput, HookMatcher
 from claude_agent_sdk.types import HookEvent
 
 from data_agent.run_config import RunConfig
-from data_agent.verifier_v2.dispatch import AGENT_TOOL, rewrite_dispatch
-from data_agent.verifier_v2.model_diff import model_diff
+from data_agent.verifier_v2.dispatch import REWRITTEN_SUBAGENT, rewrite_dispatch
 from data_agent.verifier_v2.project import dbt_projects
 from data_agent.verifier_v2.report import parse_report, summarize_transcript
-from data_agent.verifier_v2.stop import describe, record_report, stop_decision
-from data_agent.verifiers import VERIFIER_NAMES, Emit
+from data_agent.verifier_v2.stop import changed_models, describe, record_report, stop_decision
+from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES, Emit
 
 MAX_BLOCKS = 2
 # The verifier's turn cap (spec "验证器"); a call that reaches it is read as NEEDS_INFO.
@@ -49,9 +49,6 @@ def run_hooks(
     blocks = 0
     state: dict[str, Any] = {}
 
-    def changed_models() -> list[str]:
-        return [d["model"] for d in model_diff(workspace, snapshot) if d["status"] != "removed"]
-
     async def dispatch(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
@@ -63,7 +60,7 @@ def run_hooks(
             dict(fields.get("tool_input") or {}),
             task_file=task_file,
             project_dir=projects[0] if projects else workspace,
-            models=changed_models(),
+            models=changed_models(workspace, snapshot),
             dispatches_so_far=dispatches,
         )
         if output:
@@ -86,7 +83,10 @@ def run_hooks(
             summary = {"turns": None, "tool_calls": None}
         hit_max_turns = (summary["turns"] or 0) >= VERIFIER_MAX_TURNS
         parsed = parse_report(report, hit_max_turns=hit_max_turns)
-        state = record_report(state, report, workspace)
+        # Only the v2 verifier's reports count as verification; the value verifier's (until
+        # ticket 47 removes it) are recorded but satisfy no Stop rule.
+        if fields["agent_type"] == REWRITTEN_SUBAGENT:
+            state = record_report(state, report, workspace, hit_max_turns=hit_max_turns)
         emit(
             "verifier_end",
             verifier=fields["agent_type"],
