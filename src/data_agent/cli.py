@@ -1,12 +1,14 @@
 """`data-agent` command line.
 
-Exit codes of `run`: 0 success, 1 the agent did not finish, 2 config or infrastructure error.
+Exit codes of `run`: 0 success, 1 the agent did not finish (a turn, spend or `--agent-timeout-sec`
+limit stopped it), 2 config or infrastructure error.
 """
 
 import argparse
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 from data_agent.agent import ConfigError, Task, run
@@ -65,8 +67,15 @@ def main(argv: list[str] | None = None) -> None:
     add_database(run_cmd)
     run_cmd.add_argument("--config", required=True, choices=CONFIG_NAMES)
     run_cmd.add_argument("--events-dir", required=True, type=Path, help="where the event file goes")
+    run_cmd.add_argument(
+        "--agent-timeout-sec",
+        type=float,
+        help="the trial's time limit, counted from now; the run stops itself before it",
+    )
 
     args = parser.parse_args(argv)
+    # The deadline counts from the earliest point the process can see (ticket 54).
+    started = time.monotonic()
     command = serve if args.command == "mcp-server" else run_cmd
     try:
         config = load_config(args.config)
@@ -90,6 +99,8 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
+    if args.agent_timeout_sec is not None and not args.agent_timeout_sec > 0:
+        run_cmd.error(f"--agent-timeout-sec must be positive, got {args.agent_timeout_sec}")
     if not args.workspace.is_dir():
         run_cmd.error(f"workspace directory not found: {args.workspace}")
     text: str = args.task
@@ -105,7 +116,8 @@ def main(argv: list[str] | None = None) -> None:
         postgres_env=args.postgres_env,
     )
     try:
-        outcome = asyncio.run(run(task, config, args.events_dir, os.environ))
+        deadline = None if args.agent_timeout_sec is None else started + args.agent_timeout_sec
+        outcome = asyncio.run(run(task, config, args.events_dir, os.environ, deadline))
     except ConfigError as exc:
         run_cmd.error(str(exc))
     print(outcome.answer)

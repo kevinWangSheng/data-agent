@@ -1,6 +1,7 @@
 """Process metrics of trials, read from their event files (`data_agent.agent` writes them; ticket
 28): turns, a run stopped by the spend cap or the turn limit (the SDK result's subtype), verifier
-calls and their check statuses, edits to dbt model files, spend, and timing (ticket 51: trial and
+calls and their check statuses, a run stopped at the trial deadline or let end unverified for
+lack of time (ticket 54), edits to dbt model files, spend, and timing (ticket 51: trial and
 verifier walls, tool calls, each tool's p50/p90/p95/p99 and timeouts); per task, and the mean
 spend of the successful trials. For dev trials only: callers keep holdout trials out (ADR-0004).
 
@@ -22,6 +23,8 @@ EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 # The SDK ResultMessage subtypes of a run cut off by a limit (data_agent.agent's `Spend` writes the
 # budget one too when it stops the run itself).
 STOPS = {"error_max_budget_usd": "budget", "error_max_turns": "turns"}
+# The `terminal_reason` of a run that stopped itself at the trial deadline (data_agent.agent).
+DEADLINE = "deadline"
 
 
 def verifier_checks(event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -119,6 +122,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     turns, edits, calls, cost, tool_calls = 0, 0, 0, 0.0, 0
     checks: Counter[str] = Counter()
     stopped: str | None = None
+    unverified = False
     durations: dict[str, list[float]] | None = None
     timeouts: Counter[str] = Counter()
     untimed: Counter[str] = Counter()
@@ -140,6 +144,10 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
                     turns += int(event.get("num_turns") or 0)
                     cost += float(event.get("cost_usd") or 0.0)
                     stopped = STOPS.get(str(event.get("subtype")), stopped)
+                    if event.get("terminal_reason") == DEADLINE:
+                        stopped = DEADLINE
+                elif kind == "ended_unverified":
+                    unverified = True
                 elif kind == "verifier_start":
                     calls += 1
                 elif kind == "verifier_end":
@@ -166,6 +174,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
         "success": is_success(trial.reward),
         "turns": turns,
         "stopped": stopped,
+        "ended_unverified": unverified,
         "verifier_calls": calls,
         "verifier_checks": dict(checks),
         "model_edits": edits,
@@ -309,6 +318,8 @@ def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_turns": sum(r["turns"] for r in rows) / len(rows),
         "stopped_by_budget": sum(1 for r in rows if r["stopped"] == "budget"),
         "stopped_by_turns": sum(1 for r in rows if r["stopped"] == "turns"),
+        "stopped_by_deadline": sum(1 for r in rows if r["stopped"] == DEADLINE),
+        "ended_unverified": sum(1 for r in rows if r["ended_unverified"]),
         "verifier_calls": sum(r["verifier_calls"] for r in rows),
         "verifier_checks": dict(checks),
         "model_edits": sum(r["model_edits"] for r in rows),

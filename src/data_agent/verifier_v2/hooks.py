@@ -9,6 +9,11 @@
 - Stop: blocks the run while `stop_decision` names a model, at most MAX_BLOCKS times; the next
   attempt ends the run and records `ended_with_unresolved`.
 
+With a trial deadline (ticket 54), once less than VERIFY_MIN_REMAINING_S is left a verifier
+dispatch is denied and Stop lets the run end, recording `ended_unverified` when it would have
+blocked. Both change together: a Stop that asks for a dispatch the PreToolUse hook denies would
+loop until MAX_BLOCKS.
+
 Pure functions do the work; the closures here only hold the run's counters and state. When one
 of them fails on the workspace (a file deleted mid-read), the hook records an `error` event and
 falls back to doing nothing: the SDK would otherwise turn the exception into an error response
@@ -16,7 +21,9 @@ whose handling by the CLI is unverified. SubagentStop then leaves the state as i
 lets the run end rather than wedge it.
 """
 
+import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +31,7 @@ from claude_agent_sdk import HookContext, HookInput, HookJSONOutput, HookMatcher
 from claude_agent_sdk.types import HookEvent
 
 from data_agent.run_config import RunConfig
-from data_agent.verifier_v2.dispatch import REWRITTEN_SUBAGENT, rewrite_dispatch
+from data_agent.verifier_v2.dispatch import REWRITTEN_SUBAGENT, deny_dispatch, rewrite_dispatch
 from data_agent.verifier_v2.project import dbt_projects
 from data_agent.verifier_v2.report import parse_report, summarize_transcript
 from data_agent.verifier_v2.stop import (
@@ -41,6 +48,9 @@ MAX_BLOCKS = 2
 MAX_OUTSTANDING_DISPATCHES = 4
 # The verifier's turn cap (spec "验证器"); a call that reaches it is read as NEEDS_INFO.
 VERIFIER_MAX_TURNS = 50
+# Seconds a verifier run needs: 13 of 14 verifier windows in runs/t47-screen took at most 970 s
+# (docs/research/2026-11-05-foundation-latency-audit.md §2).
+VERIFY_MIN_REMAINING_S = 1000.0
 BLOCK_INSTRUCTION = (
     "The run cannot end yet. Fix what the verifier reported (reproduce a FAIL with one read-only "
     "query first), rebuild the changed models, then dispatch the `verifier` again for every "
@@ -55,8 +65,11 @@ def run_hooks(
     snapshot: Path,
     task_file: Path,
     emit: Emit,
+    deadline: float | None = None,
+    now: Callable[[], float] = time.monotonic,
 ) -> dict[HookEvent, list[HookMatcher]]:
-    """`{}` when the config's verifier layer is off."""
+    """`{}` when the config's verifier layer is off. `deadline` is the trial's end on the `now`
+    clock (monotonic seconds); None is a run without one."""
     if not config.verifiers:
         return {}
     dispatches = 0
@@ -75,6 +88,13 @@ def run_hooks(
     # The bound only keeps the queue from growing without limit.
     dispatched: deque[dict[str, str] | None] = deque(maxlen=MAX_OUTSTANDING_DISPATCHES)
 
+    def remaining_s() -> float | None:
+        """Seconds left when too few are left for a verifier run, else None."""
+        if deadline is None:
+            return None
+        left = deadline - now()
+        return left if left < VERIFY_MIN_REMAINING_S else None
+
     def failed(hook: str, exc: Exception) -> None:
         emit("error", source="verifier_v2", hook=hook, error=f"{exc!r}")
 
@@ -83,6 +103,14 @@ def run_hooks(
     ) -> HookJSONOutput:
         nonlocal dispatches
         fields: dict[str, Any] = dict(hook_input)
+        if (left := remaining_s()) is not None:
+            denied = deny_dispatch(
+                str(fields.get("tool_name") or ""),
+                dict(fields.get("tool_input") or {}),
+                remaining_s=left,
+            )
+            if denied:
+                return denied  # type: ignore[return-value]
         projects = dbt_projects(workspace)
         output = rewrite_dispatch(
             str(fields.get("tool_name") or ""),
@@ -157,6 +185,9 @@ def run_hooks(
         if not decision["block"]:
             return {}
         reason = describe(decision["reasons"])
+        if (left := remaining_s()) is not None:
+            emit("ended_unverified", reason=reason, reasons=decision["reasons"], remaining_s=left)
+            return {}
         blocks += 1
         if blocks > MAX_BLOCKS:
             emit(

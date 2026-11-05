@@ -123,6 +123,8 @@ def test_process_metrics_per_task_come_from_the_event_files(
         "mean_turns": 13.0,
         "stopped_by_budget": 0,
         "stopped_by_turns": 0,
+        "stopped_by_deadline": 0,
+        "ended_unverified": 0,
         "verifier_calls": 1,
         "verifier_checks": {"PASS": 2},
         "model_edits": 3,

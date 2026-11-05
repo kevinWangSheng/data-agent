@@ -12,8 +12,9 @@ the trial result from the event file's `result` event, and writes the run as an 
 trial's `trajectory_path`. A missing or broken event file leaves the trial without a trajectory.
 Both read the last event file by name (a trial runs `data-agent run` once).
 
-Errors (plan §7): an agent that stops early (turn or spend cap) is an agent failure the verifier
-scores; it raises nothing. A failed model call raises Harbor's error for its HTTP status, or for a
+Errors (plan §7): an agent that stops early (turn or spend cap, or the trial deadline the
+`agent_timeout_sec` kwarg sets, ticket 54) is an agent failure the verifier scores; it raises
+nothing. A failed model call raises Harbor's error for its HTTP status, or for a
 dropped connection when it has none and the CLI's message says so, so the job config's retry list
 (`TRANSIENT_ERRORS`) retries rate limits, server errors and disconnects only; a timed-out request
 keeps Harbor's own classification, which is not retried.
@@ -185,6 +186,15 @@ class DataAgentOptions(InstalledAgentOptions):
     run_config: str = Field(
         default="full", description="Run config name, from src/data_agent/configs."
     )
+    # Harbor's own timeout (`asyncio.wait_for` around `run()`) never reaches the agent, so the
+    # trial's limit is a plain kwarg, as Harbor's Cline agent has it (cline.py:83); the
+    # leaderboard's static check rejects only the override and multiplier settings. The default
+    # is data-eng-bench's task.toml limit.
+    agent_timeout_sec: float = Field(
+        default=4000,
+        gt=0,
+        description="The trial's time limit in seconds; data-agent stops itself before it.",
+    )
 
     @field_validator("run_config")
     @classmethod
@@ -298,6 +308,7 @@ class DataAgent(BaseInstalledAgent):
             '--duckdb "${DUCKDB_PATH:-/app/database/retail.duckdb}" '
             f"--config {shlex.quote(self.options.run_config)} "
             f"--events-dir {shlex.quote(str(logs / self.EVENTS_DIR))} "
+            f"--agent-timeout-sec {shlex.quote(str(self.options.agent_timeout_sec))} "
             f"--task {shlex.quote(instruction)} "
             f"2>&1 | tee {shlex.quote(str(logs / self.OUTPUT_FILE))}; "
             # Exit 1 is an agent that did not finish: the verifier scores it like any attempt.
