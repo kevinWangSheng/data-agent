@@ -1,6 +1,6 @@
 # 53 — dbt 固定开销：scan 每个 yml 只解析一次，评测适配层设 DBT_TARGET，Skill 不来回切 --vars
 
-Status: in-progress
+Status: in-review
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§5）
 Claimed by: claude (worktree 53-dbt-fixed-overhead, 2026-11-05)
@@ -56,10 +56,51 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0
-- Outcome: —
+- Outcome: implemented; local scan 19.6 s → 4.2 s with identical output; server check and the `DBT_TARGET` decision are still open
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（1da43bb、3a1e09d）
+
+**What changed**
+- **Scan:** `scan_project.py` now reads each yml file under `models/` once and builds a lookup from model to its yml file and sibling models. Before, it re-read every yml for each model missing its SQL file. The old logic is kept exactly: the last matching file wins, and the `dbt_packages` and outside-the-project filters are unchanged. The file header notes the change. `NOTICE` is not edited because its entry already says "modified as noted at its top".
+- **Adapter:** `evals/harbor_agent.py` adds `DBT_TARGET=dev` to the environment of the `data-agent run` call. The reviewer traced it through: Harbor's docker exec, then `cli.py` passing `os.environ`, then the SDK subprocess, which inherits the environment. Bash and `validate_project.py` therefore inherit it, and the command guard doesn't touch it.
+- **Skill:** `skills/dbt-workflow/SKILL.md` Step 7 now says not to switch `--vars` between dbt calls, because each switch re-parses the whole project. I also added one clause to the header comment to record the change to this copied upstream file, which is slightly beyond the literal "only that sentence" in Authority. Step 8 is untouched.
+
+**Tests (written first; each failed before its fix)**
+- `test_scan_parses_each_yml_once_and_reports_the_same`: checks each yml is parsed exactly once and compares the report with `tests/fixtures/scan_multi_yml.md`, captured from the scan before the change. It failed with 35 parses for 5 files.
+- `test_dbt_defaults_to_the_target_the_image_parsed_with`: checks that the `data-agent run` call gets `DBT_TARGET=dev`.
+- `test_workflow_says_not_to_switch_vars_between_dbt_calls`: checks the sentence is in Step 7. The existing `test_skills_and_verifier_prompts_name_no_task` already covers task names.
+
+**Local re-test** on a copy of data-eng-bench `base-image/dbt_models_duckdb` (35 yml files, 34 models to build):
+```
+uv run python <main's scan_project.py> /tmp/t53-bench/old_proj   real 19.61  (38.87 while other suites were running)
+uv run python skills/dbt-workflow/scan_project.py /tmp/t53-bench/new_proj   real 4.19  (4.49 while other suites were running)
+cmp of the two 10,537-line reports without the title line → IDENTICAL
+```
+
+**Not run yet (main session):** the server trial `dbt-receivables-aging-buckets` × 1 (full), checking scan time ≤15 s and that the first dbt call doesn't print "Unable to do partial parsing".
+
+**Reviews**
+- **Codex `da-review main`:** "Selected model is at capacity" on two attempts. Per the standing memory note, a read-only fable subagent reviewed instead.
+- **Fable review:**
+  1. Medium: the `DBT_TARGET` override risk above. Not fixed (open decision).
+  2. Low: the test fixture doesn't cover a model defined in several yml files, or broken yml. The reviewer ran old and new code on those cases by hand and got identical output. Not fixed: which file wins depends on directory-listing order, so a pinned expected report could fail on Linux CI.
+  3. Nit: missing space in the scan code. Fixed.
+- **`eng:code-review main`, Standards axis:** no breaches of documented standards.
+  - It said the parse test doesn't prove "only once". Not fixed: the test compares full lists, so a second parse fails it, and the Spec reviewer confirmed it fails on main's code.
+  - It flagged copied-over duplication: a second yml walk, a substring `dbt_packages` check, and `.yaml` files ignored. Not fixed: changing any of these would change the scan output, which the ticket forbids.
+  - It suggested a clearer name for `DBT_ENV`. Not fixed: the adapter only serves data-eng-bench.
+- **`eng:code-review main`, Spec axis:** all files are inside Authority.
+  - It flagged the header clause; that is noted above.
+  - It said the env test didn't pin the variable to the `data-agent run` call. Fixed in `3a1e09d`.
+  - It flagged the fixture coverage gap; same reason as fable item 2.
+- **Rounds:** one round of fixes, then `make check` re-run: 1702 passed in 318 s.
+
+### 2026-11-05 主会话
+
+- `DBT_TARGET=dev` 会盖掉 agent 自己选的 target，这个风险按 grilling 的决定保留。理由：工单 49 合入后，提示词和 Skill 已经不再教 agent 改 `profiles.yml`，t49-screen 里 `profiles.yml` 改动 0 次。工单会话统计的 21 次 `target: prod`，都来自工单 49 之前的运行。服务器上是否真的走部分解析，看下面的真实运行；如果仍然完整解析，就按 Stop condition 交人定。
