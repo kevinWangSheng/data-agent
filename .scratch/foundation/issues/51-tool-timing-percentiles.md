@@ -1,6 +1,6 @@
 # 51 — 工具计时改用 PostToolUse 的 duration_ms，报告出分位数
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§1）
 Claimed by: claude (worktree 51-tool-timing-percentiles, 2026-11-05)
@@ -62,7 +62,8 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 2
 - Model spend: $0 (no model calls; the server run is pending)
-- Outcome: implemented; real server run pending
+- Outcome: done，PR #51 squash 合入；t51-real 1/1，计时与分位数齐全，no duration 0
+- Model spend（主会话真实运行）: $0.1375
 - Human review minutes: —
 
 ## Comments
@@ -113,3 +114,14 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 ### 2026-11-05 主会话
 
 - 工单会话提出：按本工单的口径算，t47-screen 的验证器墙钟中位数是 719 s，不是工单 47 记的 317 s。差别全在 pos-operations 那 3 个被 4000 s 截断的 trial：本工单把它们的验证器时间算到 Agent 调用结束或 trial 结束，工单 47 的脚本没有。工单 47 的过线线（≤155 s）判定时，两种口径都报，并列出截断数；由人定以哪个为准（截断问题由工单 54 解决）。
+- 服务器真实运行 `t51-real`（commit bc571b6）：`scripts/da-remote start t51-real -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task dbt-receivables-aging-buckets --out runs/t51-real --budget 2 --config full --trials 1`，结果 exit 0，reward 1（1/1），实际价 $0.1375（闲时），内存峰值 2.0 GB。
+  - 报告的计时表：trial 墙钟 603.7 s，验证器墙钟 152.1 s，验证器被截断 0 次；共 119 次工具调用，有计时的 trial 1/1，超时 0 次，no duration 0 次。
+  - 13 种工具都有分位数。例如 `query_database` 49 次，p50 0.8 s；`compare_by_key` 1 次，12.4 s；Bash p50 23.0 s；Agent p50 63.2 s。
+  - 事件文件里有 116 个 `tool_timing`，都带 `duration_ms`，其中 55 个来自验证器内部（`query_database` 21、Read 14、`list_tables` 6 等）。有 3 个 `tool_end` 没有对应的 `tool_timing`，都是被 PreToolUse 守卫拒掉的 Bash 调用：命令没执行，所以没有 PostToolUse。本工单的停止条件没有触发。
+- PR #51：CI 绿。Codex GitHub app 在 bc571b6 上审查失败，评论 `@codex review` 重试后仍显示 failed，按规则改由 Fable 审查（结果见下一条）。
+- Codex 不可用，Fable 审查（PR #51，bc571b6）：approve，没有 P1/P2。已核对的部分：分位数计算、按 `agent_id` 配对验证器、被截断验证器按顺序配到 Agent 调用（在 t47-screen 的 pos-operations 截断 trial 上实测 4/4 配对正确）、旧事件文件兼容、钩子抛异常不会拖垮 agent（SDK `query.py:694` 会捕获）、超时识别、所有消费方。四条 P3 不修，记成已知限制：
+  1. "tool calls"（统计 `tool_start`）和各工具 calls 之和（统计 `tool_timing`）对不上，差值就是被守卫拒掉的调用，表里没有说明。
+  2. Agent 调用不区分 subagent_type，如果主 agent 派了非验证器的子 agent，被截断的验证器可能配错。现在只会派验证器，这个问题还没出现过。
+  3. 验证器墙钟的分位数只统计派过验证器的 trial，表头没写分母。工单 47 判过线时要写明。
+  4. 每次 PostToolUse 都先序列化输出，再判断是不是网关工具，只是性能上的小问题。
+- 合入：PR #51 squash。
