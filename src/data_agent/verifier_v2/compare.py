@@ -23,12 +23,13 @@ from data_agent.verifier_v2.db import (
     Queryable,
     catalog_loader,
     column_named,
-    double_type,
     find_model,
     quote,
+    workspace_alias,
 )
 
 SAMPLE_LIMIT = 20
+DOUBLE_TYPE = {"duckdb": "DOUBLE", "postgres": "DOUBLE PRECISION"}
 RELATIVE_TOLERANCE = "1e-6"
 DECIMAL_RE = re.compile(r"^(decimal|numeric)(?:\s*\(\s*(\d+)\s*,\s*(\d+)\s*\))?", re.IGNORECASE)
 FLOAT_RE = re.compile(r"^(double|real|float)", re.IGNORECASE)
@@ -53,13 +54,22 @@ def compare_by_key(
     "unmatched_reference_columns", "only_in_model", "only_in_reference", "mismatched",
     "samples"}`. `samples` holds up to 20 key dicts for each one-sided side and up to 20
     `{"key", "column", "model", "reference"}` entries for mismatches. Compared columns are the
-    reference's non-key columns that the model also has. `workspace` lets an aliased model be
-    found under its alias; `catalog` is the server's cache."""
+    reference's non-key columns that the model also has. `workspace` lets the model and the
+    changed models be known by their aliases too; `catalog` is the server's cache."""
     reference_sql = reference_sql.strip().rstrip(";")
     tables = model_sql.table_names(reference_sql, gateway.dialect)
     if tables is None:
         return {"accepted": False, "reason": "the reference SQL could not be parsed"}
-    forbidden = {model.lower(), *(name.lower() for name in changed_models)}
+    load = catalog_loader(gateway, catalog)
+    table = find_model(load, workspace, model)
+    # Bare, lower-cased relation names, as `table_names` reports them: the model as named and
+    # as built, every changed model as named and, when the workspace is known, as aliased.
+    forbidden = {_bare(model), table.name.lower()}
+    for changed in changed_models:
+        forbidden.add(_bare(changed))
+        alias = workspace_alias(workspace, changed) if workspace else None
+        if alias:
+            forbidden.add(_bare(alias))
     hits = sorted({name for name in tables if name in forbidden})
     if hits:
         return {
@@ -70,8 +80,6 @@ def compare_by_key(
                 "re-check the implementation against itself)"
             ),
         }
-    load = catalog_loader(gateway, catalog)
-    table = find_model(load, workspace, model)
     keys = [column_named(table, key) for key in key_columns]
     if not keys:
         raise ToolError("Error: key_columns is empty; name the grain key")
@@ -101,14 +109,19 @@ def compare_by_key(
         if compared
         else "FALSE"
     )
+    key_list = ", ".join(quote(k) for k in keys)
+
+    def distinct_keys(condition: str) -> str:
+        # Keys, not rows: a key repeated on either side still counts once (DISTINCT treats
+        # NULL key values as equal).
+        return f"(SELECT COUNT(*) FROM (SELECT DISTINCT {key_list} FROM j WHERE {condition}) AS k)"
+
+    only_model, only_reference = '"__r_present" IS NULL', '"__m_present" IS NULL'
     counts = gateway.query(
-        f"{joined} SELECT "
-        f'SUM(CASE WHEN "__r_present" IS NULL THEN 1 ELSE 0 END), '
-        f'SUM(CASE WHEN "__m_present" IS NULL THEN 1 ELSE 0 END), '
-        f"SUM(CASE WHEN {both} AND {any_mismatch} THEN 1 ELSE 0 END) FROM j",
+        f"{joined} SELECT {distinct_keys(only_model)}, {distinct_keys(only_reference)}, "
+        f"{distinct_keys(f'{both} AND {any_mismatch}')}",
         1,
     ).rows[0]
-    key_list = ", ".join(quote(k) for k in keys)
     only_in_model = gateway.query(
         f'{joined} SELECT {key_list} FROM j WHERE "__r_present" IS NULL ORDER BY {key_list} '
         f"LIMIT {SAMPLE_LIMIT}",
@@ -161,6 +174,11 @@ def compare_by_key(
             "mismatched": mismatches,
         },
     }
+
+
+def _bare(relation: str) -> str:
+    """The relation's own name, lower-cased, without schema or database qualifiers."""
+    return relation.strip().rsplit(".", 1)[-1].strip('"').lower()
 
 
 def _joined_sql(
@@ -224,7 +242,7 @@ def _rule(table: Table, column: str, m: str, r: str, data_type: str, gateway: Qu
         )
         return f"CAST({rounded} AS DECIMAL(38, {scale})) = CAST({m} AS DECIMAL(38, {scale}))"
     if FLOAT_RE.match(data_type.strip()):
-        double = double_type(gateway.dialect)
+        double = DOUBLE_TYPE.get(gateway.dialect, "DOUBLE PRECISION")
         md, rd = f"CAST({m} AS {double})", f"CAST({r} AS {double})"
         return (
             f"(CASE WHEN {rd} = 0 THEN {md} = 0 "

@@ -12,7 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from data_agent.db_facts import LoadCatalog, Table
 from data_agent.gateway import QueryBlocked, QueryFailed
 from data_agent.verifier_v2 import sql as model_sql
-from data_agent.verifier_v2.db import Queryable, catalog_loader, find_model, quote
+from data_agent.verifier_v2.db import Queryable, catalog_loader, duplicate_rows, find_model, quote
 from data_agent.verifier_v2.model_diff import model_diff
 from data_agent.verifier_v2.project import dbt_projects, declared_columns, model_entries
 
@@ -24,16 +24,13 @@ def contract_check(
     models: Sequence[str],
     task_columns: Mapping[str, Sequence[str]] | None = None,
     catalog: LoadCatalog | None = None,
-    diffs: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """model -> `{"exists", "columns", "window"}`, each `{"status": PASS|FAIL|N/A, "evidence"}`.
     `columns` adds `source` ("task" or "snapshot_yml"), `missing` and `extra`; `window` adds
     `functions`, the changed window functions it checked. `task_columns` maps a model to the
-    output columns the task text requires. `diffs` is `model_diff`'s output when the caller has
-    it; `catalog` the server's cache."""
+    output columns the task text requires; `catalog` is the server's cache."""
     load = catalog_loader(gateway, catalog)
-    if diffs is None:
-        diffs = model_diff(workspace, snapshot, gateway.dialect)
+    diffs = model_diff(workspace, snapshot, gateway.dialect)
     windows = {
         d["model"]: [
             c["after"]
@@ -150,13 +147,8 @@ def _duplicate_orderings(
     gateway: Queryable, table: Table, partition: list[str], ordering: list[str]
 ) -> int:
     """Rows beyond the first that share (partition, ORDER BY) values."""
-    columns = ", ".join(_as_model_column(table, e) for e in [*partition, *ordering])
-    sql = (
-        f"SELECT COALESCE(SUM(n - 1), 0) FROM (SELECT COUNT(*) AS n FROM {table.sql_name} "
-        f"GROUP BY {columns} HAVING COUNT(*) > 1) AS d"
-    )
-    rows = gateway.query(sql, 1).rows
-    return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+    columns = [_as_model_column(table, e) for e in [*partition, *ordering]]
+    return duplicate_rows(gateway, table, columns)
 
 
 def _as_model_column(table: Table, expression: str) -> str:

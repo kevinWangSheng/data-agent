@@ -10,10 +10,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.db_facts import LoadCatalog, Table, find_table, load_catalog
 from data_agent.gateway import MAX_ROWS, QueryResult
-from data_agent.verifier_v2.project import dbt_projects, model_files
-from data_agent.verifier_v2.project import model_alias as project_alias
-
-DOUBLE_TYPE = {"duckdb": "DOUBLE", "postgres": "DOUBLE PRECISION"}
+from data_agent.verifier_v2.project import dbt_projects, model_alias, model_files
 
 
 class Queryable(Protocol):
@@ -56,16 +53,17 @@ def find_model(catalog: LoadCatalog, workspace: Path | None, model: str) -> Tabl
     try:
         return find_table(tables, model, hint="the model is not built")
     except ToolError:
-        alias = model_alias(workspace, model) if workspace else None
+        alias = workspace_alias(workspace, model) if workspace else None
         if alias is None or alias.lower() == model.lower():
             raise
         return find_table(tables, alias, hint=f"the model {model!r} is not built as {alias!r}")
 
 
-def model_alias(workspace: Path, model: str) -> str | None:
+def workspace_alias(workspace: Path, model: str) -> str | None:
+    """The alias the dbt project in `workspace` that holds `model` gives it; None without one."""
     for project in dbt_projects(workspace):
         if model in model_files(project):
-            return project_alias(project, model)
+            return model_alias(project, model)
     return None
 
 
@@ -81,5 +79,18 @@ def quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def double_type(dialect: str) -> str:
-    return DOUBLE_TYPE.get(dialect, "DOUBLE PRECISION")
+def scalar_count(gateway: Queryable, sql: str) -> int:
+    """The single integer a counting statement returns; 0 for no row or NULL."""
+    rows = gateway.query(sql, 1).rows
+    return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+
+
+def duplicate_rows(gateway: Queryable, table: Table, columns: list[str], where: str = "") -> int:
+    """Rows beyond the first in each group of equal `columns` (SQL expressions), optionally
+    only rows matching `where`."""
+    sql = (
+        f"SELECT COALESCE(SUM(n - 1), 0) FROM (SELECT COUNT(*) AS n FROM {table.sql_name} "
+        f"{f'WHERE {where} ' if where else ''}GROUP BY {', '.join(columns)} "
+        "HAVING COUNT(*) > 1) AS d"
+    )
+    return scalar_count(gateway, sql)

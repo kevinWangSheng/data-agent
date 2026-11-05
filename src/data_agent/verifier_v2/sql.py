@@ -64,12 +64,8 @@ def facts(tree: exp.Expr, dialect: str) -> Facts:
     (`filter`), joins (`join`), row-count logic (`rows`: DISTINCT, QUALIFY, set operations,
     LIMIT, row_number() = 1), GROUP BY (`grain`) and window functions (`window`)."""
     found: Facts = {category: Counter() for category in CATEGORIES}
-    ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
-    for table in tree.find_all(exp.Table):
-        if not table.db and table.name.lower() in ctes:
-            continue
-        if table.name:
-            found["source"][table.sql(dialect=dialect)] += 1
+    for table in _tables_read(tree):
+        found["source"][table.sql(dialect=dialect)] += 1
     for select in tree.find_all(exp.Select):
         for clause, key in (("WHERE", "where"), ("HAVING", "having")):
             node = select.args.get(key)
@@ -152,10 +148,14 @@ def table_names(sql: str, dialect: str) -> list[str] | None:
         tree = sqlglot.parse_one(sql, read=dialect)
     except (SqlglotError, ValueError):
         return None
+    return [table.name.lower() for table in _tables_read(tree)]
+
+
+def _tables_read(tree: exp.Expr) -> list[exp.Table]:
+    """The tables a statement reads: every named table that is not one of its own CTEs."""
     ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
-    names: list[str] = []
-    for table in tree.find_all(exp.Table):
-        name = table.name.lower()
-        if name and not (not table.db and name in ctes):
-            names.append(name)
-    return names
+    return [
+        table
+        for table in tree.find_all(exp.Table)
+        if table.name and (table.db or table.name.lower() not in ctes)
+    ]

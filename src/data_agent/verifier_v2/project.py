@@ -117,7 +117,7 @@ def yml_files(project: Path, config: dict[str, Any] | None = None) -> list[Path]
 @dataclass(frozen=True)
 class ModelConfig:
     """What dbt_project.yml says about one model: the resolved per-key values (project-wide
-    defaults overridden down the directory path) and the project's vars."""
+    defaults overridden down the directory path) and the project vars the model's SQL reads."""
 
     values: dict[str, Any]
     vars: dict[str, Any]
@@ -130,9 +130,13 @@ class ModelConfig:
         return shown
 
 
-def model_config(config: dict[str, Any], project: Path, model_path: Path) -> ModelConfig:
+def model_config(
+    config: dict[str, Any], project: Path, model_path: Path, sql: str | None = None
+) -> ModelConfig:
     """The configuration dbt_project.yml gives the model at `model_path`: `models:` -> project
-    name -> each directory on the way -> the model's own name, with `+key` and `key` both read."""
+    name -> each directory on the way -> the model's own name, with `+key` and `key` both read.
+    Of the project's `vars:` only those the model's SQL (`sql`, read from `model_path` when not
+    given) calls `var()` on count as the model's, so a var edit shows only on models using it."""
     name = str(config.get("name", ""))
     models = config.get("models")
     values: dict[str, Any] = dict.fromkeys(CONFIG_KEYS)
@@ -152,15 +156,26 @@ def model_config(config: dict[str, Any], project: Path, model_path: Path) -> Mod
         node = node.get(part)
     if isinstance(node, dict):
         _collect(node, values)
+    if sql is None:
+        sql = read_text(model_path) if model_path.is_file() else ""
+    used = referenced_vars(sql)
     raw_vars = config.get("vars")
     project_vars: dict[str, Any] = {}
-    if isinstance(raw_vars, dict):
+    if isinstance(raw_vars, dict) and used:
         for key, value in raw_vars.items():
             if key == name and isinstance(value, dict):
-                project_vars.update(value)
-            elif not isinstance(value, dict):
+                project_vars.update({k: v for k, v in value.items() if k in used})
+            elif not isinstance(value, dict) and key in used:
                 project_vars[key] = value
     return ModelConfig(values, project_vars)
+
+
+VAR_CALL_RE = re.compile(r"""\bvar\s*\(\s*['"]([^'"]+)['"]""")
+
+
+def referenced_vars(sql: str) -> set[str]:
+    """The names a model's Jinja passes to `var()`."""
+    return set(VAR_CALL_RE.findall(sql))
 
 
 def _collect(node: dict[str, Any], values: dict[str, Any]) -> None:

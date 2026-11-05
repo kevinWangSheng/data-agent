@@ -40,8 +40,12 @@ def model_diff(workspace: Path, snapshot: Path, dialect: str = "duckdb") -> list
             before = before_files.get(name)
             after_text = read_text(after) if after else None
             before_text = read_text(before) if before else None
-            after_cfg = model_config(after_config, project, after) if after else None
-            before_cfg = model_config(before_config, snapshot_project, before) if before else None
+            after_cfg = model_config(after_config, project, after, after_text) if after else None
+            before_cfg = (
+                model_config(before_config, snapshot_project, before, before_text)
+                if before
+                else None
+            )
             if after_text == before_text and after_cfg == before_cfg:
                 continue
             entry = _entry(name, str(relative), before_text, after_text, dialect)
@@ -54,7 +58,7 @@ def model_diff(workspace: Path, snapshot: Path, dialect: str = "duckdb") -> list
 def _entry(
     model: str, project: str, before: str | None, after: str | None, dialect: str
 ) -> dict[str, Any]:
-    status = "new" if before is None else "removed" if after is None else "changed"
+    status = {"added": "new", "removed": "removed"}.get(_kind(before, after), "changed")
     entry: dict[str, Any] = {
         "model": model,
         "project": project,
@@ -108,8 +112,7 @@ def _config_changes(before: ModelConfig | None, after: ModelConfig | None) -> li
         old, new = before_lines.get(key), after_lines.get(key)
         if old == new:
             continue
-        kind = "added" if old is None else "removed" if new is None else "changed"
-        changes.append(_change("config", kind, old, new))
+        changes.append(_change("config", _kind(old, new), old, new))
     return changes
 
 
@@ -119,15 +122,18 @@ def _config_call_changes(before: str | None, after: str | None) -> list[dict[str
     new = sql_config_call(after) if after else None
     if old == new:
         return []
-    kind = "added" if old is None else "removed" if new is None else "changed"
     return [
         _change(
             "config",
-            kind,
+            _kind(old, new),
             f"config({old})" if old is not None else None,
             f"config({new})" if new is not None else None,
         )
     ]
+
+
+def _kind(before: object | None, after: object | None) -> str:
+    return "added" if before is None else "removed" if after is None else "changed"
 
 
 def _text_diff(model: str, before: str | None, after: str | None) -> str:

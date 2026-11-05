@@ -21,7 +21,13 @@ from data_agent.agent import ModelSettings, Task
 from data_agent.gateway import DuckDBGateway
 from data_agent.run_config import load_config
 from data_agent.verifier_tools import SNAPSHOT_ENV, parse_task_columns
-from data_agent.verifier_v2 import compare_by_key, model_diff, take_snapshot, yaml_lite
+from data_agent.verifier_v2 import (
+    compare_by_key,
+    grain_facts,
+    model_diff,
+    take_snapshot,
+    yaml_lite,
+)
 from data_agent.verifier_v2 import sql as model_sql
 from data_agent.verifier_v2.project import model_alias, model_config, project_config
 from data_agent.verifier_v2.snapshot import LARGE_SEEDS_FILE, SEED_SIZE_LIMIT
@@ -157,13 +163,17 @@ def test_model_config_resolves_down_the_directory_path(tmp_path: Path) -> None:
         "      daily:\n        materialized: incremental\n        +where: d > 1\n"
     )
     config = project_config(project)
-    daily = model_config(config, project, project / "models" / "marts" / "daily.sql")
-    other = model_config(config, project, project / "models" / "marts" / "other.sql")
-    staging = model_config(config, project, project / "models" / "stg.sql")
+    daily_sql = "SELECT 1 WHERE y > {{ var('cutoff') }} AND r = '{{ var(\"region\") }}'"
+    daily = model_config(config, project, project / "models" / "marts" / "daily.sql", daily_sql)
+    other = model_config(config, project, project / "models" / "marts" / "other.sql", "SELECT 1")
+    staging = model_config(config, project, project / "models" / "stg.sql", "SELECT 1")
     assert daily.values == {"materialized": "incremental", "where": "d > 1"}
     assert other.values == {"materialized": "table", "where": None}
     assert staging.values == {"materialized": "view", "where": None}
+    # Only the vars a model's SQL reads are its configuration (a var edit must not mark every
+    # model changed).
     assert daily.vars == {"cutoff": 2024, "region": "eu"}
+    assert other.vars == {}
     assert set(daily.lines()) == {"materialized", "where", "vars"}
 
 
@@ -234,6 +244,22 @@ def test_model_diff_keeps_several_additions_apart(tmp_path: Path) -> None:
     assert all(c["before"] is None for c in added)
 
 
+def test_model_diff_shows_a_var_change_only_on_models_that_read_it(tmp_path: Path) -> None:
+    workspace, snapshot = tmp_path / "ws", tmp_path / "snap"
+    shutil.copytree(BEFORE, workspace / "p")
+    shutil.copytree(BEFORE, snapshot / "p")
+    for root in (workspace, snapshot):
+        path = root / "p" / "models" / "marts" / "top_orders.sql"
+        path.write_text(path.read_text() + " OFFSET {{ var('skip', 0) }}")
+    (workspace / "p" / "dbt_project.yml").write_text(
+        (snapshot / "p" / "dbt_project.yml").read_text() + "vars:\n  skip: 5\n"
+    )
+    diffs = model_diff(workspace, snapshot)
+    assert [d["model"] for d in diffs] == ["top_orders"]
+    [change] = diffs[0]["changes"]
+    assert change["category"] == "config" and "skip=5" in change["after"]
+
+
 # --- compare_by_key beyond the acceptance tests ----------------------------------------------
 
 
@@ -265,6 +291,52 @@ def test_compare_by_key_lists_reference_columns_the_model_lacks(cmp_db: Path) ->
 def test_parse_task_columns_reads_models_and_their_columns() -> None:
     assert parse_task_columns("a: x, y; b: z;; c") == {"a": ["x", "y"], "b": ["z"]}
     assert parse_task_columns("") == {}
+
+
+def test_grain_facts_does_not_exempt_on_a_primary_key_inside_the_key(cmp_db: Path) -> None:
+    """The snapshot YML tests order_id unique+not_null, so it joins the key; a declaration the
+    key already covers is not a finer or different grain (spec review, ticket 45)."""
+    workspace, snapshot = cmp_db.parent / "ws", cmp_db.parent / "snap"
+    shutil.copytree(AFTER, workspace / "project")
+    shutil.copytree(BEFORE, snapshot / "project")
+    facts = grain_facts(workspace, snapshot, DuckDBGateway(cmp_db), "stg_orders", ["customer_id"])
+    assert facts["key_columns"] == ["customer_id", "order_id"]
+    assert facts["exemption"] is None
+    assert facts["null_rows"] == 1 and facts["duplicate_rows"] == 0
+
+
+def test_compare_by_key_refuses_the_model_under_a_qualified_name_or_alias(
+    cmp_db: Path, tmp_path: Path
+) -> None:
+    gateway = DuckDBGateway(cmp_db)
+    qualified = compare_by_key(gateway, "main.cmp_model", ["k"], "SELECT k, int_v FROM cmp_model")
+    assert qualified["accepted"] is False and "cmp_model" in qualified["reason"]
+    # A changed model `ltv` built under the alias customer_ltv: the alias is refused too.
+    project = tmp_path / "ws" / "p"
+    (project / "models").mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: p\n")
+    (project / "models" / "ltv.sql").write_text("{{ config(alias='customer_ltv') }} SELECT 1")
+    aliased = compare_by_key(
+        gateway,
+        "cmp_model",
+        ["k"],
+        "SELECT 1 AS k, 5 AS int_v FROM customer_ltv",
+        changed_models=["ltv"],
+        workspace=tmp_path / "ws",
+    )
+    assert aliased["accepted"] is False and "customer_ltv" in aliased["reason"]
+
+
+def test_compare_by_key_counts_keys_not_joined_rows(cmp_db: Path) -> None:
+    con = duckdb.connect(str(cmp_db))
+    try:
+        con.execute("CREATE TABLE dup_model (k INTEGER, v INTEGER)")
+        con.execute("INSERT INTO dup_model VALUES (1, 1), (1, 2), (2, 5), (3, 7), (3, 7)")
+    finally:
+        con.close()
+    sql = "SELECT * FROM (VALUES (1, 9), (1, 9), (2, 5), (4, 0)) AS r(k, v)"
+    result = compare_by_key(DuckDBGateway(cmp_db), "dup_model", ["k"], sql)
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (1, 1, 1)
 
 
 # --- MCP wrappers over stdio ------------------------------------------------------------------
