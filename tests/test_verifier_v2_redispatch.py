@@ -163,9 +163,53 @@ async def test_redispatch_lists_a_reported_model_reverted_to_the_snapshot(run: A
         ("{{ ref('pkg', 'm') }}", {"m"}),
         ("{{ ref('m', v=2) }}", {"m"}),
         ("{{ ref('m', version='2') }}", {"m"}),
-        ("{{ source('s', 'm') }} JOIN {{ preference('x') }}", set()),
+        ("{{ source('s', 'm') }} WHERE d > '{{ var(\"start\", '2020') }}'", set()),
         ("{{ ref('a') }} JOIN {{ ref('b') }}", {"a", "b"}),
+        (
+            "{{ config(materialized='incremental', unique_key=concat('a', 'b')) }}\n"
+            "SELECT * FROM {{ ref('a') }}\n"
+            "{% if is_incremental() %} WHERE t > (SELECT max(t) FROM {{ this }}) {% endif %}\n"
+            "{# a comment naming my_macro('x') #}",
+            {"a"},
+        ),
     ],
 )
 def test_referenced_models_reads_ref_calls(sql: str, refs: set[str]) -> None:
     assert referenced_models(sql) == refs
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM {{ my_ref('a') }}",
+        "SELECT * FROM {{ ref(var('upstream')) }}",
+        "{% for t in ['a', 'b'] %} SELECT * FROM {{ ref(t) }} {% endfor %}",
+        "{% set rel = upstream_relation() %} SELECT * FROM {{ rel }}",
+        "SELECT {{ dbt_utils.star(from=ref('a')) }} FROM {{ ref('a') }}",
+    ],
+)
+def test_referenced_models_is_unknown_when_jinja_calls_something_else(sql: str) -> None:
+    """A macro or a computed ref could reach any model (Codex review, round 1)."""
+    assert referenced_models(sql) is None
+
+
+async def test_redispatch_lists_a_model_whose_refs_cannot_be_read(tmp_path: Path) -> None:
+    """`via_macro` reaches `a` through a macro: when `a` changes after an all-PASS report it is
+    listed, while the plain `c` is not."""
+    workspace, snapshot = tmp_path / "ws", tmp_path / "snapshot"
+    tiny_project(snapshot / "project", {})
+    tiny_project(
+        workspace / "project",
+        {"a": "SELECT 1 AS x\n", "c": "SELECT 3\n", "via_macro": "SELECT * FROM {{ up('a') }}\n"},
+    )
+    hooks = run_hooks(
+        load_config("full"),
+        workspace=workspace,
+        snapshot=snapshot,
+        task_file=tmp_path / "task.md",
+        emit=lambda type, **fields: None,
+    )
+    await dispatch(hooks)
+    await report(hooks, a="PASS", c="PASS", via_macro="PASS")
+    edit(workspace, "a", "SELECT 2 AS x\n")
+    assert await dispatch(hooks) == ["a", "via_macro"]

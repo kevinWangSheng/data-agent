@@ -283,13 +283,27 @@ def referenced_vars(sql: str) -> set[str]:
 
 
 # `ref('m')`, `ref("m")`, `ref('package', 'm')`; a version keyword (`ref('m', v=2)`) is not a
-# second quoted argument. A ref built at render time (`ref(var('x'))`, a macro that calls ref)
-# is not seen.
+# second quoted argument.
 REF_CALL_RE = re.compile(r"""\bref\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?""")
+JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
+JINJA_BLOCK_RE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.DOTALL)
+_STRING = r"""(?:'[^']*'|"[^"]*")"""
+_ARGS = r"(?:[^()]|\([^()]*\))*"  # one level of nested parentheses
+# Calls that cannot reach another model: literal ref/source/var, config, is_incremental.
+LITERAL_CALL_RE = re.compile(
+    rf"""\b(?:ref|source|var)\s*\(\s*{_STRING}(?:\s*,\s*{_STRING})?(?:\s*,\s*\w+\s*=\s*[^()]*?)?\s*\)"""
+    rf"|\bconfig\s*\({_ARGS}\)|\bis_incremental\s*\(\s*\)"
+)
 
 
-def referenced_models(sql: str) -> set[str]:
-    """The model names a model's Jinja passes to `ref()`."""
+def referenced_models(sql: str) -> set[str] | None:
+    """The model names a model's Jinja passes to `ref()`; None when its Jinja calls anything
+    else (a macro, `ref(var('x'))`, `adapter.dispatch(...)`), which could reach a model this
+    cannot see."""
+    sql = JINJA_COMMENT_RE.sub("", sql)
+    for block in JINJA_BLOCK_RE.findall(sql):
+        if "(" in LITERAL_CALL_RE.sub("", block):
+            return None
     return {second or first for first, second in REF_CALL_RE.findall(sql)}
 
 

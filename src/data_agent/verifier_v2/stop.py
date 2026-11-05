@@ -102,7 +102,9 @@ def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path)
     names (never reported, changed since its report, FAIL in it), every model whose last report
     has a NEEDS_INFO (it does not block, but the main agent dispatches again for it), and, of
     the changed models, those that `ref()` one of these, transitively: a model's fingerprint
-    covers only its own files, so an upstream edit leaves it unchanged. Empty when none."""
+    covers only its own files, so an upstream edit leaves it unchanged. A changed model whose
+    refs cannot be read (`referenced_models` is None: a macro could hide one) is taken as
+    downstream of all of them. Empty when none."""
     files: dict[str, Path] = {}
     for project in dbt_projects(workspace):
         for name, path in model_files(project).items():
@@ -120,7 +122,9 @@ def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path)
     }
     grew = True
     while grew:
-        downstream = {model for model, used in refs.items() if used & again} - again
+        downstream = {
+            model for model, used in refs.items() if again and (used is None or used & again)
+        } - again
         again |= downstream
         grew = bool(downstream)
     return sorted(again)
