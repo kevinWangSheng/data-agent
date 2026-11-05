@@ -1,6 +1,6 @@
 # 46 — harness 钩子：派单改写、Stop 拦截、轮数记录
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 45（done）
 Spec: ../spec.md
 Claimed by: claude (fable, worktree 46-harness-hooks)
@@ -152,3 +152,8 @@ Check customer_ltv; upstream is raw.orders
 ### 2026-11-05 主会话
 
 - 退回轮已 push 到 PR #47，等 CI。服务器真实运行 `t46-real`（dbt-receivables-aging-buckets × 1，full）在 6c5ab48 上开跑。Fable 复审退回轮 diff。
+- 2026-11-05 主会话：Fable 复审退回轮 diff（7da7e94..6c5ab48）。核过没问题的：全部 CHECK 行格式（含 ` - 标题`、加粗、en/em-dash）与标题归一（`main.orders`、`orders_v2` 不串、`Model:` 标签、列表编号、别名、大小写）；删除/改名/重建的 Stop 行为；`error` 事件形状；`verifier_checks` 的 int/str 键排序。**退回**（第 2 轮，最后一轮）：
+  - 退回 A（P2）：`hooks.py:63-68,118` "报告配最早一次派单的指纹"在报告乱序到达时会漏拦：派 D1（alpha=v1）→ 改 alpha 为 v2 → 派 D2 → D2 先回报（不点名 alpha，弹出 h1）→ D1 回报 `### alpha CHECK 1: PASS`（弹出 h2，alpha 记成 v2 的哈希但验的是 v1）→ Stop 放行，v2 从没验过。与注释"只多报不漏报"矛盾；`test_hooks_pair_each_report_with_its_own_dispatch` 只测了顺序到达。修法：在飞的每份报告都取**最早**未结派单的指纹，只有在飞数归零时才清队列（只多报不漏报）；补乱序到达的测试。
+  - 顺手（P3）：队列泄漏：改写过的派单若永远没有 SubagentStop（子 agent 出错或撞上限；SDK 是否仍触发 SubagentStop 未核实），它的哈希一直留在队首，之后所有报告都配到这份旧快照，改过的模型会被规则 2 一直拦到 MAX_BLOCKS 用完。给队列加上界或按在飞数清理（与退回 A 的规则一起实现）。
+  - 顺手（P3）：`hooks.py:138-141` Stop 钩子把 `ValueError` 也接住并放行；`stop_decision` 路径设计上不抛 ValueError，抛了就是逻辑 bug，现在会静默放行。收窄到 `OSError`。
+  - 顺手（P3）：`report.py:20-23` `1. CHECK 1: PASS`（编号列表在前）仍解析不到，与标题已接受列表编号不一致。允许行首列表编号。
