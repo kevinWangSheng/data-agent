@@ -94,25 +94,45 @@ def test_model_diff_sees_new_content_of_an_unchanged_file_list(
     assert "stg_orders" in {d["model"] for d in model_diff(workspace, snapshot)}
 
 
+def settled(root: Path) -> None:
+    """Date `root` and every directory under it an hour back, as a workspace the agent has not
+    touched for a while; a directory changed within the last moments is walked every time."""
+    past = time.time_ns() - 3600 * 10**9
+    for directory in [root, *(path for path in root.rglob("*") if path.is_dir())]:
+        os.utime(directory, ns=(past, past))
+
+
+def cached_then(project: Path, root: Path) -> None:
+    """Fill the cache for `project` from settled directories, so the change that follows is
+    seen only through a directory mtime differing from the one the walk recorded."""
+    settled(root)
+    model_files(project)
+
+
 def test_model_files_follows_added_removed_and_renamed_files(tmp_path: Path) -> None:
     project = tmp_path / "p"
     (project / "models" / "sub").mkdir(parents=True)
     (project / "dbt_project.yml").write_text("name: p\n")
     (project / "models" / "a.sql").write_text("select 1")
+    cached_then(project, tmp_path)
     assert set(model_files(project)) == {"a"}
 
+    cached_then(project, tmp_path)
     (project / "models" / "sub" / "b.sql").write_text("select 2")
     assert set(model_files(project)) == {"a", "b"}
 
+    cached_then(project, tmp_path)
     (project / "models" / "sub" / "b.sql").rename(project / "models" / "sub" / "c.sql")
     assert model_files(project) == {
         "a": project / "models" / "a.sql",
         "c": project / "models" / "sub" / "c.sql",
     }
 
+    cached_then(project, tmp_path)
     (project / "models" / "a.sql").unlink()
     assert set(model_files(project)) == {"c"}
 
+    cached_then(project, tmp_path)
     (project / "models" / "deeper" / "x").mkdir(parents=True)
     (project / "models" / "deeper" / "x" / "d.sql").write_text("select 4")
     assert set(model_files(project)) == {"c", "d"}
@@ -122,30 +142,40 @@ def test_model_files_sees_a_model_directory_created_later(tmp_path: Path) -> Non
     project = tmp_path / "p"
     project.mkdir()
     (project / "dbt_project.yml").write_text("name: p\nmodel-paths: ['src/models']\n")
+    cached_then(project, tmp_path)
     assert model_files(project) == {}
     (project / "src" / "models").mkdir(parents=True)
     (project / "src" / "models" / "a.sql").write_text("select 1")
     assert set(model_files(project)) == {"a"}
 
 
-def settled(root: Path) -> None:
-    """Date `root` and every directory under it an hour back, as a workspace the agent has not
-    touched for a while; a directory changed within the last moments is walked every time."""
-    past = time.time_ns() - 3600 * 10**9
-    for directory in [root, *(path for path in root.rglob("*") if path.is_dir())]:
-        os.utime(directory, ns=(past, past))
+def test_model_files_drops_a_symlinked_model_whose_target_is_gone(tmp_path: Path) -> None:
+    """Deleting a symlink's target changes no directory the walk listed."""
+    project = tmp_path / "p"
+    (project / "models").mkdir(parents=True)
+    (project / "shared").mkdir()
+    (project / "dbt_project.yml").write_text("name: p\n")
+    (project / "models" / "a.sql").write_text("select 1")
+    (project / "shared" / "b.sql").write_text("select 2")
+    (project / "models" / "b.sql").symlink_to(project / "shared" / "b.sql")
+    cached_then(project, tmp_path)
+    assert set(model_files(project)) == {"a", "b"}
+    (project / "shared" / "b.sql").unlink()
+    assert set(model_files(project)) == {"a"}
 
 
 def test_model_files_sees_a_file_added_without_a_visible_mtime_change(tmp_path: Path) -> None:
     """A file system stamps mtimes with a coarse clock, so a file added within the same tick
     as a walk leaves its directory's mtime as the walk saw it; a directory changed that
-    recently is not trusted."""
+    recently is not trusted. (The stamp is set ahead so the test does not depend on how fast
+    it runs.)"""
     project = tmp_path / "p"
     models = project / "models"
     models.mkdir(parents=True)
     (project / "dbt_project.yml").write_text("name: p\n")
     (models / "a.sql").write_text("select 1")
-    stamp = models.stat().st_mtime_ns
+    stamp = time.time_ns() + 60 * 10**9
+    os.utime(models, ns=(stamp, stamp))
     assert set(model_files(project)) == {"a"}
     (models / "b.sql").write_text("select 2")
     os.utime(models, ns=(stamp, stamp))

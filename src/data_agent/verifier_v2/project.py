@@ -101,19 +101,28 @@ def files_under(project: Path, directory: str, suffixes: tuple[str, ...] | None)
     return _walk_files(project, directory, suffixes, None)
 
 
+@dataclass(frozen=True)
+class _Watch:
+    """What a walk saw that a later change would alter: the mtime of each directory, taken
+    before it was listed (None when missing), and for each symlinked file whether it was
+    taken; deleting or moving a symlink's target changes no directory the walk listed."""
+
+    mtimes: dict[Path, int | None]
+    links: dict[Path, bool]
+
+
 def _walk_files(
     project: Path,
     directory: str,
     suffixes: tuple[str, ...] | None,
-    mtimes: dict[Path, int | None] | None,
+    watch: _Watch | None,
 ) -> Iterator[Path]:
-    """`files_under`, recording into `mtimes` (when given) the mtime of every directory it lists,
-    taken before the listing, and of each directory from `project` down to the start, so that a
-    later change to any of them shows as a different mtime."""
+    """`files_under`, recording into `watch` (when given) every directory it lists, each
+    directory from `project` down to the start, and every symlinked file it considers."""
     base = project / directory
-    if mtimes is not None:
+    if watch is not None and base.is_relative_to(project):
         for step in (base, *base.parents):
-            mtimes[step] = _mtime(step)
+            watch.mtimes[step] = _mtime(step)
             if step == project:
                 break
     root = project.resolve()
@@ -124,19 +133,25 @@ def _walk_files(
     # seconds per walk (ticket 50).
     for current, dirnames, filenames in os.walk(base):
         dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
-        if mtimes is not None:
+        if watch is not None:
             # os.walk lists a subdirectory after yielding its parent.
             for name in dirnames:
-                mtimes[Path(current) / name] = _mtime(Path(current) / name)
+                watch.mtimes[Path(current) / name] = _mtime(Path(current) / name)
         for name in sorted(filenames):
             path = Path(current) / name
             if suffixes and path.suffix.lower() not in suffixes:
                 continue
-            if not path.is_file():
-                continue
-            if path.is_symlink() and not path.resolve().is_relative_to(root):
-                continue
-            yield path
+            link = path.is_symlink()
+            taken = _taken(path, link, root)
+            if link and watch is not None:
+                watch.links[path] = taken
+            if taken:
+                yield path
+
+
+def _taken(path: Path, link: bool, root: Path) -> bool:
+    """A file, and inside the project when it is a symlink."""
+    return path.is_file() and not (link and not path.resolve().is_relative_to(root))
 
 
 def _mtime(path: Path) -> int | None:
@@ -156,13 +171,17 @@ RACY_NS = 2 * 10**9
 @dataclass(frozen=True)
 class _ModelFiles:
     walked_at: int  # time.time_ns() before the walk
-    mtimes: dict[Path, int | None]
+    root: Path  # the project, resolved
+    watch: _Watch
     models: dict[str, Path]
 
     def current(self) -> bool:
         return all(
             _mtime(path) == mtime and (mtime is None or mtime < self.walked_at - RACY_NS)
-            for path, mtime in self.mtimes.items()
+            for path, mtime in self.watch.mtimes.items()
+        ) and all(
+            path.is_symlink() and _taken(path, True, self.root) == taken
+            for path, taken in self.watch.links.items()
         )
 
 
@@ -180,12 +199,13 @@ def model_files(project: Path, config: dict[str, Any] | None = None) -> dict[str
         cached = _model_files.get(key)
         if cached is None or not cached.current():
             walked_at = time.time_ns()
-            mtimes: dict[Path, int | None] = {}
+            watch = _Watch({}, {})
             models: dict[str, Path] = {}
             for directory in directories:
-                for path in _walk_files(project, directory, (".sql",), mtimes):
+                for path in _walk_files(project, directory, (".sql",), watch):
                     models.setdefault(path.stem, path)
-            cached = _model_files[key] = _ModelFiles(walked_at, mtimes, models)
+            cached = _ModelFiles(walked_at, project.resolve(), watch, models)
+            _model_files[key] = cached
         return dict(cached.models)
 
 
