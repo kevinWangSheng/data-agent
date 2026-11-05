@@ -2,7 +2,7 @@
 39's cache when the MCP server provides it, a fresh read otherwise) to find a model's relation.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -10,7 +10,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.db_facts import LoadCatalog, Table, find_table, load_catalog
 from data_agent.gateway import MAX_ROWS, QueryResult
-from data_agent.verifier_v2.project import dbt_projects, model_alias, model_files
+from data_agent.verifier_v2.project import dbt_projects, model_aliases
 
 
 class Queryable(Protocol):
@@ -46,25 +46,44 @@ def catalog_loader(gateway: Queryable, catalog: LoadCatalog | None) -> LoadCatal
     return load
 
 
-def find_model(catalog: LoadCatalog, workspace: Path | None, model: str) -> Table:
+def find_model(
+    catalog: LoadCatalog,
+    workspace: Path | None,
+    model: str,
+    aliases: Mapping[str, str | None] | None = None,
+) -> Table:
     """The relation a model is built as: its own name, else the alias the workspace's dbt
-    project gives it. Raises ToolError when neither is in the catalog."""
+    project gives it (from `aliases`, `workspace_aliases` of the caller, when given). Raises
+    ToolError when neither is in the catalog."""
     tables = catalog()
     try:
         return find_table(tables, model, hint="the model is not built")
     except ToolError:
-        alias = workspace_alias(workspace, model) if workspace else None
+        if aliases is not None:
+            alias = aliases.get(model)
+        else:
+            alias = workspace_alias(workspace, model) if workspace else None
         if alias is None or alias.lower() == model.lower():
             raise
         return find_table(tables, alias, hint=f"the model {model!r} is not built as {alias!r}")
 
 
+def workspace_aliases(workspace: Path, models: Sequence[str]) -> dict[str, str | None]:
+    """model -> the alias the first dbt project in `workspace` holding it gives it (None when
+    it keeps its name), for each of `models` some project holds; each project's files and YML
+    are read once, however many models are asked for."""
+    found: dict[str, str | None] = {}
+    for project in dbt_projects(workspace):
+        missing = [model for model in models if model not in found]
+        if not missing:
+            break
+        found.update(model_aliases(project, missing))
+    return found
+
+
 def workspace_alias(workspace: Path, model: str) -> str | None:
     """The alias the dbt project in `workspace` that holds `model` gives it; None without one."""
-    for project in dbt_projects(workspace):
-        if model in model_files(project):
-            return model_alias(project, model)
-    return None
+    return workspace_aliases(workspace, [model]).get(model)
 
 
 def column_named(table: Table, name: str) -> str:

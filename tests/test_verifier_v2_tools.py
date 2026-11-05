@@ -635,6 +635,65 @@ def test_compare_by_key_reports_a_reference_the_gateway_blocks(cmp_db: Path) -> 
         compare_by_key(DuckDBGateway(cmp_db), "cmp_model", ["k"], blocked)
 
 
+class RecordingGateway:
+    """A DuckDB gateway that keeps every statement it runs."""
+
+    dialect = "duckdb"
+
+    def __init__(self, path: Path) -> None:
+        self._gateway = DuckDBGateway(path)
+        self.statements: list[str] = []
+
+    def query(self, sql: str, row_limit: int = 1000) -> Any:
+        self.statements.append(sql)
+        return self._gateway.query(sql, row_limit)
+
+
+def test_compare_by_key_runs_the_reference_in_one_statement(cmp_db: Path) -> None:
+    """Ticket 50: the reference is evaluated by one statement (besides the column header, which
+    `WHERE 1 = 0` keeps from running it), under a MATERIALIZED CTE: inlined into the counting
+    and sampling statements, a reference that runs in 0.5 s alone was planned into one that
+    timed out after 150 s, once per statement."""
+    gateway = RecordingGateway(cmp_db)
+    sql = "SELECT * FROM (VALUES (1, 5), (2, 8), (4, 0)) AS ref_once_marker(k, int_v)"
+    result = compare_by_key(gateway, "cmp_model", ["k"], sql)
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (1, 1, 1)
+    running = [s for s in gateway.statements if "ref_once_marker" in s and "WHERE 1 = 0" not in s]
+    assert len(running) == 1, running
+    assert "AS MATERIALIZED" in running[0]
+
+
+def test_compare_by_key_reads_the_project_once_whatever_the_changed_models(
+    cmp_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket 50: the refusal check reads each dbt project's files once per call, not once per
+    changed model (21 changed models in a 2377-file project took 30 s per call)."""
+    from data_agent.verifier_v2 import project as project_module
+
+    project = tmp_path / "ws" / "p"
+    (project / "models").mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: p\n")
+    names = [f"m{i}" for i in range(6)]
+    for name in names:
+        (project / "models" / f"{name}.sql").write_text("SELECT 1")
+    walks: list[str] = []
+    original = project_module.files_under
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        walks.append(str(args[1]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(project_module, "files_under", counted)
+    sql = "SELECT * FROM (VALUES (1, 5)) AS r(k, int_v)"
+    gateway = DuckDBGateway(cmp_db)
+    counts = []
+    for changed in (names[:1], names):
+        walks.clear()
+        compare_by_key(gateway, "cmp_model", ["k"], sql, changed, workspace=tmp_path / "ws")
+        counts.append(len(walks))
+    assert counts[0] == counts[1], counts
+
+
 # --- Against Postgres (return 1): the join condition must be one Postgres full-joins on ----
 
 
