@@ -90,6 +90,15 @@
 >     - 47 跑初筛：5 道目标题 × 3，成功次数 ≥8/15，验证器墙钟时间中位数 ≤155 秒。
 >     - 派单改写已在本地实测可行：`updatedInput` 是整体替换，要带上全部字段。
 >
+> **编排会话进度（2026-11-04 晚更新，工单 38–47）：**
+> - `done`，已合入 main：38 `pytz`（PR #37；服务器 pos-operations full 1/1，容器装了 pytz，无报错）、39 表目录缓存（PR #39；cross-sell full 1/1，`describe_table` 中位数 8.45 s，验证工具 5–8 s，accept-2 是 14 s 和 27–85 s）、40 守卫与工作目录（PR #41，Codex P1 退回一轮后修好；daily-cohorts full 1/1，`echo $DB_TYPE` 放行、validate 38 s 通过；但 agent 仍用 `--project-dir` 改 `profiles.yml`，因为 `agent.py:130` 系统提示词和 `SKILL.md:373` 还这样教，待对齐会话定）、42 `dictionary_search` 预建字典（PR #43；初筛 `t42-screen` 11/12，无 1800 s 挂住、无 "Conflicting lock"，建字典 13–18 s 覆盖 803 张表；挂掉的 1 条是 SQL 口径问题，agent 对 `order_id` 做了 `trim()` 而评分器没有，验证者没看出，属验证层 v2 要解的第 ② 类）、43 串行诊断（PR #38；根因是 Claude Code 只并行执行带 `readOnlyHint` 的 MCP 工具，我们 11 个工具都没标；修法草稿在笔记 §4，修不修由人定，建议和 42 一起或之后）。
+> - `in-review`，**等人决定**：
+>   - 41 输出上限（PR #42，CI 绿，与 main 无冲突）。初筛 `t41-screen` 9/9 成功、"Output has been saved to" 0 次，但按字面没过两条：① "exceeds maximum allowed tokens" 2 次，都是内置 Read 读 dbt 的 `target/run_results.json`（1 MB 单行 JSON），不是 41 约束的工具；② 停止条件"scan 的 5 节本身超过 20,000 字符"在真实项目上成立，前四节占 19,930，AVAILABLE MACROS 被切进报告文件（9/9 一致）。编排会话建议接受合入并记已知限制，Read `target/*.json` 另开小工单；不同意就按字面退回。Codex 另一条 P1（`query_database` 前 50 行不受字符预算约束）按工单约定记为设计取舍，不退回。
+>   - 44 验证层 v2 验收测试（PR #40，CI 绿）。**按 plan 第 86 行必须人审后才合入。** Codex 两条 P2（seed 超 5 MB、缩进 CHECK 行的负例）都不在 Testing Decisions 里，交人定；工单 Comments 里有 6 条接口决定待确认，第 6 条（`seam_support.VERIFIER_TOOLS` 断言会在 45 拿掉 `verify_model_values` 时变红：扩 45 的 Authority 一行，或主会话改 `seam_support`）要在派 45 前定。
+> - 待派：45（等 44 合入；39 已 done）→ 46 → 47。47 的初筛 5 题 × 3。全部合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
+> - 花费：本轮服务器运行实际价约 $2.9（约 ¥21，全在闲时），开发集累计约 ¥407，止损线 ¥500。
+> - 工具提示：`~/.local/bin/da-remote` 是旧版，ablate 只取回汇总；用仓库里的 `scripts/da-remote pull`（dev 集整份取回）。覆盖安装副本被人拒过一次，直接跑 `scripts/da-remote` 即可。工单会话 source 不了模型 env 文件，真实运行由主会话做。派工输出在 `runs/dispatch/`。
+>
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
 >
 > 以下第 0–10 节是 2026-09-20 的历史记录。
