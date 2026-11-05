@@ -1,14 +1,19 @@
 """The SDK hooks of the verifier layer, one set per run (spec "派单", "Stop 钩子", "记录"):
 
 - PreToolUse on `Agent`: rewrites the verifier's dispatch (`rewrite_dispatch`), counting the
-  dispatches so the first one is the template alone.
+  dispatches so the first one is the template alone, and fingerprints the models as dispatched
+  (the main agent may keep editing while the verifier runs in the background).
 - SubagentStop: records a verifier call as `verifier_end` (its report, the parsed checks, the
   turns and tool calls from its transcript) and feeds the v2 verifier's report into the Stop
-  state.
+  state, against the dispatch-time fingerprints.
 - Stop: blocks the run while `stop_decision` names a model, at most MAX_BLOCKS times; the next
   attempt ends the run and records `ended_with_unresolved`.
 
-Pure functions do the work; the closures here only hold the run's counters and state.
+Pure functions do the work; the closures here only hold the run's counters and state. When one
+of them fails on the workspace (a file deleted mid-read), the hook records an `error` event and
+falls back to doing nothing: the SDK would otherwise turn the exception into an error response
+whose handling by the CLI is unverified. SubagentStop then leaves the state as it was, and Stop
+lets the run end rather than wedge it.
 """
 
 from pathlib import Path
@@ -21,7 +26,13 @@ from data_agent.run_config import RunConfig
 from data_agent.verifier_v2.dispatch import REWRITTEN_SUBAGENT, rewrite_dispatch
 from data_agent.verifier_v2.project import dbt_projects
 from data_agent.verifier_v2.report import parse_report, summarize_transcript
-from data_agent.verifier_v2.stop import changed_models, describe, record_report, stop_decision
+from data_agent.verifier_v2.stop import (
+    changed_models,
+    describe,
+    model_hashes,
+    record_report,
+    stop_decision,
+)
 from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES, Emit
 
 MAX_BLOCKS = 2
@@ -48,11 +59,17 @@ def run_hooks(
     dispatches = 0
     blocks = 0
     state: dict[str, Any] = {}
+    # The model fingerprints when the verifier was last dispatched; None before the first
+    # dispatch (or when hashing failed), which `record_report` reads as "hash now".
+    dispatched_hashes: dict[str, str] | None = None
+
+    def failed(hook: str, exc: Exception) -> None:
+        emit("error", source="verifier_v2", hook=hook, error=f"{exc!r}")
 
     async def dispatch(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
-        nonlocal dispatches
+        nonlocal dispatches, dispatched_hashes
         fields: dict[str, Any] = dict(hook_input)
         projects = dbt_projects(workspace)
         output = rewrite_dispatch(
@@ -65,6 +82,11 @@ def run_hooks(
         )
         if output:
             dispatches += 1
+            try:
+                dispatched_hashes = model_hashes(workspace)
+            except (OSError, ValueError) as exc:
+                failed("PreToolUse", exc)
+                dispatched_hashes = None
         return output  # type: ignore[return-value]
 
     async def subagent_stop(
@@ -82,12 +104,16 @@ def run_hooks(
         except (OSError, ValueError):
             summary = {"turns": None, "tool_calls": None}
         hit_max_turns = (summary["turns"] or 0) >= VERIFIER_MAX_TURNS
-        parsed = parse_report(report, hit_max_turns=hit_max_turns)
         # Only the v2 verifier's reports count as verification; the value verifier's (until
         # ticket 47 removes it) are recorded but satisfy no Stop rule. A call at the turn cap is
         # NEEDS_INFO as a whole (`overall`); the check lines it did write stand.
-        if fields["agent_type"] == REWRITTEN_SUBAGENT:
-            state = record_report(state, report, workspace)
+        try:
+            if fields["agent_type"] == REWRITTEN_SUBAGENT:
+                state = record_report(state, report, workspace, hashes=dispatched_hashes)
+            parsed = parse_report(report, hit_max_turns=hit_max_turns, workspace=workspace)
+        except (OSError, ValueError) as exc:
+            failed("SubagentStop", exc)
+            parsed = parse_report(report, hit_max_turns=hit_max_turns)
         emit(
             "verifier_end",
             verifier=fields["agent_type"],
@@ -105,7 +131,11 @@ def run_hooks(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
         nonlocal blocks
-        decision = stop_decision(state, workspace, snapshot)
+        try:
+            decision = stop_decision(state, workspace, snapshot)
+        except (OSError, ValueError) as exc:
+            failed("Stop", exc)
+            return {}
         if not decision["block"]:
             return {}
         reason = describe(decision["reasons"])

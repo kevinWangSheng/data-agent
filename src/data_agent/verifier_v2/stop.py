@@ -39,13 +39,21 @@ def model_hashes(workspace: Path) -> dict[str, str]:
     return hashes
 
 
-def record_report(state: Mapping[str, Any], report: str, workspace: Path) -> dict[str, Any]:
-    """`state` with the models the report names set to their statuses and current fingerprint;
-    the other models keep what they had. A section whose heading is no model in the workspace
-    (the report's `### Summary`, a model since deleted) records nothing."""
-    hashes = model_hashes(workspace)
-    updated = dict(state)
-    for model, checks in parse_report(report)["models"].items():
+def record_report(
+    state: Mapping[str, Any],
+    report: str,
+    workspace: Path,
+    hashes: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """`state` with the models the report names set to their statuses and fingerprint: `hashes`
+    as taken when the verifier was dispatched (what its report describes), else the current
+    ones. The other models keep what they had; a model no longer in the workspace is dropped.
+    A section whose heading is no model in the workspace (the report's `### Summary`) records
+    nothing."""
+    if hashes is None:
+        hashes = model_hashes(workspace)
+    updated = {model: record for model, record in state.items() if model in hashes}
+    for model, checks in parse_report(report, workspace=workspace)["models"].items():
         if model in hashes:
             updated[model] = {"checks": dict(checks), "sha256": hashes[model]}
     return updated
@@ -54,15 +62,16 @@ def record_report(state: Mapping[str, Any], report: str, workspace: Path) -> dic
 def stop_decision(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> dict[str, Any]:
     """`{"block", "reasons": [{"model", "rule", "detail"}]}`: rule 1 for a new or changed model
     no report named; rules 2 and 3 for a reported model whose file changed since, or whose
-    last report holds a FAIL. NEEDS_INFO never blocks."""
+    last report holds a FAIL. NEEDS_INFO never blocks; nor does a reported model deleted since
+    (model_diff reports it removed, for the verifier to see)."""
     changed = set(changed_models(workspace, snapshot))
     hashes = model_hashes(workspace)
     reasons: list[dict[str, Any]] = []
     for model in sorted(changed - set(state)):
         reasons.append({"model": model, "rule": 1, "detail": RULES[1]})
-    for model in sorted(state):
+    for model in sorted(set(state) & set(hashes)):
         record = state[model]
-        if hashes.get(model) != record["sha256"]:
+        if hashes[model] != record["sha256"]:
             reasons.append({"model": model, "rule": 2, "detail": RULES[2]})
         failed = sorted(n for n, status in record["checks"].items() if status == "FAIL")
         if failed:

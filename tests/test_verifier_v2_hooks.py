@@ -1,6 +1,7 @@
 """Verifier v2 hooks (ticket 46), beyond the acceptance seams: the report parser's line-start
-rule, the SubagentStop hook's turn cap and transcript failure, the dispatch counter, and the
-Stop rules for models that were removed or deleted."""
+rule and heading normalization, the SubagentStop hook's turn cap and transcript failure, the
+dispatch counter and dispatch-time fingerprints, the Stop rules for models that were removed or
+deleted, and what the hooks do when their own file reads fail."""
 
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from data_agent.run_config import load_config
 from data_agent.verifier_v2 import parse_report, record_report, run_hooks, stop_decision
 from data_agent.verifier_v2.dispatch import UNVERIFIED_HEADING
 from data_agent.verifier_v2.hooks import VERIFIER_MAX_TURNS
+from data_agent.verifier_v2.stop import model_hashes
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "verifier_v2"
 TRANSCRIPT = FIXTURES / "verifier_transcript.jsonl"
@@ -42,10 +44,29 @@ def test_parse_report_reads_checks_only_at_line_start_under_a_heading() -> None:
         ("### **orders**", "* CHECK 2: FAIL — a star bullet"),
         ("### `orders` (changed)", "**CHECK 2:** FAIL — bold closed after the colon"),
         ("### main.orders", "CHECK 2: FAIL — schema-qualified"),
+        ("### orders", "- CHECK 2 - Aggregate Cross-Validation: FAIL - the prompt's own title"),
+        ("### orders", "**CHECK 2 - Aggregate Cross-Validation: FAIL**"),
+        ("### orders", "CHECK 2 — Grain: FAIL — an em-dash before the title"),
+        ("### Model: orders", "CHECK 2: FAIL — a labelled heading"),
+        ("### 1. orders", "CHECK 2: FAIL — a numbered heading"),
+        ("### Model `orders`", "CHECK 2: FAIL — a label without a colon"),
     ],
 )
 def test_parse_report_normalizes_headings_and_allows_bold(heading: str, line: str) -> None:
     assert parse_report(f"{heading}\n{line}\n")["models"] == {"orders": {2: "FAIL"}}
+
+
+def test_parse_report_resolves_aliases_and_case_against_the_workspace(tmp_path: Path) -> None:
+    """With a workspace, a heading is resolved as the tools resolve a verifier's name: an alias
+    the model is built under, or a differently cased name, maps to the model file's stem."""
+    tiny_project(
+        tmp_path / "project", alpha="{{ config(alias='alpha_v2') }}\nSELECT 1\n", same="SELECT 9\n"
+    )
+    report = "### alpha_v2\nCHECK 1: PASS — ok\n### SAME\nCHECK 1: FAIL — bad\n"
+    assert parse_report(report, workspace=tmp_path)["models"] == {
+        "alpha": {1: "PASS"},
+        "same": {1: "FAIL"},
+    }
 
 
 def test_parse_report_overall_needs_info_when_any_check_does() -> None:
@@ -103,10 +124,25 @@ def test_stop_fingerprint_ignores_vars_order(edited: tuple[Path, Path]) -> None:
     assert stop_decision(state, workspace, snapshot)["block"] is False
 
 
-def test_stop_blocks_a_reported_model_deleted_since(edited: tuple[Path, Path]) -> None:
+def test_stop_forgets_a_reported_model_deleted_since(edited: tuple[Path, Path]) -> None:
+    """A model deleted after its report leaves the Stop state instead of blocking on rule 2 (a
+    temporary model the agent built, had verified, then removed): nothing could clear it, as
+    a report names only models in the workspace. model_diff still reports it removed."""
     workspace, snapshot = edited
     state = record_report({}, "### alpha\nCHECK 1: PASS — ok\n", workspace)
     (workspace / "project" / "models" / "alpha.sql").unlink()
+    assert stop_decision(state, workspace, snapshot) == {"block": False, "reasons": []}
+    state = record_report(state, "### same\nCHECK 1: PASS — ok\n", workspace)
+    assert set(state) == {"same"}
+
+
+def test_record_report_fingerprints_from_the_dispatch(edited: tuple[Path, Path]) -> None:
+    """The hooks hash the models when the verifier is dispatched; a report then describes
+    those files, so an edit made while the verifier ran counts as a change after the report."""
+    workspace, snapshot = edited
+    at_dispatch = model_hashes(workspace)
+    (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
+    state = record_report({}, "### alpha\nCHECK 1: PASS — ok\n", workspace, hashes=at_dispatch)
     decision = stop_decision(state, workspace, snapshot)
     assert [(r["model"], r["rule"]) for r in decision["reasons"]] == [("alpha", 2)]
 
@@ -234,3 +270,52 @@ async def test_dispatch_hook_counts_only_verifier_dispatches(edited: tuple[Path,
     assert "gone" not in first["prompt"] and "same" not in first["prompt"]
     second = (await call(hooks, "PreToolUse", **verifier))["hookSpecificOutput"]["updatedInput"]
     assert UNVERIFIED_HEADING in second["prompt"] and second["prompt"].endswith("mine\n")
+
+
+async def test_hooks_fingerprint_models_at_dispatch_time(edited: tuple[Path, Path]) -> None:
+    """The main agent dispatches the verifier in the background and keeps editing: the report
+    covers the files as dispatched, so the edit blocks the run (rule 2)."""
+    workspace, _ = edited
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
+    verifier = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "go"}}
+    await call(hooks, "PreToolUse", **verifier)
+    (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
+    report = "### alpha\nCHECK 1: PASS — ok\n"
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, report))
+    blocked = await call(hooks, "Stop", stop_hook_active=False)
+    assert blocked["decision"] == "block" and "alpha: rule 2" in blocked["reason"]
+
+
+def broken(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    raise OSError("models/alpha.sql vanished mid-read")
+
+
+async def test_stop_hook_lets_the_run_end_when_the_decision_fails(
+    edited: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook that raises becomes an SDK error whose handling by the CLI is unverified; the Stop
+    hook records the failure as an `error` event and does not block."""
+    monkeypatch.setattr("data_agent.verifier_v2.hooks.stop_decision", broken)
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
+    assert await call(hooks, "Stop", stop_hook_active=False) == {}
+    [error] = events
+    assert error["type"] == "error" and error["source"] == "verifier_v2"
+    assert error["hook"] == "Stop" and "vanished" in error["error"]
+
+
+async def test_subagent_stop_keeps_its_state_when_recording_fails(
+    edited: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("data_agent.verifier_v2.hooks.record_report", broken)
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
+    report = "### alpha\nCHECK 1: PASS — ok\n"
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, report))
+    assert [e["type"] for e in events] == ["error", "verifier_end"]
+    assert events[0]["hook"] == "SubagentStop" and "vanished" in events[0]["error"]
+    assert events[1]["checks"] == {"alpha": {1: "PASS"}}
+    # The state did not change: alpha is still unverified (rule 1).
+    blocked = await call(hooks, "Stop", stop_hook_active=False)
+    assert blocked["decision"] == "block" and "alpha: rule 1" in blocked["reason"]
