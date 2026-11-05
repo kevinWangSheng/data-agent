@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: in-progress
+Status: in-review
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -65,11 +65,10 @@ Branch: worktree-47-verifier-prompt-skill-config
 Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、分支名。
 
 ## Ledger
-
-- Attempts: 3
-- Review rounds: 3（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；退回第 2 轮 eng:code-review，0126941；Codex 4 次 at capacity）
+- Attempts: 4
+- Review rounds: 4（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；退回第 2 轮 eng:code-review，0126941；退回第 3 轮 eng:code-review，497bbca；Codex 5 次 at capacity）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: in-review，两轮退回已修完，branch `worktree-47-verifier-prompt-skill-config`（ad09e0a … cc65d28、626d226、0126941），PR #48；初筛过线判定需在 0126941 上重跑
+- Outcome: in-review，退回第 3 轮已修完，branch `worktree-47-verifier-prompt-skill-config`（… 0126941、aff77e2 merge、0ae5934、497bbca），PR #48；过线初筛由主会话在 51、52 和本轮合入后在新 main 上跑
 - Human review minutes: —
 
 ## Comments
@@ -163,3 +162,51 @@ hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
 - 测试：`tests/test_dbt_skills.py` 断言第 8 步不再含"whether or not the verifier ran"，有验证器时 STOP 条件不提主 agent 自查；无验证者回退仍有键级检查；VERIFIERS_PROMPT 的三种情况都在。先红后绿。
 - Authority 不变（第 8 步、`verifiers.py`、`tests/`）。
 - 合入前的过线初筛（5 题 × 3）由主会话在 51、52 和本轮修复合入后，在新 main 上跑；过线标准不变。
+
+### 2026-11-05 工单会话（退回第 3 轮修复，commits 0ae5934、497bbca）
+
+先 `git merge origin/main`（aff77e2，无冲突），再 TDD。只动 `skills/dbt-workflow/SKILL.md`（第 8 步和文件头说明里第 8 步那两句）、`src/data_agent/verifiers.py`（VERIFIERS_PROMPT）、`tests/test_dbt_skills.py`、`tests/test_verifiers.py`。
+
+**改动**
+- 第 8 步 2.：把"Then, whether or not the verifier ran, run the key-level check yourself"改成"Then, still without the verifier, run the key-level check yourself"，放进"If that agent is not offered"的回退分支，后面的原文一字不改（`compare_by_key` 或抽 3-5 个键）。
+- 第 8 步 3.：删掉"unless your key-level check shows a difference there"。
+- 第 8 步 4.：改成"With the verifier, STOP when the latest report shows every check PASS or N/A …; that report is the final authority …"，另起一句"Without the verifier, STOP when your own checks in step 2 all match"。"and your key-level check matches"和"The verifier and your key-level check are the final authority"已删。
+- 三种情况只写在 VERIFIERS_PROMPT，放在"Its report gives…"之前，第 8 步没有重复：
+
+  > Call `compare_by_key` or `grain_facts` yourself only in three cases: when no verifier is offered; to reproduce one FAIL (as the one read-only query below, on that one model); and for a grain NEEDS_INFO as below. Not as a routine self-check before or after a dispatch: the verifier already does it.
+
+  粒度类 NEEDS_INFO 那句沿用 0126941 的写法。
+- 文件头说明里第 8 步那两句：主 agent 自己的键级核对只在没有验证者时做，也只在那时决定 STOP。
+- 测试：
+  - 新增 `test_workflow_step_8_has_no_routine_self_check_beside_the_verifier`，断言第 8 步不含"whether or not the verifier"；键级核对只在无验证者回退里；有验证者时 STOP 一段不提 key-level 或 your own，而且含 final authority。
+  - 新增 `test_system_prompt_limits_the_main_agents_own_compare_and_grain_calls`，断言三种情况都在。
+  - `test_workflow_checks_values_per_key…` 改成只对无验证者回退做断言。
+  - 两个新测试先红后绿。
+
+**第 3 步真实行为**（不调模型；`uv run python -I /tmp/t47-r3-real.py` 对各配置跑 build options，看拼出的系统提示词）：
+```
+full            agents=['verifier'] three_cases=True whether_or_not=False fallback_key_check=True
+no-skill        agents=['verifier'] three_cases=True whether_or_not=False fallback_key_check=False
+full-old-skill  agents=['verifier'] three_cases=True whether_or_not=False fallback_key_check=False
+baseline        agents=[] three_cases=False whether_or_not=False fallback_key_check=False
+no-verifiers    agents=[] three_cases=False whether_or_not=False fallback_key_check=True
+```
+baseline 和 no-verifiers 照旧：no-verifiers 仍带 Skill 的无验证者回退，包括键级核对。
+
+**检查**：`make check` 两次通过：0ae5934 上 1703 passed、1 skipped（701 s）；497bbca 上 1703 passed、1 skipped（459 s）。`uv run pytest tests/acceptance -q -k verifier` 48 passed。
+
+**审查**
+- `da-review main`：第 5 次 at capacity，跳过。
+- eng:code-review（Standards、Spec，只看 aff77e2..HEAD），已在 497bbca 修：
+  - 新测试插进了 `test_system_prompt_holds_the_fail_rules_once` 中间，带走了它最后两条断言（两个审查都报了），已移回原测试。
+  - STOP 第一句没写"有验证器"这个前提，同一个意思还说了两遍，已改成先写有验证器、再写没有验证器的情况，并加正向断言 final authority。
+  - 三种情况那段原来放在"Do not change models after that"之后，读起来像停下以后的步骤，已移到报告规则之前。
+  - "reproduce one FAIL (one call)"和 FAIL 规则的"one read-only query"像两份额度，已改成"as the one read-only query below"。
+  - 测试名已改，不再用"v2 checks"。
+- 不修：
+  - "when no verifier is offered"在 VERIFIERS_PROMPT 里实际碰不到（只在验证层开启时拼接），也和第 8 步回退的意思重复。退回第 3 轮的要求点名三种情况都要在 VERIFIERS_PROMPT 里，所以保留。
+  - 三种情况只限 `compare_by_key`、`grain_facts`，没限 `query_database` 自查。这是按退回要求写的，扩大范围要另定。
+  - 无验证者回退里"as in step 3"指向一个默认有报告的步骤，本轮之前就这样；3. 里"先改 technical_spec.md 再改 SQL"那句仍适用。
+  - 三种情况的断言放在 `tests/test_verifiers.py`，没放 `test_dbt_skills.py`：VERIFIERS_PROMPT 的测试本来都在这个文件。
+  - `no_verifier_fallback` 按 " 3. " 切分不够稳，属轻微问题。
+  - 文件头说明超宽，属外观问题。
