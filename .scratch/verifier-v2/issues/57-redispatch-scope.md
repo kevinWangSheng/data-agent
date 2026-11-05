@@ -1,10 +1,10 @@
 # 57 — 重派只列需要重验的模型，compare_by_key 不再每次重算 model_diff
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (claude-opus-5-5), 2026-11-05
+Branch: worktree-57-redispatch-scope
 
 ## Goal
 
@@ -58,10 +58,39 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2（da-review，34b4173；eng:code-review，0152faf）
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Outcome: done（PR #55 → 40d77ad）；重派范围已实现，compare_by_key 不改（非首次调用 model_diff 占 26–28% < 30%）；branch `worktree-57-redispatch-scope`（475889f、34b4173、0152faf）
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（worktree 57-redispatch-scope，commits 475889f、34b4173、0152faf）
+
+`-w` 会话写不了主 checkout，认领字段由主会话补填。
+
+- 实现（`verifier_v2/{stop,project,hooks,dispatch}.py`，新增 `tests/test_verifier_v2_redispatch.py`）：
+  - `stop.redispatch_models`：从 `stop_decision` 点名的模型（规则 1/2/3）出发，加上次 checks 有 NEEDS_INFO 的，再加这些模型按 `ref()` 传递的、在已改模型里的下游。下游按整个工作区的 `ref()` 走（`downstream_of`），只保留已改模型，所以 A（改）→ C（未改）→ B（改）仍会列出 B。
+  - 钩子从第二次派单起调用它；集合为空或读文件出错时退回全量 `changed_models`。
+  - 模板：再次派单的模型行改为 "Models to verify in this dispatch"（原 "Models model_diff lists as new or changed" 对子集不准，也是工单 47 交来的那条）；第一次派单不变。
+  - `project.referenced_models` 解析 `ref('m')`、`ref("m")`、`ref('pkg','m')`、`ref('m', v=2)`；模型 Jinja 里调了字面 ref/source/var、`config`、`is_incremental` 以外的东西就返回 None，None 视作所有重验模型的下游（可能多列，不会漏）。所以没触发"ref 抓不到"的停止条件。
+  - Stop 三条规则、`stop_decision`、`tests/acceptance/`、既有 `test_stop_*` 都没动。
+- 验收测试：第一次派单全列 `test_first_dispatch_lists_every_changed_model`；重派每类一个（没报告过、文件改过及其下游 [a, b, d]、FAIL 及下游、NEEDS_INFO、改回快照、宏藏 ref、穿过未改模型）；空集合退回全量 `test_redispatch_with_nothing_to_verify_again_lists_every_changed_model`。穿过未改模型那条在第 1 轮的 `stop.py` 上失败，现在通过。
+- 钩子模拟（`uv run python runs/t57/simulate.py`，不调模型；报告 1 除 `dim_staff` FAIL 外全 PASS，然后改 `stg_orders`）：
+  ```
+  dispatch 1: Models model_diff lists as new or changed: dim_staff, dim_store, fct_payment_analysis, rpt_payments, stg_orders
+  Stop: block — dim_staff: rule 3 ...
+  dispatch 2: Models to verify in this dispatch: dim_staff, fct_payment_analysis, rpt_payments, stg_orders
+              ## 主 agent 提供的反证或补充信息（未经核实，只能当作需要复查的线索）
+              Only stg_orders changed; dim_staff fixed.
+  ```
+- 真实 pos-operations 工作区（2377 个模型文件，21 个已改；`runs/t57/pos_refs.py`）：全 PASS 之后一个模型 FAIL，重派列出 21 个里的 3–5 个，每次约 0.6–0.7 s。21 个里有 1 个 ref 未知（`int_pos__order_timing` 调了列宏 `safe_ts('col')`），它和两个下游（`fct_order_fulfillment`、`fct_pos_orders`）每次重派都在列表里。
+- compare_by_key 耗时拆分（`runs/t57/prof57.py`、`prof57b.py`，同一工作区、工单 50 的参考 SQL）：进程内第一次调用 model_diff 0.6–1.1 s、比较 0.5–0.8 s，model_diff 占 54–68%；之后的调用（15 次取中位数，三轮）model_diff 0.20 s、比较 0.54–0.57 s，占 28% / 26% / 27%（早期单次热样本 41%、37%、22%，噪声较大）。单次 profile：model_diff 0.46 s（`model_config` ×2377 约 0.24 s，sqlglot 解析 21 个模型约 0.11 s），查询 0.89 s（3 次 `duckdb.connect` 0.36 s、execute 0.43 s），`_forbidden` 0.25 s。**结论：不加缓存**：MCP server 整个 run 只起一次（`cli.py:97`），除第一次外都是后续调用，占比 < 30%。服务器上单次 p50 10.5 s 的拆分可能和本地不同，未测。
+- `make check`：全过，basedpyright 0 errors，1832 passed、1 skipped、1 xfailed（`runs/t57/check3.txt`）。
+- 审查：第 1 轮 `da-review main`（Codex）P1：宏或 `ref(var(...))` 里的 ref 漏抓，下游可能不被重验 → 34b4173 用 None 回退修。第 2 轮 eng:code-review 已修（0152faf）：下游遍历在中间的未改模型处中断（Spec）；模板标签对子集不准（Spec）；遍历拆成 `downstream_of`、测试共用一个钩子构造器（Standards）。不修：验证器/子 agent 判断在 `hooks.py` 和 `rewrite_dispatch` 各有一份（`rewrite_dispatch` 对其他工具返回 `{}` 是验收测试约定的契约，钩子那份避免每次 Agent 调用都读文件）；项目模型遍历又出现一次（抽公共函数要改 Authority 外的模块）；`project.py` 变大（拆分超出本工单）；被轮数上限截断的报告保留已写的 checks，已写 checks 全 PASS 的模型不再列出（与 `stop_decision` 和验收措辞一致）；宏回退会多列（数字见上；后续可读宏定义，把不调 `ref` 的宏如 `safe_ts` 视作已知）。第 2 轮修复后还没有模型审查过，PR 上的 Codex 审查是第一次。
+
+### 2026-11-05 主会话（合入）
+
+- PR #55：CI 绿（两次 check 都 pass）；Codex GitHub app 审查 0152faf，"has_any_findings": false。squash 合入 main → 40d77ad。
+- compare_by_key 不加缓存的判断按"除第一次外的调用"算（26–28% < 30%）；按第一次调用算是 54–68%，服务器上的拆分没测。记为已知限制，交人看。

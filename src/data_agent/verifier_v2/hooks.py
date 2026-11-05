@@ -2,7 +2,9 @@
 
 - PreToolUse on `Agent`: rewrites the verifier's dispatch (`rewrite_dispatch`), counting the
   dispatches so the first one is the template alone, and fingerprints the models as dispatched
-  (the main agent may keep editing while the verifier runs in the background).
+  (the main agent may keep editing while the verifier runs in the background). The first
+  dispatch lists every changed model; a later one only those to verify again
+  (`redispatch_models`), or every changed model when there are none.
 - SubagentStop: records a verifier call as `verifier_end` (its report, the parsed checks, the
   turns and tool calls from its transcript) and feeds the v2 verifier's report into the Stop
   state, against the dispatch-time fingerprints.
@@ -39,6 +41,7 @@ from data_agent.verifier_v2.stop import (
     describe,
     model_hashes,
     record_checks,
+    redispatch_models,
     stop_decision,
 )
 from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES, Emit
@@ -98,6 +101,17 @@ def run_hooks(
     def failed(hook: str, exc: Exception) -> None:
         emit("error", source="verifier_v2", hook=hook, error=f"{exc!r}")
 
+    def dispatch_models() -> list[str]:
+        """Every changed model for the first dispatch; after it, the ones to verify again
+        (ticket 57), or every changed model again when there are none or they cannot be read."""
+        if dispatches > 0:
+            try:
+                if again := redispatch_models(state, workspace, snapshot):
+                    return again
+            except (OSError, ValueError) as exc:
+                failed("PreToolUse", exc)
+        return changed_models(workspace, snapshot)
+
     async def dispatch(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
@@ -111,13 +125,17 @@ def run_hooks(
             )
             if denied:
                 return denied  # type: ignore[return-value]
+        tool_name = str(fields.get("tool_name") or "")
+        tool_input = dict(fields.get("tool_input") or {})
+        if tool_name != AGENT_TOOL or tool_input.get("subagent_type") != REWRITTEN_SUBAGENT:
+            return {}
         projects = dbt_projects(workspace)
         output = rewrite_dispatch(
-            str(fields.get("tool_name") or ""),
-            dict(fields.get("tool_input") or {}),
+            tool_name,
+            tool_input,
             task_file=task_file,
             project_dir=projects[0] if projects else workspace,
-            models=changed_models(workspace, snapshot),
+            models=dispatch_models(),
             dispatches_so_far=dispatches,
         )
         if output:

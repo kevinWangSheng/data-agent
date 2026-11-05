@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -65,10 +65,10 @@ Branch: worktree-47-verifier-prompt-skill-config
 Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、分支名。
 
 ## Ledger
-- Attempts: 4
-- Review rounds: 4（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；退回第 2 轮 eng:code-review，0126941；退回第 3 轮 eng:code-review，497bbca；Codex 5 次 at capacity）
+- Attempts: 5
+- Review rounds: 5（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；退回第 2 轮 eng:code-review，0126941；退回第 3 轮 eng:code-review，497bbca；退回第 4 轮 da-review + eng:code-review，adb7001；Codex 前 5 次 at capacity）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: in-review，退回第 3 轮已修完，branch `worktree-47-verifier-prompt-skill-config`（… 0126941、aff77e2 merge、0ae5934、497bbca），PR #48；过线初筛由主会话在 51、52 和本轮合入后在新 main 上跑
+- Outcome: in-review，退回第 4 轮已修完，branch `worktree-47-verifier-prompt-skill-config`（… 9d6762d merge、18a6435、2b0c611、adb7001），PR #48；过线初筛由主会话在工单 57 合入、本分支再合并 main 之后跑
 - Human review minutes: —
 
 ## Comments
@@ -243,3 +243,17 @@ baseline 和 no-verifiers 照旧：no-verifiers 仍带 Skill 的无验证者回�
 - 测试：`tests/test_verifiers.py` 断言验证器的工具里没有 Glob/Grep；提示词不含 "check your query runs"；含"不查询改动模型"和"只验派单列出的模型"的说法；报告规则里写着样例只在 FAIL 时给。先红后绿。验收测试不动。
 - Authority 不变（`src/data_agent/agents/`、`verifiers.py`、`tests/`）。
 - 过线初筛（5 题 × 3）由主会话在工单 57 合入、本分支合并 main 之后跑，过线标准不变。另外按类别报告探查次数（干跑、看模型输出、查目录、源表探针），以及每次调用的轮数 p50/p90，和 t47-screen2 对比。
+
+### 2026-11-05 工单会话（退回第 4 轮修复，commits 9d6762d merge、18a6435、2b0c611、adb7001）
+
+- 合并 main（9d6762d）：无文本冲突；语义冲突一处：工单 54 的 `tests/test_trial_deadline.py:80` 仍参数化已删的 `value-verifier`，合并后 `make check` 1 failed（KeyError）；18a6435 改成 `VERIFIER_NAMES`，8 passed。合并时 main 还没有工单 57。
+- 改动（只动 `agents/verifier.md`、`verifiers.py`、`tests/test_verifiers.py`）：
+  - 第 4 步：删 "and check your query runs"，参考 SQL 直接交 `compare_by_key`（"do not run it with `query_database` first"）；不许查询本次改动的模型或其输出（no `SELECT * ... LIMIT`）；列名只从 contract_check 输出、题面列清单、`list_tables(name_contains=…)` 取，"not from `information_schema` or any other catalog"；`query_database` 只用于题面规则需要的源表事实，不设数字上限。
+  - 工具：验证器 `READ_TOOLS = ("Read",)`，去掉 Glob、Grep；主 agent 仍有 Glob、Grep（测试断言）。Rules 改成 "Read the task file. Query the database only as the steps allow."
+  - 报告：CHECK 行只写状态和工具计数（CHECK 5、6 写有问题的那项改动）；样例只在 FAIL 时给，每项最多 3 条；Summary 每个状态一行；模板 CHECK 7 改为 "up to 3 examples if FAIL"。格式与解析不变。
+  - Task 一节："Verify only the models the dispatch message lists"；`model_diff` 列出的其他模型 "outside this dispatch: do not verify or report them"；第 3 步只判派单模型的改动。
+  - 测试：4 个新测试先红（Glob/Grep 仍在、措辞缺失）后绿；验收测试未动。
+- 真实行为（不调模型，`uv run python -I runs/t47r4/real.py`）：full / no-skill / no-context / full-old-skill 都是 `agents=['verifier'] verifier_local_tools=['Read'] main_glob_grep=True`，提示词无 'check your query runs'、无 'first examples'，含 'Verify only the models the dispatch message lists'、'Do not query the models this run created or changed'、'Give examples only for a FAIL'；baseline / no-verifiers `agents=[] main_glob_grep=True`。
+- 检查：2b0c611、adb7001 上 `make check` 各一次，ruff/format/basedpyright 干净，1816 passed、1 skipped；`uv run pytest tests/acceptance -q -k verifier` 48 passed。
+- 审查：`da-review main`（Codex 可用）"No actionable correctness defects"。eng:code-review（Standards、Spec，9d6762d..HEAD）无硬性违规、无漏项；已修（adb7001）："status and the key counts" 与 CHECK 5/6 无计数矛盾 → 改为 "the tool's counts (for CHECK 5 and 6, the change at issue)"；`contract_check` 不会列出别的模型 → 从 Task 一节删掉；"keep their earlier report" 前提不一定成立 → 改为 "outside this dispatch"；第 3 步加 "of the dispatched models"；"check your query runs" 断言改查整个提示词。不修：第 4 步"不读模型"与"不查询模型"是两条规则、各有测试；`section()`/`step()` 测试小重复可接受；按短语断言是原有写法；`READ_TOOLS` 单元素仍保留为具名常量。
+- 交主会话：`verifier_v2/dispatch.py:21` 的模板标签 "Models model_diff lists as new or changed" 在工单 57 只派部分模型后不准确；不在本工单 Authority 内，交工单 57。

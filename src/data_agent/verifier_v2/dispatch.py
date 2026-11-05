@@ -18,8 +18,12 @@ Verify the dbt models this run created or changed, following your instructions.
 
 Task file (read it first, with Read): `{task_file}`
 dbt project directory: `{project_dir}`
-Models model_diff lists as new or changed: {models}
+{models_label}: {models}
 """
+FIRST_MODELS_LABEL = "Models model_diff lists as new or changed"
+# A later dispatch lists only the models to verify again (ticket 57), so it says nothing about
+# which models changed.
+AGAIN_MODELS_LABEL = "Models to verify in this dispatch"
 
 
 def rewrite_dispatch(
@@ -37,7 +41,10 @@ def rewrite_dispatch(
     if tool_name != AGENT_TOOL or tool_input.get("subagent_type") != REWRITTEN_SUBAGENT:
         return {}
     prompt = TEMPLATE.format(
-        task_file=task_file, project_dir=project_dir, models=", ".join(models) or "(none)"
+        task_file=task_file,
+        project_dir=project_dir,
+        models_label=AGAIN_MODELS_LABEL if dispatches_so_far > 0 else FIRST_MODELS_LABEL,
+        models=", ".join(models) or "(none)",
     )
     if dispatches_so_far > 0:
         original = str(tool_input.get("prompt") or "").strip()

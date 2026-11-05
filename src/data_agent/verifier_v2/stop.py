@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from data_agent.verifier_v2.model_diff import model_diff
-from data_agent.verifier_v2.project import dbt_projects, model_config, model_files, project_config
+from data_agent.verifier_v2.project import (
+    dbt_projects,
+    model_config,
+    model_files,
+    project_config,
+    read_text,
+    referenced_models,
+)
 from data_agent.verifier_v2.report import parse_report
 
 RULES = {
@@ -88,6 +95,46 @@ def stop_decision(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> 
             checks = ", ".join(f"CHECK {n}" for n in failed)
             reasons.append({"model": model, "rule": 3, "detail": f"{RULES[3]} ({checks})"})
     return {"block": bool(reasons), "reasons": reasons}
+
+
+def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> list[str]:
+    """The models a verifier dispatch after the first lists, sorted: every model `stop_decision`
+    names (never reported, changed since its report, FAIL in it), every model whose last report
+    has a NEEDS_INFO (it does not block, but the main agent dispatches again for it), and the
+    changed models downstream of one of these (`downstream_of`): a model's fingerprint covers
+    only its own files, so an upstream edit leaves it unchanged. Empty when none."""
+    files: dict[str, Path] = {}
+    for project in dbt_projects(workspace):
+        for name, path in model_files(project).items():
+            files.setdefault(name, path)
+    again = {reason["model"] for reason in stop_decision(state, workspace, snapshot)["reasons"]}
+    again |= {
+        model
+        for model, record in state.items()
+        if model in files and "NEEDS_INFO" in record["checks"].values()
+    }
+    if not again:
+        return []
+    refs = {model: referenced_models(read_text(path)) for model, path in files.items()}
+    downstream = downstream_of(again, refs) & set(changed_models(workspace, snapshot))
+    return sorted(again | downstream)
+
+
+def downstream_of(seeds: set[str], refs: Mapping[str, set[str] | None]) -> set[str]:
+    """The models that `ref()` one of `seeds`, transitively, through any model in `refs` (an
+    unchanged model between two changed ones passes the change on). A model whose refs are
+    unknown (None: a macro could hide one) is taken as downstream of every seed."""
+    reached = set(seeds)
+    grew = True
+    while grew:
+        found = {
+            model
+            for model, used in refs.items()
+            if model not in reached and (used is None or used & reached)
+        }
+        reached |= found
+        grew = bool(found)
+    return reached - seeds
 
 
 def describe(reasons: list[dict[str, Any]]) -> str:
