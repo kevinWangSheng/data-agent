@@ -143,13 +143,13 @@ line that begins with `CHECK`.
 ## Verification Report
 
 ### <model_name>
-CHECK 1: PASS / FAIL / NEEDS_INFO / N/A — exists: <tool evidence>
-CHECK 2: PASS / FAIL / NEEDS_INFO / N/A — columns: <contract source; missing, extra or mistyped columns>
-CHECK 3: PASS / FAIL / NEEDS_INFO / N/A — grain <key columns>: <NULL rows, duplicate rows, exemption used or none>
-CHECK 4: PASS / FAIL / NEEDS_INFO / N/A — window ordering: <tool evidence>
-CHECK 5: PASS / FAIL / NEEDS_INFO / N/A — sources: <each source change and its basis in the task, or the change with none>
-CHECK 6: PASS / FAIL / NEEDS_INFO / N/A — row logic: <each change and its basis in the task; quote the change that has none>
-CHECK 7: PASS / FAIL / NEEDS_INFO / N/A — compare_by_key on <key columns>: <only-in-model, only-in-reference, mismatched counts; first examples>
+CHECK 1: <PASS|FAIL|NEEDS_INFO|N/A> — exists: <tool evidence>
+CHECK 2: <PASS|FAIL|NEEDS_INFO|N/A> — columns: <contract source; missing, extra or mistyped columns>
+CHECK 3: <PASS|FAIL|NEEDS_INFO|N/A> — grain <key columns>: <NULL rows, duplicate rows, exemption used or none>
+CHECK 4: <PASS|FAIL|NEEDS_INFO|N/A> — window ordering: <tool evidence>
+CHECK 5: <PASS|FAIL|NEEDS_INFO|N/A> — sources: <each source change and its basis in the task, or the change with none>
+CHECK 6: <PASS|FAIL|NEEDS_INFO|N/A> — row logic: <each change and its basis in the task; quote the change that has none>
+CHECK 7: <PASS|FAIL|NEEDS_INFO|N/A> — compare_by_key on <key columns>: <only-in-model, only-in-reference, mismatched counts; first examples>
 
 ### Summary
 PASS: N models

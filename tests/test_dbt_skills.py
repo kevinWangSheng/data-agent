@@ -337,8 +337,8 @@ def test_scan_does_not_read_a_project_config_outside_the_workspace(tmp_path: Pat
     assert "no dbt_project.yml found" in output, output
 
 
-def test_workflow_compares_values_only_up_to_rounding() -> None:
-    assert "DECIMAL at the column's places" in step_8()
+def test_workflow_compares_sums_and_averages_only_up_to_rounding() -> None:
+    assert "sums and averages up to rounding" in step_8()
     assert "1e-6" in step_8()
     assert "10%" not in body("dbt-workflow")
 
@@ -398,8 +398,11 @@ def test_workflow_checks_values_per_key_against_an_independent_recomputation() -
     assert "output grain" in text
     assert "never copy the model's expression" in text
     assert "each branch" in text
+    assert "same rounding allowance" in text
     assert "`compare_by_key(model, key_columns, reference_sql)`" in text
-    assert "reading only tables that existed before the run" in text
+    assert "read only tables that existed before the run" in text
+    # Without the tool (no-verifiers keeps the Skill), the sampled-key check stays as it was.
+    assert "pick 3-5 keys at the output grain" in text
     assert "key-level check" in text.split("STOP when", 1)[1]
 
 
@@ -410,10 +413,12 @@ def test_workflow_step_8_dispatches_one_verifier_and_defers_fail_handling() -> N
     assert "value-verifier" not in text and "verify_model_values" not in text
     assert 'subagent_type="verifier"' in text
     assert text.count('"Verification before delivery"') >= 2
-    assert "this Skill adds no rules of its own" in text
-    # The old prescription rule and the duplicate FAIL recipe are gone.
+    assert "this Skill adds no FAIL rules of its own" in text
+    # The old prescription rule and the duplicate FAIL recipe are gone: no copy of the system
+    # prompt's rules (reproduce, smallest change, counter-evidence) anywhere in Step 8.
     assert "prescribed fix exactly as stated" not in text
-    assert "reproduce" not in text.split("Handle FAIL and NEEDS_INFO")[0]
+    for rule in ("reproduce", "smallest change", "counter-evidence", "prescribe"):
+        assert rule not in text.lower(), rule
     assert "CHECK 1 FAIL" not in text and "CHECK 2 FAIL" not in text
 
 

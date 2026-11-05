@@ -64,9 +64,9 @@ If it reproduces, make the smallest change that fixes it, rebuild only the chang
 dbt, and dispatch the verifier again. If it does not reproduce, dispatch the verifier again and \
 put the counter-evidence (the query and its result) in your dispatch message.
 - NEEDS_INFO: give the verifier the information it asked for and dispatch it again, or run \
-that check yourself, read-only.
-- Stop when every check is PASS or N/A, or when your turns run out. Do not change models after \
-that.
+that check yourself, read-only, and say in your final message what you ran and found.
+- Stop when every check is PASS, N/A or a NEEDS_INFO you resolved yourself, or when your turns \
+run out. Do not change models after that.
 """
 
 Emit = Callable[..., None]

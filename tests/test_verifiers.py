@@ -180,10 +180,12 @@ def test_verifier_report_template_parses_as_the_hooks_expect() -> None:
     template = verifier_prompt().split("## Output Format")[1].split("### Summary")[0]
     lines = [line for line in template.splitlines() if line.startswith("CHECK ")]
     assert [int(line.split()[1].rstrip(":")) for line in lines] == [1, 2, 3, 4, 5, 6, 7]
+    placeholder = "<PASS|FAIL|NEEDS_INFO|N/A>"
+    assert all(placeholder in line for line in lines)
+    # The template copied verbatim is no verdict; each real status is.
+    assert not parse_report("### m\n" + "\n".join(lines))["parsed"]
     for status in ("PASS", "FAIL", "NEEDS_INFO", "N/A"):
-        report = "### m\n" + "\n".join(
-            line.replace("PASS / FAIL / NEEDS_INFO / N/A", status) for line in lines
-        )
+        report = "### m\n" + "\n".join(line.replace(placeholder, status) for line in lines)
         assert parse_report(report)["models"] == {"m": dict.fromkeys(range(1, 8), status)}
 
 
@@ -206,6 +208,8 @@ def test_system_prompt_holds_the_fail_rules_once() -> None:
     assert "does not reproduce" in fail and "counter-evidence" in fail
     needs = flat.split("- NEEDS_INFO:")[1]
     assert "information it asked for" in needs and "run that check yourself" in needs
+    # A NEEDS_INFO the main agent resolved itself is an exit (the Stop hook never blocks on it).
+    assert "a NEEDS_INFO you resolved yourself" in needs.split("- Stop when")[1]
     assert "`verifier`" in flat and "value-verifier" not in flat
     assert "Do not tell it what the columns mean or how you wrote the SQL" in flat
     assert "technical_spec.md" in flat and "intent" in flat
