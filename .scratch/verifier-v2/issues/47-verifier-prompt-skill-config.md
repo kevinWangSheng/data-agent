@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -66,10 +66,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；Codex 3 次 at capacity）
+- Attempts: 3
+- Review rounds: 3（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；退回第 2 轮 eng:code-review，0126941；Codex 4 次 at capacity）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: in-review，退回第 1 轮已修，branch `worktree-47-verifier-prompt-skill-config`（ad09e0a、8bde360、e45d781、cc65d28），PR #48；初筛过线判定需在 cc65d28 上重跑
+- Outcome: in-review，两轮退回已修完，branch `worktree-47-verifier-prompt-skill-config`（ad09e0a … cc65d28、626d226、0126941），PR #48；初筛过线判定需在 0126941 上重跑
 - Human review minutes: —
 
 ## Comments
@@ -121,3 +121,14 @@ hooks: ['PreToolUse', 'Stop', 'SubagentStart', 'SubagentStop']
   - 顺手（P3）：`verifier.md:144-150` 题面只定义行集（去重、过滤、"每 X 一行"而无指标）时参考 SQL 只有键列，`compared columns: (none)` 按新规则变 NEEDS_INFO，而键的两侧比对本来就能定胜负。改成："(none) 记 NEEDS_INFO，除非题面没有定义任何非键列，这时只看键的计数。"
   - 顺手（P3）：`verifier.md:73-78` 第 2 步说键只从题面取，但 `grain_facts` 按建出来的模型列名解析、名字不存在就 ToolError；题面说"每客户每月一行"没给列名，验证者得把它对到 `customer_id`/`month`。把第 4 步"列名不是逻辑，可以从 contract_check/题面/查询取列名，不读 SQL"那句同样写进第 2 步。
   - 顺手（P3）：`verifier.md:88-89` 和 `verifiers.py:66-67` 的 "confirm a candidate against the task" 在题面对粒度沉默时不可判定，spec 第 73 行允许快照 YML 自行豁免。写明确认的含义是"题面不与之矛盾"。另：粒度 NEEDS_INFO 时系统提示词的第一个选项（补信息再派）是死路，因为验证者必须忽略派单消息里给的粒度；在 VERIFIERS_PROMPT 加一句让主 agent 对粒度类 NEEDS_INFO 直接走第二个选项（自己跑检查），避免循环。
+
+### 2026-11-05 工单会话（退回第 2 轮修复，commits 626d226、0126941）
+
+只动 `agents/verifier.md`、`verifiers.py`（VERIFIERS_PROMPT）、`tests/test_verifiers.py`。四项先写测试（5 个先红），改完全绿。`make check`：1698 passed, 1 skipped（两次）。`uv run pytest tests/acceptance -q -k verifier`：48 passed。
+
+- 退回 A：列名回退改成 `list_tables(name_contains="<model>")`，注明子串会匹配到别的表、取模型自己那行；删掉 `LIMIT 0`。测试断言不含 `LIMIT 0`。
+- 顺手 1：`compared columns: (none)` 记 NEEDS_INFO，除非题面没定义任何非键列，这时只看三个键计数。核过 `compare.py:141-178` 键列单独的参考能定行集题的胜负。
+- 顺手 2：第 2 步加"工具按模型列名解析键，把题面的话对到模型列名；列名不是逻辑，来源是 contract_check 输出、题面列表或 `list_tables`，不读 SQL"；第 4 步改为引用第 2 步。
+- 顺手 3："confirm a candidate against the task" 改成"题面不与之矛盾即可用"。VERIFIERS_PROMPT 加一句：粒度类 NEEDS_INFO 不要带自定粒度重派，主 agent 自己用 `grain_facts` 跑 CHECK 3、用 `compare_by_key` 加参考 SQL 跑 CHECK 7。核过主 agent 能调这两个工具（`mcp_server.py:269-270`、`agent.py:747`）。
+- 真实行为（无模型）：prompt 不含 `LIMIT 0`、不含 "confirm a candidate"，含 `list_tables(name_contains="<model>")` 和 "does not contradict"；VERIFIERS_PROMPT 含 "run the grain check yourself"；maxTurns 50，工具表不变。
+- 审查：`da-review` 第 4 次 at capacity。eng:code-review（Standards、Spec）同一条实质问题已修（0126941）：粒度句覆盖 CHECK 3 和 7 却只点名 `grain_facts`，CHECK 7 要用 `compare_by_key`。其余已修：豁免括注措辞；行集例外的双重否定；第 4 步重复列名来源；`list_tables` 子串多匹配注明；弱断言换具体句子；键列参考测试补真实渲染。不修：超宽行是报告模板和中文标题，本轮前就有；"defines no row set or computation" 是行集规则的直接推论。
