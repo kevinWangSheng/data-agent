@@ -30,6 +30,8 @@ from harbor.models.trajectories import (
     Trajectory,
 )
 
+from evals.process import verifier_checks
+
 AGENT_NAME = "data-agent"
 TURN_EVENTS = frozenset({"thinking", "text", "tool_start"})
 VERSION_FIELDS = ("skill_version", "config", "layers", "sdk_version", "cli_version")
@@ -147,7 +149,7 @@ def convert(
                     extra={
                         "verifier": event.get("verifier"),
                         "agent_id": event.get("agent_id"),
-                        "checks": event.get("checks") or [],
+                        "checks": verifier_checks(event),
                     },
                 )
             )

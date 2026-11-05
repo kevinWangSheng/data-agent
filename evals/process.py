@@ -21,6 +21,21 @@ EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 STOPS = {"error_max_budget_usd": "budget", "error_max_turns": "turns"}
 
 
+def verifier_checks(event: dict[str, Any]) -> list[dict[str, Any]]:
+    """A `verifier_end` event's checks as rows `{model, check, status}`, whichever shape the agent
+    wrote: the old list of such rows, or the v2 mapping model -> {check number -> status}
+    (verifier_v2.hooks; the numbers are string keys once the event is JSON). Rows of a mapping
+    come out in model order, checks numbered in order."""
+    checks = event.get("checks") or []
+    if isinstance(checks, list):
+        return checks
+    rows: list[dict[str, Any]] = []
+    for model, statuses in checks.items():
+        for number, status in sorted(statuses.items(), key=lambda item: int(item[0])):
+            rows.append({"model": model, "check": f"CHECK {number}", "status": status})
+    return rows
+
+
 def is_model_edit(event: dict[str, Any]) -> bool:
     if event.get("type") != "tool_start" or event.get("tool") not in EDIT_TOOLS:
         return False
@@ -49,7 +64,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
                 elif kind == "verifier_start":
                     calls += 1
                 elif kind == "verifier_end":
-                    checks.update(str(c.get("status")) for c in event.get("checks") or [])
+                    checks.update(str(c.get("status")) for c in verifier_checks(event))
                 elif is_model_edit(event):
                     edits += 1
     return {
