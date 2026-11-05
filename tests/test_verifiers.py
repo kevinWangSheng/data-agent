@@ -298,21 +298,21 @@ def test_system_prompt_holds_the_fail_rules_once() -> None:
     assert "a NEEDS_INFO you resolved yourself" in needs.split("- Stop when")[1]
     assert "`verifier`" in flat and "value-verifier" not in flat
     assert "Do not tell it what the columns mean or how you wrote the SQL" in flat
-
-
-def test_system_prompt_limits_the_main_agents_own_v2_checks_to_three_cases() -> None:
-    """Ticket 47 return round 3: the main agent calls `compare_by_key` or `grain_facts` itself
-    only without a verifier, to reproduce one FAIL (one model, one call), or for a grain
-    NEEDS_INFO; never as a routine self-check before or after a dispatch."""
-    flat = " ".join(VERIFIERS_PROMPT.split())
-    rule = flat.split("Call `compare_by_key` or `grain_facts` yourself only in three cases", 1)[1]
-    rule = rule.split("- ", 1)[0]
-    assert "when no verifier is offered" in rule
-    assert "to reproduce one FAIL (one call, on that one model)" in rule
-    assert "for a grain NEEDS_INFO as above" in rule
-    assert "Not as a routine self-check" in rule
     assert "technical_spec.md" in flat and "intent" in flat
     assert "CHECK 1-7" in flat
+
+
+def test_system_prompt_limits_the_main_agents_own_compare_and_grain_calls() -> None:
+    """Ticket 47 return round 3: the main agent calls `compare_by_key` or `grain_facts` itself
+    only without a verifier, to reproduce one FAIL (one model, as the FAIL rule's one query), or
+    for a grain NEEDS_INFO; never as a routine self-check before or after a dispatch."""
+    flat = " ".join(VERIFIERS_PROMPT.split())
+    rule = flat.split("Call `compare_by_key` or `grain_facts` yourself only in three cases", 1)[1]
+    rule = rule.split("Its report gives", 1)[0]
+    assert "when no verifier is offered" in rule
+    assert "to reproduce one FAIL (as the one read-only query below, on that one model)" in rule
+    assert "for a grain NEEDS_INFO as below" in rule
+    assert "Not as a routine self-check" in rule
 
 
 async def fire(

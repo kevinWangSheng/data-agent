@@ -281,13 +281,13 @@ Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones
    your spec to match reality.
    For ANY fix, update `technical_spec.md` FIRST, then rewrite the SQL from
    the updated spec, and rebuild as the system prompt says.
-4. STOP when the latest report shows every check PASS or N/A for every model
-   you created or changed. Without the verifier, STOP when your own checks
-   in step 2 all match. Once verification passes, do NOT modify any model
-   files - the task is complete. No further investigation, no "what if"
-   queries, no source table changes. With the verifier, its latest report
-   is the final authority; the run cannot end while a model you changed is
-   unverified or has a FAIL.
+4. With the verifier, STOP when the latest report shows every check PASS or
+   N/A for every model you created or changed; that report is the final
+   authority, and the run cannot end while a model you changed is
+   unverified or has a FAIL. Without the verifier, STOP when your own checks
+   in step 2 all match. Once you STOP, do NOT modify any model files - the
+   task is complete. No further investigation, no "what if" queries, no
+   source table changes.
 
 ---
 

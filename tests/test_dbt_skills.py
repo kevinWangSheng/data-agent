@@ -421,11 +421,11 @@ def test_workflow_step_8_has_no_routine_self_check_beside_the_verifier() -> None
     assert "unless your key-level check" not in text
     assert "and your key-level check matches" not in text
     assert "your key-level check are the final authority" not in text
-    stop = text.split("STOP when", 1)[1]
+    stop = text.split("4. With the verifier, STOP when", 1)[1]
     with_verifier = stop.split("Without the verifier", 1)[0]
-    assert "latest report" in with_verifier
+    assert "latest report" in with_verifier and "final authority" in with_verifier
     assert "key-level" not in with_verifier and "your own" not in with_verifier
-    assert "Without the verifier" in stop
+    assert "Without the verifier, STOP when your own checks in step 2 all match" in stop
 
 
 def test_workflow_step_8_dispatches_one_verifier_and_defers_fail_handling() -> None:

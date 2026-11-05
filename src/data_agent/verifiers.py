@@ -58,6 +58,11 @@ you wrote the SQL; `technical_spec.md` is your intent only and the verifier does
 The run cannot end while a model you created or changed has no verifier report, was changed \
 after its last report, or still has a FAIL.
 
+Call `compare_by_key` or `grain_facts` yourself only in three cases: when no verifier is \
+offered; to reproduce one FAIL (as the one read-only query below, on that one model); and for \
+a grain NEEDS_INFO as below. Not as a routine self-check before or after a dispatch: the \
+verifier already does it.
+
 Its report gives every check (CHECK 1-7) of every model one of PASS, FAIL, NEEDS_INFO or N/A.
 - FAIL: first reproduce the failure yourself with one read-only query that shows the defect. \
 If it reproduces, make the smallest change that fixes it, rebuild only the changed models with \
@@ -72,10 +77,6 @@ comparison with `compare_by_key` and a reference query on that key (CHECK 7), an
 both.
 - Stop when every check is PASS, N/A or a NEEDS_INFO you resolved yourself, or when your turns \
 run out. Do not change models after that.
-
-Call `compare_by_key` or `grain_facts` yourself only in three cases: when no verifier is \
-offered; to reproduce one FAIL (one call, on that one model); and for a grain NEEDS_INFO as \
-above. Not as a routine self-check before or after a dispatch: the verifier already does it.
 """
 
 Emit = Callable[..., None]
