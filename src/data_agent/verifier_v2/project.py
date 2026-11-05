@@ -142,16 +142,16 @@ def _walk_files(
             if suffixes and path.suffix.lower() not in suffixes:
                 continue
             link = path.is_symlink()
-            taken = _taken(path, link, root)
+            kept = _kept(path, link, root)
             if link and watch is not None:
-                watch.links[path] = taken
-            if taken:
+                watch.links[path] = kept
+            if kept:
                 yield path
 
 
-def _taken(path: Path, link: bool, root: Path) -> bool:
-    """A file, and inside the project when it is a symlink."""
-    return path.is_file() and not (link and not path.resolve().is_relative_to(root))
+def _kept(path: Path, link: bool, root: Path) -> bool:
+    """Whether the walk yields `path`: a file, and inside the project when it is a symlink."""
+    return path.is_file() and (not link or path.resolve().is_relative_to(root))
 
 
 def _mtime(path: Path) -> int | None:
@@ -175,13 +175,13 @@ class _ModelFiles:
     watch: _Watch
     models: dict[str, Path]
 
-    def current(self) -> bool:
+    def still_valid(self) -> bool:
         return all(
             _mtime(path) == mtime and (mtime is None or mtime < self.walked_at - RACY_NS)
             for path, mtime in self.watch.mtimes.items()
         ) and all(
-            path.is_symlink() and _taken(path, True, self.root) == taken
-            for path, taken in self.watch.links.items()
+            path.is_symlink() and _kept(path, True, self.root) == kept
+            for path, kept in self.watch.links.items()
         )
 
 
@@ -197,7 +197,7 @@ def model_files(project: Path, config: dict[str, Any] | None = None) -> dict[str
     key = (project, directories)
     with _model_files_lock:
         cached = _model_files.get(key)
-        if cached is None or not cached.current():
+        if cached is None or not cached.still_valid():
             walked_at = time.time_ns()
             watch = _Watch({}, {})
             models: dict[str, Path] = {}

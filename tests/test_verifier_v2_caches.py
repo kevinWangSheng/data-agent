@@ -182,6 +182,19 @@ def test_model_files_sees_a_file_added_without_a_visible_mtime_change(tmp_path: 
     assert set(model_files(project)) == {"a", "b"}
 
 
+def walks_from_now(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The directories os.walk starts from from now on (any caller, for this test)."""
+    started: list[str] = []
+    original = project_module.os.walk
+
+    def counted(top: Any, *args: Any, **kwargs: Any) -> Any:
+        started.append(str(top))
+        return original(top, *args, **kwargs)
+
+    monkeypatch.setattr(project_module.os, "walk", counted)
+    return started
+
+
 def test_model_files_walks_an_unchanged_project_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -190,14 +203,7 @@ def test_model_files_walks_an_unchanged_project_once(
     (project / "dbt_project.yml").write_text("name: p\n")
     (project / "models" / "a.sql").write_text("select 1")
     settled(tmp_path)
-    listed: list[str] = []
-    original = project_module.os.walk
-
-    def counted(top: Any, *args: Any, **kwargs: Any) -> Any:
-        listed.append(str(top))
-        return original(top, *args, **kwargs)
-
-    monkeypatch.setattr(project_module.os, "walk", counted)
+    listed = walks_from_now(monkeypatch)
     first = model_files(project)
     assert listed
     listed.clear()
@@ -216,19 +222,13 @@ def test_concurrent_calls_compute_each_cache_once(
     settled(workspace)
     loads: list[str] = []
     original_load = project_module.yaml_lite.load
-    walks: list[str] = []
-    original_walk = project_module.os.walk
 
     def counted_load(text: str) -> Any:
         loads.append(text)
         return original_load(text)
 
-    def counted_walk(top: Any, *args: Any, **kwargs: Any) -> Any:
-        walks.append(str(top))
-        return original_walk(top, *args, **kwargs)
-
     monkeypatch.setattr(project_module.yaml_lite, "load", counted_load)
-    monkeypatch.setattr(project_module.os, "walk", counted_walk)
+    walks = walks_from_now(monkeypatch)
     config = project_module.project_config(project)
     barrier = threading.Barrier(16)
     results: dict[int, tuple[Any, Any]] = {}
