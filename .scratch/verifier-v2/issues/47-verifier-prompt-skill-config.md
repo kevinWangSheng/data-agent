@@ -210,3 +210,9 @@ baseline 和 no-verifiers 照旧：no-verifiers 仍带 Skill 的无验证者回�
   - 三种情况的断言放在 `tests/test_verifiers.py`，没放 `test_dbt_skills.py`：VERIFIERS_PROMPT 的测试本来都在这个文件。
   - `no_verifier_fallback` 按 " 3. " 切分不够稳，属轻微问题。
   - 文件头说明超宽，属外观问题。
+
+### 2026-11-05 主会话（退回第 3 轮审查）
+
+- Codex 不可用，Fable 审查（PR #48，497bbca）：approve，无 P1/P2。逐条核对过退回要求，也核对了 full、no-skill、no-verifiers、baseline 几种配置拼出的提示词：no-verifiers 不注册 `compare_by_key`，回退会走抽 3–5 个键那条路，没有发现互相矛盾的地方。工单会话写的 6 条不修理由经核对都属实。
+- 三条 P3 不修，记成已知限制：① 测试只断言固定短语 "whether or not the verifier"，钉不住"验证器分支里不再出现键级自查"；② 非粒度类的 CHECK 7 NEEDS_INFO，和"三种情况"写法有张力，现在默认再派，要不要放宽交人定；③ `no_verifier_fallback` 按 " 3. " 切分依赖现在的排布。
+- 合入前提不变：51、52 合入后在新 main 上跑过线初筛（5 题 × 3），≥8/15 且验证器墙钟中位数 ≤155 s。
