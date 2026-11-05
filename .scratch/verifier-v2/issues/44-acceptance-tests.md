@@ -1,6 +1,6 @@
 # 44 — 验证层 v2 的验收测试与夹具
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 44-acceptance-tests)
@@ -65,7 +65,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 2（Codex `da-review` 1 轮 + `eng:code-review` 1 轮，均已修完）
 - Model spend: $0（本工单不调 data agent 模型）
-- Outcome: in-review，branch `worktree-44-acceptance-tests`（commits 3263852、9351938、5f84005）；待人审 PR
+- Outcome: done，人审通过，PR #40 squash 合入 main（3bc82c8）
 - Human review minutes: —
 
 ## Comments
@@ -156,3 +156,4 @@ All checks passed! / 186 files already formatted / 0 errors, 0 warnings, 0 notes
 - 2026-11-04 主会话：PR #40 CI 绿。Codex app 第一次审查 failed，评论 `@codex review` 后完成，两条 P2，都核对过，不退回：
   1. `test_verifier_v2.py:205` 快照测试没覆盖"seed 超过 5 MB 只记文件名和哈希"（spec Implementation Decisions 第 42 行）。属实但不在「Testing Decisions」里，工单要求只写 Testing Decisions 的条目；要不要补一条，人审 PR 时定。
   2. `test_verifier_v2.py:475` 报告解析没有"缩进的 CHECK 行不算"的负例（spec 第 109 行"收紧成行首匹配"）。同上，不在 Testing Decisions 里，交人审时定。
+- 2026-11-05 主会话：人审通过，PR #40 squash 合入 main（3bc82c8）。"需要人看的决定"1–5 按工单会话的写法接受；Codex 两条 P2（5 MB seed、缩进 CHECK 负例）不补，不在 Testing Decisions 里，记为已知限制。第 6 条：在工单 45 的 Authority 加一行，允许 45 在拿掉 `verify_model_values` 的同一提交里更新 `tests/acceptance/seam_support.py` 的 `VERIFIER_TOOLS`（主会话现在改会让 main 变红）。合入后 main `make check`：1580 passed, 1 skipped, 40 xfailed。

@@ -99,6 +99,12 @@
 > - 花费：本轮服务器运行实际价约 $2.9（约 ¥21，全在闲时），开发集累计约 ¥407，止损线 ¥500。
 > - 工具提示：`~/.local/bin/da-remote` 是旧版，ablate 只取回汇总；用仓库里的 `scripts/da-remote pull`（dev 集整份取回）。覆盖安装副本被人拒过一次，直接跑 `scripts/da-remote` 即可。工单会话 source 不了模型 env 文件，真实运行由主会话做。派工输出在 `runs/dispatch/`。
 >
+> **编排会话进度（2026-11-05 更新）：**
+> - 人决定接受合入：41 输出上限（PR #42 → f03d694，已知限制：Read `target/run_results.json` 超长、scan 五节超预算切掉 AVAILABLE MACROS）；44 验证层 v2 验收测试（PR #40 → 3bc82c8，人审通过；Codex 两条 P2 不补，记已知限制）。合入后 main `make check` 1580 passed、40 xfailed。
+> - 44 第 6 条的处理：45 的 Authority 加了一行，允许它在拿掉 `verify_model_values` 的同一提交里更新 `tests/acceptance/seam_support.py` 的 `VERIFIER_TOOLS`。
+> - 45 已派（`claude -p -w 45-snapshot-and-tools`，输出在 `runs/dispatch/`）。之后 46 → 47（47 初筛 5 题 × 3）。全部合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
+> - 43 的修法（MCP 工具标 `readOnlyHint`）和 40 的尾巴（提示词与 SKILL.md 仍教改 `profiles.yml`）、41 的 Read `target/*.json` 守卫，都还等人或对齐会话定。
+>
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
 >
 > 以下第 0–10 节是 2026-09-20 的历史记录。

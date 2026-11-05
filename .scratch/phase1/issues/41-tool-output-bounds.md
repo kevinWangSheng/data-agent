@@ -1,6 +1,6 @@
 # 41 — 工具输出加上限：list_tables、query_database 照 SignalPilot 截断，scan 只打印摘要
 
-Status: in-review
+Status: done
 Blocked by: 39
 Spec: ../spec.md
 Claimed by: claude (worktree 41-tool-output-bounds)
@@ -89,7 +89,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 1（Codex 1 条已修；eng:code-review 2 处清理已修，其余写明理由不修）
 - Model spend: $0（工单会话无模型调用；初筛花费由主会话记）
-- Outcome: in-review，branch `worktree-41-tool-output-bounds`（commits 3d2284a、0d18c9a、3de27a6）；初筛待主会话
+- Outcome: done，PR #42 squash 合入 main（f03d694）；初筛 t41-screen 9/9
 - Human review minutes: —
 
 ## Comments
@@ -128,3 +128,4 @@ query_database SELECT range AS n FROM range(1000) -> 400 rows, "(1000 rows)", "[
 - 2026-11-04 主会话：PR #42 CI 绿。Codex app 一条 P1（`mcp_server.py:98`）：前 50 行不受 12,000 字符预算约束，`SELECT repeat('x', 1000000) FROM range(50)` 这类查询仍能返回约 50 MB。核对：工单"已和用户定下的"明确写了"至少显示 50 行"、"数值和截断顺序不要改"，照 SignalPilot `query.py:248-271` 抄，这是约定的设计，不算偏离，**不退回**。单个超宽值的风险属实，记为已知限制，建议对齐会话决定是否另加"单个值截断"（SignalPilot 是否有这层，未确认）。初筛 `t41-screen` 已在服务器开跑（commit 3de27a6，3 题 × 3，full，`--budget 6`）。
 - 2026-11-04 主会话：初筛 `t41-screen`（commit 3de27a6；`ablate --split dev --config full --task dbt-fix-customer-snapshot-and-build-dimension --task dbt-fraud-detection-model --task dbt-customer-churn-cohorts --trials 3 --budget 6`）：成功 9/9（accept-2 full 也是 9/9）；连冒烟实际价 $0.9926（cost_usd $1.9853，10 个事件文件全在闲时）。过程指标（机械计数，`runs/t41-screen/jobs/full/*/agent/events/`）："Output has been saved to" 0 次、`tool-results/` 0 次；**"exceeds maximum allowed tokens" 2 次**，都在 trial dbt-fix-customer-snapshot-and-build-dimension__f9SPTjp，来源是内置 Read 读 `/app/dbt_models_duckdb/target/run_results.json`（dbt 自己生成的 1,049,294 token 单行 JSON，`limit: 60` 和 `limit: 20` 两次），不是 `list_tables`、`query_database`、scan 的输出。本工单约束的三个工具在 9 个 trial 里没有触发过 Claude Code 的超长报错。过关条件按字面是"次数为 0"，这两次不在 41 的改动范围内，**合不合入交人定**；若按字面判不过，可能的后续是守卫或 Skill 不让 Read `target/*.json`。PR #42 CI 绿，Codex 一条 P1 已按设计记录（见上）。
 - 2026-11-04 主会话：**停止条件"scan 的 5 节本身就超过 20,000 字符"在真实项目上成立**。`t41-screen` 9 个 trial 的 scan 标准输出都是 19,930 字符，含 STUBS TO REWRITE、MODELS TO BUILD、DEPENDENCIES、REQUIRED COLUMNS 四节，末尾都带 `WARNING: the Step 1 sections alone exceed the summary budget; cut or missing above: AVAILABLE MACROS. Read them in the full report.`；9 个 trial 都打出了 `Full report:` 路径和 `… N more lines in` 的截断行。`list_tables` 的 "more tables not shown" footer出现 17 次，`[INCOMPLETE DISPLAY]` 0 次。完整报告文件留在容器里，Step 1 五节的实际总大小未取回（未确认）。要人定：按字面停下不合入；或接受"前四节完整 + 宏去报告里 Grep"合入；或把预算提到能放下五节（会超过 Claude Code 25,000 token 上限的约 100,000 字符，不可行）。
+- 2026-11-05 主会话：人决定接受合入。PR #42 squash 合入 main（f03d694）。已知限制两条：① 内置 Read 读 dbt 的 `target/run_results.json`（1 MB 单行 JSON）仍会触发 Claude Code 超长报错，不在本工单工具范围内，是否让守卫或 Skill 拦 `target/*.json` 交对齐会话定；② 真实项目上 scan 的 Step 1 五节超过 20,000 字符，AVAILABLE MACROS 被切进报告文件，摘要末尾有 WARNING 指向完整报告。合入后 main `make check`：1580 passed, 1 skipped, 40 xfailed。

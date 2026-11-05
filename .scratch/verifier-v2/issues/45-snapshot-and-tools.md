@@ -1,7 +1,7 @@
 # 45 — 快照与 4 个确定性验证工具
 
 Status: ready-for-agent
-Blocked by: 44, 39（phase1）
+Blocked by: 44（done）, 39（phase1，done）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -23,6 +23,7 @@ Branch: —
 ## Authority
 
 - May edit: `src/data_agent/verifier_v2/`、`src/data_agent/verifier_tools.py`（只改注册：加新工具、去掉 `verify_model_values`）、`src/data_agent/agent.py`（只加开跑前的快照调用）、`NOTICE`、`tests/`（`tests/acceptance/` 除外；按 AGENTS.md 只许删掉转绿测试的 `xfail`）
+- May also edit: `tests/acceptance/seam_support.py` 的 `VERIFIER_TOOLS`，只做一件事：去掉 `verify_model_values`、加上 4 个新工具名，与注册改动同一提交（主会话 2026-11-05 决定，见工单 44 Comments 第 6 条）
 - Must not edit: `tests/acceptance/` 的其余内容、`src/data_agent/agents/`、`skills/`、`src/data_agent/configs/`、钩子相关代码（工单 46）、其他工单的文件、`.claude/`、`CODING_STANDARDS.md`
 - Server access: none（真实运行由主会话做）
 - Spend cap: $0.3
