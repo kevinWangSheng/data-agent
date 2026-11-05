@@ -1,6 +1,6 @@
 # 51 — 工具计时改用 PostToolUse 的 duration_ms，报告出分位数
 
-Status: in-progress
+Status: in-review
 Blocked by: —
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§1）
 Claimed by: claude (worktree 51-tool-timing-percentiles, 2026-11-05)
@@ -59,10 +59,57 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0 (no model calls; the server run is pending)
+- Outcome: implemented; real server run pending
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（b469ba4、162671f、bc571b6）
+
+- **Implementation (b469ba4, 162671f, bc571b6)**
+  - `src/data_agent/agent.py`:
+    - New `tool_timing_hooks`: PostToolUse and PostToolUseFailure on every tool write a `tool_timing` event with `tool`, `tool_use_id`, `agent_id`, `duration_ms`, `failed` and `timed_out`.
+    - `timed_out` is set only for `mcp__data__*` tools whose error or response contains "Query timed out after". A test checks that this text matches the error `gateway.QueryTimedOut` actually raises.
+    - `tool_start` and `tool_end` now carry `parent`.
+  - `evals/process.py`:
+    - Each trial gets `wall_s`, `tool_calls`, `verifier_wall_s`, `verifier_unclosed`, per-tool `durations` (taken only from `duration_ms`), `timeouts`, and `untimed` (events that arrived without a duration).
+    - `timing_summary` gives p50/p90/p95/p99 at task and job level. `timing_markdown` renders the tables.
+  - `report.json` gains `process.timing` (dev split only, per ADR-0004).
+  - `ablate` adds a timing section to `ablation.md`, one row per config. `accept` adds old/new timing to both its text and its `--json` output.
+  - Event files from before this change still produce a report: tool columns show `missing` and "timed trials" shows 0/n.
+- **Tests:** new `tests/test_tool_timing.py`; additions to `test_eval_process`, `test_eval_ablate` and `test_eval_accept`. `test_eval_diverge` was changed to allow the new `timing` key.
+  - The parallel-batch test fails on the old code: it expects 0.4 s for the Glob call, while `tool_end − tool_start` gives 60 s.
+- **Checks:**
+  - Baseline: 1699 passed.
+  - Final `make check`: `1722 passed, 1 skipped, 38 deselected, 1 xfailed`, exit 0.
+- **Real run done here (old event files only):** `uv run python -m evals report runs/t47-screen/jobs/full --manifest <t47 tasks.json> --split dev --trials 3 --out runs/t51/t47-report` →
+  - trial wall p50/p90/p95/p99 = 1390.4 / 3835.7 / 3902.5 / 3987.8 s
+  - verifier wall = 718.9 / 1738.8 / 2155.3 / 2840.0 s
+  - verifiers cut off: 3; tool calls: 2730; timed trials: 0/15
+  - tool table: `missing`
+- **Still needed (main session):** server run of `dbt-receivables-aging-buckets` × 1 (full).
+  - Check that Bash, Read, MCP and verifier-internal tool calls all have `duration_ms`.
+  - In the report, "no duration" should be 0. If it isn't for MCP or subagent tools, that is this ticket's stop condition.
+- **Review 1, `da-review` (Codex):** one P2: a `tool_timing` event without `duration_ms` was silently dropped. Fixed in 162671f: such calls are now counted in a "no duration" column, and tables show "timed trials m/n".
+- **Review 2, `eng:code-review`:**
+  - Fixed in bc571b6:
+    - Timeout matching was too broad: an Agent report or Bash output quoting the error was counted again.
+    - Cut-off verifiers could be paired with the wrong Agent call when several ran in parallel.
+    - The timeout text was copied from the gateway with nothing tying the two together; a test now does.
+    - `AGENT_TOOL` was copied instead of imported.
+    - Two unclear names and some unused fallback defaults.
+  - Not fixed, with reasons:
+    - Holdout ablate timing shows `missing`: ADR-0004 keeps process metrics in dev reports only. Record as a known limit.
+    - Timing is computed inside `accept.evaluate()`: it exists only to be printed; no pass condition reads it.
+    - Per-task timing is computed but not printed: the spec only asks for task/job aggregates.
+    - A verifier with no `agent_id`: the SDK always provides one.
+    - A new run with zero tool calls shows `missing`: not a realistic case.
+    - Shared timeout constant in `gateway.py`: that file is outside this ticket's Authority, so a test pins the text instead.
+    - `process.py` contains rendering code and untyped result dicts: that matches the module's existing style.
+
+### 2026-11-05 主会话
+
+- 工单会话提出：按本工单的口径算，t47-screen 的验证器墙钟中位数是 719 s，不是工单 47 记的 317 s。差别全在 pos-operations 那 3 个被 4000 s 截断的 trial：本工单把它们的验证器时间算到 Agent 调用结束或 trial 结束，工单 47 的脚本没有。工单 47 的过线线（≤155 s）判定时，两种口径都报，并列出截断数；由人定以哪个为准（截断问题由工单 54 解决）。
