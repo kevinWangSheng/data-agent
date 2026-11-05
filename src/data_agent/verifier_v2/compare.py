@@ -18,6 +18,7 @@ from typing import Any
 from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.db_facts import LoadCatalog, Table
+from data_agent.gateway import QueryFailed
 from data_agent.verifier_v2 import sql as model_sql
 from data_agent.verifier_v2.db import (
     Queryable,
@@ -41,6 +42,11 @@ SCALE_SQL = (
     "SELECT numeric_scale FROM information_schema.columns "
     "WHERE table_schema = '{schema}' AND table_name = '{table}' AND column_name = '{column}'"
 )
+# information_schema.columns names these Postgres types without a castable spelling; a key of
+# such a type joins uncast.
+UNCASTABLE_TYPES = {"ARRAY", "USER-DEFINED"}
+# (quoted model key, quoted reference key, quoted sentinel column, model key's data type)
+Key = tuple[str, str, str, str]
 
 
 def compare_by_key(
@@ -58,7 +64,26 @@ def compare_by_key(
     "samples"}`. `samples` holds up to 20 key dicts for each one-sided side and up to 20
     `{"key", "column", "model", "reference"}` entries for mismatches. Compared columns are the
     reference's non-key columns that the model also has. `workspace` lets the model and the
-    changed models be known by their aliases too; `catalog` is the server's cache."""
+    changed models be known by their aliases too; `catalog` is the server's cache. A statement
+    the database rejects (a reference key it cannot cast to the model key's type, a value
+    column of an incomparable type) is a ToolError carrying the database's reason."""
+    try:
+        return _compare_by_key(
+            gateway, model, key_columns, reference_sql, changed_models, catalog, workspace
+        )
+    except QueryFailed as exc:
+        raise ToolError(f"Error: the database rejected the comparison: {exc}") from exc
+
+
+def _compare_by_key(
+    gateway: Queryable,
+    model: str,
+    key_columns: Sequence[str],
+    reference_sql: str,
+    changed_models: Sequence[str],
+    catalog: LoadCatalog | None,
+    workspace: Path | None,
+) -> dict[str, Any]:
     reference_sql = reference_sql.strip().rstrip(";")
     if QUERY_TABLE_RE.search(reference_sql):
         return {
@@ -72,12 +97,20 @@ def compare_by_key(
     load = catalog_loader(gateway, catalog)
     table = find_model(load, workspace, model)
     forbidden = _forbidden(load, workspace, model, table, changed_models)
+    # A qualifier that is not a schema the catalog knows (DuckDB reads `<dbname>.<table>` from
+    # the default schema) does not place the reference elsewhere: the bare name decides.
+    schemas = {t.schema.lower() for t in load()}
     hits = sorted(
         {
             f"{schema}.{name}" if schema else name
             for schema, name in references
             if name in forbidden
-            and (schema is None or not forbidden[name] or schema in forbidden[name])
+            and (
+                schema is None
+                or schema not in schemas
+                or not forbidden[name]
+                or schema in forbidden[name]
+            )
         }
     )
     if hits:
@@ -111,7 +144,15 @@ def compare_by_key(
         else:
             unmatched.append(column)
     dialect = gateway.dialect
-    pairs = [(quote(k), quote(reference_lower[k.lower()]), quote(f"__s_{k}")) for k in keys]
+    pairs: list[Key] = [
+        (
+            quote(k),
+            quote(reference_lower[k.lower()]),
+            quote(f"__s_{k}"),
+            model_columns[k.lower()][1],
+        )
+        for k in keys
+    ]
     sentinels = _sentinels(table, reference_sql, pairs, gateway)
     joined = _joined_sql(table, reference_sql, pairs, sentinels, compared, gateway)
     both = '"__m_present" AND "__r_present"'
@@ -226,22 +267,32 @@ def _bare(relation: str) -> str:
     return bare_name(relation).lower()
 
 
-def _sentinel_select(model: str, reference: str, pairs: list[tuple[str, str, str]]) -> str:
+def _as_model_type(expression: str, data_type: str) -> str:
+    """The reference key `expression` cast to the model key's type, so that COALESCE with the
+    sentinel and the join equality see one type on both sides (the old `IS NOT DISTINCT FROM`
+    let DuckDB convert implicitly; COALESCE in either database does not). A value the
+    database cannot cast fails the statement, which the tool reports with the reason."""
+    if data_type.strip().upper() in UNCASTABLE_TYPES:
+        return expression
+    return f"CAST({expression} AS {data_type})"
+
+
+def _sentinel_select(model: str, reference: str, pairs: list[Key]) -> str:
     """One row: per key, any non-NULL value of it from the `model` relation, else from the
-    `reference` one (both FROM-clause text)."""
+    `reference` one (both FROM-clause text), in the model key's type."""
     return ", ".join(
         f"COALESCE((SELECT {m} FROM {model} WHERE {m} IS NOT NULL LIMIT 1), "
-        f"(SELECT {r} FROM {reference} WHERE {r} IS NOT NULL LIMIT 1)) AS {s}"
-        for m, r, s in pairs
+        f"(SELECT {_as_model_type(r, t)} FROM {reference} WHERE {r} IS NOT NULL LIMIT 1)) AS {s}"
+        for m, r, s, t in pairs
     )
 
 
 def _sentinels(
-    table: Table, reference_sql: str, pairs: list[tuple[str, str, str]], gateway: Queryable
+    table: Table, reference_sql: str, pairs: list[Key], gateway: Queryable
 ) -> list[bool]:
     """Per key, whether a sentinel exists: False when the key is NULL on every row of both
     sides, in which case the NULL flags alone decide the join."""
-    selected = ", ".join(f"{s} IS NOT NULL" for _, _, s in pairs)
+    selected = ", ".join(f"{s} IS NOT NULL" for _, _, s, _ in pairs)
     sentinel = _sentinel_select(table.sql_name, f"({reference_sql}) AS ref_", pairs)
     row = gateway.query(f"SELECT {selected} FROM (SELECT {sentinel}) AS s", 1).rows[0]
     return [bool(value) for value in row]
@@ -250,14 +301,14 @@ def _sentinels(
 def _joined_sql(
     table: Table,
     reference_sql: str,
-    pairs: list[tuple[str, str, str]],
+    pairs: list[Key],
     sentinels: list[bool],
     compared: list[tuple[str, str, str]],
     gateway: Queryable,
 ) -> str:
     """`WITH m0, r0, s, m, r, j` where j is the FULL OUTER JOIN of model (m) and reference (r)
-    on the keys (`pairs`: quoted model key, reference key, sentinel column), with both values
-    and an equality flag per compared column.
+    on the keys (`pairs`: quoted model key, reference key, sentinel column, model key type),
+    with both values and an equality flag per compared column.
 
     NULL keys pair with NULL keys. Postgres runs a FULL JOIN only on merge- or hash-joinable
     conditions, which `IS NOT DISTINCT FROM` and `a = b OR (a IS NULL AND b IS NULL)` are not
@@ -266,13 +317,20 @@ def _joined_sql(
     is any non-NULL value of that key on either side, carried onto both m and r by a cross
     join so the condition reads only each side's columns; the flag equality keeps a NULL from
     pairing with a real key equal to the sentinel. A key with no non-NULL value anywhere
-    (`sentinels` False) joins on the flags alone, which both sides then always satisfy."""
+    (`sentinels` False) joins on the flags alone, which both sides then always satisfy. The
+    reference key is cast to the model key's type wherever the two meet."""
     on = " AND ".join(
         f"(m.{m} IS NULL) = (r.{r} IS NULL)"
-        + (f" AND COALESCE(m.{m}, m.{s}) = COALESCE(r.{r}, r.{s})" if has_sentinel else "")
-        for (m, r, s), has_sentinel in zip(pairs, sentinels, strict=True)
+        + (
+            f" AND COALESCE(m.{m}, m.{s}) = COALESCE({_as_model_type(f'r.{r}', t)}, r.{s})"
+            if has_sentinel
+            else ""
+        )
+        for (m, r, s, t), has_sentinel in zip(pairs, sentinels, strict=True)
     )
-    key_select = ", ".join(f"COALESCE(m.{m}, r.{r}) AS {m}" for m, r, _ in pairs)
+    key_select = ", ".join(
+        f"COALESCE(m.{m}, {_as_model_type(f'r.{r}', t)}) AS {m}" for m, r, _, t in pairs
+    )
     value_select = ", ".join(
         f"m.{quote(c)} AS {quote(f'__m_{c}')}, r.{quote(r)} AS {quote(f'__r_{c}')}, "
         f"{_equality(table, c, r, data_type, gateway)} AS {quote(f'__eq_{c}')}"

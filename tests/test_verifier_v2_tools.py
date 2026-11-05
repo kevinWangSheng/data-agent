@@ -211,6 +211,7 @@ def test_yaml_lite_reads_block_scalars_flow_mappings_and_continued_scalars() -> 
         "key: |2\n  text\n",
         "key: [a,\n",
         "key: !!str 1\n",
+        "- - 1\n  - 2\n",
     ],
 )
 def test_yaml_lite_raises_on_unsupported_input(text: str) -> None:
@@ -574,6 +575,32 @@ def test_compare_by_key_compares_qualified_references_by_schema(cmp_db: Path) ->
     assert ghost["accepted"] is False and "raw.ghost" in ghost["reason"]
 
 
+def test_compare_by_key_refuses_the_model_under_its_database_name(cmp_db: Path) -> None:
+    """Return A: DuckDB reads `<dbname>.<table>` from the default schema, so a qualifier that
+    is not a schema the catalog knows is no schema at all and the bare name decides."""
+    gateway = DuckDBGateway(cmp_db)
+    for itself in ("SELECT k, int_v FROM cmp.cmp_model", 'SELECT k, int_v FROM "cmp".cmp_model'):
+        refused = compare_by_key(gateway, "cmp_model", ["k"], itself)
+        assert refused["accepted"] is False and "cmp_model" in refused["reason"], itself
+
+
+def test_compare_by_key_casts_a_reference_key_of_another_type(cmp_db: Path) -> None:
+    """Return B: a reference whose key is VARCHAR against an INTEGER model key (a VALUES list,
+    or a staging model that casts a raw text id) joins on the model column's type instead of
+    failing in COALESCE; a key the database cannot cast is a tool error with its reason."""
+    gateway = DuckDBGateway(cmp_db)
+    sql = "SELECT * FROM (VALUES ('1', 5), ('2', 8), ('4', 1)) AS r(k, int_v)"
+    result = compare_by_key(gateway, "cmp_model", ["k"], sql)
+    assert result["accepted"] is True, result
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (1, 1, 1)
+    assert result["samples"]["only_in_model"] == [{"k": 3}]
+    assert result["samples"]["only_in_reference"] == [{"k": 4}]
+    assert result["samples"]["mismatched"][0]["key"] == {"k": 2}
+    bad = "SELECT * FROM (VALUES ('one', 5)) AS r(k, int_v)"
+    with pytest.raises(ToolError, match=r"Conversion Error.*'one'"):
+        compare_by_key(gateway, "cmp_model", ["k"], bad)
+
+
 # --- Against Postgres (return 1): the join condition must be one Postgres full-joins on ----
 
 
@@ -635,6 +662,25 @@ def test_compare_by_key_full_joins_every_key_on_postgres(postgres_cmp: PostgresG
     result = compare_by_key(postgres_cmp, "all_null", ["a", "b"], composite)
     assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (0, 0, 1)
     assert result["samples"]["mismatched"][0]["key"] == {"a": 2, "b": None}
+
+
+@pytest.mark.integration
+def test_compare_by_key_casts_a_reference_key_of_another_type_on_postgres(
+    postgres_cmp: PostgresGateway,
+) -> None:
+    """Return B on Postgres: `COALESCE(integer, text)` is an error there too, and `FULL JOIN`
+    keeps its hash-joinable condition once the reference key is cast to the model's type; a
+    key Postgres cannot cast is a tool error carrying the database's reason."""
+    sql = "SELECT * FROM (VALUES ('1'::text, 5), ('2', 8), ('4', 1)) AS r(k, int_v)"
+    result = compare_by_key(postgres_cmp, "cmp_model", ["k"], sql)
+    assert result["accepted"] is True, result
+    assert (result["only_in_model"], result["only_in_reference"], result["mismatched"]) == (1, 1, 1)
+    assert result["samples"]["only_in_model"] == [{"k": None}]
+    assert result["samples"]["only_in_reference"] == [{"k": 4}]
+    assert result["samples"]["mismatched"][0]["key"] == {"k": 2}
+    bad = "SELECT * FROM (VALUES ('one'::text, 5)) AS r(k, int_v)"
+    with pytest.raises(ToolError, match=r'invalid input syntax.*"one"'):
+        compare_by_key(postgres_cmp, "cmp_model", ["k"], bad)
 
 
 # --- MCP wrappers over stdio ------------------------------------------------------------------

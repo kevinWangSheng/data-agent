@@ -221,6 +221,10 @@ def _sequence(lines: list[Line], index: int, indent: int) -> tuple[list[Any], in
         if not _is_item(line.text):
             break
         rest = line.text[1:].strip()
+        if _is_item(rest):
+            raise YamlLiteError(
+                f"line {line.number}: nested block sequence on one line: {line.text!r}"
+            )
         if not rest:
             index += 1
             if index < len(lines) and lines[index].indent > indent:
