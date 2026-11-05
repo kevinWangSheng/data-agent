@@ -3,8 +3,8 @@
 Status: ready-for-agent
 Blocked by: 51
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§2）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 54-trial-deadline, 2026-11-05)
+Branch: worktree-54-trial-deadline
 
 ## Goal
 
@@ -20,7 +20,7 @@ agent 知道这个 trial 的截止时间：剩余时间不够跑完一次验证�
 
 ## Authority
 
-- May edit: `evals/harbor_agent.py`、`src/data_agent/agent.py`（主循环、CLI 参数）、`src/data_agent/cli.py`（若 CLI 参数在这里）、`src/data_agent/verifier_v2/hooks.py`、`src/data_agent/verifier_v2/dispatch.py`、`src/data_agent/verifier_v2/stop.py`、`evals/process.py`（只认 `terminal_reason: deadline` 和 `ended_unverified`）、`tests/`（`tests/acceptance/` 除外）
+- May edit: `evals/ablate.py`（只加 `--agent-kwarg KEY=VALUE` 透传成 Harbor `--ak`，主会话 2026-11-05 补）、`evals/harbor_agent.py`、`src/data_agent/agent.py`（主循环、CLI 参数）、`src/data_agent/cli.py`（若 CLI 参数在这里）、`src/data_agent/verifier_v2/hooks.py`、`src/data_agent/verifier_v2/dispatch.py`、`src/data_agent/verifier_v2/stop.py`、`evals/process.py`（只认 `terminal_reason: deadline` 和 `ended_unverified`）、`tests/`（`tests/acceptance/` 除外）
 - Must not edit: `src/data_agent/agents/`、`src/data_agent/verifiers.py`、`skills/`、`src/data_agent/mcp_server.py`、`evals/dab.py`、其他工单的文件、`.claude/`、`CODING_STANDARDS.md`
 - Server access: none（真实运行由主会话跑）
 - Spend cap: $0.5（本地）
@@ -57,10 +57,43 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1 (da-review + eng:code-review; one round of fixes)
+- Model spend: $0 (no model calls; the local run used a dead endpoint)
+- Outcome: implemented, unit tests and local real run pass; server real run pending (main session)
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（142f041、02899cf）
+
+- 2026-11-05 (claude, worktree 54-trial-deadline): implemented; commits 142f041 and 02899cf on worktree-54-trial-deadline.
+  - What changed:
+    - Harbor kwarg `agent_timeout_sec` (default 4000, must be > 0) is passed to the CLI as `--agent-timeout-sec`. The CLI turns it into a monotonic deadline at startup.
+    - `verifier_v2/hooks.py`: with less than `VERIFY_MIN_REMAINING_S = 1000` left, PreToolUse denies the dispatch of `verifier` and `value-verifier`. The reason says "Only N s are left before the trial deadline… Do not verify again: finish with the results you have". Other subagents are unaffected. In the same window, Stop lets the run end and emits `ended_unverified` (reason, reasons, remaining_s), before the blocks counter is touched, so deny and block can't loop.
+    - `agent.py`: an `asyncio.timeout` set to the deadline minus `DEADLINE_MARGIN_S` (taken from the gateway's `TIMEOUT_SECONDS`, 150) wraps the stream. When it fires, the SDK stream is closed and `result` is written with `subtype: error_deadline`, `terminal_reason: deadline`, price-table spend and `open_tool_calls` (tool calls started but not answered). The outcome is "unfinished", so the CLI exits 1 and the Harbor adapter turns that into 0. A budget stop still takes priority, and a ResultMessage received before the timer fires keeps the SDK's own result.
+    - `evals/process.py`: a trial row gets `stopped: "deadline"` and `ended_unverified`. Per-task counts `stopped_by_deadline` and `ended_unverified` are added. The trial has no Harbor exception, so `is_infra_error` is false (tested).
+  - Tests: `make check` gives 1740 passed, 1 skipped, 1 xfailed; ruff, format and basedpyright are clean. The baseline before the change was 1725 passed. New tests are in `tests/test_trial_deadline.py` (hooks with an injected clock; the main loop with a stream that sleeps past the deadline, which fails before the fix; CLI deadline). `tests/test_harbor_agent.py` gains the kwarg default, an override passed as the string "1500", and refusal of values ≤ 0. `tests/test_eval_process.py` gains the deadline trial and `ended_unverified`. `tests/test_eval_diverge.py` gets the two new per-task keys in its exact dict.
+  - Local real run, no model spend (the endpoint is a dead local port, so the SDK keeps retrying until the stop): `bash /tmp/54-real/run.sh`, which runs `data-agent run --type query … --agent-timeout-sec 160` and so should stop about 10 s after start.
+    - Output: `exit=1 wall=17s` / `error: the run stopped itself at the trial deadline`.
+    - Events: version → dictionary → status(started) → `result{subtype: error_deadline, terminal_reason: deadline, cost_basis: price_table, open_tool_calls: []}`.
+    - No CLI or mcp-server process was left afterwards. About 6 s of the wall time is the SDK's own close: 5 s grace after stdin EOF, then SIGTERM (`subprocess_cli.py` close).
+  - Not yet done: the server run in Evidence required (`pos-operations` × 1, full, `--ak agent_timeout_sec=1500`) is for the main session.
+  - Review 1, `da-review main` (Codex, completed):
+    - [P1] "Setup (snapshot, dictionary) is not covered by the deadline." Not fixed: the timer is computed from the absolute deadline, so setup time is already subtracted. The dictionary build has its own 60 s cap (`context_tools.py:89`) and the snapshot only copies logic files. Setup can only reach Harbor's timeout with `agent_timeout_sec` under about 210 s, which is not a supported use.
+  - Review 2, `eng:code-review main` (Standards and Spec sub-agents):
+    - Standards: no hard violations. Fixed in 02899cf: the margin now comes from `gateway.TIMEOUT_SECONDS`; the duplicated result shape is now the shared `Spend.stopped_fields`; `remaining_s` is renamed `short_on_time_s`.
+    - Standards, not fixed: the "deadline" string literals follow the existing `STOPS` style in process.py, and agent.py and evals stay decoupled. Reading the tool fields twice in the PreToolUse hook is minor. The `now` parameter is the clock-injection seam the ticket asks for.
+    - Spec, every Acceptance item is implemented and tested. Not fixed:
+      - (1) A verifier still running at the stop is not priced (`Spend` only reads finished transcripts); recorded as a known limitation.
+      - (2) The 1000 s check measures to the deadline, not to T−150, so a verifier sent with 1000–1120 s left gets 850–970 s; this follows the ticket's wording.
+      - (5) The SDK close has no timer of its own, but the SDK bounds it (about 20 s worst case, per its docstring), well inside the 150 s margin.
+      - (6) If the SDK turns the cancel into an ordinary exception, an extra `error(source=sdk)` event can appear; nothing counts it as infrastructure.
+    - Spec, scope: the positive-value checks are small and inside Authority. No files outside Authority were edited.
+  - Known limitations: no rule against starting a new `dbt run` close to the deadline (as agreed; `open_tool_calls` shows what was running). DAB (`evals/dab.py`) has no deadline (follow-up). Spend of a verifier still running at the stop is not counted.
+
+### 2026-11-05 主会话（补一处 Authority）
+
+- Evidence required 的服务器运行需要 `--ak agent_timeout_sec=1500`，但 `evals ablate` 不透传 agent kwarg（`evals/ablate.py:383-394` 的 `harbor_run_args` 只固定传 `run_config`），`da-remote start` 又只能跑 `python -m evals`，所以这次运行起不来。pos-operations 在新 main 上 1418 s 就跑完（t52-real），用默认 4000 s 触发不了截止。
+- 主会话补一行 Authority：允许改 `evals/ablate.py`，只加一个可重复的 `--agent-kwarg KEY=VALUE`，原样转成 Harbor 的 `--ak KEY=VALUE`，不得覆盖 `run_config`，并配测试。这是可回退的小扩展，在最终汇总里报给人。
+- 状态改回 `ready-for-agent`，在原分支上补。

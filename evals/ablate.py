@@ -79,6 +79,7 @@ from data_agent.agent import git_commit, skill_version
 from data_agent.run_config import REPO_ROOT, load_config
 from evals import balance, wheels
 from evals.harbor import Trial, event_files, load_trials
+from evals.process import timing_markdown
 from evals.report import (
     TRIALS_PER_TASK,
     check_complete,
@@ -696,6 +697,9 @@ def markdown(table: dict[str, Any]) -> str:
             f"| {c['layer']} | {c['config']} | {c['diff']:+.1f} | "
             f"[{c['ci_low']:+.1f}, {c['ci_high']:+.1f}] | {'yes' if c['significant'] else 'no'} |"
         )
+    # Process metrics, timing among them, are in dev reports only (evals.report; ADR-0004).
+    timings = [(row["config"], (row.get("process") or {}).get("timing")) for row in rows]
+    lines += ["", *timing_markdown(timings)]
     return "\n".join(lines) + "\n"
 
 

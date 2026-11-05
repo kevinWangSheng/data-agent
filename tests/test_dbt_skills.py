@@ -1,12 +1,15 @@
 """The Skills preloaded for dbt runs and the scripts dbt-workflow runs."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -355,6 +358,18 @@ def test_workflow_passes_the_spec_to_the_verifiers_as_intent_only() -> None:
     assert "Do NOT include column definitions, SQL logic" in text
 
 
+def test_workflow_says_not_to_switch_vars_between_dbt_calls() -> None:
+    """Ticket 53: two trials switched `--vars` back and forth, five extra 60-68 s full re-parses.
+    A general dbt rule beside the build commands; task names are checked for every Skill file in
+    test_skills_and_verifier_prompts_name_no_task."""
+    text = " ".join(
+        body("dbt-workflow").split("### Step 7", 1)[1].split("### Step 8", 1)[0].split()
+    )
+    assert "Do NOT switch `--vars` back and forth between dbt calls" in text
+    assert "re-parse the whole project" in text
+    assert "--vars" not in step_8()
+
+
 MANIFEST = Path(__file__).resolve().parents[1] / "evals" / "manifest.json"
 
 
@@ -590,3 +605,57 @@ def test_workflow_forbids_reading_dbt_generated_json() -> None:
     rules = body("dbt-workflow").split("\n## Rules", 1)[1]
     assert "target/" in rules
     assert "run_results.json" in rules and "manifest.json" in rules
+
+
+# Ticket 53: the scan re-read every yml under models/ once per model missing its SQL file (34
+# missing models, 31 yml files: 1055 parses, 35.7 of 40 s on the base-image project).
+SCAN_MULTI_YML = Path(__file__).parent / "fixtures" / "scan_multi_yml.md"
+
+
+def multi_yml_project(tmp_path: Path) -> Path:
+    """dbt_shop plus three yml files in nested directories, each naming models with no SQL."""
+    project = tmp_path / "dbt_shop"
+    shutil.copytree(DBT_SHOP, project)
+    for directory, names in {
+        "finance": ["fct_invoices", "fct_payments", "dim_accounts"],
+        "finance/aging": ["aging_buckets", "aging_summary"],
+        "marketing": ["dim_campaigns", "fct_clicks"],
+    }.items():
+        folder = project / "models" / directory
+        folder.mkdir(parents=True)
+        models = "".join(
+            f"  - name: {n}\n    description: The {n} model.\n"
+            f"    config:\n      materialized: {'view' if n.startswith('dim') else 'table'}\n"
+            f"    columns:\n      - name: {n}_id\n"
+            for n in names
+        )
+        yml = folder / f"_{directory.replace('/', '_')}.yml"
+        yml.write_text(f"version: 2\nmodels:\n{models}")
+    return project
+
+
+def test_scan_parses_each_yml_once_and_reports_the_same(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yaml
+
+    project = multi_yml_project(tmp_path)
+    spec = importlib.util.spec_from_file_location("scan_project", SCAN)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    parsed: list[str] = []
+    real_safe_load = yaml.safe_load
+
+    def counting_safe_load(stream: Any) -> Any:
+        parsed.append(str(getattr(stream, "name", "")))
+        return real_safe_load(stream)
+
+    monkeypatch.setattr(yaml, "safe_load", counting_safe_load)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        module.print_report(project)
+    model_ymls = sorted(str(p) for p in (project / "models").rglob("*.yml"))
+    assert sorted(p for p in parsed if p in model_ymls) == model_ymls
+    # Pinned from the scan before ticket 53 (pre-commit trims the file's trailing blank line).
+    assert out.getvalue().rstrip("\n") == SCAN_MULTI_YML.read_text().rstrip("\n")

@@ -29,7 +29,7 @@ Step 8 checks column types for every model the task asks for and adds a key-leve
 an independent recomputation, which gates the STOP only without the verifier. Step 8 treats technical_spec.md as the
 main agent's intent only, which the verifier does not need, as it judges against the task text. The Rules forbid
 Reading the JSON dbt writes under target/, and the validate section states this copy's 300 s
-default timeout. -->
+default timeout. Step 7 says not to switch `--vars` between dbt calls (each switch re-parses). -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -234,6 +234,9 @@ If `dbt run` fails on ANY model - including package models in
 Broken upstream models block every downstream model.
 
 Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones.
+
+Do NOT switch `--vars` back and forth between dbt calls: every change of `--vars` makes dbt
+re-parse the whole project, which can take a minute or more. Pick the vars once and keep them.
 
 ### Step 8 - Verify and Fix
 1. Run `query_database` with `SELECT 1`. If it errors, wait and retry.

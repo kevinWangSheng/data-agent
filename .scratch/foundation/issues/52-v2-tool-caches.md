@@ -1,10 +1,10 @@
 # 52 — v2 工具缓存快照 YML 和工作区模型文件，单次调用不再重读不变的东西
 
-Status: ready-for-agent
+Status: done
 Blocked by: —（服务器验证要用 51 的计时，排在 51 合入后）
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§3）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 52-v2-tool-caches, 2026-11-05)
+Branch: worktree-52-v2-tool-caches
 
 ## Goal
 
@@ -61,10 +61,76 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2 (Fable in place of Codex; eng:code-review)
+- Model spend: $0 (no paid runs)
+- Outcome: done，PR #52 squash 合入；本地 21 线程 grain_facts 0.45–0.57 s；t52-real 1/1（服务器 grain_facts 单次耗时留给 47 初筛）
+- Model spend（主会话真实运行）: $0.2993
 - Human review minutes: —
 
 ## Comments
+
+### 2026-11-05 工单会话（45ba80d、9b7f37b、16a6048）
+
+**Implementation (commits 45ba80d, 9b7f37b, 16a6048).**
+- **Snapshot YML:** `snapshot_documents(snapshot)` is cached per process, behind a lock.
+- **`model_diff` snapshot side:** each snapshot project's model files, text and resolved config are read once per process (`model_diff._snapshot_models`).
+- **Workspace `model_files`:** cached per (project, model-paths). It is walked again when any of these changes:
+  - the mtime of a directory the last walk listed (each mtime is taken before that directory is listed);
+  - the mtime of a directory on the way from the project down to a model-paths directory (so a model-paths directory created later is seen);
+  - a symlinked model file: whether it is still a file inside the project.
+- **Racy rule (added beyond the ticket text):** a directory whose mtime is within 2 s before the walk is not trusted, the same rule git uses for "racily clean" index entries. File times on Linux use a coarse clock, so without it a file added in the same tick as a walk would stay invisible until the next change. The cost is that directories the agent is actively writing get re-walked; results are never stale.
+- **Not cached:** workspace file contents, and `dbt_project.yml` (still parsed on every call).
+- **`compare_by_key`:** no change needed. It reaches project files only through `model_diff` and `model_files`, which are now cached.
+- **Existing tests:** none changed. `model_files` uses its own walker on a cache miss, so the existing `files_under` call-count test still counts per call.
+
+**Tests (`tests/test_verifier_v2_caches.py`, 9 tests).**
+- Same snapshot called twice: the second `grain_facts` / `model_diff` reads no snapshot file.
+- Add, delete and rename a model file, a new subdirectory, and a model-paths directory created later are all seen on the next call. These cases are detected through the mtime comparison: a mutant without it fails 2 tests.
+- Editing only file content: `model_diff` sees the new content.
+- A symlinked model whose target is deleted drops out.
+- A file added without a visible mtime change is still seen (the racy rule).
+- 16 threads at once: the YML documents are parsed once, the model directory is walked once, and all results are equal.
+- These failed before the fix: the parse-once, walk-once and concurrency tests (4 failing), the racy test, and the symlink test.
+
+**`make check`:** `1708 passed, 1 skipped, 38 deselected, 1 xfailed`, exit 0 (`runs/t52/check-r2.txt`).
+
+**Local re-run.** Command: `uv run python runs/t52/measure.py <a1 scratchpad: ws/ snap/ work/retail.duckdb> <label>`, on pos-operations with model `int_pos__order_daily_summary`.
+
+| | before | after (final code) |
+|---|---|---|
+| `grain_facts`, 21 threads (wall) | 4.81 / 5.36 / 6.57 s | 0.45 / 0.45 / 0.53 s |
+| `grain_facts`, single (median) | 0.35 s | 0.26–0.37 s (mostly SQL) |
+| `model_diff`, single (median) | 0.97 s | 0.17 s |
+| `contract_check`, single (median) | 1.09 s | 0.16–0.20 s |
+
+**Reviews.**
+- **Codex unavailable, Fable review.** `da-review main` failed with "Selected model is at capacity", so a read-only `fable` subagent reviewed instead. No high-severity findings. Fixed in 9b7f37b:
+  - the add/remove/rename tests only exercised the racy fallback, not the mtime comparison;
+  - a symlinked model whose target was deleted stayed cached, which is a regression to `OSError`;
+  - an absolute model-path made the cache stat every directory up to `/`;
+  - the racy test depended on timing.
+- **Not fixed (Fable):**
+  - `dbt_project.yml` is still parsed on every call: outside the ticket's cache set, and the target is met.
+  - The `model_files` cache has no size limit: bounded by the number of projects.
+- **eng:code-review, Spec:** all acceptance items met. The racy rule and the symlink re-check were judged necessary for correctness, not scope creep.
+- **eng:code-review, Standards:** no hard violations. Fixed in 16a6048:
+  - `_taken` renamed `_kept`, without the double negation;
+  - `current()` renamed `still_valid()`;
+  - one shared walk-counting helper in the tests.
+- **Not fixed (Standards):**
+  - Moving the cache into its own module: Authority allows only new test files.
+  - A shared `once_per_key` helper: the three caches differ (`model_files` revalidates), so it would be speculative.
+  - A cache-clearing fixture for tests: every key is a unique `tmp_path`.
+  - The single `files_under` delegate was flagged as a Middle Man: it is kept on purpose, because callers and an existing test patch it.
+
+**Pending (main session):** the Postgres integration tests (`make test-integration`), and the server `pos-operations` × 1 (full) run after 51 merges, with `grain_facts` single `duration_ms` ≤5 s.
+
+### 2026-11-05 主会话
+
+- Postgres 集成测试：在本机 Postgres 17 新建 scratch 库 `da_t52_scratch`，在 16a6048 上运行 `DATA_AGENT_TEST_POSTGRES_URL=postgresql://localhost/da_t52_scratch uv run pytest -q -m integration tests/test_verifier_v2_tools.py`，结果 `2 passed, 50 deselected`。注意：env 文件里没有 `DATA_AGENT_TEST_POSTGRES_URL`，所以 `make test-integration` 不会自动跑到这两个测试。
+- 服务器运行 pos-operations × 1 排在 51 合入之后。
+- 服务器真实运行 `t52-real`（1463023 = 16a6048 合 main a172093）：`scripts/da-remote start t52-real -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task pos-operations --out runs/t52-real --budget 2 --config full --trials 1`，exit 0，reward 1（1/1），实际价 $0.2993（闲时）。trial 墙钟 1418 s，验证器墙钟 535 s，超时 0 次，no duration 0 次。
+  - 这次 `grain_facts` 一次都没调用，所以单次 ≤5 s 那一条在这里测不出来。原因是 main 上的验证器还是旧版：派了 `verifier` 和 `value-verifier`，用的工具是 `check_model_schema`、`map_columns`、`audit_model_sources`，各 23 次。v2 单一验证器的提示词在工单 47（PR #48），还没合入。
+  - 处理方式：本工单是确定性修复，单元测试、本地复测（21 线程一批 0.45–0.57 s）和 Postgres 集成测试都已通过，先合入。`grain_facts` 和 `compare_by_key` 在服务器上的单次 `duration_ms`，放到工单 47 的过线初筛里看：那次初筛在 51、52、47 都合入后的 main 上跑，用的就是 v2 验证器。
+- PR #52：CI 绿，Codex GitHub app 审查 16a6048 完成，没有意见。squash 合入。
