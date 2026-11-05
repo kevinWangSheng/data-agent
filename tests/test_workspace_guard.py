@@ -1,5 +1,6 @@
 """Read, Glob, Grep, Write and Edit may only reach files inside the task workspace."""
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -529,9 +530,9 @@ def project_below(workspace: Path) -> Path:
 async def test_grep_denial_excludes_only_the_directory_holding_the_credentials(
     project_below: Path,
 ) -> None:
-    """Return round 1 of ticket 55: searching the project's parent, the hint said
-    `!**/proj/**`, which skips the whole project. It now names the closest directory holding every
-    credential and nothing else, and that retry passes the guard."""
+    """Searching the project's parent, the hint excludes the closest directory that holds every
+    credential and nothing else (not the project itself, which holds the models), and that retry
+    passes the guard."""
     reason = (await hook_output(project_below, "Grep", {"pattern": "select", "path": "."}))[
         "permissionDecisionReason"
     ]
@@ -542,9 +543,16 @@ async def test_grep_denial_excludes_only_the_directory_holding_the_credentials(
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="needs ripgrep")
-def test_the_suggested_exclusion_still_lets_ripgrep_read_the_models(project_below: Path) -> None:
+async def test_the_suggested_exclusion_still_lets_ripgrep_read_the_models(
+    project_below: Path,
+) -> None:
+    reason = (await hook_output(project_below, "Grep", {"pattern": "select", "path": "."}))[
+        "permissionDecisionReason"
+    ]
+    hint = re.search(r'glob: "([^"]+)"', reason)
+    assert hint
     listed = subprocess.run(
-        ["rg", "--hidden", "--files", "--glob", "!**/.env/**", "."],
+        ["rg", "--hidden", "--files", "--glob", hint.group(1), "."],
         cwd=project_below,
         capture_output=True,
         text=True,
@@ -574,8 +582,7 @@ async def test_grep_denial_offers_only_type_when_no_directory_holds_just_the_cre
     tool_input = {"pattern": "select", "glob": "!**/.env/**"}
     reason = (await hook_output(project_below, "Grep", tool_input))["permissionDecisionReason"]
     assert 'type: "sql"' in reason
-    assert "!**/proj/**" not in reason
-    assert "!**/other/**" not in reason
+    assert "glob:" not in reason
 
 
 async def test_grep_denial_keeps_the_glob_already_given(project_below: Path) -> None:
@@ -599,9 +606,9 @@ async def test_grep_denial_offers_no_directory_glob_for_a_top_level_credential(
 async def test_grep_exclusion_naming_a_directory_with_braces_decides_nothing(
     workspace: Path,
 ) -> None:
-    """Codex on ticket 55 return 1: ripgrep expands `{prod}` in `!**/secrets{prod}/**`, so the glob
-    misses the directory literally named `secrets{prod}` and its `.env` is read. The guard used to
-    match the braces literally and let the Grep run; the hint must not suggest such a glob."""
+    """ripgrep expands `{prod}` in `!**/secrets{prod}/**`, so the glob misses the directory
+    literally named `secrets{prod}` and its `.env` is read: the guard denies, and the hint does
+    not suggest such a glob."""
     (workspace / "secrets{prod}").mkdir()
     (workspace / "secrets{prod}" / ".env").write_text("KEY=x")
     tool_input = {"pattern": "select", "glob": "!**/secrets{prod}/**"}

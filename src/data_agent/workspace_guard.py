@@ -129,8 +129,9 @@ def _grep_globs(glob: str) -> list[str]:
 def _name_matches(name: str, pattern: str) -> bool | None:
     """Whether one path segment `name` matches the glob segment `pattern` (case-sensitive), or
     None where ripgrep reads the glob otherwise than fnmatch: `[^...]` (negation in ripgrep, a
-    class holding `^` in fnmatch) and a backslash (an escape in ripgrep, literal in fnmatch)."""
-    if "\\" in pattern or "[^" in pattern:
+    class holding `^` in fnmatch), a backslash (an escape in ripgrep, literal in fnmatch) and a
+    `{` or `}` left over (ripgrep expands a group, fnmatch reads it literally)."""
+    if any(syntax in pattern for syntax in ("\\", "[^", "{", "}")):
         return None
     return fnmatch.fnmatchcase(name, pattern)
 
@@ -162,16 +163,10 @@ def _below_directory(pattern: str, path: Path) -> bool:
     the search path) lies below such a directory. The leading `**/` lets the glob match wherever
     ripgrep starts, and ripgrep never enters a directory an excluding glob matches. Only the
     directories below the search path are compared: how Grep hands ripgrep the search path itself
-    (as given, absolute, with symlinks followed) is not known here. A `{` or `}` rules it out:
-    ripgrep expands the group, fnmatch reads it literally."""
+    (as given, absolute, with symlinks followed) is not known here."""
     middle = pattern.removeprefix("**/").removesuffix("/**")
     segments = middle.split("/")
-    if (
-        not (pattern.startswith("**/") and pattern.endswith("/**"))
-        or "**" in segments
-        or "{" in middle
-        or "}" in middle
-    ):
+    if not (pattern.startswith("**/") and pattern.endswith("/**")) or "**" in segments:
         return False
     parents, width = path.parts[:-1], len(segments)
     return any(
@@ -327,7 +322,7 @@ def _excluding_retry(
     retry = f"{glob} !{pattern}" if glob else f"!{pattern}"
     if not all(_filter_skips(path, retry, file_type) for path in reached):
         return None
-    if any(_below_directory(pattern, p) for p in files if not _is_credential_path(p)):
+    if any(_below_directory(pattern, path) for path in files if not _is_credential_path(path)):
         return None
     return retry
 
