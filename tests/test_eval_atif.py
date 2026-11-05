@@ -212,3 +212,32 @@ def test_without_an_instruction_the_trajectory_starts_at_the_agent() -> None:
     trajectory = convert(RUN, instruction=None, session_id="run-1")
     assert trajectory is not None
     assert trajectory.steps[0].source == "agent"
+
+
+def test_verifier_end_checks_as_a_mapping_become_rows() -> None:
+    """The v2 hooks write `checks` as model -> {check number -> status} (ticket 46); the step keeps
+    the list-of-rows shape so a trajectory reads the same whichever harness wrote the run."""
+    events = stamped(
+        VERSION,
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "a1"},
+        {
+            "type": "verifier_end",
+            "verifier": "verifier",
+            "agent_id": "a1",
+            "checks": {"x": {"1": "PASS", "2": "FAIL"}, "y": {"1": "PASS"}},
+            "report": "### x\nCHECK 1: PASS — ok\nCHECK 2: FAIL — no\n### y\nCHECK 1: PASS — ok",
+        },
+        RESULT,
+    )
+    trajectory = convert(events, instruction="t", session_id="s")
+    assert trajectory is not None
+    report = trajectory.steps[1]
+    assert report.extra == {
+        "verifier": "verifier",
+        "agent_id": "a1",
+        "checks": [
+            {"model": "x", "check": "CHECK 1", "status": "PASS"},
+            {"model": "x", "check": "CHECK 2", "status": "FAIL"},
+            {"model": "y", "check": "CHECK 1", "status": "PASS"},
+        ],
+    }

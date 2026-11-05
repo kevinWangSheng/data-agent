@@ -2,11 +2,11 @@
 with the SDK's `agents=` from the copied signalpilot-plugin prompts in `agents/`.
 
 They are offered only to dbt runs whose config turns the verifier layer on (query runs use
-sql-workflow's own checks). SubagentStart / SubagentStop hooks record each one's start and end,
-with the per-check verdicts read from its report, as `verifier_start` / `verifier_end` events.
+sql-workflow's own checks). A SubagentStart hook records each one's start as a `verifier_start`
+event; its end, with the report parsed and the turns counted, is `verifier_v2.hooks`'s
+`verifier_end`.
 """
 
-import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -36,10 +36,6 @@ DATA_TOOLS = {
     ),
     "value-verifier": ("list_tables", "query_database", "verify_model_values"),
 }
-STATUSES = ("PASS", "FAIL", "NEEDS_INFO", "N/A")
-# "CHECK 2: FAIL", "**CHECK 2**: FAIL", "**CHECK 2 - Aggregate Cross-Validation: FAIL**".
-CHECK_RE = re.compile(r"(CHECK\s*\d+)\b[^:\n]{0,80}:[\s*]*(PASS|FAIL|NEEDS_INFO|N/A)\b")
-MODEL_RE = re.compile(r"^###\s+(.+?)\s*$")
 # Ends each verifier's prompt in a run with a task file; the prompt's "Task file" section says how
 # to use it.
 TASK_FILE_LINE = "\n\nTask file (read it first, with Read): `{path}`\n"
@@ -87,36 +83,15 @@ def verifier_agents(server: str, task_file: Path | None = None) -> dict[str, Age
     return {name: load_definition(name, server, task_file) for name in VERIFIER_NAMES}
 
 
-def parse_checks(report: str) -> list[dict[str, str]]:
-    """Each `CHECK n: STATUS` line, under the `### <model>` heading it follows."""
-    checks: list[dict[str, str]] = []
-    model = ""
-    for line in report.splitlines():
-        if heading := MODEL_RE.match(line.strip()):
-            model = heading.group(1)
-        elif found := CHECK_RE.search(line):
-            checks.append({"model": model, "check": found.group(1), "status": found.group(2)})
-    return checks
-
-
 def verifier_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
-    """Hooks that record the verifiers' start and end; other subagents leave no event."""
+    """The hook that records a verifier's start; other subagents leave no event."""
 
     async def record(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
         fields: dict[str, Any] = dict(hook_input)
-        if fields.get("agent_type") not in VERIFIER_NAMES:
-            return {}
-        common = {"verifier": fields["agent_type"], "agent_id": fields.get("agent_id")}
-        if fields["hook_event_name"] == "SubagentStart":
-            emit("verifier_start", **common)
-        elif fields["hook_event_name"] == "SubagentStop":
-            report = str(fields.get("last_assistant_message") or "")
-            emit("verifier_end", **common, checks=parse_checks(report), report=report)
+        if fields.get("agent_type") in VERIFIER_NAMES:
+            emit("verifier_start", verifier=fields["agent_type"], agent_id=fields.get("agent_id"))
         return {}
 
-    return {
-        "SubagentStart": [HookMatcher(hooks=[record])],
-        "SubagentStop": [HookMatcher(hooks=[record])],
-    }
+    return {"SubagentStart": [HookMatcher(hooks=[record])]}

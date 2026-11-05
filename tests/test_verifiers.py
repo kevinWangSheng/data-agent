@@ -1,5 +1,5 @@
 """Verifier subagents: offered only to dbt runs whose config turns the layer on, read-only, and
-recorded as verifier_start / verifier_end events with their per-check verdicts."""
+recorded as verifier_start events (their end is verifier_v2's `verifier_end`)."""
 
 import json
 from pathlib import Path
@@ -13,23 +13,10 @@ from data_agent import agent
 from data_agent.agent import ModelSettings, Task
 from data_agent.events import EventLog
 from data_agent.run_config import load_config
-from data_agent.verifiers import VERIFIER_NAMES, VERIFIERS_PROMPT, parse_checks, verifier_hooks
+from data_agent.verifier_v2 import parse_report
+from data_agent.verifiers import VERIFIER_NAMES, VERIFIERS_PROMPT, verifier_hooks
 
 SETTINGS = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
-REPORT = """\
-## Structure Report
-
-### customer_ltv
-- CHECK 1: PASS - materialized as a table
-- CHECK 2: FAIL - missing lifetime_value
-- CHECK 3: **NEEDS_INFO** - audit_model_sources errored
-- CHECK 4: PASS - none
-- CHECK 5: N/A - created from scratch
-
-### Summary
-PASS: 0 models
-FAIL: 1 models - customer_ltv (CHECK 2)
-"""
 
 
 def options(tmp_path: Path, task_type: str, config: str) -> ClaudeAgentOptions:
@@ -46,7 +33,19 @@ def test_dbt_runs_offer_both_read_only_verifiers(tmp_path: Path) -> None:
         assert tools >= {"Read", "mcp__data__query_database"}
         assert not tools & {"Write", "Edit", "Bash", "Agent"}
         assert "NEEDS_INFO" in definition.prompt and "N/A" in definition.prompt
-    assert {"SubagentStart", "SubagentStop"} <= set(built.hooks or {})
+    assert "SubagentStart" in (built.hooks or {})
+    # The v2 hooks (dispatch rewrite, verifier_end, Stop) need the run's snapshot and task file.
+    assert not {"SubagentStop", "Stop"} & set(built.hooks or {})
+    with_run = agent.build_options(
+        Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb"),  # pyright: ignore[reportArgumentType]
+        load_config("full"),
+        SETTINGS,
+        [],
+        lambda *_, **__: None,
+        task_file=tmp_path / "task.md",
+        snapshot=tmp_path / "snapshot",
+    )
+    assert {"PreToolUse", "SubagentStart", "SubagentStop", "Stop"} <= set(with_run.hooks or {})
     # A background verifier ends the main turn before its report is in, splitting the run.
     assert built.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
     servers: Any = built.mcp_servers
@@ -104,29 +103,6 @@ def test_verifier_reads_fewer_rows_against_the_models_grain() -> None:
     assert "GROUP BY" in check_3 and "grain" in check_3
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        "- CHECK 2: FAIL - missing",
-        "- **CHECK 2**: FAIL - missing",
-        "**CHECK 2 - Aggregate Cross-Validation: FAIL**",
-        "- CHECK 2: **FAIL** - missing",
-    ],
-)
-def test_parse_checks_reads_markdown_variants(line: str) -> None:
-    assert parse_checks(f"### m\n{line}") == [{"model": "m", "check": "CHECK 2", "status": "FAIL"}]
-
-
-def test_parse_checks_reads_each_models_verdicts() -> None:
-    assert parse_checks(REPORT) == [
-        {"model": "customer_ltv", "check": "CHECK 1", "status": "PASS"},
-        {"model": "customer_ltv", "check": "CHECK 2", "status": "FAIL"},
-        {"model": "customer_ltv", "check": "CHECK 3", "status": "NEEDS_INFO"},
-        {"model": "customer_ltv", "check": "CHECK 4", "status": "PASS"},
-        {"model": "customer_ltv", "check": "CHECK 5", "status": "N/A"},
-    ]
-
-
 async def fire(
     hooks: dict[HookEvent, list[HookMatcher]], event: HookEvent, hook_input: Any
 ) -> None:
@@ -135,35 +111,19 @@ async def fire(
             assert await callback(hook_input, None, HookContext(signal=None)) == {}
 
 
-async def test_hooks_record_verifier_start_and_end_with_verdicts(tmp_path: Path) -> None:
+async def test_hooks_record_a_verifier_start_and_no_other_subagent(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     base = {"session_id": "s", "transcript_path": "t", "cwd": str(tmp_path)}
     with EventLog(path, secrets=[]) as log:
         hooks = verifier_hooks(log.emit)
+        assert set(hooks) == {"SubagentStart"}
         start = {"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "verifier"}
         await fire(hooks, "SubagentStart", base | start)
-        stop = {
-            "hook_event_name": "SubagentStop",
-            "stop_hook_active": False,
-            "agent_id": "a1",
-            "agent_transcript_path": "x",
-            "agent_type": "verifier",
-            "last_assistant_message": REPORT,
-        }
-        await fire(hooks, "SubagentStop", base | stop)
         other = {"hook_event_name": "SubagentStart", "agent_id": "a2", "agent_type": "Explore"}
         await fire(hooks, "SubagentStart", base | other)
     events = [json.loads(line) for line in path.read_text().splitlines()]
-    assert [e["type"] for e in events] == ["verifier_start", "verifier_end"]
+    assert [e["type"] for e in events] == ["verifier_start"]
     assert events[0]["verifier"] == "verifier" and events[0]["agent_id"] == "a1"
-    assert events[1]["report"] == REPORT
-    assert [c["status"] for c in events[1]["checks"]] == [
-        "PASS",
-        "FAIL",
-        "NEEDS_INFO",
-        "PASS",
-        "N/A",
-    ]
 
 
 def value_verifier_prompt() -> str:
@@ -286,8 +246,7 @@ def test_verifier_checks_every_row_removal_against_the_task_or_yml() -> None:
     template = next(line for line in output_format.splitlines() if "CHECK 6" in line)
     for status in ("PASS", "FAIL"):
         line = template.replace("PASS / FAIL / NEEDS_INFO / N/A", status)
-        expected = [{"model": "m", "check": "CHECK 6", "status": status}]
-        assert parse_checks(f"### m\n{line}") == expected
+        assert parse_report(f"### m\n{line}")["models"] == {"m": {6: status}}
 
 
 @pytest.mark.parametrize("name", VERIFIER_NAMES)
@@ -314,12 +273,11 @@ def test_verifiers_prompt_passes_the_spec_as_intent_and_still_hides_the_sql() ->
     assert "Do not tell them what the columns mean or how you wrote the SQL." in flat
 
 
-def test_parse_checks_reads_a_row_removal_fail_that_quotes_sql() -> None:
+def test_parse_report_reads_a_row_removal_fail_that_quotes_sql() -> None:
     report = (
         "### fct_orders\n"
         "- CHECK 5: N/A - created from scratch\n"
         "- CHECK 6: FAIL - `WHERE o.status <> 'cancelled'` (models/fct_orders.sql:12): neither "
         "the task nor the YML asks to drop cancelled orders\n"
     )
-    expected = {"model": "fct_orders", "check": "CHECK 6", "status": "FAIL"}
-    assert parse_checks(report)[-1] == expected
+    assert parse_report(report)["models"] == {"fct_orders": {5: "N/A", 6: "FAIL"}}

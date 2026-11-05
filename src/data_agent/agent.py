@@ -723,6 +723,15 @@ def build_options(
         tools = [*tools, AGENT_TOOL]
         agents = verifier_agents(MCP_SERVER, task_file)
         all_hooks |= verifier_hooks(emit)
+        # The v2 hooks need the run's snapshot and task file (`run` passes both); a caller
+        # building options without them gets the verifiers but not the dispatch rewrite, the
+        # Stop block or the `verifier_end` event.
+        if snapshot is not None and task_file is not None:
+            v2_hooks = verifier_v2.run_hooks(
+                config, workspace=task.workspace, snapshot=snapshot, task_file=task_file, emit=emit
+            )
+            for event, matchers in v2_hooks.items():
+                all_hooks.setdefault(event, []).extend(matchers)
     if spend is not None:
         for event, matchers in spend.hooks(emit).items():
             all_hooks.setdefault(event, []).extend(matchers)
