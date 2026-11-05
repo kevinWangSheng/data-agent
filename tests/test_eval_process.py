@@ -251,3 +251,34 @@ def test_job_and_task_metrics_carry_the_timing_summary(tmp_path: Path) -> None:
     job = job_metrics([trial_with(tmp_path, *parallel_batch(timed=True))])
     assert job["timing"]["tools"]["Bash"]["calls"] == 1
     assert job["per_task"]["t1"]["timing"]["tools"]["Bash"]["p50"] == 60.0
+
+
+def test_a_trial_stopped_at_its_deadline_is_counted_not_an_infrastructure_error(
+    tmp_path: Path,
+) -> None:
+    """Ticket 54: the agent stops itself at the trial deadline (`terminal_reason: deadline`) and
+    exits as an unfinished agent, so Harbor records no exception; the Stop hook let it end
+    unverified first (`ended_unverified`)."""
+    from evals.report import is_infra_error
+
+    trial = trial_with(
+        tmp_path,
+        {"type": "ended_unverified", "reason": "alpha: rule 1", "remaining_s": 900.0},
+        {
+            "type": "result",
+            "subtype": "error_deadline",
+            "terminal_reason": "deadline",
+            "num_turns": 12,
+            "cost_usd": 0.4,
+        },
+    )
+    assert not is_infra_error(trial)
+    row = trial_metrics(trial)
+    assert (row["stopped"], row["ended_unverified"], row["cost_usd"]) == ("deadline", True, 0.4)
+    task = job_metrics([trial])["per_task"]["t1"]
+    assert (task["trials"], task["stopped_by_deadline"], task["ended_unverified"]) == (1, 1, 1)
+
+
+def test_a_trial_that_ended_verified_has_no_ended_unverified(tmp_path: Path) -> None:
+    row = trial_metrics(trial_with(tmp_path, {"type": "result", "subtype": "success"}))
+    assert (row["stopped"], row["ended_unverified"]) == (None, False)

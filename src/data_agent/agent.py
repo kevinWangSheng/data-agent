@@ -47,7 +47,7 @@ from data_agent import verifier_v2
 from data_agent.command_guard import command_guard
 from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
-from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
+from data_agent.gateway import TIMEOUT_SECONDS, DuckDBGateway, Gateway, PostgresGateway
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
@@ -136,7 +136,9 @@ Database: {database}. dbt writes to it through the project's profile; you read i
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
 Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
 `cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
-directory. Do not edit `profiles.yml`.
+directory. Do not edit `profiles.yml`. When the task asks you to print `DB_TYPE`, run \
+`echo $DB_TYPE` as a Bash call of its own. List, read and search files with the Glob, Read and \
+Grep tools, not `ls` or `cat`.
 
 <task>
 {task}
@@ -150,8 +152,9 @@ then the assumptions you made.
 # Added to DBT_PROMPT only when the verifier layer is on (ticket 32); otherwise the prompt is the
 # same as before, so runs without the layer stay comparable with earlier ones.
 TASK_FILE_NOTE = """
-The task above is also saved, read-only, at {path}. Re-read it there whenever you need its exact \
-wording, for example after your context is compacted.
+The task above is also saved, read-only, at {path}. Open it with the Read tool (Glob and Bash \
+cannot reach it), and re-read it there whenever you need its exact wording, for example after \
+your context is compacted.
 """
 
 
@@ -466,20 +469,29 @@ class Spend:
 
     def result_fields(self) -> dict[str, Any]:
         """The result event of a run this cap stopped; the SDK never sent its own."""
-        uncached, cached, output = self.tokens()
         cost = self.cost_usd()
+        return self.stopped_fields(
+            "error_max_budget_usd",
+            "budget_exhausted",
+            f"spend ${cost:.4f} at the price table passed the ${self.budget} budget",
+        )
+
+    def stopped_fields(self, subtype: str, terminal_reason: str, error: str) -> dict[str, Any]:
+        """The result event of a run the harness stopped itself, priced from what this cap
+        counted."""
+        uncached, cached, output = self.tokens()
         return {
-            "subtype": "error_max_budget_usd",
+            "subtype": subtype,
             "is_error": True,
             "num_turns": len(self.main),
-            "terminal_reason": "budget_exhausted",
+            "terminal_reason": terminal_reason,
             "uncached_input_tokens": uncached,
             "cached_input_tokens": cached,
             "output_tokens": output,
-            "cost_usd": cost,
+            "cost_usd": self.cost_usd(),
             "sdk_cost_usd": None,
             "cost_basis": "price_table",
-            "errors": [f"spend ${cost:.4f} at the price table passed the ${self.budget} budget"],
+            "errors": [error],
         }
 
 
@@ -682,6 +694,7 @@ def build_options(
     task_file: Path | None = None,
     dictionary: Path | None = None,
     snapshot: Path | None = None,
+    deadline: float | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
@@ -691,7 +704,9 @@ def build_options(
     `dictionary` (`prebuilt_dictionary`, context runs only) is the value dictionary file the
     MCP server serves dictionary_search from. `snapshot` (`taken_snapshot`, verifier runs only)
     is the directory the v2 tools compare the workspace against; it reaches the MCP server the
-    way the Postgres URL does, through the SDK subprocess's environment."""
+    way the Postgres URL does, through the SDK subprocess's environment. `deadline` (monotonic
+    seconds, ticket 54) is when the trial ends: the v2 hooks stop dispatching verifiers once too
+    little of it is left."""
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
@@ -728,7 +743,12 @@ def build_options(
         # Stop block or the `verifier_end` event.
         if snapshot is not None and task_file is not None:
             v2_hooks = verifier_v2.run_hooks(
-                config, workspace=task.workspace, snapshot=snapshot, task_file=task_file, emit=emit
+                config,
+                workspace=task.workspace,
+                snapshot=snapshot,
+                task_file=task_file,
+                emit=emit,
+                deadline=deadline,
             )
             for event, matchers in v2_hooks.items():
                 all_hooks.setdefault(event, []).extend(matchers)
@@ -923,7 +943,54 @@ def ended_by_sdk(message: ResultMessage | None, model: str, spend: Spend | None)
     return fields if spend is None else fields | spend.unmetered(fields)
 
 
-async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str, str]) -> Outcome:
+# How long before the trial deadline the run stops itself (ticket 54): the gateway's statement
+# timeout, so a query started just before still ends before Harbor's own timeout.
+DEADLINE_MARGIN_S = float(TIMEOUT_SECONDS)
+
+
+def track_open_calls(message: Any, open_calls: dict[str, str]) -> None:
+    """Keep `open_calls` (tool_use id -> tool name) to the tool calls started and not answered."""
+    if isinstance(message, AssistantMessage):
+        for block in message.content:
+            if isinstance(block, ToolUseBlock):
+                open_calls[block.id] = block.name
+    elif isinstance(message, UserMessage) and isinstance(message.content, list):
+        for block in message.content:
+            if isinstance(block, ToolResultBlock):
+                open_calls.pop(block.tool_use_id, None)
+
+
+def deadline_fields(spend: Spend | None, open_calls: Mapping[str, str]) -> dict[str, Any]:
+    """The result event of a run stopped at its deadline; the SDK never sent its own. Spend is
+    the price-table cap's count (`Spend`): the main calls so far and the verifiers that stopped;
+    a verifier still running is not counted. Without a priced model nothing was counted."""
+    open_tool_calls = [{"tool_use_id": i, "tool": name} for i, name in open_calls.items()]
+    error = "the run stopped itself at the trial deadline"
+    if spend is None:
+        return {
+            **result_fields(None, ""),
+            "subtype": "error_deadline",
+            "terminal_reason": "deadline",
+            "cost_basis": "none",
+            "sdk_cost_usd": None,
+            "open_tool_calls": open_tool_calls,
+            "errors": [f"{error}; the model has no price, so its spend was not counted"],
+        }
+    return spend.stopped_fields("error_deadline", "deadline", error) | {
+        "open_tool_calls": open_tool_calls
+    }
+
+
+async def run(
+    task: Task,
+    config: RunConfig,
+    events_dir: Path,
+    env: Mapping[str, str],
+    deadline: float | None = None,
+) -> Outcome:
+    """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
+    run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
+    with `terminal_reason: "deadline"`; the outcome is an unfinished agent."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -999,22 +1066,45 @@ async def run(task: Task, config: RunConfig, events_dir: Path, env: Mapping[str,
                 task_file=task_file,
                 dictionary=dictionary,
                 snapshot=snapshot,
+                deadline=deadline,
+            )
+            open_calls: dict[str, str] = {}
+            # Cancels the stream at the deadline less its margin; closing the cancelled stream
+            # (`aclosing`) ends the SDK session and its CLI subprocess.
+            timer = asyncio.timeout(
+                None
+                if deadline is None
+                else max(0.0, deadline - DEADLINE_MARGIN_S - time.monotonic())
             )
             try:
-                stream = query(prompt=prompt, options=options)
-                async with aclosing(capped(stream, spend)) as messages:
-                    async for message in messages:
-                        if isinstance(message, ResultMessage):
-                            final = message
-                        else:
-                            record_message(log, message, tools)
-            except Exception as exc:
-                # A failed run ends with a ResultMessage and then a ResultError, whose details
-                # the result event already holds. Anything else (the SDK also raises plain
-                # Exceptions, e.g. an `initialize` timeout) means the run itself broke.
-                if final is None:
-                    log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
-        stopped = spend.result_fields() if spend is not None and spend.stopped else None
+                async with timer:
+                    try:
+                        stream = query(prompt=prompt, options=options)
+                        async with aclosing(capped(stream, spend)) as messages:
+                            async for message in messages:
+                                if isinstance(message, ResultMessage):
+                                    final = message
+                                else:
+                                    record_message(log, message, tools)
+                                    track_open_calls(message, open_calls)
+                    except Exception as exc:
+                        # A failed run ends with a ResultMessage and then a ResultError, whose
+                        # details the result event already holds. Anything else (the SDK also
+                        # raises plain Exceptions, e.g. an `initialize` timeout) means the run
+                        # itself broke.
+                        if final is None:
+                            log.emit(
+                                "error", source="sdk", error=str(exc), stderr_tail=stderr[-20:]
+                            )
+            except TimeoutError:
+                if not timer.expired():
+                    raise
+        if spend is not None and spend.stopped:
+            stopped = spend.result_fields()
+        elif timer.expired() and final is None:
+            stopped = deadline_fields(spend, open_calls)
+        else:
+            stopped = None
         log.emit("result", **(stopped or ended_by_sdk(final, settings.model, spend)))
     if stopped is not None:
         return Outcome(

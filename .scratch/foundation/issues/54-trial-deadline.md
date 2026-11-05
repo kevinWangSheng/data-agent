@@ -1,6 +1,6 @@
 # 54 — trial 截止时间：剩余不足时不再派验证器，到点自己停下
 
-Status: ready-for-agent
+Status: done
 Blocked by: 51
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§2）
 Claimed by: claude (worktree 54-trial-deadline, 2026-11-05)
@@ -57,10 +57,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1 (da-review + eng:code-review; one round of fixes)
-- Model spend: $0 (no model calls; the local run used a dead endpoint)
-- Outcome: implemented, unit tests and local real run pass; server real run pending (main session)
+- Attempts: 2
+- Review rounds: 3 (round 1: da-review + eng:code-review → 02899cf; round 2: da-review on the ablate change → aed2b62; round 3: confirming da-review, clean)
+- Model spend: $0 (no model calls)
+- Outcome: implemented; unit tests, local deadline run and ablate CLI check pass; server real run pending (main session)
 - Human review minutes: —
 
 ## Comments
@@ -97,3 +97,29 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Evidence required 的服务器运行需要 `--ak agent_timeout_sec=1500`，但 `evals ablate` 不透传 agent kwarg（`evals/ablate.py:383-394` 的 `harbor_run_args` 只固定传 `run_config`），`da-remote start` 又只能跑 `python -m evals`，所以这次运行起不来。pos-operations 在新 main 上 1418 s 就跑完（t52-real），用默认 4000 s 触发不了截止。
 - 主会话补一行 Authority：允许改 `evals/ablate.py`，只加一个可重复的 `--agent-kwarg KEY=VALUE`，原样转成 Harbor 的 `--ak KEY=VALUE`，不得覆盖 `run_config`，并配测试。这是可回退的小扩展，在最终汇总里报给人。
 - 状态改回 `ready-for-agent`，在原分支上补。
+
+### 2026-11-05 claude (worktree 54-trial-deadline): evals ablate --agent-kwarg
+
+- Merged origin/main into the branch (c7f4461; tickets 51, 52 and 53 included) with no conflicts.
+- fadacd6: `evals/ablate.py` adds a repeatable `--agent-kwarg KEY=VALUE` (argparse type `agent_kwarg`). `harbor_run_args` passes each one unchanged as `--ak KEY=VALUE` after `--ak run_config=<config>`, so it reaches both the smoke run and the jobs. A key of `run_config` (also with surrounding spaces) is refused with "--config sets run_config; an agent kwarg cannot", and a value without a key or `=` with "expected KEY=VALUE"; both exit 2 before any Harbor call.
+- aed2b62 (fix for the Codex P1, see below): `check_request` records the kwargs in `request.json` as `agent_kwargs` when there are any. Rerunning the same `--out` with different kwargs (or none, or new ones added) stops with "use another --out". Without kwargs, `request.json` is written as before (`{"model"}` only), so an existing OUT stays reusable.
+- Tests (tests/test_eval_ablate.py):
+  - kwargs reach the smoke run and the job in order (`run_config=full`, `agent_timeout_sec=1500`, `note=a=b`);
+  - without kwargs only `run_config` is passed;
+  - 4 refusal cases (exit 2, message checked, no Harbor call);
+  - 3 kwarg-mismatch cases on the same `--out` stop and the same request is still reused;
+  - an old-style `request.json` stays valid.
+- `make check`: ruff, format and basedpyright clean; 1759 passed, 1 skipped, 1 xfailed.
+- Real CLI check:
+  - `uv run python -m evals ablate --help` shows `--agent-kwarg KEY=VALUE  repeatable: passed to Harbor as --ak KEY=VALUE (e.g. agent_timeout_sec=1500); run_config comes from --config`.
+  - `uv run python -m evals ablate --tasks-dir t --manifest m --out o --budget 1 --agent-kwarg run_config=baseline` prints `python -m evals ablate: error: argument --agent-kwarg: --config sets run_config; an agent kwarg cannot`.
+  - No real Harbor job was run.
+- Review:
+  - `da-review main` (Codex, completed, no capacity problem) on fadacd6: [P1] "Include agent kwargs in the ablation reuse key": rerunning an existing `--out` with another `agent_timeout_sec` would reuse jobs run under a different timeout. True; fixed in aed2b62. It goes slightly beyond "只加透传", but it is part of the flag's correctness and stays inside ablate.py.
+  - Confirming `da-review main` on aed2b62: "No discrete, actionable correctness issues were found."
+- Next step (main session): server run, e.g. `python -m evals ablate --split dev --task pos-operations --config full --trials 1 --agent-kwarg agent_timeout_sec=1500 ...` via `da-remote start`. Expected: `result(deadline)` at about 1350 s, no `AgentTimeoutError`, spend recorded, reward scored normally.
+
+### 2026-11-05 主会话（服务器真实运行，aed2b62）
+
+- `t54-real`：`ablate … --task pos-operations --out runs/t54-real --budget 2 --config full --trials 1 --agent-kwarg agent_timeout_sec=1500`。1/1，$0.1686，Harbor 0 异常。568 s 时两次派验证器被拒（"Only 929 s are left before the trial deadline … finish with the results you have and end the run."），588 s 记 `ended_unverified`，随后 `result`（terminal_reason completed），正常退出，花费已记。没走到 T−150 s。
+- `t54-real2`：同上，`agent_timeout_sec=600`，专门验到点停止。455 s 写出 `result`（subtype `error_deadline`，terminal_reason `deadline`，cost_usd 0.1247），Harbor 0 异常、无 `AgentTimeoutError`，花费已记。reward 0（600 s 做不完这题，符合预期）。

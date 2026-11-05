@@ -1,5 +1,8 @@
 """Read, Glob, Grep, Write and Edit may only reach files inside the task workspace."""
 
+import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +32,18 @@ async def decide(
     protected: tuple[Path, ...] = (),
     readable: tuple[Path, ...] = (),
 ) -> str:
+    output = await hook_output(workspace, tool, tool_input, protected, readable)
+    return output.get("permissionDecision", "none")
+
+
+async def hook_output(
+    workspace: Path,
+    tool: str,
+    tool_input: dict[str, Any],
+    protected: tuple[Path, ...] = (),
+    readable: tuple[Path, ...] = (),
+) -> dict[str, Any]:
+    """The guard's `hookSpecificOutput` for one call; empty when it lets the call run."""
     guard = workspace_guard(workspace, protected, readable)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
@@ -40,7 +55,7 @@ async def decide(
         "tool_use_id": "u",
     }
     output: Any = await guard(hook_input, "u", {"signal": None})
-    return output.get("hookSpecificOutput", {}).get("permissionDecision", "none")
+    return output.get("hookSpecificOutput", {})
 
 
 @pytest.mark.parametrize(
@@ -413,3 +428,192 @@ async def test_the_task_file_is_denied_without_being_named_readable(
     workspace: Path, task_file: Path
 ) -> None:
     assert await decide(workspace, "Read", {"file_path": str(task_file)}) == "deny"
+
+
+# Ticket 55: in t47-screen the model added `glob: "!**/dbt_packages/**"` and was still denied. A
+# glob `**/<dir>/**` matches the directory wherever the search starts, and ripgrep never enters an
+# excluded directory, so the credential files in it are not read.
+@pytest.mark.parametrize(
+    ("tool_input", "decision"),
+    [
+        ({"pattern": "select", "glob": "!**/dbt_packages/**"}, "none"),
+        ({"pattern": "select", "glob": "!**/integration_tests/**"}, "none"),
+        ({"pattern": "select", "glob": "!**/dbt_utils/integration_tests/**"}, "none"),
+        ({"pattern": "select", "glob": "!**/dbt_*/**"}, "none"),
+        ({"pattern": "select", "path": "dbt_packages", "glob": "!**/dbt_utils/**"}, "none"),
+        ({"pattern": "select", "glob": "*.sql !**/dbt_packages/**"}, "none"),
+        # Another directory excluded: the samples are still searched.
+        ({"pattern": "select", "glob": "!**/models/**"}, "deny"),
+        ({"pattern": "select", "glob": "!**/dbt_utils/models/**"}, "deny"),
+        # Only the directories below the search path count: how Grep hands ripgrep the path
+        # itself (as given, absolute, symlinks followed) is not known to the guard.
+        ({"pattern": "select", "path": "dbt_packages", "glob": "!**/dbt_packages/**"}, "deny"),
+        # A later including glob that matches the directory brings it back (last match wins).
+        ({"pattern": "select", "glob": "!**/dbt_packages/** **/dbt_packages/**"}, "deny"),
+        ({"pattern": "select", "glob": "!**/dbt_packages/** dbt_packages/**"}, "deny"),
+        ({"pattern": "select", "glob": "!**/dbt_packages/**,**/*.env"}, "deny"),
+        # Without the leading `**/`, where the glob is anchored depends on the search path.
+        ({"pattern": "select", "glob": "!dbt_packages/**"}, "deny"),
+        ({"pattern": "select", "glob": "!**/**"}, "deny"),
+    ],
+)
+async def test_grep_excluding_a_whole_directory_skips_the_credentials_in_it(
+    with_sample_env: Path, tool_input: dict[str, Any], decision: str
+) -> None:
+    assert await decide(with_sample_env, "Grep", tool_input) == decision
+
+
+# Review of ticket 55: ripgrep reads `[^s]` as "not s" and `\.` as an escaped dot, where Python's
+# fnmatch reads a class holding `^` and a literal backslash. Such a glob decides nothing: an
+# excluding one skips no file, an including one keeps every file.
+@pytest.mark.parametrize(
+    "glob",
+    [
+        # fnmatch: `d` is in the class, so the directory is skipped; ripgrep: `d` is excluded.
+        "!**/[^d]bt_packages/**",
+        # Same for a file name: fnmatch skips postgres.env and duckdb.env, ripgrep neither.
+        "!*[^sb].env",
+        # ripgrep reads `\e` as `e`, so this keeps both samples; fnmatch matches neither.
+        r"*.\env",
+        r"!**/dbt\_packages/**",
+        # ripgrep lets an alternative hold a slash; fnmatch saw `**,*.sql}` as the name.
+        "{dbt_packages/**,*.sql}",
+        "{*.sql,**/integration_tests/**}",
+        # ripgrep drops an empty alternative, so this skips only the `.bak` names.
+        "!postgres.env{,.bak} !duckdb.env{,.bak}",
+        "!{postgres,duckdb}.env{.bak,}",
+    ],
+)
+async def test_grep_globs_ripgrep_reads_differently_skip_nothing(
+    with_sample_env: Path, glob: str
+) -> None:
+    assert await decide(with_sample_env, "Grep", {"pattern": "select", "glob": glob}) == "deny"
+
+
+async def test_grep_excluding_a_directory_still_denies_a_credential_elsewhere(
+    with_sample_env: Path,
+) -> None:
+    (with_sample_env / "config").mkdir()
+    (with_sample_env / "config" / ".env").write_text("PGPASSWORD=x")
+    tool_input = {"pattern": "select", "glob": "!**/dbt_packages/**"}
+    assert await decide(with_sample_env, "Grep", tool_input) == "deny"
+
+
+async def test_grep_denial_shows_a_filter_that_would_run(with_sample_env: Path) -> None:
+    """Ticket 55: the denial names the files and gives filters the model can copy, and each of them
+    does pass the guard."""
+    reason = (await hook_output(with_sample_env, "Grep", {"pattern": "select"}))[
+        "permissionDecisionReason"
+    ]
+    assert 'type: "sql"' in reason
+    assert 'glob: "!**/.env/**"' in reason
+    for retry in ({"type": "sql"}, {"glob": "!**/.env/**"}):
+        assert await decide(with_sample_env, "Grep", {"pattern": "select", **retry}) == "none"
+
+
+@pytest.fixture
+def project_below(workspace: Path) -> Path:
+    """The t55-real tree: the search path is the dbt project's parent, and the package's sample
+    dotenv files sit beside the package's own models."""
+    project = workspace / "proj"
+    (project / "models").mkdir(parents=True)
+    (project / "models" / "cohorts.sql").write_text("select 1")
+    tests = project / "dbt_packages" / "dbt_utils" / "integration_tests"
+    (tests / "models").mkdir(parents=True)
+    (tests / "models" / "test_x.sql").write_text("select 1")
+    (tests / ".env").mkdir()
+    (tests / ".env" / "postgres.env").write_text("PGPASSWORD=sample")
+    (tests / ".env" / "duckdb.env").write_text("DUCKDB_PATH=sample")
+    return workspace
+
+
+async def test_grep_denial_excludes_only_the_directory_holding_the_credentials(
+    project_below: Path,
+) -> None:
+    """Searching the project's parent, the hint excludes the closest directory that holds every
+    credential and nothing else (not the project itself, which holds the models), and that retry
+    passes the guard."""
+    reason = (await hook_output(project_below, "Grep", {"pattern": "select", "path": "."}))[
+        "permissionDecisionReason"
+    ]
+    assert "!**/proj/**" not in reason
+    assert 'glob: "!**/.env/**"' in reason
+    retry = {"pattern": "select", "path": ".", "glob": "!**/.env/**"}
+    assert await decide(project_below, "Grep", retry) == "none"
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="needs ripgrep")
+async def test_the_suggested_exclusion_still_lets_ripgrep_read_the_models(
+    project_below: Path,
+) -> None:
+    reason = (await hook_output(project_below, "Grep", {"pattern": "select", "path": "."}))[
+        "permissionDecisionReason"
+    ]
+    hint = re.search(r'glob: "([^"]+)"', reason)
+    assert hint
+    listed = subprocess.run(
+        ["rg", "--hidden", "--files", "--glob", hint.group(1), "."],
+        cwd=project_below,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert "./proj/models/cohorts.sql" in listed
+    assert not [path for path in listed if path.endswith(".env")]
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        # Beside the project's own models: excluding `proj` would skip them.
+        ["proj/.env"],
+        # In two places with no directory in common below the search path.
+        ["proj/config/.env", "other/.env"],
+    ],
+)
+async def test_grep_denial_offers_only_type_when_no_directory_holds_just_the_credentials(
+    project_below: Path, credentials: list[str]
+) -> None:
+    for name in credentials:
+        (project_below / name).parent.mkdir(parents=True, exist_ok=True)
+        (project_below / name).write_text("KEY=x")
+    (project_below / "proj" / "config" / "app.yml").parent.mkdir(exist_ok=True)
+    (project_below / "proj" / "config" / "app.yml").write_text("a: 1")
+    tool_input = {"pattern": "select", "glob": "!**/.env/**"}
+    reason = (await hook_output(project_below, "Grep", tool_input))["permissionDecisionReason"]
+    assert 'type: "sql"' in reason
+    assert "glob:" not in reason
+
+
+async def test_grep_denial_keeps_the_glob_already_given(project_below: Path) -> None:
+    reason = (await hook_output(project_below, "Grep", {"pattern": "select", "glob": "!*.md"}))[
+        "permissionDecisionReason"
+    ]
+    assert 'glob: "!*.md !**/.env/**"' in reason
+
+
+async def test_grep_denial_offers_no_directory_glob_for_a_top_level_credential(
+    with_credentials: Path,
+) -> None:
+    """A `.env` right in the search path lies in no directory to exclude; `type` still helps."""
+    reason = (await hook_output(with_credentials, "Grep", {"pattern": "KEY"}))[
+        "permissionDecisionReason"
+    ]
+    assert 'type: "sql"' in reason
+    assert "!**/" not in reason
+
+
+async def test_grep_exclusion_naming_a_directory_with_braces_decides_nothing(
+    workspace: Path,
+) -> None:
+    """ripgrep expands `{prod}` in `!**/secrets{prod}/**`, so the glob misses the directory
+    literally named `secrets{prod}` and its `.env` is read: the guard denies, and the hint does
+    not suggest such a glob."""
+    (workspace / "secrets{prod}").mkdir()
+    (workspace / "secrets{prod}" / ".env").write_text("KEY=x")
+    tool_input = {"pattern": "select", "glob": "!**/secrets{prod}/**"}
+    assert await decide(workspace, "Grep", tool_input) == "deny"
+    reason = (await hook_output(workspace, "Grep", {"pattern": "select"}))[
+        "permissionDecisionReason"
+    ]
+    assert "secrets{prod}/**" not in reason
