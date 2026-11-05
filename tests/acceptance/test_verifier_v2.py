@@ -123,10 +123,6 @@ CHANGED_MODELS = {
     "customer_ltv",
 }
 
-hooks_xfail = pytest.mark.xfail(
-    strict=True, raises=NotImplementedError, reason="ticket 46: harness hooks"
-)
-
 
 def noop(*args: Any, **fields: Any) -> None:
     pass
@@ -451,7 +447,6 @@ CHECK 4: N/A — no window changed
 """
 
 
-@hooks_xfail
 def test_report_parser_recognizes_the_four_statuses() -> None:
     parsed = parse_report(FOUR_STATUSES)
     assert parsed["parsed"] is True
@@ -459,18 +454,15 @@ def test_report_parser_recognizes_the_four_statuses() -> None:
     assert parsed["overall"] == "FAIL"
 
 
-@hooks_xfail
 def test_report_without_check_lines_is_needs_info() -> None:
     parsed = parse_report("I ran out of context before checking anything.")
     assert parsed == {"parsed": False, "models": {}, "overall": "NEEDS_INFO"}
 
 
-@hooks_xfail
 def test_report_cut_off_by_max_turns_is_needs_info() -> None:
     assert parse_report(FOUR_STATUSES, hit_max_turns=True)["overall"] == "NEEDS_INFO"
 
 
-@hooks_xfail
 def test_transcript_summary_counts_turns_and_tool_calls() -> None:
     assert summarize_transcript(TRANSCRIPT) == {"turns": 3, "tool_calls": 4}
 
@@ -504,7 +496,6 @@ def updated_input(output: dict[str, Any]) -> dict[str, Any]:
     return specific["updatedInput"]
 
 
-@hooks_xfail
 def test_first_dispatch_prompt_is_only_the_template(tmp_path: Path) -> None:
     prompt = updated_input(rewrite(DISPATCH, 0, tmp_path))["prompt"]
     assert str(tmp_path / "task.md") in prompt
@@ -517,7 +508,6 @@ def test_first_dispatch_prompt_is_only_the_template(tmp_path: Path) -> None:
     assert other == prompt
 
 
-@hooks_xfail
 def test_redispatch_appends_the_main_agents_text_under_the_fixed_heading(tmp_path: Path) -> None:
     prompt = updated_input(rewrite(DISPATCH, 1, tmp_path))["prompt"]
     assert str(tmp_path / "task.md") in prompt
@@ -526,7 +516,6 @@ def test_redispatch_appends_the_main_agents_text_under_the_fixed_heading(tmp_pat
     assert prompt.index(str(tmp_path / "task.md")) < prompt.index(UNVERIFIED_HEADING)
 
 
-@hooks_xfail
 def test_rewritten_input_keeps_the_other_fields(tmp_path: Path) -> None:
     updated = updated_input(rewrite(DISPATCH, 0, tmp_path))
     assert updated["subagent_type"] == "verifier"
@@ -534,7 +523,6 @@ def test_rewritten_input_keeps_the_other_fields(tmp_path: Path) -> None:
     assert set(updated) == set(DISPATCH)
 
 
-@hooks_xfail
 def test_other_subagents_and_tools_are_not_rewritten(tmp_path: Path) -> None:
     assert rewrite(DISPATCH | {"subagent_type": "general-purpose"}, 0, tmp_path) == {}
     assert rewrite({"file_path": "models/x.sql"}, 0, tmp_path, tool_name="Read") == {}
@@ -576,7 +564,6 @@ def blocking_rules(decision: dict[str, Any], model: str) -> set[int]:
     return {r["rule"] for r in decision["reasons"] if r["model"] == model}
 
 
-@hooks_xfail
 def test_stop_blocks_a_changed_model_never_verified(two_models: tuple[Path, Path]) -> None:
     workspace, snapshot = two_models
     decision = stop_decision({}, workspace, snapshot)
@@ -585,7 +572,6 @@ def test_stop_blocks_a_changed_model_never_verified(two_models: tuple[Path, Path
     assert blocking_rules(decision, "bravo") == {1}
 
 
-@hooks_xfail
 def test_stop_blocks_a_model_changed_after_its_report(two_models: tuple[Path, Path]) -> None:
     workspace, snapshot = two_models
     state = record_report({}, report(alpha="PASS", bravo="PASS"), workspace)
@@ -597,7 +583,6 @@ def test_stop_blocks_a_model_changed_after_its_report(two_models: tuple[Path, Pa
     assert not blocking_rules(decision, "bravo")
 
 
-@hooks_xfail
 def test_stop_blocks_on_a_fail(two_models: tuple[Path, Path]) -> None:
     workspace, snapshot = two_models
     state = record_report({}, report(alpha="PASS", bravo="FAIL"), workspace)
@@ -607,7 +592,6 @@ def test_stop_blocks_on_a_fail(two_models: tuple[Path, Path]) -> None:
     assert not blocking_rules(decision, "alpha")
 
 
-@hooks_xfail
 def test_stop_keeps_state_per_model(two_models: tuple[Path, Path]) -> None:
     """A and B verified, B fails; only A is re-verified and passes: B still blocks."""
     workspace, snapshot = two_models
@@ -619,7 +603,6 @@ def test_stop_keeps_state_per_model(two_models: tuple[Path, Path]) -> None:
     assert not blocking_rules(decision, "alpha")
 
 
-@hooks_xfail
 def test_stop_does_not_block_on_needs_info(two_models: tuple[Path, Path]) -> None:
     workspace, snapshot = two_models
     state = record_report({}, report(alpha="NEEDS_INFO", bravo="PASS"), workspace)
@@ -645,7 +628,6 @@ async def call_hooks(
     return merged
 
 
-@hooks_xfail
 async def test_stop_lets_the_run_end_after_two_blocks_and_records_it(
     two_models: tuple[Path, Path], tmp_path: Path
 ) -> None:
@@ -684,7 +666,6 @@ async def test_stop_lets_the_run_end_after_two_blocks_and_records_it(
     assert "bravo" in unresolved["reason"] and "alpha" not in unresolved["reason"]
 
 
-@hooks_xfail
 def test_hooks_follow_the_verifiers_switch(two_models: tuple[Path, Path], tmp_path: Path) -> None:
     workspace, snapshot = two_models
     for name in CONFIG_NAMES:
@@ -794,7 +775,6 @@ def visible_text(messages: Sequence[Any]) -> str:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=True, reason="ticket 46: dispatch rewrite end to end")
 async def test_updated_input_replaces_the_prompt_end_to_end(
     edited: tuple[Path, Path], tmp_path: Path
 ) -> None:
