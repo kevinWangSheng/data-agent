@@ -70,8 +70,9 @@ def run_hooks(
     # an earlier dispatch, which over-reports an edit (rule 2), never misses one. An empty entry
     # (hashing failed) means "hash now".
     # A dispatch that never reports (whether the SDK fires SubagentStop for a subagent that
-    # errors is unverified) would otherwise pin its stale fingerprints at the head for the rest
-    # of the run, so the queue holds at most MAX_OUTSTANDING_DISPATCHES.
+    # errors is unverified) cannot be told from one still in flight: it pins its fingerprints at
+    # the head for the rest of the run, over-reporting rule 2 until MAX_BLOCKS ends the run.
+    # The bound only keeps the queue from growing without limit.
     dispatched: deque[dict[str, str] | None] = deque(maxlen=MAX_OUTSTANDING_DISPATCHES)
 
     def failed(hook: str, exc: Exception) -> None:
@@ -118,13 +119,16 @@ def run_hooks(
         # Only the v2 verifier's reports count as verification; the value verifier's (until
         # ticket 47 removes it) are recorded but satisfy no Stop rule. A call at the turn cap is
         # NEEDS_INFO as a whole (`overall`); the check lines it did write stand.
+        # The report settles one dispatch whether or not it can be recorded below.
+        dispatch_hashes = dispatched[0] if dispatched else None
+        if fields["agent_type"] == REWRITTEN_SUBAGENT and dispatched:
+            dispatched.pop()
         try:
             parsed = parse_report(report, hit_max_turns=hit_max_turns, workspace=workspace)
             if fields["agent_type"] == REWRITTEN_SUBAGENT:
-                hashes = (dispatched[0] if dispatched else None) or model_hashes(workspace)
-                if dispatched:
-                    dispatched.pop()
-                state = record_checks(state, parsed["models"], hashes)
+                state = record_checks(
+                    state, parsed["models"], dispatch_hashes or model_hashes(workspace)
+                )
         except (OSError, ValueError) as exc:
             failed("SubagentStop", exc)
             parsed = parse_report(report, hit_max_turns=hit_max_turns)

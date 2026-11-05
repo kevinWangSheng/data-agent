@@ -19,6 +19,8 @@ from data_agent.verifier_v2.stop import model_hashes
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "verifier_v2"
 TRANSCRIPT = FIXTURES / "verifier_transcript.jsonl"
+VERIFIER = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "go"}}
+ALPHA_PASS = "### alpha\nCHECK 1: PASS — ok\n"
 
 
 def test_parse_report_reads_checks_only_at_line_start_under_a_heading() -> None:
@@ -284,19 +286,12 @@ async def test_hooks_fingerprint_models_at_dispatch_time(edited: tuple[Path, Pat
     """The main agent dispatches the verifier in the background and keeps editing: the report
     covers the files as dispatched, so the edit blocks the run (rule 2)."""
     workspace, _ = edited
-    events: list[dict[str, Any]] = []
-    hooks = hooks_for(edited, events)
-    verifier = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "go"}}
-    await call(hooks, "PreToolUse", **verifier)
+    hooks = hooks_for(edited, [])
+    await call(hooks, "PreToolUse", **VERIFIER)
     (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
-    report = "### alpha\nCHECK 1: PASS — ok\n"
-    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, report))
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
     blocked = await call(hooks, "Stop", stop_hook_active=False)
     assert blocked["decision"] == "block" and "alpha: rule 2" in blocked["reason"]
-
-
-VERIFIER = {"tool_name": "Agent", "tool_input": {"subagent_type": "verifier", "prompt": "go"}}
-ALPHA_PASS = "### alpha\nCHECK 1: PASS — ok\n"
 
 
 async def test_hooks_pair_reports_with_the_oldest_outstanding_dispatch(
@@ -305,9 +300,11 @@ async def test_hooks_pair_reports_with_the_oldest_outstanding_dispatch(
     """Two verifiers in flight: every report takes the oldest outstanding dispatch's fingerprints
     (the SDK gives no field linking a SubagentStop to its PreToolUse), so an edit between the two
     dispatches still counts as a change after both reports. A dispatch with none outstanding
-    pairs with its own fingerprints and clears it."""
+    pairs with its own fingerprints and clears it. (Three Stops exhaust MAX_BLOCKS, so the last
+    one is judged by whether it ended the run unresolved.)"""
     workspace, _ = edited
-    hooks = hooks_for(edited, [])
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
     await call(hooks, "PreToolUse", **VERIFIER)
     (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
     await call(hooks, "PreToolUse", **VERIFIER)
@@ -320,6 +317,7 @@ async def test_hooks_pair_reports_with_the_oldest_outstanding_dispatch(
     await call(hooks, "PreToolUse", **VERIFIER)
     await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
     assert await call(hooks, "Stop", stop_hook_active=True) == {}
+    assert "ended_with_unresolved" not in {e["type"] for e in events}
 
 
 async def test_hooks_pair_reports_arriving_out_of_order(edited: tuple[Path, Path]) -> None:
@@ -401,3 +399,29 @@ async def test_subagent_stop_keeps_its_state_when_recording_fails(
     # The state did not change: alpha is still unverified (rule 1).
     blocked = await call(hooks, "Stop", stop_hook_active=False)
     assert blocked["decision"] == "block" and "alpha: rule 1" in blocked["reason"]
+
+
+async def test_subagent_stop_settles_its_dispatch_even_when_recording_fails(
+    edited: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dispatch whose report could not be recorded must not stay at the head of the queue:
+    the next dispatch's report would otherwise pair with the earlier fingerprints and block on
+    an edit it did verify (rule 2)."""
+    workspace, _ = edited
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
+    await call(hooks, "PreToolUse", **VERIFIER)
+
+    def unreadable(report: str, **kwargs: Any) -> dict[str, Any]:
+        if "workspace" in kwargs:  # the workspace-resolving parse, the one that reads files
+            raise OSError("models/alpha.sql vanished mid-read")
+        return parse_report(report, **kwargs)
+
+    monkeypatch.setattr("data_agent.verifier_v2.hooks.parse_report", unreadable)
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
+    monkeypatch.undo()
+    assert [e["type"] for e in events] == ["error", "verifier_end"]
+    (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
+    await call(hooks, "PreToolUse", **VERIFIER)
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
+    assert await call(hooks, "Stop", stop_hook_active=False) == {}
