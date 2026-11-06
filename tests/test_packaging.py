@@ -97,7 +97,7 @@ def test_installed_wheel_loads_the_verifier_agents(tmp_path: Path) -> None:
     probe = (
         "from data_agent import verifiers; "
         "agents = verifiers.verifier_agents('data'); "
-        "assert set(agents) == {'verifier', 'value-verifier'}; "
+        "assert set(agents) == {'verifier'}; "
         "print(verifiers.AGENTS_DIR)"
     )
     proc = run_installed(tmp_path, site, probe)

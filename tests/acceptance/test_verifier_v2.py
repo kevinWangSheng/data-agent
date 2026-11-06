@@ -748,7 +748,6 @@ async def test_snapshot_only_in_verifier_configs(
         assert bool(taken) == load_config(name).verifiers, name
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 47: one verifier subagent with maxTurns 50")
 def test_verifier_configs_define_one_verifier(tmp_path: Path, db: Path) -> None:
     settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "sk-test"})
     for name in VERIFIER_CONFIGS:

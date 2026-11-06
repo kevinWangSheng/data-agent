@@ -408,13 +408,55 @@ def write_section(number: int) -> str:
 
 def test_workflow_checks_values_per_key_against_an_independent_recomputation() -> None:
     """A grand total can match while single keys are wrong, and a check that reuses the model's
-    own expression repeats its error; Step 8 runs whether or not the verifiers passed."""
-    text = step_8()
+    own expression repeats its error; without a verifier the main agent runs this check itself."""
+    text = no_verifier_fallback()
     assert "output grain" in text
     assert "never copy the model's expression" in text
     assert "each branch" in text
     assert "same rounding allowance" in text
-    assert "key-level check" in text.split("STOP when", 1)[1]
+    assert "`compare_by_key(model, key_columns, reference_sql)`" in text
+    assert "read only tables that existed before the run" in text
+    # Without the tool (no-verifiers keeps the Skill), the sampled-key check stays as it was.
+    assert "pick 3-5 keys at the output grain" in text
+
+
+def no_verifier_fallback() -> str:
+    """Step 8's checks for a run without the verifier, from "If that agent is not offered" up to
+    item 3."""
+    return step_8().split("If that agent is not offered", 1)[1].split(" 3. ", 1)[0]
+
+
+def test_workflow_step_8_has_no_routine_self_check_beside_the_verifier() -> None:
+    """Ticket 47 return round 3 (ADR-0008 Update 2026-11-05): with the verifier, the main agent
+    does not write a second reference query per model; the key-level check is the no-verifier
+    fallback's, and STOP and acceptance rest on the latest report alone."""
+    text = step_8()
+    assert "whether or not the verifier" not in text
+    assert "key-level check" in no_verifier_fallback()
+    assert "unless your key-level check" not in text
+    assert "and your key-level check matches" not in text
+    assert "your key-level check are the final authority" not in text
+    stop = text.split("4. With the verifier, STOP when", 1)[1]
+    with_verifier = stop.split("Without the verifier", 1)[0]
+    assert "latest report" in with_verifier and "final authority" in with_verifier
+    assert "key-level" not in with_verifier and "your own" not in with_verifier
+    assert "Without the verifier, STOP when your own checks in step 2 all match" in stop
+
+
+def test_workflow_step_8_dispatches_one_verifier_and_defers_fail_handling() -> None:
+    """Ticket 47: one `verifier`, no value verifier; the FAIL and NEEDS_INFO rules are the system
+    prompt's (VERIFIERS_PROMPT), which Step 8 refers to and does not restate."""
+    text = step_8()
+    assert "value-verifier" not in text and "verify_model_values" not in text
+    assert 'subagent_type="verifier"' in text
+    assert text.count('"Verification before delivery"') >= 2
+    assert "this Skill adds no FAIL rules of its own" in text
+    # The old prescription rule and the duplicate FAIL recipe are gone: no copy of the system
+    # prompt's rules (reproduce, smallest change, counter-evidence) anywhere in Step 8.
+    assert "prescribed fix exactly as stated" not in text
+    for rule in ("reproduce", "smallest change", "counter-evidence", "prescribe"):
+        assert rule not in text.lower(), rule
+    assert "CHECK 1 FAIL" not in text and "CHECK 2 FAIL" not in text
 
 
 def test_workflow_final_check_covers_types_of_every_required_model() -> None:

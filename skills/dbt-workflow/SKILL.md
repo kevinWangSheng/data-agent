@@ -16,14 +16,18 @@ limited rolling/period-over-period models to the latest date with NULL compariso
 general ones (one date only when the description asks; comparisons from the source history). The
 rule for skipping Steps 4-7 also keeps them when the task asks for a new model. Examples carrying
 specific macro, column or entity names were made generic; the rule for review tasks no longer
-names a task format. Step 8 uses the verifiers' four verdicts (PASS, FAIL, NEEDS_INFO, N/A) and
-verify_model_values takes the model's upstream tables and the project directory and compares
-the model SQL's own COUNTs exactly; sums and averages match only up to rounding; map_columns adds
-no domain prefix. After the first failure attribution: an edit is compared with the original
-predicate by predicate; rule-defined columns implement each factor as stated; Step 8 checks
-column types for every model the task asks for and adds a key-level check against an
-independent recomputation, which also gates the STOP. Step 8 passes technical_spec.md to the
-verifiers as the main agent's intent only, as they judge against the task text. The Rules forbid
+names a task format. Step 8 dispatches the one `verifier` agent (ADR-0009: the harness
+rewrites the dispatch and blocks the run while a changed model is unverified or has a FAIL),
+uses its four verdicts (PASS, FAIL, NEEDS_INFO, N/A), takes its FAIL and NEEDS_INFO handling
+from the system prompt instead of restating it, and leaves the main agent's own key-level check
+(with compare_by_key when the tool is offered) to runs without the verifier; the Tools section's verify_model_values entry
+(the removed value verifier's tool) takes the model's upstream tables and the project directory
+and compares the model SQL's own COUNTs exactly; sums and averages match only up to rounding;
+map_columns adds no domain prefix. After the first failure attribution: an edit is compared
+with the original predicate by predicate; rule-defined columns implement each factor as stated;
+Step 8 checks column types for every model the task asks for and adds a key-level check against
+an independent recomputation, which gates the STOP only without the verifier. Step 8 treats technical_spec.md as the
+main agent's intent only, which the verifier does not need, as it judges against the task text. The Rules forbid
 Reading the JSON dbt writes under target/, and the validate section states this copy's 300 s
 default timeout. Step 7 says not to switch `--vars` between dbt calls (each switch re-parses). -->
 
@@ -236,18 +240,15 @@ re-parse the whole project, which can take a minute or more. Pick the vars once 
 
 ### Step 8 - Verify and Fix
 1. Run `query_database` with `SELECT 1`. If it errors, wait and retry.
-2. If the Agent tool offers the `verifier` and `value-verifier` agents,
-   dispatch BOTH in parallel:
- - `subagent_type="verifier"` - structure checks
- - `subagent_type="value-verifier"` - value checks
-   Both are READ-ONLY. They return reports. They fix nothing.
-   Pass: project directory and the names of every model the task asks for,
-   not only the ones you last edited.
-   Also pass the path to `technical_spec.md`: the verifiers read it only as
-   your intent and judge against the task text, which they read themselves.
-   Do NOT include column definitions, SQL logic, or your interpretation
-   of what the columns mean. The verifiers must discover this themselves.
-   If those agents are not offered, run the same checks yourself, read-only,
+2. If the Agent tool offers the `verifier` agent, dispatch it with
+   `subagent_type="verifier"`. It is READ-ONLY: it returns a report and
+   fixes nothing. The system prompt's "Verification before delivery" section
+   says what the harness puts in the dispatch and what a later dispatch may
+   add; write only a short request. Do NOT include column definitions, SQL
+   logic, or your interpretation of what the columns mean: the verifier
+   reads the task text itself and judges against it, and `technical_spec.md`
+   is your intent only, which it does not need.
+   If that agent is not offered, run the same checks yourself, read-only,
    with `list_tables` and `query_database`, for every model the task asks for:
    CHECK 1 it exists as a table; CHECK 2 its column names and column types
    match the YML contract and the task (a timestamp the source holds is not a
@@ -257,41 +258,39 @@ re-parse the whole project, which can take a minute or more. Pick the vars once 
    the model's filters: counts, mins and maxes exactly, sums and averages up to
    rounding (equal at the column's DECIMAL places; a float column within
    1e-6 relative error). Anything more is a mismatch.
-   Then, whether or not the verifiers ran, run the key-level check yourself:
+   Then, still without the verifier, run the key-level check yourself:
    totals can match while single keys are wrong, and a check that reuses the
-   model's expression repeats its error. For every model the task asks for, pick 3-5 keys
-   at the output grain (include edge cases: NULLs, zeros, the largest group)
-   and recompute every metric for those keys straight from the sources with a
-   query you write from the task's and YML's written rules - never copy the
-   model's expression or CTEs. For a column defined by rules (weights,
-   thresholds, caps, CASE branches), pick rows that exercise each branch.
-   Compare with the model row by row under the same rounding allowance as
-   above; a larger difference is a FAIL like a verifier's - update
-   `technical_spec.md` first, then edit the SQL, as in step 3.
-3. Read BOTH reports. Every check is PASS, FAIL, NEEDS_INFO or N/A. Only act on
-   checks the verifiers marked FAIL or NEEDS_INFO (give the verifier what it asks for).
-   If a check is PASS or N/A, accept it - do NOT override the verifier
-   or "fix" something it approved, unless your key-level check shows a
-   difference there. If the model's row count differs from
-   your technical spec but the verifier says CHECK 3 PASS, update your
-   spec to match reality - the verifier has already diagnosed whether
-   the row count is correct.
-
-   For each FAIL:
- - Structure CHECK 1 FAIL (missing table): run `dbt run --select +<model>`.
- - Structure CHECK 2 FAIL (missing columns): a column that appears ONLY in the
-     YML - with no source counterpart, no sibling that outputs it, and not named by
-     the task - is aspirational; do NOT add it (it makes the output one column too
-     wide than the contract). Otherwise - it is a real source column the
-     model should carry - add it and rebuild.
- - Structure CHECK 3 FAIL (row count): investigate SQL logic,
-     pre-aggregate or add GROUP BY, rebuild.
- - Value CHECK 2 FAIL (aggregate mismatch): apply the verifier's
-     prescribed fix exactly as stated. Do NOT rationalize the mismatch
-     as intentional. The verifier's numbers are measured from source data.
-   For ANY fix, update `technical_spec.md` FIRST, then rewrite the SQL
-   from the updated spec. Rebuild.
-4. STOP when both reports show every check PASS or N/A and your key-level check matches. Once verification passes, do NOT modify any model files - the task is complete. No further investigation, no "what if" queries, no source table changes. The verifiers and your key-level check are the final authority.
+   model's expression repeats its error. For every model the task asks for,
+   write a reference query straight from the task's and YML's written rules
+   - never copy the model's expression or CTEs, and read only tables that
+   existed before the run. For a column defined by rules (weights,
+   thresholds, caps, CASE branches), make it compute each branch as the task
+   states it. If `compare_by_key` is in your tool list, call
+   `compare_by_key(model, key_columns, reference_sql)` with the key at the
+   output grain: it compares every key under the same rounding allowance as
+   above and refuses a reference that reads the model or another model you
+   created or changed. If it is not, pick 3-5 keys at the output grain
+   (include edge cases: NULLs, zeros, the largest group), recompute every
+   metric for those keys with that query, and compare with the model row by
+   row under the same rounding allowance. A key only on one side or a larger
+   difference is a FAIL like a verifier's - update `technical_spec.md`
+   first, then edit the SQL, as in step 3.
+3. Read the report. Every check is PASS, FAIL, NEEDS_INFO or N/A. Handle
+   FAIL and NEEDS_INFO as the system prompt's "Verification before delivery"
+   section says; this Skill adds no FAIL rules of its own. If a check is
+   PASS or N/A, accept it - do NOT override the verifier or "fix" something
+   it approved. If the model's row count differs from your technical spec
+   but CHECK 3 (grain) and CHECK 7 (key-level comparison) are PASS, update
+   your spec to match reality.
+   For ANY fix, update `technical_spec.md` FIRST, then rewrite the SQL from
+   the updated spec, and rebuild as the system prompt says.
+4. With the verifier, STOP when the latest report shows every check PASS or
+   N/A for every model you created or changed; that report is the final
+   authority, and the run cannot end while a model you changed is
+   unverified or has a FAIL. Without the verifier, STOP when your own checks
+   in step 2 all match. Once you STOP, do NOT modify any model files - the
+   task is complete. No further investigation, no "what if" queries, no
+   source table changes.
 
 ---
 

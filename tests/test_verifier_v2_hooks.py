@@ -241,15 +241,17 @@ async def test_subagent_stop_reads_a_call_at_the_turn_cap_as_needs_info(
     assert blocked["decision"] == "block" and "alpha: rule 3" in blocked["reason"]
 
 
-async def test_value_verifier_reports_are_recorded_but_verify_nothing(
+async def test_another_subagents_report_is_not_recorded_and_verifies_nothing(
     edited: tuple[Path, Path],
 ) -> None:
+    """Ticket 47: only `verifier` exists; a report from any other subagent (the removed
+    value-verifier name included) leaves no event and satisfies no Stop rule."""
     events: list[dict[str, Any]] = []
     hooks = hooks_for(edited, events)
     report = "### alpha\nCHECK 1: PASS — ok\n"
-    await call(hooks, "SubagentStop", **subagent_stop("value-verifier", TRANSCRIPT, report))
-    [end] = events
-    assert end["type"] == "verifier_end" and end["verifier"] == "value-verifier"
+    for agent_type in ("value-verifier", "Explore"):
+        await call(hooks, "SubagentStop", **subagent_stop(agent_type, TRANSCRIPT, report))
+    assert events == []
     blocked = await call(hooks, "Stop", stop_hook_active=False)
     assert blocked["decision"] == "block" and "alpha: rule 1" in blocked["reason"]
 

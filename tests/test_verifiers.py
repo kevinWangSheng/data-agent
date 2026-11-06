@@ -1,5 +1,6 @@
-"""Verifier subagents: offered only to dbt runs whose config turns the layer on, read-only, and
-recorded as verifier_start events (their end is verifier_v2's `verifier_end`)."""
+"""The verifier subagent: offered only to dbt runs whose config turns the layer on, read-only,
+one definition working through the v2 tools, recorded as verifier_start events (its end is
+verifier_v2's `verifier_end`)."""
 
 import json
 from pathlib import Path
@@ -13,10 +14,18 @@ from data_agent import agent
 from data_agent.agent import ModelSettings, Task
 from data_agent.events import EventLog
 from data_agent.run_config import load_config
-from data_agent.verifier_v2 import parse_report
-from data_agent.verifiers import VERIFIER_NAMES, VERIFIERS_PROMPT, verifier_hooks
+from data_agent.verifier_v2 import hooks, parse_report
+from data_agent.verifier_v2.dispatch import UNVERIFIED_HEADING
+from data_agent.verifier_v2.render import render_compare
+from data_agent.verifiers import (
+    VERIFIER_MAX_TURNS,
+    VERIFIER_NAMES,
+    VERIFIERS_PROMPT,
+    verifier_hooks,
+)
 
 SETTINGS = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
+V2_TOOLS = ("model_diff", "contract_check", "grain_facts", "compare_by_key")
 
 
 def options(tmp_path: Path, task_type: str, config: str) -> ClaudeAgentOptions:
@@ -24,15 +33,16 @@ def options(tmp_path: Path, task_type: str, config: str) -> ClaudeAgentOptions:
     return agent.build_options(task, load_config(config), SETTINGS, [], lambda *_, **__: None)
 
 
-def test_dbt_runs_offer_both_read_only_verifiers(tmp_path: Path) -> None:
+def test_dbt_runs_offer_one_read_only_verifier(tmp_path: Path) -> None:
     built = options(tmp_path, "dbt", "full")
-    assert set(built.agents or {}) == set(VERIFIER_NAMES) == {"verifier", "value-verifier"}
+    assert set(built.agents or {}) == set(VERIFIER_NAMES) == {"verifier"}
     assert "Agent" in (built.tools or []) and "Agent" in built.allowed_tools
-    for definition in (built.agents or {}).values():
-        tools = set(definition.tools or [])
-        assert tools >= {"Read", "mcp__data__query_database"}
-        assert not tools & {"Write", "Edit", "Bash", "Agent"}
-        assert "NEEDS_INFO" in definition.prompt and "N/A" in definition.prompt
+    definition = (built.agents or {})["verifier"]
+    tools = set(definition.tools or [])
+    assert tools >= {"Read", "mcp__data__query_database"}
+    assert tools >= {f"mcp__data__{tool}" for tool in V2_TOOLS}
+    assert not tools & {"Write", "Edit", "Bash", "Agent"}
+    assert "NEEDS_INFO" in definition.prompt and "N/A" in definition.prompt
     assert "SubagentStart" in (built.hooks or {})
     # The v2 hooks (dispatch rewrite, verifier_end, Stop) need the run's snapshot and task file.
     assert not {"SubagentStop", "Stop"} & set(built.hooks or {})
@@ -55,6 +65,14 @@ def test_dbt_runs_offer_both_read_only_verifiers(tmp_path: Path) -> None:
     assert VERIFIERS_PROMPT in str(built.system_prompt)
 
 
+def test_verifier_turn_cap_is_fifty_and_the_hooks_read_the_same_number(tmp_path: Path) -> None:
+    """Spec "验证器": maxTurns 50; the SubagentStop hook calls a report at that many turns
+    NEEDS_INFO, so the two constants must agree."""
+    definition = (options(tmp_path, "dbt", "full").agents or {})["verifier"]
+    assert definition.maxTurns == VERIFIER_MAX_TURNS == 50
+    assert hooks.VERIFIER_MAX_TURNS == VERIFIER_MAX_TURNS
+
+
 @pytest.mark.parametrize(
     ("task_type", "config"), [("dbt", "no-verifiers"), ("dbt", "baseline"), ("query", "full")]
 )
@@ -71,7 +89,7 @@ def test_verifiers_are_absent_when_off_or_for_query_runs(
     assert "--no-verifier-tools" in servers["data"]["args"]
 
 
-def test_verifier_definitions_name_only_tools_the_server_has() -> None:
+def test_verifier_definition_names_only_tools_the_server_has() -> None:
     built = options(Path("."), "dbt", "full")
     for definition in (built.agents or {}).values():
         for tool in definition.tools or []:
@@ -79,10 +97,7 @@ def test_verifier_definitions_name_only_tools_the_server_has() -> None:
                 assert tool.removeprefix("mcp__data__") in {
                     "list_tables",
                     "query_database",
-                    "map_columns",
-                    "check_model_schema",
-                    "audit_model_sources",
-                    "verify_model_values",
+                    *V2_TOOLS,
                 }
 
 
@@ -91,16 +106,268 @@ def verifier_prompt() -> str:
     return agents["verifier"].prompt
 
 
-def test_verifier_needs_no_table_for_ephemeral_or_disabled_models() -> None:
-    check_1 = verifier_prompt().split("### CHECK 1")[1].split("### CHECK 2")[0]
-    assert "ephemeral" in check_1 and "enabled: false" in check_1
-    assert "dbt_project.yml" in check_1
+def step(number: int) -> str:
+    prompt = verifier_prompt()
+    text = prompt.split(f"### Step {number}")[1].split("\n### ")[0].split("\n## ")[0]
+    return " ".join(text.split())
 
 
-def test_verifier_reads_fewer_rows_against_the_models_grain() -> None:
-    check_3 = verifier_prompt().split("### CHECK 3")[1].split("### CHECK 4")[0]
-    assert "Ratio < 0.9 = over-filtering" not in check_3
-    assert "GROUP BY" in check_3 and "grain" in check_3
+def test_verifier_runs_the_four_steps_in_the_specs_order() -> None:
+    """Spec "验证器": contract_check copied (CHECK 1, 2, 4); the grain key from the task into
+    grain_facts (CHECK 3); model_diff judged against the task (CHECK 5, 6); a reference query
+    from the task into compare_by_key with the Step 2 key (CHECK 7)."""
+    prompt = verifier_prompt()
+    positions = [prompt.index(f"### Step {n}") for n in (1, 2, 3, 4)]
+    assert positions == sorted(positions)
+    assert "contract_check" in step(1) and "CHECK 1, 2, 4" in step(1)
+    assert "grain_facts" in step(2) and "CHECK 3" in step(2)
+    assert "model_diff" in step(3) and "CHECK 5, 6" in step(3)
+    assert "compare_by_key" in step(4) and "CHECK 7" in step(4)
+    assert "Step 2" in step(4)
+    for tool in V2_TOOLS:
+        assert f"`{tool}" in prompt
+    # The replaced tools are gone with the old checks (the modification note at the top names them).
+    body = prompt.split("-->", 1)[1]
+    for old in ("map_columns", "check_model_schema", "audit_model_sources", "verify_model_values"):
+        assert old not in body
+
+
+def test_verifier_copies_contract_check_and_does_not_rederive_it() -> None:
+    text = step(1)
+    assert "Copy the tool's three results" in text
+    assert "Do not re-derive" in text
+    assert "YML the main agent wrote or changed is not a contract" in text
+
+
+def test_verifier_picks_the_grain_key_from_the_task_and_applies_the_null_duplicate_rule() -> None:
+    text = step(2)
+    assert "From the task text, decide each model's grain key" in text
+    assert "never from the model's SQL" in text
+    assert "NULL rows > 0 or duplicate rows > 0 is FAIL" in text
+    assert "cannot exempt" in text and "technical_spec.md" in text
+
+
+def test_verifier_takes_the_grain_key_from_the_task_only_and_never_reads_yml_for_it() -> None:
+    """ADR-0009: the verifier can only Read the project's YML, where
+    the main agent's new `unique` tests are indistinguishable from the original ones, so YML is
+    not a key source; a task that names no grain is NEEDS_INFO, and the only YML exemption is
+    the "exemption candidate" line grain_facts itself reads from the snapshot."""
+    text = step(2)
+    assert "Take the key from the task text only" in text
+    assert "not from any YML file in the project" in text
+    assert "If the task text does not name a grain, CHECK 3 = NEEDS_INFO" in text
+    assert "the exemption candidate the tool reports" in text
+    assert "The only exemptions are the task text" in text
+    assert "Do not read YML files to find a key or an exemption" in text
+    assert "original YML" not in text
+
+
+def test_verifier_judges_only_the_changes_model_diff_lists() -> None:
+    text = step(3)
+    assert "Logic the main agent did not touch is not in the output and is not reviewed" in text
+    assert "do not read the model's SQL to audit the rest of it" in text
+    assert "A removed filter is a change too" in text
+    assert "未解析" in text
+
+
+def test_verifier_writes_the_reference_from_the_task_not_the_model() -> None:
+    text = step(4)
+    assert "from the task text alone" in text
+    assert "do not copy its expressions, CTEs or `technical_spec.md`" in text
+    assert "must not read the model or any model this run created or changed" in text
+    assert "any key only on one side or any value mismatch is FAIL" in text
+    assert "do not report the refusal as a model defect" in text
+
+
+def test_verifier_aliases_reference_columns_and_needs_info_when_none_compared() -> None:
+    """compare_by_key compares only same-named columns, so a reference whose metric is aliased
+    differently compares nothing (or not the metric) and three zero counts would read as a hollow
+    PASS. The strings the prompt quotes are the ones render_compare prints."""
+    text = step(4)
+    assert "alias every non-key output column to the model's column name" in text
+    assert "Read the contract_check output or the task's column list for the names" in text
+    # A `LIMIT 0` query prints no header (format_rows says only "Query returned 0 rows"), so the
+    # fallback column source is list_tables, which prints every column name.
+    assert 'list_tables(name_contains="<model>")' in text
+    assert "LIMIT 0" not in text
+    none_compared = render_compare(_compare_result(compared=[], unmatched=["revenue"]))
+    assert "compared columns: (none)" in none_compared
+    assert "`compared columns: (none)`" in text
+    assert "reference columns the model lacks (not compared)" in none_compared
+    assert '"reference columns the model lacks (not compared)"' in text
+    assert "CHECK 7 = NEEDS_INFO, not PASS" in text
+    assert "All zero with at least one compared column: PASS, but only when every metric" in text
+
+
+def _compare_result(compared: list[str], unmatched: list[str]) -> dict[str, Any]:
+    return {
+        "accepted": True,
+        "relation": "main.m",
+        "dialect": "duckdb",
+        "compared_columns": compared,
+        "unmatched_reference_columns": unmatched,
+        "only_in_model": 0,
+        "only_in_reference": 0,
+        "mismatched": 0,
+        "samples": {"only_in_model": [], "only_in_reference": [], "mismatched": []},
+    }
+
+
+def test_verifier_compares_keys_alone_when_the_task_defines_no_non_key_column() -> None:
+    """A task that only defines a row set (dedup, filter, "one row per X") gives a reference with
+    key columns only; `compared columns: (none)` is then the expected shape, and the key counts
+    alone decide, not NEEDS_INFO."""
+    text = step(4)
+    assert "unless the task defines no non-key column at all" in text
+    assert "the three key counts alone decide" in text
+    # A key-only reference renders as "(none)" with the three key counts; nothing else to read.
+    rendered = render_compare(_compare_result(compared=[], unmatched=[]))
+    assert "compared columns: (none)" in rendered
+
+
+def test_verifier_maps_the_tasks_grain_words_to_column_names_without_reading_sql() -> None:
+    """grain_facts resolves the key by the built model's column names (an unknown name is a
+    ToolError), and a task says "per customer and month" without naming columns, so Step 2 must
+    say where the names come from and that names are not logic."""
+    text = step(2)
+    assert "Column names are not the model's logic" in text
+    assert "contract_check output, the task's column list" in text
+    assert 'list_tables(name_contains="<model>")' in text
+
+
+def test_verifier_exemption_candidate_needs_only_no_contradiction_from_the_task() -> None:
+    """Spec: the snapshot YML can exempt on its own; a task silent on grain cannot "confirm"
+    anything, so confirming means the task text does not contradict the candidate."""
+    text = step(2)
+    assert "the task text does not contradict it" in text
+    assert "says nothing about a finer grain does not" in text
+    assert "confirm a candidate against the task" not in text
+
+
+def test_verifier_treats_the_main_agents_counter_evidence_as_unverified() -> None:
+    prompt = " ".join(verifier_prompt().split())
+    heading = UNVERIFIED_HEADING.split("（")[0]  # noqa: RUF001
+    assert heading in prompt
+    section = prompt.split("## Task file")[1].split("##")[0]
+    assert "word for word" in section and "Read it before any check" in section
+    assert "technical_spec.md" in section and "the task text wins" in section
+    assert "unverified" in section and "never as a result" in section
+
+
+def test_verifier_report_template_parses_as_the_hooks_expect() -> None:
+    """The output format gives CHECK 1-7 one per line under `### <model>`, in the shape
+    `parse_report` reads; every line with a real status is a verdict."""
+    template = verifier_prompt().split("## Output Format")[1].split("### Summary")[0]
+    lines = [line for line in template.splitlines() if line.startswith("CHECK ")]
+    assert [int(line.split()[1].rstrip(":")) for line in lines] == [1, 2, 3, 4, 5, 6, 7]
+    placeholder = "<PASS|FAIL|NEEDS_INFO|N/A>"
+    assert all(placeholder in line for line in lines)
+    # The template copied verbatim is no verdict; each real status is.
+    assert not parse_report("### m\n" + "\n".join(lines))["parsed"]
+    for status in ("PASS", "FAIL", "NEEDS_INFO", "N/A"):
+        report = "### m\n" + "\n".join(line.replace(placeholder, status) for line in lines)
+        assert parse_report(report)["models"] == {"m": dict.fromkeys(range(1, 8), status)}
+
+
+def test_verifier_prompt_names_no_fix_or_prescription() -> None:
+    """The verifier reports; the FAIL handling is the main agent's, in VERIFIERS_PROMPT."""
+    prompt = verifier_prompt()
+    assert "Fix nothing" in prompt
+    assert "Prescribe" not in prompt and "RECOMMENDATION" not in prompt
+
+
+def test_system_prompt_holds_the_fail_rules_once() -> None:
+    """Spec "FAIL 处理": reproduce first, smallest change, rebuild only the changed models,
+    re-dispatch; counter-evidence when it does not reproduce; NEEDS_INFO re-dispatched with the
+    information or done by the main agent. The Skill only refers here."""
+    flat = " ".join(VERIFIERS_PROMPT.split())
+    fail = flat.split("- FAIL:")[1].split("- NEEDS_INFO:")[0]
+    assert "reproduce the failure yourself with one read-only query" in fail
+    assert "smallest change" in fail and "rebuild only the changed models" in fail
+    assert "dispatch the verifier again" in fail
+    assert "does not reproduce" in fail and "counter-evidence" in fail
+    needs = flat.split("- NEEDS_INFO:")[1]
+    assert "information it asked for" in needs and "run that check yourself" in needs
+    # The verifier takes the grain key from the task text only, so re-dispatching with a grain
+    # the main agent supplies is a loop; a grain NEEDS_INFO is the main agent's own check.
+    grain = needs.split("- Stop when")[0]
+    assert "run the grain check yourself with `grain_facts`" in grain
+    # CHECK 7 is a value comparison; grain_facts alone does not resolve it.
+    assert "`compare_by_key` and a reference query on that key (CHECK 7)" in grain
+    # A NEEDS_INFO the main agent resolved itself is an exit (the Stop hook never blocks on it).
+    assert "a NEEDS_INFO you resolved yourself" in needs.split("- Stop when")[1]
+    assert "`verifier`" in flat and "value-verifier" not in flat
+    assert "Do not tell it what the columns mean or how you wrote the SQL" in flat
+    assert "technical_spec.md" in flat and "intent" in flat
+    assert "CHECK 1-7" in flat
+
+
+def test_system_prompt_limits_the_main_agents_own_compare_and_grain_calls() -> None:
+    """Ticket 47 return round 3: the main agent calls `compare_by_key` or `grain_facts` itself
+    only without a verifier, to reproduce one FAIL (one model, as the FAIL rule's one query), or
+    for a grain NEEDS_INFO; never as a routine self-check before or after a dispatch."""
+    flat = " ".join(VERIFIERS_PROMPT.split())
+    rule = flat.split("Call `compare_by_key` or `grain_facts` yourself only in three cases", 1)[1]
+    rule = rule.split("Its report gives", 1)[0]
+    assert "when no verifier is offered" in rule
+    assert "to reproduce one FAIL (as the one read-only query below, on that one model)" in rule
+    assert "for a grain NEEDS_INFO as below" in rule
+    assert "Not as a routine self-check" in rule
+
+
+def section(heading: str) -> str:
+    text = verifier_prompt().split(f"## {heading}\n")[1].split("\n## ")[0]
+    return " ".join(text.split())
+
+
+def test_verifier_has_read_for_the_task_file_and_no_search_tools(tmp_path: Path) -> None:
+    """Ticket 47 return round 4: Glob and Grep served only the reading of SQL and YML the prompt
+    forbids (cross-sell spent 14 turns on Read/Glob/Grep); Read stays for the task file. The main
+    agent's tools are not the verifier's and keep them."""
+    built = options(tmp_path, "dbt", "full")
+    tools = set((built.agents or {})["verifier"].tools or [])
+    assert "Read" in tools
+    assert not tools & {"Glob", "Grep"}
+    assert {"Glob", "Grep"} <= set(built.tools or [])
+    assert "Read the task file" in section("Rules")
+    assert "Read files." not in section("Rules")
+
+
+def test_verifier_hands_the_reference_to_compare_by_key_without_probing_the_model() -> None:
+    """Ticket 47 return round 4: t47-screen2's verifier spent 226 queries dry-running references,
+    121 looking at the models' output and 33 on the catalog. compare_by_key reports SQL errors
+    itself; the changed models are as off-limits as their SQL; column names come from the three
+    sources Step 2 names; query_database is for the source-table facts a task rule needs."""
+    text = step(4)
+    assert "check your query runs" not in verifier_prompt()
+    assert "do not run it with `query_database` first" in text
+    assert "Do not query the models this run created or changed or their output" in text
+    assert "`SELECT * ... LIMIT`" in text
+    assert "not from `information_schema` or any other catalog" in text
+    assert "Use `query_database` only for facts about the source tables that a task rule needs" in (
+        text
+    )
+
+
+def test_verifier_verifies_only_the_models_the_dispatch_lists() -> None:
+    """Ticket 47 return round 4, with ticket 57's re-dispatch list: models model_diff lists
+    beyond the dispatch are not verified or reported (contract_check only reports the models it
+    is given)."""
+    text = section("Task")
+    assert "Verify only the models the dispatch message lists" in text
+    assert "outside this dispatch: do not verify or report them" in text
+    assert "Judge each listed change of the dispatched models" in step(3)
+
+
+def test_verifier_report_gives_examples_only_for_a_fail() -> None:
+    """Ticket 47 return round 4: pos reports ran to 22-30 k characters (60-95 s to generate).
+    Check lines carry the status and the key counts; examples only for a FAIL, at most 3; the
+    Summary is one line per status. The parsed layout is unchanged (the template test above)."""
+    text = section("Output Format")
+    assert "the status and the tool's counts (for CHECK 5 and 6, the change at issue)" in text
+    assert "Give examples only for a FAIL, at most 3 per check; none for a PASS" in text
+    assert "one line per status, without repeating the checks' details" in text
+    assert "first examples" not in verifier_prompt()
 
 
 async def fire(
@@ -126,158 +393,11 @@ async def test_hooks_record_a_verifier_start_and_no_other_subagent(tmp_path: Pat
     assert events[0]["verifier"] == "verifier" and events[0]["agent_id"] == "a1"
 
 
-def value_verifier_prompt() -> str:
-    agents = options(Path("."), "dbt", "full").agents or {}
-    return agents["value-verifier"].prompt
-
-
-def test_value_verifier_reads_total_as_a_count_only_for_row_nouns() -> None:
-    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
-    assert 'Column named "total_X" → MUST match COUNT(*)' not in check_2
-    rule = next(line for line in check_2.splitlines() if "total_<row noun>" in line)
-    assert "total_orders" in rule
-    sums = check_2.split("is not a count")[1]
-    assert "total_amount" in sums and "total_revenue" in sums
-
-
-def test_value_verifier_compares_sums_and_averages_only_up_to_rounding() -> None:
-    """The verifier recomputes over the same slice and filters, so a sum or average may differ
-    from the model's only by rounding or float error; a 10% band would pass wrong results."""
-    prompt = value_verifier_prompt()
-    check_2 = prompt.split("### CHECK 2")[1].split("### CHECK 3")[0]
-    flat = " ".join(check_2.split())
-    assert "Counts compare exactly: one row off is a mismatch." in flat
-    assert "rounded to the column's scale (its DECIMAL places)" in flat
-    assert "relative error of at most 1e-6" in flat
-    assert "Anything beyond that is a MISMATCH" in flat
-    assert "10%" not in prompt
-
-
-def test_value_verifier_lets_the_tools_sql_verdict_override_the_name_rules() -> None:
-    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
-    flat = " ".join(check_2.split())
-    read, _, unread = flat.partition('Only when the output says "Model SQL could not be parsed"')
-    assert unread, "the name rules need their own unparsed-SQL branch"
-    # With the SQL read, the tool's verdict decides, even against a "total" name.
-    assert 'starts with "Model SQL read"' in read and "whatever the column is named" in read
-    assert '`total_customers` marked "Model matches COUNT(DISTINCT customer_id)" is PASS' in read
-    # The name rules, the under-counting FAIL among them, sit only in the unparsed branch.
-    for rule in ("total_<row noun>", "unique_X", "under-counting"):
-        assert rule not in read and rule in unread, rule
-
-
-def test_verifier_calls_duplicate_lookup_keys_a_possible_fan_out() -> None:
-    check_3 = verifier_prompt().split("### CHECK 3")[1].split("### CHECK 4")[0]
-    assert "the fan-out is CORRECT" not in check_3
-    assert "byte-identical" not in check_3
-    assert "never a reason for PASS" in check_3
-
-
-def test_verifier_finds_models_under_the_model_paths() -> None:
-    check_1 = verifier_prompt().split("### CHECK 1")[1].split("### CHECK 2")[0]
-    assert "model-paths" in check_1 and "recursively" in check_1
-    assert "models/*.yml" not in check_1
-
-
-def test_verifier_passes_yml_types_to_check_model_schema() -> None:
-    check_2 = verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
-    assert "check_model_schema" in check_2 and "name:data_type" in check_2
-
-
-def test_verifier_takes_the_column_contract_from_yml_then_the_task_then_needs_info() -> None:
-    """Ticket 33: CHECK 2's contract is the model's YML columns; without them, the output column
-    list the task text gives (names, and types where the task gives them); only with neither is
-    CHECK 2 NEEDS_INFO. YML wins over the task when both exist."""
-    check_2 = " ".join(verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0].split())
-    contract = check_2.split("Column contract")[1].split("Call `check_model_schema`")[0]
-    yml, task, neither = (
-        contract.index(step) for step in ("1. The model's YML", "2. No YML", "3. Neither")
-    )
-    assert yml < task < neither
-    assert "task file" in contract[task:neither] and "data_type" in contract[task:neither]
-    assert "NEEDS_INFO" in contract[neither:] and "NEEDS_INFO" not in contract[:neither]
-    assert "the YML wins" in contract
-    assert "with the contract's columns" in check_2
-    # With no contract there are no columns to pass; check_model_schema would only error.
-    assert "skip `check_model_schema`" in contract[neither:]
-    template = verifier_prompt().split("## Output Format")[1]
-    assert "contract source" in next(line for line in template.splitlines() if "CHECK 2" in line)
-
-
-def test_verifier_reads_map_columns_by_contract_source_so_no_contract_stays_needs_info() -> None:
-    """Ticket 33, PR #34 review: reporting every UNMAPPED-INCLUDE column of a created model
-    holds only under a YML contract; with no contract at all those columns are no defect and
-    CHECK 2 is NEEDS_INFO, not FAIL. Under a YML contract a modified model's already-missing
-    columns stay exempt in both tools' output, as before check_model_schema moved first."""
-    check_2 = " ".join(verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0].split())
-    mapping = check_2.split("Call `map_columns")[1]
-    yml, task, no_contract_at = (
-        mapping.index(label)
-        for label in (
-            "- Contract from the YML:",
-            "- Contract from the task file:",
-            "- No contract:",
-        )
-    )
-    assert yml < task < no_contract_at
-    assert "report every UNMAPPED-INCLUDE column" in mapping[yml:task]
-    assert mapping.count("report every UNMAPPED-INCLUDE") == 1
-    assert "already missing" in mapping[yml:task] and "from either tool" in mapping[yml:task]
-    # map_columns maps against the YML only: with a task contract its NONE line and
-    # UNMAPPED-INCLUDE list neither mean NEEDS_INFO nor excuse a missing task column.
-    assert "`YML contract: NONE`" in mapping[task:no_contract_at]
-    assert "is not NEEDS_INFO" in mapping[task:no_contract_at]
-    assert "never already missing" in mapping[task:no_contract_at]
-    no_contract = mapping[no_contract_at:]
-    assert "not defects" in no_contract
-    assert "CHECK 2 = NEEDS_INFO" in no_contract and "never FAIL" in no_contract
-
-
-def test_verifier_checks_every_row_removal_against_the_task_or_yml() -> None:
-    """Ticket 32: each filter, inner join, row removal and changed source needs a basis in the
-    task text or the YML, or the check fails quoting the SQL."""
-    prompt = verifier_prompt()
-    check_6 = " ".join(prompt.split("### CHECK 6")[1].split("## Output Format")[0].split())
-    for term in ("WHERE", "HAVING", "INNER JOIN", "source table", "task file", "YML", "quote"):
-        assert term.lower() in check_6.lower(), term
-    # Only a changed source needs a basis, not every upstream the model reads.
-    assert "A source the model reads that the task and YML do not name is not a change" in check_6
-    output_format = prompt.split("## Output Format")[1]
-    template = next(line for line in output_format.splitlines() if "CHECK 6" in line)
-    for status in ("PASS", "FAIL"):
-        line = template.replace("PASS / FAIL / NEEDS_INFO / N/A", status)
-        assert parse_report(f"### m\n{line}")["models"] == {"m": {6: status}}
-
-
-@pytest.mark.parametrize("name", VERIFIER_NAMES)
-def test_verifiers_judge_against_the_task_file_not_the_spec(name: str) -> None:
-    prompt = " ".join((options(Path("."), "dbt", "full").agents or {})[name].prompt.split())
-    section = prompt.split("## Task file")[1].split("##")[0]
-    assert "word for word" in section and "Read it before any check" in section
-    assert "technical_spec.md" in section and "the task text wins" in section
-
-
-def test_value_verifier_recomputes_what_the_task_defines_from_the_task() -> None:
-    check_2 = value_verifier_prompt().split("### CHECK 2")[1].split("### CHECK 3")[0]
-    flat = " ".join(check_2.split())
-    rule = flat.split("A quantity the task defines")[1].split(". ", 3)
-    text = ". ".join(rule[:3])
-    for term in ("formula", "bucket", "default", "task file"):
-        assert term in text, term
-    assert "not" in text and "technical spec" in text
-
-
-def test_verifiers_prompt_passes_the_spec_as_intent_and_still_hides_the_sql() -> None:
-    flat = " ".join(VERIFIERS_PROMPT.split())
-    assert "technical_spec.md" in flat and "intent" in flat and "task text" in flat
-    assert "Do not tell them what the columns mean or how you wrote the SQL." in flat
-
-
-def test_parse_report_reads_a_row_removal_fail_that_quotes_sql() -> None:
+def test_parse_report_reads_a_row_logic_fail_that_quotes_sql() -> None:
     report = (
         "### fct_orders\n"
-        "- CHECK 5: N/A - created from scratch\n"
-        "- CHECK 6: FAIL - `WHERE o.status <> 'cancelled'` (models/fct_orders.sql:12): neither "
-        "the task nor the YML asks to drop cancelled orders\n"
+        "CHECK 5: N/A — sources: no source change\n"
+        "CHECK 6: FAIL — row logic: `[filter] removed: o.status <> 'cancelled'`: neither "
+        "the task nor the YML asks to keep cancelled orders\n"
     )
     assert parse_report(report)["models"] == {"fct_orders": {5: "N/A", 6: "FAIL"}}
