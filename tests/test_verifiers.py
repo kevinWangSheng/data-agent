@@ -310,6 +310,26 @@ def test_system_prompt_holds_the_fail_rules_once() -> None:
     assert "CHECK 1-7" in flat
 
 
+def test_system_prompt_lets_a_disputed_fail_end_the_run() -> None:
+    """Ticket 64: after one re-dispatch with counter-evidence, the same check of an unchanged
+    model failing again is a dispute; the main agent may end the run and lists each disputed
+    item with its grounds. The Skill's Step 8 refers to the prompt and does not contradict it
+    (no "cannot end while ... has a FAIL" of its own)."""
+    flat = " ".join(VERIFIERS_PROMPT.split())
+    assert "or still has a FAIL that is not disputed" in flat
+    fail = flat.split("- FAIL:")[1].split("- NEEDS_INFO:")[0]
+    assert "dispatched it again with counter-evidence" in fail
+    assert "did not change the model" in fail and "the same check still FAILs" in fail
+    assert "disputed" in fail and "you may end the run" in fail
+    assert "in your final message list every disputed check" in fail
+    assert "and your grounds" in fail
+    assert "a disputed FAIL" in flat.split("- Stop when")[1]
+    skill = (Path(__file__).resolve().parents[1] / "skills/dbt-workflow/SKILL.md").read_text()
+    step8 = " ".join(skill.split("### Step 8")[1].split("\n## ")[0].split())
+    assert "has a FAIL" not in step8 and "every check PASS or N/A" not in step8
+    assert "system prompt" in step8.split("4. ")[1]
+
+
 def test_system_prompt_limits_the_main_agents_own_compare_and_grain_calls() -> None:
     """Ticket 47 return round 3: the main agent calls `compare_by_key` or `grain_facts` itself
     only without a verifier, to reproduce one FAIL (one model, as the FAIL rule's one query), or
