@@ -1004,3 +1004,17 @@ def test_exec_usage_errors_exit_2_without_connecting(env: Env, args: list[str]):
     assert proc.returncode == 2
     assert "usage" in proc.stderr
     assert env.ssh_calls() == 0
+
+
+def test_exec_takes_a_dash_word_as_the_command_not_an_option(env: Env):
+    env.repo.mkdir(parents=True)
+    proc = env.run("exec", "--", "-a", "x", "echo", "hi")
+    assert proc.returncode == 127
+    assert "hi" not in proc.stdout.splitlines()
+
+
+def test_exec_runs_in_the_default_home_relative_repo_dir(env: Env):
+    env.repo.mkdir(parents=True)
+    proc = env.run("exec", "--", "pwd", DA_REMOTE_DIR="~/data-agent")
+    assert proc.returncode == 0, proc.stdout
+    assert proc.stdout.splitlines() == [str(env.repo)]
