@@ -132,11 +132,12 @@ grain key from Step 2 plus the metrics or attributes the task defines,
 computed from the tables that existed before the run with the task's own
 rules (its filters, formulas, buckets, defaults). Do not read the model's
 SQL first and do not copy its expressions, CTEs or `technical_spec.md`:
-a reference that repeats the model's logic repeats its error. A row-set
-rule (filter, join, dedup) the task does not mention goes into the
-reference as the snapshot model had it: `model_diff`'s removed lines
-show the snapshot version of each such rule the main agent removed or
-changed. A rule the task mentions follows the task. A filter dropped
+a reference that repeats the model's logic repeats its error. One
+exception: a row-set rule (filter, join, dedup) the task does not
+mention, which the main agent removed or changed, goes into the
+reference as its removed line in `model_diff` shows it (the snapshot
+version); those removed lines are the only model logic the reference
+may copy. A rule the task mentions follows the task. A filter dropped
 without a basis then shows as only-in-model. This is not a reason to
 read the model's current SQL. The query must not read the model or any
 model this run created or changed (the tool refuses such a reference;
@@ -190,10 +191,11 @@ the heading; one line per check, `CHECK <n>: <STATUS> — <detail>`, n from
 1 to 7, in order, for every model. Put nothing else at the start of a
 line that begins with `CHECK`.
 
-Keep it short. Except for a FAIL, a check line gives only the status and
-the key counts, with about 100 characters of detail at most. CHECK 5 and
-6 list only the changes at issue; when every change has a basis, write
-"all changes have a basis". Give examples only for a FAIL, at most 3 per
+Keep it short. A PASS line gives only the status and the key counts; an
+N/A or NEEDS_INFO line adds only its reason; either way about 100
+characters of detail at most. A FAIL line says what and where. CHECK 5
+and 6 list only the changes at issue; when every change has a basis,
+write "all changes have a basis". Give examples only for a FAIL, at most 3 per
 check; none for a PASS. The Summary is one line per status, without
 repeating the checks' details.
 
@@ -205,8 +207,8 @@ CHECK 1: <PASS|FAIL|NEEDS_INFO|N/A> — exists: <tool evidence>
 CHECK 2: <PASS|FAIL|NEEDS_INFO|N/A> — columns: <contract source; missing, extra or mistyped columns>
 CHECK 3: <PASS|FAIL|NEEDS_INFO|N/A> — grain <key columns>: <NULL rows, duplicate rows, exemption used or none>
 CHECK 4: <PASS|FAIL|NEEDS_INFO|N/A> — window ordering: <tool evidence>
-CHECK 5: <PASS|FAIL|NEEDS_INFO|N/A> — sources: <the change with no basis, quoted, or "all changes have a basis">
-CHECK 6: <PASS|FAIL|NEEDS_INFO|N/A> — row logic: <the change with no basis, quoted, and what in the task you looked for, or "all changes have a basis">
+CHECK 5: <PASS|FAIL|NEEDS_INFO|N/A> — sources: <the change with no basis, quoted; "all changes have a basis"; or why N/A>
+CHECK 6: <PASS|FAIL|NEEDS_INFO|N/A> — row logic: <the change with no basis, quoted, and what in the task you looked for; "all changes have a basis"; or why N/A>
 CHECK 7: <PASS|FAIL|NEEDS_INFO|N/A> — compare_by_key on <key columns>: <compared columns; only-in-model, only-in-reference, mismatched counts; up to 3 examples if FAIL>
 
 ### Summary
