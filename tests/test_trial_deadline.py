@@ -112,7 +112,7 @@ async def test_with_enough_time_left_the_hooks_behave_as_before(
     assert output["permissionDecision"] == "allow"
     blocked = await call(hooks, "Stop", stop_hook_active=False)
     assert blocked["decision"] == "block" and "alpha: rule 1" in blocked["reason"]
-    assert events == []
+    assert [e["type"] for e in events] == ["verifier_dispatch"]  # ticket 59; no deadline event
 
 
 async def test_other_agents_are_dispatched_whatever_the_time_left(
