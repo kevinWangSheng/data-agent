@@ -167,6 +167,29 @@ async def test_a_dispute_stands_while_the_check_keeps_failing_on_the_same_model(
     assert ended["disputed"] == [{"model": "alpha", "check": 3, "dispatches": [1, 2]}]
 
 
+async def test_two_reports_of_one_outstanding_dispatch_are_no_dispute(workspace: Path) -> None:
+    """d2 (with counter-evidence) and d3 are outstanding together, so both reports take d2's
+    number and evidence; the first records a new FAIL and the second repeats it. No dispatch
+    with counter-evidence came after that first FAIL, so it still blocks."""
+    run = Run(workspace)
+    await run.verify("### alpha\nCHECK 3: PASS — ok\n" + BETA_PASS)
+    tool_input = {"subagent_type": "verifier", "prompt": EVIDENCE}
+    await run.call("PreToolUse", tool_name="Agent", tool_input=tool_input)
+    await run.call("PreToolUse", tool_name="Agent", tool_input=tool_input | {"prompt": ""})
+    for agent_id in ("v2", "v3"):
+        await run.call(
+            "SubagentStop",
+            agent_id=agent_id,
+            agent_type="verifier",
+            agent_transcript_path=str(TRANSCRIPT),
+            last_assistant_message=CHECK3_FAIL,
+            stop_hook_active=False,
+        )
+    blocked = await run.stop()
+    assert blocked["decision"] == "block" and "alpha: rule 3" in blocked["reason"]
+    assert run.ended("ended_disputed") == []
+
+
 async def test_disputes_are_listed_when_the_run_ends_unresolved(workspace: Path) -> None:
     run = Run(workspace)
     await run.verify(CHECK3_FAIL + "### beta\nCHECK 2: FAIL — bad\n")

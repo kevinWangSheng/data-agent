@@ -85,9 +85,11 @@ def record_checks(
     """`record_report` on an already parsed report (`parse_report`'s `models`), for a caller
     that parsed it for its own record. `dispatch` numbers the dispatch the report answers and
     `counter_evidence` says whether it carried the main agent's counter-evidence; with both, a
-    FAIL that the model's previous record also holds, on the same fingerprint, is disputed
-    (`disputed`: check -> the two dispatch numbers). A dispute stands while the same check keeps
-    failing on that fingerprint."""
+    FAIL that the model's previous record also holds, on the same fingerprint, from an earlier
+    dispatch, is disputed (`disputed`: check -> the two dispatch numbers). Two reports answering
+    one dispatch number (verifiers in flight together) are no dispute: no counter-evidence came
+    after the first FAIL. A dispute stands while the same check keeps failing on that
+    fingerprint."""
     updated = {model: record for model, record in state.items() if model in hashes}
     for model, checks in models.items():
         if model not in hashes:
@@ -104,6 +106,7 @@ def record_checks(
                     counter_evidence
                     and dispatch is not None
                     and before.get("dispatch") is not None
+                    and before["dispatch"] < dispatch
                     and before["checks"].get(check) == "FAIL"
                 ):
                     disputed[check] = [before["dispatch"], dispatch]
