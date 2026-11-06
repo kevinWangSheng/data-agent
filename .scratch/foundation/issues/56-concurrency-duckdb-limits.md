@@ -1,10 +1,10 @@
 # 56 — 评测并发改回 3，DuckDB 设内存和临时文件上限，memory.log 多记 CPU 与压力
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —（58 done；服务器只读检查已跑，见 Comments；数值已由人定，见下）
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§7）
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 56-concurrency-duckdb-limits)
+Branch: worktree-56-concurrency-duckdb-limits
 
 ## Goal
 
@@ -76,10 +76,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1（da-review 跑了 2 次，第 1 次撞时限无结论）
 - Model spend: $0
-- Outcome: —
+- Outcome: 已实现，branch `worktree-56-concurrency-duckdb-limits`（163191b、4075e30）；cross-sell 真实查询待主会话服务器运行
 - Human review minutes: —
 
 ## Comments
@@ -96,3 +96,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
     - `/proc/self/cgroup` `0::/`; `cpu.max` `200000 100000`; `memory.max` `8388608000`, which matches what this ticket expects.
     - The image's `/usr/local/bin/python3` has duckdb `1.2.2`, the same as the agent's `uv.lock`. A default connection reports `threads=2`, `memory_limit='6.2 GiB'`, `max_temp_directory_size='90% of available disk space'`, which matches the expectation.
   - What this means: with 3 concurrent trials, every DuckDB instance (one per gateway connection, plus each separate dbt process) may use up to 6.2 GiB, but the host has only 7.7 GB. The temp-file limit defaults to about 58 GB of the 64G free. Waiting for the user to set `memory_limit` and `max_temp_directory_size` (suggested starting points 2 GB and 4 GB).
+
+- 2026-11-06 工单 agent（claude-opus-5-5），branch `worktree-56-concurrency-duckdb-limits`，提交 163191b、4075e30
+  - 测试：基线 `tests/test_gateway.py` 2 passed。新测试 `test_connection_has_memory_and_temp_file_limits` 修复前失败（row != ("2.0 GiB","4.0 GiB")），修复后通过。`make check`：ruff、format（225 个文件）、basedpyright 0 errors；1852 passed、1 skipped、38 deselected（332.97 s）。
+  - 真实运行：把 da-remote 采样的 heredoc 渲染成 run.sh（`bash -n` 通过），在 ubuntu:24.04 里跑宿主机那几行，输出含 `swap_used_mb=0 swap_total_mb=0 load=0.00,0.00,0.00` 和 `psi_cpu/psi_memory/psi_io` 三行；没有 `/proc/pressure` 时只输出 `psi_cpu` 等，不报错。`docker stats` 格式本地接受（没有容器在跑）。
+  - 没跑：工单 50 的 cross-sell 参考 SQL。本地没有真的 `retail.duckdb`（data-agent-refs 里只是 134 字节的 LFS 指针），留给主会话的服务器运行（cross-sell full × 1）；若报 Out of Memory 或临时文件超限，按停止条件交回人重定数值。
+  - 审查 1 `da-review main`：第 1 次撞 20 分钟后台时限，无结论；第 2 次（HEAD 4075e30）无问题。
+  - 审查 2 `eng:code-review main`（Standards + Spec，新上下文）：无硬性违规、无遗漏、无越权。已修（4075e30）：PSI 读取的 `2>/dev/null` 放到输入重定向前，没有 PSI 的内核不再每 5 s 往 memory.log 写报错；循环变量 `r` 改名 `resource`；测试 docstring 不再重复宿主机大小的理由。不修：测试断言字面值而不是常量（要验证 DuckDB 按二进制单位解析）；字段说明留在脚本头（验收要求"脚本头注释"）；没有 Swap 行时 `load=` 前多一个空格，无害。
