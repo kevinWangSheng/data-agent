@@ -1,6 +1,6 @@
 # 47 — 单一验证器的提示词、Skill 第 8 步和配置
 
-Status: in-review
+Status: done
 Blocked by: 46（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 47, 2026-11-05)
@@ -68,7 +68,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 5
 - Review rounds: 5（第 1 轮 Fable + eng:code-review，8bde360；退回第 1 轮 eng:code-review，cc65d28；退回第 2 轮 eng:code-review，0126941；退回第 3 轮 eng:code-review，497bbca；退回第 4 轮 da-review + eng:code-review，adb7001；Codex 前 5 次 at capacity）
 - Model spend: $0（工单会话无模型调用）
-- Outcome: in-review，退回第 4 轮已修完，branch `worktree-47-verifier-prompt-skill-config`（… 9d6762d merge、18a6435、2b0c611、adb7001），PR #48；过线初筛由主会话在工单 57 合入、本分支再合并 main 之后跑
+- Outcome: done（PR #48 → 006927a；人 2026-11-06 决定在第二条线未过的情况下合入，记已知限制），退回第 4 轮已修完，branch `worktree-47-verifier-prompt-skill-config`（… 9d6762d merge、18a6435、2b0c611、adb7001），PR #48；过线初筛由主会话在工单 57 合入、本分支再合并 main 之后跑
 - Human review minutes: —
 
 ## Comments
@@ -280,3 +280,16 @@ baseline 和 no-verifiers 照旧：no-verifiers 仍带 Skill 的无验证者回�
 - 余下耗时的具体原因：① cross-sell 验证器墙钟比 t47-screen2 还高（287 → 455 s），有 NEEDS_INFO 引起的重派（3 个 trial 5 次调用，NEEDS_INFO 4 项）；② pos CHECK 3 对 NULL `order_source` 分组反复 FAIL，主 agent 带题面反证重派，验证器仍判 FAIL，Stop 规则 3 拦着，循环到截止前；③ 禁止的探查仍有残余；④ 每轮生成延迟是 deepseek-flash 的下限。
 - division-by-zero 0/3：3 个 trial 各 1 次验证调用，结论 PASS（6uVCUp4）、NEEDS_INFO（7f7yp8X）、NEEDS_INFO（KkKSw8q），都没有判 FAIL，错误答案没被拦下（逐 trial 失败原因未读）。
 - 结论：按合入前提（≥8/15 且 ≤155 s）**不合 PR #48**，交人决定。本工单已退回 4 轮。
+
+### 2026-11-06 主会话（合入）
+
+- 人决定（2026-11-06）：按编排会话建议合入，155 s 线未过记成已知限制。理由：已退回 4 轮；成功 12/15（accept-2 7/15）；余下原因不在本工单 Authority 内（改写后的派单没进事件、pos 的 FAIL 循环属于 Stop 规则设计、每轮生成延迟取决于模型）。
+- PR #48：CI 绿；Codex GitHub app 审查 b693d9a（`@codex review` 触发），"has_any_findings": false。squash 合入 main → 006927a。
+- 已知限制：
+  1. 验证器墙钟中位数 337 s，没过 ≤155 s（t47-screen3）。
+  2. dbt-fix-division-by-zero 0/3，验证器没判 FAIL（PASS 1 次、NEEDS_INFO 2 次），逐 trial 原因未读。
+  3. 验证器仍有提示词禁止的探查（干跑 90、看模型输出 73、查目录 9，按 SQL 文本粗分）。
+- 交对齐会话写工单：
+  - (a) 把钩子改写后的派单（模型列表）写进 `verifier_start` 事件。确定性，$0；先做它，才能判断 pos 重派仍报 21 个模型是列表本身接近全量，还是验证器没守"只验派单列出的模型"。
+  - (b) 主 agent 带反证重派后验证器仍判 FAIL 时怎么收场（pos CHECK 3 NULL `order_source` 分组循环到截止前），属验证层设计。
+  - (c) 可选：验证器对本次改动模型的 `query_database` 用钩子硬拦，不只靠提示词。
