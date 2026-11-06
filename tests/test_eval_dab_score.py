@@ -233,9 +233,9 @@ def test_bootstrap_is_reproducible_with_a_fixed_seed(dab_root: Path, tmp_path: P
     assert first == dab_score.paired_bootstrap(*scores, seed=7, n_boot=300)
     # alpha: 1/3 -> 2/3, beta: 0 -> 0, so Pass@1 rises by (33.3 + 0) / 2 points.
     assert first["diff"] == pytest.approx(100 / 6)
-    low, diff, high = first["ci_low"], first["diff"], first["ci_high"]
-    assert low is not None and diff is not None and high is not None
-    assert low < diff < high
+    low, high = first["ci_low"], first["ci_high"]
+    assert low is not None and high is not None
+    assert low < first["diff"] < high
     assert first["significant"] is False
 
 
