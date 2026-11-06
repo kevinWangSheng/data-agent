@@ -115,8 +115,12 @@ dispatched models against the task text:
   the task text (a stated rule, an entity the output is "per", an
   exclusion it names). An item with no basis is FAIL: quote the change
   line and say what in the task you looked for. A removed filter is a
-  change too and needs the same basis. All changes have a basis: PASS.
-  N/A when the model has no change in these categories.
+  change too. Removing or loosening a filter, join or DISTINCT / QUALIFY /
+  dedup that the snapshot model had has one basis only: the task naming
+  that condition or the rows it affects (quote its words). A reason
+  inferred from a success criterion, a row count, or the task not saying
+  to keep it is no basis: FAIL, quoting the removed line. All changes have
+  a basis: PASS. N/A when the model has no change in these categories.
 Logic the main agent did not touch is not in the output and is not
 reviewed: do not read the model's SQL to audit the rest of it. A model
 marked 未解析 (not parsed) shows a line diff instead: judge the changed
@@ -128,16 +132,24 @@ grain key from Step 2 plus the metrics or attributes the task defines,
 computed from the tables that existed before the run with the task's own
 rules (its filters, formulas, buckets, defaults). Do not read the model's
 SQL first and do not copy its expressions, CTEs or `technical_spec.md`:
-a reference that repeats the model's logic repeats its error. The query
-must not read the model or any model this run created or changed (the
-tool refuses such a reference; `model_diff` listed them). Hand the
+a reference that repeats the model's logic repeats its error. One
+exception: a row-set rule (filter, join, dedup) the task does not
+mention, which the main agent removed or changed, goes into the
+reference as its removed line in `model_diff` shows it (the snapshot
+version); those removed lines are the only model logic the reference
+may copy. A rule the task mentions follows the task. A filter dropped
+without a basis then shows as only-in-model. This is not a reason to
+read the model's current SQL. The query must not read the model or any
+model this run created or changed (the tool refuses such a reference;
+`model_diff` listed them). Hand the
 reference straight to `compare_by_key`, which returns any SQL error; do
 not run it with `query_database` first. Do not query the models this run
 created or changed or their output (no `SELECT * ... LIMIT`), for the
 same reason you do not read their SQL. Use `list_tables` to find the
 source tables. Use `query_database` only for facts about the source
-tables that a task rule needs (for example, which values a status column
-the task names takes).
+tables that a task rule needs (for example, which values a column the
+task names takes). Most models need none; when one does, get all of it
+in one query.
 
 The tool compares only columns that have the same name on both sides,
 so alias every non-key output column to the model's column name
@@ -179,10 +191,13 @@ the heading; one line per check, `CHECK <n>: <STATUS> — <detail>`, n from
 1 to 7, in order, for every model. Put nothing else at the start of a
 line that begins with `CHECK`.
 
-Keep it short. A check line gives the status and the tool's
-counts (for CHECK 5 and 6, the change at issue). Give
-examples only for a FAIL, at most 3 per check; none for a PASS. The
-Summary is one line per status, without repeating the checks' details.
+Keep it short. A PASS line gives only the status and the key counts; an
+N/A or NEEDS_INFO line adds only its reason; either way about 100
+characters of detail at most. A FAIL line says what and where. CHECK 5
+and 6 list only the changes at issue; when every change has a basis,
+write "all changes have a basis". Give examples only for a FAIL, at most 3 per
+check; none for a PASS. The Summary is one line per status, without
+repeating the checks' details.
 
 ```
 ## Verification Report
@@ -192,8 +207,8 @@ CHECK 1: <PASS|FAIL|NEEDS_INFO|N/A> — exists: <tool evidence>
 CHECK 2: <PASS|FAIL|NEEDS_INFO|N/A> — columns: <contract source; missing, extra or mistyped columns>
 CHECK 3: <PASS|FAIL|NEEDS_INFO|N/A> — grain <key columns>: <NULL rows, duplicate rows, exemption used or none>
 CHECK 4: <PASS|FAIL|NEEDS_INFO|N/A> — window ordering: <tool evidence>
-CHECK 5: <PASS|FAIL|NEEDS_INFO|N/A> — sources: <each source change and its basis in the task, or the change with none>
-CHECK 6: <PASS|FAIL|NEEDS_INFO|N/A> — row logic: <each change and its basis in the task; quote the change that has none>
+CHECK 5: <PASS|FAIL|NEEDS_INFO|N/A> — sources: <the change with no basis, quoted; "all changes have a basis"; or why N/A>
+CHECK 6: <PASS|FAIL|NEEDS_INFO|N/A> — row logic: <the change with no basis, quoted, and what in the task you looked for; "all changes have a basis"; or why N/A>
 CHECK 7: <PASS|FAIL|NEEDS_INFO|N/A> — compare_by_key on <key columns>: <compared columns; only-in-model, only-in-reference, mismatched counts; up to 3 examples if FAIL>
 
 ### Summary

@@ -254,13 +254,21 @@ def test_verifier_treats_the_main_agents_counter_evidence_as_unverified() -> Non
     assert "unverified" in section and "never as a result" in section
 
 
+PLACEHOLDER = "<PASS|FAIL|NEEDS_INFO|N/A>"
+
+
+def template_check_lines() -> list[str]:
+    """The `CHECK <n>` lines of the Output Format's report template."""
+    template = verifier_prompt().split("## Output Format")[1].split("### Summary")[0]
+    return [line for line in template.splitlines() if line.startswith("CHECK ")]
+
+
 def test_verifier_report_template_parses_as_the_hooks_expect() -> None:
     """The output format gives CHECK 1-7 one per line under `### <model>`, in the shape
     `parse_report` reads; every line with a real status is a verdict."""
-    template = verifier_prompt().split("## Output Format")[1].split("### Summary")[0]
-    lines = [line for line in template.splitlines() if line.startswith("CHECK ")]
+    lines = template_check_lines()
     assert [int(line.split()[1].rstrip(":")) for line in lines] == [1, 2, 3, 4, 5, 6, 7]
-    placeholder = "<PASS|FAIL|NEEDS_INFO|N/A>"
+    placeholder = PLACEHOLDER
     assert all(placeholder in line for line in lines)
     # The template copied verbatim is no verdict; each real status is.
     assert not parse_report("### m\n" + "\n".join(lines))["parsed"]
@@ -364,7 +372,6 @@ def test_verifier_report_gives_examples_only_for_a_fail() -> None:
     Check lines carry the status and the key counts; examples only for a FAIL, at most 3; the
     Summary is one line per status. The parsed layout is unchanged (the template test above)."""
     text = section("Output Format")
-    assert "the status and the tool's counts (for CHECK 5 and 6, the change at issue)" in text
     assert "Give examples only for a FAIL, at most 3 per check; none for a PASS" in text
     assert "one line per status, without repeating the checks' details" in text
     assert "first examples" not in verifier_prompt()
@@ -401,3 +408,72 @@ def test_parse_report_reads_a_row_logic_fail_that_quotes_sql() -> None:
         "the task nor the YML asks to keep cancelled orders\n"
     )
     assert parse_report(report)["models"] == {"fct_orders": {5: "N/A", 6: "FAIL"}}
+
+
+def test_verifier_needs_the_task_to_name_a_removed_row_rule() -> None:
+    """Ticket 63 (t47-screen3, three trials): the main agent dropped the snapshot model's filter
+    because a success criterion read that way, and CHECK 6 took the criterion as a basis. Removing
+    or loosening an existing filter, join or dedup needs the task to name that condition or the
+    rows it affects; an inference is no basis."""
+    text = step(3)
+    assert "Removing or loosening a filter, join or DISTINCT / QUALIFY / dedup" in text
+    assert "the task naming that condition or the rows it affects" in text
+    assert "a success criterion, a row count, or the task not saying to keep it" in text
+    assert "FAIL, quoting the removed line" in text
+
+
+def test_verifier_reference_keeps_the_snapshot_row_set_the_task_does_not_mention() -> None:
+    """Ticket 63: the reference's row set followed the main agent's diff (with the filter when it
+    was kept, without it when it was dropped), so CHECK 7 could not catch the drop. Row-set rules
+    the task does not mention come from the snapshot, as model_diff's removed lines show them."""
+    text = step(4)
+    assert "a row-set rule (filter, join, dedup) the task does not mention" in text
+    assert "which the main agent removed or changed" in text
+    assert "its removed line in `model_diff`" in text
+    assert "the only model logic the reference may copy" in text
+    assert "A rule the task mentions follows the task" in text
+    assert "shows as only-in-model" in text
+    assert "not a reason to read the model's current SQL" in text
+
+
+def test_verifier_probes_source_tables_only_when_needed_and_in_one_query() -> None:
+    """Ticket 63: source-table probing the task rules do not need cost turns; no count cap."""
+    text = step(4)
+    assert "Most models need none; when one does, get all of it in one query" in text
+
+
+def test_verifier_report_lines_stay_short_and_list_only_changes_at_issue() -> None:
+    """Ticket 63: check lines other than FAIL carry the status and key counts (N/A and
+    NEEDS_INFO keep the reason the steps require), about 100 characters of detail at most;
+    CHECK 5 and 6 list only the changes at issue."""
+    text = section("Output Format")
+    assert "A PASS line gives only the status and the key counts" in text
+    assert "an N/A or NEEDS_INFO line adds only its reason" in text
+    assert "about 100 characters of detail at most" in text
+    assert "CHECK 5 and 6 list only the changes at issue" in text
+    assert '"all changes have a basis"' in text
+
+
+def test_verifier_short_report_from_the_template_parses_for_every_model() -> None:
+    """A report rendered from the template with short details, two models, parses to seven
+    statuses per model."""
+    lines = template_check_lines()
+
+    def render(model: str, status: str) -> str:
+        short = [line.replace(PLACEHOLDER, status).split(": <")[0] for line in lines]
+        for check_5_or_6 in (4, 5):
+            short[check_5_or_6] += ": all changes have a basis"
+        return f"### {model}\n" + "\n".join(short)
+
+    report = "## Verification Report\n\n" + render("a", "PASS") + "\n\n" + render("b", "FAIL")
+    assert parse_report(report)["models"] == {
+        "a": dict.fromkeys(range(1, 8), "PASS"),
+        "b": dict.fromkeys(range(1, 8), "FAIL"),
+    }
+
+
+def test_verifier_prompt_names_no_task_table_or_column_from_the_evidence() -> None:
+    """ADR-0005: the rules are general; nothing from the t47 evidence task leaks in."""
+    body = verifier_prompt().split("-->", 1)[1].lower()
+    for word in ("cancel", "status column", "division", "screen"):
+        assert word not in body
