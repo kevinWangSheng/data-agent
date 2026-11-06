@@ -284,10 +284,9 @@ re-parse the whole project, which can take a minute or more. Pick the vars once 
    your spec to match reality.
    For ANY fix, update `technical_spec.md` FIRST, then rewrite the SQL from
    the updated spec, and rebuild as the system prompt says.
-4. With the verifier, STOP when the latest report shows every check PASS or
-   N/A for every model you created or changed; that report is the final
-   authority, and the run cannot end while a model you changed is
-   unverified or has a FAIL. Without the verifier, STOP when your own checks
+4. With the verifier, STOP when the system prompt's "Verification before
+   delivery" section says you may, judged on the latest report for every
+   model you created or changed; that report is the final authority. Without the verifier, STOP when your own checks
    in step 2 all match. Once you STOP, do NOT modify any model files - the
    task is complete. No further investigation, no "what if" queries, no
    source table changes.

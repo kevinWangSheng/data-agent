@@ -58,6 +58,13 @@ def rewrite_dispatch(
     }
 
 
+def carries_counter_evidence(prompt: str) -> bool:
+    """Whether a rewritten dispatch prompt (`rewrite_dispatch`'s) holds the main agent's text
+    under `UNVERIFIED_HEADING`, non-empty (ticket 64's counter-evidence)."""
+    _, heading, after = prompt.partition(f"## {UNVERIFIED_HEADING}")
+    return bool(heading and after.strip())
+
+
 def deny_dispatch(
     tool_name: str, tool_input: Mapping[str, Any], *, remaining_s: float
 ) -> dict[str, Any]:

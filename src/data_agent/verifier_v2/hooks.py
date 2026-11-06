@@ -10,7 +10,13 @@
   turns and tool calls from its transcript) and feeds the v2 verifier's report into the Stop
   state, against the dispatch-time fingerprints.
 - Stop: blocks the run while `stop_decision` names a model, at most MAX_BLOCKS times; the next
-  attempt ends the run and records `ended_with_unresolved`.
+  attempt ends the run and records `ended_with_unresolved`. A disputed FAIL (ticket 64,
+  `stop.disputed_checks`) does not block; a run that ends with one records `ended_disputed`.
+- PreToolUse on `query_database` (ticket 64): denies a query from a `verifier` (the input of
+  a tool call inside a subagent carries its `agent_id` and `agent_type`; the main agent's
+  carries no `agent_id`) that reads a model of an outstanding dispatch, by
+  name or alias in any schema; it is to use grain_facts and compare_by_key. SQL that parses
+  in neither dialect passes, as does every query of the main agent or another subagent.
 
 With a trial deadline (ticket 54), once less than VERIFY_MIN_REMAINING_S is left a verifier
 dispatch is denied and Stop lets the run end, recording `ended_unverified` when it would have
@@ -26,7 +32,8 @@ lets the run end rather than wedge it.
 
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -34,12 +41,21 @@ from claude_agent_sdk import HookContext, HookInput, HookJSONOutput, HookMatcher
 from claude_agent_sdk.types import HookEvent
 
 from data_agent.run_config import RunConfig
-from data_agent.verifier_v2.dispatch import REWRITTEN_SUBAGENT, deny_dispatch, rewrite_dispatch
+from data_agent.verifier_v2.db import workspace_aliases
+from data_agent.verifier_v2.dispatch import (
+    REWRITTEN_SUBAGENT,
+    carries_counter_evidence,
+    deny_dispatch,
+    rewrite_dispatch,
+)
 from data_agent.verifier_v2.project import dbt_projects
 from data_agent.verifier_v2.report import parse_report, summarize_transcript
+from data_agent.verifier_v2.sql import table_references
 from data_agent.verifier_v2.stop import (
     changed_models,
     describe,
+    describe_disputes,
+    disputed_checks,
     model_hashes,
     record_checks,
     redispatch_models,
@@ -63,6 +79,59 @@ BLOCK_INSTRUCTION = (
     "query first), rebuild the changed models, then dispatch the `verifier` again for every "
     "model named here."
 )
+# The MCP tool the verifier may not point at its own models (`mcp__<server>__query_database`).
+QUERY_TOOL_SUFFIX = "__query_database"
+# The hook runs in the agent process, which does not know the task's dialect; a query is read
+# in each, and passes only when it parses in none.
+DIALECTS = ("duckdb", "postgres")
+QUERY_DENIED = (
+    "Do not query the models this dispatch asks you to verify ({models}); use grain_facts / "
+    "compare_by_key, with a reference query that reads the sources."
+)
+
+
+@dataclass(frozen=True)
+class Dispatch:
+    """One verifier dispatch as the hooks saw it: its number (1 for the first), the models it
+    listed, their fingerprints then (None when hashing failed: "hash now") and whether it
+    carried the main agent's counter-evidence."""
+
+    number: int
+    models: tuple[str, ...]
+    hashes: dict[str, str] | None
+    counter_evidence: bool
+
+
+def reads_models(sql: str, names: Iterable[str]) -> list[str]:
+    """The `names` (lower-cased relation names) the query reads, in any schema, by any dialect
+    in DIALECTS it parses in; empty when it parses in none."""
+    wanted = set(names)
+    read: set[str] = set()
+    for dialect in DIALECTS:
+        tables = table_references(sql, dialect)
+        if tables is not None:
+            read |= {name for _, name in tables if name in wanted}
+    return sorted(read)
+
+
+def deny_query(models: Iterable[str]) -> dict[str, Any]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": QUERY_DENIED.format(models=", ".join(models)),
+        }
+    }
+
+
+def relation_names(models: Iterable[str], aliases: Mapping[str, str | None]) -> dict[str, str]:
+    """Lower-cased relation name -> model, for each model as named and as aliased."""
+    names: dict[str, str] = {}
+    for model in models:
+        names[model.lower()] = model
+        if alias := aliases.get(model):
+            names[alias.lower()] = model
+    return names
 
 
 def run_hooks(
@@ -82,18 +151,21 @@ def run_hooks(
     dispatches = 0
     blocks = 0
     state: dict[str, Any] = {}
-    # The model fingerprints at each verifier dispatch whose report has not arrived, oldest
-    # first. The SDK gives no field linking a SubagentStop to its PreToolUse, and reports may
-    # arrive in any order, so every report takes the *oldest* outstanding dispatch's
-    # fingerprints, and an entry leaves the queue only from the newest end, so the oldest stays
-    # until no dispatch is outstanding: with two verifiers in flight that can pair a report with
-    # an earlier dispatch, which over-reports an edit (rule 2), never misses one. An empty entry
-    # (hashing failed) means "hash now".
+    # Each verifier dispatch whose report has not arrived (its fingerprints, models, number and
+    # counter-evidence), oldest first. The SDK gives no field linking a SubagentStop to its
+    # PreToolUse, and reports may arrive in any order, so every report takes the *oldest*
+    # outstanding dispatch's fingerprints, and an entry leaves the queue only from the newest
+    # end, so the oldest stays until no dispatch is outstanding: with two verifiers in flight
+    # that can pair a report with an earlier dispatch, which over-reports an edit (rule 2),
+    # never misses one; a dispute is then judged by that dispatch's number and evidence too.
     # A dispatch that never reports (whether the SDK fires SubagentStop for a subagent that
     # errors is unverified) cannot be told from one still in flight: it pins its fingerprints at
     # the head for the rest of the run, over-reporting rule 2 until MAX_BLOCKS ends the run.
     # The bound only keeps the queue from growing without limit.
-    dispatched: deque[dict[str, str] | None] = deque(maxlen=MAX_OUTSTANDING_DISPATCHES)
+    dispatched: deque[Dispatch] = deque(maxlen=MAX_OUTSTANDING_DISPATCHES)
+    # The models of the latest dispatch, for a verifier whose dispatch left the queue early
+    # (the bound above).
+    last_models: tuple[str, ...] = ()
 
     def short_on_time_s() -> float | None:
         """Seconds left when too few are left for a verifier run, else None."""
@@ -121,7 +193,7 @@ def run_hooks(
     async def dispatch(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
-        nonlocal dispatches
+        nonlocal dispatches, last_models
         fields: dict[str, Any] = dict(hook_input)
         if (left := short_on_time_s()) is not None:
             denied = deny_dispatch(
@@ -148,12 +220,41 @@ def run_hooks(
         if output:
             dispatches += 1
             emit("verifier_dispatch", n=dispatches, models=models, source=source)
+            last_models = tuple(models)
+            hashes: dict[str, str] | None
             try:
-                dispatched.append(model_hashes(workspace))
+                hashes = model_hashes(workspace)
             except (OSError, ValueError) as exc:
                 failed("PreToolUse", exc)
-                dispatched.append(None)
+                hashes = None
+            prompt = str(output["hookSpecificOutput"]["updatedInput"]["prompt"])
+            dispatched.append(
+                Dispatch(dispatches, last_models, hashes, carries_counter_evidence(prompt))
+            )
         return output  # type: ignore[return-value]
+
+    async def guard_query(
+        hook_input: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        fields: dict[str, Any] = dict(hook_input)
+        tool_name = str(fields.get("tool_name") or "")
+        if not (tool_name.startswith("mcp__") and tool_name.endswith(QUERY_TOOL_SUFFIX)):
+            return {}
+        if not fields.get("agent_id") or fields.get("agent_type") != REWRITTEN_SUBAGENT:
+            return {}
+        sql = (fields.get("tool_input") or {}).get("sql")
+        models = sorted({m for d in dispatched for m in d.models}) or list(last_models)
+        if not isinstance(sql, str) or not models:
+            return {}
+        try:
+            names = relation_names(models, workspace_aliases(workspace, models))
+        except (OSError, ValueError) as exc:
+            failed("PreToolUse", exc)
+            names = relation_names(models, {})
+        read = reads_models(sql, names)
+        if not read:
+            return {}
+        return deny_query(sorted({names[name] for name in read}))  # type: ignore[return-value]
 
     async def subagent_stop(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
@@ -174,14 +275,18 @@ def run_hooks(
         # ticket 47 removes it) are recorded but satisfy no Stop rule. A call at the turn cap is
         # NEEDS_INFO as a whole (`overall`); the check lines it did write stand.
         # The report settles one dispatch whether or not it can be recorded below.
-        dispatch_hashes = dispatched[0] if dispatched else None
+        answered = dispatched[0] if dispatched else None
         if fields["agent_type"] == REWRITTEN_SUBAGENT and dispatched:
             dispatched.pop()
         try:
             parsed = parse_report(report, hit_max_turns=hit_max_turns, workspace=workspace)
             if fields["agent_type"] == REWRITTEN_SUBAGENT:
                 state = record_checks(
-                    state, parsed["models"], dispatch_hashes or model_hashes(workspace)
+                    state,
+                    parsed["models"],
+                    (answered.hashes if answered else None) or model_hashes(workspace),
+                    dispatch=answered.number if answered else None,
+                    counter_evidence=answered.counter_evidence if answered else False,
                 )
         except (OSError, ValueError) as exc:
             failed("SubagentStop", exc)
@@ -205,15 +310,23 @@ def run_hooks(
         nonlocal blocks
         try:
             decision = stop_decision(state, workspace, snapshot)
+            disputes = disputed_checks(state, workspace)
         except OSError as exc:  # the workspace, not the state: a bug must not pass silently
             failed("Stop", exc)
             return {}
-        if not decision["block"]:
+
+        def end() -> dict[str, Any]:
+            """Lets the run end, listing the disputes it ends with."""
+            if disputes:
+                emit("ended_disputed", reason=describe_disputes(disputes), disputed=disputes)
             return {}
+
+        if not decision["block"]:
+            return end()  # type: ignore[return-value]
         reason = describe(decision["reasons"])
         if (left := short_on_time_s()) is not None:
             emit("ended_unverified", reason=reason, reasons=decision["reasons"], remaining_s=left)
-            return {}
+            return end()  # type: ignore[return-value]
         blocks += 1
         if blocks > MAX_BLOCKS:
             emit(
@@ -222,11 +335,14 @@ def run_hooks(
                 reasons=decision["reasons"],
                 blocks=blocks - 1,
             )
-            return {}
+            return end()  # type: ignore[return-value]
         return {"decision": "block", "reason": f"{reason}. {BLOCK_INSTRUCTION}"}
 
     return {
-        "PreToolUse": [HookMatcher(matcher=AGENT_TOOL, hooks=[dispatch])],
+        "PreToolUse": [
+            HookMatcher(matcher=AGENT_TOOL, hooks=[dispatch]),
+            HookMatcher(hooks=[guard_query]),
+        ],
         "SubagentStop": [HookMatcher(hooks=[subagent_stop])],
         "Stop": [HookMatcher(hooks=[stop])],
     }
