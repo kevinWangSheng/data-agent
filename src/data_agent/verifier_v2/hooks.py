@@ -161,7 +161,8 @@ def run_hooks(
     # outstanding dispatch's fingerprints, and an entry leaves the queue only from the newest
     # end, so the oldest stays until no dispatch is outstanding: with two verifiers in flight
     # that can pair a report with an earlier dispatch, which over-reports an edit (rule 2),
-    # never misses one; a dispute is then judged by that dispatch's number and evidence too.
+    # never misses one; a dispute is then judged by that dispatch's number, and counts the
+    # report as carrying counter-evidence only if every outstanding dispatch did.
     # A dispatch that never reports (whether the SDK fires SubagentStop for a subagent that
     # errors is unverified) cannot be told from one still in flight: it pins its fingerprints at
     # the head for the rest of the run, over-reporting rule 2 until MAX_BLOCKS ends the run.
@@ -280,6 +281,9 @@ def run_hooks(
         # NEEDS_INFO as a whole (`overall`); the check lines it did write stand.
         # The report settles one dispatch whether or not it can be recorded below.
         answered = dispatched[0] if dispatched else None
+        # Which outstanding dispatch the report answers is unknown, so it counts as carrying
+        # counter-evidence only if every one of them did.
+        counter_evidence = bool(dispatched) and all(d.counter_evidence for d in dispatched)
         if fields["agent_type"] == REWRITTEN_SUBAGENT and dispatched:
             dispatched.pop()
         try:
@@ -290,7 +294,7 @@ def run_hooks(
                     parsed["models"],
                     (answered.hashes if answered else None) or model_hashes(workspace),
                     dispatch=answered.number if answered else None,
-                    counter_evidence=answered.counter_evidence if answered else False,
+                    counter_evidence=counter_evidence,
                 )
         except (OSError, ValueError) as exc:
             failed("SubagentStop", exc)

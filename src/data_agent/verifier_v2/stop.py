@@ -165,11 +165,11 @@ def describe_disputes(disputes: list[dict[str, Any]]) -> str:
 
 def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> list[str]:
     """The models a verifier dispatch after the first lists, sorted: every model `stop_decision`
-    names (never reported, changed since its report, FAIL in it), every model whose last report
-    has a NEEDS_INFO (it does not block, but the main agent dispatches again for it), and the
-    changed models downstream of one of these (`downstream_of`): a model's fingerprint covers
-    its own files and the macros it calls, not the models it refs, so an upstream edit leaves
-    it unchanged. Empty when none."""
+    names (never reported, changed since its report, an undisputed FAIL in it), every model
+    whose last report has a NEEDS_INFO (it does not block, but the main agent dispatches again
+    for it), and the changed models downstream of one of these (`downstream_of`): a model's
+    fingerprint covers its own files and the macros it calls, not the models it refs, so an
+    upstream edit leaves it unchanged. Empty when none."""
     files: dict[str, Path] = {}
     pure: dict[str, frozenset[str]] = {}  # model -> its project's pure macros
     for project in dbt_projects(workspace):
