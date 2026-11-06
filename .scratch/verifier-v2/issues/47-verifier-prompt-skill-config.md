@@ -278,5 +278,5 @@ baseline 和 no-verifiers 照旧：no-verifiers 仍带 Skill 的无验证者回�
 - 墙钟成分（`breakdown.py`）：验证调用合计 7483 s，其中工具并集 1697 s（23%），模型生成与空隙 5786 s（77%）；每轮间隔中位 8.3 s（t47-screen2 4.6 s）。
 - 重派范围（工单 57）：web 的重派从 5 个模型降到 2、3 个，cross-sell 第二次调用 2 个；pos 的重派仍报 21 个模型。是重派列表本身接近全量（第一次 8 个模型 FAIL 加下游，再加 `safe_ts` 宏让 ref 未知的模型），还是验证器没守"只验派单列出的模型"，**分不清**：钩子改写后的派单没写进事件。
 - 余下耗时的具体原因：① cross-sell 验证器墙钟比 t47-screen2 还高（287 → 455 s），有 NEEDS_INFO 引起的重派（3 个 trial 5 次调用，NEEDS_INFO 4 项）；② pos CHECK 3 对 NULL `order_source` 分组反复 FAIL，主 agent 带题面反证重派，验证器仍判 FAIL，Stop 规则 3 拦着，循环到截止前；③ 禁止的探查仍有残余；④ 每轮生成延迟是 deepseek-flash 的下限。
-- division-by-zero 0/3：3 个 trial 验证器结论分别是 PASS、NEEDS_INFO、PASS/NEEDS_INFO 一类，没有拦下错误答案（逐 trial 失败原因未读）。
+- division-by-zero 0/3：3 个 trial 各 1 次验证调用，结论 PASS（6uVCUp4）、NEEDS_INFO（7f7yp8X）、NEEDS_INFO（KkKSw8q），都没有判 FAIL，错误答案没被拦下（逐 trial 失败原因未读）。
 - 结论：按合入前提（≥8/15 且 ≤155 s）**不合 PR #48**，交人决定。本工单已退回 4 轮。
