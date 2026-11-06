@@ -233,7 +233,9 @@ def test_bootstrap_is_reproducible_with_a_fixed_seed(dab_root: Path, tmp_path: P
     assert first == dab_score.paired_bootstrap(*scores, seed=7, n_boot=300)
     # alpha: 1/3 -> 2/3, beta: 0 -> 0, so Pass@1 rises by (33.3 + 0) / 2 points.
     assert first["diff"] == pytest.approx(100 / 6)
-    assert first["ci_low"] < first["diff"] < first["ci_high"]
+    low, diff, high = first["ci_low"], first["diff"], first["ci_high"]
+    assert low is not None and diff is not None and high is not None
+    assert low < diff < high
     assert first["significant"] is False
 
 
@@ -276,3 +278,29 @@ def test_cli_refuses_unpaired_outputs_by_count(
     argv = ["dab-score", str(cand), "--baseline", str(base), "--dab-root", str(dab_root)]
     assert evals_main(argv) == 2
     assert "2 queries are unpaired" in capsys.readouterr().err
+
+
+def test_cli_reports_no_interval_when_every_dataset_has_a_single_query(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Ticket 62: resampling within a dataset of one query always draws that query, so every
+    # resample equals the point estimate; the interval would be a point and look significant.
+    dab_root = make_dab(tmp_path / "dab", {"alpha": ["1"], "beta": ["1"]})
+    base = make_out(tmp_path / "base", {("alpha", "1", 0): "gold1", ("beta", "1", 0): "no"})
+    cand = make_out(tmp_path / "cand", {("alpha", "1", 0): "no", ("beta", "1", 0): "no"})
+    report = tmp_path / "report.json"
+    argv = ["dab-score", str(cand), "--baseline", str(base), "--dab-root", str(dab_root)]
+    assert evals_main([*argv, "--report", str(report), "--n-boot", "200"]) == 0
+    assert json.loads(report.read_text())["comparison"] == {
+        "diff": -50.0,
+        "ci_low": None,
+        "ci_high": None,
+        "significant": False,
+    }
+    line = next(
+        x for x in capsys.readouterr().out.splitlines() if x.startswith("candidate - baseline")
+    )
+    assert line == (
+        "candidate - baseline: -50.00 points "
+        "(every dataset has 1 query: too few to estimate an interval)"
+    )
