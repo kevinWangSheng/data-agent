@@ -21,7 +21,8 @@ TASK_TEXT = 'Build `fct_orders`:\n  - "net" = gross - refunds \nKeep cancelled o
 
 # DBT_PROMPT without the verifier layer's task-file note (ticket 32), kept here so runs without
 # the layer can be compared to it. Its dbt-command sentence follows ticket 49 (`cd`, no
-# profiles.yml edit) and ticket 55 (a lone `echo $DB_TYPE`, file tools instead of `ls`/`cat`).
+# profiles.yml edit), ticket 55 (a lone `echo $DB_TYPE`, file tools instead of `ls`/`cat`) and
+# ticket 66 (an existing profiles.yml stays; one may be created when the task asks).
 DBT_PROMPT_BEFORE = """\
 Task type: dbt
 Database: {database}. dbt writes to it through the project's profile; you read it only through the \
@@ -29,9 +30,9 @@ Database: {database}. dbt writes to it through the project's profile; you read i
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
 Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
 `cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
-directory. Do not edit `profiles.yml`. When the task asks you to print `DB_TYPE`, run \
-`echo $DB_TYPE` as a Bash call of its own. List, read and search files with the Glob, Read and \
-Grep tools, not `ls` or `cat`.
+directory. Do not edit an existing `profiles.yml`; create one when the task asks for it. When the \
+task asks you to print `DB_TYPE`, run `echo $DB_TYPE` as a Bash call of its own. List, read and \
+search files with the Glob, Read and Grep tools, not `ls` or `cat`.
 
 <task>
 {task}

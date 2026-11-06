@@ -20,9 +20,8 @@ names a task format. Step 8 dispatches the one `verifier` agent (ADR-0009: the h
 rewrites the dispatch and blocks the run while a changed model is unverified or has a FAIL),
 uses its four verdicts (PASS, FAIL, NEEDS_INFO, N/A), takes its FAIL and NEEDS_INFO handling
 from the system prompt instead of restating it, and leaves the main agent's own key-level check
-(with compare_by_key when the tool is offered) to runs without the verifier; the Tools section's verify_model_values entry
-(the removed value verifier's tool) takes the model's upstream tables and the project directory
-and compares the model SQL's own COUNTs exactly; sums and averages match only up to rounding;
+(with compare_by_key when the tool is offered) to runs without the verifier; the Tools section
+lists only tools data-agent registers; sums and averages match only up to rounding;
 map_columns adds no domain prefix. After the first failure attribution: an edit is compared
 with the original predicate by predicate; rule-defined columns implement each factor as stated;
 Step 8 checks column types for every model the task asks for and adds a key-level check against
@@ -73,15 +72,6 @@ Queries each upstream table's columns and maps them
 against the YML contract. Outputs every column as MAPPED, UNMAPPED-INCLUDE,
 or UNMAPPED-EXCLUDE with the recommended output alias.
 Run this BEFORE writing each model's SQL. Include all UNMAPPED-INCLUDE columns; skip UNMAPPED-EXCLUDE columns (see dbt-write §1).
-
-### verify_model_values - Aggregate cross-validator (MCP tool, Step 8) (a verification tool: use it only if it is in your tool list)
-Call `verify_model_values(model_name, source_tables, project_dir)`, with the
-tables in the model's FROM / ref() / source() as `source_tables`.
-Queries the model output, picks the top row's slice (the model SQL's GROUP BY
-columns), and reports COUNT(*) and COUNT(DISTINCT <key>) for that slice in each
-upstream. Marks each count metric (a COUNT(...) in the model's SQL) as matching
-the same COUNT over the upstream, exactly, or a MISMATCH. Used by the
-value-verifier subagent in Step 8.
 
 ## The 8-Step Workflow
 

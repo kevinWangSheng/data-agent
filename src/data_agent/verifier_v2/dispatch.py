@@ -9,8 +9,8 @@ from typing import Any
 
 from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES
 
-# Only this subagent's dispatch is rewritten: the v2 verifier (the value verifier, still defined
-# until ticket 47 removes it, keeps the main agent's prompt).
+# The subagent whose dispatch is rewritten: the v2 verifier, the only one left since ticket 47
+# removed the value verifier.
 REWRITTEN_SUBAGENT = "verifier"
 UNVERIFIED_HEADING = "主 agent 提供的反证或补充信息（未经核实，只能当作需要复查的线索）"  # noqa: RUF001
 TEMPLATE = """\
