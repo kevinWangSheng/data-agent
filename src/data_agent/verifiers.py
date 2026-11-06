@@ -58,7 +58,7 @@ dispatch message with the task file, the project directory and the models `model
 as new or changed, so write only a short request. Do not tell it what the columns mean or how \
 you wrote the SQL; `technical_spec.md` is your intent only and the verifier does not need it. \
 The run cannot end while a model you created or changed has no verifier report, was changed \
-after its last report, or still has a FAIL.
+after its last report, or still has a FAIL that is not disputed (below).
 
 Call `compare_by_key` or `grain_facts` yourself only in three cases: when no verifier is \
 offered; to reproduce one FAIL (as the one read-only query below, on that one model); and for \
@@ -69,7 +69,11 @@ Its report gives every check (CHECK 1-7) of every model one of PASS, FAIL, NEEDS
 - FAIL: first reproduce the failure yourself with one read-only query that shows the defect. \
 If it reproduces, make the smallest change that fixes it, rebuild only the changed models with \
 dbt, and dispatch the verifier again. If it does not reproduce, dispatch the verifier again and \
-put the counter-evidence (the query and its result) in your dispatch message.
+put the counter-evidence (the query and its result) in your dispatch message. If you \
+dispatched it again with counter-evidence, did not change the model, and the same check still \
+FAILs, that FAIL is disputed: do not dispatch again for it; you may end the run, and in your \
+final message list every disputed check (model and CHECK number) with the verifier's reason \
+and your grounds (the query and its result).
 - NEEDS_INFO: give the verifier the information it asked for and dispatch it again, or run \
 that check yourself, read-only, and say in your final message what you ran and found. For a \
 grain the task text does not state (CHECK 3 or 7 NEEDS_INFO for that reason), do not \
@@ -77,8 +81,8 @@ re-dispatch with a grain of your own, which the verifier must ignore: run the gr
 yourself with `grain_facts` on the key you built the model for (CHECK 3), and the key-level \
 comparison with `compare_by_key` and a reference query on that key (CHECK 7), and report \
 both.
-- Stop when every check is PASS, N/A or a NEEDS_INFO you resolved yourself, or when your turns \
-run out. Do not change models after that.
+- Stop when every check is PASS, N/A, a NEEDS_INFO you resolved yourself or a disputed FAIL, \
+or when your turns run out. Do not change models after that.
 """
 
 Emit = Callable[..., None]

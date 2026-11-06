@@ -1,6 +1,12 @@
 """The Stop state (spec "Stop 钩子"): per model, the check statuses from the last report that
-named it and its fingerprint at that time (`model_hashes`: its SQL file, its dbt_project.yml
-configuration and the project macros it calls). `stop_decision` applies the three rules.
+named it, its fingerprint at that time (`model_hashes`: its SQL file, its dbt_project.yml
+configuration and the project macros it calls), the number of the dispatch the report answered
+and its disputed checks. `stop_decision` applies the three rules.
+
+A disputed check (ticket 64) is a FAIL the verifier gave twice on the same fingerprint, the
+second time on a dispatch that carried the main agent's counter-evidence: the two disagree and
+another round would not settle it, so rule 3 skips it and the run may end, listing it
+(`disputed_checks`).
 """
 
 import hashlib
@@ -73,21 +79,51 @@ def record_checks(
     state: Mapping[str, Any],
     models: Mapping[str, Mapping[int, str]],
     hashes: Mapping[str, str],
+    dispatch: int | None = None,
+    counter_evidence: bool = False,
 ) -> dict[str, Any]:
     """`record_report` on an already parsed report (`parse_report`'s `models`), for a caller
-    that parsed it for its own record."""
+    that parsed it for its own record. `dispatch` numbers the dispatch the report answers and
+    `counter_evidence` says whether it carried the main agent's counter-evidence; with both, a
+    FAIL that the model's previous record also holds, on the same fingerprint, from an earlier
+    dispatch, is disputed (`disputed`: check -> the two dispatch numbers). Two reports answering
+    one dispatch number (verifiers in flight together) are no dispute: no counter-evidence came
+    after the first FAIL. A dispute stands while the same check keeps failing on that
+    fingerprint."""
     updated = {model: record for model, record in state.items() if model in hashes}
     for model, checks in models.items():
-        if model in hashes:
-            updated[model] = {"checks": dict(checks), "sha256": hashes[model]}
+        if model not in hashes:
+            continue
+        before = state.get(model)
+        disputed: dict[int, list[int]] = {}
+        if before is not None and before["sha256"] == hashes[model]:
+            for check, status in checks.items():
+                if status != "FAIL":
+                    continue
+                if check in before.get("disputed", {}):
+                    disputed[check] = before["disputed"][check]
+                elif (
+                    counter_evidence
+                    and dispatch is not None
+                    and before.get("dispatch") is not None
+                    and before["dispatch"] < dispatch
+                    and before["checks"].get(check) == "FAIL"
+                ):
+                    disputed[check] = [before["dispatch"], dispatch]
+        updated[model] = {
+            "checks": dict(checks),
+            "sha256": hashes[model],
+            "dispatch": dispatch,
+            "disputed": disputed,
+        }
     return updated
 
 
 def stop_decision(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> dict[str, Any]:
     """`{"block", "reasons": [{"model", "rule", "detail"}]}`: rule 1 for a new or changed model
     no report named; rules 2 and 3 for a reported model whose file changed since, or whose
-    last report holds a FAIL. NEEDS_INFO never blocks; nor does a reported model deleted since
-    (model_diff reports it removed, for the verifier to see)."""
+    last report holds a FAIL that is not disputed. NEEDS_INFO never blocks; nor does a reported
+    model deleted since (model_diff reports it removed, for the verifier to see)."""
     changed = set(changed_models(workspace, snapshot))
     hashes = model_hashes(workspace)
     reasons: list[dict[str, Any]] = []
@@ -97,20 +133,43 @@ def stop_decision(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> 
         record = state[model]
         if hashes[model] != record["sha256"]:
             reasons.append({"model": model, "rule": 2, "detail": RULES[2]})
-        failed = sorted(n for n, status in record["checks"].items() if status == "FAIL")
+        disputed = record.get("disputed", {})
+        failed = sorted(
+            n for n, status in record["checks"].items() if status == "FAIL" and n not in disputed
+        )
         if failed:
             checks = ", ".join(f"CHECK {n}" for n in failed)
             reasons.append({"model": model, "rule": 3, "detail": f"{RULES[3]} ({checks})"})
     return {"block": bool(reasons), "reasons": reasons}
 
 
+def disputed_checks(state: Mapping[str, Any], workspace: Path) -> list[dict[str, Any]]:
+    """`[{"model", "check", "dispatches"}]`, sorted, for every disputed check of a model still in
+    the workspace and unchanged since its report (a change ends the dispute: rule 2 applies)."""
+    hashes = model_hashes(workspace)
+    return [
+        {"model": model, "check": check, "dispatches": list(dispatches)}
+        for model in sorted(set(state) & set(hashes))
+        if hashes[model] == state[model]["sha256"]
+        for check, dispatches in sorted(state[model].get("disputed", {}).items())
+    ]
+
+
+def describe_disputes(disputes: list[dict[str, Any]]) -> str:
+    return "; ".join(
+        f"{d['model']}: CHECK {d['check']} FAIL on dispatches "
+        f"{', '.join(map(str, d['dispatches']))}, the model unchanged and counter-evidence given"
+        for d in disputes
+    )
+
+
 def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path) -> list[str]:
     """The models a verifier dispatch after the first lists, sorted: every model `stop_decision`
-    names (never reported, changed since its report, FAIL in it), every model whose last report
-    has a NEEDS_INFO (it does not block, but the main agent dispatches again for it), and the
-    changed models downstream of one of these (`downstream_of`): a model's fingerprint covers
-    its own files and the macros it calls, not the models it refs, so an upstream edit leaves
-    it unchanged. Empty when none."""
+    names (never reported, changed since its report, an undisputed FAIL in it), every model
+    whose last report has a NEEDS_INFO (it does not block, but the main agent dispatches again
+    for it), and the changed models downstream of one of these (`downstream_of`): a model's
+    fingerprint covers its own files and the macros it calls, not the models it refs, so an
+    upstream edit leaves it unchanged. Empty when none."""
     files: dict[str, Path] = {}
     pure: dict[str, frozenset[str]] = {}  # model -> its project's pure macros
     for project in dbt_projects(workspace):
