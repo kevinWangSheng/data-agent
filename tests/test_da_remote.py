@@ -851,13 +851,15 @@ def test_the_loader_wrappers_leave_the_mcp_stream_alone(bench: Env, tool: str, c
 
 def test_the_dab_mongo_runs_no_server_javascript_and_restarts(bench: Env):
     # A `$where` query once crashed mongod in its JS engine (SIGILL) and nothing brought it back.
-    assert bench.run("benchmarks").returncode == 0
+    proc = bench.run("benchmarks")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     mongo = next(c for c in calls(bench, "docker") if c.startswith("run ") and "mongo:8" in c)
-    image_at = mongo.split().index("mongo:8")
-    docker_args, mongod_args = mongo.split()[:image_at], mongo.split()[image_at + 1 :]
-    assert "--restart unless-stopped" in " ".join(docker_args)
+    args = mongo.split()
+    image_at = args.index("mongo:8")
+    docker_args, mongod_args = args[:image_at], args[image_at + 1 :]
+    assert docker_args[docker_args.index("--restart") + 1] == "unless-stopped"
     assert "--noscripting" in mongod_args
-    assert "--wiredTigerCacheSizeGB 0.5" in " ".join(mongod_args)
+    assert mongod_args[mongod_args.index("--wiredTigerCacheSizeGB") + 1] == "0.5"
 
 
 def test_benchmarks_skips_what_is_ready(bench: Env):
