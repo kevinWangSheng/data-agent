@@ -1,9 +1,10 @@
 """`accept`: does a change pass ADR-0008 on the dev set; can the old version's results be reused.
 
 Inputs are two Harbor jobs on the whole dev set (`--old`, the version before the change; `--new`,
-the change), the change's target tasks, the regression set file (a JSON list of dev task names)
-and any reruns of regression tasks (`--rerun`, jobs of the new version). The change passes when
-all three of ADR-0008's conditions hold:
+the change; either may be several jobs of one config, merged by evals.report.load_jobs), the
+change's target tasks, the regression set file (a JSON list of dev task names) and any reruns
+of regression tasks (`--rerun`, jobs of the new version). The change passes when all three of
+ADR-0008's conditions hold:
 
 1. point estimate: the new version's successes over the dev set are not fewer than the old's;
 2. targets: the targets' successes add up to more than the old's;
@@ -36,7 +37,15 @@ from evals.ablate import has_versions, header
 from evals.harbor import Trial, event_files, load_trials
 from evals.metrics import is_success
 from evals.process import job_metrics, timing_markdown
-from evals.report import TRIALS_PER_TASK, check_complete, is_infra_error, split_trials
+from evals.report import (
+    MERGE_HELP,
+    TRIALS_PER_TASK,
+    check_complete,
+    is_infra_error,
+    last_record,
+    load_jobs,
+    split_trials,
+)
 
 MAX_AGE = timedelta(days=14)
 # Version header fields that a change is expected to alter, or that differ per event file.
@@ -50,8 +59,14 @@ RECORD_KEYS = (("benchmark_commit", "benchmark commit"), ("machine", "machine"))
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     p = commands.add_parser("accept", help="ADR-0008: does a change pass on the dev set")
-    p.add_argument("--old", type=Path, required=True, help="job of the version before the change")
-    p.add_argument("--new", type=Path, required=True, help="job of the change")
+    p.add_argument(
+        "--old",
+        type=Path,
+        nargs="+",
+        required=True,
+        help=f"the version before the change: {MERGE_HELP}",
+    )
+    p.add_argument("--new", type=Path, nargs="+", required=True, help=f"the change: {MERGE_HELP}")
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--target", action="append", required=True, help="target task; repeatable")
     p.add_argument("--regression", type=Path, required=True, help="JSON list of dev task names")
@@ -91,8 +106,8 @@ def successes(trials: list[Trial]) -> Counter[str]:
 
 
 def evaluate(
-    old_job: Path,
-    new_job: Path,
+    old_jobs: list[Path],
+    new_jobs: list[Path],
     dev_tasks: list[str],
     targets: list[str],
     regression: list[str],
@@ -100,7 +115,7 @@ def evaluate(
     trials: int,
 ) -> dict[str, Any]:
     dev = set(dev_tasks)
-    old, new = load_trials(old_job), load_trials(new_job)
+    old, new = load_jobs(old_jobs), load_jobs(new_jobs)
     reruns = [t for job in rerun_jobs for t in load_trials(job)]
     for label, tasks in (
         ("old job", {t.task for t in old}),
@@ -115,8 +130,10 @@ def evaluate(
     split_trials(new, manifest, "dev", "the new")
     check_complete(new, "new", trials)
 
-    old_infra = had_infra_errors(old_job, old)
-    problems = reuse_problems(old_job, new_job, old, new, old_infra)
+    old_infra = had_infra_errors(old_jobs, old)
+    # Merged jobs share their records' benchmark commit and machine (load_jobs), so the first
+    # job's record stands for each side.
+    problems = reuse_problems(old_jobs[0], new_jobs[0], old, new, old_infra)
     conditions: dict[str, Any] = {}
     if not old_infra:  # the old round cannot be scored at all
         check_complete(old, "old", trials)
@@ -203,12 +220,6 @@ def fields(trials: list[Trial]) -> dict[str, set[str]]:
     }
 
 
-def last_record(job: Path) -> dict[str, Any] | None:
-    """The last run record of the job's OUT (`OUT/jobs/<config>` -> `OUT/records/*.json`)."""
-    paths = sorted((job.parent.parent / "records").glob("*.json"))
-    return json.loads(paths[-1].read_text()) if paths else None
-
-
 def times(trials: list[Trial], key: str) -> tuple[list[datetime], int]:
     """The trials' `key` times, and how many trials that ran have none. Infrastructure error
     trials are not counted: they may end before Harbor writes the times, an old one forces a
@@ -276,11 +287,13 @@ def reuse_problems(
     return problems
 
 
-def had_infra_errors(job: Path, trials: list[Trial]) -> bool:
-    """An infrastructure error left in the job, or one a resume dropped (ablate.keep_spend keeps
-    each dropped trial under `OUT/dropped/<config>/`)."""
-    dropped = job.parent.parent / "dropped" / job.name
-    return any(is_infra_error(t) for t in trials) or (dropped.is_dir() and any(dropped.iterdir()))
+def had_infra_errors(jobs: list[Path], trials: list[Trial]) -> bool:
+    """An infrastructure error left in the jobs, or one a resume dropped from any of them
+    (ablate.keep_spend keeps each dropped trial under `OUT/dropped/<config>/`)."""
+    dropped = [job.parent.parent / "dropped" / job.name for job in jobs]
+    return any(is_infra_error(t) for t in trials) or any(
+        d.is_dir() and any(d.iterdir()) for d in dropped
+    )
 
 
 def render(result: dict[str, Any]) -> str:
