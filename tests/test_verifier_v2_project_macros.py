@@ -114,6 +114,17 @@ def test_a_model_calling_a_macro_that_could_reach_a_model_is_unknown(
     assert referenced_models(sql, macros_of(root)) is None
 
 
+@pytest.mark.parametrize(
+    "signature", ["m(x=ref('a'))", "m(x=graph)", "m(x=helper())", "m(x=pkg.helper())"]
+)
+def test_a_macro_whose_defaults_could_reach_a_model_is_not_pure(
+    tmp_path: Path, signature: str
+) -> None:
+    """The signature counts with the body (Codex review, round 2)."""
+    root = project(tmp_path, {}, {"m.sql": f"{{% macro {signature} %}}{{{{ x }}}}{{% endmacro %}}"})
+    assert macros_of(root) == frozenset()
+
+
 def test_a_duplicate_macro_name_counts_only_when_every_definition_is_pure(
     tmp_path: Path,
 ) -> None:

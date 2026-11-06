@@ -310,7 +310,7 @@ def referenced_models(sql: str, pure: frozenset[str] = frozenset()) -> set[str] 
 # A call by bare name; `pkg.m(` and `x.upper(` are not (the name follows a dot).
 BARE_CALL_RE = re.compile(r"(?<![\w.])(\w+)\s*\(")
 MACRO_RE = re.compile(
-    rf"\{{%-?\s*macro\s+(\w+)\s*\({_ARGS}\)\s*-?%\}}(.*?)\{{%-?\s*endmacro\s*-?%\}}", re.DOTALL
+    rf"\{{%-?\s*macro\s+(\w+)\s*\(({_ARGS})\)\s*-?%\}}(.*?)\{{%-?\s*endmacro\s*-?%\}}", re.DOTALL
 )
 # Words in a macro body that can reach a model or the database.
 REACHING_RE = re.compile(r"\b(?:ref|adapter|dispatch|run_query|graph)\b")
@@ -340,8 +340,9 @@ class ProjectMacros:
 
     def pure(self) -> frozenset[str]:
         """The macros that cannot reach a model: no definition names `ref`, `adapter`,
-        `dispatch`, `run_query` or `graph` (Jinja comments removed) or calls other than by
-        bare name, and every macro they call is one of these (the largest such set)."""
+        `dispatch`, `run_query` or `graph` (Jinja comments removed) in its arguments or body,
+        calls anything in its argument defaults, or calls other than by bare name in its body,
+        and every macro they call is one of these (the largest such set)."""
         pure = set(self.definitions) - self.opaque
         while True:
             kept = {name for name in pure if self.calls[name] <= pure}
@@ -376,11 +377,13 @@ def project_macros(project: Path, config: dict[str, Any] | None = None) -> Proje
         for path in files_under(project, directory, (".sql",)):
             text = JINJA_COMMENT_RE.sub("", read_text(path))
             for match in MACRO_RE.finditer(text):
-                name, body = match.groups()
+                name, arguments, body = match.groups()
                 names, all_bare = _bare_calls(body)
                 definitions.setdefault(name, []).append(match.group(0))
                 calls.setdefault(name, set()).update(names)
-                if REACHING_RE.search(body) or not all_bare:
+                # A default value is evaluated like the body; one with a call is not read.
+                reaching = REACHING_RE.search(arguments + "\n" + body)
+                if reaching or not all_bare or "(" in arguments:
                     opaque.add(name)
     return ProjectMacros(definitions, calls, frozenset(opaque))
 
