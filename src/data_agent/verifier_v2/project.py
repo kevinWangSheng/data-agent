@@ -316,42 +316,84 @@ MACRO_RE = re.compile(
 REACHING_RE = re.compile(r"\b(?:ref|adapter|dispatch|run_query|graph)\b")
 
 
-def _jinja_calls(text: str) -> set[str] | None:
-    """The names the Jinja in `text` (comments removed) calls, besides the literal calls
-    `LITERAL_CALL_RE` matches; None when some call is not by bare name (`pkg.m(...)`,
-    `x[0](...)`, a parenthesis that is no call)."""
+def _bare_calls(text: str) -> tuple[set[str], bool]:
+    """The names the Jinja in `text` (comments removed) calls by bare name, besides the
+    literal calls `LITERAL_CALL_RE` matches, and whether every call is one of those (not
+    `pkg.m(...)`, `x[0](...)`, a parenthesis that is no call)."""
     names: set[str] = set()
+    every = True
     for block in JINJA_BLOCK_RE.findall(text):
         rest = LITERAL_CALL_RE.sub("", block)
         found = BARE_CALL_RE.findall(rest)
-        if rest.count("(") != len(found):
-            return None
+        every = every and rest.count("(") == len(found)
         names.update(found)
-    return names
+    return names, every
+
+
+def _jinja_calls(text: str) -> set[str] | None:
+    """`_bare_calls`' names, None when some call is not by bare name."""
+    names, every = _bare_calls(text)
+    return names if every else None
+
+
+@dataclass(frozen=True)
+class ProjectMacros:
+    """The macros under a project's own macro-paths (never in `dbt_packages/`), as read."""
+
+    definitions: dict[str, list[str]]  # name -> each definition's text, in file order
+    calls: dict[str, set[str]]  # name -> the names its definitions call by bare name
+    opaque: frozenset[str]  # names a definition of which could reach a model by itself
+
+    def pure(self) -> frozenset[str]:
+        """The macros that cannot reach a model: no definition names `ref`, `adapter`,
+        `dispatch`, `run_query` or `graph` (Jinja comments removed) or calls other than by
+        bare name, and every macro they call is one of these (the largest such set)."""
+        pure = set(self.definitions) - self.opaque
+        while True:
+            kept = {name for name in pure if self.calls[name] <= pure}
+            if kept == pure:
+                return frozenset(pure)
+            pure = kept
+
+    def used_by(self, sql: str) -> list[str]:
+        """The project macros the model's Jinja calls, directly or through another, sorted."""
+        found: set[str] = set()
+        todo = _bare_calls(JINJA_COMMENT_RE.sub("", sql))[0]
+        while todo:
+            name = todo.pop()
+            if name in self.definitions and name not in found:
+                found.add(name)
+                todo |= self.calls[name]
+        return sorted(found)
+
+
+def project_macros(project: Path, config: dict[str, Any] | None = None) -> ProjectMacros:
+    """The project's own macros, read from the files on each call. A macro-paths entry that
+    resolves into `SKIP_DIRS` (`dbt_packages/...`) is not read."""
+    config = project_config(project) if config is None else config
+    root = project.resolve()
+    definitions: dict[str, list[str]] = {}
+    calls: dict[str, set[str]] = {}
+    opaque: set[str] = set()
+    for directory in resource_dirs(config, "macro-paths", RESOURCE_PATHS["macro-paths"]):
+        base = (project / directory).resolve()
+        if base.is_relative_to(root) and SKIP_DIRS & set(base.relative_to(root).parts):
+            continue
+        for path in files_under(project, directory, (".sql",)):
+            text = JINJA_COMMENT_RE.sub("", read_text(path))
+            for match in MACRO_RE.finditer(text):
+                name, body = match.groups()
+                names, every = _bare_calls(body)
+                definitions.setdefault(name, []).append(match.group(0))
+                calls.setdefault(name, set()).update(names)
+                if REACHING_RE.search(body) or not every:
+                    opaque.add(name)
+    return ProjectMacros(definitions, calls, frozenset(opaque))
 
 
 def pure_macros(project: Path, config: dict[str, Any] | None = None) -> frozenset[str]:
-    """The macros under the project's own macro-paths (not `dbt_packages/`) that cannot reach a
-    model: the body, Jinja comments removed, names none of `ref`, `adapter`, `dispatch`,
-    `run_query`, `graph`, and every macro it calls is one of these (the largest such set). A
-    name defined twice counts only when every definition does. Read from the files each call."""
-    config = project_config(project) if config is None else config
-    calls: dict[str, set[str] | None] = {}
-    for directory in resource_dirs(config, "macro-paths", RESOURCE_PATHS["macro-paths"]):
-        for path in files_under(project, directory, (".sql",)):
-            for name, body in MACRO_RE.findall(JINJA_COMMENT_RE.sub("", read_text(path))):
-                called = None if REACHING_RE.search(body) else _jinja_calls(body)
-                if name in calls:
-                    known = calls[name]
-                    called = None if known is None or called is None else known | called
-                calls[name] = called
-    candidates = {name: called for name, called in calls.items() if called is not None}
-    pure = set(candidates)
-    while True:
-        kept = {name for name in pure if candidates[name] <= pure}
-        if kept == pure:
-            return frozenset(pure)
-        pure = kept
+    """`ProjectMacros.pure` of the project's macros."""
+    return project_macros(project, config).pure()
 
 
 def _collect(node: dict[str, Any], values: dict[str, Any]) -> None:

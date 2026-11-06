@@ -13,6 +13,7 @@ from data_agent.verifier_v2.project import (
     model_config,
     model_files,
     project_config,
+    project_macros,
     pure_macros,
     read_text,
     referenced_models,
@@ -34,15 +35,20 @@ def changed_models(workspace: Path, snapshot: Path) -> list[str]:
 def model_hashes(workspace: Path) -> dict[str, str]:
     """A SHA-256 fingerprint of each model, by name, over every dbt project in the workspace:
     its SQL file and what dbt_project.yml configures for it, the same surface `model_diff`
-    reports changes on."""
+    reports changes on, and the definitions of the project macros it calls (directly or
+    through another), so a macro edit after a report counts as a change to its callers."""
     hashes: dict[str, str] = {}
     for project in dbt_projects(workspace):
         config = project_config(project)
+        macros = project_macros(project, config)
         for name, path in model_files(project, config).items():
             sql = path.read_bytes()
+            text = sql.decode("utf-8", "replace")
             digest = hashlib.sha256(sql)
-            settings = model_config(config, project, path, sql.decode("utf-8", "replace")).lines()
+            settings = model_config(config, project, path, text).lines()
             digest.update("\n".join(sorted(settings.values())).encode())
+            for macro in macros.used_by(text):
+                digest.update("\n".join(macros.definitions[macro]).encode())
             hashes.setdefault(name, digest.hexdigest())
     return hashes
 

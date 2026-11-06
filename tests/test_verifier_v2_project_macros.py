@@ -165,3 +165,41 @@ def test_redispatch_macros_are_read_per_project(tmp_path: Path) -> None:
         "lone": {"checks": {1: "PASS"}, "sha256": hashes["lone"]},
     }
     assert redispatch_models(state, workspace, snapshot) == ["stg"]
+
+
+def test_redispatch_lists_the_callers_of_an_edited_project_macro(tmp_path: Path) -> None:
+    """A pure macro edited after the report changes what its callers build (also through
+    clean_money -> parse_amount): they are listed with the other seed, the model that does
+    not call it is not (Codex review, round 1)."""
+    workspace, snapshot = tmp_path / "ws", tmp_path / "snapshot"
+    models = {
+        "stg": "SELECT 1 AS amount\n",
+        "direct": "SELECT {{ parse_amount('amount') }} FROM {{ ref('other') }}\n",
+        "nested": "SELECT {{ clean_money('amount') }} FROM {{ ref('other') }}\n",
+        "plain": "SELECT amount FROM {{ ref('other') }}\n",
+        "other": "SELECT 2 AS amount\n",
+    }
+    project(snapshot / "project", {})
+    project(workspace / "project", models, {"pure.sql": PURE})
+    hashes = model_hashes(workspace)
+    state = {
+        name: {"checks": {1: "PASS"}, "sha256": "stale" if name == "stg" else hashes[name]}
+        for name in models
+    }
+    (workspace / "project" / "macros" / "pure.sql").write_text(
+        PURE.replace("decimal(18,2)", "decimal(18,4)")
+    )
+    assert redispatch_models(state, workspace, snapshot) == ["direct", "nested", "stg"]
+
+
+def test_macro_paths_inside_dbt_packages_are_not_read(tmp_path: Path) -> None:
+    """A macro-paths entry naming a directory in dbt_packages still reads no package macro
+    (Codex review, round 1)."""
+    root = project(tmp_path, {}, {"h.sql": PURE})
+    (root / "dbt_project.yml").write_text(
+        'name: tiny\nmacro-paths: ["dbt_packages/util/macros", "macros"]\n'
+    )
+    package = root / "dbt_packages" / "util" / "macros"
+    package.mkdir(parents=True)
+    (package / "p.sql").write_text("{% macro pkg_pure(x) %}{{ x }}{% endmacro %}")
+    assert macros_of(root) == {"parse_amount", "clean_money"}
