@@ -282,3 +282,182 @@ def test_a_trial_stopped_at_its_deadline_is_counted_not_an_infrastructure_error(
 def test_a_trial_that_ended_verified_has_no_ended_unverified(tmp_path: Path) -> None:
     row = trial_metrics(trial_with(tmp_path, {"type": "result", "subtype": "success"}))
     assert (row["stopped"], row["ended_unverified"]) == (None, False)
+
+
+DENIED = (
+    "PreToolUse:Bash hook error: Bash may only run one dbt command in the foreground. "
+    "Denied: a second command."
+)
+OVERSIZE = (
+    "Error: result (665,331 characters) exceeds maximum allowed tokens. Output has been saved "
+    "to /tmp/out.txt"
+)
+
+
+def tool_result(content: str, *, is_error: bool = True, tool: str = "Bash") -> dict[str, Any]:
+    return {"type": "tool_end", "tool": tool, "content": content, "is_error": is_error}
+
+
+def test_a_trial_counts_the_gate_events(tmp_path: Path) -> None:
+    """Ticket 67: the stage-1 gate's mechanical metrics, from the events tickets 59 and 64 add
+    and the `tool_end` contents Claude Code writes for a PreToolUse denial and for an output too
+    long to return."""
+    trial = trial_with(
+        tmp_path,
+        {"type": "verifier_dispatch", "n": 1, "models": ["a", "b", "c"], "source": "first"},
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "v1"},
+        tool_result(DENIED),
+        tool_result(DENIED.replace("Bash", "Grep", 1), tool="Grep"),
+        tool_result(OVERSIZE, is_error=False, tool="mcp__data__query_database"),
+        {"type": "verifier_dispatch", "n": 2, "models": ["b"], "source": "again"},
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "v2"},
+        {"type": "ended_with_unresolved", "reason": "b: rule 2", "blocks": 3},
+        {"type": "ended_disputed", "reason": "b: CHECK 1", "disputed": {"b": [1]}},
+        {"type": "result", "subtype": "success", "num_turns": 30},
+    )
+    row = trial_metrics(trial)
+    assert row["ended_with_unresolved"] is True
+    assert row["ended_disputed"] is True
+    assert row["guard_denials"] == 2
+    assert row["oversize_outputs"] == 1
+    assert row["verifier_dispatches"] == 2
+    assert row["dispatch_models"] == [3, 1]
+
+
+def test_an_event_file_before_dispatch_events_has_no_dispatch_or_dispute_counts(
+    tmp_path: Path,
+) -> None:
+    """An event file written before tickets 59 and 64 (accept-2's): a verifier ran but no
+    `verifier_dispatch` was recorded, so dispatches and disputes are unknown, not zero; the
+    rest is counted as usual."""
+    trial = trial_with(
+        tmp_path,
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "v1"},
+        tool_result(DENIED),
+        tool_result(OVERSIZE, is_error=False, tool="mcp__data__query_database"),
+        {"type": "ended_with_unresolved", "reason": "a: rule 2", "blocks": 3},
+        {"type": "result", "subtype": "success", "num_turns": 30},
+    )
+    row = trial_metrics(trial)
+    assert (row["verifier_dispatches"], row["dispatch_models"], row["ended_disputed"]) == (
+        None,
+        None,
+        None,
+    )
+    assert (row["guard_denials"], row["oversize_outputs"]) == (1, 1)
+    assert (row["ended_with_unresolved"], row["verifier_calls"]) == (True, 1)
+
+
+def test_a_trial_without_a_verifier_has_no_dispatch_and_no_dispute(tmp_path: Path) -> None:
+    """No verifier ran (a baseline trial, or one that never verified): zero dispatches and no
+    disputed FAIL are known in any event-file version."""
+    row = trial_metrics(trial_with(tmp_path, {"type": "result", "subtype": "success"}))
+    assert (row["verifier_dispatches"], row["dispatch_models"], row["ended_disputed"]) == (
+        0,
+        [],
+        False,
+    )
+
+
+def test_a_result_that_says_truncated_is_no_oversize_output(tmp_path: Path) -> None:
+    """Only Claude Code's own "exceeds maximum allowed tokens" error counts; a tool's result
+    that mentions truncation (a gateway row cap, a log line) does not."""
+    trial = trial_with(
+        tmp_path,
+        tool_result("rows: 1000 (truncated: true)", is_error=False, tool="mcp__data__query"),
+        tool_result("Error: output truncated at 30000 characters"),
+        tool_result("note: Error: result (5 characters) exceeds maximum allowed tokens"),
+    )
+    assert trial_metrics(trial)["oversize_outputs"] == 0
+
+
+def test_a_result_given_as_content_blocks_is_read_as_text(tmp_path: Path) -> None:
+    trial = trial_with(
+        tmp_path,
+        {
+            "type": "tool_end",
+            "tool": "Read",
+            "is_error": True,
+            "content": [
+                {"type": "text", "text": DENIED},
+            ],
+        },
+    )
+    assert trial_metrics(trial)["guard_denials"] == 1
+
+
+def named_trial(tmp_path: Path, task: str, name: str, *events: dict[str, Any]) -> Trial:
+    events_dir = tmp_path / name / "agent" / "events"
+    events_dir.mkdir(parents=True)
+    (events_dir / "run-1.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    return Trial(task, name, 1.0, None, 0, 0, 0, 0.0, tmp_path / name)
+
+
+def gate_trials(tmp_path: Path) -> list[Trial]:
+    """Three trials: a new one with two dispatches (3 and 1 models) that ended unresolved and
+    disputed, a new one with no verifier, and an old one (a verifier, no dispatch event)."""
+    dispatch = {"type": "verifier_dispatch", "source": "first"}
+    start = {"type": "verifier_start", "verifier": "verifier", "agent_id": "v"}
+    return [
+        named_trial(
+            tmp_path,
+            "t1",
+            "t1__a",
+            {**dispatch, "n": 1, "models": ["a", "b", "c"]},
+            start,
+            {**dispatch, "n": 2, "models": ["b"]},
+            start,
+            tool_result(DENIED),
+            tool_result(DENIED),
+            tool_result(OVERSIZE, is_error=False),
+            {"type": "ended_with_unresolved"},
+            {"type": "ended_disputed"},
+        ),
+        named_trial(tmp_path, "t1", "t1__b", tool_result(DENIED), {"type": "ended_unverified"}),
+        named_trial(
+            tmp_path,
+            "t2",
+            "t2__a",
+            start,
+            tool_result(DENIED),
+            tool_result(OVERSIZE, is_error=False),
+        ),
+    ]
+
+
+def test_task_metrics_add_up_the_gate_counts_of_known_trials(tmp_path: Path) -> None:
+    per_task = job_metrics(gate_trials(tmp_path))["per_task"]
+    t1, t2 = per_task["t1"], per_task["t2"]
+    assert (t1["ended_with_unresolved"], t1["ended_disputed"]) == (1, 1)
+    assert (t1["guard_denials"], t1["oversize_outputs"]) == (3, 1)
+    assert (t1["verifier_dispatches"], t1["dispatch_models"]) == (2, [3, 1])
+    assert (t2["guard_denials"], t2["oversize_outputs"]) == (1, 1)
+    assert (t2["ended_disputed"], t2["verifier_dispatches"], t2["dispatch_models"]) == (
+        None,
+        None,
+        None,
+    )
+
+
+def test_job_metrics_average_the_gate_counts_per_trial_leaving_unknowns_out(
+    tmp_path: Path,
+) -> None:
+    """Means per trial over the three trials; dispatches and disputes over the two whose event
+    files record them; models per dispatch over the two dispatches."""
+    gate = job_metrics(gate_trials(tmp_path))["gate"]
+    assert gate["trials"] == 3
+    assert gate["ended_with_unresolved"] == pytest.approx(1 / 3)
+    assert gate["ended_unverified"] == pytest.approx(1 / 3)
+    assert gate["guard_denials"] == pytest.approx(4 / 3)
+    assert gate["oversize_outputs"] == pytest.approx(2 / 3)
+    assert gate["trials_with_dispatches_recorded"] == 2
+    assert gate["ended_disputed"] == pytest.approx(1 / 2)
+    assert gate["verifier_dispatches"] == pytest.approx(2 / 2)
+    assert gate["models_per_dispatch"] == pytest.approx(4 / 2)
+
+
+def test_job_gate_means_are_none_when_no_trial_records_dispatches(tmp_path: Path) -> None:
+    gate = job_metrics(gate_trials(tmp_path)[2:])["gate"]
+    assert (gate["trials_with_dispatches_recorded"], gate["ended_disputed"]) == (0, None)
+    assert (gate["verifier_dispatches"], gate["models_per_dispatch"]) == (None, None)
+    assert gate["guard_denials"] == 1.0

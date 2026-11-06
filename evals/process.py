@@ -2,14 +2,18 @@
 28): turns, a run stopped by the spend cap or the turn limit (the SDK result's subtype), verifier
 calls and their check statuses, a run stopped at the trial deadline or let end unverified for
 lack of time (ticket 54), edits to dbt model files, spend, and timing (ticket 51: trial and
-verifier walls, tool calls, each tool's p50/p90/p95/p99 and timeouts); per task, and the mean
-spend of the successful trials. For dev trials only: callers keep holdout trials out (ADR-0004).
+verifier walls, tool calls, each tool's p50/p90/p95/p99 and timeouts), and the stage-1 gate's
+mechanical metrics (ADR-0008, ticket 67: a run ended unresolved or disputed, guard denials,
+oversize tool outputs, verifier dispatches and their model counts); per task, the mean spend of
+the successful trials, and the gate metrics' means per trial. For dev trials only: callers keep
+holdout trials out (ADR-0004).
 
 Model edits count Claude Code's file-writing tools on a `.sql` file under a `models/` directory;
 a model rewritten through Bash (`sed -i`, a heredoc) is not counted.
 """
 
 import json
+import re
 from collections import Counter
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -25,6 +29,12 @@ EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 STOPS = {"error_max_budget_usd": "budget", "error_max_turns": "turns"}
 # The `terminal_reason` of a run that stopped itself at the trial deadline (data_agent.agent).
 DEADLINE = "deadline"
+# How Claude Code words a tool result, in `tool_end.content`, for a call a PreToolUse hook denied
+# (the guards and verifier_v2's `permissionDecision: deny`): `PreToolUse:<tool> hook error: <the
+# reason>`; and for a result too long to return to the model, which it saves to a file instead
+# (accept-2 records these with `is_error: false`, so the wording alone identifies them).
+DENIAL = re.compile(r"PreToolUse:\S+ hook error: ")
+OVERSIZE = re.compile(r"Error: result \([\d,]+ characters\) exceeds maximum allowed tokens")
 
 
 def verifier_checks(event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -40,6 +50,17 @@ def verifier_checks(event: dict[str, Any]) -> list[dict[str, Any]]:
         for number, status in sorted(statuses.items(), key=lambda item: int(item[0])):
             rows.append({"model": model, "check": f"CHECK {number}", "status": status})
     return rows
+
+
+def result_text(event: dict[str, Any]) -> str:
+    """A `tool_end` event's content as text: the SDK gives a string or a list of content blocks
+    (the text ones carry it)."""
+    content = event.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(str(block.get("text") or "") for block in content if isinstance(block, dict))
+    return ""
 
 
 def is_model_edit(event: dict[str, Any]) -> bool:
@@ -122,7 +143,10 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     turns, edits, calls, cost, tool_calls = 0, 0, 0, 0.0, 0
     checks: Counter[str] = Counter()
     stopped: str | None = None
-    unverified = False
+    unverified = unresolved = disputed = False
+    denials = oversize = 0
+    dispatch_models: list[int] = []
+    verified = False  # a verifier ran
     durations: dict[str, list[float]] | None = None
     timeouts: Counter[str] = Counter()
     untimed: Counter[str] = Counter()
@@ -148,8 +172,21 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
                         stopped = DEADLINE
                 elif kind == "ended_unverified":
                     unverified = True
+                elif kind == "ended_with_unresolved":
+                    unresolved = True
+                elif kind == "ended_disputed":
+                    disputed = True
+                elif kind == "verifier_dispatch":
+                    dispatch_models.append(len(event.get("models") or []))
                 elif kind == "verifier_start":
                     calls += 1
+                    verified = True
+                elif kind == "tool_end":
+                    text = result_text(event)
+                    if DENIAL.match(text):
+                        denials += 1
+                    elif OVERSIZE.match(text):
+                        oversize += 1
                 elif kind == "verifier_end":
                     checks.update(str(c.get("status")) for c in verifier_checks(event))
                 elif kind == "tool_start":
@@ -168,6 +205,10 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     times = [when for when, _ in stamped]
     trial_end = max(times) if times else None
     verifier_s, unclosed = verifier_wall(stamped, trial_end) if trial_end is not None else (None, 0)
+    # A verifier ran yet no dispatch was recorded: the file predates `verifier_dispatch` (ticket
+    # 59) and `ended_disputed` (ticket 64), so both are unknown. With no verifier run they are
+    # known, in any version: no dispatch, and no disputed FAIL (one needs a verifier report).
+    predates = verified and not dispatch_models
     return {
         "task": trial.task,
         "trial": trial.name,
@@ -175,6 +216,12 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
         "turns": turns,
         "stopped": stopped,
         "ended_unverified": unverified,
+        "ended_with_unresolved": unresolved,
+        "ended_disputed": None if predates else disputed,
+        "guard_denials": denials,
+        "oversize_outputs": oversize,
+        "verifier_dispatches": None if predates else len(dispatch_models),
+        "dispatch_models": None if predates else dispatch_models,
         "verifier_calls": calls,
         "verifier_checks": dict(checks),
         "model_edits": edits,
@@ -308,10 +355,42 @@ def timing_markdown(summaries: list[tuple[str, dict[str, Any] | None]]) -> list[
     return lines
 
 
+def known(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The rows whose event files record verifier dispatches and disputes (tickets 59, 64)."""
+    return [r for r in rows if r.get("verifier_dispatches") is not None]
+
+
+def gate_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The stage-1 gate's mechanical metrics (ADR-0008, ticket 67) as means per trial: the
+    `ended_*` outcomes as the share of trials, guard denials and oversize outputs as calls per
+    trial. Disputes and dispatches average over `trials_with_dispatches_recorded` alone (None
+    when no trial's event file records them), and `models_per_dispatch` over their dispatches."""
+
+    def mean(values: list[float]) -> float | None:
+        return sum(values) / len(values) if values else None
+
+    recorded = known(rows)
+    models = [m for r in recorded for m in r["dispatch_models"]]
+    return {
+        "trials": len(rows),
+        "ended_with_unresolved": mean([float(r["ended_with_unresolved"]) for r in rows]),
+        "ended_unverified": mean([float(r["ended_unverified"]) for r in rows]),
+        "guard_denials": mean([float(r["guard_denials"]) for r in rows]),
+        "oversize_outputs": mean([float(r["oversize_outputs"]) for r in rows]),
+        "trials_with_dispatches_recorded": len(recorded),
+        "ended_disputed": mean([float(r["ended_disputed"]) for r in recorded]),
+        "verifier_dispatches": mean([float(r["verifier_dispatches"]) for r in recorded]),
+        "models_per_dispatch": mean([float(m) for m in models]),
+    }
+
+
 def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """A task's process metrics over its trial rows. The gate counts (ticket 67) are totals;
+    disputes and dispatches total the trials that record them, None when none does."""
     checks: Counter[str] = Counter()
     for row in rows:
         checks.update(row["verifier_checks"])
+    recorded = known(rows)
     return {
         "successes": sum(1 for r in rows if r["success"]),
         "trials": len(rows),
@@ -320,6 +399,16 @@ def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "stopped_by_turns": sum(1 for r in rows if r["stopped"] == "turns"),
         "stopped_by_deadline": sum(1 for r in rows if r["stopped"] == DEADLINE),
         "ended_unverified": sum(1 for r in rows if r["ended_unverified"]),
+        "ended_with_unresolved": sum(1 for r in rows if r["ended_with_unresolved"]),
+        "ended_disputed": sum(1 for r in recorded if r["ended_disputed"]) if recorded else None,
+        "guard_denials": sum(r["guard_denials"] for r in rows),
+        "oversize_outputs": sum(r["oversize_outputs"] for r in rows),
+        "verifier_dispatches": (
+            sum(r["verifier_dispatches"] for r in recorded) if recorded else None
+        ),
+        "dispatch_models": (
+            [m for r in recorded for m in r["dispatch_models"]] if recorded else None
+        ),
         "verifier_calls": sum(r["verifier_calls"] for r in rows),
         "verifier_checks": dict(checks),
         "model_edits": sum(r["model_edits"] for r in rows),
@@ -329,14 +418,17 @@ def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def job_metrics(trials: list[Trial]) -> dict[str, Any]:
-    """Process metrics of dev trials: per task, per trial, and the mean spend of a success."""
+    """Process metrics of dev trials: per task, per trial, the mean spend of a success, and the
+    gate metrics' means per trial."""
     rows: dict[str, list[dict[str, Any]]] = {}
     for trial in trials:
         rows.setdefault(trial.task, []).append(trial_metrics(trial))
     succeeded = [r["cost_usd"] for rs in rows.values() for r in rs if r["success"]]
+    every = [r for rs in rows.values() for r in rs]
     return {
         "mean_cost_usd_succeeded": sum(succeeded) / len(succeeded) if succeeded else None,
         "per_task": {task: task_metrics(rs) for task, rs in sorted(rows.items())},
-        "timing": timing_summary([r for rs in rows.values() for r in rs]),
+        "timing": timing_summary(every),
+        "gate": gate_metrics(every),
         "trials": [r for _, rs in sorted(rows.items()) for r in rs],
     }

@@ -232,6 +232,10 @@ def test_process_metrics_ignore_the_dispatch_event(tmp_path: Path) -> None:
     without = trial_metrics(trial_with(tmp_path / "without", BASE_EVENTS))
     with_dispatch = trial_metrics(trial_with(tmp_path / "with", with_event))
     assert with_dispatch.pop("events") != without.pop("events")  # the file path alone differs
+    # Ticket 67 counts the dispatches (tests/test_eval_process.py); nothing else changes.
+    dispatch_keys = ("verifier_dispatches", "dispatch_models", "ended_disputed")
+    assert [with_dispatch.pop(key) for key in dispatch_keys] == [1, [1], False]
+    assert [without.pop(key) for key in dispatch_keys] == [None, None, None]
     assert with_dispatch == without
 
 

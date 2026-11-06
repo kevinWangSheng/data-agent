@@ -344,7 +344,7 @@ def write_report(
     if split == "dev":
         report["per_task"] = _per_task(in_split)
         process = job_metrics(in_split)
-        keys = ("mean_cost_usd_succeeded", "per_task", "timing")
+        keys = ("mean_cost_usd_succeeded", "per_task", "timing", "gate")
         report["process"] = {key: process[key] for key in keys}
         rows = _trial_rows(in_split)
         (out_dir / "trials.json").write_text(json.dumps(rows, indent=2) + "\n")
