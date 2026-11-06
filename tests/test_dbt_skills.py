@@ -28,7 +28,7 @@ from data_agent.verifiers import AGENTS_DIR, VERIFIERS_PROMPT
 DBT_SHOP = Path(__file__).parent / "fixtures" / "dbt_shop"
 SCAN = SKILLS_DIR / "dbt-workflow" / "scan_project.py"
 # Tools and skills the upstream dbt Skills call that data-agent has no counterpart for. The
-# verification tools (map_columns, verify_model_values) come with the verifier layer and are
+# verification tools (map_columns) come with the verifier layer and are
 # named only as "if available".
 SIGNALPILOT_ONLY = {
     "analyze_project_db",
@@ -589,6 +589,28 @@ def test_dbt_prompt_teaches_cd_into_the_project_not_project_dir_flags() -> None:
     assert "--profiles-dir" not in text
     assert "`cd <project_dir> && dbt ...`" in text
     assert "profiles.yml" in text and "do not edit" in text.lower()
+
+
+# Ticket 66: about 86 task texts say "Create a `profiles.yml` in the dbt project directory", and
+# trials that did so went back and forth over a prompt that forbade editing it. The prompt keeps
+# an existing profile as is and allows creating one when the task asks.
+def test_dbt_prompt_keeps_an_existing_profile_and_allows_creating_one_the_task_asks_for() -> None:
+    text = DBT_PROMPT.format(
+        server=MCP_SERVER,
+        database="DuckDB",
+        workspace="/w",
+        task="t",
+        scripts="",
+        task_file_note="",
+    )
+    assert "Do not edit `profiles.yml`." not in text
+    assert "Do not edit an existing `profiles.yml`; create one when the task asks for it." in text
+
+
+def test_no_skill_describes_the_removed_verify_model_values_tool() -> None:
+    """Ticket 66: verify_model_values is not registered since ADR-0009; no Skill may present it."""
+    for path in SKILLS_DIR.glob("*/SKILL.md"):
+        assert "verify_model_values" not in path.read_text(), path
 
 
 def test_workflow_validate_section_states_the_real_default_timeout() -> None:

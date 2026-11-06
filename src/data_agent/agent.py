@@ -136,9 +136,9 @@ Database: {database}. dbt writes to it through the project's profile; you read i
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
 Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
 `cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
-directory. Do not edit `profiles.yml`. When the task asks you to print `DB_TYPE`, run \
-`echo $DB_TYPE` as a Bash call of its own. List, read and search files with the Glob, Read and \
-Grep tools, not `ls` or `cat`.
+directory. Do not edit an existing `profiles.yml`; create one when the task asks for it. When the \
+task asks you to print `DB_TYPE`, run `echo $DB_TYPE` as a Bash call of its own. List, read and \
+search files with the Glob, Read and Grep tools, not `ls` or `cat`.
 
 <task>
 {task}

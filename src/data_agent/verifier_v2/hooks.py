@@ -276,8 +276,8 @@ def run_hooks(
         except (OSError, ValueError):
             summary = {"turns": None, "tool_calls": None}
         hit_max_turns = (summary["turns"] or 0) >= VERIFIER_MAX_TURNS
-        # Only the v2 verifier's reports count as verification; the value verifier's (until
-        # ticket 47 removes it) are recorded but satisfy no Stop rule. A call at the turn cap is
+        # Only the `verifier` agent's reports count as verification (the one name left in
+        # VERIFIER_NAMES since ticket 47 removed the value verifier). A call at the turn cap is
         # NEEDS_INFO as a whole (`overall`); the check lines it did write stand.
         # The report settles one dispatch whether or not it can be recorded below.
         answered = dispatched[0] if dispatched else None
