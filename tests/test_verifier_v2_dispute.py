@@ -208,6 +208,8 @@ async def test_the_verifier_may_not_query_a_dispatched_model(workspace: Path, sq
         "SELECT * FROM same",
         "WITH alpha AS (SELECT 1 AS x) SELECT * FROM alpha",
         "SELEC * FRM ((alpha",
+        # Too deep for the parser (RecursionError, not a parse error): unparsed, so it passes.
+        pytest.param("SELECT " + "(" * 3000 + "1" + ")" * 3000 + " FROM alpha", id="too-deep"),
     ],
 )
 async def test_the_verifier_may_query_sources_other_tables_and_unparsed_sql(

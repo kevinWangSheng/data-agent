@@ -104,11 +104,15 @@ class Dispatch:
 
 def reads_models(sql: str, names: Iterable[str]) -> list[str]:
     """The `names` (lower-cased relation names) the query reads, in any schema, by any dialect
-    in DIALECTS it parses in; empty when it parses in none."""
+    in DIALECTS it parses in; empty when it parses in none. SQL nested too deep for the parser
+    (RecursionError rather than a parse error) counts as unparsed."""
     wanted = set(names)
     read: set[str] = set()
     for dialect in DIALECTS:
-        tables = table_references(sql, dialect)
+        try:
+            tables = table_references(sql, dialect)
+        except RecursionError:
+            tables = None
         if tables is not None:
             read |= {name for _, name in tables if name in wanted}
     return sorted(read)
