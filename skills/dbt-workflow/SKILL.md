@@ -21,7 +21,7 @@ rewrites the dispatch and blocks the run while a changed model is unverified or 
 uses its four verdicts (PASS, FAIL, NEEDS_INFO, N/A), takes its FAIL and NEEDS_INFO handling
 from the system prompt instead of restating it, and leaves the main agent's own key-level check
 (with compare_by_key when the tool is offered) to runs without the verifier; the Tools section
-no longer describes the removed value verifier's tool; sums and averages match only up to rounding;
+lists only tools data-agent registers; sums and averages match only up to rounding;
 map_columns adds no domain prefix. After the first failure attribution: an edit is compared
 with the original predicate by predicate; rule-defined columns implement each factor as stated;
 Step 8 checks column types for every model the task asks for and adds a key-level check against

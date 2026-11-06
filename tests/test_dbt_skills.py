@@ -28,7 +28,7 @@ from data_agent.verifiers import AGENTS_DIR, VERIFIERS_PROMPT
 DBT_SHOP = Path(__file__).parent / "fixtures" / "dbt_shop"
 SCAN = SKILLS_DIR / "dbt-workflow" / "scan_project.py"
 # Tools and skills the upstream dbt Skills call that data-agent has no counterpart for. The
-# verification tools (map_columns) come with the verifier layer and are
+# verification tool (map_columns) comes with the verifier layer and is
 # named only as "if available".
 SIGNALPILOT_ONLY = {
     "analyze_project_db",
