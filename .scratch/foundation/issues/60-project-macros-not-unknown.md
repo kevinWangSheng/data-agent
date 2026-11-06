@@ -1,10 +1,10 @@
 # 60 — 项目自己的宏不再让模型"依赖未知"，重派列表不再退成全量
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06）
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 60-project-macros-not-unknown)
+Branch: worktree-60-project-macros-not-unknown
 
 ## Goal
 
@@ -56,10 +56,38 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0
+- Outcome: done (PR #64 → 4628e58); pos redispatch lists drop from 21 to 6–11 models (offline recompute)
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-60-project-macros-not-unknown`: ef8a9a5, 8741fde, ba056ca, 064fa11
+  - `project.py`: `project_macros(project, config)` reads only the project's own `macro-paths` (default `macros`) and never `dbt_packages/`.
+    - `.pure()` is the largest set that passes repeated elimination: no `ref`/`adapter`/`dispatch`/`run_query`/`graph` in the arguments or body (Jinja comments removed), no calls in argument defaults, and the body calls only other pure project macros by bare name. A duplicated macro name counts as pure only if every definition is.
+    - `referenced_models(sql, pure)` keeps a model's refs when its Jinja calls only `ref`/`source`/`var`/`config`/`is_incremental` and pure macros.
+  - `stop.py`: `redispatch_models` checks refs per project against that project's pure macros. `model_hashes` also hashes the text of the project macros a model calls, directly or indirectly, and the rule-2 text names macro edits.
+  - Unchanged: unknown refs (None) still count as downstream of every seed, and package macros stay unknown.
+  - Tests: `tests/test_verifier_v2_project_macros.py` has 22 cases. The first fails before the fix, at import. `make check` on 064fa11: lint, format and types clean; 1874 passed, 1 skipped, 38 deselected.
+  - Offline recompute of pos-operations from t47-screen3 (the agent's scratch script replays Write/Edit events; seeds = models edited since the last dispatch + FAIL/NEEDS_INFO + never reported):
+    - HGcLuCF seq 1083: 21/21 → 8/21 (the 8 seeds; 0 unknown refs, down from 20)
+    - HGcLuCF seq 1540: 21/21 → 6/21
+    - qpLnwaW seq 1338: 21/21 → 11/21 (0 unknown refs, down from 19)
+    - qpLnwaW seq 2015: 21/21 → 10/21
+  - Codex round 1:
+    - P1, callers of an edited pure macro were not re-dispatched: fixed in 8741fde (macros in the fingerprint).
+    - P2, `macro-paths` pointing into `dbt_packages` was read: fixed.
+  - `eng:code-review`, Standards: fixed in ba056ca (naming, inlined pass-through helpers). Not fixing: a new `macros.py` would be outside Authority; macro files are read twice per redispatch, which the ticket allows.
+  - `eng:code-review`, Spec: stale rule-2 text and docstrings fixed in ba056ca. Known limitations, all erring toward unknown refs: `return(...)`, `range(`, `if (` or a parenthesis inside a string counts as not pure; argument defaults nested two levels are not parsed; a pure macro called with a filter that takes arguments is still unknown. An existing gap: a project that overrides `ref`/`source`/`var`/`config` with its own macro is still trusted.
+  - Codex round 2:
+    - P1, argument defaults ignored when checking purity: fixed in 064fa11.
+    - P2, a caller of a macro-only edit is missed: not fixed. Rule 2 (fingerprint) or rule 1 covers it, except for a caller whose file still matches the snapshot. That is a `model_diff` gap (it compares model files only) that existed before this branch; `model_diff.py` is outside Authority.
+- 2026-11-06 main session: accepted the fingerprint change (8741fde) as a review fix, not a new policy. Before this ticket, a model that calls a project macro had unknown refs and was re-dispatched every time. Now that its refs are known, the macro text in the fingerprint keeps callers of an edited macro under Stop rule 2. Its effect on block counts is measured in the stage 1 gate. Follow-up: the `model_diff` macro-only gap goes into the acceptance criteria of a later ticket (not 59–67).
+
+- 2026-11-06 main session: PR #64 CI green. The Codex GitHub app on 064fa11 had 1 finding (P2, `project.py:386`): parameter names such as `graph` or `ref` are searched for reaching symbols, which makes the macro opaque. I checked it against the code and it holds, but I am not fixing it.
+  - It errs toward unknown refs, which is the behaviour from before this ticket, so the cost is efficiency, not correctness.
+  - The body check would flag any use of that parameter anyway, so only a reaching-named parameter the macro never uses would gain.
+  - Recorded with the known limitations above.
+  - Squash-merged to main as 4628e58.

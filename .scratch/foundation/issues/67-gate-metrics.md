@@ -1,10 +1,10 @@
 # 67 — `process.py` 统计第 1 段闸门要的指标
 
-Status: ready-for-agent
+Status: done
 Blocked by: 59, 64
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06 的补充，"闸门的口径"）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-06 (filled in by the main session; the worktree session could not write the main checkout)
+Branch: worktree-67-gate-metrics
 
 ## Goal
 
@@ -58,10 +58,36 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: done (PR #67 → b7c6071)
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-67-gate-metrics`: 36c783b, 0e52e5f
+  - Implementation:
+    - Each trial gains `ended_with_unresolved`, `ended_disputed`, `guard_denials`, `oversize_outputs`, `verifier_dispatches` and `dispatch_models`. `task_metrics` sums them, `job_metrics["gate"]` gives per-trial means, and the dev report's `process.gate` carries them.
+    - Guard denial: a `tool_end` whose content starts with `PreToolUse:<tool> hook error: ` (every denied call in accept-2 has this form; full has 434).
+    - Oversize output: content starting with `Error: result (N characters) exceeds maximum allowed tokens` (in accept-2 these have `is_error` false). String content and block-list content are both read.
+  - Old event files: a trial that ran a verifier (`verifier_start`) but has no `verifier_dispatch` gets None for dispatch and dispute, and so does every trial with the same `git_commit` in the job. Trials where no verifier ran get 0 / False, which is a known zero.
+  - Known limitations:
+    - Files written after 59 but before 64 have dispatch events but `ended_disputed` False (not None).
+    - Guard denials include the deadline denial (ticket 54) and the ticket-64 query block, which accept-2 lacks, so the comparison with accept-2 leans strict.
+  - Outside Authority: 2 existing process tests pinned the old exact output and necessarily went red. `tests/test_eval_diverge.py` gains the new fields in its exact dict. `tests/test_verifier_dispatch_event.py` (ticket 59) asserted "process ignores dispatch events"; it is renamed and now asserts that dispatches are counted and other fields are unchanged.
+  - Evidence: `job_metrics(load_trials(job))["gate"]` on the main checkout's runs, per-trial means:
+    - accept-2/jobs/full (90): guard denials 4.822, oversize 1.8, ended_with_unresolved 0.0, ended_unverified 0.0, dispatch/dispute None
+    - accept-2/jobs/baseline (90): 3.589, 0.567, 0.0, 0.0; dispatch 0.0, dispute 0.0
+    - t47-screen3/jobs/full (15): 2.867, 0.0, 0.0, 0.0; dispatch/dispute None
+    - These match raw grep counts: full 434 denials and 162 oversize; baseline 51 oversize.
+  - Tests: 9 new in `test_eval_process.py` and 1 in `test_eval_report.py`. `make check`: 1942 passed, 1 skipped.
+  - `da-review`: Codex was unavailable (model refresh timeouts, killed at 20 min). Fable reviewed instead and found nothing substantive. 3 P3s not fixed:
+    - a string `models` field would be counted per character (the writer always writes a list);
+    - a trial with no event file counts 0 dispatches (infra errors are excluded upstream);
+    - a crashing hook that also writes "hook error" would count as a denial (never seen in accept-2).
+  - `eng:code-review`, Spec: old jobs read 0.0 (fixed: decided by `git_commit`); the ticket-59 test name contradicted its new assertion (renamed). Not fixing: no `source` output (the ticket asks for counts only); denials include deadline denials, by the ticket's letter.
+  - `eng:code-review`, Standards: names and duplicated helpers fixed. `process.py` length is out of scope.
+- 2026-11-06 main session: accepted the two test edits outside Authority, which were needed because the tests pinned exact output. Guard-denial comparison: no code change. At the stage-1 gate I will report guard denials both in total and with the deadline denial and the ticket-64 query block excluded, so the comparison with accept-2 is like for like; the human sees both.
+
+- 2026-11-06 main session: PR #67 CI green. The Codex GitHub app on 0e52e5f had 1 finding (P2, `process.py:226`): "a dispatch with an empty `models` list is indistinguishable from no dispatch event, so the trial reads as predates". Not true. `dispatch_models` gets one entry per `verifier_dispatch` event, holding that dispatch's model count (`process.py:180`, `dispatch_models.append(len(event.get("models") or []))`). An empty-list dispatch adds `0`, so the list is `[0]`, `predates` (`:213`, `verifier_ran and not dispatch_models`) is False, and the dispatch is counted. Squash-merged to main as b7c6071.

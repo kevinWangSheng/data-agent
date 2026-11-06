@@ -1,10 +1,10 @@
 # 62 — dab-score：每个数据集只有 1 题时不报区间
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus, worktree 62-dab-score-single-query)
+Branch: worktree-62-dab-score-single-query
 
 ## Goal
 
@@ -49,10 +49,22 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: done (PR #62 → 0ff63da); server recompute shows no interval for 1-query datasets
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-62-dab-score-single-query`, commits 1760ce5, 9b45093
+  - Fix: `paired_bootstrap` (`evals/dab_score.py`) returns `ci_low`/`ci_high` = None and `significant` = False when every dataset has 1 query. The CLI prints "candidate - baseline: <diff> points (every dataset has 1 query: too few to estimate an interval)". Mixed datasets keep the old algorithm, as decided. The result is now a TypedDict `Comparison`.
+  - Tests: the new `test_cli_reports_no_interval_when_every_dataset_has_a_single_query` failed before the fix ("(95% CI -50.00 to -50.00; significant)"); all 18 dab-score tests pass. One existing test gained None-narrowing asserts for basedpyright; its behaviour is unchanged.
+  - `make check`: lint, format and types clean. The full run hit the background limit at 73% of pytest; `uv run pytest -q` alone gave 1853 passed, 1 skipped. After the type-only commit 9b45093: full-repo lint and types clean; dab-score + acceptance tests 96 passed.
+  - Real run (fake-DAB fixtures): all datasets with 1 query → "-50.00 points (every dataset has 1 query: too few to estimate an interval)"; mixed → "-25.00 points (95% CI -50.00 to +0.00; not significant)".
+  - `da-review main` (on 1760ce5): no findings.
+  - `eng:code-review main`, Standards: fixed the loose dict type (TypedDict) in 9b45093. Not fixing: the CLI message restates the only cause of None.
+  - `eng:code-review main`, Spec: nothing missing. Known limitation, by the decided rule: in a mixed run whose whole difference comes from 1-query datasets, the interval still collapses to a point. The formal DAB clone has 2–13 queries per dataset, so the formal evaluation is not affected.
+
+- 2026-11-06 main session: PR #62 CI green; Codex GitHub app on 9b45093: no findings. Squash-merged to main as 0ff63da.
+  - Server recompute (`scripts/da-remote setup 0ff63da`, then line 1 of `runs/dabtrial2-score/run.log` with the report sent to a new dir): `scripts/da-remote start t62-rescore -- dab-score runs/dabtrial2-no-context --baseline runs/dabtrial2-baseline --dab-root ../da-benchmarks/DataAgentBench --report runs/t62-rescore/report.json` → `candidate - baseline: -11.76 points (every dataset has 1 query: too few to estimate an interval)`, evals exit 0. The old run printed `-11.76 points (95% CI -11.76 to -11.76; significant)`. The per-dataset scores are unchanged.

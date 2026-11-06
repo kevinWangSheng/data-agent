@@ -1,10 +1,10 @@
 # 61 — DAB 的 Mongo 关掉服务端 JavaScript，并加重启策略
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06）
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 61-dab-mongo-noscripting)
+Branch: worktree-61-dab-mongo-noscripting
 
 ## Goal
 
@@ -55,10 +55,27 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: done (PR #59 → 1f65e68); container rebuilt, $where returns an error, krama query1 exit 0 with 10/10 Mongo calls ok
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-61-dab-mongo-noscripting`, commits f0ae2ef, 9c30191
+  - Change: the Mongo container is created with `--restart unless-stopped`, and mongod gets `--noscripting` after `--wiredTigerCacheSizeGB 0.5` (`scripts/da-remote:454-457`).
+  - Docs: the mongod v8.0 manual lists `--noscripting` ("Disables the scripting engine"): https://www.mongodb.com/docs/v8.0/reference/program/mongod/ . Its config equivalent `security.javascriptEnabled` disables `$where`, `mapReduce`, `$accumulator` and `$function`: https://www.mongodb.com/docs/v8.0/reference/configuration-options/ .
+  - Stop condition: grep in `src/`, `evals/` and `scripts/` for `$where|$function|$accumulator|mapReduce|javascript` found nothing, and DAB loads data with `mongorestore`. 未确认: DAB's own tool code exists only on the server and was not checked; the krama run after the rebuild covers it.
+  - Test: `-k no_server_javascript` fails against main (`'--restart' is not in list`) and passes on this branch. `tests/test_da_remote.py`: 122 passed before, 123 after; existing tests unchanged. `make check` (f0ae2ef): 1853 passed, 1 skipped, 38 deselected; lint, format and types clean. 9c30191 changes only the new test (file checks clean, 123 passed).
+  - Real run: none (no server access by Authority).
+  - `da-review main`: no findings.
+  - `eng:code-review main`, Spec: no gaps, no scope creep.
+  - `eng:code-review main`, Standards: fixed the test structure in 9c30191. Not fixing: no `-> None` on the test (neighbouring tests omit it too); an existing container only gets `docker start` and keeps its old flags, by design, since the rebuild belongs to the main session.
+
+- 2026-11-06 main session: PR #59 CI green; Codex GitHub app on 9c30191: no findings. Squash-merged to main as 1f65e68.
+  - Rebuild (server idle; repo `scripts/da-remote`). Before: `docker inspect` gave `restart=no cmd=["--wiredTigerCacheSizeGB","0.5"] image=mongo:8`, volume `da-dab-mongodata:/data/db`. Ran `scripts/da-remote exec -- docker rm -f da-dab-mongo`, then `scripts/da-remote benchmarks` → `da-dab-mongo: created and started`, `mongodb ok`. After: `running restart=unless-stopped cmd=["--wiredTigerCacheSizeGB","0.5","--noscripting"]`, same `da-dab-mongodata` volume. Rollback: rebuild without the two flags.
+  - `$where` check: pymongo is not installed in the server's repo env, so I used mongosh in the container on a throwaway db `t61probe` (dropped afterwards): `find({$where:"this._id === 1"})` → `ERROR: Location6108304 no globalScriptEngine in $where parsing`. The container is still `running`, `RestartCount=0`.
+  - DAB run: `scripts/da-remote setup 1f65e68`; `scripts/da-remote start t61-krama -- dab --dab-root ../da-benchmarks/DataAgentBench --dataset krama --query 1 --config no-context --runs 1 --out runs/t61-krama --budget 4` → `da-remote: evals exited 0`, spend $0.0886.
+    - All 10 Mongo tool calls succeeded (`dab_tool_calls.jsonl`). There were no connection errors, and the container did not restart. mongorestore loaded `domain_docs_db.files` (1651 documents, 0 failures), so DAB's loading and tools do not depend on server-side JS.
+    - The trial itself is `unfinished`: after 71 turns the model call failed with "Prompt is too long" (`terminal_reason: blocking_limit`). This is an agent context limit, not Mongo. It is recorded for the DAB formal eval (plan §10 item 18) and is outside this ticket.

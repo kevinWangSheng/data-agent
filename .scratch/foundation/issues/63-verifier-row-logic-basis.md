@@ -1,10 +1,10 @@
 # 63 — 验证器：删除原有逻辑要题面点名，参考 SQL 沿用快照行集，报告再短一点
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06）；../../verifier-v2/spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5)
+Branch: worktree-63-verifier-row-logic-basis
 
 ## Goal
 
@@ -59,10 +59,29 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1 (one fix round; both reviews clean after it)
+- Model spend: $0
+- Outcome: done (PR #61 → b49d12d); real effect measured in unified eval stage 1
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-63-verifier-row-logic-basis`, commits b6d4204, c780059
+  - Change (only `src/data_agent/agents/verifier.md`, `tests/test_verifiers.py`):
+    - CHECK 6: removing or loosening a filter, join or dedup the snapshot model had needs the task to name that condition or the rows it affects. A reason taken from a success criterion, a row count, or "the task doesn't say to keep it" is a FAIL that quotes the removed line.
+    - Step 4: a row-set rule the task does not mention, which the main agent removed or changed, goes into the reference as its `model_diff` removed line shows it. Those removed lines are the only model logic the reference may copy.
+    - Source-table probing: "Most models need none; when one does, get all of it in one query."
+    - Report: a PASS line gives status and key counts only; N/A and NEEDS_INFO keep their reason; CHECK 5 and 6 list only the changes at issue, or "all changes have a basis".
+  - Tests: baseline `tests/test_verifiers.py` 27 passed. 6 new tests, 5 of them red before the change (the 6th is a template/`parse_report` compatibility guard). `make check`: lint, format and types clean; pytest 1858 passed, 1 skipped. After the fix round: `tests/test_verifiers.py` 33 passed; `tests/acceptance -k verifier` 48 passed.
+  - Real run ($0, prompt-only): loaded the verifier through `agent.build_options(..., load_config("full"), ...)` and printed the changed CHECK 6, Step 4, Output Format and template passages, which match the text above.
+  - ADR-0005: the old example "a status column the task names" became "a column the task names". The new text names no task, table or column (checked by the agent and the Spec reviewer).
+  - `da-review main`: no actionable defect. Re-run after the fixes: none.
+  - `eng:code-review main`, fixed in c780059:
+    - "only status and counts" contradicted the N/A and NEEDS_INFO reasons.
+    - "as the snapshot model had it" was ambiguous; now only removed lines may be copied.
+    - CHECK 5/6 now have "or why N/A".
+    - Shared `template_check_lines()` test helper.
+  - Not fixing: the ADR-0005 test bans only the evidence task's words (a general check can't be automated); "about 100 characters" is soft, per the decided rule; "all changes have a basis" appears in both prose and template, on purpose.
+
+- 2026-11-06 main session: PR #61 CI green; Codex GitHub app on c780059: no findings. Squash-merged to main as b49d12d. The real effect is measured in unified eval stage 1.

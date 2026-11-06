@@ -1,10 +1,10 @@
 # 65 — 评测工具按配置合并多个 job
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06 的补充）
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 65-merge-jobs-per-config)
+Branch: worktree-65-merge-jobs-per-config
 
 ## Goal
 
@@ -61,10 +61,29 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: done (PR #60 → 7afc7c6)
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-65-merge-jobs-per-config`: 0178182 (merge several jobs of one config), 9c910a8 (review fixes)
+  - Implementation: `load_jobs` in `evals/report.py`. With one job it returns `load_trials` unchanged. With several jobs it refuses any of these: a job given twice or a repeated trial name; trials that ran (infrastructure errors excluded) with different git_commit / skill_version / config; last run records that differ on benchmark_commit / machine / model; an unset or empty value; a `-dirty` benchmark commit (the same rules as `check_record`). Errors show counts only. `report`, `compare`, `diverge` and `accept --old/--new` each take one or more jobs. accept checks for dropped infra errors in every old job, and `last_record` moved from `accept.py` to `report.py`.
+  - Beyond the ticket text: the version check also requires the same config, so a baseline job cannot be merged into full.
+  - Tests: `tests/test_eval_merge.py` (20 new). Full suite 1872 passed, 1 skipped (on 0178182). After 9c910a8 (help text and one rename): lint, format and types clean; the 4 affected test files gave 105 passed.
+  - Real run: the 9 trials in `runs/t47-screen3/jobs/full`, split 1 + 2 per task into `runs/t65-merge/{a,b}`:
+    `uv run python -m evals report runs/t65-merge/a/jobs/full runs/t65-merge/b/jobs/full --manifest runs/t65-merge/manifest.json --split dev --trials 3 --out runs/t65-merge/report-merged` → `dev: accuracy 66.7% ± 0.0% over 9 trials`, and `report.json` is byte-identical (cmp) to the single-job report. b alone → `error: 3 of 3 dev tasks do not have exactly 3 trials` (exit 2); a given twice → `error: 1 job directory(ies) are given more than once` (exit 2).
+  - `da-review main`: no correctness defects.
+  - `eng:code-review main`, Spec: no gaps, within Authority, one-job behaviour unchanged.
+  - `eng:code-review main`, Standards: fixed in 9c910a8: a shared `MERGE_HELP`; `label` → `side_label`.
+  - Not fixing:
+    - `harbor.version_header` duplicates `ablate.header`: ablate is outside Authority, and report cannot import ablate.
+    - `accept.RECORD_KEYS` overlaps `MERGE_RECORD_KEYS`: accept leaves out model on purpose.
+    - The `-dirty` special case stays, because it is `check_record`'s rule.
+    - accept passes only the first job's record, which `load_jobs` has already checked for agreement.
+    - `report.py` grows about 115 lines.
+  - Known limitation: `diverge` does not check exactly-k trials per task (unchanged for one job). Stage 1/2 scoring uses `report`, which does check it.
+
+- 2026-11-06 main session: PR #60 CI green; Codex GitHub app on 9c910a8: no findings. Squash-merged to main as 7afc7c6.

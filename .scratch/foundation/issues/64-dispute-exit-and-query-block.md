@@ -1,10 +1,10 @@
 # 64 — 验证器与主 agent 争议的收场，钩子硬拦验证器查派单模型
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06）；../../verifier-v2/spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 64-dispute-exit-and-query-block)
+Branch: worktree-64-dispute-exit-and-query-block-r1 (rebased; was worktree-64-dispute-exit-and-query-block)
 
 ## Goal
 
@@ -67,10 +67,57 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 2
+- Review rounds: 2 (send-back round 1)
+- Model spend: $0
+- Outcome: done (PR #65 → 7549361, after send-back 1); real effect measured in unified eval stage 1
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-64-dispute-exit-and-query-block`: bce5e53, ccfe4cb, 0a78811 (rebased by the main session to 53f5e49, d8cd8b3, 40f00f6)
+  - Change:
+    - When the same CHECK of the same model FAILs again, the model is unchanged since the first FAIL, and the dispatch in between carried counter-evidence (a non-empty `UNVERIFIED_HEADING` section), Stop rule 3 no longer blocks. At the end of the run an `ended_disputed` event lists each disputed item (model, CHECK, the two dispatch numbers). Any other FAIL still blocks, and `MAX_BLOCKS` is unchanged.
+    - A new PreToolUse hook denies the verifier's `query_database` call when its SQL reads a dispatched model by name or alias ("use grain_facts / compare_by_key"). Unparsed SQL passes, and so do the main agent's queries.
+    - `VERIFIERS_PROMPT` has the dispute rule. Skill Step 8.4 refers to the system prompt.
+  - Tests: `tests/test_verifier_v2_dispute.py` (19 new) and 1 new test in `tests/test_verifiers.py`. The dispute test fails before the fix. `make check` on 0a78811: lint and types clean; 1872 passed, 1 skipped, 38 deselected.
+  - Offline replay of t47-screen3 `pos-operations__HGcLuCF` (`runs/t64/replay.py` in the worktree, which git ignores; real dispatch prompts and reports through `run_hooks`), Stop after report 2:
+    - Before: blocks on 6 models (rule 3, CHECK 3).
+    - After: blocks only on `fct_order_daily_performance`, the model edited before dispatch 2; the other 5 are disputed (dispatches 1 and 2).
+  - How the verifier is recognised: `tests/acceptance/test_verifier_v2.py:682` requires `run_hooks` to register only PreToolUse/SubagentStop/Stop, and `agent.py` is outside Authority, so there is no SubagentStart map. The guard uses the PreToolUse input's `agent_id` plus `agent_type == "verifier"` (SDK `types.py:329-345`).
+  - Known limitation: the hook doesn't know the dialect or schema, so a same-named source in another schema is also denied. `compare_by_key` can still read it.
+  - Counter-evidence follows the ticket rule (a non-empty section), so any non-empty re-dispatch message counts.
+  - `da-review main`:
+    - [P2] RecursionError on deeply nested SQL escaped the guard: fixed in ccfe4cb, with a test.
+    - [P1] "FAIL d1, FAIL d2 without evidence, FAIL d3 with evidence is a dispute (d2, d3)": not fixed. It matches the agreed rule (evidence carried, model unchanged since d2's FAIL, still FAIL).
+  - `eng:code-review main`:
+    - Fixed: the `last_dispatch_models` name, the Step 8.4 reflow, a test for a standing dispute.
+    - Not fixing:
+      - Reusing `agent.QUERY_TOOL` would make a circular import.
+      - Catching RecursionError in `sql.table_references` too: sql.py is outside Authority; follow-up for compare_by_key.
+      - A dataclass for dispute records: judgement call.
+      - Schema-blind deny and counter-evidence breadth: covered above.
+- 2026-11-06 main session:
+  - Verifier recognition, live evidence: in `runs/t47-screen3/jobs/full/dbt-fix-division-by-zero__7f7yp8X`, the 8 `tool_timing` events for the verifier's `query_database` calls carry the same `agent_id` that `verifier_start` recorded from the SDK hook input; the 22 main-agent calls have `agent_id` null. Per the SDK, `agent_type` comes with `agent_id` inside a subagent, so the stop condition does not apply. Unified eval stage 1 confirms it live (guard rejection events).
+  - Counter-evidence breadth: the ticket's agreed rule ("UNVERIFIED_HEADING section present and non-empty") is applied as written; no new decision is needed.
+  - Rebased onto main after 59 (6380aa0), 63, 65 and 61 merged. The `hooks.py` conflict was positional only: both sides edited the dispatch lines. Kept 59's `models, source = dispatch_models()` plus the `verifier_dispatch` event, and 64's `last_dispatch_models` and `Dispatch` record. After the rebase: lint, format and types clean; 6 affected test files (dispute, dispatch event, hooks, verifiers, trial deadline, redispatch) 131 passed.
+
+- 2026-11-06 main session: PR #63 CI green. The Codex GitHub app on 40f00f6 had 1 finding (P2, `stop.py:102`). I checked it against the code and it holds.
+- **Send-back: with several verifier dispatches outstanding, a FAIL can be disputed with no counter-evidence dispatch after it.** `subagent_stop` (`hooks.py:282-284`) attributes each report to the oldest dispatch (`dispatched[0]`) but removes the newest (`pop()`). This is the conservative fingerprint pairing already on main (`hooks.py:177-179`). So with d2 (carries counter-evidence) and d3 both outstanding, both reports get `dispatch=2, counter_evidence=True`. If the first report records a new FAIL and the second report FAILs the same check on the same fingerprint, `record_checks` (`stop.py:96-102`) records a dispute `[2, 2]` and Stop lets the run end, although no counter-evidence dispatch came after that first FAIL.
+  - Fix: a dispute needs two different dispatches, where the evidence-carrying dispatch comes strictly after the one whose report first recorded the FAIL (for example, require `before["dispatch"] < dispatch`). Keep the fingerprint pairing conservative as it is.
+  - Add a test that fails before the fix: two outstanding dispatches (the oldest carries counter-evidence), both reports FAIL the same check on an unchanged model, and Stop still blocks with no `ended_disputed`.
+- Status back to `ready-for-agent`. Fix it on the original branch `worktree-64-dispute-exit-and-query-block` (already rebased on main, now 40f00f6) in the existing worktree. This is send-back round 1.
+
+- 2026-11-06 ticket agent (claude-opus-5-5), send-back round 1, commits f75dab8, 6de6a42
+  - f75dab8: a dispute needs `before["dispatch"] < dispatch` (`stop.py:102`). The test `test_two_reports_of_one_outstanding_dispatch_are_no_dispute` returned `{}` from Stop before the fix; after it, Stop blocks and emits no `ended_disputed`.
+  - 6de6a42 (gap found by the Spec review): each report took `counter_evidence` from the oldest outstanding dispatch. Now a report carries counter-evidence only if every outstanding dispatch did. The test `test_a_fail_counts_as_disputed_only_if_every_outstanding_dispatch_has_evidence` failed before the fix. The same commit makes the `redispatch_models` docstring say "undisputed FAIL" and reflows Step 8.4.
+  - `make check` on 6de6a42: lint and types clean; 1909 passed, 1 skipped, 38 deselected. The HGcLuCF offline replay is identical to the earlier one (empty `diff`; its dispatches are sequential).
+  - `da-review main`: [P1] "FAIL d1, FAIL d2 without evidence, FAIL d3 with evidence is a dispute (d2, d3)". Not fixed, same as round 1: it matches the agreed rule.
+  - `eng:code-review`, not fixing:
+    - `ended_disputed` can be emitted again when Stop fires again (`ended_with_unresolved` does the same).
+    - The guard denies models from every outstanding dispatch, the conservative reading.
+    - The modification note at SKILL.md:19-20 is outside Authority (Step 8 only); follow-up.
+    - Judgement calls on `# type: ignore` and the double `model_hashes`.
+- 2026-11-06 main session: rebased onto main after ticket 60 (4628e58). The `stop.py` conflicts were docstrings only, and both texts are kept (the fingerprint covers the macros a model calls, plus the dispute fields). There is no semantic conflict: a macro edit changes the fingerprint, so it rules out a dispute, as it should. After the rebase: lint, format and types clean; the verifier test files plus `tests/acceptance/test_verifier_v2.py` give 195 passed. AGENTS.md forbids force-push, so the rebased commits went to a new branch, `worktree-64-dispute-exit-and-query-block-r1` (head fea3815), as PR #65. #63 is closed as superseded.
+
+- 2026-11-06 main session: PR #65 CI green; Codex GitHub app on fea3815: no findings. Squash-merged to main as 7549361.

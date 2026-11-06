@@ -1,10 +1,10 @@
 # 59 — 验证器派单写进事件：第几次、模型列表、列表来源
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-06
+Branch: worktree-59-dispatch-event
 
 ## Goal
 
@@ -55,10 +55,23 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: done (PR #58 → 6380aa0)
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-59-dispatch-event`, commit d53dac6
+  - Implementation: `hooks.py` `dispatch_models()` returns (models, source); `dispatch` emits `verifier_dispatch(n, models, source)` after a successful `rewrite_dispatch`, right after `dispatches += 1`. A deadline denial returns earlier, so it writes no event.
+  - New tests in `tests/test_verifier_dispatch_event.py` (8): first dispatch (n=1, models match the prompt's list); again; fallback_all for an empty list; fallback_all for a read error; deadline denial writes no event; other agents write no event; `evals/process.py` and `evals/atif.py` give the same output with and without the event. Before the fix 5 failed, 3 passed; after, 8 passed.
+  - Existing assertions changed to include the new event: `tests/test_verifier_v2_hooks.py:425`; `tests/test_trial_deadline.py:115` (ticket 54's unit test, outside Authority; its `events == []` broke on the new event; it still asserts that no deadline event appears).
+  - `make check`: ruff and format clean; basedpyright 0 errors; 1860 passed, 1 skipped, 38 deselected. The baseline `make check` hit its 10-minute limit (7 worktrees testing at once); the targeted tests run before the fix serve as baseline.
+  - Real run: not done separately, as the ticket allows; it is covered by unified eval stage 1.
+  - `da-review main` (Codex): no actionable correctness issues.
+  - `eng:code-review main`, Standards: no hard violations. Not fixing: the new test file has its own copies of the helpers (every existing hook test file does the same); `remaining or 0.0` exists only for the type checker.
+  - `eng:code-review main`, Spec: every acceptance item has a test; no scope creep. Not fixing: an empty list prints as "(none)" in the prompt and as `[]` in the event, with the same meaning; the process test's assertion that the paths differ only checks the fixture layout.
+- 2026-11-06 main session: accepted the edit to `tests/test_trial_deadline.py` outside Authority. It is not an acceptance test, the new event broke it, and it keeps its original intent.
+
+- 2026-11-06 main session: PR #58 CI green; Codex GitHub app (`@codex review`) on d53dac6: no findings. Squash-merged to main as 6380aa0.

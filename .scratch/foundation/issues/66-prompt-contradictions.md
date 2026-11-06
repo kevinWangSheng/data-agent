@@ -1,10 +1,10 @@
 # 66 — 提示词里的矛盾：`profiles.yml`、已删的 `verify_model_values`
 
-Status: ready-for-agent
+Status: done
 Blocked by: 59, 64
 Spec: ../../../docs/adr/0008-change-acceptance.md（Update 2026-11-06 的补充）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-06 (filled in by the main session; the worktree session could not write the main checkout)
+Branch: worktree-66-prompt-contradictions
 
 ## Goal
 
@@ -53,10 +53,23 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: done (PR #66 → d8eb6a9)
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-06 ticket agent (claude-opus-5-5), branch `worktree-66-prompt-contradictions`: 0efaa31, 5449562
+  - Changes:
+    - DBT_PROMPT (`agent.py:139`) now reads "Do not edit an existing `profiles.yml`; create one when the task asks for it." The `DBT_PROMPT_BEFORE` copy in `tests/test_task_file.py` matches.
+    - SKILL.md: the `### verify_model_values` section is removed. The modification note at the top (the model sees it) now says "the Tools section lists only tools data-agent registers", naming no removed tool, and still records the upstream modification.
+    - `dispatch.py:12-13` and `hooks.py:279-280`: comment wording only ("verifier" is the only name left since ticket 47).
+  - Tests: 2 new in `tests/test_dbt_skills.py`, both failing before the change; after it, test_dbt_skills + test_task_file give 65 passed. `grep -rn "until ticket 47" src` and `grep -rn verify_model_values skills` return nothing. `make check`: 1934 passed, 1 skipped, 38 deselected. No real run, per the ticket (covered by unified eval stage 1).
+  - `da-review main`: no findings.
+  - `eng:code-review`, Spec: the header sentence is reworded (5449562); otherwise it matches Acceptance and Authority, with no ADR-0005 issue.
+  - `eng:code-review`, Standards: "tools (map_columns)" fixed. Not fixing: the duplicated `DBT_PROMPT.format` in two tests (the existing pattern).
+  - Follow-ups outside Authority: `agent_type == REWRITTEN_SUBAGENT` at `hooks.py:286/:290` is always true now that only "verifier" is left (dead guard); the `verify_model_values` code in `verifier_tools.py:720+` is dead (already a known limitation in ADR-0008 Update 2026-11-06: "`verify_values` 死代码"). Tidy-up comes after the eval.
+
+- 2026-11-06 main session: PR #66 CI green; Codex GitHub app on 5449562: no findings. Squash-merged to main as d8eb6a9.
