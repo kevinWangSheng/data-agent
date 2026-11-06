@@ -1,6 +1,6 @@
 # 56 — 评测并发改回 3，DuckDB 设内存和临时文件上限，memory.log 多记 CPU 与压力
 
-Status: in-review
+Status: done
 Blocked by: —（58 done；服务器只读检查已跑，见 Comments；数值已由人定，见下）
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§7）
 Claimed by: claude-opus-5-5 (worktree 56-concurrency-duckdb-limits)
@@ -79,7 +79,7 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Attempts: 1
 - Review rounds: 1（da-review 跑了 2 次，第 1 次撞时限无结论）
 - Model spend: $0
-- Outcome: 已实现，branch `worktree-56-concurrency-duckdb-limits`（163191b、4075e30）；cross-sell 真实查询待主会话服务器运行
+- Outcome: done（PR #57 → bfeef47）；服务器 t56-real cross-sell full 1/1，无内存或临时文件超限报错
 - Human review minutes: —
 
 ## Comments
@@ -103,3 +103,9 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
   - 没跑：工单 50 的 cross-sell 参考 SQL。本地没有真的 `retail.duckdb`（data-agent-refs 里只是 134 字节的 LFS 指针），留给主会话的服务器运行（cross-sell full × 1）；若报 Out of Memory 或临时文件超限，按停止条件交回人重定数值。
   - 审查 1 `da-review main`：第 1 次撞 20 分钟后台时限，无结论；第 2 次（HEAD 4075e30）无问题。
   - 审查 2 `eng:code-review main`（Standards + Spec，新上下文）：无硬性违规、无遗漏、无越权。已修（4075e30）：PSI 读取的 `2>/dev/null` 放到输入重定向前，没有 PSI 的内核不再每 5 s 往 memory.log 写报错；循环变量 `r` 改名 `resource`；测试 docstring 不再重复宿主机大小的理由。不修：测试断言字面值而不是常量（要验证 DuckDB 按二进制单位解析）；字段说明留在脚本头（验收要求"脚本头注释"）；没有 Swap 行时 `load=` 前多一个空格，无害。
+
+- 2026-11-06 主会话：PR #57 CI 绿；Codex GitHub app 审查 4075e30（`@codex review` 触发），`has_any_findings: false`。squash 合入 main → bfeef47。
+  - 服务器真实运行 `t56-real`（bfeef47）：`scripts/da-remote start t56-real -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task dbt-customer-cross-sell-insights --out runs/t56-real --budget 2 --config full --trials 1`：exit 0，reward 1（1/1），实际价 $0.3811（含冒烟 $0.1030，都在高峰）。trial 墙钟 1025 s，验证器墙钟 521 s，工具超时 0 次；`compare_by_key` p50 4.8 s，`query_database` p50 0.7 s。
+  - 上限：取回的整份运行目录里搜 "out of memory"、"max_temp_directory_size"，0 处。
+  - `memory.log`：每个采样有 `swap_used_mb`/`swap_total_mb`、`load=`、`psi_cpu`/`psi_memory`/`psi_io` 三行、每个容器的 CPU%（例：`dbt-customer-cross-sell-insights__tu7fz8y__env-main-1 75.66% 579.6MiB / 7.754GiB`）。宿主机峰值 1867/7940 MB。
+  - 同时运行的 trial：冒烟和正式 trial 先后各 1 个，没有超过 3（本次只有 1 题 × 1，并发 3 的上限这次没被压到）。
