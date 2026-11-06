@@ -121,6 +121,28 @@ def test_dev_report_has_process_metrics_per_task(tmp_path: Path) -> None:
     assert process["per_task"]["t1"]["cost_usd"] == pytest.approx(1.5)
 
 
+def test_dev_report_has_the_gate_metrics(tmp_path: Path) -> None:
+    """Ticket 67: the dev `process` section carries the stage-1 gate's means per trial and each
+    task's gate counts."""
+    job = tmp_path / "job"
+    denied = {"type": "tool_end", "is_error": True, "content": "PreToolUse:Bash hook error: no"}
+    trials = (
+        ("t1__a", [denied, denied, denied]),
+        ("t1__b", [{"type": "ended_disputed"}]),
+        ("t1__c", [{"type": "result", "subtype": "success"}]),
+    )
+    for name, events in trials:
+        write_trial(job, name, {"verifier_result": {"rewards": {"reward": 1.0}}})
+        directory = job / name / "agent" / "events"
+        directory.mkdir(parents=True)
+        (directory / "run-1.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    process = report(job, tmp_path)["process"]
+    gate, task = process["gate"], process["per_task"]["t1"]
+    assert (gate["trials"], gate["guard_denials"]) == (3, 1.0)
+    assert gate["ended_disputed"] == pytest.approx(1 / 3)
+    assert (task["guard_denials"], task["ended_disputed"], task["verifier_dispatches"]) == (3, 1, 0)
+
+
 def test_a_usage_limit_is_rerun_not_scored(tmp_path: Path) -> None:
     """The account ran out (Harbor does not retry it); that is no agent failure to score as 0."""
     job = tmp_path / "job"
