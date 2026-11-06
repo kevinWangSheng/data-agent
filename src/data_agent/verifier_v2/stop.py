@@ -13,6 +13,7 @@ from data_agent.verifier_v2.project import (
     model_config,
     model_files,
     project_config,
+    pure_macros,
     read_text,
     referenced_models,
 )
@@ -104,9 +105,13 @@ def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path)
     changed models downstream of one of these (`downstream_of`): a model's fingerprint covers
     only its own files, so an upstream edit leaves it unchanged. Empty when none."""
     files: dict[str, Path] = {}
+    pure: dict[str, frozenset[str]] = {}  # model -> its project's pure macros
     for project in dbt_projects(workspace):
-        for name, path in model_files(project).items():
-            files.setdefault(name, path)
+        config = project_config(project)
+        macros = pure_macros(project, config)
+        for name, path in model_files(project, config).items():
+            if name not in files:
+                files[name], pure[name] = path, macros
     again = {reason["model"] for reason in stop_decision(state, workspace, snapshot)["reasons"]}
     again |= {
         model
@@ -115,7 +120,7 @@ def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path)
     }
     if not again:
         return []
-    refs = {model: referenced_models(read_text(path)) for model, path in files.items()}
+    refs = {model: referenced_models(read_text(path), pure[model]) for model, path in files.items()}
     downstream = downstream_of(again, refs) & set(changed_models(workspace, snapshot))
     return sorted(again | downstream)
 

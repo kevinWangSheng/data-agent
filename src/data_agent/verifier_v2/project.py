@@ -296,15 +296,62 @@ LITERAL_CALL_RE = re.compile(
 )
 
 
-def referenced_models(sql: str) -> set[str] | None:
+def referenced_models(sql: str, pure: frozenset[str] = frozenset()) -> set[str] | None:
     """The model names a model's Jinja passes to `ref()`; None when its Jinja calls anything
-    else (a macro, `ref(var('x'))`, `adapter.dispatch(...)`), which could reach a model this
-    cannot see."""
+    else than those and the project macros in `pure` (`pure_macros`): another macro,
+    `ref(var('x'))`, `adapter.dispatch(...)` could reach a model this cannot see."""
     sql = JINJA_COMMENT_RE.sub("", sql)
-    for block in JINJA_BLOCK_RE.findall(sql):
-        if "(" in LITERAL_CALL_RE.sub("", block):
-            return None
+    called = _jinja_calls(sql)
+    if called is None or not called <= pure:
+        return None
     return {second or first for first, second in REF_CALL_RE.findall(sql)}
+
+
+# A call by bare name; `pkg.m(` and `x.upper(` are not (the name follows a dot).
+BARE_CALL_RE = re.compile(r"(?<![\w.])(\w+)\s*\(")
+MACRO_RE = re.compile(
+    rf"\{{%-?\s*macro\s+(\w+)\s*\({_ARGS}\)\s*-?%\}}(.*?)\{{%-?\s*endmacro\s*-?%\}}", re.DOTALL
+)
+# Words in a macro body that can reach a model or the database (ticket 60).
+REACHING_RE = re.compile(r"\b(?:ref|adapter|dispatch|run_query|graph)\b")
+
+
+def _jinja_calls(text: str) -> set[str] | None:
+    """The names the Jinja in `text` (comments removed) calls, besides the literal calls
+    `LITERAL_CALL_RE` matches; None when some call is not by bare name (`pkg.m(...)`,
+    `x[0](...)`, a parenthesis that is no call)."""
+    names: set[str] = set()
+    for block in JINJA_BLOCK_RE.findall(text):
+        rest = LITERAL_CALL_RE.sub("", block)
+        found = BARE_CALL_RE.findall(rest)
+        if rest.count("(") != len(found):
+            return None
+        names.update(found)
+    return names
+
+
+def pure_macros(project: Path, config: dict[str, Any] | None = None) -> frozenset[str]:
+    """The macros under the project's own macro-paths (not `dbt_packages/`) that cannot reach a
+    model: the body, Jinja comments removed, names none of `ref`, `adapter`, `dispatch`,
+    `run_query`, `graph`, and every macro it calls is one of these (the largest such set). A
+    name defined twice counts only when every definition does. Read from the files each call."""
+    config = project_config(project) if config is None else config
+    calls: dict[str, set[str] | None] = {}
+    for directory in resource_dirs(config, "macro-paths", RESOURCE_PATHS["macro-paths"]):
+        for path in files_under(project, directory, (".sql",)):
+            for name, body in MACRO_RE.findall(JINJA_COMMENT_RE.sub("", read_text(path))):
+                called = None if REACHING_RE.search(body) else _jinja_calls(body)
+                if name in calls:
+                    known = calls[name]
+                    called = None if known is None or called is None else known | called
+                calls[name] = called
+    candidates = {name: called for name, called in calls.items() if called is not None}
+    pure = set(candidates)
+    while True:
+        kept = {name for name in pure if candidates[name] <= pure}
+        if kept == pure:
+            return frozenset(pure)
+        pure = kept
 
 
 def _collect(node: dict[str, Any], values: dict[str, Any]) -> None:
