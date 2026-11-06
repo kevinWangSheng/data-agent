@@ -422,7 +422,7 @@ async def test_subagent_stop_settles_its_dispatch_even_when_recording_fails(
     monkeypatch.setattr("data_agent.verifier_v2.hooks.parse_report", unreadable)
     await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
     monkeypatch.undo()
-    assert [e["type"] for e in events] == ["error", "verifier_end"]
+    assert [e["type"] for e in events] == ["verifier_dispatch", "error", "verifier_end"]
     (workspace / "project" / "models" / "alpha.sql").write_text("SELECT 3 AS x\n")
     await call(hooks, "PreToolUse", **VERIFIER)
     await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))

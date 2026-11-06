@@ -4,7 +4,8 @@
   dispatches so the first one is the template alone, and fingerprints the models as dispatched
   (the main agent may keep editing while the verifier runs in the background). The first
   dispatch lists every changed model; a later one only those to verify again
-  (`redispatch_models`), or every changed model when there are none.
+  (`redispatch_models`), or every changed model when there are none. Each rewritten dispatch
+  records `verifier_dispatch`: its number `n`, the `models` listed, and their `source`.
 - SubagentStop: records a verifier call as `verifier_end` (its report, the parsed checks, the
   turns and tool calls from its transcript) and feeds the v2 verifier's report into the Stop
   state, against the dispatch-time fingerprints.
@@ -27,7 +28,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from claude_agent_sdk import HookContext, HookInput, HookJSONOutput, HookMatcher
 from claude_agent_sdk.types import HookEvent
@@ -45,6 +46,9 @@ from data_agent.verifier_v2.stop import (
     stop_decision,
 )
 from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES, Emit
+
+# Where a verifier dispatch's model list came from (the `verifier_dispatch` event, ticket 59).
+type DispatchSource = Literal["first", "again", "fallback_all"]
 
 MAX_BLOCKS = 2
 # How many verifier dispatches may await a report before the oldest is presumed lost.
@@ -101,16 +105,18 @@ def run_hooks(
     def failed(hook: str, exc: Exception) -> None:
         emit("error", source="verifier_v2", hook=hook, error=f"{exc!r}")
 
-    def dispatch_models() -> list[str]:
+    def dispatch_models() -> tuple[list[str], DispatchSource]:
         """Every changed model for the first dispatch; after it, the ones to verify again
-        (ticket 57), or every changed model again when there are none or they cannot be read."""
-        if dispatches > 0:
-            try:
-                if again := redispatch_models(state, workspace, snapshot):
-                    return again
-            except (OSError, ValueError) as exc:
-                failed("PreToolUse", exc)
-        return changed_models(workspace, snapshot)
+        (ticket 57), or every changed model again when there are none or they cannot be read.
+        With the list, where it came from (ticket 59)."""
+        if dispatches == 0:
+            return changed_models(workspace, snapshot), "first"
+        try:
+            if again := redispatch_models(state, workspace, snapshot):
+                return again, "again"
+        except (OSError, ValueError) as exc:
+            failed("PreToolUse", exc)
+        return changed_models(workspace, snapshot), "fallback_all"
 
     async def dispatch(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
@@ -130,16 +136,18 @@ def run_hooks(
         if tool_name != AGENT_TOOL or tool_input.get("subagent_type") != REWRITTEN_SUBAGENT:
             return {}
         projects = dbt_projects(workspace)
+        models, source = dispatch_models()
         output = rewrite_dispatch(
             tool_name,
             tool_input,
             task_file=task_file,
             project_dir=projects[0] if projects else workspace,
-            models=dispatch_models(),
+            models=models,
             dispatches_so_far=dispatches,
         )
         if output:
             dispatches += 1
+            emit("verifier_dispatch", n=dispatches, models=models, source=source)
             try:
                 dispatched.append(model_hashes(workspace))
             except (OSError, ValueError) as exc:
