@@ -1,5 +1,6 @@
 """The Stop state (spec "Stop 钩子"): per model, the check statuses from the last report that
-named it and the hash of its SQL file at that time. `stop_decision` applies the three rules.
+named it and its fingerprint at that time (`model_hashes`: its SQL file, its dbt_project.yml
+configuration and the project macros it calls). `stop_decision` applies the three rules.
 """
 
 import hashlib
@@ -14,7 +15,6 @@ from data_agent.verifier_v2.project import (
     model_files,
     project_config,
     project_macros,
-    pure_macros,
     read_text,
     referenced_models,
 )
@@ -22,7 +22,7 @@ from data_agent.verifier_v2.report import parse_report
 
 RULES = {
     1: "changed since the snapshot but never named in a verifier report",
-    2: "changed after the last report that named it",
+    2: "it or a project macro it calls changed after the last report that named it",
     3: "the last report that named it has a FAIL",
 }
 
@@ -109,12 +109,13 @@ def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path)
     names (never reported, changed since its report, FAIL in it), every model whose last report
     has a NEEDS_INFO (it does not block, but the main agent dispatches again for it), and the
     changed models downstream of one of these (`downstream_of`): a model's fingerprint covers
-    only its own files, so an upstream edit leaves it unchanged. Empty when none."""
+    its own files and the macros it calls, not the models it refs, so an upstream edit leaves
+    it unchanged. Empty when none."""
     files: dict[str, Path] = {}
     pure: dict[str, frozenset[str]] = {}  # model -> its project's pure macros
     for project in dbt_projects(workspace):
         config = project_config(project)
-        macros = pure_macros(project, config)
+        macros = project_macros(project, config).pure()
         for name, path in model_files(project, config).items():
             if name not in files:
                 files[name], pure[name] = path, macros

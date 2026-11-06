@@ -298,11 +298,11 @@ LITERAL_CALL_RE = re.compile(
 
 def referenced_models(sql: str, pure: frozenset[str] = frozenset()) -> set[str] | None:
     """The model names a model's Jinja passes to `ref()`; None when its Jinja calls anything
-    else than those and the project macros in `pure` (`pure_macros`): another macro,
+    else than those and the project macros in `pure` (`ProjectMacros.pure`): another macro,
     `ref(var('x'))`, `adapter.dispatch(...)` could reach a model this cannot see."""
     sql = JINJA_COMMENT_RE.sub("", sql)
-    called = _jinja_calls(sql)
-    if called is None or not called <= pure:
+    called, all_bare = _bare_calls(sql)
+    if not all_bare or not called <= pure:
         return None
     return {second or first for first, second in REF_CALL_RE.findall(sql)}
 
@@ -312,7 +312,7 @@ BARE_CALL_RE = re.compile(r"(?<![\w.])(\w+)\s*\(")
 MACRO_RE = re.compile(
     rf"\{{%-?\s*macro\s+(\w+)\s*\({_ARGS}\)\s*-?%\}}(.*?)\{{%-?\s*endmacro\s*-?%\}}", re.DOTALL
 )
-# Words in a macro body that can reach a model or the database (ticket 60).
+# Words in a macro body that can reach a model or the database.
 REACHING_RE = re.compile(r"\b(?:ref|adapter|dispatch|run_query|graph)\b")
 
 
@@ -321,19 +321,13 @@ def _bare_calls(text: str) -> tuple[set[str], bool]:
     literal calls `LITERAL_CALL_RE` matches, and whether every call is one of those (not
     `pkg.m(...)`, `x[0](...)`, a parenthesis that is no call)."""
     names: set[str] = set()
-    every = True
+    all_bare = True
     for block in JINJA_BLOCK_RE.findall(text):
         rest = LITERAL_CALL_RE.sub("", block)
         found = BARE_CALL_RE.findall(rest)
-        every = every and rest.count("(") == len(found)
+        all_bare = all_bare and rest.count("(") == len(found)
         names.update(found)
-    return names, every
-
-
-def _jinja_calls(text: str) -> set[str] | None:
-    """`_bare_calls`' names, None when some call is not by bare name."""
-    names, every = _bare_calls(text)
-    return names if every else None
+    return names, all_bare
 
 
 @dataclass(frozen=True)
@@ -383,17 +377,12 @@ def project_macros(project: Path, config: dict[str, Any] | None = None) -> Proje
             text = JINJA_COMMENT_RE.sub("", read_text(path))
             for match in MACRO_RE.finditer(text):
                 name, body = match.groups()
-                names, every = _bare_calls(body)
+                names, all_bare = _bare_calls(body)
                 definitions.setdefault(name, []).append(match.group(0))
                 calls.setdefault(name, set()).update(names)
-                if REACHING_RE.search(body) or not every:
+                if REACHING_RE.search(body) or not all_bare:
                     opaque.add(name)
     return ProjectMacros(definitions, calls, frozenset(opaque))
-
-
-def pure_macros(project: Path, config: dict[str, Any] | None = None) -> frozenset[str]:
-    """`ProjectMacros.pure` of the project's macros."""
-    return project_macros(project, config).pure()
 
 
 def _collect(node: dict[str, Any], values: dict[str, Any]) -> None:

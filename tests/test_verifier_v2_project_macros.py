@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from data_agent.verifier_v2.project import project_config, pure_macros, referenced_models
+from data_agent.verifier_v2.project import project_config, project_macros, referenced_models
 from data_agent.verifier_v2.stop import model_hashes, redispatch_models
 
 PURE = """\
@@ -51,7 +51,7 @@ def project(root: Path, models: dict[str, str], macros: dict[str, str] | None = 
 
 
 def macros_of(root: Path) -> frozenset[str]:
-    return pure_macros(root, project_config(root))
+    return project_macros(root, project_config(root)).pure()
 
 
 def test_pure_macros_are_those_that_cannot_reach_a_model(tmp_path: Path) -> None:
