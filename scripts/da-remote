@@ -20,6 +20,9 @@
 #        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout;
 #                                                 an ablate run brings back its summary only, unless
 #                                                 all its tasks are in the server's dev list
+#        da-remote exec -- <command> [<args>]     run one command in the server's repo dir, each
+#                                                 argument as given (no shell: use bash -c for one);
+#                                                 output masked, its exit code returned
 # Env:   DA_REMOTE_HOST (default: da-server), DA_REMOTE_DIR (repo path on the server, default:
 #        ~/data-agent), DA_REMOTE_REPO (clone URL, default: the GitHub repo)
 set -euo pipefail
@@ -697,6 +700,18 @@ EOF
   fi
 }
 
+exec_cmd() {
+  # The words travel quoted inside the script and are expanded once there, so the server's shell
+  # never re-splits them. stdin is closed: the command must not read the rest of the script.
+  run_script ARGS "$(printf '%q ' "$@")" <<'EOF'
+cd "$DIR" 2>/dev/null || {
+  echo "exec: no repo dir at $DIR; run da-remote setup first"
+  exit 1
+}
+eval "exec $ARGS" </dev/null
+EOF
+}
+
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
 case "$cmd" in
@@ -724,6 +739,11 @@ case "$cmd" in
     [ $# -eq 1 ] || usage
     check_name "$1"
     "$cmd" "$1"
+    ;;
+  exec)
+    if [ $# -lt 2 ] || [ "$1" != -- ]; then usage; fi
+    shift
+    exec_cmd "$@"
     ;;
   *) usage ;;
 esac

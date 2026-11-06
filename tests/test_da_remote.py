@@ -962,3 +962,45 @@ def test_a_dab_run_gets_dab_packages_and_database_settings(env: Env):
     ]
     env.finish(0)
     assert "env loaded: dab" in (env.repo / "runs" / "smoke" / "run.log").read_text()
+
+
+def test_exec_masks_server_addresses_in_the_command_output(env: Env):
+    env.repo.mkdir(parents=True)
+    proc = env.run("exec", "--", "bash", "-c", "echo inet 192.0.2.10; echo inet6 2001:db8::5 >&2")
+    assert proc.returncode == 0
+    assert "192.0.2.10" not in proc.stdout + proc.stderr
+    assert "2001:db8::5" not in proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == ["inet <server>", "inet6 <server>"]
+
+
+@pytest.mark.parametrize("code", [1, 3, 42])
+def test_exec_returns_the_remote_exit_code(env: Env, code: int):
+    env.repo.mkdir(parents=True)
+    assert env.run("exec", "--", "bash", "-c", f"exit {code}").returncode == code
+
+
+def test_exec_args_arrive_verbatim_in_the_repo_dir(env: Env):
+    env.repo.mkdir(parents=True)
+    args = ["a b", "it's", 'say "hi"', "x; touch pwned", "$(touch pwned2)", "*", ""]
+    proc = env.run("exec", "--", "bash", "-c", 'pwd; printf "[%s]\\n" "$@"', "_", *args)
+    assert proc.returncode == 0, proc.stdout
+    lines = proc.stdout.splitlines()
+    assert lines[0] == str(env.repo)
+    assert lines[1:] == [f"[{a}]" for a in args]
+    for where in (env.local, env.server, env.repo):
+        assert not (where / "pwned").exists() and not (where / "pwned2").exists()
+
+
+def test_exec_without_the_repo_dir_runs_nothing(env: Env):
+    proc = env.run("exec", "--", "touch", "ran")
+    assert proc.returncode == 1
+    assert "setup" in proc.stdout
+    assert not (env.server / "ran").exists()
+
+
+@pytest.mark.parametrize("args", [["exec"], ["exec", "--"], ["exec", "ls"], ["exec", "ls", "--"]])
+def test_exec_usage_errors_exit_2_without_connecting(env: Env, args: list[str]):
+    proc = env.run(*args)
+    assert proc.returncode == 2
+    assert "usage" in proc.stderr
+    assert env.ssh_calls() == 0
