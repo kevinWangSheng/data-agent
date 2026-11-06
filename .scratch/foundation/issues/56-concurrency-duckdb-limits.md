@@ -1,7 +1,7 @@
 # 56 — 评测并发改回 3，DuckDB 设内存和临时文件上限，memory.log 多记 CPU 与压力
 
-Status: needs-info
-Blocked by: 58（da-remote exec）；之后主会话用 `da-remote exec` 跑服务器只读检查（命令见下）；之后人定 DuckDB 上限的数值
+Status: ready-for-agent
+Blocked by: —（58 done；服务器只读检查已跑，见 Comments；数值已由人定，见下）
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§7）
 Claimed by: —
 Branch: —
@@ -15,6 +15,15 @@ Branch: —
 - 并发：`evals/configs/data-eng-bench-duckdb.data-agent.yaml:15` 的 `n_concurrent_trials` 从 4 改成 3，和 `docs/plan.md:145-151` 一致。
 - DuckDB 上限：先跑服务器只读检查，再由人定 `memory_limit` 和 `max_temp_directory_size` 的数值（起点 2 GB 和 4 GB）。数值定下后补进本节，Status 改为 `ready-for-agent`。
 - `scripts/da-remote` 的采样（`:498-520`）加上 `docker stats` 的 CPUPerc、`free` 的 Swap 行、`/proc/loadavg`、`/proc/pressure/{cpu,memory,io}`。
+
+## 数值与范围（2026-11-05，grilling Q1–Q5，人都答 yes）
+
+- `memory_limit = '2GiB'`、`max_temp_directory_size = '4GiB'`（写二进制单位；DuckDB 的 `GB` 按 1000 进位）。依据：宿主机 7.7 GB；单 trial 所有进程峰值 1762 MiB；工单 50 的几 GB 溢写来自已修掉的坏执行计划；磁盘剩 64G。
+- 写成 `src/data_agent/gateway.py` 的模块常量，在 `connect_duckdb` 的 config 里传入（`lock_configuration` 之前生效）；注释写明来源（本工单服务器检查）。不加环境变量开关。
+- 生效范围：所有经网关的连接，含 v2 验证工具的 session（`gateway.py:164`）。上限按实例算，并行多个连接各一份。
+- 已知限制：dbt 进程不设上限（用题目镜像的 `profiles.yml`，默认约 6.2 GiB；改它与工单 49 冲突）。
+- threads 不动（DuckDB 按 cgroup 取 2）。
+- 合入后真实运行（主会话，小额）：服务器 cross-sell full × 1；查无 "Out of Memory" / 临时文件超限报错，`memory.log` 有 CPU%、Swap、PSI 字段，同时运行 trial ≤ 3。
 
 ## 服务器只读检查（编排会话做，结果贴到 Comments）
 
