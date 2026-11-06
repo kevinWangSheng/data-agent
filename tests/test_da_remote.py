@@ -849,6 +849,17 @@ def test_the_loader_wrappers_leave_the_mcp_stream_alone(bench: Env, tool: str, c
     assert Path(f"{out}.stdin").read_text() == ""
 
 
+def test_the_dab_mongo_runs_no_server_javascript_and_restarts(bench: Env):
+    # A `$where` query once crashed mongod in its JS engine (SIGILL) and nothing brought it back.
+    assert bench.run("benchmarks").returncode == 0
+    mongo = next(c for c in calls(bench, "docker") if c.startswith("run ") and "mongo:8" in c)
+    image_at = mongo.split().index("mongo:8")
+    docker_args, mongod_args = mongo.split()[:image_at], mongo.split()[image_at + 1 :]
+    assert "--restart unless-stopped" in " ".join(docker_args)
+    assert "--noscripting" in mongod_args
+    assert "--wiredTigerCacheSizeGB 0.5" in " ".join(mongod_args)
+
+
 def test_benchmarks_skips_what_is_ready(bench: Env):
     assert bench.run("benchmarks").returncode == 0
     settings = bench.server / ".config" / "data-agent" / "dab.env"

@@ -451,8 +451,10 @@ container() { # <name> <docker run args...>
 export POSTGRES_PASSWORD="$PG_PASSWORD" # docker run -e takes it from here, off the command line
 container "$PG_CONTAINER" -p "127.0.0.1:$PG_PORT:5432" -e POSTGRES_PASSWORD \
   -v da-dab-pgdata:/var/lib/postgresql/data -v "$DAB:$DAB:ro" postgres:17 || exit 1
-container "$MONGO_CONTAINER" -p "127.0.0.1:$MONGO_PORT:27017" -v da-dab-mongodata:/data/db \
-  -v "$DAB:$DAB:ro" mongo:8 --wiredTigerCacheSizeGB 0.5 || exit 1
+# --noscripting: a $where query once killed mongod in its JS engine (SIGILL); now it is an error.
+container "$MONGO_CONTAINER" --restart unless-stopped -p "127.0.0.1:$MONGO_PORT:27017" \
+  -v da-dab-mongodata:/data/db -v "$DAB:$DAB:ro" mongo:8 --wiredTigerCacheSizeGB 0.5 \
+  --noscripting || exit 1
 
 for _ in $(seq 30); do
   probe=$(db_probe 2>&1) && code=0 || code=$?
