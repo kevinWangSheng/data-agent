@@ -1,10 +1,10 @@
 # 58 — `da-remote exec`：透传任意命令到服务器，输出照样遮掉地址
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: —（用户 2026-11-05 决定：不放开直接 ssh，改给 da-remote 加透传子命令）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 58-da-remote-exec)
+Branch: worktree-58-da-remote-exec
 
 ## Goal
 
@@ -47,10 +47,33 @@ Status `ready-for-human`，Comment 写明试了什么、哪里失败、分支名
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0
-- Outcome: —
+- Outcome: implemented; main-session real run done; PR pending
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-05 ticket agent (commits a95f9e5, c674ee0):
+  - Tests: `uv run pytest tests/test_da_remote.py -q -k 'exec or usage'` → 22 passed. `make check` → 1851 passed, 1 skipped (shellcheck isn't installed, so its test skipped; `uvx --from shellcheck-py shellcheck scripts/da-remote` was clean). New tests cover:
+    - IPv4 and IPv6 masking (192.0.2.10 and 2001:db8::5), including stderr.
+    - Remote exit codes 1, 3 and 42 coming back unchanged.
+    - Arguments with spaces, quotes, `;`, `$(...)`, `*` and `""` arriving verbatim and running in `DA_REMOTE_DIR`.
+    - The `~` default directory.
+    - A command word starting with `-`.
+    - A missing repo directory (exit 1).
+    - Missing `--` or command: exit 2.
+  - `da-review main`: no findings.
+  - `eng:code-review main`:
+    - Fixed in c674ee0: a command word starting with `-` was taken as an option to the shell's `exec` (now uses `exec --`, with a test that failed before the fix); test for the `~` default; header comment; usage and `docs/setup.md` note that stdin is closed and stderr is mixed into stdout, and that `exec` does not loosen the secret or holdout rules.
+    - Not fixed:
+      - The repo-directory check is duplicated with `start`'s. Two copies is small, so no shared helper.
+      - Exit 255 can mean either ssh failed or the command exited 255. That comes from ssh and is documented.
+      - The server-side read risk is controlled by the AGENTS.md rules (the user chose exec over direct ssh on 2026-11-05).
+- 2026-11-05 main-session real run (worktree script, installed copy not overwritten):
+  - `da-remote exec -- git log --oneline -1` → `b693d9a Merge remote-tracking branch 'origin/main' into worktree-47-verifier-prompt-skill-config`, rc=0. The first call printed nothing (rc=0); the second and later calls printed normally. Cause not confirmed (未确认).
+  - `da-remote exec -- free -m` → `Mem: 7940 total / 1040 used / 6900 available; Swap: 4095 / 527 used`, rc=0.
+  - `da-remote exec -- bash -c 'exit 7'` → rc=7.
+  - No addresses leaked in any output.
+  - Problem found: after about 12 ssh connections in a short burst, the server refused every connection with `Connection closed by <server> port 22` (rc=255). The existing `da-remote check` was refused the same way, so this is a server-side connection limit (MaxStartups or fail2ban, 未确认) and not a defect in exec. Ticket 56's read-only checks should be combined into one `exec -- bash -c '…'` call.
