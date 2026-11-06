@@ -27,7 +27,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from evals.compare import percentile_interval
 from evals.dab import _import_from
@@ -200,15 +200,25 @@ def render(name: str, data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def paired_bootstrap(
-    baseline: Score, candidate: Score, seed: int, n_boot: int
-) -> dict[str, float | bool]:
+class Comparison(TypedDict):
+    """Candidate minus baseline, in points; no interval (None) when it cannot be estimated."""
+
+    diff: float
+    ci_low: float | None
+    ci_high: float | None
+    significant: bool
+
+
+def paired_bootstrap(baseline: Score, candidate: Score, seed: int, n_boot: int) -> Comparison:
     """Candidate minus baseline Pass@1, in percentage points, with a 95% percentile interval.
 
     As `evals.compare`: queries are paired, and the difference is significant only when the
     interval excludes 0. Each resample draws queries with replacement within each dataset, so
     every dataset is in every resample and the statistic stays DAB's Pass@1 (mean over datasets
     of the per-query mean).
+
+    When every dataset has 1 query, every resample equals the difference itself; there is no
+    interval (`ci_low` and `ci_high` are None) and the difference is not significant.
     """
     base, cand = baseline.query_rates(), candidate.query_rates()
     if set(base) != set(cand):
@@ -219,12 +229,21 @@ def paired_bootstrap(
     for key in base:
         diffs.setdefault(key[0], []).append(100.0 * (cand[key] - base[key]))
     groups = [diffs[dataset] for dataset in sorted(diffs)]
+    diff = statistics.fmean(statistics.fmean(g) for g in groups)
+    if all(len(g) == 1 for g in groups):
+        return {"diff": diff, "ci_low": None, "ci_high": None, "significant": False}
     rng = random.Random(seed)
     boots = [
         statistics.fmean(statistics.fmean(rng.choices(g, k=len(g))) for g in groups)
         for _ in range(n_boot)
     ]
-    return percentile_interval(statistics.fmean(statistics.fmean(g) for g in groups), boots)
+    interval = percentile_interval(diff, boots)
+    return {
+        "diff": diff,
+        "ci_low": interval["ci_low"],
+        "ci_high": interval["ci_high"],
+        "significant": bool(interval["significant"]),
+    }
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -303,11 +322,13 @@ def run_cli(args: argparse.Namespace) -> int:
         print(render(name, data[name]))
     if comparison is not None:
         data["comparison"] = comparison
-        print(
-            f"candidate - baseline: {comparison['diff']:+.2f} points "
-            f"(95% CI {comparison['ci_low']:+.2f} to {comparison['ci_high']:+.2f}; "
-            f"{'significant' if comparison['significant'] else 'not significant'})"
-        )
+        low, high = comparison["ci_low"], comparison["ci_high"]
+        if low is None or high is None:
+            interval = "every dataset has 1 query: too few to estimate an interval"
+        else:
+            verdict = "significant" if comparison["significant"] else "not significant"
+            interval = f"95% CI {low:+.2f} to {high:+.2f}; {verdict}"
+        print(f"candidate - baseline: {comparison['diff']:+.2f} points ({interval})")
     path = args.report or args.out / "dab_score.json"
     path.write_text(json.dumps(data, indent=2) + "\n")
     print(f"report: {path}")
