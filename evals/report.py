@@ -184,6 +184,9 @@ MERGE_RECORD_KEYS = (
 )
 
 
+MERGE_HELP = "one job, or several jobs of one config to merge (evals.report.load_jobs)"
+
+
 def last_record(job: Path) -> dict[str, Any] | None:
     """The last run record of the job's OUT (`OUT/jobs/<config>` -> `OUT/records/*.json`)."""
     paths = sorted((job.parent.parent / "records").glob("*.json"))

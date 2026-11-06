@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from evals.process import job_metrics
-from evals.report import check_dev_list, is_infra_error, load_jobs
+from evals.report import MERGE_HELP, check_dev_list, is_infra_error, load_jobs
 
 SIDES = ("baseline", "candidate")
 
@@ -35,9 +35,8 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser = commands.add_parser(
         "diverge", help="dev set: paired per-task divergence and process metrics of two jobs"
     )
-    merge = "one job, or several jobs of one config to merge (evals.report.load_jobs)"
-    parser.add_argument("--baseline", type=Path, nargs="+", required=True, help=merge)
-    parser.add_argument("--candidate", type=Path, nargs="+", required=True, help=merge)
+    parser.add_argument("--baseline", type=Path, nargs="+", required=True, help=MERGE_HELP)
+    parser.add_argument("--candidate", type=Path, nargs="+", required=True, help=MERGE_HELP)
     parser.add_argument("--manifest", type=Path, required=True, help="its dev list is shown")
     parser.add_argument("--out", type=Path, required=True)
     parser.set_defaults(run=run)
@@ -61,7 +60,7 @@ def divergent_tasks(base: dict[str, Any], cand: dict[str, Any]) -> list[dict[str
     return rows
 
 
-def label(jobs: list[Path]) -> str:
+def side_label(jobs: list[Path]) -> str:
     """A side's name in the report: its jobs' directory names (the config, under ablate's
     `OUT/jobs/<config>`), each once, `+`-joined."""
     return "+".join(dict.fromkeys(job.name for job in jobs))
@@ -90,7 +89,7 @@ def divergence_report(baseline: list[Path], candidate: list[Path], dev: set[str]
     base_tasks, cand_tasks = (metrics[side]["per_task"] for side in SIDES)
     divergent = divergent_tasks(base_tasks, cand_tasks)
     return {
-        "labels": {"baseline": label(baseline), "candidate": label(candidate)},
+        "labels": {"baseline": side_label(baseline), "candidate": side_label(candidate)},
         "paired_tasks": len(set(base_tasks) & set(cand_tasks)),
         "unpaired_tasks": sorted(set(base_tasks) ^ set(cand_tasks)),
         "outside_dev_trials": {side: len(jobs[side]) - len(in_dev[side]) for side in SIDES},

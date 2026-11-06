@@ -10,6 +10,7 @@ from evals import ablate, accept, attribute, dab, dab_score, diverge, jaffle, sc
 from evals.compare import paired_bootstrap
 from evals.harbor import by_task, load_trials
 from evals.report import (
+    MERGE_HELP,
     TRIALS_PER_TASK,
     check_complete,
     load_jobs,
@@ -60,9 +61,6 @@ def cmd_report(args: argparse.Namespace) -> None:
         f"{args.split}: accuracy {report['accuracy']:.1f}% ± {report['accuracy_stderr']:.1f}% "
         f"over {report['n_trials']} trials -> {args.out}"
     )
-
-
-MERGE_HELP = "one job, or several jobs of one config to merge (evals.report.load_jobs)"
 
 
 def build_parser() -> argparse.ArgumentParser:

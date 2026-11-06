@@ -38,6 +38,7 @@ from evals.harbor import Trial, event_files, load_trials
 from evals.metrics import is_success
 from evals.process import job_metrics, timing_markdown
 from evals.report import (
+    MERGE_HELP,
     TRIALS_PER_TASK,
     check_complete,
     is_infra_error,
@@ -58,15 +59,14 @@ RECORD_KEYS = (("benchmark_commit", "benchmark commit"), ("machine", "machine"))
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     p = commands.add_parser("accept", help="ADR-0008: does a change pass on the dev set")
-    merge = "; several jobs of one config are merged (evals.report.load_jobs)"
     p.add_argument(
         "--old",
         type=Path,
         nargs="+",
         required=True,
-        help="job of the version before the change" + merge,
+        help=f"the version before the change: {MERGE_HELP}",
     )
-    p.add_argument("--new", type=Path, nargs="+", required=True, help="job of the change" + merge)
+    p.add_argument("--new", type=Path, nargs="+", required=True, help=f"the change: {MERGE_HELP}")
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--target", action="append", required=True, help="target task; repeatable")
     p.add_argument("--regression", type=Path, required=True, help="JSON list of dev task names")
