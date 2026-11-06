@@ -529,7 +529,9 @@ cd $(printf '%q' "$PWD") || exit 1
 # Container names can name holdout tasks, so the log stays out of a summary-only pull.
 while :; do
   echo "\$(date -u +%FT%TZ) \$(free -m 2>/dev/null | awk '/^Mem:/ {printf "used_mb=%s total_mb=%s ", \$3, \$2} /^Swap:/ {printf "swap_used_mb=%s swap_total_mb=%s", \$3, \$2}') load=\$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null | tr ' ' ,)"
-  for r in cpu memory io; do echo "  psi_\$r \$(tr '\n' ' ' </proc/pressure/\$r 2>/dev/null)"; done
+  for resource in cpu memory io; do
+    echo "  psi_\$resource \$(tr '\n' ' ' 2>/dev/null </proc/pressure/\$resource)"
+  done
   docker stats --no-stream --format '  {{.Name}} {{.CPUPerc}} {{.MemUsage}}' 2>/dev/null
   sleep 5
 done >>$(printf '%q' "$run/memory.log") 2>&1 &

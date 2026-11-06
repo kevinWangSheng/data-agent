@@ -35,8 +35,7 @@ def test_timestamptz_column_is_returned(tmp_path: Path) -> None:
 
 
 def test_connection_has_memory_and_temp_file_limits(tmp_path: Path) -> None:
-    """Without explicit limits DuckDB takes 80% of the container's memory (6.2 GiB) and 90% of free
-    disk for temp files, per instance; three concurrent trials would overrun the 7.7 GB host."""
+    """Every gateway connection carries the memory and spill caps (why: `DUCKDB_MEMORY_LIMIT`)."""
     db = tmp_path / "x.duckdb"
     duckdb.connect(str(db)).close()
     con = connect_duckdb(db)
