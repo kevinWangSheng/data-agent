@@ -9,7 +9,14 @@ from typing import Any
 from evals import ablate, accept, attribute, dab, dab_score, diverge, jaffle, scrub, spend
 from evals.compare import paired_bootstrap
 from evals.harbor import by_task, load_trials
-from evals.report import TRIALS_PER_TASK, check_complete, score, split_trials, write_report
+from evals.report import (
+    TRIALS_PER_TASK,
+    check_complete,
+    load_jobs,
+    score,
+    split_trials,
+    write_report,
+)
 from evals.sample import read_task_list, sample, task_difficulty
 
 
@@ -32,7 +39,7 @@ def cmd_score(args: argparse.Namespace) -> None:
 
 
 def cmd_compare(args: argparse.Namespace) -> None:
-    baseline, candidate = load_trials(args.baseline), load_trials(args.candidate)
+    baseline, candidate = load_jobs(args.baseline), load_jobs(args.candidate)
     if args.split:
         manifest = json.loads(args.manifest.read_text())
         baseline = split_trials(baseline, manifest, args.split, "the baseline")
@@ -47,12 +54,15 @@ def cmd_compare(args: argparse.Namespace) -> None:
 
 def cmd_report(args: argparse.Namespace) -> None:
     manifest = json.loads(args.manifest.read_text())
-    trials = load_trials(args.job_dir)
+    trials = load_jobs(args.job_dirs)
     report = write_report(trials, manifest, args.split, args.out, args.trials, args.manifest)
     print(
         f"{args.split}: accuracy {report['accuracy']:.1f}% ± {report['accuracy_stderr']:.1f}% "
         f"over {report['n_trials']} trials -> {args.out}"
     )
+
+
+MERGE_HELP = "one job, or several jobs of one config to merge (evals.report.load_jobs)"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,8 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_score)
 
     p = commands.add_parser("compare", help="paired per-task bootstrap of two jobs")
-    p.add_argument("--baseline", type=Path, required=True)
-    p.add_argument("--candidate", type=Path, required=True)
+    p.add_argument("--baseline", type=Path, nargs="+", required=True, help=MERGE_HELP)
+    p.add_argument("--candidate", type=Path, nargs="+", required=True, help=MERGE_HELP)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--n-boot", type=int, default=10000)
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
@@ -84,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_compare)
 
     p = commands.add_parser("report", help="report one split; holdout gets aggregates only")
-    p.add_argument("job_dir", type=Path)
+    p.add_argument("job_dirs", type=Path, nargs="+", metavar="job_dir", help=MERGE_HELP)
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--split", choices=("dev", "holdout"), required=True)
     p.add_argument("--out", type=Path, required=True)

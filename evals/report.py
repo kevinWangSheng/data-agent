@@ -7,12 +7,13 @@ metrics (evals.process) and where each trial's events live, for failure attribut
 
 import json
 from collections import Counter
+from collections.abc import Sequence
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from evals import spend
-from evals.harbor import Trial, by_task, last_event_file
+from evals.harbor import Trial, by_task, event_files, last_event_file, load_trials, version_header
 from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
 from evals.process import job_metrics
 
@@ -167,6 +168,118 @@ def check_complete(trials: list[Trial], label: str, trials_per_task: int) -> Non
         raise ValueError(
             f"{infra} infrastructure {noun} in the {label} trials; rerun those trials first"
         )
+
+
+# What the trials of merged jobs must share: from each event file's version header, and from the
+# last run record of each job's OUT (evals.ablate.make_record), with the labels errors use.
+MERGE_VERSION_KEYS = (
+    ("git_commit", "git commit"),
+    ("skill_version", "Skill version"),
+    ("config", "config"),
+)
+MERGE_RECORD_KEYS = (
+    ("benchmark_commit", "benchmark commit"),
+    ("machine", "machine"),
+    ("model", "model"),
+)
+
+
+def last_record(job: Path) -> dict[str, Any] | None:
+    """The last run record of the job's OUT (`OUT/jobs/<config>` -> `OUT/records/*.json`)."""
+    paths = sorted((job.parent.parent / "records").glob("*.json"))
+    return json.loads(paths[-1].read_text()) if paths else None
+
+
+def load_jobs(job_dirs: Sequence[Path]) -> list[Trial]:
+    """The trials of one config's jobs, merged as if run in one job (ticket 65); one job is read
+    as `load_trials` reads it.
+
+    Several jobs are merged only when no job is given twice and no trial name repeats (either
+    would count a trial twice), every trial that ran records the same code, Skill version and
+    config in its event files' version headers, and the last run records of the jobs' OUTs agree
+    on the benchmark commit (a clean one), machine and model. Trials with an infrastructure error
+    are not version-checked: they may end before the header, and scoring refuses them anyway.
+    Errors give counts only, so they name no holdout task.
+    """
+    if len(job_dirs) == 1:
+        return load_trials(job_dirs[0])
+    resolved = Counter(job.resolve() for job in job_dirs)
+    twice = sum(1 for n in resolved.values() if n > 1)
+    if twice:
+        raise ValueError(f"{twice} job directory(ies) are given more than once")
+    trials = sorted((t for job in job_dirs for t in load_trials(job)), key=lambda t: t.dir.name)
+    repeated = sum(1 for n in Counter(t.name for t in trials).values() if n > 1)
+    if repeated:
+        raise ValueError(
+            f"{repeated} trial name(s) appear in more than one of the {len(job_dirs)} jobs; "
+            "a trial is counted once"
+        )
+    check_same_versions(trials, len(job_dirs))
+    check_same_records(job_dirs)
+    return trials
+
+
+def check_same_versions(trials: list[Trial], n_jobs: int) -> None:
+    """Every trial that ran records one code, Skill version and config; errors give counts."""
+    keys = [key for key, _ in MERGE_VERSION_KEYS]
+    seen: dict[str, set[str]] = {key: set() for key in keys}
+    unversioned = 0
+    for trial in trials:
+        if is_infra_error(trial):
+            continue
+        headers = [version_header(events) for events in event_files(trial)]
+        if not headers or not all(
+            isinstance(h.get(k), str) and h[k] for h in headers for k in keys
+        ):
+            unversioned += 1
+            continue
+        for h in headers:
+            for key in keys:
+                seen[key].add(h[key])
+    if unversioned:
+        raise ValueError(
+            f"{unversioned} trial(s) of the {n_jobs} jobs have no version header with the git "
+            "commit, Skill version and config, so the jobs cannot be matched"
+        )
+    for key, label in MERGE_VERSION_KEYS:
+        if len(seen[key]) > 1:
+            raise ValueError(
+                f"the trials of the {n_jobs} jobs record {len(seen[key])} different {label} "
+                "values; merge only jobs of one version and config"
+            )
+
+
+def check_same_records(job_dirs: Sequence[Path]) -> None:
+    """The jobs' OUTs' last run records agree on benchmark commit, machine and model, compared as
+    evals.ablate.check_record does before reusing jobs under one OUT."""
+    records = [last_record(job) for job in job_dirs]
+    present = [r for r in records if r is not None]
+    if len(present) < len(records):
+        raise ValueError(
+            f"{len(records) - len(present)} of {len(job_dirs)} jobs have no run record "
+            "(OUT/records/*.json), so they cannot be matched to one benchmark checkout, machine "
+            "and model"
+        )
+    for key, label in MERGE_RECORD_KEYS:
+        values = [r.get(key) for r in present]
+        unusable = sum(
+            1
+            for v in values
+            if not isinstance(v, str)
+            or not v
+            or (key == "benchmark_commit" and v.endswith("-dirty"))
+        )
+        if unusable:
+            raise ValueError(
+                f"the run record of {unusable} of {len(job_dirs)} jobs gives no usable {label} "
+                "(unset, or a benchmark checkout with uncommitted changes), so the jobs cannot "
+                "be matched"
+            )
+        if len(set(values)) > 1:
+            raise ValueError(
+                f"the run records of the {len(job_dirs)} jobs give {len(set(values))} different "
+                f"{label} values; merge only jobs run under the same conditions"
+            )
 
 
 def split_trials(

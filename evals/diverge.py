@@ -1,4 +1,6 @@
-"""`diverge --baseline JOB --candidate JOB --manifest M --out DIR`: read two jobs on the dev set.
+"""`diverge --baseline JOB... --candidate JOB... --manifest M --out DIR`: two jobs on the dev set.
+
+Either side may be several jobs of one config, merged by evals.report.load_jobs.
 
 Writes `DIR/diverge.json` and `DIR/diverge.md` and prints the markdown:
 
@@ -23,9 +25,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from evals.harbor import load_trials
 from evals.process import job_metrics
-from evals.report import check_dev_list, is_infra_error
+from evals.report import check_dev_list, is_infra_error, load_jobs
 
 SIDES = ("baseline", "candidate")
 
@@ -34,8 +35,9 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser = commands.add_parser(
         "diverge", help="dev set: paired per-task divergence and process metrics of two jobs"
     )
-    parser.add_argument("--baseline", type=Path, required=True)
-    parser.add_argument("--candidate", type=Path, required=True)
+    merge = "one job, or several jobs of one config to merge (evals.report.load_jobs)"
+    parser.add_argument("--baseline", type=Path, nargs="+", required=True, help=merge)
+    parser.add_argument("--candidate", type=Path, nargs="+", required=True, help=merge)
     parser.add_argument("--manifest", type=Path, required=True, help="its dev list is shown")
     parser.add_argument("--out", type=Path, required=True)
     parser.set_defaults(run=run)
@@ -59,8 +61,14 @@ def divergent_tasks(base: dict[str, Any], cand: dict[str, Any]) -> list[dict[str
     return rows
 
 
-def divergence_report(baseline: Path, candidate: Path, dev: set[str]) -> dict[str, Any]:
-    jobs = dict(zip(SIDES, (load_trials(baseline), load_trials(candidate)), strict=True))
+def label(jobs: list[Path]) -> str:
+    """A side's name in the report: its jobs' directory names (the config, under ablate's
+    `OUT/jobs/<config>`), each once, `+`-joined."""
+    return "+".join(dict.fromkeys(job.name for job in jobs))
+
+
+def divergence_report(baseline: list[Path], candidate: list[Path], dev: set[str]) -> dict[str, Any]:
+    jobs = dict(zip(SIDES, (load_jobs(baseline), load_jobs(candidate)), strict=True))
     in_dev = {side: [t for t in trials if t.task in dev] for side, trials in jobs.items()}
     if not any(in_dev.values()):
         raise ValueError("neither job has a dev-set trial; per-task output is for the dev set only")
@@ -82,7 +90,7 @@ def divergence_report(baseline: Path, candidate: Path, dev: set[str]) -> dict[st
     base_tasks, cand_tasks = (metrics[side]["per_task"] for side in SIDES)
     divergent = divergent_tasks(base_tasks, cand_tasks)
     return {
-        "labels": {"baseline": baseline.name, "candidate": candidate.name},
+        "labels": {"baseline": label(baseline), "candidate": label(candidate)},
         "paired_tasks": len(set(base_tasks) & set(cand_tasks)),
         "unpaired_tasks": sorted(set(base_tasks) ^ set(cand_tasks)),
         "outside_dev_trials": {side: len(jobs[side]) - len(in_dev[side]) for side in SIDES},
@@ -146,7 +154,9 @@ def markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_divergence(baseline: Path, candidate: Path, manifest: Path, out: Path) -> dict[str, Any]:
+def write_divergence(
+    baseline: list[Path], candidate: list[Path], manifest: Path, out: Path
+) -> dict[str, Any]:
     """Build the report and write it under `out`; ValueError when there is nothing to show."""
     splits = json.loads(manifest.read_text())
     check_dev_list(splits, manifest)

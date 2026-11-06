@@ -75,6 +75,18 @@ def last_event_file(trial: Trial) -> Path | None:
     return files[-1] if files else None
 
 
+def version_header(events: Path) -> dict[str, Any]:
+    """The event file's first line: the agent writes its `version` event there
+    (data_agent.agent); {} for an empty file or a first line that is no JSON object."""
+    with events.open(encoding="utf-8", errors="replace") as f:
+        line = f.readline()
+    try:
+        fields = json.loads(line)
+    except json.JSONDecodeError:
+        return {}
+    return fields if isinstance(fields, dict) else {}
+
+
 def by_task(trials: list[Trial]) -> dict[str, list[float | None]]:
     """Per-task reward lists, the input shape of `evals.metrics`."""
     out: dict[str, list[float | None]] = defaultdict(list)
