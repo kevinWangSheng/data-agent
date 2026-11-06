@@ -257,3 +257,26 @@ baseline 和 no-verifiers 照旧：no-verifiers 仍带 Skill 的无验证者回�
 - 检查：2b0c611、adb7001 上 `make check` 各一次，ruff/format/basedpyright 干净，1816 passed、1 skipped；`uv run pytest tests/acceptance -q -k verifier` 48 passed。
 - 审查：`da-review main`（Codex 可用）"No actionable correctness defects"。eng:code-review（Standards、Spec，9d6762d..HEAD）无硬性违规、无漏项；已修（adb7001）："status and the key counts" 与 CHECK 5/6 无计数矛盾 → 改为 "the tool's counts (for CHECK 5 and 6, the change at issue)"；`contract_check` 不会列出别的模型 → 从 Task 一节删掉；"keep their earlier report" 前提不一定成立 → 改为 "outside this dispatch"；第 3 步加 "of the dispatched models"；"check your query runs" 断言改查整个提示词。不修：第 4 步"不读模型"与"不查询模型"是两条规则、各有测试；`section()`/`step()` 测试小重复可接受；按短语断言是原有写法；`READ_TOOLS` 单元素仍保留为具名常量。
 - 交主会话：`verifier_v2/dispatch.py:21` 的模板标签 "Models model_diff lists as new or changed" 在工单 57 只派部分模型后不准确；不在本工单 Authority 内，交工单 57。
+
+### 2026-11-06 主会话（过线初筛 `t47-screen3`，b693d9a = 退回第 4 轮 + 工单 57 合入后的 main）
+
+`scripts/da-remote start t47-screen3 -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --split dev --task dbt-fix-division-by-zero --task pos-operations --task dbt-customer-cross-sell-insights --task web-session-quality-scoring --task dbt-receivables-aging-buckets --out runs/t47-screen3 --budget 8 --config full --trials 3`：exit 0，23:40–01:10 UTC，实际价 $1.89（cost_usd $3.78），0 次 `AgentTimeoutError`，验证器 0 次被截断。
+
+| 题 | accept-2 | t47-screen | t47-screen2 | **t47-screen3** | screen3 验证器墙钟中位 |
+|---|---|---|---|---|---|
+| dbt-fix-division-by-zero | 0/3 | 1/3 | 1/3 | **0/3** | 98 s |
+| pos-operations | 2/3 | 2/3 | 3/3 | **3/3** | 1661 s |
+| dbt-customer-cross-sell-insights | 2/3 | 2/3 | 3/3 | **3/3** | 455 s |
+| web-session-quality-scoring | 2/3 | 3/3 | 3/3 | **3/3** | 360 s |
+| dbt-receivables-aging-buckets | 1/3 | 3/3 | 3/3 | **3/3** | 97 s |
+| 合计 | 7/15 | 11/15 | 13/15 | **12/15** | |
+
+- 第一条线 ≥8/15：**过**（12/15）。
+- 第二条线：每 trial 验证器墙钟中位数 ≤155 s：**没过**。工单 51 报告口径 337 s（t47-screen2 359 s）；按本工单原口径（主 agent 层 Agent 调用起止取并集）343 s。15 个 trial 排序：80、93、101、103、103、130、222、**343**、370、466、509、674、680、1678、1932；≤155 的只有 6 个（receivables ×3、division ×3），要 8 个。
+- 每次验证调用（24 次）：轮数 p50 15 / p90 28 / p95 30 / 最大 30（t47-screen2 p50 21 / p90 38 / 最大 50）；工具调用 p50 34 / p90 119 / 最大 164；撞 `maxTurns` 0 次。Stop 拦截没有事件记录，次数未确认（同 t47-screen2）。
+- 验证器 `query_database` 按类别（`runs/t47-screen2/diag/redundancy.py` 的粗分，改路径后跑；t47-screen2 → t47-screen3）：干跑参考 SQL 237 → 90；看模型输出 125 → 73；查目录 36 → 9；源表探针 792 → 477。提示词禁止的前三类减少但没清零，按 SQL 文本粗分，未逐条核对。
+- 墙钟成分（`breakdown.py`）：验证调用合计 7483 s，其中工具并集 1697 s（23%），模型生成与空隙 5786 s（77%）；每轮间隔中位 8.3 s（t47-screen2 4.6 s）。
+- 重派范围（工单 57）：web 的重派从 5 个模型降到 2、3 个，cross-sell 第二次调用 2 个；pos 的重派仍报 21 个模型。是重派列表本身接近全量（第一次 8 个模型 FAIL 加下游，再加 `safe_ts` 宏让 ref 未知的模型），还是验证器没守"只验派单列出的模型"，**分不清**：钩子改写后的派单没写进事件。
+- 余下耗时的具体原因：① cross-sell 验证器墙钟比 t47-screen2 还高（287 → 455 s），有 NEEDS_INFO 引起的重派（3 个 trial 5 次调用，NEEDS_INFO 4 项）；② pos CHECK 3 对 NULL `order_source` 分组反复 FAIL，主 agent 带题面反证重派，验证器仍判 FAIL，Stop 规则 3 拦着，循环到截止前；③ 禁止的探查仍有残余；④ 每轮生成延迟是 deepseek-flash 的下限。
+- division-by-zero 0/3：3 个 trial 验证器结论分别是 PASS、NEEDS_INFO、PASS/NEEDS_INFO 一类，没有拦下错误答案（逐 trial 失败原因未读）。
+- 结论：按合入前提（≥8/15 且 ≤155 s）**不合 PR #48**，交人决定。本工单已退回 4 轮。
