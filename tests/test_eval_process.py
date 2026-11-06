@@ -21,21 +21,25 @@ from evals.process import (
 )
 
 
-def trial_with(tmp_path: Path, *events: dict[str, Any]) -> Trial:
-    events_dir = tmp_path / "t1__a" / "agent" / "events"
+def named_trial(tmp_path: Path, task: str, name: str, *events: dict[str, Any]) -> Trial:
+    events_dir = tmp_path / name / "agent" / "events"
     events_dir.mkdir(parents=True)
     (events_dir / "run-1.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     return Trial(
-        task="t1",
-        name="t1__a",
+        task=task,
+        name=name,
         reward=1.0,
         exception_type=None,
         uncached_input_tokens=0,
         cached_input_tokens=0,
         output_tokens=0,
         cost_usd=0.0,
-        dir=tmp_path / "t1__a",
+        dir=tmp_path / name,
     )
+
+
+def trial_with(tmp_path: Path, *events: dict[str, Any]) -> Trial:
+    return named_trial(tmp_path, "t1", "t1__a", *events)
 
 
 def test_checks_as_a_list_count_each_entry_status(tmp_path: Path) -> None:
@@ -288,7 +292,7 @@ DENIED = (
     "PreToolUse:Bash hook error: Bash may only run one dbt command in the foreground. "
     "Denied: a second command."
 )
-OVERSIZE = (
+OVERSIZE_RESULT = (
     "Error: result (665,331 characters) exceeds maximum allowed tokens. Output has been saved "
     "to /tmp/out.txt"
 )
@@ -308,7 +312,7 @@ def test_a_trial_counts_the_gate_events(tmp_path: Path) -> None:
         {"type": "verifier_start", "verifier": "verifier", "agent_id": "v1"},
         tool_result(DENIED),
         tool_result(DENIED.replace("Bash", "Grep", 1), tool="Grep"),
-        tool_result(OVERSIZE, is_error=False, tool="mcp__data__query_database"),
+        tool_result(OVERSIZE_RESULT, is_error=False, tool="mcp__data__query_database"),
         {"type": "verifier_dispatch", "n": 2, "models": ["b"], "source": "again"},
         {"type": "verifier_start", "verifier": "verifier", "agent_id": "v2"},
         {"type": "ended_with_unresolved", "reason": "b: rule 2", "blocks": 3},
@@ -334,7 +338,7 @@ def test_an_event_file_before_dispatch_events_has_no_dispatch_or_dispute_counts(
         tmp_path,
         {"type": "verifier_start", "verifier": "verifier", "agent_id": "v1"},
         tool_result(DENIED),
-        tool_result(OVERSIZE, is_error=False, tool="mcp__data__query_database"),
+        tool_result(OVERSIZE_RESULT, is_error=False, tool="mcp__data__query_database"),
         {"type": "ended_with_unresolved", "reason": "a: rule 2", "blocks": 3},
         {"type": "result", "subtype": "success", "num_turns": 30},
     )
@@ -386,13 +390,6 @@ def test_a_result_given_as_content_blocks_is_read_as_text(tmp_path: Path) -> Non
     assert trial_metrics(trial)["guard_denials"] == 1
 
 
-def named_trial(tmp_path: Path, task: str, name: str, *events: dict[str, Any]) -> Trial:
-    events_dir = tmp_path / name / "agent" / "events"
-    events_dir.mkdir(parents=True)
-    (events_dir / "run-1.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
-    return Trial(task, name, 1.0, None, 0, 0, 0, 0.0, tmp_path / name)
-
-
 def gate_trials(tmp_path: Path) -> list[Trial]:
     """Three trials: a new one with two dispatches (3 and 1 models) that ended unresolved and
     disputed, a new one with no verifier, and an old one (a verifier, no dispatch event)."""
@@ -409,7 +406,7 @@ def gate_trials(tmp_path: Path) -> list[Trial]:
             start,
             tool_result(DENIED),
             tool_result(DENIED),
-            tool_result(OVERSIZE, is_error=False),
+            tool_result(OVERSIZE_RESULT, is_error=False),
             {"type": "ended_with_unresolved"},
             {"type": "ended_disputed"},
         ),
@@ -420,7 +417,7 @@ def gate_trials(tmp_path: Path) -> list[Trial]:
             "t2__a",
             start,
             tool_result(DENIED),
-            tool_result(OVERSIZE, is_error=False),
+            tool_result(OVERSIZE_RESULT, is_error=False),
         ),
     ]
 
@@ -461,3 +458,30 @@ def test_job_gate_means_are_none_when_no_trial_records_dispatches(tmp_path: Path
     assert (gate["trials_with_dispatches_recorded"], gate["ended_disputed"]) == (0, None)
     assert (gate["verifier_dispatches"], gate["models_per_dispatch"]) == (None, None)
     assert gate["guard_denials"] == 1.0
+
+
+def version(commit: str) -> dict[str, Any]:
+    return {"type": "version", "git_commit": commit}
+
+
+def test_trials_of_a_version_that_predates_dispatch_events_all_leave_them_unknown(
+    tmp_path: Path,
+) -> None:
+    """A job run on code before ticket 59 (accept-2): one trial ran a verifier with no
+    `verifier_dispatch`, so no trial of that commit records dispatches, not even one that ran no
+    verifier; a trial of another commit that records them keeps its counts."""
+    start = {"type": "verifier_start", "verifier": "verifier", "agent_id": "v"}
+    dispatch = {"type": "verifier_dispatch", "n": 1, "models": ["a"], "source": "first"}
+    job = job_metrics(
+        [
+            named_trial(tmp_path, "t1", "t1__a", version("old"), start),
+            named_trial(tmp_path, "t1", "t1__b", version("old"), tool_result(DENIED)),
+            named_trial(tmp_path, "t2", "t2__a", version("new"), dispatch, start),
+            named_trial(tmp_path, "t2", "t2__b", version("new")),
+        ]
+    )
+    old = [r for r in job["trials"] if r["task"] == "t1"]
+    assert [(r["verifier_dispatches"], r["ended_disputed"]) for r in old] == [(None, None)] * 2
+    assert job["per_task"]["t1"]["verifier_dispatches"] is None
+    gate = job["gate"]
+    assert (gate["trials_with_dispatches_recorded"], gate["verifier_dispatches"]) == (2, 0.5)

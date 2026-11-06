@@ -16,11 +16,11 @@ import json
 import re
 from collections import Counter
 from datetime import datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from data_agent.verifiers import AGENT_TOOL
-from evals.harbor import Trial, last_event_file
+from evals.harbor import Trial, last_event_file, version_header
 from evals.metrics import is_success
 
 EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
@@ -146,7 +146,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     unverified = unresolved = disputed = False
     denials = oversize = 0
     dispatch_models: list[int] = []
-    verified = False  # a verifier ran
+    verifier_ran = False
     durations: dict[str, list[float]] | None = None
     timeouts: Counter[str] = Counter()
     untimed: Counter[str] = Counter()
@@ -180,7 +180,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
                     dispatch_models.append(len(event.get("models") or []))
                 elif kind == "verifier_start":
                     calls += 1
-                    verified = True
+                    verifier_ran = True
                 elif kind == "tool_end":
                     text = result_text(event)
                     if DENIAL.match(text):
@@ -206,9 +206,11 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     trial_end = max(times) if times else None
     verifier_s, unclosed = verifier_wall(stamped, trial_end) if trial_end is not None else (None, 0)
     # A verifier ran yet no dispatch was recorded: the file predates `verifier_dispatch` (ticket
-    # 59) and `ended_disputed` (ticket 64), so both are unknown. With no verifier run they are
-    # known, in any version: no dispatch, and no disputed FAIL (one needs a verifier report).
-    predates = verified and not dispatch_models
+    # 59) and `ended_disputed` (ticket 64), so both are unknown. With no verifier run the file
+    # alone cannot tell (`job_metrics` asks the trial's code version), and they are counted: no
+    # dispatch, no disputed FAIL (one needs a verifier report). A file written between tickets
+    # 59 and 64 records dispatches but could not record a dispute: it reads as no dispute.
+    predates = verifier_ran and not dispatch_models
     return {
         "task": trial.task,
         "trial": trial.name,
@@ -223,6 +225,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
         "verifier_dispatches": None if predates else len(dispatch_models),
         "dispatch_models": None if predates else dispatch_models,
         "verifier_calls": calls,
+        "verifier_ran": verifier_ran,
         "verifier_checks": dict(checks),
         "model_edits": edits,
         "cost_usd": cost,
@@ -355,9 +358,37 @@ def timing_markdown(summaries: list[tuple[str, dict[str, Any] | None]]) -> list[
     return lines
 
 
-def known(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+# The trial fields of tickets 59 and 64's events: all None for a run whose code predates them.
+DISPATCH_FIELDS = ("ended_disputed", "verifier_dispatches", "dispatch_models")
+
+
+def recording_dispatches(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The rows whose event files record verifier dispatches and disputes (tickets 59, 64)."""
     return [r for r in rows if r.get("verifier_dispatches") is not None]
+
+
+def dispatched_models(rows: list[dict[str, Any]]) -> list[int]:
+    """The model count of every dispatch of the rows that record them, in row order."""
+    return [m for r in recording_dispatches(rows) for m in r["dispatch_models"]]
+
+
+def unknown_where_version_predates(rows: list[dict[str, Any]]) -> None:
+    """Sets the dispatch fields to None in every row whose code version (the event file's
+    `version.git_commit`) another row shows predates ticket 59: a verifier ran there and no
+    dispatch was recorded. A trial of that version that ran no verifier could not have recorded
+    a dispatch or a dispute either, so its zero is unknown, not counted."""
+    commits = [
+        version_header(Path(r["events"])).get("git_commit") if r.get("events") else None
+        for r in rows
+    ]
+    old = {
+        commit
+        for commit, r in zip(commits, rows, strict=True)
+        if commit and r.get("verifier_ran") and r.get("verifier_dispatches") is None
+    }
+    for commit, row in zip(commits, rows, strict=True):
+        if commit in old:
+            row.update(dict.fromkeys(DISPATCH_FIELDS))
 
 
 def gate_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -369,8 +400,8 @@ def gate_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     def mean(values: list[float]) -> float | None:
         return sum(values) / len(values) if values else None
 
-    recorded = known(rows)
-    models = [m for r in recorded for m in r["dispatch_models"]]
+    recorded = recording_dispatches(rows)
+    models = dispatched_models(rows)
     return {
         "trials": len(rows),
         "ended_with_unresolved": mean([float(r["ended_with_unresolved"]) for r in rows]),
@@ -390,7 +421,7 @@ def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     checks: Counter[str] = Counter()
     for row in rows:
         checks.update(row["verifier_checks"])
-    recorded = known(rows)
+    recorded = recording_dispatches(rows)
     return {
         "successes": sum(1 for r in rows if r["success"]),
         "trials": len(rows),
@@ -406,9 +437,7 @@ def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "verifier_dispatches": (
             sum(r["verifier_dispatches"] for r in recorded) if recorded else None
         ),
-        "dispatch_models": (
-            [m for r in recorded for m in r["dispatch_models"]] if recorded else None
-        ),
+        "dispatch_models": dispatched_models(rows) if recorded else None,
         "verifier_calls": sum(r["verifier_calls"] for r in rows),
         "verifier_checks": dict(checks),
         "model_edits": sum(r["model_edits"] for r in rows),
@@ -419,16 +448,18 @@ def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def job_metrics(trials: list[Trial]) -> dict[str, Any]:
     """Process metrics of dev trials: per task, per trial, the mean spend of a success, and the
-    gate metrics' means per trial."""
+    gate metrics' means per trial. Dispatches and disputes are unknown for every trial of a code
+    version that predates them (`unknown_where_version_predates`)."""
     rows: dict[str, list[dict[str, Any]]] = {}
     for trial in trials:
         rows.setdefault(trial.task, []).append(trial_metrics(trial))
-    succeeded = [r["cost_usd"] for rs in rows.values() for r in rs if r["success"]]
-    every = [r for rs in rows.values() for r in rs]
+    all_rows = [r for rs in rows.values() for r in rs]
+    unknown_where_version_predates(all_rows)
+    succeeded = [r["cost_usd"] for r in all_rows if r["success"]]
     return {
         "mean_cost_usd_succeeded": sum(succeeded) / len(succeeded) if succeeded else None,
         "per_task": {task: task_metrics(rs) for task, rs in sorted(rows.items())},
-        "timing": timing_summary(every),
-        "gate": gate_metrics(every),
+        "timing": timing_summary(all_rows),
+        "gate": gate_metrics(all_rows),
         "trials": [r for _, rs in sorted(rows.items()) for r in rs],
     }

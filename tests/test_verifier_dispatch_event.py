@@ -227,7 +227,7 @@ def trial_with(root: Path, events: list[dict[str, Any]]) -> Trial:
     )
 
 
-def test_process_metrics_ignore_the_dispatch_event(tmp_path: Path) -> None:
+def test_process_metrics_count_the_dispatch_event_and_change_nothing_else(tmp_path: Path) -> None:
     with_event = [*BASE_EVENTS[:2], DISPATCH_EVENT, *BASE_EVENTS[2:]]
     without = trial_metrics(trial_with(tmp_path / "without", BASE_EVENTS))
     with_dispatch = trial_metrics(trial_with(tmp_path / "with", with_event))
