@@ -74,3 +74,16 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-05 main session: server read-only check (`da-remote exec`, after ticket 58 merged as 18e0c11)
+  - Host:
+    - `nproc` 6; `free -m`: Mem 7940 total / 1043 used / 6897 available; Swap 4095 / 527 used.
+    - cgroup v2 (`cgroup2fs`).
+    - PSI: cpu some avg60=0.02; memory some/full avg=0.00 (idle, no trial running).
+    - Disk: the overlay filesystem has 64G free of 144G.
+  - Running containers: sub2api, its postgres and redis, da-dab-mongo, da-dab-postgres. Their combined memory is about 160 MiB.
+  - No trial was running, so I started a throwaway container from `ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0` with the `task.toml` limits. All 103 tasks are `cpus = 2`, `memory_mb = 8000`, `storage_mb = 10240`; the container was started with `--cpus 2 --memory 8000m`, which approximates the limits Harbor applies (未确认 that Harbor passes them in exactly this form). Results:
+    - `nproc` in the container: 6 (a CPU quota doesn't change the number of visible cores).
+    - `/proc/self/cgroup` `0::/`; `cpu.max` `200000 100000`; `memory.max` `8388608000`, which matches what this ticket expects.
+    - The image's `/usr/local/bin/python3` has duckdb `1.2.2`, the same as the agent's `uv.lock`. A default connection reports `threads=2`, `memory_limit='6.2 GiB'`, `max_temp_directory_size='90% of available disk space'`, which matches the expectation.
+  - What this means: with 3 concurrent trials, every DuckDB instance (one per gateway connection, plus each separate dbt process) may use up to 6.2 GiB, but the host has only 7.7 GB. The temp-file limit defaults to about 58 GB of the 64G free. Waiting for the user to set `memory_limit` and `max_temp_directory_size` (suggested starting points 2 GB and 4 GB).
