@@ -151,6 +151,22 @@ async def test_a_disputed_check_next_to_another_fail_still_blocks_on_the_other(
     assert run.ended("ended_disputed") == []
 
 
+async def test_a_dispute_stands_while_the_check_keeps_failing_on_the_same_model(
+    workspace: Path,
+) -> None:
+    """A later dispatch (for beta's new FAIL) without counter-evidence on alpha re-reports alpha
+    CHECK 3 FAIL: the dispute stands, with its original dispatches, and blocks nothing."""
+    run = Run(workspace)
+    await run.verify(CHECK3_FAIL + BETA_PASS)
+    await run.stop()
+    await run.verify(CHECK3_FAIL + "### beta\nCHECK 2: FAIL — bad\n", prompt=EVIDENCE)
+    await run.stop()
+    await run.verify(CHECK3_FAIL + BETA_PASS, prompt="")
+    assert await run.stop() == {}
+    [ended] = run.ended("ended_disputed")
+    assert ended["disputed"] == [{"model": "alpha", "check": 3, "dispatches": [1, 2]}]
+
+
 async def test_disputes_are_listed_when_the_run_ends_unresolved(workspace: Path) -> None:
     run = Run(workspace)
     await run.verify(CHECK3_FAIL + "### beta\nCHECK 2: FAIL — bad\n")

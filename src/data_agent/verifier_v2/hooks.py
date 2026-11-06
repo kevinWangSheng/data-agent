@@ -169,7 +169,7 @@ def run_hooks(
     dispatched: deque[Dispatch] = deque(maxlen=MAX_OUTSTANDING_DISPATCHES)
     # The models of the latest dispatch, for a verifier whose dispatch left the queue early
     # (the bound above).
-    last_models: tuple[str, ...] = ()
+    last_dispatch_models: tuple[str, ...] = ()
 
     def short_on_time_s() -> float | None:
         """Seconds left when too few are left for a verifier run, else None."""
@@ -197,7 +197,7 @@ def run_hooks(
     async def dispatch(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
-        nonlocal dispatches, last_models
+        nonlocal dispatches, last_dispatch_models
         fields: dict[str, Any] = dict(hook_input)
         if (left := short_on_time_s()) is not None:
             denied = deny_dispatch(
@@ -224,7 +224,7 @@ def run_hooks(
         if output:
             dispatches += 1
             emit("verifier_dispatch", n=dispatches, models=models, source=source)
-            last_models = tuple(models)
+            last_dispatch_models = tuple(models)
             hashes: dict[str, str] | None
             try:
                 hashes = model_hashes(workspace)
@@ -233,7 +233,7 @@ def run_hooks(
                 hashes = None
             prompt = str(output["hookSpecificOutput"]["updatedInput"]["prompt"])
             dispatched.append(
-                Dispatch(dispatches, last_models, hashes, carries_counter_evidence(prompt))
+                Dispatch(dispatches, last_dispatch_models, hashes, carries_counter_evidence(prompt))
             )
         return output  # type: ignore[return-value]
 
@@ -247,7 +247,7 @@ def run_hooks(
         if not fields.get("agent_id") or fields.get("agent_type") != REWRITTEN_SUBAGENT:
             return {}
         sql = (fields.get("tool_input") or {}).get("sql")
-        models = sorted({m for d in dispatched for m in d.models}) or list(last_models)
+        models = sorted({m for d in dispatched for m in d.models}) or list(last_dispatch_models)
         if not isinstance(sql, str) or not models:
             return {}
         try:
