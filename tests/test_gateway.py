@@ -7,7 +7,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from data_agent.gateway import DuckDBGateway, QueryFailed
+from data_agent.gateway import DuckDBGateway, QueryFailed, connect_duckdb
 
 
 def test_long_query_times_out(tmp_path: Path) -> None:
@@ -32,3 +32,17 @@ def test_timestamptz_column_is_returned(tmp_path: Path) -> None:
     assert result.columns == ["at"]
     assert len(result.rows) == 1
     assert result.rows[0][0].tzinfo is not None
+
+
+def test_connection_has_memory_and_temp_file_limits(tmp_path: Path) -> None:
+    """Every gateway connection carries the memory and spill caps (why: `DUCKDB_MEMORY_LIMIT`)."""
+    db = tmp_path / "x.duckdb"
+    duckdb.connect(str(db)).close()
+    con = connect_duckdb(db)
+    try:
+        row = con.sql(
+            "SELECT current_setting('memory_limit'), current_setting('max_temp_directory_size')"
+        ).fetchone()
+    finally:
+        con.close()
+    assert row == ("2.0 GiB", "4.0 GiB")

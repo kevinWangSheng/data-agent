@@ -15,7 +15,15 @@
 #        da-remote start <name> -- <evals args>   run `python -m evals <evals args>` in the background,
 #                                                 log to runs/<name>/run.log on the server; give
 #                                                 evals --out runs/<name> so status and pull see it;
-#                                                 a dab run gets DAB's packages and database settings
+#                                                 a dab run gets DAB's packages and database settings;
+#                                                 runs/<name>/memory.log samples the server every 5 s:
+#                                                 a header line (Mem and Swap used/total MiB from
+#                                                 `free -m`, load = /proc/loadavg 1/5/15 min), then
+#                                                 psi_cpu/psi_memory/psi_io (/proc/pressure/*: share
+#                                                 of time tasks stalled on that resource, "some" =
+#                                                 at least one, "full" = all), then per container
+#                                                 its CPU% (100% = one core) and memory from
+#                                                 `docker stats`
 #        da-remote status [<name>]                running or not, log tail, spend so far
 #        da-remote push <name>                    copy this checkout's runs/<name>/ to the server
 #        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout;
@@ -516,11 +524,15 @@ $dab_env
 set +a
 export PATH="\$HOME/.local/bin:\$PATH"
 cd $(printf '%q' "$PWD") || exit 1
-# The server's memory every 5 s while evals runs (plan §7: concurrency follows measured peaks).
+# The server's memory, CPU and pressure every 5 s while evals runs (plan §7: concurrency follows
+# measured peaks; fields in the header's start entry).
 # Container names can name holdout tasks, so the log stays out of a summary-only pull.
 while :; do
-  echo "\$(date -u +%FT%TZ) \$(free -m 2>/dev/null | awk '/^Mem:/ {print "used_mb=" \$3, "total_mb=" \$2}')"
-  docker stats --no-stream --format '  {{.Name}} {{.MemUsage}}' 2>/dev/null
+  echo "\$(date -u +%FT%TZ) \$(free -m 2>/dev/null | awk '/^Mem:/ {printf "used_mb=%s total_mb=%s ", \$3, \$2} /^Swap:/ {printf "swap_used_mb=%s swap_total_mb=%s", \$3, \$2}') load=\$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null | tr ' ' ,)"
+  for resource in cpu memory io; do
+    echo "  psi_\$resource \$(tr '\n' ' ' 2>/dev/null </proc/pressure/\$resource)"
+  done
+  docker stats --no-stream --format '  {{.Name}} {{.CPUPerc}} {{.MemUsage}}' 2>/dev/null
   sleep 5
 done >>$(printf '%q' "$run/memory.log") 2>&1 &
 sampler=\$!

@@ -19,6 +19,12 @@ from data_agent.engine import inject_limit, validate_sql
 
 MAX_ROWS = 10_000
 TIMEOUT_SECONDS = 150  # upstream query_database's timeout_seconds
+# Per DuckDB instance (every gateway connection is one). Unset, DuckDB takes 80% of the
+# container's memory.max (6.2 GiB) and 90% of free disk for spills, each instance its own share;
+# the eval host has 7.7 GB and runs 3 trials. Values from ticket 56's server check: one trial's
+# processes peaked at 1762 MiB; 64G disk free. Binary units: DuckDB's "GB" means 1000^3.
+DUCKDB_MEMORY_LIMIT = "2GiB"
+DUCKDB_MAX_TEMP_DIRECTORY_SIZE = "4GiB"
 
 
 class QueryBlocked(Exception):
@@ -123,12 +129,17 @@ class DuckDBGateway:
 
 def connect_duckdb(path: Path) -> duckdb.DuckDBPyConnection:
     """A read-only connection. External access off: a file or network reader the denylist
-    misses still cannot run."""
+    misses still cannot run. Memory and spill limits go in here: the configuration is locked."""
     try:
         return duckdb.connect(
             str(path),
             read_only=True,
-            config={"enable_external_access": False, "lock_configuration": True},
+            config={
+                "enable_external_access": False,
+                "memory_limit": DUCKDB_MEMORY_LIMIT,
+                "max_temp_directory_size": DUCKDB_MAX_TEMP_DIRECTORY_SIZE,
+                "lock_configuration": True,
+            },
         )
     except duckdb.Error as exc:
         raise QueryFailed(str(exc)) from exc
