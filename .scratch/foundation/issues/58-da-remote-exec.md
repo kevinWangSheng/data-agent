@@ -1,6 +1,6 @@
 # 58 — `da-remote exec`：透传任意命令到服务器，输出照样遮掉地址
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: —（用户 2026-11-05 决定：不放开直接 ssh，改给 da-remote 加透传子命令）
 Claimed by: claude (worktree 58-da-remote-exec)
@@ -50,7 +50,7 @@ Status `ready-for-human`，Comment 写明试了什么、哪里失败、分支名
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0
-- Outcome: implemented; main-session real run done; PR pending
+- Outcome: merged (PR #56 → 18e0c11)
 - Human review minutes: —
 
 ## Comments
@@ -77,3 +77,4 @@ Status `ready-for-human`，Comment 写明试了什么、哪里失败、分支名
   - `da-remote exec -- bash -c 'exit 7'` → rc=7.
   - No addresses leaked in any output.
   - Problem found: after about 12 ssh connections in a short burst, the server refused every connection with `Connection closed by <server> port 22` (rc=255). The existing `da-remote check` was refused the same way, so this is a server-side connection limit (MaxStartups or fail2ban, 未确认) and not a defect in exec. Ticket 56's read-only checks should be combined into one `exec -- bash -c '…'` call.
+- PR #56: CI green; the Codex GitHub app reviewed c674ee0 with no findings. Squash-merged as 18e0c11.
