@@ -12,7 +12,7 @@
 name: data-eng-bench-duckdb
 
 n_attempts: 3          # leaderboard requires >= 3 trials per task
-n_concurrent_trials: 4
+n_concurrent_trials: 3
 quiet: true
 
 # plan §7: errored trials score 0 and Harbor retries nothing by default. Retry the model API's
