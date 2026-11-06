@@ -32,10 +32,10 @@ Branch: —
 - 证据（2026-11-06，读 `runs/t47-screen3/jobs/full/pos-operations__{JPS92zS,HGcLuCF,qpLnwaW}`）：
   - CHECK 3 FAIL 原文："167 NULL-key rows, 0 duplicates; no exemption (task does not make NULL order_source part of the grain)"；三个 trial 评分都 69/69，是假阳性。同样 167 行，不同调用在 PASS 和 FAIL 之间摇摆。
   - HGcLuCF 第 2 次调用后主 agent 没改模型、只带反证重派，第 3 次验证器才改判；qpLnwaW 第 3 次全 PASS。每次调用 535–684 s。screen3 里没有"循环到截止"，0 次 `ended_*` 事件。
-  - 维持重派的是 `stop.py:105-108`（最后一份报告有 FAIL 就拦）和 `verifiers.py:69-72,79-80`（FAIL 复现不了只能带反证再派，结束条件不允许有 FAIL）。现有出口：验证器改判、`MAX_BLOCKS=2` 后记 `ended_with_unresolved`（`hooks.py:45,200-207`）、剩余时间不足记 `ended_unverified`。
+  - 维持重派的是 `stop.py` 的 `stop_decision`（:79-97，最后一份报告有 FAIL 就拦）和 `verifiers.py:69-72,79-80`（FAIL 复现不了只能带反证再派，结束条件不允许有 FAIL）。现有出口：验证器改判、`MAX_BLOCKS=2` 后记 `ended_with_unresolved`（`hooks.py:49,210-214`）、剩余时间不足记 `ended_unverified`。
 - 硬拦的事实：
   - 子 agent 里触发的 PreToolUse 输入带 `agent_id`；`agent.py:397-434` 已按 SubagentStart/SubagentStop 跟踪运行中的子 agent，可照此建 `agent_id → agent_type`。
-  - 表名解析：`verifier_v2/sql.py:144` 的 `table_references`；模型建成的名字和别名：`compare.py:215` 的 `_forbidden`（`compare_by_key` 已用同样规则拒绝读改动模型的参考 SQL）。
+  - 表名解析：`verifier_v2/sql.py:144` 的 `table_references`；模型建成的名字和别名：`compare.py:217` 的 `_forbidden`（`compare_by_key` 已用同样规则拒绝读改动模型的参考 SQL）。
   - 工单 47 的 (c)：t47-screen3 验证器仍有"看模型输出"约 73 次、"干跑参考 SQL"约 90 次（按 SQL 文本粗分）。
   - 拒绝的写法照 `dispatch.py` 的 `deny_dispatch`（`permissionDecision: deny` + reason）。
 - 上游：SignalPilot plugin 只派一轮、没有 Stop 硬门（`/Users/shenghuikevin/dev/AI/data-agent-refs/signalpilot-plugin/skills/dbt-workflow/SKILL.md:255-276`）；未见"意见不一致怎么收场"的条款。

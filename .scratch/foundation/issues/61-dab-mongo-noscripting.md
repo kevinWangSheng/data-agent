@@ -12,8 +12,8 @@ agent 发 `$where` 这类服务端 JavaScript 查询时，Mongo 返回错误，�
 
 ## 已和用户定下的（2026-11-06，grilling 第 2 轮 Q6）
 
-- `scripts/da-remote` 的 `benchmarks` 子命令建 Mongo 容器时（`:446-447`）：`docker run` 加 `--restart unless-stopped`，mongod 参数加 `--noscripting`（保留 `--wiredTigerCacheSizeGB 0.5`）。
-- 已存在的容器参数在创建时定死，`container()`（`:434-442`）只会 `docker start`。人已批准：合入后由主会话在服务器空闲时重建一次（`docker rm -f da-dab-mongo` 后重跑 `da-remote benchmarks`），数据卷 `da-dab-mongodata` 保留；回滚是用旧参数再建。工单会话不碰服务器。
+- `scripts/da-remote` 的 `benchmarks` 子命令建 Mongo 容器时（`:454-455`）：`docker run` 加 `--restart unless-stopped`，mongod 参数加 `--noscripting`（保留 `--wiredTigerCacheSizeGB 0.5`）。
+- 已存在的容器参数在创建时定死，`container()`（`:442-450`）只会 `docker start`。人已批准：合入后由主会话在服务器空闲时重建一次（`docker rm -f da-dab-mongo` 后重跑 `scripts/da-remote benchmarks`；必须用仓库里的 `scripts/da-remote`，PATH 上的 `~/.local/bin/da-remote` 是旧版），数据卷 `da-dab-mongodata` 保留；回滚是用旧参数再建。工单会话不碰服务器。
 - Postgres 容器不在本工单范围。
 
 ## Authority

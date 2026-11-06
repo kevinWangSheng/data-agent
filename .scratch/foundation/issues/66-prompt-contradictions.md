@@ -14,7 +14,7 @@ Branch: —
 
 - `DBT_PROMPT`（`src/data_agent/agent.py:139`）的 "Do not edit `profiles.yml`." 改成：不改已有的 `profiles.yml`；题面要求时可以新建。
 - `skills/dbt-workflow/SKILL.md`：删掉 Tools 里的 `### verify_model_values` 一节（约 :77-84），和开头说明里提到它的那句（约 :23-25）。其他内容不动。
-- 删除或改写过时注释：`src/data_agent/verifier_v2/dispatch.py:12-13`、`src/data_agent/verifier_v2/hooks.py:166-167` 的 "until ticket 47 removes it"（工单 47 已删掉值验证器）。只改注释，不改代码。
+- 删除或改写过时注释：`src/data_agent/verifier_v2/dispatch.py:12-13`、`src/data_agent/verifier_v2/hooks.py:165-166` 的 "until ticket 47 removes it"（工单 47 已删掉值验证器）。只改注释，不改代码。
 - 不写针对某道题的内容（ADR-0005）。
 
 ## Authority
