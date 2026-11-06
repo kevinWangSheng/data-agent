@@ -1,7 +1,7 @@
-# 57 — `da-remote exec`：透传任意命令到服务器，输出照样遮掉地址
+# 58 — `da-remote exec`：透传任意命令到服务器，输出照样遮掉地址
 
 Status: ready-for-agent
-Blocked by: 56
+Blocked by: —
 Spec: —（用户 2026-11-05 决定：不放开直接 ssh，改给 da-remote 加透传子命令）
 Claimed by: —
 Branch: —

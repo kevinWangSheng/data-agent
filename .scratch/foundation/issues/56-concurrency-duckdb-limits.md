@@ -1,7 +1,7 @@
 # 56 — 评测并发改回 3，DuckDB 设内存和临时文件上限，memory.log 多记 CPU 与压力
 
 Status: needs-info
-Blocked by: 服务器只读检查（编排会话用 `da-remote` 跑，命令见下）；之后人定 DuckDB 上限的数值
+Blocked by: 58（da-remote exec）；之后主会话用 `da-remote exec` 跑服务器只读检查（命令见下）；之后人定 DuckDB 上限的数值
 Spec: ../../../docs/research/2026-11-05-foundation-latency-audit.md（§7）
 Claimed by: —
 Branch: —
