@@ -296,15 +296,96 @@ LITERAL_CALL_RE = re.compile(
 )
 
 
-def referenced_models(sql: str) -> set[str] | None:
+def referenced_models(sql: str, pure: frozenset[str] = frozenset()) -> set[str] | None:
     """The model names a model's Jinja passes to `ref()`; None when its Jinja calls anything
-    else (a macro, `ref(var('x'))`, `adapter.dispatch(...)`), which could reach a model this
-    cannot see."""
+    else than those and the project macros in `pure` (`ProjectMacros.pure`): another macro,
+    `ref(var('x'))`, `adapter.dispatch(...)` could reach a model this cannot see."""
     sql = JINJA_COMMENT_RE.sub("", sql)
-    for block in JINJA_BLOCK_RE.findall(sql):
-        if "(" in LITERAL_CALL_RE.sub("", block):
-            return None
+    called, all_bare = _bare_calls(sql)
+    if not all_bare or not called <= pure:
+        return None
     return {second or first for first, second in REF_CALL_RE.findall(sql)}
+
+
+# A call by bare name; `pkg.m(` and `x.upper(` are not (the name follows a dot).
+BARE_CALL_RE = re.compile(r"(?<![\w.])(\w+)\s*\(")
+MACRO_RE = re.compile(
+    rf"\{{%-?\s*macro\s+(\w+)\s*\(({_ARGS})\)\s*-?%\}}(.*?)\{{%-?\s*endmacro\s*-?%\}}", re.DOTALL
+)
+# Words in a macro body that can reach a model or the database.
+REACHING_RE = re.compile(r"\b(?:ref|adapter|dispatch|run_query|graph)\b")
+
+
+def _bare_calls(text: str) -> tuple[set[str], bool]:
+    """The names the Jinja in `text` (comments removed) calls by bare name, besides the
+    literal calls `LITERAL_CALL_RE` matches, and whether every call is one of those (not
+    `pkg.m(...)`, `x[0](...)`, a parenthesis that is no call)."""
+    names: set[str] = set()
+    all_bare = True
+    for block in JINJA_BLOCK_RE.findall(text):
+        rest = LITERAL_CALL_RE.sub("", block)
+        found = BARE_CALL_RE.findall(rest)
+        all_bare = all_bare and rest.count("(") == len(found)
+        names.update(found)
+    return names, all_bare
+
+
+@dataclass(frozen=True)
+class ProjectMacros:
+    """The macros under a project's own macro-paths (never in `dbt_packages/`), as read."""
+
+    definitions: dict[str, list[str]]  # name -> each definition's text, in file order
+    calls: dict[str, set[str]]  # name -> the names its definitions call by bare name
+    opaque: frozenset[str]  # names a definition of which could reach a model by itself
+
+    def pure(self) -> frozenset[str]:
+        """The macros that cannot reach a model: no definition names `ref`, `adapter`,
+        `dispatch`, `run_query` or `graph` (Jinja comments removed) in its arguments or body,
+        calls anything in its argument defaults, or calls other than by bare name in its body,
+        and every macro they call is one of these (the largest such set)."""
+        pure = set(self.definitions) - self.opaque
+        while True:
+            kept = {name for name in pure if self.calls[name] <= pure}
+            if kept == pure:
+                return frozenset(pure)
+            pure = kept
+
+    def used_by(self, sql: str) -> list[str]:
+        """The project macros the model's Jinja calls, directly or through another, sorted."""
+        found: set[str] = set()
+        todo = _bare_calls(JINJA_COMMENT_RE.sub("", sql))[0]
+        while todo:
+            name = todo.pop()
+            if name in self.definitions and name not in found:
+                found.add(name)
+                todo |= self.calls[name]
+        return sorted(found)
+
+
+def project_macros(project: Path, config: dict[str, Any] | None = None) -> ProjectMacros:
+    """The project's own macros, read from the files on each call. A macro-paths entry that
+    resolves into `SKIP_DIRS` (`dbt_packages/...`) is not read."""
+    config = project_config(project) if config is None else config
+    root = project.resolve()
+    definitions: dict[str, list[str]] = {}
+    calls: dict[str, set[str]] = {}
+    opaque: set[str] = set()
+    for directory in resource_dirs(config, "macro-paths", RESOURCE_PATHS["macro-paths"]):
+        base = (project / directory).resolve()
+        if base.is_relative_to(root) and SKIP_DIRS & set(base.relative_to(root).parts):
+            continue
+        for path in files_under(project, directory, (".sql",)):
+            text = JINJA_COMMENT_RE.sub("", read_text(path))
+            for match in MACRO_RE.finditer(text):
+                name, arguments, body = match.groups()
+                names, all_bare = _bare_calls(body)
+                definitions.setdefault(name, []).append(match.group(0))
+                calls.setdefault(name, set()).update(names)
+                # A default value is evaluated like the body; one with a call is not read.
+                reaching = REACHING_RE.search(arguments + "\n" + body)
+                if reaching or not all_bare or "(" in arguments:
+                    opaque.add(name)
+    return ProjectMacros(definitions, calls, frozenset(opaque))
 
 
 def _collect(node: dict[str, Any], values: dict[str, Any]) -> None:

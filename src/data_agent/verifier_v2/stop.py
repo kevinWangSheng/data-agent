@@ -1,5 +1,6 @@
 """The Stop state (spec "Stop 钩子"): per model, the check statuses from the last report that
-named it and the hash of its SQL file at that time. `stop_decision` applies the three rules.
+named it and its fingerprint at that time (`model_hashes`: its SQL file, its dbt_project.yml
+configuration and the project macros it calls). `stop_decision` applies the three rules.
 """
 
 import hashlib
@@ -13,6 +14,7 @@ from data_agent.verifier_v2.project import (
     model_config,
     model_files,
     project_config,
+    project_macros,
     read_text,
     referenced_models,
 )
@@ -20,7 +22,7 @@ from data_agent.verifier_v2.report import parse_report
 
 RULES = {
     1: "changed since the snapshot but never named in a verifier report",
-    2: "changed after the last report that named it",
+    2: "it or a project macro it calls changed after the last report that named it",
     3: "the last report that named it has a FAIL",
 }
 
@@ -33,15 +35,20 @@ def changed_models(workspace: Path, snapshot: Path) -> list[str]:
 def model_hashes(workspace: Path) -> dict[str, str]:
     """A SHA-256 fingerprint of each model, by name, over every dbt project in the workspace:
     its SQL file and what dbt_project.yml configures for it, the same surface `model_diff`
-    reports changes on."""
+    reports changes on, and the definitions of the project macros it calls (directly or
+    through another), so a macro edit after a report counts as a change to its callers."""
     hashes: dict[str, str] = {}
     for project in dbt_projects(workspace):
         config = project_config(project)
+        macros = project_macros(project, config)
         for name, path in model_files(project, config).items():
             sql = path.read_bytes()
+            text = sql.decode("utf-8", "replace")
             digest = hashlib.sha256(sql)
-            settings = model_config(config, project, path, sql.decode("utf-8", "replace")).lines()
+            settings = model_config(config, project, path, text).lines()
             digest.update("\n".join(sorted(settings.values())).encode())
+            for macro in macros.used_by(text):
+                digest.update("\n".join(macros.definitions[macro]).encode())
             hashes.setdefault(name, digest.hexdigest())
     return hashes
 
@@ -102,11 +109,16 @@ def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path)
     names (never reported, changed since its report, FAIL in it), every model whose last report
     has a NEEDS_INFO (it does not block, but the main agent dispatches again for it), and the
     changed models downstream of one of these (`downstream_of`): a model's fingerprint covers
-    only its own files, so an upstream edit leaves it unchanged. Empty when none."""
+    its own files and the macros it calls, not the models it refs, so an upstream edit leaves
+    it unchanged. Empty when none."""
     files: dict[str, Path] = {}
+    pure: dict[str, frozenset[str]] = {}  # model -> its project's pure macros
     for project in dbt_projects(workspace):
-        for name, path in model_files(project).items():
-            files.setdefault(name, path)
+        config = project_config(project)
+        macros = project_macros(project, config).pure()
+        for name, path in model_files(project, config).items():
+            if name not in files:
+                files[name], pure[name] = path, macros
     again = {reason["model"] for reason in stop_decision(state, workspace, snapshot)["reasons"]}
     again |= {
         model
@@ -115,7 +127,7 @@ def redispatch_models(state: Mapping[str, Any], workspace: Path, snapshot: Path)
     }
     if not again:
         return []
-    refs = {model: referenced_models(read_text(path)) for model, path in files.items()}
+    refs = {model: referenced_models(read_text(path), pure[model]) for model, path in files.items()}
     downstream = downstream_of(again, refs) & set(changed_models(workspace, snapshot))
     return sorted(again | downstream)
 
