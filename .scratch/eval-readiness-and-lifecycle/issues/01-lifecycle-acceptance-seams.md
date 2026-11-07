@@ -1,6 +1,6 @@
 # 01 — 固定评测生命周期的验收接缝
 
-Status: in-progress
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 01-lifecycle-acceptance-seams)
