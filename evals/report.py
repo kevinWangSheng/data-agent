@@ -315,7 +315,8 @@ def check_same_requests(job_dirs: Sequence[Path]) -> None:
     """The jobs' OUTs' requests (`OUT/request.json`) agree on everything but their tasks: the
     model, the split and the run parameters (`agent_kwargs`, e.g. the agent timeout; one request
     with them and one without do not agree). A job without a readable request cannot be
-    matched. Errors name the keys, never a task."""
+    matched, nor a dev request (one with a split) without a non-empty task list: its requested
+    task set would be unknown. Errors name the keys, never a task."""
     requests: list[dict[str, Any]] = []
     for job in job_dirs:
         request = read_request(job)
@@ -323,6 +324,13 @@ def check_same_requests(job_dirs: Sequence[Path]) -> None:
             raise ValueError(
                 f"a job of the {len(job_dirs)} has no readable request (OUT/request.json), so "
                 "its model, split and run parameters cannot be matched"
+            )
+        tasks = request.get(REQUEST_TASKS)
+        listed = isinstance(tasks, list) and tasks and all(isinstance(t, str) for t in tasks)
+        if "split" in request and not listed:
+            raise ValueError(
+                f"a dev request of the {len(job_dirs)} jobs has no task list, so the task set it "
+                "asked for cannot be known"
             )
         requests.append({k: v for k, v in request.items() if k != REQUEST_TASKS})
     keys = sorted({key for request in requests for key in request})
@@ -451,10 +459,10 @@ def gates(
     failures; infrastructure passes only with no trial excluded as an infrastructure error
     (ADR-0008: infra_error must be 0), and states the interrupted trials resumes reran, which do
     not fail it (the operator or Harbor stopped them); efficiency lists each trial with a full
-    redispatch, a
-    warning that is not a correctness failure. Efficiency is None (unknown) when no trial's
-    event file records dispatches. Correctness has no pass line here: the success lines are
-    the human's, per evaluation (ADR-0008)."""
+    redispatch, a warning that is not a correctness failure. Efficiency fails on any warning;
+    without one it passes only when every trial's event file records dispatches, else it is
+    None (unknown). Correctness has no pass line here: the success lines are the human's, per
+    evaluation (ADR-0008)."""
     successes = sum(1 for t in in_split if is_success(t.reward))
     warnings = [
         {
@@ -466,7 +474,7 @@ def gates(
         for row in process["trials"]
         if row.get("full_redispatches")
     ]
-    recorded = process["gate"]["trials_with_dispatches_recorded"]
+    every_trial_recorded = all(row["full_redispatches"] is not None for row in process["trials"])
     return {
         "correctness": {
             "successes": successes,
@@ -478,7 +486,10 @@ def gates(
             **excluded["infra_excluded"],
             "interrupted": excluded["interrupted_excluded"],
         },
-        "efficiency": {"passed": not warnings if recorded else None, "warnings": warnings},
+        "efficiency": {
+            "passed": False if warnings else (True if every_trial_recorded else None),
+            "warnings": warnings,
+        },
     }
 
 

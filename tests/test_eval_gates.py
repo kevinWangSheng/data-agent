@@ -178,6 +178,33 @@ def test_merged_jobs_total_the_exclusions_of_every_out(
     assert r["infra_excluded"] == {"trials": 2, "cost_usd": pytest.approx(0.04)}
 
 
+def old_event_file(job: Path, name: str) -> None:
+    """Rewrite a trial's event file as code before dispatch events (another commit) leaves it:
+    a verifier ran and no dispatch was recorded."""
+    lines = [
+        {"type": "version", "git_commit": "c0", "skill_version": "s1", "config": "full"},
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "v1"},
+        {"type": "result", "subtype": "success", "num_turns": 3, "cost_usd": 0.01},
+    ]
+    events = job / name / "agent" / "events" / "run-1.jsonl"
+    events.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+
+def test_efficiency_is_unknown_when_some_trials_do_not_record_dispatches(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex review (ticket 04): one trial cannot show whether it re-sent every model, so no
+    warning elsewhere does not make the line pass; a warning still fails it."""
+    job = write_out(tmp_path, "full", GOOD, events={"t2__0": dispatches(21, 6)})
+    old_event_file(job, "t1__0")
+    r = report([job], manifest, tmp_path / "r", capsys, "dev")
+    assert (r["gates"]["efficiency"]["passed"], r["gates"]["efficiency"]["warnings"]) == (None, [])
+    failing = write_out(tmp_path / "f", "full", GOOD, events={"t2__0": dispatches(21, 21)})
+    old_event_file(failing, "t1__0")
+    r = report([failing], manifest, tmp_path / "rf", capsys, "dev")
+    assert r["gates"]["efficiency"]["passed"] is False
+
+
 def test_efficiency_is_unknown_when_no_trial_records_dispatches(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

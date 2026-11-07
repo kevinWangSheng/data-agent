@@ -307,6 +307,26 @@ def test_accept_counts_infrastructure_errors_in_any_old_job(
     assert "the old round had infrastructure errors" in result["reuse_problems"]
 
 
+@pytest.mark.parametrize(
+    "request_b",
+    [
+        pytest.param({"model": "m1", "split": "dev"}, id="no-tasks"),
+        pytest.param({"model": "m1", "split": "dev", "tasks": "t1"}, id="tasks-not-a-list"),
+        pytest.param({"model": "m1", "split": "dev", "tasks": []}, id="no-task-listed"),
+    ],
+)
+def test_a_dev_request_without_a_task_list_is_refused(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str], request_b: dict[str, Any]
+) -> None:
+    """Codex review (ticket 04): requests may differ in their task lists, but a dev request
+    must have one, or the job's requested task set is unknown."""
+    a = write_out(tmp_path, "a", {t: [1.0] for t in DEV})
+    b = write_out(tmp_path, "b", {t: [1.0, 0.0] for t in DEV}, start=1, request=request_b)
+    code, _, err = run_report(tmp_path, manifest, [a, b], capsys)
+    assert code == 2
+    assert "task list" in err
+
+
 def test_jobs_without_a_request_are_refused(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
