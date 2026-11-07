@@ -195,9 +195,11 @@ MERGE_RECORD_KEYS = (
 MERGE_HELP = "one job, or several jobs of one config to merge (evals.report.load_jobs)"
 
 
-def out_of(job: Path) -> Path:
-    """The OUT a job of evals.ablate lives in: `OUT/jobs/<config>` -> `OUT`."""
-    return job.parent.parent
+def out_of(job: Path) -> Path | None:
+    """The OUT a job of evals.ablate lives in: `OUT/jobs/<config>` -> `OUT`; None for a job
+    outside that layout (a standalone Harbor job), whose surroundings are not its OUT."""
+    resolved = job.resolve()
+    return resolved.parent.parent if resolved.parent.name == "jobs" else None
 
 
 def distinct(values: Sequence[Any]) -> int:
@@ -208,7 +210,8 @@ def distinct(values: Sequence[Any]) -> int:
 
 def last_record(job: Path) -> dict[str, Any] | None:
     """The last run record of the job's OUT (`OUT/jobs/<config>` -> `OUT/records/*.json`)."""
-    paths = sorted((out_of(job) / "records").glob("*.json"))
+    out = out_of(job)
+    paths = sorted((out / "records").glob("*.json")) if out else []
     return json.loads(paths[-1].read_text()) if paths else None
 
 
@@ -380,8 +383,11 @@ def check_dev_list(manifest: dict[str, Any], label: Path | str) -> None:
 
 def read_request(job: Path) -> dict[str, Any] | None:
     """The request of the job's OUT (`OUT/jobs/<config>` -> `OUT/request.json`), or None."""
+    out = out_of(job)
+    if out is None:
+        return None
     try:
-        request = json.loads((out_of(job) / "request.json").read_text())
+        request = json.loads((out / "request.json").read_text())
     except (OSError, ValueError):
         return None
     return request if isinstance(request, dict) else None
@@ -402,8 +408,11 @@ def kept_trials(job: Path) -> list[tuple[Path, str | None]]:
     """The trials resumes of the job dropped, kept by evals.ablate under `OUT/dropped/<config>/`
     (each once, by its trial name): each directory with its task, or None for a trial Harbor was
     stopped in (no result.json, so no task)."""
+    out_dir = out_of(job)
+    if out_dir is None:
+        return []
     out: list[tuple[Path, str | None]] = []
-    for kept in sorted(p for p in (out_of(job) / "dropped" / job.name).glob("*") if p.is_dir()):
+    for kept in sorted(p for p in (out_dir / "dropped" / job.name).glob("*") if p.is_dir()):
         result = kept / "result.json"
         task = task_id(json.loads(result.read_text())["task_name"]) if result.is_file() else None
         out.append((kept, task))

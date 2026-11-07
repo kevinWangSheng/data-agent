@@ -275,6 +275,22 @@ def test_a_dev_report_records_the_run_contract(
     }
 
 
+def test_a_standalone_job_reads_no_out_around_it(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex review (ticket 04 return): a Harbor job outside evals.ablate's `OUT/jobs/<config>`
+    layout has no OUT, so a request, run record or dropped trials two levels up are not its
+    own and are not read: the contract is unrecorded and nothing is excluded."""
+    write_out(tmp_path, "full", GOOD, dropped={"t1": 0.02})
+    standalone = tmp_path / "full" / "harbor-jobs" / "full"
+    (tmp_path / "full" / "jobs").rename(standalone.parent)
+    r = report([standalone], manifest, tmp_path / "r", capsys, "dev")
+    assert r["infra_excluded"] == {"trials": 0, "cost_usd": 0}
+    assert (r["run"]["benchmark_commit"], r["run"]["split"]) == (None, None)
+    assert r["run"]["git_commit"] == "c1"
+    assert r["gates"]["infrastructure"]["passed"] is True
+
+
 def test_a_holdout_report_gives_exclusions_as_counts_and_no_gates(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
