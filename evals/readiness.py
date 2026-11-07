@@ -209,22 +209,25 @@ def record(
     checked: list[str],
     warnings: list[dict[str, str]],
     resources: dict[str, Any],
-) -> Path:
+) -> None:
     """OUT/readiness/<stamp>.json: the checks this preflight ran, its warnings and the resources
     it saw."""
     path = out / READINESS_DIR / f"{stamp}.json"
     path.parent.mkdir(exist_ok=True)
     found = {"checked": checked, "warnings": warnings, "resources": resources}
     path.write_text(json.dumps(found, indent=2) + "\n")
-    return path
 
 
 def summary(out: Path) -> dict[str, Any]:
-    """Every preflight recorded under OUT: the checks that ran and all their warnings. `clean`
+    """Every preflight recorded under OUT: the checks any of them ran and their warnings, a
+    finding several preflights made on one config and task (a rerun smokes again) once. `clean`
     is None when no preflight was recorded (no job ran under this OUT from this code)."""
     files = sorted((out / READINESS_DIR).glob("*.json"))
     found = [json.loads(path.read_text()) for path in files]
-    warnings = [w for f in found for w in f["warnings"]]
+    first: dict[tuple[str, str, str], dict[str, str]] = {}
+    for w in (w for f in found for w in f["warnings"]):
+        first.setdefault((w["check"], w["config"], w["task"]), w)
+    warnings = list(first.values())
     checked = sorted({c for f in found for c in f["checked"]})
     return {
         "clean": (not warnings) if found else None,

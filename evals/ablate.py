@@ -24,7 +24,8 @@ billed spend (evals.spend); a job runs to its end once started, so the overshoot
 job. Before the first job that runs
 comes the preflight (ADR-0008): the model account's balance must cover what is left of --budget
 (evals.balance); readiness (evals.readiness) checks the trial limit against the agent's self-stop
-margin and Docker's memory and OUT's free disk against the trials run at once; the wheel cache
+margin, and Docker's memory and the free disk of its data root (when that is on this host; not
+under Colima) against the trials run at once; the wheel cache
 is filled for the platforms of the tasks' images (evals.wheels;
 with a full cache no network); each config runs the manifest's first dev task once, which must
 end with a reward, no error and versioned events, and scrub must check its files (--skip-smoke

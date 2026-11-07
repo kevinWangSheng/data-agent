@@ -38,7 +38,7 @@ PASS = {
     "no-context": 1.0,
     "full-old-skill": 2 / 3,
 }
-GIB = 2**30
+GIB = readiness.GIB
 FAKE_KEY = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
 
 type Outcome = Callable[[str, str, int], tuple[float | None, str | None]]
@@ -1986,3 +1986,25 @@ def test_readiness_warnings_stay_with_out_across_a_rerun(
     found = table(out)["readiness"]
     assert found["clean"] is False
     assert [w["check"] for w in found["warnings"]] == ["deadline"]
+
+
+def test_readiness_states_a_warning_each_rerun_finds_again_once(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Every call that runs a job smokes again: the same finding on the same config and task is
+    one warning in the table, however many preflights found it."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        return (None, "ApiInternalServerError") if broken["yes"] else (1.0, None)
+
+    harbor = FakeHarbor(outcome)
+    harbor.result_fields = lambda smoke, config, task, attempt: (
+        {"terminal_reason": "deadline"} if smoke else {}
+    )
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--fail-fast", "2") == 2
+    broken["yes"] = False
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    assert len(harbor.smoke) == 2
+    assert [w["check"] for w in table(out)["readiness"]["warnings"]] == ["deadline"]
