@@ -5,7 +5,8 @@ The product default is chosen on the dev set from `full`, `baseline` and `no-ver
 as `evals report --split dev` writes it, its jobs merged across stage 1 and stage 2 if need be.
 The table sets each config's success, cost and process evidence side by side and keeps the gates
 apart: correctness (successes of the scored trials), infrastructure errors excluded from the
-score, and efficiency warnings (a full verifier redispatch), which are not correctness failures.
+score (those never rerun to a result fail the infrastructure gate), and efficiency warnings
+(a full verifier redispatch), which are not correctness failures.
 
 Reports are compared only under one run contract: the same code commit, model, benchmark
 commit, machine, split and run parameters (agent kwargs), one Skill version among the configs
@@ -47,6 +48,7 @@ def selection_row(config: str, report: dict[str, Any]) -> dict[str, Any]:
     billed counts lacks those: they are None."""
     successes, trials = report.get("n_succeeded"), report["n_trials"]
     efficiency = (report.get("gates") or {}).get("efficiency")
+    infrastructure = (report.get("gates") or {}).get("infrastructure") or {}
     process = report.get("process")
     gate = (process or {}).get("gate") or {}
     timing = (process or {}).get("timing") or {}
@@ -60,6 +62,7 @@ def selection_row(config: str, report: dict[str, Any]) -> dict[str, Any]:
         "billed_cost_usd": report.get("billed_cost_usd"),
         "cost_per_success_usd": report["cost_usd"] / successes if successes else None,
         "infra_excluded": report.get("infra_excluded"),
+        "infra_unresolved": infrastructure.get("unresolved"),
         "efficiency": None
         if efficiency is None
         else {"passed": efficiency["passed"], "warnings": len(efficiency["warnings"])},
@@ -97,7 +100,8 @@ def selection_markdown(rows: list[dict[str, Any]]) -> list[str]:
     """The selection table: success, cost, the gates and per-trial process means per config."""
     lines = [
         "Gates are kept apart: correctness is the scored trials' successes; infrastructure errors "
-        "were excluded from the score (the gate passes only with none); an efficiency warning "
+        "were excluded from the score (the gate fails only on an unresolved one, a dropped trial "
+        "whose slot was never rerun to a result); an efficiency warning "
         "(a verifier dispatch that re-sent every model) is not a correctness failure. Process "
         "columns are per-trial means except full redispatches, a total; walls are the p50 "
         "in seconds.",
@@ -116,6 +120,7 @@ def selection_markdown(rows: list[dict[str, Any]]) -> list[str]:
             f"{number(row['billed_cost_usd'], '.4f')} | "
             f"{number(row['cost_per_success_usd'], '.4f')} | "
             + (f"{infra['trials']}, {infra['cost_usd']:.4f}" if infra else NONE)
+            + (f" ({row['infra_unresolved']} unresolved)" if row["infra_unresolved"] else "")
             + f" | {efficiency_cell(row['efficiency'])} | "
             f"{number(p.get('full_redispatches'), 'd')} | "
             + " | ".join(

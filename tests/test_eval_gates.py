@@ -62,12 +62,14 @@ def write_out(
     interrupted: list[float] | None = None,
     events: dict[str, list[dict[str, Any]]] | None = None,
     start: int = 0,
+    planned: int | None = None,
 ) -> Path:
     """OUT `root/config` as `evals ablate` leaves it: the job, a run record, the request, and
     the trials a resume deleted, kept as evals.ablate.keep_spend keeps them (result.json and the
     event files moved into the trial's directory under OUT/dropped/<config>/): `dropped`
     infrastructure errors (task -> cost) and `interrupted` trials (their costs; no result.json).
-    Trial `<task>__<i>` from i = `start`."""
+    Trial `<task>__<i>` from i = `start`. The job's Harbor config plans `planned` trials per
+    task (`n_attempts`), by default as many as the most any task has."""
     out = root / config
     job = out / "jobs" / config
     for task, values in rewards.items():
@@ -75,7 +77,8 @@ def write_out(
             name = f"{task}__{i}"
             write_trial(job, task, name, reward, config=config, commit=commit, skill=skill,
                         events=(events or {}).get(name))  # fmt: skip
-    (job / "config.json").write_text("{}")
+    n_attempts = planned if planned is not None else max(map(len, rewards.values()))
+    (job / "config.json").write_text(json.dumps({"n_attempts": n_attempts}))
     (out / "records").mkdir()
     (out / "records" / "20261107T100000Z.json").write_text(json.dumps(record))
     (out / "request.json").write_text(json.dumps(request))
@@ -124,23 +127,61 @@ def report(
 GOOD = {"t1": [1.0, 1.0, 0.0], "t2": [1.0, 1.0, 1.0]}
 
 
-def test_a_dev_report_states_the_infrastructure_errors_it_excluded(
+def test_an_infrastructure_error_rerun_to_a_result_passes_the_gate(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The scored trials are complete; a trial a resume dropped is out of the score, counted
-    with its cost, and fails the infrastructure gate (ADR-0008: infra_error must be 0)."""
+    """Human decision (2026-11-07): the resume reran the dropped trial and its slot now has a
+    result, so the error is resolved. It is out of the score, counted with its cost, and does
+    not fail the infrastructure gate."""
     job = write_out(tmp_path, "full", GOOD, dropped={"t1": 0.02})
     r = report([job], manifest, tmp_path / "r", capsys, "dev")
     assert r["n_trials"] == 6
     assert r["infra_excluded"] == {"trials": 1, "cost_usd": pytest.approx(0.02)}
     gates = r["gates"]
     assert gates["infrastructure"] == {
-        "passed": False,
+        "passed": True,
         "trials": 1,
         "cost_usd": pytest.approx(0.02),
+        "unresolved": 0,
         "interrupted": {"trials": 0, "cost_usd": 0},
     }
     assert gates["correctness"] == {"successes": 5, "failures": 1, "trials": 6}
+
+
+def test_an_infrastructure_error_without_a_rerun_fails_the_gate(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The stage 1 job planned three t1 trials; a resume dropped one with an infrastructure
+    error and never ran it again (two t1 results left). Another job's t1 trial makes the task's
+    count but fills that job's own planned slot, not the dropped one: unresolved, so the gate
+    fails."""
+    a = write_out(
+        tmp_path / "s1", "full", {"t1": [1.0, 1.0], "t2": [1.0, 1.0, 1.0]}, planned=3,
+        dropped={"t1": 0.02},
+    )  # fmt: skip
+    b = write_out(tmp_path / "s2", "full", {"t1": [0.0]}, start=2, planned=1)
+    r = report([a, b], manifest, tmp_path / "r", capsys, "dev")
+    assert r["n_trials"] == 6
+    assert r["infra_excluded"] == {"trials": 1, "cost_usd": pytest.approx(0.02)}
+    infrastructure = r["gates"]["infrastructure"]
+    assert (infrastructure["passed"], infrastructure["unresolved"]) == (False, 1)
+
+
+def test_a_slot_dropped_twice_and_rerun_once_is_resolved(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two resumes dropped an infrastructure error each for t1; the second rerun gave a
+    result, so every planned t1 slot has one and nothing is unresolved."""
+    job = write_out(tmp_path, "full", GOOD)
+    kept = tmp_path / "full" / "dropped" / "full"
+    for i in range(2):
+        name = f"t1__again{i}"
+        write_trial(kept, "t1", name, None, exception="ApiInternalServerError", cost=0.01)
+        flatten_events(kept / name)
+    r = report([job], manifest, tmp_path / "r", capsys, "dev")
+    assert r["infra_excluded"] == {"trials": 2, "cost_usd": pytest.approx(0.02)}
+    assert r["gates"]["infrastructure"]["passed"] is True
+    assert r["gates"]["infrastructure"]["unresolved"] == 0
 
 
 def test_without_dropped_trials_the_infrastructure_gate_passes(
@@ -304,6 +345,7 @@ def test_select_sets_the_three_configs_side_by_side(
     assert full["cost_usd"] == pytest.approx(0.06)
     assert full["cost_per_success_usd"] == pytest.approx(0.06 / 5)
     assert full["infra_excluded"] == {"trials": 1, "cost_usd": pytest.approx(0.04)}
+    assert full["infra_unresolved"] == 0
     assert full["efficiency"] == {"passed": False, "warnings": 1}
     assert "full_redispatches" in full["process"]
     assert rows["baseline"]["efficiency"] == {"passed": True, "warnings": 0}
@@ -311,7 +353,22 @@ def test_select_sets_the_three_configs_side_by_side(
     for config in CONFIGS:
         assert f"| {config} |" in md
     assert "failed (1 warning)" in md
+    assert "unresolved)" not in md
     assert md in printed
+
+
+def test_select_marks_unresolved_infrastructure_errors(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dropped infrastructure error with no rerun of its slot is shown next to the
+    exclusions, since it fails the infrastructure gate."""
+    full = {"dropped": {"t2": 0.04}, "planned": 4}
+    dirs = dev_reports(tmp_path, manifest, capsys, full=full)
+    code, printed = select(dirs, tmp_path / "sel", capsys)
+    assert code == 0, printed
+    rows = json.loads((tmp_path / "sel" / "selection.json").read_text())["configs"]
+    assert rows[0]["infra_unresolved"] == 1
+    assert "| 1, 0.0400 (1 unresolved) |" in (tmp_path / "sel" / "selection.md").read_text()
 
 
 @pytest.mark.parametrize(

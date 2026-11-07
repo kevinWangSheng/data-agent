@@ -398,25 +398,64 @@ def kept_cost(kept_dir: Path) -> float:
         ) from exc
 
 
+def kept_trials(job: Path) -> list[tuple[Path, str | None]]:
+    """The trials resumes of the job dropped, kept by evals.ablate under `OUT/dropped/<config>/`
+    (each once, by its trial name): each directory with its task, or None for a trial Harbor was
+    stopped in (no result.json, so no task)."""
+    out: list[tuple[Path, str | None]] = []
+    for kept in sorted(p for p in (out_of(job) / "dropped" / job.name).glob("*") if p.is_dir()):
+        result = kept / "result.json"
+        task = task_id(json.loads(result.read_text())["task_name"]) if result.is_file() else None
+        out.append((kept, task))
+    return out
+
+
 def excluded_trials(job_dirs: Sequence[Path], tasks: set[str]) -> dict[str, dict[str, Any]]:
-    """The trials resumes of the jobs dropped from the score, kept by evals.ablate under
-    `OUT/dropped/<config>/` (each once, by its trial name), as counts and `cost_usd` alone (no
-    task or trial, so a holdout report may carry them, ADR-0004): `infra_excluded`, the
-    infrastructure errors (a kept result.json) of `tasks`, and `interrupted_excluded`, trials
-    Harbor was stopped in (no result.json, so no task to filter by: the job's own)."""
+    """The trials resumes of the jobs dropped from the score (`kept_trials`), as counts and
+    `cost_usd` alone (no task or trial, so a holdout report may carry them, ADR-0004):
+    `infra_excluded`, the infrastructure errors (a kept result.json) of `tasks`, and
+    `interrupted_excluded`, trials Harbor was stopped in (no task to filter by: the job's own)."""
     out = {key: {"trials": 0, "cost_usd": 0.0} for key in ("infra", "interrupted")}
     for job in job_dirs:
-        for kept in sorted(p for p in (out_of(job) / "dropped" / job.name).glob("*") if p.is_dir()):
-            result = kept / "result.json"
-            if result.is_file():
-                if task_id(json.loads(result.read_text())["task_name"]) not in tasks:
-                    continue
-                key = "infra"
-            else:
-                key = "interrupted"
+        for kept, task in kept_trials(job):
+            if task is not None and task not in tasks:
+                continue
+            key = "interrupted" if task is None else "infra"
             out[key]["trials"] += 1
             out[key]["cost_usd"] += kept_cost(kept)
     return {"infra_excluded": out["infra"], "interrupted_excluded": out["interrupted"]}
+
+
+def planned_attempts(job: Path) -> int:
+    """The trials per task the job's Harbor config plans (`n_attempts`, Harbor's default 1)."""
+    try:
+        config = json.loads((job / "config.json").read_text())
+        attempts = config.get("n_attempts", 1)
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ValueError(
+            "a job's config.json cannot be read, so its planned trials per task are unknown"
+        ) from exc
+    if not isinstance(attempts, int) or attempts < 1:
+        raise ValueError("a job's config.json plans no usable number of trials per task")
+    return attempts
+
+
+def unresolved_infra(trials: list[Trial], job_dirs: Sequence[Path], tasks: set[str]) -> int:
+    """The infrastructure errors resumes dropped (`kept_trials`) of `tasks` that were never rerun
+    to a result (human decision 2026-11-07). A rerun gets a new trial name (Harbor plans
+    `n_attempts` per task and runs the missing ones), so slots are counted per job and task: of
+    the planned trials, those without a scored trial (result.json) in the same job are open, and
+    each dropped error fills at most one open slot. Another job's trial of the task fills that
+    job's own planned slot, never this one."""
+    unresolved = 0
+    for job in job_dirs:
+        dropped = Counter(task for _, task in kept_trials(job) if task in tasks)
+        if not dropped:
+            continue
+        planned = planned_attempts(job)
+        present = Counter(t.task for t in trials if t.dir.parent.resolve() == job.resolve())
+        unresolved += sum(min(n, max(0, planned - present[task])) for task, n in dropped.items())
+    return unresolved
 
 
 # The run contract a report records (`run`): from the trials' version headers, the last run
@@ -453,16 +492,20 @@ FULL_REDISPATCH_LINE = "full_redispatches"
 
 
 def gates(
-    in_split: list[Trial], process: dict[str, Any], excluded: dict[str, dict[str, Any]]
+    in_split: list[Trial],
+    process: dict[str, Any],
+    excluded: dict[str, dict[str, Any]],
+    unresolved: int,
 ) -> dict[str, Any]:
     """A dev report's gates, kept apart: correctness counts the scored trials' successes and
-    failures; infrastructure passes only with no trial excluded as an infrastructure error
-    (ADR-0008: infra_error must be 0), and states the interrupted trials resumes reran, which do
-    not fail it (the operator or Harbor stopped them); efficiency lists each trial with a full
-    redispatch, a warning that is not a correctness failure. Efficiency fails on any warning;
-    without one it passes only when every trial's event file records dispatches, else it is
-    None (unknown). Correctness has no pass line here: the success lines are the human's, per
-    evaluation (ADR-0008)."""
+    failures; infrastructure states the infrastructure errors excluded from the score and passes
+    only with none of them `unresolved` (`unresolved_infra`; human decision 2026-11-07: one
+    rerun to a result is reported, not failed), and states the interrupted trials resumes
+    reran, which do not fail it (the operator or Harbor stopped them); efficiency lists each
+    trial with a full redispatch, a warning that is not a correctness failure. Efficiency fails
+    on any warning; without one it passes only when every trial's event file records
+    dispatches, else it is None (unknown). Correctness has no pass line here: the success
+    lines are the human's, per evaluation (ADR-0008)."""
     successes = sum(1 for t in in_split if is_success(t.reward))
     warnings = [
         {
@@ -482,8 +525,9 @@ def gates(
             "trials": len(in_split),
         },
         "infrastructure": {
-            "passed": excluded["infra_excluded"]["trials"] == 0,
+            "passed": unresolved == 0,
             **excluded["infra_excluded"],
+            "unresolved": unresolved,
             "interrupted": excluded["interrupted_excluded"],
         },
         "efficiency": {
@@ -523,7 +567,8 @@ def write_report(
         process = job_metrics(in_split)
         keys = ("mean_cost_usd_succeeded", "per_task", "timing", "gate")
         report["process"] = {key: process[key] for key in keys}
-        report["gates"] = gates(in_split, process, excluded)
+        unresolved = unresolved_infra(in_split, job_dirs, {t.task for t in in_split})
+        report["gates"] = gates(in_split, process, excluded, unresolved)
         rows = _trial_rows(in_split)
         (out_dir / "trials.json").write_text(json.dumps(rows, indent=2) + "\n")
     (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
