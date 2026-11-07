@@ -12,6 +12,7 @@ the holdout, always whole; with `--split dev`, the dev set or the `--task`s chos
     OUT/records/<UTC time>.json  new on every invocation check_record lets through: start
                               time, benchmark commit, machine
     OUT/smoke/<UTC time>/<config>/  the preflight's smoke job, one dev task once
+    OUT/readiness/<UTC time>.json   the preflight's readiness checks, warnings and resources
     OUT/reports/<UTC time>/   new on every invocation:
         <config>/report.json  `evals report` (holdout: aggregates only)
         ablation.json, ablation.md
@@ -22,10 +23,16 @@ Before each job the spend guard (`evals spend` on OUT) stops the batch at 80% of
 billed spend (evals.spend); a job runs to its end once started, so the overshoot is at most one
 job. Before the first job that runs
 comes the preflight (ADR-0008): the model account's balance must cover what is left of --budget
-(evals.balance); the wheel cache is filled for the platforms of the tasks' images (evals.wheels;
+(evals.balance); readiness (evals.readiness) checks the trial limit against the agent's self-stop
+margin, and Docker's memory and the free disk of its data root (when that is on this host; not
+under Colima) against the trials run at once; the wheel cache
+is filled for the platforms of the tasks' images (evals.wheels;
 with a full cache no network); each config runs the manifest's first dev task once, which must
 end with a reward, no error and versioned events, and scrub must check its files (--skip-smoke
-leaves this out when resuming). Any failure stops the batch before a job. While a job runs, its
+leaves this out when resuming). Any failure stops the batch before a job. A passed smoke trial's
+efficiency findings (a deadline stop, a tool timeout, a full verifier redispatch, input mostly
+missing the prompt cache) are readiness warnings: they do not stop the batch, and the table
+states them under "Readiness" next to the scores, which are the trials' own. While a job runs, its
 new trials are watched: a usage limit or config error, or --fail-fast infrastructure errors in a
 row, stop Harbor and the batch. A finished job is not rerun; an interrupted one, or one with
 infrastructure errors, is resumed with `harbor job resume`, which deletes the errored trials and
@@ -66,6 +73,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -78,7 +86,7 @@ from typing import Any
 
 from data_agent.agent import git_commit, skill_version
 from data_agent.run_config import REPO_ROOT, load_config
-from evals import balance, wheels
+from evals import balance, readiness, wheels
 from evals.harbor import Trial, event_files, events_in, load_trials
 from evals.process import timing_markdown
 from evals.report import (
@@ -465,11 +473,14 @@ def check_balance(out: Path, budget: Decimal) -> None:
     print(f"balance: {found.describe()}, covers the ${left:.2f} left of --budget", flush=True)
 
 
-def smoke(args: argparse.Namespace, configs: list[str], task: str, stamp: str) -> None:
+def smoke(
+    args: argparse.Namespace, configs: list[str], task: str, stamp: str
+) -> list[dict[str, str]]:
     """Each config on one dev task, once, then scrub on its files: a broken config, key, image or
     scrub shows here, before the jobs spend hours (ADR-0008 preflight). Dev, not holdout, so the
-    output may name the task."""
+    output may name the task. Returns the readiness warnings of the smoke trials, which pass."""
     jobs = args.out / "smoke" / stamp
+    warnings: list[dict[str, str]] = []
     for config in configs:
         log = args.out / "logs" / f"smoke-{config}.log"
         print(f"smoke: {config} on {task} -> {log}", flush=True)
@@ -497,6 +508,30 @@ def smoke(args: argparse.Namespace, configs: list[str], task: str, stamp: str) -
                 f"see {args.out / 'logs' / 'guards.log'}"
             )
         print(f"smoke: {config} ok (reward {trial.reward:g}, ${trial.cost_usd:.4f})", flush=True)
+        for found in readiness.smoke_warnings(config, task, trial):
+            print(f"readiness warning: {found['reason']}", flush=True)
+            warnings.append(found)
+    return warnings
+
+
+def concurrent_trials(args: argparse.Namespace, configs: list[str], tasks: list[str]) -> int:
+    """The most trials a job of this call can run at once, at most as many as a job has: a new
+    job takes --n-concurrent, else the job config's; a resumed one the `n_concurrent_trials` its
+    own config.json saved (`harbor job resume` reads it, not this call's)."""
+    n = args.n_concurrent
+    if n is None:
+        found = re.search(r"^n_concurrent_trials:\s*(\d+)", JOB_CONFIG.read_text(), re.MULTILINE)
+        if found is None:
+            raise Stop(f"{JOB_CONFIG} sets no n_concurrent_trials; pass --n-concurrent")
+        n = int(found.group(1))
+    for config in configs:
+        saved = args.out / "jobs" / config / "config.json"
+        if saved.is_file():
+            try:
+                n = max(n, int(json.loads(saved.read_text()).get("n_concurrent_trials") or 0))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise Stop(f"cannot read n_concurrent_trials from {saved}: {exc}") from exc
+    return min(n, len(tasks) * args.trials)
 
 
 def benchmark_commit(tasks_dir: Path) -> str | None:
@@ -701,6 +736,7 @@ def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]
         "reference": REFERENCE,
         "configs": rows,
         "contributions": contributions,
+        "readiness": readiness.summary(args.out),
     }
     (reports / "ablation.json").write_text(json.dumps(table, indent=2) + "\n")
     (reports / "ablation.md").write_text(markdown(table))
@@ -745,6 +781,7 @@ def markdown(table: dict[str, Any]) -> str:
     lines += ["", *selection_markdown([selection_row(row["config"], row) for row in rows])]
     timings = [(row["config"], (row.get("process") or {}).get("timing")) for row in rows]
     lines += ["", *timing_markdown(timings)]
+    lines += ["", *readiness.markdown(table.get("readiness"))]
     return "\n".join(lines) + "\n"
 
 
@@ -758,6 +795,11 @@ def run(args: argparse.Namespace) -> int:
         return 2
     if args.fail_fast < 1:
         print(f"ablate: --fail-fast must be at least 1, got {args.fail_fast}", file=sys.stderr)
+        return 2
+    if args.n_concurrent is not None and args.n_concurrent < 1:
+        print(
+            f"ablate: --n-concurrent must be at least 1, got {args.n_concurrent}", file=sys.stderr
+        )
         return 2
     configs = [c for c in CONFIGS if c in (args.config or CONFIGS)]
     if REFERENCE not in configs:
@@ -812,11 +854,26 @@ def run(args: argparse.Namespace) -> int:
             if prepared:
                 return
             check_balance(args.out, budget)
+            try:
+                resources, checked = readiness.check_environment(
+                    concurrent_trials(args, configs, tasks), args.agent_kwarg
+                )
+            except readiness.NotReady as exc:
+                raise Stop(f"readiness: {exc}; no job starts") from exc
+            if resources["free_disk_bytes"] is None:
+                print(
+                    f"readiness: Docker's data root {resources['docker_root']} is not on this "
+                    "host; its disk is not measured",
+                    flush=True,
+                )
             smoke_tasks = [] if args.skip_smoke else dev[:1]
             prefetch_wheels(args.tasks_dir, [*tasks, *smoke_tasks])
             prepared.append(True)
+            warnings: list[dict[str, str]] = []
             if smoke_tasks:
-                smoke(args, configs, smoke_tasks[0], stamp)
+                warnings = smoke(args, configs, smoke_tasks[0], stamp)
+                checked.extend(readiness.SMOKE_CHECKS)
+            readiness.record(args.out, stamp, checked, warnings, resources)
 
         for config in configs:
             ensure_job(config, args, tasks, prepare)

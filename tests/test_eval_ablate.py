@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 from lifecycle_events import dispatches
 
-from evals import ablate, balance
+from evals import ablate, balance, readiness
 from evals import report as report_module
 from evals.__main__ import main as evals_main
 
@@ -38,6 +38,7 @@ PASS = {
     "no-context": 1.0,
     "full-old-skill": 2 / 3,
 }
+GIB = readiness.GIB
 FAKE_KEY = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
 
 type Outcome = Callable[[str, str, int], tuple[float | None, str | None]]
@@ -187,6 +188,32 @@ def benchmark(monkeypatch: pytest.MonkeyPatch) -> None:
     machine."""
     monkeypatch.setattr(ablate, "benchmark_commit", lambda _dir: "be4c4")
     monkeypatch.setenv("DATA_AGENT_MACHINE", "mac-colima")
+
+
+@pytest.fixture(autouse=True)
+def machine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
+    """What readiness reads of the machine (ticket 02): Docker's memory (None for a Docker that
+    does not answer) and data root, and the free disk there; the real ones need Docker."""
+    root = tmp_path / "docker-root"
+    root.mkdir()
+    found: dict[str, Any] = {
+        "docker_memory": 16 * GIB,
+        "docker_root": str(root),
+        "free_disk": 100 * GIB,
+    }
+
+    def docker_info() -> tuple[int, str]:
+        if found["docker_memory"] is None:
+            raise readiness.NotReady("docker info failed: Cannot connect to the Docker daemon")
+        return found["docker_memory"], found["docker_root"]
+
+    def free_disk(path: Path) -> int:
+        assert path == Path(found["docker_root"])
+        return found["free_disk"]
+
+    monkeypatch.setattr(readiness, "docker_info", docker_info)
+    monkeypatch.setattr(readiness, "free_disk", free_disk)
+    return found
 
 
 REAL_BENCHMARK_COMMIT = ablate.benchmark_commit
@@ -1453,7 +1480,6 @@ def test_an_agent_kwarg_that_is_malformed_or_overrides_the_config_is_refused(
 # --- Evaluation lifecycle contract (eval-readiness-and-lifecycle, ticket 01) ----------------------
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02: a smoke stopped at its deadline is a warning")
 def test_readiness_a_smoke_trial_stopped_at_its_deadline_is_a_warning_the_table_carries(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,
@@ -1487,7 +1513,6 @@ def test_readiness_a_smoke_trial_stopped_at_its_deadline_is_a_warning_the_table_
     assert "warning" in markdown and "deadline" in markdown
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02: readiness warnings reach the ablation table")
 def test_readiness_a_full_model_redispatch_is_a_warning_the_table_carries(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,
@@ -1520,7 +1545,6 @@ def test_readiness_a_full_model_redispatch_is_a_warning_the_table_carries(
     assert "warning" in markdown and "redispatch" in markdown
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 02: the ablation table states readiness")
 def test_readiness_without_findings_is_reported_clean(
     monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
 ) -> None:
@@ -1768,3 +1792,219 @@ def test_a_holdout_table_gives_exclusions_and_no_efficiency_verdict(
     assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full") == 0
     lines = (report_dirs(out)[0] / "ablation.md").read_text().splitlines()
     assert any(line.startswith("| full |") and "| 0, 0.0000 | — |" in line for line in lines)
+
+
+# --- Readiness checks (eval-readiness-and-lifecycle, ticket 02) -----------------------------------
+
+
+def test_readiness_a_trial_timeout_inside_the_agents_self_stop_margin_blocks_every_harbor_run(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The agent stops itself 150 s (the gateway's statement timeout) before its trial deadline
+    (ticket 54): a 100 s limit would end every trial at its start, a systemic failure."""
+    harbor = FakeHarbor()
+    extra = ("--config", "full", "--agent-kwarg", "agent_timeout_sec=100")
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", *extra) == 2
+    err = capsys.readouterr().err
+    assert "agent_timeout_sec" in err and "150" in err
+    assert harbor.calls == harbor.smoke == []
+
+
+def test_readiness_docker_memory_short_of_the_concurrent_trials_blocks_every_harbor_run(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    machine: dict[str, Any],
+) -> None:
+    """A trial peaked at 1762 MiB (the 2026-11-05 audit): 3 concurrent trials (the job config's
+    default) need 5.2 GiB of Docker's memory, 5 GiB is not enough; 2 at a time fit."""
+    machine["docker_memory"] = 5 * GIB
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", "--config", "full") == 2
+    err = capsys.readouterr().err
+    assert "Docker" in err and "3 concurrent trials" in err
+    assert harbor.calls == harbor.smoke == []
+    extra = ("--config", "full", "--n-concurrent", "2")
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out2", *extra) == 0
+
+
+def test_readiness_a_docker_that_does_not_answer_blocks_every_harbor_run(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    machine: dict[str, Any],
+) -> None:
+    machine["docker_memory"] = None
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", "--config", "full") == 2
+    assert "Cannot connect to the Docker daemon" in capsys.readouterr().err
+    assert harbor.calls == harbor.smoke == []
+
+
+def test_readiness_free_disk_short_of_the_concurrent_trials_blocks_every_harbor_run(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    machine: dict[str, Any],
+) -> None:
+    """Each trial's DuckDB may write 4 GiB of temporary files: 3 concurrent trials need 12 GiB."""
+    machine["free_disk"] = 10 * GIB
+    harbor = FakeHarbor()
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", "--config", "full") == 2
+    assert "disk" in capsys.readouterr().err
+    assert harbor.calls == harbor.smoke == []
+
+
+def test_readiness_counts_only_the_trials_that_can_run_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+    dev_manifest: Path,
+    tmp_path: Path,
+    machine: dict[str, Any],
+) -> None:
+    """One dev task once runs one trial at a time, whatever the concurrency: it needs room for
+    one trial only."""
+    machine["docker_memory"], machine["free_disk"] = 2 * GIB, 4 * GIB
+    args = ("--split", "dev", "--task", "dbt-alpha", "--trials", "1", "--config", "full")
+    assert run(monkeypatch, FakeHarbor(), dev_manifest, tmp_path / "out", *args) == 0
+
+
+def test_readiness_states_its_checks_and_the_resources_it_saw(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full") == 0
+    readiness_found = table(out)["readiness"]
+    assert {"agent_timeout", "docker_memory", "disk", "deadline", "full_redispatch"} <= set(
+        readiness_found["checked"]
+    )
+    (path,) = (out / "readiness").iterdir()
+    resources = json.loads(path.read_text())["resources"]
+    assert resources == {
+        "concurrent_trials": 3,
+        "docker_memory_bytes": 16 * GIB,
+        "docker_root": str(tmp_path / "docker-root"),
+        "free_disk_bytes": 100 * GIB,
+        "agent_timeout_sec": 4000.0,
+    }
+
+
+def test_readiness_leaves_a_docker_disk_off_this_host_unmeasured(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    machine: dict[str, Any],
+) -> None:
+    """Under Colima, Docker's data root is a path in its VM: there is no disk here to measure,
+    so the disk check is left out of what readiness states it checked, and blocks nothing."""
+    machine["docker_root"] = "/var/lib/docker-in-a-vm"
+    out = tmp_path / "out"
+    assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full") == 0
+    assert "not measured" in capsys.readouterr().out
+    found = table(out)["readiness"]
+    assert "disk" not in found["checked"] and "docker_memory" in found["checked"]
+    (path,) = (out / "readiness").iterdir()
+    assert json.loads(path.read_text())["resources"]["free_disk_bytes"] is None
+
+
+def test_readiness_a_concurrency_below_one_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Harbor would run the job config's 3 at a time, so a check for 0 would check nothing."""
+    harbor = FakeHarbor()
+    extra = ("--config", "full", "--n-concurrent", "0")
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", *extra) == 2
+    assert "--n-concurrent" in capsys.readouterr().err
+    assert harbor.calls == harbor.smoke == []
+
+
+def test_readiness_counts_the_concurrency_a_resumed_job_was_saved_with(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    machine: dict[str, Any],
+) -> None:
+    """`harbor job resume` runs a job with the `n_concurrent_trials` of its own config.json, not
+    this call's: a job saved with 4 needs room for 4 though the job config says 3."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        return (None, "ApiInternalServerError") if broken["yes"] else (1.0, None)
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--fail-fast", "2") == 2
+    saved = out / "jobs" / "full" / "config.json"
+    saved.write_text(json.dumps(json.loads(saved.read_text()) | {"n_concurrent_trials": 4}))
+    broken["yes"] = False
+    machine["docker_memory"] = 6 * GIB  # room for 3 trials (5.2 GiB), not for 4 (6.9 GiB)
+    calls = len(harbor.calls)
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--skip-smoke") == 2
+    assert "4 concurrent trials" in capsys.readouterr().err
+    assert len(harbor.calls) == calls
+
+
+def test_readiness_without_a_smoke_runs_the_environment_checks_only(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full", "--skip-smoke") == 0
+    found = table(out)["readiness"]
+    assert found["clean"] is True
+    assert "deadline" not in found["checked"] and "docker_memory" in found["checked"]
+
+
+def test_readiness_warnings_stay_with_out_across_a_rerun(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """A batch stopped after its preflight (here a streak of infrastructure errors) and rerun
+    with --skip-smoke still carries the first preflight's warning into its table."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        return (None, "ApiInternalServerError") if broken["yes"] else (1.0, None)
+
+    harbor = FakeHarbor(outcome)
+    harbor.result_fields = lambda smoke, config, task, attempt: (
+        {"terminal_reason": "deadline"} if smoke else {}
+    )
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--fail-fast", "2") == 2
+    assert not report_dirs(out)
+    broken["yes"] = False
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--skip-smoke") == 0
+    found = table(out)["readiness"]
+    assert found["clean"] is False
+    assert [w["check"] for w in found["warnings"]] == ["deadline"]
+
+
+def test_readiness_states_a_warning_each_rerun_finds_again_once(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Every call that runs a job smokes again: the same finding on the same config and task is
+    one warning in the table, however many preflights found it."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        return (None, "ApiInternalServerError") if broken["yes"] else (1.0, None)
+
+    harbor = FakeHarbor(outcome)
+    harbor.result_fields = lambda smoke, config, task, attempt: (
+        {"terminal_reason": "deadline"} if smoke else {}
+    )
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--fail-fast", "2") == 2
+    broken["yes"] = False
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    assert len(harbor.smoke) == 2
+    assert [w["check"] for w in table(out)["readiness"]["warnings"]] == ["deadline"]
