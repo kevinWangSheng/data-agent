@@ -513,15 +513,23 @@ def smoke(
     return warnings
 
 
-def concurrent_trials(args: argparse.Namespace, tasks: list[str]) -> int:
-    """How many trials a job runs at once: --n-concurrent, else the job config's, at most as
-    many as the job has."""
+def concurrent_trials(args: argparse.Namespace, configs: list[str], tasks: list[str]) -> int:
+    """The most trials a job of this call can run at once, at most as many as a job has: a new
+    job takes --n-concurrent, else the job config's; a resumed one the `n_concurrent_trials` its
+    own config.json saved (`harbor job resume` reads it, not this call's)."""
     n = args.n_concurrent
     if n is None:
         found = re.search(r"^n_concurrent_trials:\s*(\d+)", JOB_CONFIG.read_text(), re.MULTILINE)
         if found is None:
             raise Stop(f"{JOB_CONFIG} sets no n_concurrent_trials; pass --n-concurrent")
         n = int(found.group(1))
+    for config in configs:
+        saved = args.out / "jobs" / config / "config.json"
+        if saved.is_file():
+            try:
+                n = max(n, int(json.loads(saved.read_text()).get("n_concurrent_trials") or 0))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise Stop(f"cannot read n_concurrent_trials from {saved}: {exc}") from exc
     return min(n, len(tasks) * args.trials)
 
 
@@ -787,6 +795,11 @@ def run(args: argparse.Namespace) -> int:
     if args.fail_fast < 1:
         print(f"ablate: --fail-fast must be at least 1, got {args.fail_fast}", file=sys.stderr)
         return 2
+    if args.n_concurrent is not None and args.n_concurrent < 1:
+        print(
+            f"ablate: --n-concurrent must be at least 1, got {args.n_concurrent}", file=sys.stderr
+        )
+        return 2
     configs = [c for c in CONFIGS if c in (args.config or CONFIGS)]
     if REFERENCE not in configs:
         print(f"ablate: --config must include {REFERENCE}, the reference", file=sys.stderr)
@@ -841,15 +854,20 @@ def run(args: argparse.Namespace) -> int:
                 return
             check_balance(args.out, budget)
             try:
-                resources = readiness.check_environment(
-                    args.out, concurrent_trials(args, tasks), args.agent_kwarg
+                resources, checked = readiness.check_environment(
+                    concurrent_trials(args, configs, tasks), args.agent_kwarg
                 )
             except readiness.NotReady as exc:
                 raise Stop(f"readiness: {exc}; no job starts") from exc
+            if resources["free_disk_bytes"] is None:
+                print(
+                    f"readiness: Docker's data root {resources['docker_root']} is not on this "
+                    "host; its disk is not measured",
+                    flush=True,
+                )
             smoke_tasks = [] if args.skip_smoke else dev[:1]
             prefetch_wheels(args.tasks_dir, [*tasks, *smoke_tasks])
             prepared.append(True)
-            checked: list[str] = [*readiness.ENVIRONMENT_CHECKS]
             warnings: list[dict[str, str]] = []
             if smoke_tasks:
                 warnings = smoke(args, configs, smoke_tasks[0], stamp)

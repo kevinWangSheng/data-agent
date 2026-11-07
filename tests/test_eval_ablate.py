@@ -191,21 +191,27 @@ def benchmark(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def machine(monkeypatch: pytest.MonkeyPatch) -> dict[str, int | None]:
-    """What readiness reads of the machine (ticket 02): Docker's memory, None for a Docker that
-    does not answer, and the free disk under OUT; the real ones need Docker and this disk."""
-    found: dict[str, int | None] = {"docker_memory": 16 * GIB, "free_disk": 100 * GIB}
+def machine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
+    """What readiness reads of the machine (ticket 02): Docker's memory (None for a Docker that
+    does not answer) and data root, and the free disk there; the real ones need Docker."""
+    root = tmp_path / "docker-root"
+    root.mkdir()
+    found: dict[str, Any] = {
+        "docker_memory": 16 * GIB,
+        "docker_root": str(root),
+        "free_disk": 100 * GIB,
+    }
 
-    def docker_memory() -> int:
+    def docker_info() -> tuple[int, str]:
         if found["docker_memory"] is None:
             raise readiness.NotReady("docker info failed: Cannot connect to the Docker daemon")
-        return found["docker_memory"]
+        return found["docker_memory"], found["docker_root"]
 
     def free_disk(path: Path) -> int:
-        assert path.is_dir()
-        return found["free_disk"] or 0
+        assert path == Path(found["docker_root"])
+        return found["free_disk"]
 
-    monkeypatch.setattr(readiness, "docker_memory", docker_memory)
+    monkeypatch.setattr(readiness, "docker_info", docker_info)
     monkeypatch.setattr(readiness, "free_disk", free_disk)
     return found
 
@@ -1812,7 +1818,7 @@ def test_readiness_docker_memory_short_of_the_concurrent_trials_blocks_every_har
     manifest: Path,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    machine: dict[str, int | None],
+    machine: dict[str, Any],
 ) -> None:
     """A trial peaked at 1762 MiB (the 2026-11-05 audit): 3 concurrent trials (the job config's
     default) need 5.2 GiB of Docker's memory, 5 GiB is not enough; 2 at a time fit."""
@@ -1831,7 +1837,7 @@ def test_readiness_a_docker_that_does_not_answer_blocks_every_harbor_run(
     manifest: Path,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    machine: dict[str, int | None],
+    machine: dict[str, Any],
 ) -> None:
     machine["docker_memory"] = None
     harbor = FakeHarbor()
@@ -1845,7 +1851,7 @@ def test_readiness_free_disk_short_of_the_concurrent_trials_blocks_every_harbor_
     manifest: Path,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    machine: dict[str, int | None],
+    machine: dict[str, Any],
 ) -> None:
     """Each trial's DuckDB may write 4 GiB of temporary files: 3 concurrent trials need 12 GiB."""
     machine["free_disk"] = 10 * GIB
@@ -1859,7 +1865,7 @@ def test_readiness_counts_only_the_trials_that_can_run_at_once(
     monkeypatch: pytest.MonkeyPatch,
     dev_manifest: Path,
     tmp_path: Path,
-    machine: dict[str, int | None],
+    machine: dict[str, Any],
 ) -> None:
     """One dev task once runs one trial at a time, whatever the concurrency: it needs room for
     one trial only."""
@@ -1882,9 +1888,70 @@ def test_readiness_states_its_checks_and_the_resources_it_saw(
     assert resources == {
         "concurrent_trials": 3,
         "docker_memory_bytes": 16 * GIB,
+        "docker_root": str(tmp_path / "docker-root"),
         "free_disk_bytes": 100 * GIB,
         "agent_timeout_sec": 4000.0,
     }
+
+
+def test_readiness_leaves_a_docker_disk_off_this_host_unmeasured(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    machine: dict[str, Any],
+) -> None:
+    """Under Colima, Docker's data root is a path in its VM: there is no disk here to measure,
+    so the disk check is left out of what readiness states it checked, and blocks nothing."""
+    machine["docker_root"] = "/var/lib/docker-in-a-vm"
+    out = tmp_path / "out"
+    assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full") == 0
+    assert "not measured" in capsys.readouterr().out
+    found = table(out)["readiness"]
+    assert "disk" not in found["checked"] and "docker_memory" in found["checked"]
+    (path,) = (out / "readiness").iterdir()
+    assert json.loads(path.read_text())["resources"]["free_disk_bytes"] is None
+
+
+def test_readiness_a_concurrency_below_one_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Harbor would run the job config's 3 at a time, so a check for 0 would check nothing."""
+    harbor = FakeHarbor()
+    extra = ("--config", "full", "--n-concurrent", "0")
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", *extra) == 2
+    assert "--n-concurrent" in capsys.readouterr().err
+    assert harbor.calls == harbor.smoke == []
+
+
+def test_readiness_counts_the_concurrency_a_resumed_job_was_saved_with(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    machine: dict[str, Any],
+) -> None:
+    """`harbor job resume` runs a job with the `n_concurrent_trials` of its own config.json, not
+    this call's: a job saved with 4 needs room for 4 though the job config says 3."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        return (None, "ApiInternalServerError") if broken["yes"] else (1.0, None)
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--fail-fast", "2") == 2
+    saved = out / "jobs" / "full" / "config.json"
+    saved.write_text(json.dumps(json.loads(saved.read_text()) | {"n_concurrent_trials": 4}))
+    broken["yes"] = False
+    machine["docker_memory"] = 6 * GIB  # room for 3 trials (5.2 GiB), not for 4 (6.9 GiB)
+    calls = len(harbor.calls)
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--skip-smoke") == 2
+    assert "4 concurrent trials" in capsys.readouterr().err
+    assert len(harbor.calls) == calls
 
 
 def test_readiness_without_a_smoke_runs_the_environment_checks_only(

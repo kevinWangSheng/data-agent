@@ -18,9 +18,10 @@ Blockers, checked before the wheel fill and the smoke:
   latency-audit.md: 1762 MiB; 4 concurrent trials peaked at 3676 of 7940 MB together). DuckDB's
   own cap (2 GiB, data_agent.gateway) is not used: no trial reached it, and a 2 GiB Docker VM,
   which runs one trial, would fail it. A Docker that does not answer blocks too;
-- `disk`: the disk under OUT must hold the temporary files those trials' DuckDB may write. It is
-  the disk of OUT; where Docker keeps its disk elsewhere (a VM, as Colima on the Mac), the
-  containers' own disk is not measured.
+- `disk`: Docker's data root (`docker info`'s DockerRootDir, where the containers write) must
+  have room for the temporary files those trials' DuckDB may write (its cap, data_agent.gateway).
+  Where that root is not on this host (Colima keeps it in its VM) the disk is not measured: the
+  check is left out of `checked` and blocks nothing.
 
 Warnings, from each config's smoke trial:
 
@@ -32,8 +33,8 @@ Warnings, from each config's smoke trial:
 
 Cost and time are bounded: no model call, no Harbor run beyond the existing smoke (one trial per
 config), nothing per task or per trial of the batch. The environment checks are one `docker
-info` (at most DOCKER_TIMEOUT_S) and one disk-usage call; the smoke checks read each config's
-one smoke trial, already paid for.
+info` (at most DOCKER_TIMEOUT_S) and at most one disk-usage call; the smoke checks read each
+config's one smoke trial, already paid for.
 """
 
 import json
@@ -49,7 +50,6 @@ from evals.harbor import Trial
 from evals.process import DEADLINE, trial_metrics
 
 READINESS_DIR = "readiness"
-ENVIRONMENT_CHECKS = ("agent_timeout", "docker_memory", "disk")
 SMOKE_CHECKS = ("deadline", "tool_timeout", "full_redispatch", "prompt_cache")
 GIB = 2**30
 TRIAL_PEAK_MEMORY_BYTES = 1762 * 2**20
@@ -70,17 +70,18 @@ def gib(size: str) -> int:
 TRIAL_TEMP_BYTES = gib(DUCKDB_MAX_TEMP_DIRECTORY_SIZE)
 
 
-def docker_memory() -> int:
-    """Bytes of memory Docker's containers share (`docker info`)."""
-    command = ["docker", "info", "--format", "{{.MemTotal}}"]
+def docker_info() -> tuple[int, str]:
+    """Bytes of memory Docker's containers share, and Docker's data root (`docker info`)."""
+    command = ["docker", "info", "--format", "{{.MemTotal}} {{.DockerRootDir}}"]
     try:
         proc = subprocess.run(command, capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise NotReady(f"docker info failed: {exc}") from exc
     if proc.returncode != 0:
         raise NotReady(f"docker info failed: {proc.stderr.strip() or f'exit {proc.returncode}'}")
+    memory, _, root = proc.stdout.strip().partition(" ")
     try:
-        return int(proc.stdout.strip())
+        return int(memory), root
     except ValueError as exc:
         raise NotReady(f"docker info gave no memory size: {proc.stdout.strip()!r}") from exc
 
@@ -107,8 +108,9 @@ def agent_timeout(agent_kwargs: list[str]) -> float:
         raise NotReady(f"{AGENT_TIMEOUT_KWARG}={values[-1]} is not a number of seconds") from exc
 
 
-def check_environment(out: Path, concurrent: int, agent_kwargs: list[str]) -> dict[str, Any]:
-    """The blockers, for `concurrent` trials at a time; the resources seen when none fires."""
+def check_environment(concurrent: int, agent_kwargs: list[str]) -> tuple[dict[str, Any], list[str]]:
+    """The blockers, for `concurrent` trials at a time. When none fires: the resources seen and
+    the checks that ran (`disk` only where Docker's data root is on this host)."""
     timeout = agent_timeout(agent_kwargs)
     if not (math.isfinite(timeout) and timeout > DEADLINE_MARGIN_S):
         raise NotReady(
@@ -116,7 +118,7 @@ def check_environment(out: Path, concurrent: int, agent_kwargs: list[str]) -> di
             f"{DEADLINE_MARGIN_S:g} s before its trial deadline, so every trial would stop at "
             f"once; give more than {DEADLINE_MARGIN_S:g}"
         )
-    memory = docker_memory()
+    memory, root = docker_info()
     if memory < concurrent * TRIAL_PEAK_MEMORY_BYTES:
         raise NotReady(
             f"Docker has {memory / GIB:.1f} GiB of memory; {concurrent} concurrent trials need "
@@ -124,20 +126,25 @@ def check_environment(out: Path, concurrent: int, agent_kwargs: list[str]) -> di
             f"{TRIAL_PEAK_MEMORY_BYTES / GIB:.2f} GiB): lower --n-concurrent or give Docker more "
             "memory"
         )
-    disk = free_disk(out)
-    if disk < concurrent * TRIAL_TEMP_BYTES:
-        raise NotReady(
-            f"the disk under {out} has {disk / GIB:.1f} GiB free; {concurrent} concurrent trials "
-            f"need {concurrent * TRIAL_TEMP_BYTES / GIB:g} GiB (each trial's DuckDB may write "
-            f"{DUCKDB_MAX_TEMP_DIRECTORY_SIZE} of temporary files): free disk space or lower "
-            "--n-concurrent"
-        )
-    return {
+    checked = ["agent_timeout", "docker_memory"]
+    disk = free_disk(Path(root)) if root and Path(root).is_dir() else None
+    if disk is not None:
+        checked.append("disk")
+        if disk < concurrent * TRIAL_TEMP_BYTES:
+            raise NotReady(
+                f"the disk of Docker's data root {root} has {disk / GIB:.1f} GiB free; "
+                f"{concurrent} concurrent trials need {concurrent * TRIAL_TEMP_BYTES / GIB:g} GiB "
+                f"(each trial's DuckDB may write {DUCKDB_MAX_TEMP_DIRECTORY_SIZE} of temporary "
+                "files): free disk space or lower --n-concurrent"
+            )
+    resources = {
         "concurrent_trials": concurrent,
         "docker_memory_bytes": memory,
+        "docker_root": root,
         "free_disk_bytes": disk,
         "agent_timeout_sec": timeout,
     }
+    return resources, checked
 
 
 def warning(check: str, config: str, task: str, reason: str) -> dict[str, str]:

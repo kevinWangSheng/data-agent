@@ -93,16 +93,16 @@ def completed(code: int, stdout: str = "", stderr: str = "") -> subprocess.Compl
     return subprocess.CompletedProcess(["docker"], code, stdout, stderr)
 
 
-def test_docker_memory_reads_docker_info(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_docker_info_gives_its_memory_and_data_root(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[list[str]] = []
 
     def fake_run(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         seen.append(command)
-        return completed(0, "8221065216\n")
+        return completed(0, "8221065216 /var/lib/docker\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert readiness.docker_memory() == 8221065216
-    assert seen == [["docker", "info", "--format", "{{.MemTotal}}"]]
+    assert readiness.docker_info() == (8221065216, "/var/lib/docker")
+    assert seen == [["docker", "info", "--format", "{{.MemTotal}} {{.DockerRootDir}}"]]
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_a_docker_that_does_not_answer_is_not_ready(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(readiness.NotReady, match=message):
-        readiness.docker_memory()
+        readiness.docker_info()
 
 
 def test_the_agents_default_trial_limit_is_read_from_the_agent() -> None:
