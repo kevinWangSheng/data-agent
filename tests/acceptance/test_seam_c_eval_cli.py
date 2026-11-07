@@ -219,6 +219,39 @@ def test_dev_report_has_per_task_outcomes(tmp_path: Path) -> None:
         assert task not in everything
 
 
+def test_holdout_report_stays_aggregate_with_lifecycle_findings(tmp_path: Path) -> None:
+    """Evaluation lifecycle (eval-readiness-and-lifecycle): whatever gates and efficiency
+    warnings a report gains, a holdout trial that re-dispatched every model and stopped at its
+    deadline still shows in the holdout report as aggregates only, naming no task or trial."""
+    job = tmp_path / "job"
+    shutil.copytree(HARBOR_JOB, job)
+    models = [f"model_{i:02d}" for i in range(21)]
+    lines = [
+        {"type": "version", "git_commit": "c1", "skill_version": "s1", "config": "full"},
+        {"type": "verifier_dispatch", "n": 1, "models": models, "source": "first"},
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "v1"},
+        {"type": "verifier_dispatch", "n": 2, "models": models, "source": "again"},
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "v2"},
+        {"type": "result", "subtype": "success", "terminal_reason": "deadline", "cost_usd": 0.1},
+    ]
+    for trial in (p for p in job.iterdir() if p.is_dir()):
+        (trial / "agent" / "events").mkdir(parents=True)
+        events = "".join(json.dumps(line) + "\n" for line in lines)
+        (trial / "agent" / "events" / "run-1.jsonl").write_text(events)
+    out = tmp_path / "report"
+    proc = evals(
+        "report",
+        str(job),
+        *("--manifest", str(EVAL_MANIFEST), "--split", "holdout", "--out", str(out)),
+    )
+    assert proc.returncode == 0, proc.stderr
+    files = [p for p in sorted(out.rglob("*")) if p.is_file()]
+    assert [p.name for p in files] == ["report.json"]
+    everything = proc.stdout + proc.stderr + files[0].read_text()
+    for detail in (*HOLDOUT_TASKS, *DEV_TASKS, "Qm3xT9a", "Lp8vR2c", "Zk4nW7e", "per_task"):
+        assert detail not in everything, f"{detail!r} leaked into the holdout report"
+
+
 # --- Scrub ----------------------------------------------------------------------------------
 
 
