@@ -139,6 +139,44 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
 - 有 accept-2 数据的指标（`ended_with_unresolved`、`ended_unverified`、守卫拒绝、超长输出）：按每 trial 平均次数，分别和 accept-2 的 full、baseline 比，不高于才算过。
 - accept-2 没有数据的指标（工具超时、截止自停）：不设比较线；出现就把那个 trial 列为异常，交子 agent 读，不直接判不过。
 - 回归集：5 道目标题 ×3 直接比成功次数；其余回归题只跑 ×1，accept-2 里 ≥2/3、这次失败的，列为异常去读，不直接判不过。
-- 一票否决：infra_error 不为 0；63、64 的三条线没全过。验证器墙钟中位数是每个 trial 的验证器墙钟（工单 51 的口径，`process.py` 的 `verifier_wall_s`）的中位数。
+- 一票否决：有未解决的 infra 错误；63、64 的三条线没全过。闸门通过 = 没有未解决的 infra 错误：被续跑丢弃、同一 job 里该题的 trial 槽位已由重跑补出结果的 infra 错误不判不过，只报数量和花费（人定 2026-11-07，见下面 Update 2026-11-07）。63、64 三条线里 pos-operations 重派那条按 Update 2026-11-07 改为效率告警，不再一票否决；它没过时照实报告为没过，第 2 段仍由人确认后才跑。验证器墙钟中位数是每个 trial 的验证器墙钟（工单 51 的口径，`process.py` 的 `verifier_wall_s`）的中位数。
 - 并行工单的合并冲突：只是位置冲突时，由编排会话 rebase、重跑 CI、再请 Codex 审；语义冲突退回后合入的那张工单，在原分支上解决，计入它的退回轮数。
 - 第 1 段（70 个 trial，约 ¥44）已由人在 2026-11-06 批准；只有第 2 段开跑前要人确认。
+
+## Update 2026-11-07：评测生命周期（eval-readiness 02–04）
+
+第 1 段（`runs/u1-target`、`runs/u1-full-rest`，b7c6071）跑完后，人决定先把评测流程定成一份契约，再决定第 2 段。spec 在 `.scratch/eval-readiness-and-lifecycle/spec.md`，实现是工单 02（PR #71）、03（PR #69）、04（PR #70）。冲突处以本节为准。
+
+- **轻量 readiness**（工单 02，`evals/readiness.py`）：`ablate` 预检里原有的余额、wheel、冒烟、scrub、运行记录和 request 检查不变，另加几项浅检查。它不是性能审计，不按题、不按 trial 加探针。
+  - 阻断（第一个 job 前退出 2）：`agent_timeout_sec` 不大于 agent 的 150 s 自停余量；`docker info` 失败或 30 s 内无响应；Docker 内存低于 并发 trial 数 × 1762 MiB（2026-11-05 审计的单 trial 峰值）；Docker data root 在本机时，剩余磁盘低于 并发 trial 数 × 4 GiB（DuckDB 临时文件上限）。
+  - 告警（不阻断，写进 `OUT/readiness/<UTC 时间>.json` 和 `ablation.md` 的 "Readiness"）：只读每个配置那 1 个已付费的冒烟 trial——截止自停、工具语句超时、全量重派、prompt cache 命中率低于 50%。`--skip-smoke` 续跑时没有冒烟，这四项不查。
+  - 花费上限：0 次额外模型调用、0 次额外 Harbor 运行（冒烟本来就有，每配置 1 个 trial）；环境检查是 1 次 `docker info` 加最多 1 次查磁盘。
+  - 不查的：任务特有的长尾（冒烟只跑开发集第 1 题，pos-operations 这类重派冒烟看不到，由 04 的效率闸门在全部 dev trial 上兜底）、重复的相同工具调用（会误报）。
+- **续跑边界**（工单 03）：
+  - 已完成的 job 不重跑；中断（没有 `result.json`）和基础设施报错的 trial 由 `harbor job resume` 删掉重跑，同一 request。
+  - 删之前把它们的事件文件移到 `OUT/dropped/<config>/`（有 `result.json` 的另复制一份过去）：不进计分表，花费仍记一次（事件文件是移动不是复制，不重复计）。
+  - 逻辑失败（答错、agent 用完时间）是结果，留在计分表里，不自动重跑；要重跑须另开一次运行。
+  - 代码 commit、Skill 版本、benchmark commit、机器、model、split、题目或 `--agent-kwarg` 和 OUT 里已有的不同，就拒绝复用和续跑（退出 2），换一个 `--out`。代码 commit 和 Skill 版本是和 job 里已有结果的 trial 的 version 头比；一个结果都没有的 job 不比（已知限制，见 `docs/setup.md`），所以改了代码就换新的 `--out`。
+  - 额度用完、配置错误、连续 `--fail-fast` 个基础设施报错照旧立即停批次。
+- **三道闸门分开报**（工单 04，`evals report` 的 `gates`，`evals select`）：
+  - 正确性：成功、失败、trial 数。通过线由每次评测的 ADR 条款定（第 1 段是"成功 ≥12/15"）。
+  - 基础设施：**闸门通过 = 没有未解决的 infra 错误**，不是"没有 infra 错误"（人定 2026-11-07）。未解决 = 被丢弃的 infra 错误 trial，在同一 job 里该题的计划 trial 数还没由带 `result.json` 的 trial 补齐。已经重跑出结果的只在 `infra_excluded` 里报数量和 `cost_usd`；被续跑丢弃的中断 trial 在 `interrupted` 里只报不判。按本 ADR 的布局（每道题在合并的各 job 里计划的 trial 数加起来正好是 3，如目标题 ×3、其余题 ×1 加 ×2），未解决的 infra 错误会让 `check_complete` 直接拒绝出报告（"do not have exactly 3 trials" 或 "infrastructure errors … rerun those trials first"），所以能写出来的报告这道闸门总是通过——比人定更严。
+  - 效率：同一 trial 里后续的一次派单若 `source="fallback_all"`，或 `source="again"` 且模型集合与首次派单相同，记一次全量重派；每个有全量重派的 trial 一条 warning，有 warning 这道闸门就不过（`passed: false`）。它不改正确性的计数。
+- **第 1 段的结论按三道闸门写**：
+  - 正确性线过（目标题 14/15，≥12）；基础设施线过（infra_error 0，没有未解决的）；验证器墙钟线过（中位数 305 s，<337 s）。
+  - 效率线**没过**：pos-operations 的重派列表没有少于 21 个模型（NvPFUAo、p8TpFk3 后续派单重派了全部 21 个；7cGbUhG 的 21 个是首次派单，之后是 6、5；原因见 HANDOFF 编排会话进度）。它按 spec 归为效率告警，不算新的正确性失败；但报告和任何总结都只能写"正确性与基础设施线通过、效率线有告警"，不能写成第 1 段闸门全过。
+  - 用 04 的 `gates()` 按上面的全量重派规则重算第 1 段的 full job（$0，2026-11-07）：`u1-target` 有 4 个 trial 告警（pos-operations 2 个，dbt-fix-division-by-zero 2 个，分别 9 次、4 次），`u1-full-rest` 有 6 个（6 道题各 1 个）；两个 OUT 的基础设施都是 `unresolved` 0、`infra_excluded` 0。所以效率告警不只在 pos 上；这些都只报不判正确性，第 2 段前由人一起看。
+  - 第 1 段本身出不了 `evals report`：它要求覆盖整个开发集、每题正好 3 次，第 1 段的闸门由 `runs/u1-gate/gate.py` 算。两段合并后才有完整报告。
+  - 把这条线改成产品的硬性要求，要人另行决定后再实现。
+- **第 1 段与第 2 段合并的条件**：代码 commit、Skill 版本、benchmark commit、model、机器、split、`agent_kwargs` 全部一致，合并后覆盖整个开发集、每配置每题正好 3 次（两段各自请求的题目不同是设计如此，`request.json` 只有 `tasks` 可以不同）。`evals report OUT1/jobs/<config> OUT2/jobs/<config> …` 和 `evals select` 对不一致的直接拒绝（退出 2），不合并。
+  - 代码或评测行为改了，第 1 段作废，要在新的固定 commit 上重跑第 1 段，再跑第 2 段。trial 的 `git_commit` 是构建 agent wheel 的那个 checkout 的 HEAD，所以 main 上任何新提交（哪怕只改 `evals/`）都会让新跑的 trial 和第 1 段对不上。
+  - 现状（2026-11-07）：main 已在 b7c6071 之后合入 eval-readiness 01–04，`git diff b7c6071 -- src/ skills/` 为空、`evals/` 有改动。在 b7c6071 上跑第 2 段能和第 1 段合并，但那次运行用不到 02 的 readiness 和 03 的续跑记账；在新 main 上跑就要先重跑第 1 段（第 1 段这次实际花了 $6.49，约 ¥47）。二选一由人定。
+- **三配置选默认 ≠ 六配置消融**：
+  - 开发集上 full、baseline、no-verifiers 的比较（`evals select`）是选产品默认配置的实验，规则见 Update 2026-11-04 的"统一评估"。no-verifiers 留着，是判断验证层值不值它的花费和时延的直接证据。
+  - 留出集 6 配置消融是之后一次性的组件归因实验，要等开发集的选择做完、并且项目确实需要归因证据时才跑。它不属于 readiness，也不因为某一条效率告警自动触发。
+  - 留出集报告照旧只出汇总（ADR-0004）。
+- **人工决定点**（都不自动进入下一步）：
+  1. 第 2 段开跑前：接受 readiness 和第 1 段的结果（含 pos 的效率告警）；在 b7c6071 上跑，还是先在新 commit 上重跑第 1 段；第 2 段 baseline 的题目范围；止损线和余额。
+  2. 留出集 6 配置消融前：开发集选择已完成，并确认需要组件归因；按 plan §10 第 15 项核算花费并确认。
+  3. data-eng-bench 全量前：同第 15 项的花费确认（plan §10 第 17 项）。
+  4. DAB 正式评测前：同第 15 项的花费确认，且工单 61 已合入（plan §10 第 18 项）。
