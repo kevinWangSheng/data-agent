@@ -26,6 +26,7 @@ Branch: —
 ## Acceptance
 
 - [ ] ADR and plan state the lightweight readiness scope and its bounded cost.
+- [ ] ADR-0008:142 的"一票否决：infra_error 不为 0"改为只按未解决的 infra 错误判；已重跑出结果的只报数量和花费（人定 2026-11-07，实现见 04）。措辞写"闸门通过 = 没有未解决的 infra 错误"，不写"没有 infra 错误"；并写明 ADR 布局下未解决的错误会让 `check_complete` 直接拒绝出报告（见 04 已知限制）。
 - [ ] Setup documentation states the resume boundary and spend-accounting behavior.
 - [ ] Stage 1/Stage 2 same-contract requirements and invalidation after code changes are documented.
 - [ ] The `pos-operations` efficiency warning is reported without claiming that the efficiency line passed.
