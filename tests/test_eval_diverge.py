@@ -133,6 +133,7 @@ def test_process_metrics_per_task_come_from_the_event_files(
         "oversize_outputs": 0,
         "verifier_dispatches": 0,
         "dispatch_models": [],
+        "full_redispatches": 0,  # eval-readiness ticket 04
         "verifier_calls": 1,
         "verifier_checks": {"PASS": 2},
         "model_edits": 3,

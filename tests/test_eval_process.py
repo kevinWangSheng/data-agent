@@ -488,7 +488,6 @@ def test_trials_of_a_version_that_predates_dispatch_events_all_leave_them_unknow
     assert (gate["trials_with_dispatches_recorded"], gate["verifier_dispatches"]) == (2, 0.5)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 04: full-model redispatches per trial")
 @pytest.mark.parametrize(
     ("counts", "full"),
     [((21,), 0), ((21, 6, 5), 0), ((21, 17, 3, 1, 21), 1), ((21, 21, 21), 2)],
@@ -503,7 +502,6 @@ def test_a_trial_counts_its_dispatches_that_resend_every_model(
     assert trial_metrics(trial)["full_redispatches"] == full
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 04: full-model redispatches per trial")
 def test_full_redispatches_are_unknown_in_an_event_file_before_dispatch_events(
     tmp_path: Path,
 ) -> None:
@@ -514,3 +512,51 @@ def test_full_redispatches_are_unknown_in_an_event_file_before_dispatch_events(
         {"type": "result", "subtype": "success"},
     )
     assert trial_metrics(trial)["full_redispatches"] is None
+
+
+# --- full_redispatches rule (eval-readiness-and-lifecycle ticket 04, human rule 2026-11-07) ---
+
+
+def dispatch(n: int, models: list[str], source: str) -> dict[str, Any]:
+    return {"type": "verifier_dispatch", "n": n, "models": models, "source": source}
+
+
+FIRST = dispatch(1, ["a", "b", "c"], "first")
+
+
+@pytest.mark.parametrize(
+    ("later", "full"),
+    [
+        pytest.param([dispatch(2, ["a"], "fallback_all")], 1, id="fallback_all-counts"),
+        pytest.param([dispatch(2, ["a", "b", "c"], "again")], 1, id="again-same-set"),
+        pytest.param([dispatch(2, ["c", "a", "b"], "again")], 1, id="again-same-set-reordered"),
+        pytest.param([dispatch(2, ["a", "b", "x"], "again")], 0, id="again-same-count-other"),
+        pytest.param([dispatch(2, ["a", "b"], "again")], 0, id="again-subset"),
+        pytest.param([], 0, id="first-dispatch-alone"),
+        pytest.param(
+            [dispatch(2, ["a", "b", "c"], "again"), dispatch(3, ["b"], "fallback_all")],
+            2,
+            id="each-later-dispatch-counts",
+        ),
+    ],
+)
+def test_full_redispatches_follow_the_source_and_model_set_rule(
+    tmp_path: Path, later: list[dict[str, Any]], full: int
+) -> None:
+    """A later dispatch is a full redispatch when its source is `fallback_all`, or when it is
+    `again` and lists the first dispatch's models as a set; the first dispatch never counts."""
+    trial = trial_with(tmp_path, FIRST, *later, {"type": "result", "subtype": "success"})
+    assert trial_metrics(trial)["full_redispatches"] == full
+
+
+def test_task_and_gate_metrics_total_full_redispatches(tmp_path: Path) -> None:
+    """Per task and over the job, full redispatches are totals of the trials recording them."""
+    trials = [
+        named_trial(tmp_path, "t1", "t1__a", *dispatches(21, 21, 21), {"type": "result"}),
+        named_trial(tmp_path, "t1", "t1__b", *dispatches(21, 6), {"type": "result"}),
+        named_trial(tmp_path, "t2", "t2__a", *dispatches(21, 17, 3, 1, 21), {"type": "result"}),
+    ]
+    job = job_metrics(trials)
+    assert job["per_task"]["t1"]["full_redispatches"] == 2
+    assert job["per_task"]["t2"]["full_redispatches"] == 1
+    assert job["gate"]["full_redispatches"] == 3

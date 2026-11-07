@@ -1713,7 +1713,6 @@ def test_one_resume_keeps_an_interrupted_trial_without_events_and_an_infrastruct
     assert (full_row["n_trials"], full_row["accuracy"]) == (6, pytest.approx(100.0))
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 04: the table states infrastructure exclusions")
 def test_the_table_states_the_infrastructure_errors_it_excluded_and_their_spend(
     monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
 ) -> None:
@@ -1736,3 +1735,36 @@ def test_the_table_states_the_infrastructure_errors_it_excluded_and_their_spend(
     assert rows["full"]["n_trials"] == rows["baseline"]["n_trials"] == 6
     assert rows["full"]["infra_excluded"] == {"trials": 1, "cost_usd": pytest.approx(0.01)}
     assert rows["baseline"]["infra_excluded"] == {"trials": 0, "cost_usd": 0}
+
+
+def test_a_dev_table_states_each_configs_gates_next_to_success_and_cost(
+    monkeypatch: pytest.MonkeyPatch, dev_manifest: Path, tmp_path: Path
+) -> None:
+    """Eval-readiness ticket 04: the dev table sets each config's gates beside its success and
+    cost; full's redispatch is a failed efficiency line, baseline (no verifier) passes it."""
+    harbor = FakeHarbor()
+    redispatch = [
+        {"type": "verifier_dispatch", "n": n, "models": ["a", "b"], "source": source}
+        for n, source in ((1, "first"), (2, "again"))
+    ]
+    harbor.events = lambda smoke, config, task, attempt: (
+        redispatch if config == "full" and task == "dbt-alpha" and attempt == 0 else []
+    )
+    out = tmp_path / "out"
+    configs = ("--config", "full", "--config", "baseline")
+    assert run(monkeypatch, harbor, dev_manifest, out, "--split", "dev", *configs) == 0
+    lines = (report_dirs(out)[0] / "ablation.md").read_text().splitlines()
+    assert any("| efficiency |" in line for line in lines)
+    (failed,) = [line for line in lines if "failed (1 warning)" in line]
+    assert failed.startswith("| full |")
+    assert any(line.startswith("| baseline |") and "| passed |" in line for line in lines)
+
+
+def test_a_holdout_table_gives_exclusions_and_no_efficiency_verdict(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Holdout rows have no process metrics (ADR-0004): of the gates, exclusions show only."""
+    out = tmp_path / "out"
+    assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full") == 0
+    lines = (report_dirs(out)[0] / "ablation.md").read_text().splitlines()
+    assert any(line.startswith("| full |") and "| 0, 0.0000 | — |" in line for line in lines)

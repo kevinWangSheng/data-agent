@@ -233,9 +233,10 @@ def test_process_metrics_count_the_dispatch_event_and_change_nothing_else(tmp_pa
     with_dispatch = trial_metrics(trial_with(tmp_path / "with", with_event))
     assert with_dispatch.pop("events") != without.pop("events")  # the file path alone differs
     # Ticket 67 counts the dispatches (tests/test_eval_process.py); nothing else changes.
-    dispatch_keys = ("verifier_dispatches", "dispatch_models", "ended_disputed")
-    assert [with_dispatch.pop(key) for key in dispatch_keys] == [1, [1], False]
-    assert [without.pop(key) for key in dispatch_keys] == [None, None, None]
+    # and eval-readiness ticket 04 its full redispatches (none: one dispatch).
+    keys = ("verifier_dispatches", "dispatch_models", "ended_disputed", "full_redispatches")
+    assert [with_dispatch.pop(key) for key in keys] == [1, [1], False, 0]
+    assert [without.pop(key) for key in keys] == [None, None, None, None]
     assert with_dispatch == without
 
 

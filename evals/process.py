@@ -129,6 +129,18 @@ def verifier_wall(
     return union_length(windows), unclosed
 
 
+# The `verifier_dispatch.source` values (data_agent.verifier_v2.hooks `DispatchSource`) of a later
+# dispatch: the model list `again` asks for, or every changed model when that list is unusable.
+AGAIN, FALLBACK_ALL = "again", "fallback_all"
+
+
+def is_full_redispatch(source: object, models: list[str], first: frozenset[str]) -> bool:
+    """A dispatch after a trial's first re-sends every model (the human rule of 2026-11-07,
+    eval-readiness ticket 04): `fallback_all` always does; `again` does when its models are the
+    first dispatch's as a set (order aside; as many models under other names do not)."""
+    return source == FALLBACK_ALL or (source == AGAIN and frozenset(models) == first)
+
+
 def trial_metrics(trial: Trial) -> dict[str, Any]:
     """One trial's process metrics, from the event file it is scored by (`last_event_file`).
 
@@ -146,6 +158,8 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
     unverified = unresolved = disputed = False
     denials = oversize = 0
     dispatch_models: list[int] = []
+    first_models: frozenset[str] | None = None
+    full_redispatches = 0
     verifier_ran = False
     durations: dict[str, list[float]] | None = None
     timeouts: Counter[str] = Counter()
@@ -177,7 +191,12 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
                 elif kind == "ended_disputed":
                     disputed = True
                 elif kind == "verifier_dispatch":
-                    dispatch_models.append(len(event.get("models") or []))
+                    models = [str(m) for m in event.get("models") or []]
+                    dispatch_models.append(len(models))
+                    if first_models is None:
+                        first_models = frozenset(models)
+                    elif is_full_redispatch(event.get("source"), models, first_models):
+                        full_redispatches += 1
                 elif kind == "verifier_start":
                     calls += 1
                     verifier_ran = True
@@ -224,6 +243,7 @@ def trial_metrics(trial: Trial) -> dict[str, Any]:
         "oversize_outputs": oversize,
         "verifier_dispatches": None if predates else len(dispatch_models),
         "dispatch_models": None if predates else dispatch_models,
+        "full_redispatches": None if predates else full_redispatches,
         "verifier_calls": calls,
         "verifier_ran": verifier_ran,
         "verifier_checks": dict(checks),
@@ -359,7 +379,7 @@ def timing_markdown(summaries: list[tuple[str, dict[str, Any] | None]]) -> list[
 
 
 # The trial fields of tickets 59 and 64's events: all None for a run whose code predates them.
-DISPATCH_FIELDS = ("ended_disputed", "verifier_dispatches", "dispatch_models")
+DISPATCH_FIELDS = ("ended_disputed", "verifier_dispatches", "dispatch_models", "full_redispatches")
 
 
 def recording_dispatches(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -395,7 +415,8 @@ def gate_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """The stage-1 gate's mechanical metrics (ADR-0008, ticket 67) as means per trial: the
     `ended_*` outcomes as the share of trials, guard denials and oversize outputs as calls per
     trial. Disputes and dispatches average over `trials_with_dispatches_recorded` alone (None
-    when no trial's event file records them), and `models_per_dispatch` over their dispatches."""
+    when no trial's event file records them), and `models_per_dispatch` over their dispatches;
+    `full_redispatches` totals those trials' dispatches that re-sent every model."""
 
     def mean(values: list[float]) -> float | None:
         return sum(values) / len(values) if values else None
@@ -412,6 +433,7 @@ def gate_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "ended_disputed": mean([float(r["ended_disputed"]) for r in recorded]),
         "verifier_dispatches": mean([float(r["verifier_dispatches"]) for r in recorded]),
         "models_per_dispatch": mean([float(m) for m in models]),
+        "full_redispatches": (sum(r["full_redispatches"] for r in recorded) if recorded else None),
     }
 
 
@@ -438,6 +460,7 @@ def task_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
             sum(r["verifier_dispatches"] for r in recorded) if recorded else None
         ),
         "dispatch_models": dispatched_models(rows) if recorded else None,
+        "full_redispatches": sum(r["full_redispatches"] for r in recorded) if recorded else None,
         "verifier_calls": sum(r["verifier_calls"] for r in rows),
         "verifier_checks": dict(checks),
         "model_edits": sum(r["model_edits"] for r in rows),

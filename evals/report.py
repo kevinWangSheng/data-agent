@@ -219,6 +219,7 @@ def load_jobs(job_dirs: Sequence[Path]) -> list[Trial]:
         )
     check_same_versions(trials, len(job_dirs))
     check_same_records(job_dirs)
+    check_same_requests(job_dirs)
     return trials
 
 
@@ -285,6 +286,35 @@ def check_same_records(job_dirs: Sequence[Path]) -> None:
             )
 
 
+# The request key merged jobs may differ in (evals.ablate.check_request): stage 1 and stage 2
+# ask for different tasks by design (ADR-0008 补充 2026-11-06); the task set the merge fixes is
+# the split's, each task with exactly the trials per task, which `write_report` checks.
+REQUEST_TASKS = "tasks"
+
+
+def check_same_requests(job_dirs: Sequence[Path]) -> None:
+    """The jobs' OUTs' requests (`OUT/request.json`) agree on everything but their tasks: the
+    model, the split and the run parameters (`agent_kwargs`, e.g. the agent timeout; one request
+    with them and one without do not agree). A job without a readable request cannot be
+    matched. Errors name the keys, never a task."""
+    requests: list[dict[str, Any]] = []
+    for job in job_dirs:
+        request = read_request(job)
+        if request is None:
+            raise ValueError(
+                f"a job of the {len(job_dirs)} has no readable request (OUT/request.json), so "
+                "its model, split and run parameters cannot be matched"
+            )
+        requests.append({k: v for k, v in request.items() if k != REQUEST_TASKS})
+    keys = sorted({key for request in requests for key in request})
+    differ = [key for key in keys if len({json.dumps(r.get(key)) for r in requests}) > 1]
+    if differ:
+        raise ValueError(
+            f"the requests of the {len(job_dirs)} jobs differ in {', '.join(differ)}; merge "
+            "only jobs run under the same request"
+        )
+
+
 def split_trials(
     trials: list[Trial], manifest: dict[str, Any], split: str, label: str
 ) -> list[Trial]:
@@ -321,6 +351,96 @@ def check_dev_list(manifest: dict[str, Any], label: Path | str) -> None:
             raise ValueError(f"{name} holds out tasks the dev list names; use the real manifest")
 
 
+def read_request(job: Path) -> dict[str, Any] | None:
+    """The request of the job's OUT (`OUT/jobs/<config>` -> `OUT/request.json`), or None."""
+    try:
+        request = json.loads((job.parent.parent / "request.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return request if isinstance(request, dict) else None
+
+
+def dropped_trials(job_dirs: Sequence[Path], tasks: set[str]) -> list[Trial]:
+    """The trials of `tasks` that resumes of the jobs dropped as infrastructure errors and
+    evals.ablate kept under `OUT/dropped/<config>/` (each kept once, by its trial name)."""
+    dropped: list[Trial] = []
+    for job in job_dirs:
+        kept = job.parent.parent / "dropped" / job.name
+        if any(kept.glob("*/result.json")):
+            dropped += [t for t in load_trials(kept) if t.task in tasks]
+    return dropped
+
+
+def infra_excluded(dropped: list[Trial]) -> dict[str, Any]:
+    """The infrastructure errors left out of the score, as a count and their `cost_usd`: no task
+    or trial, so a holdout report may carry it (ADR-0004)."""
+    return {"trials": len(dropped), "cost_usd": sum(t.cost_usd for t in dropped)}
+
+
+# The run contract a report records (`run`): from the trials' version headers, the last run
+# record of the jobs' OUTs, and their requests. `evals select` compares reports by it.
+RUN_HEADER_KEYS = ("config", "git_commit", "skill_version", "model")
+RUN_RECORD_KEYS = ("benchmark_commit", "machine")
+
+
+def run_contract(trials: list[Trial], job_dirs: Sequence[Path]) -> dict[str, Any]:
+    """What the trials were run under; a key is None when it is unrecorded or not one value
+    (several jobs agree on it already, `load_jobs`). `agent_kwargs` is [] for a request
+    without any."""
+
+    def one(values: list[Any]) -> Any:
+        distinct = {json.dumps(v) for v in values}
+        return values[0] if values and None not in values and len(distinct) == 1 else None
+
+    headers = [
+        version_header(events) for t in trials if not is_infra_error(t) for events in event_files(t)
+    ]
+    records = [last_record(job) or {} for job in job_dirs]
+    requests = [read_request(job) for job in job_dirs]
+    run: dict[str, Any] = {key: one([h.get(key) for h in headers]) for key in RUN_HEADER_KEYS}
+    run |= {key: one([r.get(key) for r in records]) for key in RUN_RECORD_KEYS}
+    run["split"] = one([r.get("split", "holdout") if r else None for r in requests])
+    run["agent_kwargs"] = one([r.get("agent_kwargs", []) if r else None for r in requests])
+    return run
+
+
+# The efficiency line of a dev report's gates (ADR-0008 补充 2026-11-06): a later verifier
+# dispatch that re-sent every model (evals.process.is_full_redispatch).
+FULL_REDISPATCH_LINE = "full_redispatches"
+
+
+def gates(
+    in_split: list[Trial], process: dict[str, Any], excluded: dict[str, Any]
+) -> dict[str, Any]:
+    """A dev report's gates, kept apart: correctness counts the scored trials' successes and
+    failures; infrastructure passes only with no trial excluded as an infrastructure error
+    (ADR-0008: infra_error must be 0); efficiency lists each trial with a full redispatch, a
+    warning that is not a correctness failure. Efficiency is None (unknown) when no trial's
+    event file records dispatches. Correctness has no pass line here: the success lines are
+    the human's, per evaluation (ADR-0008)."""
+    successes = sum(1 for t in in_split if is_success(t.reward))
+    warnings = [
+        {
+            "task": row["task"],
+            "trial": row["trial"],
+            "line": FULL_REDISPATCH_LINE,
+            "count": row["full_redispatches"],
+        }
+        for row in process["trials"]
+        if row.get("full_redispatches")
+    ]
+    recorded = process["gate"]["trials_with_dispatches_recorded"]
+    return {
+        "correctness": {
+            "successes": successes,
+            "failures": len(in_split) - successes,
+            "trials": len(in_split),
+        },
+        "infrastructure": {"passed": excluded["trials"] == 0, **excluded},
+        "efficiency": {"passed": not warnings if recorded else None, "warnings": warnings},
+    }
+
+
 def write_report(
     trials: list[Trial],
     manifest: dict[str, Any],
@@ -328,24 +448,29 @@ def write_report(
     out_dir: Path,
     trials_per_task: int = TRIALS_PER_TASK,
     manifest_label: Path | str = "the manifest",
+    job_dirs: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Write `out_dir/report.json` for one split of the manifest; dev also gets `trials.json`.
 
     Refuses a split that is incomplete: a task without results, or a split `check_complete`
     rejects; and a dev list `check_dev_list` rejects. Errors give counts only, so they name no
-    holdout task.
+    holdout task. `job_dirs`, the jobs the trials come from, give the run contract (`run`) and
+    the infrastructure errors resumes dropped (`infra_excluded`); a dev report adds `gates`.
     """
     if split == "dev":
         check_dev_list(manifest, manifest_label)
     in_split = split_trials(trials, manifest, split, "this")
     check_complete(in_split, split, trials_per_task)
-    report: dict[str, Any] = {"split": split, **summary(in_split)}
+    excluded = infra_excluded(dropped_trials(job_dirs, {t.task for t in in_split}))
+    report: dict[str, Any] = {"split": split, **summary(in_split), "infra_excluded": excluded}
+    report["run"] = run_contract(in_split, job_dirs)
     out_dir.mkdir(parents=True, exist_ok=True)
     if split == "dev":
         report["per_task"] = _per_task(in_split)
         process = job_metrics(in_split)
         keys = ("mean_cost_usd_succeeded", "per_task", "timing", "gate")
         report["process"] = {key: process[key] for key in keys}
+        report["gates"] = gates(in_split, process, excluded)
         rows = _trial_rows(in_split)
         (out_dir / "trials.json").write_text(json.dumps(rows, indent=2) + "\n")
     (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
