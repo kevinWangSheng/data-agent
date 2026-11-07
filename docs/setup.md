@@ -55,7 +55,17 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
 - 每次调用先在 `--out` 下写运行记录 `records/<UTC 时间>.json`：开始时间、benchmark commit（`--tasks-dir` 所在 clone 的 HEAD，有改动带 `-dirty`）、机器标签（环境变量 `DATA_AGENT_MACHINE`；`da-remote start` 设成 SSH 主机别名，env 文件可覆盖；本机跑要自己设，如 `mac-colima`）、代码 commit、模型。`--out` 下已有 job 时，benchmark commit 或机器标签和最近一份记录不同（或 benchmark 有改动、不在 git 里、没设机器标签、没有记录）就停（exit 2），不写新记录、不续跑也不复用；换了 benchmark 或机器就换一个 `--out`。
 - 要起第一个 job 前做预检，任何一项不过就退出 2、不起正式 job：余额要够 `--budget` 减去已花的（按实际价花费）；每个配置在 manifest 开发集第 1 题上冒烟 1 次（`smoke/<UTC 时间>/<config>/`，日志 `logs/smoke-<config>.log`），要有 reward、无报错、事件文件有 version 头；再对冒烟结果跑 scrub。续跑已冒烟过的批次加 `--skip-smoke`（余额照查）。没有 job 要跑时不预检。
+- 预检里的轻量 readiness（工单 02，`evals/readiness.py`；ADR-0008 Update 2026-11-07）。花费有界：不调模型、不多起 Harbor，只有 1 次 `docker info`（最多 30 秒）、最多 1 次查磁盘，加上读每配置那 1 个已有的冒烟 trial。
+  - 阻断（退出 2，一个 job 都不起）：`--agent-kwarg agent_timeout_sec=` 不大于 agent 的 150 秒自停余量；`docker info` 失败或无响应；Docker 内存 < 并发 trial 数 × 1762 MiB；Docker data root 在本机时剩余磁盘 < 并发 trial 数 × 4 GiB（Colima 的 data root 在虚拟机里，不测磁盘）。并发数取 `--n-concurrent`、job config、续跑 job 保存的 `n_concurrent_trials` 里最大的，不超过 job 的 trial 数。
+  - 告警（不阻断）：冒烟 trial 截止自停、工具语句超时、全量重派、prompt cache 命中率 < 50%。写进 `OUT/readiness/<UTC 时间>.json`，`ablation.md` 的 "Readiness" 一行列出。冒烟只跑开发集第 1 题，任务特有的长尾看不到。
 - 跑的过程中每 10 秒看一次新完成的 trial：出现 `ApiUsageLimitError`（账户额度或余额用完）或配置错误立即停；连续 `--fail-fast N`（默认 5）个基础设施报错也停。停 Harbor 用它自己的方式（SIGTERM，它会取消 trial、清容器），300 秒不退才 SIGKILL，只对本次启动的那个进程。都是退出 2。`ApiUsageLimitError` 算基础设施报错（`evals report` 不记 0 分）：充值后用同一 `--out` 重跑，这些 trial 会被重跑。
+- 续跑边界（工单 03）：同一 `--out` 再跑时，已完成的 job 直接复用；有中断（没有 `result.json`）或基础设施报错 trial 的 job 用 `harbor job resume` 只补缺的。被删的 trial 先把 `result.json` 和事件文件**移到** `OUT/dropped/<config>/`：不计分，花费仍由 `evals spend`、余额检查和 80% 护栏记一次，替补 trial 跑完也不会重复计。逻辑失败（答错、agent 用完时间）是结果，job 视为完成，不自动重跑。代码 commit 或 Skill 版本与 job 里的 trial 不同、checkout 有改动、benchmark commit 或机器与最近的运行记录不同、`--model`/split/题目/`--agent-kwarg` 与 `OUT/request.json` 不同，都拒绝复用和续跑，换一个 `--out`。
+
+合并分段结果与选配置（工单 04，ADR-0008 Update 2026-11-07）：
+
+- 同一配置分几个 OUT 跑的 job 合起来出报告：`uv run python -m evals report OUT1/jobs/full OUT2/jobs/full --manifest evals/manifest.json --split dev --out <目录>`。合并要求 version 头里的 git commit、Skill 版本、config 一致，各 OUT 最近一份运行记录的 benchmark commit、机器、model 一致，`request.json` 除 `tasks` 外一致（dev 的 request 必须有非空题目列表），合并后每题正好 `--trials`（默认 3）次；任何一条不满足退出 2、不写报告。代码有新提交后跑的 job 和旧 job 的 git commit 不同，合不了：第 1 段要在新 commit 上重跑。
+- 开发集报告里的 `gates` 分三部分：`correctness`（成功、失败、trial 数，不设通过线）；`infrastructure`（`passed` 只看 `unresolved`，即没被重跑补齐的 infra 错误数；已补齐的只在 `infra_excluded` 报数量和 `cost_usd`，`interrupted` 只报不判）；`efficiency`（每个全量重派的 trial 一条 warning，有 warning 就 `passed: false`；没有 warning 但有 trial 没有派单记录时为 `null`，即未知）。效率没过要照实写"效率告警"，不写闸门全过。留出集报告只有汇总，没有题名。
+- 三配置并排：`uv run python -m evals select <full 报告目录> <baseline 报告目录> <no-verifiers 报告目录> --out <目录>`，写 `selection.json`、`selection.md`。拒绝留出集报告、同一配置给两次，以及 commit、model、benchmark、机器、split、`agent_kwargs`、（带 Skill 的配置之间）Skill 版本、题目或每题 trial 数不一致（退出 2）。显著性另用 `evals compare`。
 
 改动验收（ADR-0008，工单 29）：`uv run python -m evals accept --old OUT_OLD/jobs/full --new OUT_NEW/jobs/full --manifest evals/manifest.json --target <题> [--target <题> ...] --regression evals/regression.json [--rerun <补跑 job> ...] [--json]`。
 
