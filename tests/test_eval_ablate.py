@@ -1453,10 +1453,8 @@ def test_an_agent_kwarg_that_is_malformed_or_overrides_the_config_is_refused(
 # --- Evaluation lifecycle contract (eval-readiness-and-lifecycle, ticket 01) ----------------------
 
 
-@pytest.mark.xfail(
-    strict=True, reason="ticket 02: readiness blocks a smoke stopped at its deadline"
-)
-def test_readiness_a_smoke_trial_stopped_at_its_deadline_stops_before_any_job(
+@pytest.mark.xfail(strict=True, reason="ticket 02: a smoke stopped at its deadline is a warning")
+def test_readiness_a_smoke_trial_stopped_at_its_deadline_is_a_warning_the_table_carries(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,
     tmp_path: Path,
@@ -1464,18 +1462,29 @@ def test_readiness_a_smoke_trial_stopped_at_its_deadline_stops_before_any_job(
 ) -> None:
     """A smoke trial the agent stopped itself at the trial deadline (the result event's
     `terminal_reason` is `deadline`, ticket 54) ends with a reward and no Harbor error, so today's
-    smoke passes it. A dev task running out of time before any job is a systemic timeout risk for
-    the whole batch: readiness blocks it before the first real job, as a failed smoke does."""
+    smoke passes it silently. It is listed as an anomaly, not a failed gate (ADR-0008): the batch
+    runs, the scores are the trials' own, and the table says the run was not clean because a
+    smoke trial hit its deadline."""
     harbor = FakeHarbor()
     harbor.result_fields = lambda smoke, config, task, attempt: (
         {"terminal_reason": "deadline"} if smoke and config == "baseline" else {}
     )
     out = tmp_path / "out"
-    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--config", "baseline") == 2
-    assert harbor.calls == []
-    assert report_dirs(out) == []
-    err = capsys.readouterr().err
-    assert "deadline" in err and "baseline" in err
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--config", "baseline") == 0
+    printed = capsys.readouterr()
+    assert len(harbor.smoke) == len(harbor.calls) == 2
+    result = table(out)
+    assert {c["config"]: c["accuracy"] for c in result["configs"]} == pytest.approx(
+        {"full": 100.0, "baseline": 0.0}
+    )
+    readiness = result["readiness"]
+    assert readiness["clean"] is False
+    (warning,) = readiness["warnings"]
+    assert {"check", "reason"} <= set(warning)
+    assert "deadline" in warning["reason"].lower() and "baseline" in warning["reason"]
+    assert "warning" in (printed.out + printed.err).lower()
+    markdown = (report_dirs(out)[0] / "ablation.md").read_text().lower()
+    assert "warning" in markdown and "deadline" in markdown
 
 
 @pytest.mark.xfail(strict=True, reason="ticket 02: readiness warnings reach the ablation table")
