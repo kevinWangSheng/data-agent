@@ -27,22 +27,23 @@ with a full cache no network); each config runs the manifest's first dev task on
 end with a reward, no error and versioned events, and scrub must check its files (--skip-smoke
 leaves this out when resuming). Any failure stops the batch before a job. While a job runs, its
 new trials are watched: a usage limit or config error, or --fail-fast infrastructure errors in a
-row, stop Harbor and the batch. A finished job is not rerun; an
-interrupted one, or one with infrastructure errors, is resumed with `harbor job resume`, which
-deletes the errored trials and runs what is missing (plan §7: infrastructure errors are rerun,
-never scored). An existing job is reused only from a clean checkout at the commit and Skill version
-its trials recorded, on the clean benchmark commit and the machine of OUT's last run record, and
-under the --model OUT was first run with (the recorded model names need not match Harbor's -m, so
-the request itself is compared), and the table needs one commit and one model
+row, stop Harbor and the batch. A finished job is not rerun; an interrupted one, or one with
+infrastructure errors, is resumed with `harbor job resume`, which deletes the errored trials and
+the interrupted ones (no result.json) and runs what is missing (plan §7: infrastructure errors are
+rerun, never scored); the event files of both are first kept under OUT/dropped/, so their spend
+still counts, once. A logical failure (a wrong answer, the agent out of time) is a result: its job
+is complete and is not rerun. An existing job is reused only from a clean checkout at the commit
+and Skill version its trials recorded, on the clean benchmark commit and the machine of OUT's last
+run record, and under the --model OUT was first run with (the recorded model names need not match
+Harbor's -m, so the request itself is compared), and the table needs one commit and one model
 across its configs. A config error (the model's key, name or parameters) stops the batch for a
-human: Harbor does not retry it and a report would score it as a real 0. So does a usage limit
-(the account ran out), but its trials are infrastructure errors, rerun once the account is topped
-up. Once every job is
-complete, `evals scrub` cleans this table's jobs in place, `evals report` writes each config's
-report and `evals compare --manifest --split <split>` gives each layer's contribution: full minus
-the config without the layer, in accuracy points, with a paired bootstrap 95% interval. Per-task
-holdout results are never printed or written (ADR-0004); the guards' and Harbor's own output,
-which name tasks, go to logs.
+human: Harbor does not retry it and a report would score it as a real 0. So does a usage limit (the
+account ran out), but its trials are infrastructure errors, rerun once the account is topped up.
+Once every job is complete, `evals scrub` cleans this table's jobs in place, `evals report` writes
+each config's report and `evals compare --manifest --split <split>` gives each layer's
+contribution: full minus the config without the layer, in accuracy points, with a paired bootstrap
+95% interval. Per-task holdout results are never printed or written (ADR-0004); the guards' and
+Harbor's own output, which name tasks, go to logs.
 
 Run from the repo root with the DATA_AGENT_* variables set, as for `harbor run`:
 
@@ -379,15 +380,25 @@ def guard_spend(out: Path, budget: str) -> None:
     print(printed.strip(), flush=True)
 
 
-def keep_spend(out: Path, config: str, trials: list[Trial]) -> None:
+def interrupted(job: Path) -> list[Path]:
+    """The job's trial directories without a result.json: a trial Harbor was stopped in before it
+    wrote its result. `harbor job resume` deletes every one of them and runs the attempt again
+    (harbor/job.py `_maybe_init_existing_job`), the agent's event file with it."""
+    return sorted(p for p in job.iterdir() if p.is_dir() and not (p / "result.json").is_file())
+
+
+def keep_spend(out: Path, config: str, trial_dirs: list[Path]) -> None:
     """Copy the event files of the trials a resume will delete to OUT/dropped/, where the spend
-    guard still counts what they cost, and their result.json, which marks that the round had an
-    infrastructure error even for a trial that broke before writing events (`evals accept`)."""
-    for trial in trials:
-        kept_dir = out / "dropped" / config / trial.dir.name
+    guard still counts what they cost, and their result.json when they have one, which marks that
+    the round had an infrastructure error even for a trial that broke before writing events
+    (`evals accept`). An interrupted trial has no result.json; its directory is kept all the same,
+    so `evals accept` also sees that the round lost a trial."""
+    for trial_dir in trial_dirs:
+        kept_dir = out / "dropped" / config / trial_dir.name
         kept_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(trial.dir / "result.json", kept_dir / "result.json")
-        for events in event_files(trial):
+        if (trial_dir / "result.json").is_file():
+            shutil.copyfile(trial_dir / "result.json", kept_dir / "result.json")
+        for events in sorted((trial_dir / "agent" / "events").glob("*.jsonl")):
             shutil.copyfile(events, kept_dir / events.name)
 
 
@@ -579,15 +590,17 @@ def ensure_job(
     runs before Harbor does."""
     jobs, logs = args.out / "jobs", args.out / "logs"
     job = jobs / config
-    dropped: list[Trial] = []
+    dropped: list[Path] = []
     if (job / "config.json").is_file():
         trials = load_trials(job) if any(job.glob("*/result.json")) else []
         check_config_errors(config, job, trials)
         check_conditions(config, job, trials)
         if problem(trials, tasks, args.split, args.trials) is None:
             return
-        dropped = [t for t in trials if is_infra_error(t)]
-        infra = sorted({str(t.exception_type) for t in dropped})
+        errored = [t for t in trials if is_infra_error(t)]
+        infra = sorted({str(t.exception_type) for t in errored})
+        # Both are deleted by the resume and run again; what they cost was billed all the same.
+        dropped = [*(t.dir for t in errored), *interrupted(job)]
         harbor_args = ["job", "resume", "-p", str(job), *(a for e in infra for a in ("-f", e))]
     else:
         harbor_args = [

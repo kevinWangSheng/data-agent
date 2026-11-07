@@ -1620,7 +1620,6 @@ def test_a_dropped_trial_is_counted_once_however_many_resumes_follow(
         assert json.loads((report / "full" / "report.json").read_text())["n_trials"] == 6
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 03: an interrupted trial's spend survives resume")
 def test_the_spend_of_an_interrupted_trial_survives_its_resume(
     monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
 ) -> None:
@@ -1640,6 +1639,43 @@ def test_the_spend_of_an_interrupted_trial_survives_its_resume(
     assert not victim.exists()
     code, printed, _ = ablate.evals_cli(["spend", str(out), "--budget", "100"])
     assert code == 0 and "(cost_usd $7.0000) over 7 event file(s)" in printed
+
+
+def test_one_resume_keeps_an_interrupted_trial_without_events_and_an_infrastructure_error(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Ticket 03: Harbor was stopped in a trial before the agent wrote events, and another trial
+    of the job ended in an infrastructure error. The resume reruns both, filters by the error's
+    type only, and both are kept under OUT/dropped/: the errored one with its result.json and
+    events, the interrupted one as an empty directory (nothing to bill, but the round lost it)."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if task == "dbt-delta" and attempt == 0 and broken["yes"]:
+            return None, "ApiInternalServerError"
+        return 1.0, None
+
+    harbor = FakeHarbor(outcome, cost=1.0)
+    out = tmp_path / "out"
+    full = ("--config", "full", "--skip-smoke")
+    assert run(monkeypatch, harbor, manifest, out, *full) == 2
+    job = out / "jobs" / "full"
+    (errored,) = [p.name for p in job.glob("dbt-delta__a0c*")]
+    stopped = next(job.glob("dbt-echo__*"))  # left as a trial Harbor was stopped in at setup
+    (stopped / "result.json").unlink()
+    for events in (stopped / "agent" / "events").iterdir():
+        events.unlink()
+    broken["yes"] = False
+    assert run(monkeypatch, harbor, manifest, out, *full) == 0
+    assert harbor.calls[-1] == ["job", "resume", "-p", str(job), "-f", "ApiInternalServerError"]
+    dropped = out / "dropped" / "full"
+    assert sorted(p.name for p in dropped.iterdir()) == sorted([errored, stopped.name])
+    assert sorted(p.name for p in (dropped / errored).iterdir()) == ["result.json", "run.jsonl"]
+    assert list((dropped / stopped.name).iterdir()) == []
+    code, printed, _ = ablate.evals_cli(["spend", str(out), "--budget", "100"])
+    assert code == 0 and "(cost_usd $7.0000) over 7 event file(s)" in printed
+    (full_row,) = table(out)["configs"]
+    assert (full_row["n_trials"], full_row["accuracy"]) == (6, pytest.approx(100.0))
 
 
 @pytest.mark.xfail(strict=True, reason="ticket 04: the table states infrastructure exclusions")
