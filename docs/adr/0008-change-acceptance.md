@@ -149,14 +149,14 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
 
 - **轻量 readiness**（工单 02，`evals/readiness.py`）：`ablate` 预检里原有的余额、wheel、冒烟、scrub、运行记录和 request 检查不变，另加几项浅检查。它不是性能审计，不按题、不按 trial 加探针。
   - 阻断（第一个 job 前退出 2）：`agent_timeout_sec` 不大于 agent 的 150 s 自停余量；`docker info` 失败或 30 s 内无响应；Docker 内存低于 并发 trial 数 × 1762 MiB（2026-11-05 审计的单 trial 峰值）；Docker data root 在本机时，剩余磁盘低于 并发 trial 数 × 4 GiB（DuckDB 临时文件上限）。
-  - 告警（不阻断，写进 `OUT/readiness/<UTC 时间>.json` 和 `ablation.md` 的 "Readiness"）：只读每个配置那 1 个已付费的冒烟 trial——截止自停、工具语句超时、全量重派、prompt cache 命中率低于 50%。
+  - 告警（不阻断，写进 `OUT/readiness/<UTC 时间>.json` 和 `ablation.md` 的 "Readiness"）：只读每个配置那 1 个已付费的冒烟 trial——截止自停、工具语句超时、全量重派、prompt cache 命中率低于 50%。`--skip-smoke` 续跑时没有冒烟，这四项不查。
   - 花费上限：0 次额外模型调用、0 次额外 Harbor 运行（冒烟本来就有，每配置 1 个 trial）；环境检查是 1 次 `docker info` 加最多 1 次查磁盘。
   - 不查的：任务特有的长尾（冒烟只跑开发集第 1 题，pos-operations 这类重派冒烟看不到，由 04 的效率闸门在全部 dev trial 上兜底）、重复的相同工具调用（会误报）。
 - **续跑边界**（工单 03）：
   - 已完成的 job 不重跑；中断（没有 `result.json`）和基础设施报错的 trial 由 `harbor job resume` 删掉重跑，同一 request。
   - 删之前把它们的 `result.json` 和事件文件移到 `OUT/dropped/<config>/`：不进计分表，花费仍记一次（移动不是复制，不重复计）。
   - 逻辑失败（答错、agent 用完时间）是结果，留在计分表里，不自动重跑；要重跑须另开一次运行。
-  - 代码 commit、Skill 版本、benchmark commit、机器、model、split、题目或 `--agent-kwarg` 和 OUT 里已有的不同，就拒绝复用和续跑（退出 2），换一个 `--out`。
+  - 代码 commit、Skill 版本、benchmark commit、机器、model、split、题目或 `--agent-kwarg` 和 OUT 里已有的不同，就拒绝复用和续跑（退出 2），换一个 `--out`。代码 commit 和 Skill 版本是和 job 里已有结果的 trial 的 version 头比；一个结果都没有的 job 不比（已知限制，见 `docs/setup.md`），所以改了代码就换新的 `--out`。
   - 额度用完、配置错误、连续 `--fail-fast` 个基础设施报错照旧立即停批次。
 - **三道闸门分开报**（工单 04，`evals report` 的 `gates`，`evals select`）：
   - 正确性：成功、失败、trial 数。通过线由每次评测的 ADR 条款定（第 1 段是"成功 ≥12/15"）。
