@@ -562,7 +562,6 @@ def stage_job(tmp_path: Path, rewards: dict[str, list[float]]) -> Path:
     return job
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 04: dev reports separate gates")
 def test_a_dev_report_keeps_the_redispatch_warning_out_of_correctness(
     tmp_path: Path, dev_manifest: Callable[[list[str]], Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -588,7 +587,6 @@ def test_a_dev_report_keeps_the_redispatch_warning_out_of_correctness(
     assert report["accuracy"] == pytest.approx(100 * 8 / 9)
 
 
-@pytest.mark.xfail(strict=True, reason="ticket 04: dev reports separate gates")
 def test_a_dev_report_without_full_redispatches_passes_the_efficiency_line(
     tmp_path: Path, dev_manifest: Callable[[list[str]], Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -662,9 +660,6 @@ def test_stage_1_and_stage_2_of_one_contract_merge_into_three_trials_per_task(
     }
 
 
-NOT_YET_COMPARED = pytest.mark.xfail(strict=True, reason="ticket 04: merge compares run requests")
-
-
 @pytest.mark.parametrize(
     ("stage_2", "what"),
     [
@@ -685,19 +680,16 @@ NOT_YET_COMPARED = pytest.mark.xfail(strict=True, reason="ticket 04: merge compa
             {"request": {**STAGE_REQUEST, "agent_kwargs": ["agent_timeout_sec=900"]}},
             "agent_kwargs",
             id="run-parameters",
-            marks=NOT_YET_COMPARED,
         ),
         pytest.param(
             {"request": {k: v for k, v in STAGE_REQUEST.items() if k != "agent_kwargs"}},
             "agent_kwargs",
             id="run-parameters-dropped",
-            marks=NOT_YET_COMPARED,
         ),
         pytest.param(
             {"request": {**STAGE_REQUEST, "split": "holdout"}},
             "split",
             id="split",
-            marks=NOT_YET_COMPARED,
         ),
     ],
 )

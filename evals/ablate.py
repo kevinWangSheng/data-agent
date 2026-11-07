@@ -88,6 +88,7 @@ from evals.report import (
     is_infra_error,
     split_trials,
 )
+from evals.selection import selection_markdown, selection_row
 from evals.spend import SpendUnknown, file_spend
 from evals.walk import walk_files
 
@@ -739,7 +740,9 @@ def markdown(table: dict[str, Any]) -> str:
             f"| {c['layer']} | {c['config']} | {c['diff']:+.1f} | "
             f"[{c['ci_low']:+.1f}, {c['ci_high']:+.1f}] | {'yes' if c['significant'] else 'no'} |"
         )
-    # Process metrics, timing among them, are in dev reports only (evals.report; ADR-0004).
+    # Gates (eval-readiness ticket 04) and process metrics, timing among them, are in dev reports
+    # only (evals.report; ADR-0004); a holdout row shows its infrastructure exclusions alone.
+    lines += ["", *selection_markdown([selection_row(row["config"], row) for row in rows])]
     timings = [(row["config"], (row.get("process") or {}).get("timing")) for row in rows]
     lines += ["", *timing_markdown(timings)]
     return "\n".join(lines) + "\n"

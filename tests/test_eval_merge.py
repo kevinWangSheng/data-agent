@@ -12,6 +12,9 @@ from evals.__main__ import main
 DEV = ["t1", "t2"]
 HOLDOUT = ["h-secret"]
 RECORD = {"benchmark_commit": "b" * 40, "machine": "box", "model": "m1"}
+# OUT/request.json of a dev run (evals.ablate.check_request); merged jobs' requests may differ
+# only in their tasks (eval-readiness ticket 04).
+REQUEST = {"model": "m1", "split": "dev", "tasks": DEV}
 STARTED = "2026-11-01T10:00:00+00:00"
 
 
@@ -25,6 +28,7 @@ def write_out(
     skill: str = "s1",
     config: str = "full",
     record: dict[str, Any] | None = RECORD,
+    request: dict[str, Any] | None = REQUEST,
     exception: str | None = None,
 ) -> Path:
     """OUT `root/name` with one job, `jobs/<config>`; trial `<task>__<i>` from i = `start`.
@@ -57,6 +61,8 @@ def write_out(
     if record is not None:
         (root / name / "records").mkdir(exist_ok=True)
         (root / name / "records" / "20261101T100000Z.json").write_text(json.dumps(record))
+    if request is not None:
+        (root / name / "request.json").write_text(json.dumps(request))
     return job
 
 
@@ -299,3 +305,50 @@ def test_accept_counts_infrastructure_errors_in_any_old_job(
     result = json.loads(capsys.readouterr().out)
     assert result["verdict"] == "rerun-old"
     assert "the old round had infrastructure errors" in result["reuse_problems"]
+
+
+@pytest.mark.parametrize(
+    "request_b",
+    [
+        pytest.param({"model": "m1", "split": "dev"}, id="no-tasks"),
+        pytest.param({"model": "m1", "split": "dev", "tasks": "t1"}, id="tasks-not-a-list"),
+        pytest.param({"model": "m1", "split": "dev", "tasks": []}, id="no-task-listed"),
+    ],
+)
+def test_a_dev_request_without_a_task_list_is_refused(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str], request_b: dict[str, Any]
+) -> None:
+    """Codex review (ticket 04): requests may differ in their task lists, but a dev request
+    must have one, or the job's requested task set is unknown."""
+    a = write_out(tmp_path, "a", {t: [1.0] for t in DEV})
+    b = write_out(tmp_path, "b", {t: [1.0, 0.0] for t in DEV}, start=1, request=request_b)
+    code, _, err = run_report(tmp_path, manifest, [a, b], capsys)
+    assert code == 2
+    assert "task list" in err
+
+
+def test_jobs_without_a_request_are_refused(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without OUT/request.json the run parameters (agent kwargs, split) cannot be matched, so
+    the jobs are not merged (eval-readiness ticket 04)."""
+    a = write_out(tmp_path, "a", {t: [1.0] for t in DEV})
+    b = write_out(tmp_path, "b", {t: [1.0, 0.0] for t in DEV}, start=1, request=None)
+    code, _, err = run_report(tmp_path, manifest, [a, b], capsys)
+    assert code == 2
+    assert "request" in err
+
+
+def test_requests_that_differ_only_in_their_tasks_merge(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Stage 1 and stage 2 ask for different task lists by design; the split's tasks with
+    exactly 3 trials each are what the merged report checks."""
+    a = write_out(tmp_path, "a", {"t1": [1.0, 1.0, 1.0]}, request={**REQUEST, "tasks": ["t1"]})
+    b = write_out(tmp_path, "b", {"t2": [1.0, 0.0, 0.0]}, request={**REQUEST, "tasks": ["t2"]})
+    code, report, err = run_report(tmp_path, manifest, [a, b], capsys)
+    assert code == 0, err
+    assert report["per_task"] == {
+        "t1": {"successes": 3, "trials": 3},
+        "t2": {"successes": 1, "trials": 3},
+    }

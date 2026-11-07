@@ -6,7 +6,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from evals import ablate, accept, attribute, dab, dab_score, diverge, jaffle, scrub, spend
+from evals import (
+    ablate,
+    accept,
+    attribute,
+    dab,
+    dab_score,
+    diverge,
+    jaffle,
+    scrub,
+    selection,
+    spend,
+)
 from evals.compare import paired_bootstrap
 from evals.harbor import by_task, load_trials
 from evals.report import (
@@ -56,7 +67,9 @@ def cmd_compare(args: argparse.Namespace) -> None:
 def cmd_report(args: argparse.Namespace) -> None:
     manifest = json.loads(args.manifest.read_text())
     trials = load_jobs(args.job_dirs)
-    report = write_report(trials, manifest, args.split, args.out, args.trials, args.manifest)
+    report = write_report(
+        trials, manifest, args.split, args.out, args.trials, args.manifest, args.job_dirs
+    )
     print(
         f"{args.split}: accuracy {report['accuracy']:.1f}% ± {report['accuracy_stderr']:.1f}% "
         f"over {report['n_trials']} trials -> {args.out}"
@@ -99,7 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
     p.set_defaults(func=cmd_report)
 
-    for module in (scrub, spend, attribute, dab, dab_score, jaffle, ablate, accept, diverge):
+    modules = (scrub, spend, attribute, dab, dab_score, jaffle, ablate, accept, diverge, selection)
+    for module in modules:
         module.add_parser(commands)
     return parser
 
