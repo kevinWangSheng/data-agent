@@ -15,8 +15,9 @@ The old results are reused only when, against the new job, the version headers a
 field but the code and Skill versions, the run records (ticket 27's `OUT/records/`) agree on the
 benchmark commit and the machine, the old job started at most two weeks before the new one ended,
 and the old round had no infrastructure error (none left in the job, none dropped by a resume
-into `OUT/dropped/<config>/`). Otherwise the verdict is `rerun-old`, unless a regression task
-regressed: that is judged on the new version alone, so the verdict is `fail` either way.
+into `OUT/dropped/<config>/`, where an interrupted trial is kept too). Otherwise the verdict is
+`rerun-old`, unless a regression task regressed: that is judged on the new version alone,
+so the verdict is `fail` either way.
 
 Dev set only: any job, target or regression task outside the manifest's dev set is refused, by
 count, so no holdout task is named (ADR-0004).
@@ -288,8 +289,9 @@ def reuse_problems(
 
 
 def had_infra_errors(jobs: list[Path], trials: list[Trial]) -> bool:
-    """An infrastructure error left in the jobs, or one a resume dropped from any of them
-    (ablate.keep_spend keeps each dropped trial under `OUT/dropped/<config>/`)."""
+    """An infrastructure error left in the jobs, or a trial a resume dropped from any of them: an
+    infrastructure error or an interrupted trial (ablate.keep_spend keeps each under
+    `OUT/dropped/<config>/`)."""
     dropped = [job.parent.parent / "dropped" / job.name for job in jobs]
     return any(is_infra_error(t) for t in trials) or any(
         d.is_dir() and any(d.iterdir()) for d in dropped

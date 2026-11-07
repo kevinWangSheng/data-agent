@@ -63,9 +63,15 @@ def load_trials(job_dir: Path) -> list[Trial]:
 
 
 def event_files(trial: Trial) -> list[Path]:
-    """The trial's event files, where the agent writes them in Harbor's agent logs directory
-    (`agent/events/run-<UTC stamp>-<id>.jsonl`), oldest first: the names sort by start time."""
-    return sorted((trial.dir / "agent" / "events").glob("*.jsonl"))
+    """The trial's event files (`events_in` its directory)."""
+    return events_in(trial.dir)
+
+
+def events_in(trial_dir: Path) -> list[Path]:
+    """The event files in a trial directory, where the agent writes them in Harbor's agent logs
+    directory (`agent/events/run-<UTC stamp>-<id>.jsonl`), oldest first: the names sort by start
+    time. Also for a trial without result.json, which `load_trials` does not list."""
+    return sorted((trial_dir / "agent" / "events").glob("*.jsonl"))
 
 
 def last_event_file(trial: Trial) -> Path | None:
