@@ -407,16 +407,17 @@ def kept_cost(kept_dir: Path) -> float:
 def kept_trials(job: Path) -> list[tuple[Path, str | None]]:
     """The trials resumes of the job dropped, kept by evals.ablate under `OUT/dropped/<config>/`
     (each once, by its trial name): each directory with its task, or None for a trial Harbor was
-    stopped in (no result.json, so no task)."""
-    out_dir = out_of(job)
-    if out_dir is None:
+    stopped in (no result.json, so no task). The config is the job's real directory name, as
+    its OUT is found from its real path (`out_of`), not the name of a link or `.` it is given by."""
+    out = out_of(job)
+    if out is None:
         return []
-    out: list[tuple[Path, str | None]] = []
-    for kept in sorted(p for p in (out_dir / "dropped" / job.name).glob("*") if p.is_dir()):
+    found: list[tuple[Path, str | None]] = []
+    for kept in sorted(p for p in (out / "dropped" / job.resolve().name).glob("*") if p.is_dir()):
         result = kept / "result.json"
         task = task_id(json.loads(result.read_text())["task_name"]) if result.is_file() else None
-        out.append((kept, task))
-    return out
+        found.append((kept, task))
+    return found
 
 
 def excluded_trials(job_dirs: Sequence[Path], tasks: set[str]) -> dict[str, dict[str, Any]]:
@@ -567,7 +568,8 @@ def write_report(
         check_dev_list(manifest, manifest_label)
     in_split = split_trials(trials, manifest, split, "this")
     check_complete(in_split, split, trials_per_task)
-    excluded = excluded_trials(job_dirs, {t.task for t in in_split})
+    tasks = {t.task for t in in_split}
+    excluded = excluded_trials(job_dirs, tasks)
     report: dict[str, Any] = {"split": split, **summary(in_split), **excluded}
     report["run"] = run_contract(in_split, job_dirs)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -576,7 +578,7 @@ def write_report(
         process = job_metrics(in_split)
         keys = ("mean_cost_usd_succeeded", "per_task", "timing", "gate")
         report["process"] = {key: process[key] for key in keys}
-        unresolved = unresolved_infra(in_split, job_dirs, {t.task for t in in_split})
+        unresolved = unresolved_infra(in_split, job_dirs, tasks)
         report["gates"] = gates(in_split, process, excluded, unresolved)
         rows = _trial_rows(in_split)
         (out_dir / "trials.json").write_text(json.dumps(rows, indent=2) + "\n")

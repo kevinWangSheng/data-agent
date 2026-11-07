@@ -275,6 +275,19 @@ def test_a_dev_report_records_the_run_contract(
     }
 
 
+def test_a_job_given_by_a_symlink_finds_its_dropped_trials(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Review (ticket 04 return): the dropped trials are looked up under the job's real config
+    name, as its OUT is, not the name of the path it was given by."""
+    job = write_out(tmp_path, "full", GOOD, planned=4, dropped={"t1": 0.02})
+    link = tmp_path / "s1-full"
+    link.symlink_to(job)
+    r = report([link], manifest, tmp_path / "r", capsys, "dev")
+    assert r["infra_excluded"] == {"trials": 1, "cost_usd": pytest.approx(0.02)}
+    assert r["gates"]["infrastructure"]["unresolved"] == 1
+
+
 def test_a_standalone_job_reads_no_out_around_it(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
