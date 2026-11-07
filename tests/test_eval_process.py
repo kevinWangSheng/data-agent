@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from lifecycle_events import dispatches
 
 from evals.harbor import Trial
 from evals.process import (
@@ -487,23 +488,6 @@ def test_trials_of_a_version_that_predates_dispatch_events_all_leave_them_unknow
     assert (gate["trials_with_dispatches_recorded"], gate["verifier_dispatches"]) == (2, 0.5)
 
 
-# The models of a dbt project as a verifier dispatch lists them: in stage 1, pos-operations
-# re-dispatched all 21 of its models (ADR-0008 补充 2026-11-06; eval-readiness-and-lifecycle).
-ALL_MODELS = [f"model_{i:02d}" for i in range(21)]
-
-
-def dispatching(*counts: int) -> list[dict[str, Any]]:
-    """`verifier_dispatch` events listing the first `count` models, each with its verifier."""
-    events: list[dict[str, Any]] = []
-    for n, count in enumerate(counts, 1):
-        source = "first" if n == 1 else "again"
-        events += [
-            {"type": "verifier_dispatch", "n": n, "models": ALL_MODELS[:count], "source": source},
-            {"type": "verifier_start", "verifier": "verifier", "agent_id": f"v{n}"},
-        ]
-    return events
-
-
 @pytest.mark.xfail(strict=True, reason="ticket 04: full-model redispatches per trial")
 @pytest.mark.parametrize(
     ("counts", "full"),
@@ -515,7 +499,7 @@ def test_a_trial_counts_its_dispatches_that_resend_every_model(
     """Stage 1's efficiency line: a dispatch after the first that lists every model of the first
     dispatch (stage 1's pos-operations trials dispatched [21, 6, 5], [21, 17, 3, 1, 21] and
     [21, 21, 21] models)."""
-    trial = trial_with(tmp_path, *dispatching(*counts), {"type": "result", "subtype": "success"})
+    trial = trial_with(tmp_path, *dispatches(*counts), {"type": "result", "subtype": "success"})
     assert trial_metrics(trial)["full_redispatches"] == full
 
 

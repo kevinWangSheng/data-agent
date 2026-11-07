@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from lifecycle_events import dispatches
 
 from evals import ablate, balance
 from evals import report as report_module
@@ -1451,23 +1452,6 @@ def test_an_agent_kwarg_that_is_malformed_or_overrides_the_config_is_refused(
 
 # --- Evaluation lifecycle contract (eval-readiness-and-lifecycle, ticket 01) ----------------------
 
-# The models of a dbt project as a verifier dispatch lists them (`verifier_dispatch`, ticket 59):
-# in stage 1, pos-operations re-dispatched all 21 of its models.
-ALL_MODELS = [f"model_{i:02d}" for i in range(21)]
-
-
-def dispatches(*counts: int) -> list[dict[str, Any]]:
-    """`verifier_dispatch` events listing the first `count` models, each followed by its
-    verifier's start."""
-    events: list[dict[str, Any]] = []
-    for n, count in enumerate(counts, 1):
-        source = "first" if n == 1 else "again"
-        events += [
-            {"type": "verifier_dispatch", "n": n, "models": ALL_MODELS[:count], "source": source},
-            {"type": "verifier_start", "verifier": "verifier", "agent_id": f"v{n}"},
-        ]
-    return events
-
 
 @pytest.mark.xfail(
     strict=True, reason="ticket 02: readiness blocks a smoke stopped at its deadline"
@@ -1536,7 +1520,8 @@ def test_readiness_without_findings_is_reported_clean(
     harbor.events = lambda smoke, config, task, attempt: dispatches(21, 6, 5)
     out = tmp_path / "out"
     assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
-    assert table(out)["readiness"] == {"clean": True, "warnings": []}
+    readiness = table(out)["readiness"]
+    assert (readiness["clean"], readiness["warnings"]) == (True, [])
 
 
 def test_logical_failures_stay_scored_and_a_rerun_does_not_retry_them(
