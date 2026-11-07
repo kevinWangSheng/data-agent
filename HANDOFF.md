@@ -185,6 +185,23 @@
 >   - 独立检查（同日）后又定：新工单 67（`process.py` 统计闸门指标，等 59、64）；闸门口径、合并冲突处理、第 1 段已批准，见 ADR-0008 补充的"闸门的口径"。所以是 59–67 全部合入后才跑第 1 段。
 >   - 编排注意：服务器操作只用仓库里的 `scripts/da-remote`（PATH 上的是旧版）；62 重算和第 1 段前先 `scripts/da-remote setup <固定提交>`；61 的 Mongo 重建不能和第 1 段同时跑；离线取证用主 checkout 的 `runs/` 绝对路径；Claude 登录 11-11 到 11-14 之间过期，第 2 段前要人重新登录。
 >   - 执行在**新的编排会话**里做（对齐会话的上下文不再适合）：派 59–66、抄结果、PR、审查、合并、61/62 的服务器步骤、两段评测。
+>
+> **编排会话进度（2026-11-07）：59–67 全部合入，第 1 段跑完，闸门有一条线没过；人决定暂停，先审评测流程和状态，之后开新会话再跑。第 2 段没有开跑。**
+> - 合入（squash）：59 #58 6380aa0、61 #59 1f65e68、65 #60 7afc7c6、63 #61 b49d12d、62 #62 0ff63da、60 #64 4628e58、64 #65 7549361（#63 退回 1 轮后 rebase 成新分支，#63 关闭）、66 #66 d8eb6a9、67 #67 b7c6071（`gh pr merge` 报 502 但已落到 main，PR 手动关闭）。工单记录在 3aa2fb1。Codex 意见：60 的 P2（宏的参数名让宏不透明）属实但偏保守，没修；67 的 P2 不属实。
+> - 服务器：61 合入后重建了 `da-dab-mongo`（`--noscripting`、`unless-stopped`，数据卷保留）；krama query1 no-context（`runs/t61-krama`）exit 0，Mongo 10/10 次调用成功，但 trial 本身在 71 轮后 "Prompt is too long" 没做完，留给 DAB 正式评测。62 合入后按 `runs/dabtrial2-score/run.log` 第 1 行重算（`runs/t62-rescore`）：−11.76 分，每个数据集只有 1 题，没有区间。
+> - **第 1 段**：服务器固定在 b7c6071，跑了两个 OUT：`runs/u1-target`（5 道目标题 × 3）、`runs/u1-full-rest`（其余 25 题 × 1），每个 OUT 都跑 full 和 baseline。花费 $3.38 + $3.11 = $6.49（约 ¥47，全在闲时）。开发集累计约 ¥461 / ¥600。余额 ¥98.63，不够第 2 段（约 ¥125）。
+>   - **和 ADR 计划不一样的地方**：`ablate` 要求 `--config` 里必须有 full（参照配置），单独的 `u1-baseline`（baseline 30 × 1）没法跑（exit 2，$0）。所以 baseline 放进上面两个 OUT（复用已经跑完的 full job）。这样 5 道目标题的 baseline 是 × 3，不是 × 1。第 2 段的 baseline 应该改成其余 25 题 × 2，合并后仍然每题每配置 3 次，总数还是 270。
+>   - 闸门数据（脚本 `runs/u1-gate/gate.py`，结果 `gate.json`、`rows.json`、`gate-out.txt`；驱动脚本和日志也在这个目录）：
+>     - infra_error 0。目标题 14/15（≥12 ✅）；验证器墙钟中位数 305 s（<337 ✅）；**pos 重派少于 21 个模型 ❌**：每次派单的模型数依次是 7cGbUhG [21,6,5]、NvPFUAo [21,17,3,1,21]、p8TpFk3 [21,21,21]。
+>     - 目标题和 accept-2 full 比都没掉分：division-by-zero 2/3（原 0/3）、pos 3/3（2/3）、cross-sell 3/3（2/3）、web-session 3/3（2/3）、receivables 3/3（1/3）。回归集没有异常。总成功数：full 28/40，baseline 26/40。
+>     - 机械指标（每 trial 平均，括号里是 accept-2 按同样题目组合加权的值）：full 守卫拒绝 2.83（4.90；去掉 54 的截止拒绝和 64 的查询拦截后 2.68）、超长输出 0（1.70）、`ended_with_unresolved` 0（0）、`ended_unverified` 0.05（0）；baseline 守卫拒绝 2.80（3.73）、超长输出 0（0.56）。
+>     - **口径问题，待人定**：ADR 把 `ended_with_unresolved`、`ended_unverified` 算作"有 accept-2 数据"的指标，可 accept-2 的代码（0b5597d）根本不发这两个事件（工单 54 才加）。accept-2 的 0 是没有数据，不是真的 0。`ended_unverified` 的 2 个 trial 都是 pos：派单列表太大，撞了截止拒绝，结果都成功。
+>   - **pos 列表是 21 个模型的两个原因**（子 agent 读的，派单事件的 `source` 已核实）：
+>     1. p8TpFk3：主 agent 写的 `pos_helpers.sql` 里，宏体内有 `ref('stg_pos__*')`。工单 60 的规则把这种宏判成不透明，19 个模型的 refs 变成未知，所以每次都全量重派（`source=again`）。修法候选：解析宏体里的 `ref()`。
+>     2. NvPFUAo 最后一次：工单 64 把之前的 FAIL 判成争议以后，`redispatch_models` 是空的，于是 `hooks.py:196` 退回全量（`source=fallback_all`），没理主 agent 点名的 7 个模型。那次跑了 745 s，但确实找到一个真问题，主 agent 也修了。另外，`carries_counter_evidence` 只看第 1 次以后的派单提示有没有文字（未确认是否过宽）。
+>   - 失败和异常的 trial（两个 sonnet 子 agent 读完，记录在 `runs/u1-gate/reading-full.md`、`reading-baseline.md`）：没有 59–67 造成的新失败类型。full 12 个失败都是模型波动，或 accept-2 已有的失败类型。tzXXxtE 例外：工单 47 的 CHECK 4 把并列排名判成 FAIL，主 agent 因此删光了窗口函数，评分器偏偏要窗口函数。4 次争议都正当，没有放过真错误。4 次查询拦截都按设计工作。baseline cross-sell 从 accept-2 的 3/3 降到 0/3，没找到代码原因，p≈0.05，可能是波动。小问题：一个模型在 duckdb 和 snowflake 两个项目里都有时，`verifier_dispatch.models` 会把它列两次。
+> - **下一步（等人审完流程再开新编排会话）**：人要决定 pos 这条线怎么处理。选项：把两个原因记成已知限制，在 b7c6071 上跑第 2 段，累计约 ¥586；或者先修再重跑第 1 段，约 ¥47，累计约 ¥633，要提高止损线。另外还要定上面的口径问题和第 2 段 baseline 的题目范围。第 2 段前要充值，并重新登录 Claude（11-11 到 11-14 之间过期）。
+> - 本地还留着已合并的 worktree 和分支，没清理。
 
 > **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
 >
