@@ -411,6 +411,18 @@ def test_reuse_counts_infrastructure_errors_a_resume_dropped(
     assert set(result["conditions"]) == {"regression"}
 
 
+def test_reuse_counts_a_trial_a_resume_dropped_as_interrupted(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Ticket 03: an interrupted trial leaves no result.json, only its moved event files (or none).
+    (tmp_path / "old" / "dropped" / "full" / "t2__x").mkdir(parents=True)
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert (code, result["verdict"]) == (1, "rerun-old")
+    assert result["reuse_problems"] == ["the old round had infrastructure errors"]
+
+
 @pytest.mark.parametrize("side", ["old", "new"])
 def test_reuse_needs_a_version_header_on_every_trial(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str], side: str

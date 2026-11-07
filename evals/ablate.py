@@ -30,7 +30,7 @@ new trials are watched: a usage limit or config error, or --fail-fast infrastruc
 row, stop Harbor and the batch. A finished job is not rerun; an interrupted one, or one with
 infrastructure errors, is resumed with `harbor job resume`, which deletes the errored trials and
 the interrupted ones (no result.json) and runs what is missing (plan §7: infrastructure errors are
-rerun, never scored); the event files of both are first kept under OUT/dropped/, so their spend
+rerun, never scored); the event files of both are first moved to OUT/dropped/, so their spend
 still counts, once. A logical failure (a wrong answer, the agent out of time) is a result: its job
 is complete and is not rerun. An existing job is reused only from a clean checkout at the commit
 and Skill version its trials recorded, on the clean benchmark commit and the machine of OUT's last
@@ -79,7 +79,7 @@ from typing import Any
 from data_agent.agent import git_commit, skill_version
 from data_agent.run_config import REPO_ROOT, load_config
 from evals import balance, wheels
-from evals.harbor import Trial, event_files, load_trials
+from evals.harbor import Trial, event_files, events_in, load_trials
 from evals.process import timing_markdown
 from evals.report import (
     TRIALS_PER_TASK,
@@ -388,9 +388,10 @@ def interrupted(job: Path) -> list[Path]:
 
 
 def keep_spend(out: Path, config: str, trial_dirs: list[Path]) -> None:
-    """Copy the event files of the trials a resume will delete to OUT/dropped/, where the spend
-    guard still counts what they cost, and their result.json when they have one, which marks that
-    the round had an infrastructure error even for a trial that broke before writing events
+    """Move the event files of the trials a resume will delete to OUT/dropped/, where the spend
+    guard still counts what they cost: moved, not copied, so a resume Harbor gives up on before
+    deleting them leaves each counted once. Copy their result.json when they have one, which marks
+    that the round had an infrastructure error even for a trial that broke before writing events
     (`evals accept`). An interrupted trial has no result.json; its directory is kept all the same,
     so `evals accept` also sees that the round lost a trial."""
     for trial_dir in trial_dirs:
@@ -398,8 +399,8 @@ def keep_spend(out: Path, config: str, trial_dirs: list[Path]) -> None:
         kept_dir.mkdir(parents=True, exist_ok=True)
         if (trial_dir / "result.json").is_file():
             shutil.copyfile(trial_dir / "result.json", kept_dir / "result.json")
-        for events in sorted((trial_dir / "agent" / "events").glob("*.jsonl")):
-            shutil.copyfile(events, kept_dir / events.name)
+        for events in events_in(trial_dir):
+            shutil.move(events, kept_dir / events.name)
 
 
 def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:
