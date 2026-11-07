@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Any
 
 from evals import spend
-from evals.harbor import Trial, by_task, event_files, last_event_file, load_trials, version_header
+from evals.harbor import (
+    Trial,
+    by_task,
+    event_files,
+    last_event_file,
+    load_trials,
+    task_id,
+    version_header,
+)
 from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
 from evals.process import job_metrics
 
@@ -187,9 +195,20 @@ MERGE_RECORD_KEYS = (
 MERGE_HELP = "one job, or several jobs of one config to merge (evals.report.load_jobs)"
 
 
+def out_of(job: Path) -> Path:
+    """The OUT a job of evals.ablate lives in: `OUT/jobs/<config>` -> `OUT`."""
+    return job.parent.parent
+
+
+def distinct(values: Sequence[Any]) -> int:
+    """How many different JSON values there are among `values` (lists and dicts compared by
+    content)."""
+    return len({json.dumps(v, sort_keys=True) for v in values})
+
+
 def last_record(job: Path) -> dict[str, Any] | None:
     """The last run record of the job's OUT (`OUT/jobs/<config>` -> `OUT/records/*.json`)."""
-    paths = sorted((job.parent.parent / "records").glob("*.json"))
+    paths = sorted((out_of(job) / "records").glob("*.json"))
     return json.loads(paths[-1].read_text()) if paths else None
 
 
@@ -307,7 +326,7 @@ def check_same_requests(job_dirs: Sequence[Path]) -> None:
             )
         requests.append({k: v for k, v in request.items() if k != REQUEST_TASKS})
     keys = sorted({key for request in requests for key in request})
-    differ = [key for key in keys if len({json.dumps(r.get(key)) for r in requests}) > 1]
+    differ = [key for key in keys if distinct([r.get(key) for r in requests]) > 1]
     if differ:
         raise ValueError(
             f"the requests of the {len(job_dirs)} jobs differ in {', '.join(differ)}; merge "
@@ -354,27 +373,42 @@ def check_dev_list(manifest: dict[str, Any], label: Path | str) -> None:
 def read_request(job: Path) -> dict[str, Any] | None:
     """The request of the job's OUT (`OUT/jobs/<config>` -> `OUT/request.json`), or None."""
     try:
-        request = json.loads((job.parent.parent / "request.json").read_text())
+        request = json.loads((out_of(job) / "request.json").read_text())
     except (OSError, ValueError):
         return None
     return request if isinstance(request, dict) else None
 
 
-def dropped_trials(job_dirs: Sequence[Path], tasks: set[str]) -> list[Trial]:
-    """The trials of `tasks` that resumes of the jobs dropped as infrastructure errors and
-    evals.ablate kept under `OUT/dropped/<config>/` (each kept once, by its trial name)."""
-    dropped: list[Trial] = []
+def kept_cost(kept_dir: Path) -> float:
+    """The `cost_usd` of a dropped trial's event files, which evals.ablate.keep_spend moved into
+    its directory under OUT/dropped/ (what the spend guard counts). Errors name no trial."""
+    try:
+        return float(sum(spend.file_spend(p).listed for p in sorted(kept_dir.glob("*.jsonl"))))
+    except (spend.SpendUnknown, OSError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            "a dropped trial's event file cannot be totalled; run `evals spend` on its OUT"
+        ) from exc
+
+
+def excluded_trials(job_dirs: Sequence[Path], tasks: set[str]) -> dict[str, dict[str, Any]]:
+    """The trials resumes of the jobs dropped from the score, kept by evals.ablate under
+    `OUT/dropped/<config>/` (each once, by its trial name), as counts and `cost_usd` alone (no
+    task or trial, so a holdout report may carry them, ADR-0004): `infra_excluded`, the
+    infrastructure errors (a kept result.json) of `tasks`, and `interrupted_excluded`, trials
+    Harbor was stopped in (no result.json, so no task to filter by: the job's own)."""
+    out = {key: {"trials": 0, "cost_usd": 0.0} for key in ("infra", "interrupted")}
     for job in job_dirs:
-        kept = job.parent.parent / "dropped" / job.name
-        if any(kept.glob("*/result.json")):
-            dropped += [t for t in load_trials(kept) if t.task in tasks]
-    return dropped
-
-
-def infra_excluded(dropped: list[Trial]) -> dict[str, Any]:
-    """The infrastructure errors left out of the score, as a count and their `cost_usd`: no task
-    or trial, so a holdout report may carry it (ADR-0004)."""
-    return {"trials": len(dropped), "cost_usd": sum(t.cost_usd for t in dropped)}
+        for kept in sorted(p for p in (out_of(job) / "dropped" / job.name).glob("*") if p.is_dir()):
+            result = kept / "result.json"
+            if result.is_file():
+                if task_id(json.loads(result.read_text())["task_name"]) not in tasks:
+                    continue
+                key = "infra"
+            else:
+                key = "interrupted"
+            out[key]["trials"] += 1
+            out[key]["cost_usd"] += kept_cost(kept)
+    return {"infra_excluded": out["infra"], "interrupted_excluded": out["interrupted"]}
 
 
 # The run contract a report records (`run`): from the trials' version headers, the last run
@@ -389,8 +423,7 @@ def run_contract(trials: list[Trial], job_dirs: Sequence[Path]) -> dict[str, Any
     without any."""
 
     def one(values: list[Any]) -> Any:
-        distinct = {json.dumps(v) for v in values}
-        return values[0] if values and None not in values and len(distinct) == 1 else None
+        return values[0] if values and None not in values and distinct(values) == 1 else None
 
     headers = [
         version_header(events) for t in trials if not is_infra_error(t) for events in event_files(t)
@@ -399,6 +432,8 @@ def run_contract(trials: list[Trial], job_dirs: Sequence[Path]) -> dict[str, Any
     requests = [read_request(job) for job in job_dirs]
     run: dict[str, Any] = {key: one([h.get(key) for h in headers]) for key in RUN_HEADER_KEYS}
     run |= {key: one([r.get(key) for r in records]) for key in RUN_RECORD_KEYS}
+    # evals.ablate.check_request leaves the split out of a holdout request (the holdout is run
+    # whole) and `agent_kwargs` out of a request without any.
     run["split"] = one([r.get("split", "holdout") if r else None for r in requests])
     run["agent_kwargs"] = one([r.get("agent_kwargs", []) if r else None for r in requests])
     return run
@@ -410,11 +445,13 @@ FULL_REDISPATCH_LINE = "full_redispatches"
 
 
 def gates(
-    in_split: list[Trial], process: dict[str, Any], excluded: dict[str, Any]
+    in_split: list[Trial], process: dict[str, Any], excluded: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
     """A dev report's gates, kept apart: correctness counts the scored trials' successes and
     failures; infrastructure passes only with no trial excluded as an infrastructure error
-    (ADR-0008: infra_error must be 0); efficiency lists each trial with a full redispatch, a
+    (ADR-0008: infra_error must be 0), and states the interrupted trials resumes reran, which do
+    not fail it (the operator or Harbor stopped them); efficiency lists each trial with a full
+    redispatch, a
     warning that is not a correctness failure. Efficiency is None (unknown) when no trial's
     event file records dispatches. Correctness has no pass line here: the success lines are
     the human's, per evaluation (ADR-0008)."""
@@ -436,7 +473,11 @@ def gates(
             "failures": len(in_split) - successes,
             "trials": len(in_split),
         },
-        "infrastructure": {"passed": excluded["trials"] == 0, **excluded},
+        "infrastructure": {
+            "passed": excluded["infra_excluded"]["trials"] == 0,
+            **excluded["infra_excluded"],
+            "interrupted": excluded["interrupted_excluded"],
+        },
         "efficiency": {"passed": not warnings if recorded else None, "warnings": warnings},
     }
 
@@ -455,14 +496,15 @@ def write_report(
     Refuses a split that is incomplete: a task without results, or a split `check_complete`
     rejects; and a dev list `check_dev_list` rejects. Errors give counts only, so they name no
     holdout task. `job_dirs`, the jobs the trials come from, give the run contract (`run`) and
-    the infrastructure errors resumes dropped (`infra_excluded`); a dev report adds `gates`.
+    the trials resumes dropped (`infra_excluded`, `interrupted_excluded`); a dev report adds
+    `gates`.
     """
     if split == "dev":
         check_dev_list(manifest, manifest_label)
     in_split = split_trials(trials, manifest, split, "this")
     check_complete(in_split, split, trials_per_task)
-    excluded = infra_excluded(dropped_trials(job_dirs, {t.task for t in in_split}))
-    report: dict[str, Any] = {"split": split, **summary(in_split), "infra_excluded": excluded}
+    excluded = excluded_trials(job_dirs, {t.task for t in in_split})
+    report: dict[str, Any] = {"split": split, **summary(in_split), **excluded}
     report["run"] = run_contract(in_split, job_dirs)
     out_dir.mkdir(parents=True, exist_ok=True)
     if split == "dev":

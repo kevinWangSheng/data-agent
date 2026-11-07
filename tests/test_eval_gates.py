@@ -26,11 +26,12 @@ def write_trial(
     *,
     config: str = "full",
     commit: str = "c1",
+    skill: str = "s1",
     events: list[dict[str, Any]] | None = None,
     exception: str | None = None,
     cost: float = 0.01,
 ) -> None:
-    version = {"type": "version", "git_commit": commit, "skill_version": "s1", "config": config}
+    version = {"type": "version", "git_commit": commit, "skill_version": skill, "config": config}
     version["model"] = "m1"
     end = {"type": "result", "subtype": "success", "num_turns": 3, "cost_usd": cost}
     events_dir = job / name / "agent" / "events"
@@ -54,31 +55,51 @@ def write_out(
     rewards: dict[str, list[float]],
     *,
     commit: str = "c1",
+    skill: str = "s1",
     record: dict[str, Any] = RECORD,
     request: dict[str, Any] = REQUEST,
     dropped: dict[str, float] | None = None,
+    interrupted: list[float] | None = None,
     events: dict[str, list[dict[str, Any]]] | None = None,
     start: int = 0,
 ) -> Path:
     """OUT `root/config` as `evals ablate` leaves it: the job, a run record, the request, and
-    `dropped` trials (task -> cost) a resume deleted as infrastructure errors; trial `<task>__<i>`
-    from i = `start`."""
+    the trials a resume deleted, kept as evals.ablate.keep_spend keeps them (result.json and the
+    event files moved into the trial's directory under OUT/dropped/<config>/): `dropped`
+    infrastructure errors (task -> cost) and `interrupted` trials (their costs; no result.json).
+    Trial `<task>__<i>` from i = `start`."""
     out = root / config
     job = out / "jobs" / config
     for task, values in rewards.items():
         for i, reward in enumerate(values, start):
             name = f"{task}__{i}"
-            write_trial(job, task, name, reward, config=config, commit=commit,
+            write_trial(job, task, name, reward, config=config, commit=commit, skill=skill,
                         events=(events or {}).get(name))  # fmt: skip
     (job / "config.json").write_text("{}")
     (out / "records").mkdir()
     (out / "records" / "20261107T100000Z.json").write_text(json.dumps(record))
     (out / "request.json").write_text(json.dumps(request))
+    kept = out / "dropped" / config
     for i, (task, cost) in enumerate((dropped or {}).items()):
         name = f"{task}__dropped{i}"
-        write_trial(out / "dropped" / config, task, name, None, config=config,
+        write_trial(kept, task, name, None, config=config,
                     exception="ApiInternalServerError", cost=cost)  # fmt: skip
+        flatten_events(kept / name)
+    for i, cost in enumerate(interrupted or []):
+        name = f"{DEV[0]}__stopped{i}"
+        write_trial(kept, DEV[0], name, None, config=config, cost=cost)
+        (kept / name / "result.json").unlink()
+        flatten_events(kept / name)
     return job
+
+
+def flatten_events(trial_dir: Path) -> None:
+    """Move the trial's event files to its directory, as keep_spend does (ticket 03)."""
+    events_dir = trial_dir / "agent" / "events"
+    for events in events_dir.iterdir():
+        events.rename(trial_dir / events.name)
+    events_dir.rmdir()
+    (trial_dir / "agent").rmdir()
 
 
 @pytest.fixture
@@ -117,6 +138,7 @@ def test_a_dev_report_states_the_infrastructure_errors_it_excluded(
         "passed": False,
         "trials": 1,
         "cost_usd": pytest.approx(0.02),
+        "interrupted": {"trials": 0, "cost_usd": 0},
     }
     assert gates["correctness"] == {"successes": 5, "failures": 1, "trials": 6}
 
@@ -128,6 +150,22 @@ def test_without_dropped_trials_the_infrastructure_gate_passes(
     r = report([job], manifest, tmp_path / "r", capsys, "dev")
     assert r["infra_excluded"] == {"trials": 0, "cost_usd": 0}
     assert r["gates"]["infrastructure"]["passed"] is True
+
+
+def test_interrupted_trials_are_stated_apart_and_do_not_fail_the_gate(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A trial Harbor was stopped in (kept without result.json, ticket 03) was rerun by the
+    resume: it is out of the score and stated with what it cost, but it is not an
+    infrastructure error, so the gate still passes."""
+    job = write_out(tmp_path, "full", GOOD, interrupted=[0.3, 0.0])
+    r = report([job], manifest, tmp_path / "r", capsys, "dev")
+    assert r["n_trials"] == 6
+    assert r["infra_excluded"] == {"trials": 0, "cost_usd": 0}
+    assert r["interrupted_excluded"] == {"trials": 2, "cost_usd": pytest.approx(0.3)}
+    infrastructure = r["gates"]["infrastructure"]
+    assert infrastructure["passed"] is True
+    assert infrastructure["interrupted"] == {"trials": 2, "cost_usd": pytest.approx(0.3)}
 
 
 def test_merged_jobs_total_the_exclusions_of_every_out(
@@ -205,7 +243,9 @@ def dev_reports(
     }
     dirs = []
     for config in CONFIGS:
-        kwargs: dict[str, Any] = {"events": events[config]} | changes.get(config, {})
+        # baseline loads no Skills: its version header records "none" (data_agent.agent).
+        skill = {"skill": "none"} if config == "baseline" else {}
+        kwargs: dict[str, Any] = {"events": events[config], **skill} | changes.get(config, {})
         job = write_out(tmp_path / "outs", config, rewards[config], **kwargs)
         out = tmp_path / "reports" / config
         report([job], manifest, out, capsys, "dev")
@@ -251,6 +291,7 @@ def test_select_sets_the_three_configs_side_by_side(
     ("change", "what"),
     [
         pytest.param({"baseline": {"commit": "c2"}}, "git_commit", id="commit"),
+        pytest.param({"no-verifiers": {"skill": "s2"}}, "skill_version", id="skill"),
         pytest.param({"baseline": {"record": {**RECORD, "machine": "x"}}}, "machine", id="machine"),
         pytest.param(
             {"no-verifiers": {"request": {**REQUEST, "agent_kwargs": []}}},

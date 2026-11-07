@@ -8,7 +8,8 @@ apart: correctness (successes of the scored trials), infrastructure errors exclu
 score, and efficiency warnings (a full verifier redispatch), which are not correctness failures.
 
 Reports are compared only under one run contract: the same code commit, model, benchmark
-commit, machine, split and run parameters (agent kwargs), each config once, over the same tasks
+commit, machine, split and run parameters (agent kwargs), one Skill version among the configs
+that load Skills, each config once, over the same tasks
 with the same trials per task. A holdout report is refused: it carries no per-task or process
 evidence to choose by (ADR-0004). Significance comes from `evals compare` on the jobs.
 
@@ -21,9 +22,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# The run-contract keys (evals.report.run_contract) the configs must share; `config` and
-# `skill_version` differ between configs by design (baseline runs without Skills).
+from evals.report import distinct
+
+# The run-contract keys (evals.report.run_contract) the configs must share. `config` differs
+# by design, and `skill_version` is "none" for a config without Skills (data_agent's version
+# header): the configs with Skills must share it.
 SHARED_RUN_KEYS = ("git_commit", "model", "benchmark_commit", "machine", "split", "agent_kwargs")
+NO_SKILLS = "none"
 NONE = "—"
 
 
@@ -94,10 +99,11 @@ def selection_markdown(rows: list[dict[str, Any]]) -> list[str]:
         "Gates are kept apart: correctness is the scored trials' successes; infrastructure errors "
         "were excluded from the score (the gate passes only with none); an efficiency warning "
         "(a verifier dispatch that re-sent every model) is not a correctness failure. Process "
-        "columns are per-trial means, walls the p50 in seconds.",
+        "columns are per-trial means except full redispatches, a total; walls are the p50 "
+        "in seconds.",
         "",
         "| config | accuracy (%) | successes | cost (USD) | billed (USD) | cost per success "
-        "| infra excluded (trials, USD) | efficiency | full redispatches | unverified "
+        "| infra excluded (trials, USD) | efficiency | full redispatches (total) | unverified "
         "| unresolved | disputed | guard denials | oversize outputs | verifier wall | trial wall |",
         "|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
@@ -149,11 +155,17 @@ def load_reports(report_dirs: list[Path]) -> list[dict[str, Any]]:
                 f"{unknown} of {len(reports)} reports do not record one {key}, so the run "
                 "contracts cannot be matched"
             )
-        if len({json.dumps(v) for v in values}) > 1:
+        if distinct(values) > 1:
             raise ValueError(
                 f"the reports' run contracts differ in {key}; compare only configs run under "
                 "one contract"
             )
+    skills = [run.get("skill_version") for run in runs]
+    if None in skills or distinct([s for s in skills if s != NO_SKILLS]) > 1:
+        raise ValueError(
+            "the reports' run contracts differ in skill_version among the configs with Skills; "
+            "compare only configs run under one contract"
+        )
     trial_counts = [
         {task: counts["trials"] for task, counts in r["per_task"].items()} for r in reports
     ]
