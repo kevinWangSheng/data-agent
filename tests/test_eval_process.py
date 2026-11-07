@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from lifecycle_events import dispatches
 
 from evals.harbor import Trial
 from evals.process import (
@@ -485,3 +486,31 @@ def test_trials_of_a_version_that_predates_dispatch_events_all_leave_them_unknow
     assert job["per_task"]["t1"]["verifier_dispatches"] is None
     gate = job["gate"]
     assert (gate["trials_with_dispatches_recorded"], gate["verifier_dispatches"]) == (2, 0.5)
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 04: full-model redispatches per trial")
+@pytest.mark.parametrize(
+    ("counts", "full"),
+    [((21,), 0), ((21, 6, 5), 0), ((21, 17, 3, 1, 21), 1), ((21, 21, 21), 2)],
+)
+def test_a_trial_counts_its_dispatches_that_resend_every_model(
+    tmp_path: Path, counts: tuple[int, ...], full: int
+) -> None:
+    """Stage 1's efficiency line: a dispatch after the first that lists every model of the first
+    dispatch (stage 1's pos-operations trials dispatched [21, 6, 5], [21, 17, 3, 1, 21] and
+    [21, 21, 21] models)."""
+    trial = trial_with(tmp_path, *dispatches(*counts), {"type": "result", "subtype": "success"})
+    assert trial_metrics(trial)["full_redispatches"] == full
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 04: full-model redispatches per trial")
+def test_full_redispatches_are_unknown_in_an_event_file_before_dispatch_events(
+    tmp_path: Path,
+) -> None:
+    """As the other dispatch counts: a verifier ran and no dispatch was recorded (accept-2)."""
+    trial = trial_with(
+        tmp_path,
+        {"type": "verifier_start", "verifier": "verifier", "agent_id": "v1"},
+        {"type": "result", "subtype": "success"},
+    )
+    assert trial_metrics(trial)["full_redispatches"] is None

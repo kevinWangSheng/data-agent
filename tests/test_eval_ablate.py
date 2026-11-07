@@ -3,6 +3,11 @@
 Harbor is replaced at the subprocess seam (`ablate.run_harbor`) by `FakeHarbor`, which writes job
 directories shaped like Harbor's (`<job>/config.json`, `<job>/<trial>/result.json`, the agent's
 event file), so everything after it (spend guard, scrub, report, compare) runs for real.
+
+The evaluation lifecycle contract (eval-readiness-and-lifecycle ticket 01) is fixed at the same
+seam: readiness before the first job, reuse and resume, logical failures kept as scored failures,
+and the spend of dropped trials. A test marked `xfail(strict=True)` names the ticket that makes it
+pass; that ticket removes the marker and changes nothing else in the test.
 """
 
 import json
@@ -16,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from lifecycle_events import dispatches
 
 from evals import ablate, balance
 from evals import report as report_module
@@ -36,6 +42,10 @@ FAKE_KEY = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
 
 type Outcome = Callable[[str, str, int], tuple[float | None, str | None]]
 type StopWhen = Callable[[], str | None]
+# A new trial's extra events, written between its version header and its result event, and extra
+# fields of its result event; both from (smoke, config, task, attempt).
+type Events = Callable[[bool, str, str, int], list[dict[str, Any]]]
+type ResultFields = Callable[[bool, str, str, int], dict[str, Any]]
 
 
 def by_pass_rate(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
@@ -59,6 +69,8 @@ class FakeHarbor:
         self.smoke: list[list[str]] = []
         self.model: dict[str, str] = {}  # per config; deepseek-flash otherwise
         self.finished: list[str] = []  # trial names in the order they finished
+        self.events: Events = lambda smoke, config, task, attempt: []
+        self.result_fields: ResultFields = lambda smoke, config, task, attempt: {}
 
     def __call__(self, args: list[str], log: Path, stop_when: StopWhen) -> tuple[int, str | None]:
         smoke = args[0] == "run" and Path(args[args.index("-o") + 1]).parent.name == "smoke"
@@ -68,9 +80,13 @@ class FakeHarbor:
         if args[:2] == ["job", "resume"]:
             job = Path(args[args.index("-p") + 1])
             dropped = {args[i + 1] for i, a in enumerate(args) if a == "-f"}
-            for trial in [p for p in job.iterdir() if (p / "result.json").is_file()]:
-                result = json.loads((trial / "result.json").read_text())
-                if (result.get("exception_info") or {}).get("exception_type") in dropped:
+            for trial in [p for p in job.iterdir() if p.is_dir()]:
+                # As Harbor's resume does (harbor/job.py `_maybe_init_existing_job`), a trial
+                # directory without result.json (an interrupted trial) is deleted and rerun.
+                done = (trial / "result.json").is_file()
+                result = json.loads((trial / "result.json").read_text()) if done else {}
+                error = (result.get("exception_info") or {}).get("exception_type")
+                if not done or error in dropped:
                     for path in sorted(trial.rglob("*"), reverse=True):
                         path.rmdir() if path.is_dir() else path.unlink()
                     trial.rmdir()
@@ -92,11 +108,16 @@ class FakeHarbor:
             (job / "config.json").write_text(json.dumps(config))
         # As ablate's watcher would see them: after each trial Harbor finishes.
         outcome = self.smoke_outcome if smoke else self.outcome
-        reason = self.fill(job, config, stop_when, outcome)
+        reason = self.fill(job, config, stop_when, outcome, smoke)
         return (-15, reason) if reason else (0, None)
 
     def fill(
-        self, job: Path, config: dict[str, Any], stop_when: StopWhen, outcome: Outcome
+        self,
+        job: Path,
+        config: dict[str, Any],
+        stop_when: StopWhen,
+        outcome: Outcome,
+        smoke: bool,
     ) -> str | None:
         for task in config["tasks"]:
             # Trial names carry the attempt they fill: `<task>__a<attempt>c<call>`.
@@ -116,7 +137,9 @@ class FakeHarbor:
                     "model": self.model.get(config["run_config"], "deepseek-flash"),
                 }
                 result_event = {"type": "result", "cost_usd": self.cost}
-                event_lines = [json.dumps(header), json.dumps(result_event)]
+                result_event |= self.result_fields(smoke, config["run_config"], task, attempt)
+                extra = self.events(smoke, config["run_config"], task, attempt)
+                event_lines = [json.dumps(e) for e in (header, *extra, result_event)]
                 # A key the model echoed into a tool result: scrub must remove it.
                 event_lines.append(json.dumps({"type": "tool_result", "output": FAKE_KEY}))
                 (trial / "agent" / "events" / "run.jsonl").write_text("\n".join(event_lines) + "\n")
@@ -1425,3 +1448,220 @@ def test_an_agent_kwarg_that_is_malformed_or_overrides_the_config_is_refused(
     assert exc.value.code == 2
     assert message in capsys.readouterr().err
     assert harbor.calls == harbor.smoke == []
+
+
+# --- Evaluation lifecycle contract (eval-readiness-and-lifecycle, ticket 01) ----------------------
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 02: a smoke stopped at its deadline is a warning")
+def test_readiness_a_smoke_trial_stopped_at_its_deadline_is_a_warning_the_table_carries(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A smoke trial the agent stopped itself at the trial deadline (the result event's
+    `terminal_reason` is `deadline`, ticket 54) ends with a reward and no Harbor error, so today's
+    smoke passes it silently. It is listed as an anomaly, not a failed gate (ADR-0008): the batch
+    runs, the scores are the trials' own, and the table says the run was not clean because a
+    smoke trial hit its deadline."""
+    harbor = FakeHarbor()
+    harbor.result_fields = lambda smoke, config, task, attempt: (
+        {"terminal_reason": "deadline"} if smoke and config == "baseline" else {}
+    )
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--config", "baseline") == 0
+    printed = capsys.readouterr()
+    assert len(harbor.smoke) == len(harbor.calls) == 2
+    result = table(out)
+    assert {c["config"]: c["accuracy"] for c in result["configs"]} == pytest.approx(
+        {"full": 100.0, "baseline": 0.0}
+    )
+    readiness = result["readiness"]
+    assert readiness["clean"] is False
+    (warning,) = readiness["warnings"]
+    assert {"check", "reason"} <= set(warning)
+    assert "deadline" in warning["reason"].lower() and "baseline" in warning["reason"]
+    assert "warning" in (printed.out + printed.err).lower()
+    markdown = (report_dirs(out)[0] / "ablation.md").read_text().lower()
+    assert "warning" in markdown and "deadline" in markdown
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 02: readiness warnings reach the ablation table")
+def test_readiness_a_full_model_redispatch_is_a_warning_the_table_carries(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A smoke trial whose second verifier dispatch re-sent every model of the first is an
+    isolated efficiency finding, not a broken environment: the batch runs, the scores are the
+    trials' own, and the table says the run was not clean and why. The check reads the smoke's
+    event files: one smoke trial per config, no extra probe."""
+    harbor = FakeHarbor()
+    harbor.events = lambda smoke, config, task, attempt: (
+        dispatches(21, 21) if smoke and config == "full" else []
+    )
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full", "--config", "baseline") == 0
+    printed = capsys.readouterr()
+    assert len(harbor.smoke) == len(harbor.calls) == 2
+    result = table(out)
+    assert {c["config"]: c["accuracy"] for c in result["configs"]} == pytest.approx(
+        {"full": 100.0, "baseline": 0.0}
+    )
+    readiness = result["readiness"]
+    assert readiness["clean"] is False
+    (warning,) = readiness["warnings"]
+    assert {"check", "reason"} <= set(warning)
+    assert "redispatch" in f"{warning['check']} {warning['reason']}".lower()
+    assert "warning" in (printed.out + printed.err).lower()
+    markdown = (report_dirs(out)[0] / "ablation.md").read_text().lower()
+    assert "warning" in markdown and "redispatch" in markdown
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 02: the ablation table states readiness")
+def test_readiness_without_findings_is_reported_clean(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Later dispatches that narrow the model list are the expected shape: no warning."""
+    harbor = FakeHarbor()
+    harbor.events = lambda smoke, config, task, attempt: dispatches(21, 6, 5)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    readiness = table(out)["readiness"]
+    assert (readiness["clean"], readiness["warnings"]) == (True, [])
+
+
+def test_logical_failures_stay_scored_and_a_rerun_does_not_retry_them(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """A wrong answer (reward 0) and the agent running out of time (AgentTimeoutError, which
+    Harbor does not retry) are the agent's results: the job is complete, a rerun reuses it, and
+    the failures stay in the score. Only a new --out runs them again."""
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if task == "dbt-echo" and attempt == 0:
+            return 0.0, None
+        if task == "dbt-echo" and attempt == 1:
+            return None, "AgentTimeoutError"
+        return 1.0, None
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    job = out / "jobs" / "full"
+    failed = sorted(p.name for p in job.glob("dbt-echo__a[01]c*"))
+    assert len(failed) == 2
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    assert len(harbor.calls) == 1
+    assert sorted(p.name for p in job.glob("dbt-echo__a[01]c*")) == failed
+    assert not (out / "dropped").exists()
+    for report in report_dirs(out):
+        (full,) = json.loads((report / "ablation.json").read_text())["configs"]
+        assert full["accuracy"] == pytest.approx(100 * 4 / 6)
+
+
+def test_a_resume_reruns_infrastructure_errors_and_keeps_logical_failures(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """In one job, the resume deletes and reruns the infrastructure error under the job's own
+    request (`harbor job resume -p`, `-f` its exception type only); the logical failures are left
+    as they were and scored."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if task == "dbt-delta" and attempt == 0 and broken["yes"]:
+            return None, "ApiInternalServerError"
+        if task == "dbt-echo" and attempt == 0:
+            return 0.0, None
+        if task == "dbt-echo" and attempt == 1:
+            return None, "AgentTimeoutError"
+        return 1.0, None
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 2
+    job = out / "jobs" / "full"
+    failed = sorted(p.name for p in job.glob("dbt-echo__a[01]c*"))
+    (errored,) = [p.name for p in job.glob("dbt-delta__a0c*")]
+    broken["yes"] = False
+    assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
+    assert harbor.calls[-1] == ["job", "resume", "-p", str(job), "-f", "ApiInternalServerError"]
+    assert sorted(p.name for p in job.glob("dbt-echo__a[01]c*")) == failed
+    assert not (job / errored).exists()
+    assert sorted(p.name for p in (out / "dropped" / "full").iterdir()) == [errored]
+    (full,) = table(out)["configs"]
+    assert (full["n_trials"], full["accuracy"]) == (6, pytest.approx(100 * 4 / 6))
+
+
+def test_a_dropped_trial_is_counted_once_however_many_resumes_follow(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """The same slot errors in two rounds: both dropped trials are kept and each is counted once,
+    next to the six scored trials; a later call that runs nothing copies nothing again."""
+    rounds = {"errors_left": 2}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if task == "dbt-delta" and attempt == 0 and rounds["errors_left"]:
+            rounds["errors_left"] -= 1
+            return None, "ApiInternalServerError"
+        return 1.0, None
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    full = ("--config", "full", "--skip-smoke")
+    assert [run(monkeypatch, harbor, manifest, out, *full) for _ in range(4)] == [2, 2, 0, 0]
+    assert len(harbor.calls) == 3
+    assert len(list((out / "dropped" / "full").iterdir())) == 2
+    code, printed, _ = ablate.evals_cli(["spend", str(out), "--budget", "100"])
+    assert code == 0 and "(cost_usd $0.0800) over 8 event file(s)" in printed
+    for report in report_dirs(out):
+        assert json.loads((report / "full" / "report.json").read_text())["n_trials"] == 6
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 03: an interrupted trial's spend survives resume")
+def test_the_spend_of_an_interrupted_trial_survives_its_resume(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Harbor's resume deletes a trial directory without result.json (harbor/job.py
+    `_maybe_init_existing_job`), the agent's event file with it. What that trial cost was billed
+    all the same, so the spend guard must still count it, kept under OUT/dropped/ as an
+    infrastructure error's is; the rerun trial is counted on its own, once."""
+    harbor = FakeHarbor(cost=1.0)
+    out = tmp_path / "out"
+    full = ("--config", "full", "--skip-smoke")
+    assert run(monkeypatch, harbor, manifest, out, *full) == 0
+    job = out / "jobs" / "full"
+    victim = next(job.glob("dbt-echo__*"))
+    (victim / "result.json").unlink()  # the agent ended; Harbor was stopped before the result
+    assert run(monkeypatch, harbor, manifest, out, *full) == 0
+    assert harbor.calls[-1] == ["job", "resume", "-p", str(job)]
+    assert not victim.exists()
+    code, printed, _ = ablate.evals_cli(["spend", str(out), "--budget", "100"])
+    assert code == 0 and "(cost_usd $7.0000) over 7 event file(s)" in printed
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 04: the table states infrastructure exclusions")
+def test_the_table_states_the_infrastructure_errors_it_excluded_and_their_spend(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    """Dropped trials are out of the score but not out of the record: each config's row gives how
+    many trials resumes dropped and what they cost, as counts (no task, so holdout-safe)."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if config == "full" and task == "dbt-delta" and attempt == 0 and broken["yes"]:
+            return None, "ApiInternalServerError"
+        return 1.0, None
+
+    harbor = FakeHarbor(outcome)
+    out = tmp_path / "out"
+    configs = ("--config", "full", "--config", "baseline")
+    assert run(monkeypatch, harbor, manifest, out, *configs) == 2
+    broken["yes"] = False
+    assert run(monkeypatch, harbor, manifest, out, *configs) == 0
+    rows = {row["config"]: row for row in table(out)["configs"]}
+    assert rows["full"]["n_trials"] == rows["baseline"]["n_trials"] == 6
+    assert rows["full"]["infra_excluded"] == {"trials": 1, "cost_usd": pytest.approx(0.01)}
+    assert rows["baseline"]["infra_excluded"] == {"trials": 0, "cost_usd": 0}

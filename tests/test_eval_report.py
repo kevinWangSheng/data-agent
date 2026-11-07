@@ -4,11 +4,14 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from lifecycle_events import dispatches
 
+from evals.__main__ import main as evals_main
 from evals.harbor import load_trials
 from evals.report import billed_usd
 
@@ -473,3 +476,249 @@ def test_a_dev_report_on_a_task_the_real_manifest_holds_out_is_refused(tmp_path:
     assert proc.returncode == 2
     assert held_out not in proc.stdout + proc.stderr
     assert not out.exists()
+
+
+# --- Evaluation lifecycle contract (eval-readiness-and-lifecycle, ticket 01) ----------------------
+#
+# Stage 1 and Stage 2 of the dev evaluation (ADR-0008 补充 2026-11-06) run on one commit into
+# several OUTs and are merged per config by `evals report JOB...` (ticket 65). A test marked
+# `xfail(strict=True)` names the ticket that makes it pass; that ticket removes the marker only.
+
+STAGE_DEV = ["t1", "t2"]
+STAGE_HOLDOUT = ["h-secret"]
+# What `evals ablate` writes to OUT/records/<stamp>.json and OUT/request.json for a dev run.
+STAGE_RECORD = {"benchmark_commit": "b" * 40, "machine": "box", "model": "m1"}
+STAGE_REQUEST = {"model": "m1", "split": "dev", "tasks": STAGE_DEV}
+STAGE_REQUEST |= {"agent_kwargs": ["agent_timeout_sec=1500"]}
+
+
+def write_versioned_trial(
+    job: Path,
+    task: str,
+    name: str,
+    reward: float,
+    events: list[dict[str, Any]] | None = None,
+    header: dict[str, Any] | None = None,
+) -> None:
+    """A trial as the agent and Harbor leave it: a version header, `events`, a result event."""
+    version = {"type": "version", "git_commit": "c1", "skill_version": "s1", "config": "full"}
+    version |= {"model": "m1"} | (header or {})
+    end = {"type": "result", "subtype": "success", "num_turns": 3, "cost_usd": 0.01}
+    events_dir = job / name / "agent" / "events"
+    events_dir.mkdir(parents=True)
+    lines = "".join(json.dumps(e) + "\n" for e in (version, *(events or []), end))
+    (events_dir / "run-1.jsonl").write_text(lines)
+    result = {
+        "task_name": f"org/{task}",
+        "trial_name": name,
+        "verifier_result": {"rewards": {"reward": reward}},
+        "agent_result": {"cost_usd": 0.01, "n_output_tokens": 10},
+    }
+    (job / name / "result.json").write_text(json.dumps(result))
+
+
+@pytest.fixture
+def dev_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[list[str]], Path]:
+    """Writes a manifest with the given dev list; the repo manifest's holdout, which a dev report
+    checks too, is pointed at one that holds out none of these tests' dev tasks."""
+    repo = tmp_path / "repo-manifest.json"
+    repo.write_text(json.dumps({"seed": 0, "dev": [], "holdout": STAGE_HOLDOUT}))
+    monkeypatch.setattr("evals.report.REPO_MANIFEST", repo)
+
+    def write(dev: list[str]) -> Path:
+        path = tmp_path / "manifest.json"
+        path.write_text(json.dumps({"seed": 0, "dev": dev, "holdout": STAGE_HOLDOUT}))
+        return path
+
+    return write
+
+
+def report_on(
+    jobs: list[Path],
+    manifest: Path,
+    out: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> tuple[int, dict[str, Any] | None, str]:
+    """`evals report` of the dev split on `jobs`: exit code, report.json or None, stderr."""
+    paths = [str(job) for job in jobs]
+    code = evals_main(
+        ["report", *paths, "--manifest", str(manifest), "--split", "dev", "--out", str(out)]
+    )
+    err = capsys.readouterr().err
+    report = json.loads((out / "report.json").read_text()) if code == 0 else None
+    return code, report, err
+
+
+def stage_job(tmp_path: Path, rewards: dict[str, list[float]]) -> Path:
+    """A dev job of pos-operations' stage-1 trials and `rewards` for the other tasks."""
+    job = tmp_path / "job"
+    for name, counts in (("a", (21, 6, 5)), ("b", (21, 17, 3, 1, 21)), ("c", (21, 21, 21))):
+        write_versioned_trial(
+            job, "pos-operations", f"pos-operations__{name}", 1.0, dispatches(*counts)
+        )
+    for task, values in rewards.items():
+        for i, reward in enumerate(values):
+            write_versioned_trial(job, task, f"{task}__{i}", reward)
+    return job
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 04: dev reports separate gates")
+def test_a_dev_report_keeps_the_redispatch_warning_out_of_correctness(
+    tmp_path: Path, dev_manifest: Callable[[list[str]], Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Stage 1: every pos-operations trial passed, but two re-dispatched all 21 models. The report
+    shows a failed efficiency line naming those dev trials; correctness counts successes only, so
+    a logical failure elsewhere is a correctness result and the redispatch is not one."""
+    job = stage_job(tmp_path, {"t1": [1.0, 1.0, 1.0], "t2": [1.0, 1.0, 0.0]})
+    manifest = dev_manifest([*STAGE_DEV, "pos-operations"])
+    code, report, err = report_on([job], manifest, tmp_path / "report", capsys)
+    assert code == 0, err
+    assert report is not None
+    gates = report["gates"]
+    assert (gates["correctness"]["successes"], gates["correctness"]["trials"]) == (8, 9)
+    assert "redispatch" not in json.dumps(gates["correctness"]).lower()
+    efficiency = gates["efficiency"]
+    assert efficiency["passed"] is False
+    assert {w["task"] for w in efficiency["warnings"]} == {"pos-operations"}
+    assert {w["trial"] for w in efficiency["warnings"]} == {
+        "pos-operations__b",
+        "pos-operations__c",
+    }
+    assert all("redispatch" in w["line"] for w in efficiency["warnings"])
+    assert report["accuracy"] == pytest.approx(100 * 8 / 9)
+
+
+@pytest.mark.xfail(strict=True, reason="ticket 04: dev reports separate gates")
+def test_a_dev_report_without_full_redispatches_passes_the_efficiency_line(
+    tmp_path: Path, dev_manifest: Callable[[list[str]], Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Later dispatches that narrow the model list pass the efficiency line, whatever the
+    correctness results (here every other trial failed)."""
+    job = tmp_path / "job"
+    for i, counts in enumerate(((21,), (21, 6, 5), (21, 3))):
+        write_versioned_trial(
+            job, "pos-operations", f"pos-operations__{i}", 1.0, dispatches(*counts)
+        )
+    for task in STAGE_DEV:
+        for i in range(3):
+            write_versioned_trial(job, task, f"{task}__{i}", 0.0)
+    manifest = dev_manifest([*STAGE_DEV, "pos-operations"])
+    code, report, err = report_on([job], manifest, tmp_path / "report", capsys)
+    assert code == 0, err
+    assert report is not None
+    efficiency = report["gates"]["efficiency"]
+    assert (efficiency["passed"], efficiency["warnings"]) == (True, [])
+    assert (report["gates"]["correctness"]["successes"], report["accuracy"]) == (
+        3,
+        pytest.approx(100 / 3),
+    )
+
+
+def write_stage_out(
+    root: Path,
+    name: str,
+    rewards: dict[str, list[float]],
+    *,
+    start: int = 0,
+    header: dict[str, Any] | None = None,
+    record: dict[str, Any] = STAGE_RECORD,
+    request: dict[str, Any] = STAGE_REQUEST,
+) -> Path:
+    """OUT `root/name` as `evals ablate` leaves it for one config: `jobs/full`, a run record and
+    the request; trial `<task>__<i>` from i = `start`."""
+    job = root / name / "jobs" / "full"
+    for task, values in rewards.items():
+        for i, reward in enumerate(values, start):
+            write_versioned_trial(job, task, f"{task}__{i}", reward, header=header)
+    (job / "config.json").write_text("{}")
+    (root / name / "records").mkdir()
+    (root / name / "records" / "20261106T100000Z.json").write_text(json.dumps(record))
+    (root / name / "request.json").write_text(json.dumps(request))
+    return job
+
+
+def test_stage_1_and_stage_2_of_one_contract_merge_into_three_trials_per_task(
+    tmp_path: Path, dev_manifest: Callable[[list[str]], Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Stage 1 ran t1 x 3 in one OUT and t2 x 1 in another; stage 2 ran t2 x 2 (ADR-0008 补充
+    2026-11-06: one OUT per request). The requests' task lists differ by design; the task set
+    the contract fixes is the split's, each task with exactly 3 merged trials."""
+    targets = write_stage_out(
+        tmp_path, "s1-targets", {"t1": [1.0, 1.0, 0.0]}, request={**STAGE_REQUEST, "tasks": ["t1"]}
+    )
+    rest = write_stage_out(
+        tmp_path, "s1-rest", {"t2": [1.0]}, request={**STAGE_REQUEST, "tasks": ["t2"]}
+    )
+    stage_2 = write_stage_out(
+        tmp_path, "s2", {"t2": [0.0, 1.0]}, start=1, request={**STAGE_REQUEST, "tasks": ["t2"]}
+    )
+    manifest = dev_manifest(STAGE_DEV)
+    code, report, err = report_on([targets, rest, stage_2], manifest, tmp_path / "r", capsys)
+    assert code == 0, err
+    assert report is not None
+    assert report["per_task"] == {
+        "t1": {"successes": 2, "trials": 3},
+        "t2": {"successes": 2, "trials": 3},
+    }
+
+
+NOT_YET_COMPARED = pytest.mark.xfail(strict=True, reason="ticket 04: merge compares run requests")
+
+
+@pytest.mark.parametrize(
+    ("stage_2", "what"),
+    [
+        pytest.param({"header": {"git_commit": "c2"}}, "git commit", id="commit"),
+        pytest.param({"header": {"skill_version": "s2"}}, "Skill version", id="skill"),
+        pytest.param({"header": {"config": "baseline"}}, "config", id="config"),
+        pytest.param(
+            {"record": {**STAGE_RECORD, "benchmark_commit": "d" * 40}},
+            "benchmark commit",
+            id="benchmark",
+        ),
+        pytest.param({"record": {**STAGE_RECORD, "machine": "other"}}, "machine", id="machine"),
+        pytest.param({"record": {**STAGE_RECORD, "model": "m2"}}, "model", id="model"),
+        pytest.param(
+            {"rewards": {"t1": [1.0, 1.0]}}, "exactly 3 trials", id="task-set-trial-count"
+        ),
+        pytest.param(
+            {"request": {**STAGE_REQUEST, "agent_kwargs": ["agent_timeout_sec=900"]}},
+            "agent_kwargs",
+            id="run-parameters",
+            marks=NOT_YET_COMPARED,
+        ),
+        pytest.param(
+            {"request": {k: v for k, v in STAGE_REQUEST.items() if k != "agent_kwargs"}},
+            "agent_kwargs",
+            id="run-parameters-dropped",
+            marks=NOT_YET_COMPARED,
+        ),
+        pytest.param(
+            {"request": {**STAGE_REQUEST, "split": "holdout"}},
+            "split",
+            id="split",
+            marks=NOT_YET_COMPARED,
+        ),
+    ],
+)
+def test_stage_1_and_stage_2_under_different_contracts_are_not_merged(
+    tmp_path: Path,
+    dev_manifest: Callable[[list[str]], Path],
+    capsys: pytest.CaptureFixture[str],
+    stage_2: dict[str, Any],
+    what: str,
+) -> None:
+    """Stage 2 merges with stage 1 only under one commit, Skill version, config, benchmark
+    commit, machine, model, split, task set (the split's tasks, each with exactly 3 merged
+    trials) and run parameters (the agent kwargs, e.g. the agent timeout); one mismatch refuses
+    the merge. A new commit makes stage 1 stale: it is rerun, never merged. The whole contract is
+    listed here, so the cases ticket 65 already enforces (test_eval_merge) appear again."""
+    manifest = dev_manifest(STAGE_DEV)
+    stage_1 = write_stage_out(tmp_path, "s1", {t: [1.0] for t in STAGE_DEV})
+    rewards = stage_2.get("rewards", {t: [1.0, 0.0] for t in STAGE_DEV})
+    conditions = {key: value for key, value in stage_2.items() if key != "rewards"}
+    later = write_stage_out(tmp_path, "s2", rewards, start=1, **conditions)
+    code, _, err = report_on([stage_1, later], manifest, tmp_path / "r", capsys)
+    assert code == 2
+    assert what in err
+    assert not (tmp_path / "r" / "report.json").exists()
