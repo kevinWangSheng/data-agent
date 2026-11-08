@@ -209,6 +209,18 @@
 
 写于 2026-09-20。给下一个会话（新目录、新 agent）用。本文件是会话结论的可移植记录，不是规范；规范由后续 `CONTEXT.md` / ADR / spec 承接。
 
+> **编排会话进度（2026-11-08）：eval-readiness 01–05 全部合入（PR #68–#72）；第 2 段跑完，三配置选择做完，人定产品默认配置为 no-verifiers。**
+> - **redispatch 诊断**（第 2 段前，$0，`runs/u1-gate/reading-redispatch.md`）：04 规则标出的另外 8 个 trial 都不是选模型的代码缺陷，没有 `fallback_all`，都是 1–7 个模型的小集合在改动或争议后重验。指标对小集合过度计数（首次只派 1 个模型时"集合相同"恒真，占 23 次中的 16 次）。已知限制仍是 pos 的两条（宏里 `ref()` → 依赖未知；`again` 为空 → `fallback_all`）。
+> - **第 2 段**（服务器 b7c6071，驱动 `runs/u2-gate/stage2.sh`，日志 `stage2.log`）：u1-target 加 no-verifiers 5×3、u1-full-rest 加 no-verifiers 25×1、新 OUT u2-rest 其余 25 题 × 2 跑 full/baseline/no-verifiers；共 190 个 trial，全部 exit 0，infra 0，全在闲时（周末全天闲时，`evals/spend.py:32-34`）。实际价 $10.93（约 ¥80），开发集累计约 ¥541 / ¥600。第一次启动脚本缺 `startrun` 函数，没起任何运行、$0（`stage2-failed-start.log`）。
+> - **合并结果**（30 题 × 3，`runs/u2-gate/report/<config>/`，`runs/u2-gate/select/selection.md`）：
+>   - full 66.7% ± 2.5（60/90），实际价 $8.83，每次成功 $0.294，trial 墙钟 p50 555 s，效率闸门不过（26 条告警、45 次全量重派）。
+>   - baseline 65.6% ± 2.2（59/90），$3.57，$0.121，317 s。
+>   - no-verifiers 67.8% ± 2.5（61/90），$4.42，$0.145，405 s。
+>   - 配对比较都不显著：full−baseline +1.1 [−11.1, +13.3]；full−no-verifiers −1.1 [−7.8, +5.6]；no-verifiers−baseline +2.2 [−8.9, +14.4]。
+>   - ADR-0008 最终消融前检查（full 点估计不低于 baseline）：66.7 ≥ 65.6，过。
+> - **人定（2026-11-08）**：产品默认配置为 no-verifiers。
+> - 下一步：plan §10 第 15 项，算正式评测（16 留出集 6 配置消融、17 data-eng-bench 全量、18 DAB 正式评测）的总花费，和人确认；16、17、18 各自开跑前都要人确认。
+
 ## 0. 一句话
 
 做一个开源、可自托管的**通用 data agent**，对标 **SignalPilot**，主语是 agent（skills 方法、验证子 agent、问/做策略、上下文策略、失败归因自改进），工具层复用现成，在四个公开榜单上出分并做消融。目的是求职作品集，目标岗位 **agent 应用开发为主**。
