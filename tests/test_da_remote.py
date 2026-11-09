@@ -609,14 +609,14 @@ def test_pull_of_an_ablate_run_it_cannot_judge_takes_the_summary_only(env: Env, 
     assert not pulled_whole(env)
 
 
-def board_run(env: Env) -> Path:
+def board_run(env: Env, *args: str) -> Path:
     """A finished `evals board` run on the server: two batch jobs holding trials of dev, other
     (in neither split) and holdout tasks, an interrupted trial, Harbor's logs, a dropped trial, a
-    smoke job and a report."""
+    smoke job and a report; `args` are more evals arguments."""
     assert env.run("setup").returncode == 0
     (env.repo / "evals").mkdir(exist_ok=True)
     (env.repo / "evals" / "manifest.json").write_text(json.dumps(SERVER_MANIFEST))
-    assert env.run("start", "smoke", "--", "board", "--budget", "1").returncode == 0
+    assert env.run("start", "smoke", "--", "board", "--budget", "1", *args).returncode == 0
     env.finish(0)
     run = env.repo / "runs" / "smoke"
     batches = {"batch-1a2b3c": ["dbt-alpha", "dbt-other"], "all": ["dbt-delta", LONG_DEV]}
@@ -671,6 +671,26 @@ def test_pull_of_a_board_run_without_a_readable_manifest_takes_the_reports_only(
     args = (env.log / "rsync.args").read_text().splitlines()
     assert not any(a.startswith("--include=/jobs") for a in args)
     assert args[-3] == "--exclude=*"
+
+
+def test_a_board_pull_leaves_a_run_log_naming_a_holdout_task_on_the_server(env: Env):
+    """`da-remote start` writes the evals arguments to run.log, a batch's `--task`s too."""
+    run = board_run(env, "--task", "dbt-delta")
+    assert "dbt-delta" in (run / "run.log").read_text()
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert "--include=/run.log" not in args
+    assert "--include=/exit" in args and "--include=/reports/***" in args
+    assert "dbt-delta" not in proc.stdout + proc.stderr + "\n".join(args)
+
+
+def test_a_board_pull_without_a_readable_manifest_leaves_the_run_log(env: Env):
+    board_run(env)
+    (env.repo / "evals" / "manifest.json").write_text("{")
+    assert env.run("pull", "smoke").returncode == 0
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert "--include=/run.log" not in args
 
 
 @pytest.mark.parametrize(

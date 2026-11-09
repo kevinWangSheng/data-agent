@@ -631,7 +631,8 @@ pull() {
   # Harbor log and dropped-trials dir belongs to one of those jobs. Anything unreadable or not a
   # trial dir where one belongs fails the check.
   # For a board run, the lines after it are `trial jobs/<job>/<trial>`, one per trial dir whose
-  # result.json names a task outside the server manifest's holdout.
+  # result.json names a task outside the server manifest's holdout, and `log run.log` when the run
+  # log names no holdout task (`da-remote start` writes the evals arguments, `--task`s too, there).
   pull_info=$(run_script NAME "$1" <<'EOF'
 cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
 if [ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = board ]; then
@@ -649,6 +650,12 @@ except (OSError, ValueError, KeyError, TypeError):
     sys.exit(0)
 if not isinstance(holdout, list) or not all(isinstance(t, str) for t in holdout):
     sys.exit(0)
+try:
+    log = (run / "run.log").read_text(errors="replace") if (run / "run.log").exists() else ""
+except OSError:
+    log = None
+if log is not None and not any(task in log for task in holdout):
+    print("log run.log")
 jobs = run / "jobs"
 for job in sorted(jobs.iterdir()) if jobs.is_dir() else []:
     if not job.is_dir() or not safe.fullmatch(job.name):
@@ -725,10 +732,13 @@ EOF
   local trials=0 seen_job=""
   if [ "$sub" = board ]; then
     # ADR-0004: a board run holds the holdout tasks too. Its reports (holdout as aggregates), the
-    # run log, the control files and the trial dirs of the other tasks come back; the holdout's
-    # trials, Harbor's logs and job files (which name tasks), dropped and smoke trials stay.
+    # run log when it names no holdout task, the control files and the trial dirs of the other
+    # tasks come back; the holdout's trials, Harbor's logs and job files (which name tasks),
+    # dropped and smoke trials stay.
     filters=(--include='/reports/***')
-    for f in run.log exit budget subcommand request.json; do filters+=(--include="/$f"); done
+    local files=(exit budget subcommand request.json)
+    grep -qxF 'log run.log' <<<"$pull_info" && files=(run.log "${files[@]}")
+    for f in "${files[@]}"; do filters+=(--include="/$f"); done
     while IFS= read -r line; do
       [[ $line =~ ^trial\ jobs/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)$ ]] ||
         continue

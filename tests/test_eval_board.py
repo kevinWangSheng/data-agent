@@ -426,6 +426,23 @@ def test_an_interrupted_batch_without_results_is_not_resumed_under_other_code(
     assert len(harbor.raw) == 1
 
 
+def test_a_batch_stopped_before_any_result_counts_as_missing_in_the_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Another batch still reports; the stopped batch's tasks are listed as missing."""
+    out = tmp_path / "out"
+    harbor = BoardHarbor()
+    assert run(monkeypatch, harbor, out, "--skip-smoke", "--task", OTHER) == 0
+    for result in (out / "jobs").glob("*/*/result.json"):
+        result.unlink()  # as if Harbor was stopped before any trial finished
+    assert run(monkeypatch, harbor, out, "--skip-smoke", "--task", DEV) == 0
+    r = report(out)
+    assert not r["complete"]
+    assert r["missing"]["tasks"] == {OTHER: 3, ZERO: 3}
+    assert r["leaderboard"]["n_trials"] == 3
+    assert len(r["batches"]) == 2
+
+
 def test_a_refused_request_writes_no_run_record(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

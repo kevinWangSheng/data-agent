@@ -407,9 +407,11 @@ def build_report(
     trials_per_task: int,
 ) -> dict[str, Any]:
     """The report over every batch of OUT, merged (report.load_jobs refuses batches of other
-    versions, records or requests). Tasks of `holdout` appear in aggregates only."""
+    versions, records or requests). Tasks of `holdout` appear in aggregates only. A batch stopped
+    before its first result.json has no trial to merge: its tasks are missing until it resumes."""
+    with_results = [job for job in job_dirs if any(job.glob("*/result.json"))]
     try:
-        trials = report_module.load_jobs(job_dirs)
+        trials = report_module.load_jobs(with_results)
     except ValueError as exc:
         raise Stop(f"the batches of {out} cannot be merged: {exc}") from exc
     unknown = sum(1 for t in trials if t.task not in registry)
@@ -492,7 +494,9 @@ def build_report(
         ],
         # run_contract reads a request without a split as a holdout one; a board run has none.
         "run": {
-            k: v for k, v in report_module.run_contract(scored, job_dirs).items() if k != "split"
+            k: v
+            for k, v in report_module.run_contract(scored, with_results).items()
+            if k != "split"
         },
         "readiness": readiness.summary(out),
     }
