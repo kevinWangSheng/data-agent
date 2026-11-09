@@ -246,7 +246,7 @@
      - 已确认（2026-11-08，ADR-0004、ADR-0008 Update 2026-11-08）：正式评测单独批 ¥700，估算约 ¥490；16、18 在 b7c6071 上跑，17 在 leaderboard-run 01 合入后的 commit 上跑、只在闲时跑、按题拆批；修复排到 DAB 跑完之后。正式评测由人另开的运行会话执行，编排会话只做准备。
 6. 第六层：
    - 16 留出集消融（15）：~~6 个配置~~ 改为 5 个配置（full、baseline、no-skill、no-verifiers、no-context）× 30 题 × 3 次，共 450 个 trial，`--budget 42`；另报 no-verifiers 对 baseline（ADR-0004 Update 2026-11-08）。一次性的组件归因实验：开发集三配置的选择做完、人确认确实需要归因证据后才跑，不因某条效率告警自动开跑；只出汇总（ADR-0004、ADR-0008 Update 2026-11-07）。
-   - 17 data-eng-bench 全量：用登记处数据集全新跑 103 题 × 3，只跑 no-verifiers，共 309 个 trial，`--budget 18`；在工单 `.scratch/leaderboard-run/issues/01` 合入后的 commit 上跑（`src/`、`skills/` 和 b7c6071 一致）。b7c6071 上 `ablate` 跑出来的 trial 上不了榜（ADR-0004 Update 2026-11-08）（16，以及 leaderboard-run 01）。
+   - 17 data-eng-bench 全量：用登记处数据集全新跑 103 题 × 3，只跑 no-verifiers，共 309 个 trial，`--budget 18`；用 `evals board` 在 aa70175 上跑（工单 leaderboard-run 01，PR #73，2026-11-09 合入；`src/`、`skills/` 和 b7c6071 一致），分 3 批、同一个 `--out`；1 题真实冒烟已过，trial 带榜单 CI 要的来源、摘要和 agent 名。接受登记处 v1.0 和 a3278ad 的差异（人定 2026-11-09）。b7c6071 上 `ablate` 跑出来的 trial 上不了榜（ADR-0004 Update 2026-11-08）（16，以及 leaderboard-run 01）。
    - 18 DAB 正式评测：baseline 与最终版（no-context），只跑榜单的 54 题 × 5 次，共 540 个 trial；开跑前先在 b7c6071 上小试跑 34 个 trial 测单价（15，以及 12）。
 7. 第七层：
    - 19 清理轨迹，然后由人上榜提交（17、18）。

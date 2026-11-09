@@ -1,6 +1,6 @@
 # 01 — 用登记处数据集跑上榜用的全量
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-code (lr01b, 2026-11-09)
@@ -59,12 +59,10 @@ Status 设为 `ready-for-human`，写一条 Comment：试了什么、哪里失�
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2（da-review ×3 次调用，其中 1 次超时；eng:code-review ×1）
-- Model spend: $0（FakeHarbor only）
-- Review rounds: 0（没有提交）
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: 在取证（验收第 5 条）停下，命中停止条件 2，条件 1 大概率也会命中
+- Attempts: 3（第 1 次在取证处停下；第 2 次实现；第 3 次退回修复）
+- Review rounds: 4（实现 2 轮、退回 2 轮；da-review ×4 次调用，其中 1 次超时；eng:code-review ×2；PR 上 Codex 无意见）
+- Model spend: $0.056（第 6 条真实运行，1 个 trial，实付价）
+- Outcome: 合入 PR #73（aa70175）
 - Human review minutes: —
 
 ## Comments
@@ -105,3 +103,39 @@ Status 设为 `ready-for-human`，写一条 Comment：试了什么、哪里失�
   2. 加测试：用 FakeHarbor 跑出来的 job `config.json` 和 trial `result.json`/`config.json`，照 `flows/filter.py` 推出 source_filter，再用 `ci/static_analysis.py` 的 `matching_agent`、`trial_config_failures` 的同等逻辑断言能匹配、没有覆盖（照上游写法复制到测试里，保留版权头、登记 NOTICE；不 import refs 目录）。
   3. ablate 的配置不动，只改 board 用的。
   在原分支 worktree-lr01b-registry-dataset-run 上修，提交后照第 5 步两道审查。
+- 退回修复（2026-11-09，工单 agent，分支 worktree-lr01b-registry-dataset-run，commits 9089f56、7e31190、3a96e22）：
+  - **job 配置**：board 把 ablate 的 yaml 读出来，写成 `OUT/job-config.json`；`agents[0]` 加 `name = DataAgent.name()`（"data-agent"），`model_name` 取 `--model`，没给就用 yaml 里的。ablate 的 yaml 和 ablate.py 都没改。
+  - **Harbor 核实**（0.24.0）：
+    - `agents/factory.py:242-257`（类查找 `:124-129` 同理）：name 不在 `AgentName.values()`、也不是 `acp:` 开头时，按 `import_path` 加载；"data-agent" 两样都不是。
+    - `cli/jobs.py:1528-1568`：只给 `--config`、不给 `--agent` 时 `-m` 被忽略（`model_names` 只在 1540 用到）。所以 board 原来的 `--model` 不生效，`request.json` 会记一个没跑的模型。现在模型写进 job 配置，不再传 `-m`。
+    - `agents/base.py:291-323` 和 `upload/uploader.py:519-536`：trial 记的模型来自同一个 `model_name`（provider/name），上游 `trial_model` 拼回来完全一致。
+    - `cli/jobs.py:68-70`：`agents` 跨 `--config` 层是追加的，所以不能用叠加层，只能写一份完整配置。
+  - **reasoning_effort 不写**：data-agent 不给模型设 effort（`src/data_agent/agent.py:763-789` 的 ClaudeAgentOptions 没有，`DataAgentOptions` 也没有这个 kwarg）。source_filter 的 effort 因此是 null，metadata 是 "none"（`flows/filter.py:69-85,193`），`matching_agent` 用 None == None 匹配。
+  - **测试**：
+    - BoardHarbor 改用 Harbor 自己的 `load_config_source`、`JobConfig`、`JobPlan.build_trial_configs`、`AgentFactory.create_agent_from_config`，写出 job config.json、trial config.json 和 `agent_info`。
+    - `tests/leaderboard_ci.py` 照上游复制 `matching_agent`、`trial_config_failures`、`trial_model`、`job_filter_keys`（改名 `source_filters`）和 run() 里的 job 配置检查（`job_config_failures`），保留版权，登记 NOTICE，不 import refs。
+    - 新测试（默认模型和 `--model deepseek/deepseek-pro` 两种）断言：只有 1 个 source_filter，`{agent: data-agent, model_name: <model>, reasoning_effort: None}`；job 配置检查和每个 trial 的检查都是空；`-m` 不在命令里。
+    - 在旧 board.py 上这个测试失败（"no matching agent in job config"，`-m` 还在命令里）。
+  - **本地演示**（FakeHarbor，真实 registry 和 manifest）：`DATA_AGENT_MACHINE=mac-demo PYTHONPATH=.:tests uv run python /tmp/lr01b/demo.py <dir> board --config no-verifiers --out <dir>/out --budget 0.2 --task dbt-fix-division-by-zero --trials 1` → exit 0。
+    - 命令：`harbor run --config <out>/job-config.json -d snowflake-labs/data-eng-bench@sha256:de31…c995 … --ak run_config=no-verifiers -i snowflake-labs/dbt-fix-division-by-zero`。
+    - job-config 的 agents：`[{'import_path': 'evals.harbor_agent:DataAgent', 'model_name': 'deepseek/deepseek-flash', 'kwargs': {'run_config': 'full'}, 'name': 'data-agent'}]`。
+    - 对演示 job 跑复制来的 CI 逻辑：source_filters = `[{'agent': 'data-agent', 'agent_version': 'unknown', 'model_name': 'deepseek/deepseek-flash', 'reasoning_effort': None}]`，matching_agent 找到，job_config_failures = []，trial_config_failures = [[]]。
+    - 输出在本机 /tmp/lr01c/demo.txt。
+  - `make check`：2079 passed，1 skipped，38 deselected；basedpyright 0 errors。
+- 审查（第 1 轮 da-review，Codex，针对 9089f56）：
+  - P1"没有 result.json 的批次让合并报告失败"：已修（7e31190），build_report 只合并有结果的批次，没结果批次的题算缺；有修复前失败的测试。
+  - P2"board pull 会带回写着留出题名的 run.log（`da-remote start` 把 `--task` 写进 run.log）"：已修（7e31190），run.log 只有在不含任何留出题名、manifest 读得了时才取；有修复前失败的测试，已有断言没改。
+- 审查（第 2 轮 eng:code-review，Standards + Spec）：
+  - 已修（3a96e22）：pull 进行中的 board run 时，检查之后 run.log 还可能变长，现在只取已结束（有 `exit`）的 run 的 run.log，有修复前失败的测试；`write_job_config` 不再返回没人用的路径；leaderboard_ci.py 头部注明保留上游的宽松注解。
+  - 不修：test_da_remote 新用例没有 `-> None`（全文件惯例都不写）；request.json 的默认模型占位来自之前的 ablate 代码；"所有批次都没结果"走不到（报告只在当前批次跑完后才生成）；重复的 agent 名测试保留，它是唯一直接对照 `DataAgent.name()` 的检查。
+- 修复已满 2 轮。
+- 顺带发现（不属于本工单）：ablate 的 `--model` 同样只传 `-m`，在 Harbor 0.24.0 下不生效。建议另开工单。
+- 第 6 条真实运行仍待主会话 push 后做：`da-remote setup <3a96e22 或合并后的 commit>`，`da-remote start board-smoke -- board --config no-verifiers --out runs/board-smoke --budget 0.2 --task dbt-fix-division-by-zero --trials 1 --skip-smoke`。另外贴 job `config.json` 的 `agents[0].name` 和 `model_name`，和 trial `result.json` 的 `agent_info`，确认能匹配。
+- 第 6 条真实运行（2026-11-09，主会话，UTC 12:26，闲时）：`da-remote setup 3a96e22`；`da-remote start board-smoke -- board --config no-verifiers --out runs/board-smoke --budget 0.2 --task dbt-fix-division-by-zero --trials 1 --skip-smoke`，exit 0，实付 $0.0563，readiness clean。
+  - job `config.json`：`agents = [{name: data-agent, import_path: evals.harbor_agent:DataAgent, model_name: deepseek/deepseek-flash, kwargs: {run_config: no-verifiers}}]`，`timeout_multiplier: None`。
+  - trial `config.json` 的 `task`：`{name: snowflake-labs/dbt-fix-division-by-zero, ref: sha256:ff5d1b1b…f623, source: snowflake-labs/data-eng-bench}`。
+  - trial `result.json` 的 `agent_info`：`{name: data-agent, version: 3a96e222…, model_info: {name: deepseek-flash, provider: deepseek}}`，和 job 配置的 agent 名、`provider/model` 一致。
+  - `agent/trajectory.json` 在。reward 0：verifier 15 项过 14 项，`row_count` 390 对 382，是 agent 的逻辑失败，登记处环境（基础镜像 tag、dbt、verifier）正常。这道题是开发集的。
+  - 跑完 `da-remote setup b7c6071`，服务器回到第 16 项的 commit。
+- 合并（2026-11-09）：PR #73 squash 为 aa70175。CI 两项全绿；Codex GitHub app 对 3a96e22 审查完成、无意见。
+- 后续：ablate 的 `--model` 在 Harbor 0.24.0 下不生效（只传 `-m`），记入 ADR-0008 的已知限制，DAB 跑完后另开工单；第 16、18 项都不传 `--model`，不受影响。

@@ -212,4 +212,6 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
     5. 效率指标会把小集合也算成全量重派（`runs/u1-gate/reading-redispatch.md`）。
     6. 续跑一个还没有任何 `result.json` 的 job 时，会跳过代码版本检查（`docs/setup.md`）。
     7. 留出集 30 × 3 大概率测不出显著差值。
+    8. `ablate --model` 不生效：Harbor 0.24.0 在只给 `--config`、不给 `--agent` 时忽略 `-m`（`cli/jobs.py:1528-1568`），trial 跑的是 job 配置里的默认模型。第 16、18 项都不传 `--model`，不受影响；`evals board` 已改成把模型写进 job 配置（leaderboard-run 01）。
+    9. 登记处 v1.0 和 a3278ad 不同（第 17 项）：`dbt-cart-abandonment-recovery` 在 v1.0 上必得 0 分，97 题题面保留 DuckDB/Snowflake 兼容提示。榜单只认 v1.0，所有提交者相同；报告另给 102 题准确率。
 - **执行分工**：正式评测由人另开的运行会话执行。编排会话只做开跑前的决策和准备：文档、manifest、运行手册、环境核对、补传测试的方案。
