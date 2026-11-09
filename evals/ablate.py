@@ -415,10 +415,18 @@ def keep_spend(out: Path, config: str, trial_dirs: list[Path]) -> None:
 def prefetch_wheels(tasks_dir: Path, tasks: list[str]) -> None:
     """Fill the wheel cache for the platforms of the tasks' containers (evals.wheels), so that no
     trial downloads the agent's dependencies within Harbor's agent setup limit."""
+    try:
+        images = {wheels.task_image(tasks_dir / task) for task in tasks}
+    except (OSError, KeyError, ValueError, RuntimeError) as exc:
+        raise Stop(f"cannot fill the wheel cache for the tasks' containers: {exc}") from exc
+    fill_wheels(images)
+
+
+def fill_wheels(images: set[str]) -> None:
+    """Fill the wheel cache for the platforms of these images (evals.wheels)."""
     from evals.harbor_agent import build_artifacts  # imports Harbor
 
     try:
-        images = {wheels.task_image(tasks_dir / task) for task in tasks}
         _, requirements = build_artifacts()
         lines = wheels.fill(images, requirements, REPO_ROOT / "uv.lock")
     except (OSError, KeyError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
@@ -473,18 +481,27 @@ def check_balance(out: Path, budget: Decimal) -> None:
     print(f"balance: {found.describe()}, covers the ${left:.2f} left of --budget", flush=True)
 
 
+type RunArgs = Callable[[argparse.Namespace, Path, str, list[str], int], list[str]]
+
+
 def smoke(
-    args: argparse.Namespace, configs: list[str], task: str, stamp: str
+    args: argparse.Namespace,
+    configs: list[str],
+    task: str,
+    stamp: str,
+    run_args: "RunArgs | None" = None,
 ) -> list[dict[str, str]]:
     """Each config on one dev task, once, then scrub on its files: a broken config, key, image or
     scrub shows here, before the jobs spend hours (ADR-0008 preflight). Dev, not holdout, so the
-    output may name the task. Returns the readiness warnings of the smoke trials, which pass."""
+    output may name the task. Returns the readiness warnings of the smoke trials, which pass.
+    `run_args` builds the `harbor run` (default `harbor_run_args`: the local tasks dir)."""
+    build = run_args or harbor_run_args
     jobs = args.out / "smoke" / stamp
     warnings: list[dict[str, str]] = []
     for config in configs:
         log = args.out / "logs" / f"smoke-{config}.log"
         print(f"smoke: {config} on {task} -> {log}", flush=True)
-        code, _ = run_harbor(harbor_run_args(args, jobs, config, [task], 1), log, lambda: None)
+        code, _ = run_harbor(build(args, jobs, config, [task], 1), log, lambda: None)
         if code != 0:
             raise Stop(f"smoke run of {config}: harbor exited {code}, so no job starts; see {log}")
         try:

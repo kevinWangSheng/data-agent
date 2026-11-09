@@ -28,7 +28,8 @@
 #        da-remote push <name>                    copy this checkout's runs/<name>/ to the server
 #        da-remote pull <name>                    copy the server's runs/<name>/ into this checkout;
 #                                                 an ablate run brings back its summary only, unless
-#                                                 all its tasks are in the server's dev list
+#                                                 all its tasks are in the server's dev list; a
+#                                                 board run its reports and non-holdout trials
 #        da-remote exec -- <command> [<args>]     run one command in the server's repo dir, each
 #                                                 argument as given (no shell: use bash -c for one);
 #                                                 stdin closed, stderr merged into stdout, output
@@ -629,8 +630,41 @@ pull() {
   # result.json or Harbor's trial name, every preflight smoke job is judged the same way, and every
   # Harbor log and dropped-trials dir belongs to one of those jobs. Anything unreadable or not a
   # trial dir where one belongs fails the check.
+  # For a board run, the lines after it are `trial jobs/<job>/<trial>`, one per trial dir whose
+  # result.json names a task outside the server manifest's holdout.
   pull_info=$(run_script NAME "$1" <<'EOF'
 cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
+if [ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = board ]; then
+  cd "$DIR" && uv run -q --no-sync python - "runs/$NAME" evals/manifest.json 2>/dev/null <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+run, manifest = Path(sys.argv[1]), Path(sys.argv[2])
+safe = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+try:
+    holdout = json.loads(manifest.read_text())["holdout"]
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(0)
+if not isinstance(holdout, list) or not all(isinstance(t, str) for t in holdout):
+    sys.exit(0)
+jobs = run / "jobs"
+for job in sorted(jobs.iterdir()) if jobs.is_dir() else []:
+    if not job.is_dir() or not safe.fullmatch(job.name):
+        continue
+    for trial in sorted(job.iterdir()):
+        if not trial.is_dir() or not safe.fullmatch(trial.name):
+            continue
+        try:
+            task = json.loads((trial / "result.json").read_text())["task_name"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # no result yet (interrupted) or unreadable: its task is unknown
+        if isinstance(task, str) and task.rsplit("/", 1)[-1] not in holdout:
+            print(f"trial jobs/{job.name}/{trial.name}")
+PY
+  exit 0
+fi
 [ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = ablate ] || exit 0
 cd "$DIR" && uv run -q --no-sync python - "runs/$NAME" evals/manifest.json >/dev/null 2>&1 <<'PY' &&
 import json
@@ -688,6 +722,31 @@ EOF
   )
   sub=${pull_info%%$'\n'*}
   [ "$pull_info" = "ablate"$'\n'"dev-only" ] && dev_only=yes
+  local trials=0 seen_job=""
+  if [ "$sub" = board ]; then
+    # ADR-0004: a board run holds the holdout tasks too. Its reports (holdout as aggregates), the
+    # run log, the control files and the trial dirs of the other tasks come back; the holdout's
+    # trials, Harbor's logs and job files (which name tasks), dropped and smoke trials stay.
+    filters=(--include='/reports/***')
+    for f in run.log exit budget subcommand request.json; do filters+=(--include="/$f"); done
+    while IFS= read -r line; do
+      [[ $line =~ ^trial\ jobs/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)$ ]] ||
+        continue
+      [ "$trials" -eq 0 ] && filters+=(--include='/jobs/')
+      if [ "${BASH_REMATCH[1]}" != "$seen_job" ]; then
+        seen_job=${BASH_REMATCH[1]}
+        filters+=(--include="/jobs/$seen_job/")
+      fi
+      filters+=(--include="/jobs/$seen_job/${BASH_REMATCH[2]}/***")
+      trials=$((trials + 1))
+    done <<<"$pull_info"
+    filters+=(--exclude='*')
+    mkdir -p "$root/runs"
+    copy "${filters[@]}" "$host:$(rsync_dir)/runs/$1/" "$root/runs/$1/"
+    echo "pull: server runs/$1 -> $root/runs/$1 (board: reports and $trials non-holdout" \
+      "trial(s); holdout trials stay on the server)"
+    return
+  fi
   # ADR-0004: an ablate run may be on the holdout, whose trial dirs and Harbor logs name tasks; only
   # its reports (aggregates), the run log (ablate prints aggregates only) and control files leave
   # the server, unless the run was shown to hold dev-set tasks only (ADR-0008: those trajectories
