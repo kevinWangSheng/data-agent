@@ -32,9 +32,8 @@
   - 任务原文文件（`src/data_agent/agent.py` 的 TASK_FILE_NOTE）；
   - Skill 里"Verification before delivery"一节（只在 verifier 运行时注入，`verifiers.py:54`）。
   - 报告要按这个范围写。
-- **103 题全量用拼接凑出**：开发集统一评估的 30 题 + 留出集消融的 30 题 + 补跑剩下的 43 题，每题 3 次，都在 b7c6071 上跑，榜单只计 no-verifiers。
-  - `ablate` 必须带 full，所以 43 题也跑 full，顺带得到一份 full 的 103 题结果。
-  - 前提：事后把开发集和留出集的 trial 补传到 Harbor Hub、再合并提交是可行的（`leaderboard/SUBMIT.md:43,60-61`）。17 开跑前先用 1 个 trial 实测。测试不通过，就在新 commit 上全新跑 103 题。
+- ~~**103 题全量用拼接凑出**~~（同日作废）：b7c6071 上 `ablate` 用本地 `--path` 跑，trial 的来源是 `tasks`、没有 `task.ref`，榜单 CI 会过滤掉（`leaderboard/core/hub.py:94`，`ci/static_analysis.py:163-170`）；agent 版本是 git commit，不同 commit 的 trial 也拼不到一行。
+- **103 题全量改为全新跑**（人定 2026-11-08）：先由工单 `.scratch/leaderboard-run/issues/01` 加一种运行方式，用登记处数据集 `snowflake-labs/data-eng-bench@sha256:de31…`、只跑一个配置。再在那个新 commit 上跑 103 × 3 no-verifiers，约 309 个 trial、约 $15。`src/`、`skills/` 和 b7c6071 一致。
 - **DAB 只跑榜单的 54 题**：12 个数据集，baseline 和 no-context 各 54 × 5 = 270，共 540 个 trial。
   - 服务器上的 DAB clone（`6ad9d68`）有 104 题，多出来的 5 个新数据集（civic_unstructured、cve、imdb、krama、usaspending，共 50 题）不在榜单计分范围（DAB `README.md:158`），不跑。
   - 正式评测前先在 b7c6071 上小试跑：17 个数据集各跑 query1，两个配置各 1 次，共 34 个 trial。

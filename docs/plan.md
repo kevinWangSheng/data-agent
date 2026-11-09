@@ -243,10 +243,10 @@
      - 第 2 段已跑（2026-11-08，b7c6071，190 个 trial，实际价约 ¥80，累计约 ¥541）。合并后 full 66.7%、baseline 65.6%、no-verifiers 67.8%（各 30 题 × 3），配对差都不显著；每次成功的实付价 full $0.147、baseline $0.061、no-verifiers $0.072（`selection.md` 的"每次成功"列是按价目表算的，是实付价的 2 倍）。最终消融前检查（full 不低于 baseline）过。人定产品默认配置为 no-verifiers（2026-11-08）。
 5. 第五层：
    - 15 算正式评测的总花费，并和人确认（2、9、13、13b、14c 之后的统一评估）。16、17、18 每一项开跑前都要人确认，不因前一项跑完自动开始。
-     - 已确认（2026-11-08，ADR-0004、ADR-0008 Update 2026-11-08）：正式评测单独批 ¥700，估算约 ¥515；16、17、18 都在 b7c6071 上跑、只在闲时跑、按题拆批；修复排到 DAB 跑完之后。正式评测由人另开的运行会话执行，编排会话只做准备。
+     - 已确认（2026-11-08，ADR-0004、ADR-0008 Update 2026-11-08）：正式评测单独批 ¥700，估算约 ¥490；16、18 在 b7c6071 上跑，17 在 leaderboard-run 01 合入后的 commit 上跑、只在闲时跑、按题拆批；修复排到 DAB 跑完之后。正式评测由人另开的运行会话执行，编排会话只做准备。
 6. 第六层：
    - 16 留出集消融（15）：~~6 个配置~~ 改为 5 个配置（full、baseline、no-skill、no-verifiers、no-context）× 30 题 × 3 次，共 450 个 trial，`--budget 42`；另报 no-verifiers 对 baseline（ADR-0004 Update 2026-11-08）。一次性的组件归因实验：开发集三配置的选择做完、人确认确实需要归因证据后才跑，不因某条效率告警自动开跑；只出汇总（ADR-0004、ADR-0008 Update 2026-11-07）。
-   - 17 data-eng-bench 全量：在 b7c6071 上补跑剩下的 43 题 × 3（no-verifiers，加上 `ablate` 必须带的 full），共 258 个 trial，`--budget 23`；和开发集、留出集的结果拼成 103 × 3，上榜只计 no-verifiers。开跑前先用 1 个 trial 测试补传到 Hub（16）。
+   - 17 data-eng-bench 全量：用登记处数据集全新跑 103 题 × 3，只跑 no-verifiers，共 309 个 trial，`--budget 18`；在工单 `.scratch/leaderboard-run/issues/01` 合入后的 commit 上跑（`src/`、`skills/` 和 b7c6071 一致）。b7c6071 上 `ablate` 跑出来的 trial 上不了榜（ADR-0004 Update 2026-11-08）（16，以及 leaderboard-run 01）。
    - 18 DAB 正式评测：baseline 与最终版（no-context），只跑榜单的 54 题 × 5 次，共 540 个 trial；开跑前先在 b7c6071 上小试跑 34 个 trial 测单价（15，以及 12）。
 7. 第七层：
    - 19 清理轨迹，然后由人上榜提交（17、18）。
