@@ -69,6 +69,10 @@ Apache License 2.0, commit a3278ad102829a6084dde086244a0ef665a8011c
   (modified: only the pure scoring functions are kept)
 - evals/configs/data-eng-bench-duckdb.data-agent.yaml <- configs/data-eng-bench-duckdb.claude-code.yaml
   (modified: the agent, retries and setup timeout are this repo's)
+- tests/leaderboard_ci.py <- leaderboard/src/leaderboard/ci/static_analysis.py (the override checks,
+  matching_agent, trial_config_failures; run()'s job-config checks as job_config_failures),
+  core/hub.py (trial_model) and flows/filter.py (job_filter_keys as source_filters); modified as
+  noted at its top
 
 From the upstream NOTICE:
 

@@ -5,8 +5,10 @@ trials record `"source": "tasks"`, which the leaderboard's CI filters out; the t
 command come from the registry's `DATASET@DATASET_REF` (Harbor's `-d`), so their `config.task`
 carries the registry's name, digest and source, as data-eng-bench's leaderboard
 (`leaderboard/core/hub.py`, `ci/static_analysis.py`) requires. The job config is ablate's
-(`evals/configs/data-eng-bench-duckdb.data-agent.yaml`): no timeout multiplier, no timeout or
-resource override, `DB_TYPE=duckdb` through `environment.env`.
+(`evals/configs/data-eng-bench-duckdb.data-agent.yaml`: no timeout multiplier, no timeout or
+resource override, `DB_TYPE=duckdb` through `environment.env`), written to
+`OUT/job-config.json` with its agent named and modelled as the leaderboard's CI matches it
+(`job_config`).
 
 The run can be split into batches with `--task` (Harbor's `-i`); each batch is one Harbor job,
 `OUT/jobs/<batch>/`, named by its task set (`all`, or `batch-<hash>`, so no job name names a
@@ -87,6 +89,8 @@ DIFFERENCES = (
     "The leaderboard accepts v1.0's digests only; every submission runs the same tasks.",
 )
 JOBS_ALL = "all"
+# The job config board runs Harbor with (`job_config`), under OUT.
+JOB_CONFIG_FILE = "job-config.json"
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -128,6 +132,35 @@ def read_registry(path: Path) -> dict[str, dict[str, str]]:
     return tasks
 
 
+def job_config(model: str | None) -> dict[str, Any]:
+    """ablate's job config, its agent as the leaderboard's CI finds it in a job's config.json.
+
+    `ci/static_analysis.py` `matching_agent` wants an entry of `agents` whose `name` is the trials'
+    agent name (`DataAgent.name()`), whose `model_name` is their `provider/model`
+    (`core/hub.py` `trial_model`, which Harbor records from this same `model_name`) and whose
+    `kwargs.reasoning_effort` is the submission's (`flows/filter.py` reads it from this entry). A
+    `name` that is no Harbor agent leaves the agent loaded by `import_path` (Harbor 0.24.0
+    `agents/factory.py` 242-257). `--model` goes here, not to `-m`: with `--config` and no
+    `--agent`, Harbor ignores `-m` (`cli/jobs.py` 1528-1568). No `reasoning_effort`: data-agent
+    sets no effort for its model, so the submission's is null ("none")."""
+    import yaml  # a Harbor dependency
+
+    from evals.harbor_agent import DataAgent  # imports Harbor
+
+    config: dict[str, Any] = yaml.safe_load(ablate.JOB_CONFIG.read_text())
+    (agent,) = config["agents"]
+    agent["name"] = DataAgent.name()
+    if model:
+        agent["model_name"] = model
+    return config
+
+
+def write_job_config(out: Path, model: str | None) -> Path:
+    path = out / JOB_CONFIG_FILE
+    path.write_text(json.dumps(job_config(model), indent=2) + "\n")
+    return path
+
+
 def harbor_run_args(
     args: argparse.Namespace, jobs: Path, job_name: str, tasks: list[str], trials: int
 ) -> list[str]:
@@ -135,10 +168,9 @@ def harbor_run_args(
     `jobs/<job_name>`. Harbor matches `-i` against the registry's `<org>/<task>` names."""
     org = DATASET.split("/")[0]
     return [
-        *("run", "--config", str(ablate.JOB_CONFIG), "-d", DATASET_VERSION),
+        *("run", "--config", str(args.out / JOB_CONFIG_FILE), "-d", DATASET_VERSION),
         *("-o", str(jobs), "--job-name", job_name, "-k", str(trials)),
         *("--ak", f"run_config={args.config}"),
-        *(("-m", args.model) if args.model else ()),
         *(a for task in tasks for a in ("-i", f"{org}/{task}")),
     ]
 
@@ -614,6 +646,7 @@ def run(args: argparse.Namespace) -> int:
         others = check_batches(args.out, batch, tasks, registry)
         check_mixing(args.config, [*others, args.out / "jobs" / batch])
         check_request(args.out, args)
+        write_job_config(args.out, args.model)
         record_path = ablate.write_record(args.out, record, stamp)
         print(f"record: {record_path}", flush=True)
         print(f"batch: {batch}, {len(tasks)} of {len(registry)} tasks", flush=True)

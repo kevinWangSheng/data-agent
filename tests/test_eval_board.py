@@ -2,18 +2,28 @@
 
 Harbor is replaced at ablate's subprocess seam (`ablate.run_harbor`) by `BoardHarbor`, ablate's
 FakeHarbor taught `harbor run -d`: it strips the registry's org from the `-i` patterns and writes
-the job config's `datasets` as Harbor does. Docker (`board.docker`), the model account's balance,
-readiness's machine probes and the wheel fill are replaced as in the ablate tests; everything
-after Harbor (spend guard, scrub, merge, report) runs for real.
+the job config, each trial's config and the agent that ran with Harbor 0.24.0's own code (the
+`--config` file and `--ak` merged as `harbor run` does, `JobConfig`, `JobPlan`, `AgentFactory`),
+so the leaderboard CI's checks (`leaderboard_ci`) run on what Harbor would record. Docker
+(`board.docker`), the model account's balance, readiness's machine probes and the wheel fill are
+replaced as in the ablate tests; everything after Harbor (spend guard, scrub, merge, report)
+runs for real.
 """
 
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+import leaderboard_ci
 import pytest
 import yaml
+from harbor.agents.factory import AgentFactory
+from harbor.cli.config_sources import load_config_source
+from harbor.job_plan import JobPlan
+from harbor.models.job.config import JobConfig
+from harbor.models.trial.config import TaskConfig
 from test_eval_ablate import FakeHarbor, StopWhen, by_pass_rate
 
 from evals import ablate, balance, board, readiness
@@ -34,9 +44,30 @@ REPO_REGISTRY, REPO_MANIFEST = board.REGISTRY, board.MANIFEST
 REGISTRY_REF = "sha256:de31878dba7e5a9aad85dc8276820b0a20ab593aed46ff93dfbbbdb6007ec995"
 
 
+def harbor_job_config(args: list[str]) -> JobConfig:
+    """The job config `harbor run` builds of these arguments: the `--config` file, each `--ak`
+    added to every agent's kwargs (Harbor 0.24.0 cli/jobs.py 1586-1588), `-d` with `-i` as one
+    dataset."""
+    data = load_config_source(args[args.index("--config") + 1])
+    for i, arg in enumerate(args):
+        if arg == "--ak":
+            key, value = args[i + 1].split("=", 1)
+            for agent in data["agents"]:
+                agent.setdefault("kwargs", {})[key] = value
+    name, ref = args[args.index("-d") + 1].split("@", 1)
+    patterns = [args[i + 1] for i, a in enumerate(args) if a == "-i"]
+    data["datasets"] = [{"name": name, "ref": ref, "task_names": patterns}]
+    data["job_name"] = args[args.index("--job-name") + 1]
+    data["jobs_dir"] = args[args.index("-o") + 1]
+    data["n_attempts"] = int(args[args.index("-k") + 1])
+    return JobConfig.model_validate(data)
+
+
 class BoardHarbor(FakeHarbor):
     """FakeHarbor for `harbor run -d <dataset>@<ref> -i <org>/<task>`; `raw` keeps the calls as
-    given, and each trial gets the per-trial config.json Harbor writes."""
+    given. The job's config.json is Harbor's job config with FakeHarbor's own keys on top (its
+    `tasks` replaces Harbor's empty one, for its resume), and each trial gets the agent that ran
+    and its per-trial config.json, as Harbor writes them."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -52,24 +83,33 @@ class BoardHarbor(FakeHarbor):
         plain = [a.split("/", 1)[1] if a in patterns else a for a in args]
         result = super().__call__(plain, log, stop_when)
         job = Path(args[args.index("-o") + 1]) / args[args.index("--job-name") + 1]
-        config = json.loads((job / "config.json").read_text())
-        name, ref = args[args.index("-d") + 1].split("@", 1)
-        config["datasets"] = [{"name": name, "ref": ref, "task_names": patterns}]
-        (job / "config.json").write_text(json.dumps(config))
+        fake = json.loads((job / "config.json").read_text())
+        harbor = harbor_job_config(args).model_dump(mode="json")
+        (job / "config.json").write_text(
+            json.dumps(harbor | fake | {"datasets": harbor["datasets"]})
+        )
         self.add_trial_files(job)
         return result
 
     def add_trial_files(self, job: Path) -> None:
-        """What Harbor's trials also record: the start time (each trial here took 60 seconds)
-        and the trial's config.json with the registry task it ran."""
+        """What Harbor's trials also record: the start time (each trial here took 60 seconds),
+        the agent that ran (`agent_info`, of the agent `AgentFactory` creates of the trial's
+        agent config) and the trial's config.json (`JobPlan`'s) with the registry task it ran."""
+        config = json.loads((job / "config.json").read_text()) | {"tasks": []}
+        harbor = JobConfig.model_validate(config).model_copy(update={"n_attempts": 1})
         for path in job.glob("*/result.json"):
             result = json.loads(path.read_text())
             if "started_at" not in result:
                 end = datetime.fromisoformat(result["finished_at"])
                 result["started_at"] = (end - timedelta(seconds=60)).isoformat()
-                path.write_text(json.dumps(result))
-            task = {"name": result["task_name"], "ref": "sha256:fake", "source": board.DATASET}
-            (path.parent / "config.json").write_text(json.dumps({"task": task}))
+            task = TaskConfig(name=result["task_name"], ref="sha256:fake", source=board.DATASET)
+            (trial,) = JobPlan.build_trial_configs(harbor, [task], job_id=uuid4())
+            agent = AgentFactory.create_agent_from_config(
+                trial.agent, logs_dir=path.parent / "agent"
+            )
+            result["agent_info"] = agent.to_agent_info().model_dump(mode="json")
+            path.write_text(json.dumps(result))
+            (path.parent / "config.json").write_text(trial.model_dump_json())
 
 
 @pytest.fixture(autouse=True)
@@ -524,6 +564,66 @@ def test_trial_results_trajectories_and_spend_stay_in_out(
         assert json.loads((trial / "config.json").read_text())["task"]["source"] == board.DATASET
         result = json.loads((trial / "result.json").read_text())
         assert result["agent_result"]["cost_usd"] == 0.01
+
+
+def leaderboard_view(job: Path) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict]]:
+    """A job as the leaderboard's CI reads it once uploaded: its config, its bulk trial rows (the
+    agent and model Harbor's uploader stores of each trial's `agent_info`, upload/uploader.py
+    519-536, and the trial's task source) and each trial's config."""
+    trials = [p.parent for p in sorted(job.glob("*/result.json"))]
+    configs = [json.loads((t / "config.json").read_text()) for t in trials]
+    rows = []
+    for trial, config in zip(trials, configs, strict=True):
+        info = json.loads((trial / "result.json").read_text())["agent_info"]
+        model = info["model_info"] or {}
+        rows.append(
+            {
+                "agent_name": info["name"],
+                "agent_version": info["version"],
+                "model_provider": model.get("provider"),
+                "model_name": model.get("name"),
+                "source": config["task"]["source"],
+            }
+        )
+    return json.loads((job / "config.json").read_text()), rows, configs
+
+
+@pytest.mark.parametrize(
+    ("extra", "model"),
+    [
+        ((), "deepseek/deepseek-flash"),
+        (("--model", "deepseek/deepseek-pro"), "deepseek/deepseek-pro"),
+    ],
+)
+def test_the_leaderboard_ci_finds_the_agent_of_the_trials_in_the_job_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extra: tuple[str, ...], model: str
+) -> None:
+    """data-eng-bench's `lb filter` and static analysis on a board job: one source_filter, its
+    agent found in the job config (`matching_agent`), no override in the job or any trial."""
+    out = tmp_path / "out"
+    harbor = BoardHarbor()
+    assert run(monkeypatch, harbor, out, "--skip-smoke", "--task", DEV, *extra) == 0
+    (call,) = harbor.raw
+    assert "-m" not in call  # Harbor ignores -m with --config and no --agent
+    config, rows, trial_configs = leaderboard_view(out / "jobs" / board.batch_name([DEV], {}))
+    (sf,) = leaderboard_ci.source_filters(config, rows) or []
+    assert sf == {
+        "agent": "data-agent",
+        "agent_version": "unknown",  # the wheel's git commit in a real trial
+        "model_name": model,
+        "reasoning_effort": None,
+    }
+    assert leaderboard_ci.job_config_failures(config, sf) == []
+    assert [leaderboard_ci.trial_config_failures(c) for c in trial_configs] == [[]] * 3
+    (agent,) = config["agents"]
+    assert agent["import_path"] == "evals.harbor_agent:DataAgent"
+
+
+def test_the_agent_name_is_the_one_its_trials_record() -> None:
+    from evals.harbor_agent import DataAgent
+
+    (agent,) = board.job_config(None)["agents"]
+    assert agent["name"] == DataAgent.name()
 
 
 def test_board_shows_in_the_cli_help() -> None:
