@@ -67,6 +67,14 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 开发集报告里的 `gates` 分三部分：`correctness`（成功、失败、trial 数，不设通过线）；`infrastructure`（`passed` 只看 `unresolved`，即没被重跑补齐的 infra 错误数；已补齐的只在 `infra_excluded` 报数量和 `cost_usd`，`interrupted` 只报不判）；`efficiency`（每个全量重派的 trial 一条 warning，有 warning 就 `passed: false`；没有 warning 但有 trial 没有派单记录时为 `null`，即未知）。效率没过要照实写"效率告警"，不写闸门全过。留出集报告只有汇总，没有题名。
 - 三配置并排：`uv run python -m evals select <full 报告目录> <baseline 报告目录> <no-verifiers 报告目录> --out <目录>`，写 `selection.json`、`selection.md`。拒绝留出集报告、同一配置给两次，以及 commit、model、benchmark、机器、split、`agent_kwargs`、（带 Skill 的配置之间）Skill 版本、题目或每题 trial 数不一致（退出 2）。显著性另用 `evals compare`。
 
+上榜用的全量（leaderboard-run 工单 01）：`evals board` 只跑一个配置，题目从登记处 `snowflake-labs/data-eng-bench@sha256:de31…c995`（榜单 CI 认的 v1.0）取（Harbor `-d`，不用 `--tasks-dir`），trial 的 `config.task` 带登记处的题名、摘要和 source，job 配置取 `ablate` 的（不覆盖超时和资源，`DB_TYPE=duckdb` 走 `environment.env`），写到 `OUT/job-config.json`，agent 加上 `name: data-agent`、`model_name` 取 `--model`（默认 job 配置里的），这样榜单 CI 的 `matching_agent` 能在 job 配置里找到 trial 的 agent 和模型；不写 `reasoning_effort`（data-agent 不给模型设 effort，提交时 metadata 是 "none"）。
+
+- 例：`da-remote start board-1 -- board --config no-verifiers --out runs/board-1 --budget 20`；`--trials` 默认 3，`--n-concurrent`、`--fail-fast`、`--skip-smoke` 同 `ablate`；`--model` 写进 job 配置，不传 Harbor 的 `-m`（Harbor 0.24.0 在只给 `--config`、不给 `--agent` 时忽略 `-m`）。
+- 拆批：`--task <题>` 可重复，每批一个 job `jobs/<batch>/`（全量叫 `all`，其余按题集取哈希，job 名不含题名）。同一个 `--out` 再给同一组题就续跑那一批；和已有批次有重题、或配置/模型/每题次数/代码 commit/Skill 版本不同就拒绝（退出 2）。
+- 预检同 `ablate`，另在最前面检查本机有没有 `dbt-bench-base`（登记处 103 题的 Dockerfile 都是 `FROM dbt-bench-base`）；没有就 `docker pull ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0` 再 `docker tag` 成 `dbt-bench-base`，失败就在起 job 前退出 2。题目文件不改。冒烟用 manifest 开发集里第一道在登记处的题。花费护栏、续跑、infra 处理同 `ablate`。
+- 每批跑完写报告 `reports/<UTC 时间>/board.json`、`board.md`，合并 `--out` 下所有批次：榜单算法的准确率 ± 标准误和 pass@k；没凑满 103 × k 时列出缺的题（留出集只给个数）；按难度的准确率；花费（每 trial、每次成功）、token、墙钟；infra 排除数；"和 a3278ad 的差异"一节（`dbt-cart-abandonment-recovery` 在 v1.0 上必得 0 分，上限 102/103；97 题保留 DuckDB/Snowflake 兼容提示）和去掉这道题的 102 题准确率。逐题表不列留出集的题。
+- `da-remote pull` 对 `board` 的 run 只取回报告、`run.log`（run 还没结束、里面出现留出题名（例如 `--task` 点了留出题）或读不了 manifest 时不取）、控制文件和非留出题的 trial 目录（按服务器仓库 `evals/manifest.json` 的 holdout 判断；没有 `result.json` 的、读不了的都不取）；留出题的 trial、Harbor 日志、job 文件、dropped 和冒烟留在服务器，供人上传时用。
+
 改动验收（ADR-0008，工单 29）：`uv run python -m evals accept --old OUT_OLD/jobs/full --new OUT_NEW/jobs/full --manifest evals/manifest.json --target <题> [--target <题> ...] --regression evals/regression.json [--rerun <补跑 job> ...] [--json]`。
 
 - 两份 job 都要覆盖整个开发集、每题 `--trials`（默认 3）次，新版不能有基础设施报错；job、目标题、回归集、补跑里有任何非开发集题就拒绝（只报个数，ADR-0004），退出 2。

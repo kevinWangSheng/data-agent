@@ -10,6 +10,7 @@ from evals import (
     ablate,
     accept,
     attribute,
+    board,
     dab,
     dab_score,
     diverge,
@@ -112,7 +113,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
     p.set_defaults(func=cmd_report)
 
-    modules = (scrub, spend, attribute, dab, dab_score, jaffle, ablate, accept, diverge, selection)
+    modules = (
+        scrub,
+        spend,
+        attribute,
+        dab,
+        dab_score,
+        jaffle,
+        ablate,
+        board,
+        accept,
+        diverge,
+        selection,
+    )
     for module in modules:
         module.add_parser(commands)
     return parser

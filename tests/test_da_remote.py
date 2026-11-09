@@ -609,6 +609,140 @@ def test_pull_of_an_ablate_run_it_cannot_judge_takes_the_summary_only(env: Env, 
     assert not pulled_whole(env)
 
 
+def board_run(env: Env, *args: str) -> Path:
+    """A finished `evals board` run on the server: two batch jobs holding trials of dev, other
+    (in neither split) and holdout tasks, an interrupted trial, Harbor's logs, a dropped trial, a
+    smoke job and a report; `args` are more evals arguments."""
+    assert env.run("setup").returncode == 0
+    (env.repo / "evals").mkdir(exist_ok=True)
+    (env.repo / "evals" / "manifest.json").write_text(json.dumps(SERVER_MANIFEST))
+    assert env.run("start", "smoke", "--", "board", "--budget", "1", *args).returncode == 0
+    env.finish(0)
+    run = env.repo / "runs" / "smoke"
+    batches = {"batch-1a2b3c": ["dbt-alpha", "dbt-other"], "all": ["dbt-delta", LONG_DEV]}
+    for job_name, tasks in batches.items():
+        job = run / "jobs" / job_name
+        job.mkdir(parents=True)
+        names = [f"snowflake-labs/{task}" for task in tasks]
+        (job / "config.json").write_text(json.dumps({"datasets": [{"task_names": names}]}))
+        (job / "result.json").write_text(json.dumps({"trials": [f"{t}__x" for t in tasks]}))
+        for task in tasks:
+            trial = job / f"{task[:32].rstrip('-_')}__abc1234"
+            (trial / "agent").mkdir(parents=True)
+            (trial / "result.json").write_text(json.dumps({"task_name": f"snowflake-labs/{task}"}))
+    (run / "jobs" / "all" / "dbt-delta__run9999").mkdir()  # interrupted: no result.json
+    (run / "logs").mkdir()
+    (run / "logs" / "all.log").write_text("dbt-delta output\n")
+    (run / "dropped" / "all" / "dbt-delta__drop123").mkdir(parents=True)
+    (run / "smoke" / "20261109T000000.000000Z" / "no-verifiers").mkdir(parents=True)
+    (run / "reports" / "t1").mkdir(parents=True)
+    return run
+
+
+def test_pull_of_a_board_run_takes_the_reports_and_the_non_holdout_trials(env: Env):
+    """ADR-0004: the registry holds the holdout tasks; their trials stay on the server for a
+    human to upload, and nothing that names them comes back."""
+    board_run(env)
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    long_trial = f"{LONG_DEV[:32].rstrip('-_')}__abc1234"
+    assert args[3:-2] == [
+        "--include=/reports/***",
+        *(f"--include=/{f}" for f in ("run.log", "exit", "budget", "subcommand", "request.json")),
+        "--include=/jobs/",
+        "--include=/jobs/all/",
+        f"--include=/jobs/all/{long_trial}/***",
+        "--include=/jobs/batch-1a2b3c/",
+        "--include=/jobs/batch-1a2b3c/dbt-alpha__abc1234/***",
+        "--include=/jobs/batch-1a2b3c/dbt-other__abc1234/***",
+        "--exclude=*",
+    ]
+    assert "dbt-delta" not in proc.stdout + proc.stderr + "\n".join(args)
+    assert "holdout" in proc.stdout
+
+
+def test_pull_of_a_board_run_without_a_readable_manifest_takes_the_reports_only(env: Env):
+    """Fail closed: without the server's holdout list no trial can be shown to be outside it."""
+    board_run(env)
+    (env.repo / "evals" / "manifest.json").write_text("{")
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert not any(a.startswith("--include=/jobs") for a in args)
+    assert args[-3] == "--exclude=*"
+
+
+def test_a_board_pull_leaves_a_run_log_naming_a_holdout_task_on_the_server(env: Env):
+    """`da-remote start` writes the evals arguments to run.log, a batch's `--task`s too."""
+    run = board_run(env, "--task", "dbt-delta")
+    assert "dbt-delta" in (run / "run.log").read_text()
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert "--include=/run.log" not in args
+    assert "--include=/exit" in args and "--include=/reports/***" in args
+    assert "dbt-delta" not in proc.stdout + proc.stderr + "\n".join(args)
+
+
+def test_a_board_pull_of_a_live_run_leaves_its_run_log(env: Env):
+    """A live run's log may grow, past the holdout check, before rsync copies it."""
+    assert env.run("setup").returncode == 0
+    (env.repo / "evals").mkdir(exist_ok=True)
+    (env.repo / "evals" / "manifest.json").write_text(json.dumps(SERVER_MANIFEST))
+    assert env.run("start", "smoke", "--", "board", "--budget", "1").returncode == 0
+    proc = env.run("pull", "smoke")
+    env.finish(0)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert "--include=/run.log" not in args
+
+
+def test_a_board_pull_without_a_readable_manifest_leaves_the_run_log(env: Env):
+    board_run(env)
+    (env.repo / "evals" / "manifest.json").write_text("{")
+    assert env.run("pull", "smoke").returncode == 0
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert "--include=/run.log" not in args
+
+
+@pytest.mark.parametrize(
+    "local_file",
+    [
+        "logs/all.log",
+        "dropped/all/dbt-delta__drop123/result.json",
+        "smoke/20261109T000000.000000Z/no-verifiers/config.json",
+        "jobs/all/dbt-delta__abc1234/result.json",  # a holdout trial from elsewhere
+        "jobs/all/config.json",  # a job file, which names every task
+    ],
+)
+def test_a_board_pull_refuses_a_local_dir_holding_other_files(env: Env, local_file: str):
+    """rsync's filters keep old local files, so holdout files already here would stay next to the
+    pulled trials; pull refuses instead of deleting anything local."""
+    board_run(env)
+    local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))
+    path = local / "runs" / "smoke" / local_file
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 1
+    assert "move runs/smoke aside" in proc.stderr
+    assert "dbt-delta" not in proc.stderr
+    assert not (env.log / "rsync.args").exists()
+    assert path.is_file()
+
+
+def test_a_board_pull_again_over_its_own_trials_is_fine(env: Env):
+    board_run(env)
+    local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))
+    trial = local / "runs" / "smoke" / "jobs" / "batch-1a2b3c" / "dbt-alpha__abc1234"
+    (trial / "agent").mkdir(parents=True)
+    (trial / "result.json").write_text("{}")
+    (local / "runs" / "smoke" / "reports" / "t0").mkdir(parents=True)
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_push_copies_a_local_run_dir_to_the_server(env: Env):
     assert env.run("setup").returncode == 0
     local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))
