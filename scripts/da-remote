@@ -741,6 +741,32 @@ EOF
       trials=$((trials + 1))
     done <<<"$pull_info"
     filters+=(--exclude='*')
+    # The filters keep old local files: refuse rather than leave anything but the trials pulled
+    # (a holdout trial, a job file or log naming tasks) next to them.
+    local d entry
+    for d in logs dropped smoke; do
+      if [ -e "$root/runs/$1/$d" ]; then
+        echo "pull: runs/$1/$d exists here; a board pull brings back reports and non-holdout" \
+          "trials only, so move runs/$1 aside first" >&2
+        exit 1
+      fi
+    done
+    if [ -e "$root/runs/$1/jobs" ]; then
+      while IFS= read -r entry; do
+        if [ -d "$root/runs/$1/jobs/$entry" ] && [[ $entry == */* ]] &&
+          printf '%s\n' "${filters[@]}" | grep -qxF -- "--include=/jobs/$entry/***"; then
+          continue
+        fi
+        if [ -d "$root/runs/$1/jobs/$entry" ] && [[ $entry != */* ]] &&
+          printf '%s\n' "${filters[@]}" | grep -qxF -- "--include=/jobs/$entry/"; then
+          continue
+        fi
+        # Not named: it may be a holdout trial (ADR-0004).
+        echo "pull: runs/$1/jobs holds a file or dir here that is not a non-holdout trial this" \
+          "pull brings back, so move runs/$1 aside first" >&2
+        exit 1
+      done < <(cd "$root/runs/$1/jobs" && find . -mindepth 1 -maxdepth 2 | sed 's|^\./||')
+    fi
     mkdir -p "$root/runs"
     copy "${filters[@]}" "$host:$(rsync_dir)/runs/$1/" "$root/runs/$1/"
     echo "pull: server runs/$1 -> $root/runs/$1 (board: reports and $trials non-holdout" \

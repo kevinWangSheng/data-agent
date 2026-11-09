@@ -673,6 +673,43 @@ def test_pull_of_a_board_run_without_a_readable_manifest_takes_the_reports_only(
     assert args[-3] == "--exclude=*"
 
 
+@pytest.mark.parametrize(
+    "local_file",
+    [
+        "logs/all.log",
+        "dropped/all/dbt-delta__drop123/result.json",
+        "smoke/20261109T000000.000000Z/no-verifiers/config.json",
+        "jobs/all/dbt-delta__abc1234/result.json",  # a holdout trial from elsewhere
+        "jobs/all/config.json",  # a job file, which names every task
+    ],
+)
+def test_a_board_pull_refuses_a_local_dir_holding_other_files(env: Env, local_file: str):
+    """rsync's filters keep old local files, so holdout files already here would stay next to the
+    pulled trials; pull refuses instead of deleting anything local."""
+    board_run(env)
+    local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))
+    path = local / "runs" / "smoke" / local_file
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 1
+    assert "move runs/smoke aside" in proc.stderr
+    assert "dbt-delta" not in proc.stderr
+    assert not (env.log / "rsync.args").exists()
+    assert path.is_file()
+
+
+def test_a_board_pull_again_over_its_own_trials_is_fine(env: Env):
+    board_run(env)
+    local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))
+    trial = local / "runs" / "smoke" / "jobs" / "batch-1a2b3c" / "dbt-alpha__abc1234"
+    (trial / "agent").mkdir(parents=True)
+    (trial / "result.json").write_text("{}")
+    (local / "runs" / "smoke" / "reports" / "t0").mkdir(parents=True)
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_push_copies_a_local_run_dir_to_the_server(env: Env):
     assert env.run("setup").returncode == 0
     local = Path(git("rev-parse", "--show-toplevel", cwd=env.local))

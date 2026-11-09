@@ -362,6 +362,30 @@ def test_a_batch_under_other_conditions_is_refused(
     assert len(harbor.raw) == 1
 
 
+@pytest.mark.parametrize("change", ["commit", "skill_version", "dirty"])
+def test_an_interrupted_batch_without_results_is_not_resumed_under_other_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
+) -> None:
+    """A batch stopped before its first result.json has no trial to compare versions with; the
+    run record of the call that started it does."""
+    out = tmp_path / "out"
+    harbor = BoardHarbor()
+    assert run(monkeypatch, harbor, out, "--skip-smoke", "--task", DEV) == 0
+    for result in (out / "jobs").glob("*/*/result.json"):
+        result.unlink()  # as if Harbor was stopped before any trial finished
+    real = ablate.conditions
+    if change == "skill_version":
+        monkeypatch.setattr(
+            ablate, "conditions", lambda config: real(config) | {"skill_version": "other"}
+        )
+    else:
+        commit = "beef" if change == "commit" else "c0ffee-dirty"
+        monkeypatch.setattr(ablate, "git_commit", lambda: commit)
+        monkeypatch.setattr(board, "git_commit", lambda: commit)
+    assert run(monkeypatch, harbor, out, "--skip-smoke", "--task", DEV) == 2
+    assert len(harbor.raw) == 1
+
+
 def test_a_refused_request_writes_no_run_record(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

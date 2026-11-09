@@ -211,16 +211,46 @@ def check_request(out: Path, args: argparse.Namespace) -> None:
 
 
 def make_record(args: argparse.Namespace) -> dict[str, Any]:
-    """ablate's run record, the benchmark being the registry's dataset version."""
+    """ablate's run record, the benchmark being the registry's dataset version, plus the Skill
+    version the config runs with (`check_versions`)."""
     return {
         "started_at": datetime.now(UTC).isoformat(),
         "benchmark_commit": DATASET_VERSION,
         "machine": os.environ.get(ablate.MACHINE_ENV) or None,
         "git_commit": git_commit(),
+        "skill_version": ablate.conditions(args.config)["skill_version"],
         "model": args.model or ablate.DEFAULT_MODEL,
         "configs": [args.config],
         "smoke": not args.skip_smoke,
     }
+
+
+def check_versions(out: Path, record: dict[str, Any]) -> None:
+    """Jobs under OUT are reused or resumed only from a clean checkout at the git commit and Skill
+    version of OUT's last run record: a batch stopped before its first result.json has no trial
+    whose version header `check_mixing` could compare (ablate.check_record leaves these out)."""
+    if not any((out / "jobs").glob("*/config.json")):
+        return
+    if str(record["git_commit"]).endswith("-dirty"):
+        raise Stop(
+            f"this checkout has uncommitted changes, so it cannot be matched to the jobs under "
+            f"{out}; commit them, or use another --out"
+        )
+    paths = sorted((out / "records").glob("*.json"))
+    try:
+        before = json.loads(paths[-1].read_text()) if paths else {}
+    except (OSError, ValueError) as exc:
+        raise Stop(f"cannot read {paths[-1]}: {exc}; use another --out") from exc
+    changed = [
+        f"{key} {before.get(key)!r} there, {record[key]!r} now"
+        for key in ("git_commit", "skill_version")
+        if before.get(key) != record[key]
+    ]
+    if changed:
+        raise Stop(
+            f"the jobs under {out} were run under other conditions ({'; '.join(changed)}); "
+            "use another --out"
+        )
 
 
 def docker(*args: str) -> tuple[int, str]:
@@ -580,6 +610,7 @@ def run(args: argparse.Namespace) -> int:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
         record = make_record(args)
         ablate.check_record(args.out, Path(DATASET), record)
+        check_versions(args.out, record)
         others = check_batches(args.out, batch, tasks, registry)
         check_mixing(args.config, [*others, args.out / "jobs" / batch])
         check_request(args.out, args)
