@@ -362,6 +362,18 @@ def test_a_batch_under_other_conditions_is_refused(
     assert len(harbor.raw) == 1
 
 
+def test_a_refused_request_writes_no_run_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The last run record stays the jobs' own (ablate.check_record's contract)."""
+    out = tmp_path / "out"
+    harbor = BoardHarbor()
+    assert run(monkeypatch, harbor, out, "--skip-smoke", "--task", DEV) == 0
+    records = sorted((out / "records").glob("*.json"))
+    assert run(monkeypatch, harbor, out, "--skip-smoke", "--task", OTHER, "--model", "x/y") == 2
+    assert sorted((out / "records").glob("*.json")) == records
+
+
 def test_a_skill_version_change_between_batches_is_refused(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -409,6 +421,7 @@ def test_infrastructure_errors_are_resumed_and_their_spend_kept_once(
     assert final["infra_excluded"]["trials"] == 1
     assert final["infra_excluded"]["cost_usd"] == pytest.approx(0.01)
     assert final["cost"]["cost_usd"] == pytest.approx(0.03)
+    assert final["cost"]["total_cost_usd"] == pytest.approx(0.04)  # the dropped trial too
     assert len(list((out / "dropped").rglob("*.jsonl"))) == 1
 
 

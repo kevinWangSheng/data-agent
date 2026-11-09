@@ -53,6 +53,7 @@ from data_agent.agent import git_commit
 from data_agent.run_config import REPO_ROOT
 from evals import ablate, readiness
 from evals import report as report_module
+from evals.ablate import Stop
 from evals.harbor import Trial, load_trials, task_id
 from evals.metrics import is_success
 from evals.report import TRIALS_PER_TASK, is_infra_error, score, summary
@@ -61,6 +62,7 @@ from evals.report import TRIALS_PER_TASK, is_infra_error, score, summary
 # DATASET, DATASET_REF: snowflake-labs/data-eng-bench@v1.0).
 DATASET = "snowflake-labs/data-eng-bench"
 DATASET_REF = "sha256:de31878dba7e5a9aad85dc8276820b0a20ab593aed46ff93dfbbbdb6007ec995"
+DATASET_VERSION = f"{DATASET}@{DATASET_REF}"
 # The registry's tasks, each with its digest and difficulty (read from the registry 2026-11-09).
 REGISTRY = REPO_ROOT / "evals" / "registry.json"
 MANIFEST = report_module.REPO_MANIFEST
@@ -68,7 +70,7 @@ MANIFEST = report_module.REPO_MANIFEST
 # data-eng-bench's published base image under its local build name (data-eng-bench base-image/).
 BASE_TAG = "dbt-bench-base"
 BASE_IMAGE = "ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0"
-DOCKER_PULL_TIMEOUT_S = 1800.0
+DOCKER_TIMEOUT_S = 1800.0
 # v1.0's tests/test_outputs.py of this task returns `final_score`, which it never defines
 # (a3278ad returns `final`): every trial scores 0.
 ZERO_TASK = "dbt-cart-abandonment-recovery"
@@ -85,10 +87,6 @@ DIFFERENCES = (
     "The leaderboard accepts v1.0's digests only; every submission runs the same tasks.",
 )
 JOBS_ALL = "all"
-
-
-class Stop(ablate.Stop):
-    pass
 
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
@@ -123,7 +121,7 @@ def read_registry(path: Path) -> dict[str, dict[str, str]]:
     """{task: {"ref", "difficulty"}} of the registry list, which must be of DATASET@DATASET_REF."""
     registry = json.loads(path.read_text())
     if registry.get("dataset") != DATASET or registry.get("ref") != DATASET_REF:
-        raise ValueError(f"{path} lists another dataset than {DATASET}@{DATASET_REF}")
+        raise ValueError(f"{path} lists another dataset than {DATASET_VERSION}")
     tasks: dict[str, dict[str, str]] = registry["tasks"]
     if not tasks:
         raise ValueError(f"{path} lists no task")
@@ -137,7 +135,7 @@ def harbor_run_args(
     `jobs/<job_name>`. Harbor matches `-i` against the registry's `<org>/<task>` names."""
     org = DATASET.split("/")[0]
     return [
-        *("run", "--config", str(ablate.JOB_CONFIG), "-d", f"{DATASET}@{DATASET_REF}"),
+        *("run", "--config", str(ablate.JOB_CONFIG), "-d", DATASET_VERSION),
         *("-o", str(jobs), "--job-name", job_name, "-k", str(trials)),
         *("--ak", f"run_config={args.config}"),
         *(("-m", args.model) if args.model else ()),
@@ -153,7 +151,7 @@ def batch_name(tasks: list[str], registry: dict[str, Any]) -> str:
     return f"batch-{digest}"
 
 
-def job_tasks(job: Path) -> set[str]:
+def job_tasks(job: Path, registry: dict[str, Any]) -> set[str]:
     """The tasks a Harbor job was asked to run, from its config.json (`datasets[*].task_names`,
     the `-i` patterns); a dataset without a task list means the whole registry."""
     try:
@@ -161,7 +159,7 @@ def job_tasks(job: Path) -> set[str]:
         names: set[str] = set()
         for dataset in datasets:
             if not dataset.get("task_names"):
-                return set(json.loads(REGISTRY.read_text())["tasks"])
+                return set(registry)
             names |= {task_id(name) for name in dataset["task_names"]}
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise Stop(
@@ -170,11 +168,11 @@ def job_tasks(job: Path) -> set[str]:
     return names
 
 
-def check_batches(out: Path, batch: str, tasks: list[str]) -> list[Path]:
+def check_batches(out: Path, batch: str, tasks: list[str], registry: dict[str, Any]) -> list[Path]:
     """The other batches' jobs under OUT; refuses a batch that shares a task with one of them
     (its trials would be counted twice). Counts only, so no holdout task is named."""
     others = sorted(p for p in (out / "jobs").iterdir() if p.is_dir() and p.name != batch)
-    shared = sum(len(set(tasks) & job_tasks(job)) for job in others)
+    shared = sum(len(set(tasks) & job_tasks(job, registry)) for job in others)
     if shared:
         raise Stop(
             f"{shared} of the {len(tasks)} tasks asked for are in another batch of {out}; "
@@ -196,7 +194,7 @@ def check_request(out: Path, args: argparse.Namespace) -> None:
     and trials per task."""
     path = out / "request.json"
     now: dict[str, Any] = {
-        "dataset": f"{DATASET}@{DATASET_REF}",
+        "dataset": DATASET_VERSION,
         "config": args.config,
         "model": args.model or ablate.DEFAULT_MODEL,
         "trials": args.trials,
@@ -216,7 +214,7 @@ def make_record(args: argparse.Namespace) -> dict[str, Any]:
     """ablate's run record, the benchmark being the registry's dataset version."""
     return {
         "started_at": datetime.now(UTC).isoformat(),
-        "benchmark_commit": f"{DATASET}@{DATASET_REF}",
+        "benchmark_commit": DATASET_VERSION,
         "machine": os.environ.get(ablate.MACHINE_ENV) or None,
         "git_commit": git_commit(),
         "model": args.model or ablate.DEFAULT_MODEL,
@@ -229,7 +227,7 @@ def docker(*args: str) -> tuple[int, str]:
     """A docker command: its exit code and output."""
     try:
         proc = subprocess.run(
-            ["docker", *args], capture_output=True, text=True, timeout=DOCKER_PULL_TIMEOUT_S
+            ["docker", *args], capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, str(exc)
@@ -294,7 +292,7 @@ def ensure_batch(
     ablate.check_account_errors(batch, trials)
 
 
-def trial_seconds(trial: Trial) -> tuple[datetime, datetime] | None:
+def trial_times(trial: Trial) -> tuple[datetime, datetime] | None:
     """When the trial started and finished, from its result.json; None when unrecorded."""
     try:
         result = json.loads((trial.dir / "result.json").read_text())
@@ -310,7 +308,7 @@ def wall_clock(trials: list[Trial]) -> dict[str, Any]:
     """The trials' own durations, and each batch's span from its first start to its last end."""
     spans: dict[str, list[tuple[datetime, datetime]]] = {}
     for trial in trials:
-        times = trial_seconds(trial)
+        times = trial_times(trial)
         if times is not None:
             spans.setdefault(trial.dir.parent.name, []).append(times)
     durations = [(end - start).total_seconds() for found in spans.values() for start, end in found]
@@ -378,6 +376,7 @@ def build_report(
         of_level = [t for t in scored if registry[t.task]["difficulty"] == level]
         by_difficulty[level] = aggregate(of_level)
     without_zero = [t for t in scored if t.task != ZERO_TASK]
+    excluded = report_module.excluded_trials(job_dirs, set(registry))
     per_task = []
     for task in sorted(registry):
         if task in holdout:
@@ -393,7 +392,7 @@ def build_report(
             }
         )
     return {
-        "dataset": f"{DATASET}@{DATASET_REF}",
+        "dataset": DATASET_VERSION,
         "complete": complete,
         "n_tasks": len(registry),
         "trials_per_task": trials_per_task,
@@ -408,6 +407,11 @@ def build_report(
         },
         "by_difficulty": by_difficulty,
         "cost": {
+            # Everything run cost (listed): the scored trials, the infrastructure errors still
+            # to rerun, and the trials resumes dropped (`excluded`).
+            "total_cost_usd": sum(t.cost_usd for t in trials)
+            + sum(e["cost_usd"] for e in excluded.values()),
+            # The rest is of the scored trials.
             "cost_usd": sum(t.cost_usd for t in scored),
             "billed_cost_usd": billed,
             "per_trial_usd": billed / len(scored) if scored else None,
@@ -417,11 +421,13 @@ def build_report(
             "output_tokens": sum(t.output_tokens for t in scored),
         },
         "wall_clock": wall_clock(scored),
-        **report_module.excluded_trials(job_dirs, set(registry)),
+        **excluded,
         "holdout": aggregate([t for t in scored if t.task in holdout]),
         "per_task": per_task,
         "differences_from_a3278ad": list(DIFFERENCES),
-        "batches": [{"job": job.name, "n_tasks": len(job_tasks(job))} for job in job_dirs],
+        "batches": [
+            {"job": job.name, "n_tasks": len(job_tasks(job, registry))} for job in job_dirs
+        ],
         # run_contract reads a request without a split as a holdout one; a board run has none.
         "run": {
             k: v for k, v in report_module.run_contract(scored, job_dirs).items() if k != "split"
@@ -501,7 +507,8 @@ def markdown(r: dict[str, Any]) -> str:
         "",
         "## Cost, tokens, time",
         "",
-        f"- cost: ${usd(c['cost_usd'])} listed, ${usd(c['billed_cost_usd'])} billed; "
+        f"- total cost, excluded trials included: ${usd(c['total_cost_usd'])} listed",
+        f"- scored trials: ${usd(c['cost_usd'])} listed, ${usd(c['billed_cost_usd'])} billed; "
         f"${usd(c['per_trial_usd'])} per trial, ${usd(c['per_success_usd'])} per success",
         f"- tokens: {c['uncached_input_tokens']:,} uncached + {c['cached_input_tokens']:,} cached "
         f"input, {c['output_tokens']:,} output",
@@ -573,10 +580,10 @@ def run(args: argparse.Namespace) -> int:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
         record = make_record(args)
         ablate.check_record(args.out, Path(DATASET), record)
-        others = check_batches(args.out, batch, tasks)
+        others = check_batches(args.out, batch, tasks, registry)
         check_mixing(args.config, [*others, args.out / "jobs" / batch])
-        record_path = ablate.write_record(args.out, record, stamp)
         check_request(args.out, args)
+        record_path = ablate.write_record(args.out, record, stamp)
         print(f"record: {record_path}", flush=True)
         print(f"batch: {batch}, {len(tasks)} of {len(registry)} tasks", flush=True)
         prepared: list[bool] = []
@@ -624,7 +631,7 @@ def run(args: argparse.Namespace) -> int:
         job_dirs = sorted(p for p in (args.out / "jobs").iterdir() if p.is_dir())
         report = build_report(args.out, job_dirs, registry, holdout, args.trials)
         reports = write_report(args.out, report)
-    except ablate.Stop as exc:
+    except Stop as exc:
         print(f"board: {exc}", file=sys.stderr)
         return exc.code
     print((reports / "board.md").read_text(), end="")

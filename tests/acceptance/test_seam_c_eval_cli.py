@@ -314,3 +314,20 @@ def test_spend_stops_at_80_percent_of_budget() -> None:
     assert evals("spend", str(HARBOR_JOB), "--budget", "3.5").returncode == 0
     assert evals("spend", str(HARBOR_JOB), "--budget", "2.96875").returncode != 0  # exactly 80%
     assert evals("spend", str(HARBOR_JOB), "--budget", "2.5").returncode != 0
+
+
+def test_board_takes_one_config_and_refuses_a_task_outside_the_registry(tmp_path: Path) -> None:
+    """`board --config C --out DIR --budget USD [--trials K] [--n-concurrent N] [--task T ...]`
+    runs one config on the registry's data-eng-bench (leaderboard-run 01); a task the registry
+    does not list is refused (exit 2) before anything runs or is written."""
+    help_text = evals_ok("board", "--help")
+    for flag in ("--config", "--out", "--budget", "--trials", "--n-concurrent", "--task"):
+        assert flag in help_text
+    out = tmp_path / "out"
+    proc = evals(
+        *("board", "--config", "no-verifiers", "--out", str(out), "--budget", "1"),
+        *("--task", "dbt-not-in-the-registry"),
+    )
+    assert proc.returncode == 2
+    assert "dbt-not-in-the-registry" in proc.stderr
+    assert not out.exists()

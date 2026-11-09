@@ -489,7 +489,7 @@ def smoke(
     configs: list[str],
     task: str,
     stamp: str,
-    run_args: "RunArgs | None" = None,
+    run_args: RunArgs | None = None,
 ) -> list[dict[str, str]]:
     """Each config on one dev task, once, then scrub on its files: a broken config, key, image or
     scrub shows here, before the jobs spend hours (ADR-0008 preflight). Dev, not holdout, so the
