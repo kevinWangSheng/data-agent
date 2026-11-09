@@ -13,6 +13,8 @@
 - 新增一种运行方式：只跑一个配置，题目从登记处的 `snowflake-labs/data-eng-bench@sha256:de31878dba7e5a9aad85dc8276820b0a20ab593aed46ff93dfbbbdb6007ec995` 取，可以用 Harbor 的 `-i` 拆批，同一个 OUT 里的几批合并计分。
 - 第 17 项用它在一个新 commit 上全新跑 103 题 × 3，只跑 no-verifiers，约 309 个 trial、约 $15，只在闲时跑。
 - `src/`、`skills/` 不动，agent 的行为和 b7c6071 一致（代码冻结的例外，ADR-0008 Update 2026-11-08）。
+- 人定（2026-11-09）：登记处 v1.0 和 a3278ad 不同（103 题都有差异：`dbt-cart-abandonment-recovery` 在 v1.0 上必得 0 分，97 题题面保留兼容提示，Dockerfile 是 `FROM dbt-bench-base`）。上游修复只进了 git，没有重新发布；榜单只认 v1.0 的摘要，所有提交者跑的是同一份题。接受这些差异照样上榜，在报告里写明，并另给 102 题的准确率。基础镜像用 GHCR 的 `data-eng-bench-base:1.0.0` 在本机 tag 成 `dbt-bench-base`。
+- 登记处 103 题里有留出集 30 题：报告和 `da-remote pull` 对它们只给汇总（ADR-0004）。
 - 上传到 Hub 和清理轨迹不在这里，属于 plan §10 第 19 项，是对外动作，要人单独确认。
 
 ## 测试接缝
