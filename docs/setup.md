@@ -73,7 +73,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 拆批：`--task <题>` 可重复，每批一个 job `jobs/<batch>/`（全量叫 `all`，其余按题集取哈希，job 名不含题名）。同一个 `--out` 再给同一组题就续跑那一批；和已有批次有重题、或配置/模型/每题次数/代码 commit/Skill 版本不同就拒绝（退出 2）。
 - 预检同 `ablate`，另在最前面检查本机有没有 `dbt-bench-base`（登记处 103 题的 Dockerfile 都是 `FROM dbt-bench-base`）；没有就 `docker pull ghcr.io/snowflake-labs/data-eng-bench-base:1.0.0` 再 `docker tag` 成 `dbt-bench-base`，失败就在起 job 前退出 2。题目文件不改。冒烟用 manifest 开发集里第一道在登记处的题。花费护栏、续跑、infra 处理同 `ablate`。
 - 每批跑完写报告 `reports/<UTC 时间>/board.json`、`board.md`，合并 `--out` 下所有批次：榜单算法的准确率 ± 标准误和 pass@k；没凑满 103 × k 时列出缺的题（留出集只给个数）；按难度的准确率；花费（每 trial、每次成功）、token、墙钟；infra 排除数；"和 a3278ad 的差异"一节（`dbt-cart-abandonment-recovery` 在 v1.0 上必得 0 分，上限 102/103；97 题保留 DuckDB/Snowflake 兼容提示）和去掉这道题的 102 题准确率。逐题表不列留出集的题。
-- `da-remote pull` 对 `board` 的 run 只取回报告、`run.log`（里面出现留出题名时不取，例如 `--task` 点了留出题；读不了 manifest 也不取）、控制文件和非留出题的 trial 目录（按服务器仓库 `evals/manifest.json` 的 holdout 判断；没有 `result.json` 的、读不了的都不取）；留出题的 trial、Harbor 日志、job 文件、dropped 和冒烟留在服务器，供人上传时用。
+- `da-remote pull` 对 `board` 的 run 只取回报告、`run.log`（run 还没结束、里面出现留出题名（例如 `--task` 点了留出题）或读不了 manifest 时不取）、控制文件和非留出题的 trial 目录（按服务器仓库 `evals/manifest.json` 的 holdout 判断；没有 `result.json` 的、读不了的都不取）；留出题的 trial、Harbor 日志、job 文件、dropped 和冒烟留在服务器，供人上传时用。
 
 改动验收（ADR-0008，工单 29）：`uv run python -m evals accept --old OUT_OLD/jobs/full --new OUT_NEW/jobs/full --manifest evals/manifest.json --target <题> [--target <题> ...] --regression evals/regression.json [--rerun <补跑 job> ...] [--json]`。
 

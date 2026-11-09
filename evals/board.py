@@ -155,10 +155,9 @@ def job_config(model: str | None) -> dict[str, Any]:
     return config
 
 
-def write_job_config(out: Path, model: str | None) -> Path:
-    path = out / JOB_CONFIG_FILE
-    path.write_text(json.dumps(job_config(model), indent=2) + "\n")
-    return path
+def write_job_config(out: Path, model: str | None) -> None:
+    """`OUT/job-config.json`: the `--config` of every `harbor run` of board (`harbor_run_args`)."""
+    (out / JOB_CONFIG_FILE).write_text(json.dumps(job_config(model), indent=2) + "\n")
 
 
 def harbor_run_args(

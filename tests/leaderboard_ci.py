@@ -9,6 +9,7 @@
 #   core/hub.py: trial_model (unmodified);
 #   flows/filter.py: job_filter_keys (as source_filters, modified: over a job config and trial
 #     rows already fetched, without the date; the DATASET check returns instead of exiting).
+# The unmodified functions keep upstream's loose annotations (bare dict, an unannotated value).
 """The leaderboard CI's checks of a job's config and its trials, for board's tests: what
 data-eng-bench's `lb filter` derives a submission's `source_filter` from, and what its static
 analysis then requires of the job config and of each trial's config."""

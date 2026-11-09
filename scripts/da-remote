@@ -632,7 +632,8 @@ pull() {
   # trial dir where one belongs fails the check.
   # For a board run, the lines after it are `trial jobs/<job>/<trial>`, one per trial dir whose
   # result.json names a task outside the server manifest's holdout, and `log run.log` when the run
-  # log names no holdout task (`da-remote start` writes the evals arguments, `--task`s too, there).
+  # has finished and its log names no holdout task (`da-remote start` writes the evals arguments,
+  # `--task`s too, there).
   pull_info=$(run_script NAME "$1" <<'EOF'
 cat "$DIR/runs/$NAME/subcommand" 2>/dev/null || true
 if [ "$(cat "$DIR/runs/$NAME/subcommand" 2>/dev/null)" = board ]; then
@@ -650,8 +651,10 @@ except (OSError, ValueError, KeyError, TypeError):
     sys.exit(0)
 if not isinstance(holdout, list) or not all(isinstance(t, str) for t in holdout):
     sys.exit(0)
+# Only a finished run's log (the runner writes `exit` after its last line): a live run's log could
+# grow, past this check, before rsync copies it.
 try:
-    log = (run / "run.log").read_text(errors="replace") if (run / "run.log").exists() else ""
+    log = (run / "run.log").read_text(errors="replace") if (run / "exit").is_file() else None
 except OSError:
     log = None
 if log is not None and not any(task in log for task in holdout):

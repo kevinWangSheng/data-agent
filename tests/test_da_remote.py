@@ -685,6 +685,19 @@ def test_a_board_pull_leaves_a_run_log_naming_a_holdout_task_on_the_server(env: 
     assert "dbt-delta" not in proc.stdout + proc.stderr + "\n".join(args)
 
 
+def test_a_board_pull_of_a_live_run_leaves_its_run_log(env: Env):
+    """A live run's log may grow, past the holdout check, before rsync copies it."""
+    assert env.run("setup").returncode == 0
+    (env.repo / "evals").mkdir(exist_ok=True)
+    (env.repo / "evals" / "manifest.json").write_text(json.dumps(SERVER_MANIFEST))
+    assert env.run("start", "smoke", "--", "board", "--budget", "1").returncode == 0
+    proc = env.run("pull", "smoke")
+    env.finish(0)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    args = (env.log / "rsync.args").read_text().splitlines()
+    assert "--include=/run.log" not in args
+
+
 def test_a_board_pull_without_a_readable_manifest_leaves_the_run_log(env: Env):
     board_run(env)
     (env.repo / "evals" / "manifest.json").write_text("{")
