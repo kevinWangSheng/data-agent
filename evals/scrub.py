@@ -62,7 +62,8 @@ PAGE_PATH = re.compile(r"/home/[0-9]+(?=[\s\"'?#]|\\[bfnrt\"\\]|$)")
 # ending a sentence (`saved to /home/x.`).
 PATH_NAME_END = r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"
 # Example paths an agent writes (`/home/user/project`, `/home/<user>`); they name no one, so they
-# are not reported. Compared without case and without punctuation ending a sentence.
+# are not reported. Compared without case, a URL query or fragment, or punctuation ending a
+# sentence.
 PLACEHOLDER_USERS = frozenset({"user", "username", "<user>", "<username>", "$user", "${user}"})
 # Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
 UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
@@ -217,7 +218,7 @@ def names_left(path: Path, text: str, users: list[str]) -> list[str]:
 def host_paths_in(text: str) -> Iterator[str]:
     """Each host home path in text, page paths and placeholders aside."""
     for match in HOST_PATH.finditer(text):
-        name = match.group().split("/", 2)[2].rstrip(".,;:)")
+        name = re.split(r"[?#]", match.group().split("/", 2)[2])[0].rstrip(".,;:!)")
         if not PAGE_PATH.match(text, match.start()) and name.lower() not in PLACEHOLDER_USERS:
             yield match.group()
 
@@ -243,13 +244,29 @@ def scrub_text(text: str, rules: Rules, counts: Counter[str]) -> str:
     return text
 
 
+# How many layers of escapes `fully_decoded` takes off; text escaped deeper is unchecked.
+MAX_DECODES = 8
+
+
+def fully_decoded(text: str) -> str:
+    """Text with `\\uXXXX`, `\\/` and `\\\\` escapes decoded until none is left, so an escape
+    produced by decoding one (`\\u005cu002f`, a nested JSON `\\\\/`) hides nothing either."""
+    for _ in range(MAX_DECODES):
+        decoded = UNICODE_ESCAPE.sub(lambda m: chr(int(m.group()[2:], 16)), text)
+        decoded = decoded.replace("\\\\", "\\").replace("\\/", "/")
+        if decoded == text:
+            return text
+        text = decoded
+    raise Unchecked(f"escapes outside JSON nested more than {MAX_DECODES} deep")
+
+
 def scrub_plain(text: str, rules: Rules, counts: Counter[str]) -> str:
     """Text that is not JSON. A `\\uXXXX` escape in it is checked decoded: the text passes as it
     is when the decoded text holds nothing a rule removes and no host path; otherwise an escape
     hides a name that cannot be removed in place, so the text is unchecked."""
     text = scrub_text(text, rules, counts)
     if UNICODE_ESCAPE.search(text):
-        decoded = UNICODE_ESCAPE.sub(lambda m: chr(int(m.group()[2:], 16)), text)
+        decoded = fully_decoded(text)
         hits: Counter[str] = Counter()
         scrub_text(decoded, rules, hits)
         if hits.total() or next(host_paths_in(decoded), None) is not None:

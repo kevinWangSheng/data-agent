@@ -206,6 +206,21 @@ def test_scrub_checks_unicode_escapes_outside_json_after_decoding_them(tmp_path:
     assert "hidden.log" in proc.stderr
 
 
+def test_scrub_fails_on_paths_hidden_by_nested_escapes_outside_json(tmp_path: Path) -> None:
+    """One decode is not enough: `\\\\u002f` and `\\/` left after it still spell a path."""
+    for name, text in [
+        ("double.log", 'prefix {\\"p\\":\\"\\\\u002fhome\\\\u002fzed\\\\u002fjob\\"}\n'),
+        ("slash.log", "prefix \\u0022\\/home\\/zed\\/job\n"),
+        ("backslash.log", "prefix \\u005cu002fhome\\u005cu002fzed\\u005cu002fjob\n"),
+    ]:
+        directory = tmp_path / name.split(".")[0]
+        directory.mkdir()
+        (directory / name).write_text(text)
+        proc = scrub(directory, "--home", "/home/zed")
+        assert proc.returncode != 0, name
+        assert name in proc.stderr
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read any directory")
 def test_scrub_fails_when_a_subdirectory_cannot_be_read(tmp_path: Path) -> None:
     locked = tmp_path / "trial" / "agent"
@@ -281,6 +296,7 @@ def test_scrub_lets_placeholder_home_paths_through(tmp_path: Path) -> None:
     text = (
         "e.g. /home/user. or /home/<user>/project, /Users/username/x, /home/$USER/x,\n"
         "/home/${USER}/x and /Users/<username>.\n"
+        "see http://localhost/home/user?tab=1, /home/user#top or /home/user!\n"
     )
     log.write_text(text)
     proc = scrub(tmp_path)
