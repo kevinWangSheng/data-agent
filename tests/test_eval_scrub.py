@@ -188,6 +188,24 @@ def test_scrub_fails_on_unicode_escapes_outside_json(tmp_path: Path) -> None:
     assert events.read_text() == text
 
 
+def test_scrub_checks_unicode_escapes_outside_json_after_decoding_them(tmp_path: Path) -> None:
+    """Item 16: an agent's code or SQL holds `\\uXXXX` as text. Decoded, it names nothing to
+    remove, so the file passes unchanged; an escape that spells a host path still fails."""
+    events = tmp_path / "events.jsonl"
+    text = json.dumps({"output": "print('caf\\u00e9')\nselect '\\u2014' as dash"}) + "\n"
+    events.write_text(text)
+    log = tmp_path / "run.log"
+    log.write_text("label = 'caf\\u00e9'\n")
+    proc = scrub(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert events.read_text() == text
+    assert log.read_text() == "label = 'caf\\u00e9'\n"
+    (tmp_path / "hidden.log").write_text("cd \\u002fhome\\u002fzed\\u002fjobs\n")
+    proc = scrub(tmp_path)
+    assert proc.returncode != 0
+    assert "hidden.log" in proc.stderr
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read any directory")
 def test_scrub_fails_when_a_subdirectory_cannot_be_read(tmp_path: Path) -> None:
     locked = tmp_path / "trial" / "agent"
@@ -238,6 +256,41 @@ def test_scrub_keeps_json_keys_that_spell_the_user_name(tmp_path: Path) -> None:
     assert json.loads(config.read_text()) == {
         "agent": {"import_path": "evals.harbor_agent:DataAgent", "name": "[redacted-user]"}
     }
+
+
+def test_scrub_removes_a_home_and_user_name_ending_a_sentence(tmp_path: Path) -> None:
+    """Item 16: a `--home` given without its user (`--home /home/user` did not remove
+    `/home/user.`). A period ending a sentence is not part of the directory name, so the path is
+    removed; a name that goes on after the period (`ci-runner.old`) is another directory and still
+    fails."""
+    log = tmp_path / "trial.log"
+    log.write_text("wrote /home/ci-runner. Then ran in /home/ci-runner.\n")
+    proc = scrub(tmp_path, "--home", "/home/ci-runner")
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text() == "wrote [redacted-home]. Then ran in [redacted-home].\n"
+    log.write_text("copied /home/ci-runner.old/x\n")
+    proc = scrub(tmp_path, "--home", "/home/ci-runner")
+    assert proc.returncode != 0
+    assert "/home/ci-runner.old" in proc.stderr
+
+
+def test_scrub_lets_placeholder_home_paths_through(tmp_path: Path) -> None:
+    """Item 16: an agent writes `/home/user` or `/home/<user>` as an example path; those name no
+    one. Any other name in the same place is still reported."""
+    log = tmp_path / "trial.log"
+    text = (
+        "e.g. /home/user. or /home/<user>/project, /Users/username/x, /home/$USER/x,\n"
+        "/home/${USER}/x and /Users/<username>.\n"
+    )
+    log.write_text(text)
+    proc = scrub(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text() == text
+    log.write_text(text + "/home/user1/x and /home/users/x\n")
+    proc = scrub(tmp_path)
+    assert proc.returncode != 0
+    assert "/home/user1" in proc.stderr and "/home/users" in proc.stderr
+    assert "trial.log:1" not in proc.stderr and "trial.log:2" not in proc.stderr
 
 
 def test_scrub_fails_on_missing_directory(tmp_path: Path) -> None:
