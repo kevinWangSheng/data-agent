@@ -9,9 +9,9 @@ Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories,
 `\\uXXXX` escape outside parseable JSON that decodes to a name, a repeated JSON key) is listed and
 the command fails, and so is any path left under a user's home directory (`/home/<x>`,
 `/Users/<x>`; but not `/home/<digits>` ending a URL or SQL string, a page path from task data, nor
-a placeholder such as `/home/user` or `/home/<user>` an agent wrote), or user name left as a
-word outside JSON keys, that no rule removed. Container paths such as `/app`, `/logs` and `/root`
-(the agent runs as root in the task container, and the SDK saves long tool output under
+a placeholder such as `/home/user`, `/home/<user>` or `/home/*` an agent wrote), or user name left
+as a word outside JSON keys, that no rule removed. Container paths such as `/app`, `/logs` and
+`/root` (the agent runs as root in the task container, and the SDK saves long tool output under
 /root/.claude) are not host paths.
 """
 
@@ -66,6 +66,9 @@ PATH_NAME_END = r"(?:(?![A-Za-z0-9_.-])|(?=\.(?:[\s\"'),;\]}\\]|$)))"
 # are not reported. Compared without case, a URL query or fragment, or punctuation ending a
 # sentence.
 PLACEHOLDER_USERS = frozenset({"user", "username", "<user>", "<username>", "$user", "${user}"})
+# A glob over every home (`/home/*`, `/home/*?`, `/Users/**`) names no one either; one with part
+# of a name in it (`/home/jo*`) does not count.
+WILDCARD_USER = re.compile(r"[*?]+")
 # Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
 UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
 
@@ -217,14 +220,18 @@ def names_left(path: Path, text: str, users: list[str]) -> list[str]:
 
 
 def host_paths_in(text: str) -> Iterator[str]:
-    """Each host home path in text, page paths and placeholders aside."""
+    """Each host home path in text, page paths, placeholders and wildcards aside."""
     for match in HOST_PATH.finditer(text):
-        name = re.split(r"[?#]", match.group().split("/", 2)[2])[0]
+        segment = match.group().split("/", 2)[2]
+        name = re.split(r"[?#]", segment)[0]
         # Punctuation ends a sentence only where the path ends: before a `/` it is part of the
         # directory name (`/home/user./jobs` is another directory).
         if text[match.end() : match.end() + 1] != "/":
             name = name.rstrip(".,;:!)")
-        if not PAGE_PATH.match(text, match.start()) and name.lower() not in PLACEHOLDER_USERS:
+            segment = segment.rstrip(".,;:!)")
+        if PAGE_PATH.match(text, match.start()):
+            continue
+        if name.lower() not in PLACEHOLDER_USERS and not WILDCARD_USER.fullmatch(segment):
             yield match.group()
 
 

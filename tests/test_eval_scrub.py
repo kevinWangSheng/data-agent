@@ -311,6 +311,23 @@ def test_scrub_lets_placeholder_home_paths_through(tmp_path: Path) -> None:
     assert "trial.log:1" not in proc.stderr and "trial.log:2" not in proc.stderr
 
 
+def test_scrub_lets_wildcard_home_paths_through(tmp_path: Path) -> None:
+    """Item 16 h3: an agent globs every home (`ls /home/*?`, `/Users/*/x`); a wildcard names no
+    one. A name with a wildcard in it (`/home/jo*`) still shows part of a name, so it is
+    reported."""
+    log = tmp_path / "trial.log"
+    text = "ran ls -d /home/*? and /home/*/x, /Users/**/y, /home/?? and /home/*.\n"
+    log.write_text(text)
+    proc = scrub(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text() == text
+    log.write_text(text + "then /home/jo*/x and /home/*bob\n")
+    proc = scrub(tmp_path)
+    assert proc.returncode != 0
+    assert "/home/jo*" in proc.stderr and "/home/*bob" in proc.stderr
+    assert "trial.log:1" not in proc.stderr
+
+
 def test_scrub_fails_on_missing_directory(tmp_path: Path) -> None:
     proc = scrub(tmp_path / "nope")
     assert proc.returncode != 0
