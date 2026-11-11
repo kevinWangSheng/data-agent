@@ -57,10 +57,11 @@ HOST_PATH = re.compile(
 # so, but Harbor records the job's paths beneath it, so `/home/193/...`, `/home/193:/usr/bin` and
 # `/home/193%2F` are still reported.
 PAGE_PATH = re.compile(r"/home/[0-9]+(?=[\s\"'?#]|\\[bfnrt\"\\]|$)")
-# Where a home directory or user name in a path ends: not before another name character, nor
-# before a period that one follows (`/home/x.old` is another directory), but before a period
-# ending a sentence (`saved to /home/x.`).
-PATH_NAME_END = r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"
+# Where a home directory or user name in a path ends: not before another name character or a
+# period that can go on as a path (`/home/x.old`, `/home/x./jobs` and `/home/x..cache` are other
+# directories), but before a period ending a sentence (`saved to /home/x.`): one followed by
+# whitespace, a quote, closing punctuation, a backslash (a `\n` in text) or the end.
+PATH_NAME_END = r"(?:(?![A-Za-z0-9_.-])|(?=\.(?:[\s\"'),;\]}\\]|$)))"
 # Example paths an agent writes (`/home/user/project`, `/home/<user>`); they name no one, so they
 # are not reported. Compared without case, a URL query or fragment, or punctuation ending a
 # sentence.

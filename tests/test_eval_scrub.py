@@ -283,10 +283,11 @@ def test_scrub_removes_a_home_and_user_name_ending_a_sentence(tmp_path: Path) ->
     proc = scrub(tmp_path, "--home", "/home/ci-runner")
     assert proc.returncode == 0, proc.stderr
     assert log.read_text() == "wrote [redacted-home]. Then ran in [redacted-home].\n"
-    log.write_text("copied /home/ci-runner.old/x\n")
-    proc = scrub(tmp_path, "--home", "/home/ci-runner")
-    assert proc.returncode != 0
-    assert "/home/ci-runner.old" in proc.stderr
+    for other in ("/home/ci-runner.old/x", "/home/ci-runner./jobs", "/home/ci-runner..cache"):
+        log.write_text(f"copied {other}\n")
+        proc = scrub(tmp_path, "--home", "/home/ci-runner")
+        assert proc.returncode != 0, other
+        assert log.read_text() == f"copied {other}\n"
 
 
 def test_scrub_lets_placeholder_home_paths_through(tmp_path: Path) -> None:
