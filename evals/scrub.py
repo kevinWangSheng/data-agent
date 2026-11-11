@@ -6,9 +6,10 @@ and `.jsonl` files it scrubs the decoded strings and re-serializes, so JSON esca
 secret nor get broken by a redaction; other files, and lines that do not parse, are scrubbed as
 text. JSON nested in a string (a tool that printed JSON) is decoded and scrubbed the same way.
 Anything it cannot check (non-UTF-8 or unreadable files, unreadable directories, symlinks, a
-`\\uXXXX` escape outside parseable JSON, a repeated JSON key) is listed and the command fails, and
-so is any path left under a user's home directory (`/home/<x>`, `/Users/<x>`; but not
-`/home/<digits>` ending a URL or SQL string, a page path from task data), or user name left as a
+`\\uXXXX` escape outside parseable JSON that decodes to a name, a repeated JSON key) is listed and
+the command fails, and so is any path left under a user's home directory (`/home/<x>`,
+`/Users/<x>`; but not `/home/<digits>` ending a URL or SQL string, a page path from task data, nor
+a placeholder such as `/home/user` or `/home/<user>` an agent wrote), or user name left as a
 word outside JSON keys, that no rule removed. Container paths such as `/app`, `/logs` and `/root`
 (the agent runs as root in the task container, and the SDK saves long tool output under
 /root/.claude) are not host paths.
@@ -56,6 +57,15 @@ HOST_PATH = re.compile(
 # so, but Harbor records the job's paths beneath it, so `/home/193/...`, `/home/193:/usr/bin` and
 # `/home/193%2F` are still reported.
 PAGE_PATH = re.compile(r"/home/[0-9]+(?=[\s\"'?#]|\\[bfnrt\"\\]|$)")
+# Where a home directory or user name in a path ends: not before another name character or a
+# period that can go on as a path (`/home/x.old`, `/home/x./jobs` and `/home/x..cache` are other
+# directories), but before a period ending a sentence (`saved to /home/x.`): one followed by
+# whitespace, a quote, closing punctuation, a backslash (a `\n` in text) or the end.
+PATH_NAME_END = r"(?:(?![A-Za-z0-9_.-])|(?=\.(?:[\s\"'),;\]}\\]|$)))"
+# Example paths an agent writes (`/home/user/project`, `/home/<user>`); they name no one, so they
+# are not reported. Compared without case, a URL query or fragment, or punctuation ending a
+# sentence.
+PLACEHOLDER_USERS = frozenset({"user", "username", "<user>", "<username>", "$user", "${user}"})
 # Can spell any character of a name, so no pattern sees "build\u002dbox-7" as "build-box-7".
 UNICODE_ESCAPE = re.compile(r"\\u[0-9A-Fa-f]{4}")
 
@@ -134,9 +144,9 @@ def build_rules(
     # JSON keys, so a name that is also a Harbor field (`agent`) leaves the structure alone.
     all_homes = {str(Path.home()), *(h.rstrip("/") for h in homes or [])} - {"", "/"}
     for home in sorted(all_homes, key=len, reverse=True):
-        rules.append(("home", re.compile(rf"{re.escape(home)}(?![A-Za-z0-9_.-])"), True))
+        rules.append(("home", re.compile(rf"{re.escape(home)}{PATH_NAME_END}"), True))
     for user in user_names(users):
-        rules.append(("user", re.compile(rf"(?<=/){re.escape(user)}(?![A-Za-z0-9_.-])"), True))
+        rules.append(("user", re.compile(rf"(?<=/){re.escape(user)}{PATH_NAME_END}"), True))
         rules.append(("user", user_word(user), False))
     return rules
 
@@ -207,9 +217,14 @@ def names_left(path: Path, text: str, users: list[str]) -> list[str]:
 
 
 def host_paths_in(text: str) -> Iterator[str]:
-    """Each host home path in text, page paths aside."""
+    """Each host home path in text, page paths and placeholders aside."""
     for match in HOST_PATH.finditer(text):
-        if not PAGE_PATH.match(text, match.start()):
+        name = re.split(r"[?#]", match.group().split("/", 2)[2])[0]
+        # Punctuation ends a sentence only where the path ends: before a `/` it is part of the
+        # directory name (`/home/user./jobs` is another directory).
+        if text[match.end() : match.end() + 1] != "/":
+            name = name.rstrip(".,;:!)")
+        if not PAGE_PATH.match(text, match.start()) and name.lower() not in PLACEHOLDER_USERS:
             yield match.group()
 
 
@@ -234,10 +249,33 @@ def scrub_text(text: str, rules: Rules, counts: Counter[str]) -> str:
     return text
 
 
+# How many layers of escapes `fully_decoded` takes off; text escaped deeper is unchecked.
+MAX_DECODES = 8
+
+
+def fully_decoded(text: str) -> str:
+    """Text with `\\uXXXX`, `\\/` and `\\\\` escapes decoded until none is left, so an escape
+    produced by decoding one (`\\u005cu002f`, a nested JSON `\\\\/`) hides nothing either."""
+    for _ in range(MAX_DECODES):
+        decoded = UNICODE_ESCAPE.sub(lambda m: chr(int(m.group()[2:], 16)), text)
+        decoded = decoded.replace("\\\\", "\\").replace("\\/", "/")
+        if decoded == text:
+            return text
+        text = decoded
+    raise Unchecked(f"escapes outside JSON nested more than {MAX_DECODES} deep")
+
+
 def scrub_plain(text: str, rules: Rules, counts: Counter[str]) -> str:
+    """Text that is not JSON. A `\\uXXXX` escape in it is checked decoded: the text passes as it
+    is when the decoded text holds nothing a rule removes and no host path; otherwise an escape
+    hides a name that cannot be removed in place, so the text is unchecked."""
     text = scrub_text(text, rules, counts)
     if UNICODE_ESCAPE.search(text):
-        raise Unchecked("a \\uXXXX escape outside JSON could hide a name")
+        decoded = fully_decoded(text)
+        hits: Counter[str] = Counter()
+        scrub_text(decoded, rules, hits)
+        if hits.total() or next(host_paths_in(decoded), None) is not None:
+            raise Unchecked("a \\uXXXX escape outside JSON hides a name")
     return text
 
 
