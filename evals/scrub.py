@@ -219,7 +219,11 @@ def names_left(path: Path, text: str, users: list[str]) -> list[str]:
 def host_paths_in(text: str) -> Iterator[str]:
     """Each host home path in text, page paths and placeholders aside."""
     for match in HOST_PATH.finditer(text):
-        name = re.split(r"[?#]", match.group().split("/", 2)[2])[0].rstrip(".,;:!)")
+        name = re.split(r"[?#]", match.group().split("/", 2)[2])[0]
+        # Punctuation ends a sentence only where the path ends: before a `/` it is part of the
+        # directory name (`/home/user./jobs` is another directory).
+        if text[match.end() : match.end() + 1] != "/":
+            name = name.rstrip(".,;:!)")
         if not PAGE_PATH.match(text, match.start()) and name.lower() not in PLACEHOLDER_USERS:
             yield match.group()
 

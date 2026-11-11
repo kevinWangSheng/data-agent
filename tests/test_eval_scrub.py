@@ -303,10 +303,11 @@ def test_scrub_lets_placeholder_home_paths_through(tmp_path: Path) -> None:
     proc = scrub(tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert log.read_text() == text
-    log.write_text(text + "/home/user1/x and /home/users/x\n")
+    log.write_text(text + "/home/user1/x and /home/users/x, /home/user./jobs, /home/username../r\n")
     proc = scrub(tmp_path)
     assert proc.returncode != 0
     assert "/home/user1" in proc.stderr and "/home/users" in proc.stderr
+    assert "/home/user." in proc.stderr and "/home/username.." in proc.stderr
     assert "trial.log:1" not in proc.stderr and "trial.log:2" not in proc.stderr
 
 
