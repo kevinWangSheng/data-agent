@@ -215,3 +215,23 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
     8. `ablate --model` 不生效：Harbor 0.24.0 在只给 `--config`、不给 `--agent` 时忽略 `-m`（`cli/jobs.py:1528-1568`），trial 跑的是 job 配置里的默认模型。第 16、18 项都不传 `--model`，不受影响；`evals board` 已改成把模型写进 job 配置（leaderboard-run 01）。
     9. 登记处 v1.0 和 a3278ad 不同（第 17 项）：`dbt-cart-abandonment-recovery` 在 v1.0 上必得 0 分，97 题题面保留 DuckDB/Snowflake 兼容提示。榜单只认 v1.0，所有提交者相同；报告另给 102 题准确率。
 - **执行分工**：正式评测由人另开的运行会话执行。编排会话只做开跑前的决策和准备：文档、manifest、运行手册、环境核对、补传测试的方案。
+
+## Update 2026-11-12：第 16、17 项的结果和已知限制
+
+- **第 16 项（留出集 5 配置消融）**：2026-11-09 至 11-11，b7c6071，450 个 trial，3 批，实付 $36.22。第 3 批 $14.38，超过 +20% 线（$13.8）；人 2026-11-11 定：费用预警时充值，不另外停下。只看汇总（ADR-0004）：
+  - 准确率：full 66.7% ± 1.6，baseline 65.6% ± 2.7，no-skill 64.4% ± 2.5，no-verifiers 71.1% ± 1.9，no-context 57.8% ± 2.2。
+  - 配对差值（任务级 bootstrap，95% 区间）都不显著：full − baseline +1.1，full − no-skill +2.2，full − no-verifiers −4.4，full − no-context +8.9，no-verifiers − baseline +5.6。
+  - scrub 在 3 批都报了误报。修复是代码冻结的例外（人 2026-11-11 批准），只改了 `evals/scrub.py` 和测试：PR #74（3f3df19）、PR #75（ea740b5）。在 ea740b5 上重跑 3 批的 scrub，都 exit 0。每批的 `ablation.md` 没有补；合并报告是 `evals report` 在服务器 `runs/f16-report-<config>` 出的。
+- **第 17 项（data-eng-bench 全量，上榜用）**：改在 ea740b5 上跑，代替 aa70175（含 scrub 修复；`git diff b7c6071 ea740b5 -- src/ skills/` 为空）。`evals board`，no-verifiers，3 批，并发 3，2026-11-11 13:41Z 至 11-12 15:50Z，全部在闲时。
+  - 103 × 3 准确率 64.1% ± 1.6，pass@2 0.715，pass@3 0.748。去掉 `dbt-cart-abandonment-recovery` 的 102 题是 64.7% ± 1.6。
+  - 按难度：easy 100%（3 题）、medium 70.9%、hard 57.8%、very_hard 45.8%。留出集 30 题汇总 67.8%。
+  - 实付 $15.16（估算 $15.1），每个 trial $0.049，每次成功 $0.077。平均每个 trial 547 s。infra 排除 1 次（第 2 批，续跑补上）。
+  - 报告在本机 `runs/f17/reports/20261112T155019.560470Z/board.md`。留出题的 trial 留在服务器 `runs/f17`，第 19 项上传时用。
+  - 参照：PR #10（Opus 5.5 high）67.96%。模型和价位不同，不直接算差值。
+- **批次之间不再逐批确认**（人 2026-11-11）：大运行批准后，各批由运行会话按闲时窗口接着开。超过 +20% 线、exit 非 0、scrub 失败、出现 infra 错误时照样停下；16、17、18 之间仍要人确认。
+- **正式评测累计实付**：$51.38（16 是 $36.22，17 是 $15.16），预算 ¥700。
+- **已知限制，接在上面第 1–9 条后面**：
+  10. Harbor 并发起同一道题的几个 trial 时，会同时构建同一个环境镜像。其中一个可能在导出时报 `image "hb__…:latest": already exists`，环境起不来，记成 infra 错误（第 17 项第 2 批出现 1 次）。镜像已存在后续跑能过。
+  11. 并发 3 时服务器内存已到上限：第 17 项第 3 批峰值 7.0 / 7.9 GB，另换出约 2 GB swap，内存 PSI full avg10 最高约 4.7%（前两批峰值 4.5 GB）。这台服务器不能再加并发；要提速只能加机器或换大内存的机器（plan §7）。
+  12. `--budget` 的 80% 线只在每个 Harbor job 开始前查。累计花费超过 80% 后，续跑 infra 错误的 trial 会被拦住，要人调高 `--budget`。
+  13. DAB 的运行器是串行的（`evals/dab.py:660`；服务器上同一时间只装一个数据集），540 个 trial 的墙钟没估。第 18 项小试跑时测出来，再定要不要并行。
