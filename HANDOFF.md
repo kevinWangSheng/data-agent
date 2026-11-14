@@ -254,7 +254,19 @@
   - DAB：提交包在本机和服务器的 `runs/f19-dab/`：`pkg/submission.json`（no-context 的 270 条，和算分用的那份逐字节相同）、`data-agent-dab-traces.zip`（270 个 trial 的 `events.jsonl`、`dab_tool_calls.jsonl`、`execute_python_artifacts.jsonl`，32 MB，不含 workspace）、`PR.md`（提交说明草稿）。上游先例（DAB PR #111、#113）：PR 里只放答案 JSON，轨迹给外部压缩包链接。
   - DAB 轨迹的 scrub（ea740b5）改了 562 个文件（IP 105 处、home 路径 7944 处，密钥和 endpoint 0 处），exit 1：剩 8 处 `/home/corbax`，都在 GITHUB_REPOS query2，是数据集里一个 SVG 文件的内容，不是本机或服务器的路径，没有处理。
   - 服务器停在 ea740b5（跑 scrub 用），没有在跑的批次。
-  - 等人定：DAB 轨迹压缩包放哪里（PR 附件上限 25 MB，放不下；可以放本仓库的 GitHub Release）；榜单上显示的 agent 名和组织名。已知限制 14 不加规则（人 2026-11-14 定）；agnews 低分的原因见 ADR-0008 Update 2026-11-13，建议不修，等人确认。GitHub 仓库 `kevinWangSheng/data-agent` 现在已经是 PUBLIC（2026-11-14 `gh repo view` 核实），plan 第 22 项还写着待做。
+  - 等人定：DAB 轨迹压缩包放哪里（PR 附件上限 25 MB，放不下；可以放本仓库的 GitHub Release）；榜单上显示的 agent 名和组织名。已知限制 14 不加规则（人 2026-11-14 定）；agnews 低分的原因见 ADR-0008 Update 2026-11-13；"建议不修"已作废，见下一条。GitHub 仓库 `kevinWangSheng/data-agent` 现在已经是 PUBLIC（2026-11-14 `gh repo view` 核实），plan 第 22 项还写着待做。
+- 2026-11-14：DAB 修复一轮（plan §10 第 18b 项；ADR-0005 Update 2026-11-14，人批准的一次例外）。**下一会话从这里接着做。**
+  - 已定：三处通用修复，工单在 `.scratch/dab-fixes/issues/`。68 答案写法、69 轮数预算可见、70 语义分类工具。诊断分类、100 轮实验、验证过线标准都在 ADR-0005 的 Update 里。
+  - 68 已合入（PR #76，6a3b53b），工单 done。
+  - 69、70 已在 2026-11-14 约 10:20Z 派出（`claude -p --model opus -w 69-turn-budget-visible` / `-w 70-classify-text-tool`），是上一个编排会话的后台任务。会话的最终回复写到上个会话的 scratchpad：`/private/tmp/claude-501/-Users-shenghuikevin-dev-AI-data-agent/9a31b246-4266-4c4d-b81b-799200078164/scratchpad/t69.out`、`t70.out`。文件为空说明还没结束，或者会话随上个会话一起被终止了：看 `git worktree list` 里两个分支有没有提交、工单的 `Status:`，没做完就在原分支重派。
+  - 每张工单接下来由主会话做：把最终回复抄进工单；在工单分支上做真实运行（本地，`set -a && . ~/.config/data-agent/env && set +a` 后 `uv run data-agent run ...`；68 用的是由 `tests/fixtures/shop.sql` 建的 DuckDB）；push、开 PR、等 CI 和 Codex 的 PR 审查、`gh pr merge --squash`；工单改 done 并提交。69、70 和 68 改了同两个提示，后合的解决冲突。
+    - 69 的真实运行：用低上限的临时配置，核对提醒进了模型上下文、"剩 3 轮"之后正好 3 轮结束、各只出现一次。
+    - 70 的真实运行：跑新加的集成测试，再跑一道用到分类的查询题；量每千行实付成本，定行数上限的最终值（暂定 20,000）。
+    - 69 可能交回（查不清 CLI 的轮数口径），70 可能交回（工具花费没法计入预算）；交回就告诉人，不自己绕过。
+  - 三张都合入后：服务器更新到新 main，做小范围验证（no-context，约 21 次，不到 $1，小额默认放行，跑完汇报）。题目和过线标准见 ADR-0005 Update；任何一条不过就停下交给人。
+  - 过线后：全量重跑 540 次（约 $10）开跑前要人确认，可能要先充值（2026-11-14 余额 ¥84.04）。跑法照第 18 项（`runs/f18/par.py`，SSH 调用间隔至少 16 秒）。跑完重新算分、重做 `runs/f19-dab/` 的提交包和 `PR.md`（写明修复是看过本榜失败后做的、修复前的分数），新旧结果并排写进 ADR-0008。
+  - 等人定：DAB 榜单 Tuned prompt 一栏怎么填（提交前对照榜单定义）。data-eng-bench 的提交不受这一轮影响，人现在就可以交。
+  - 100 轮实验的临时配置已从服务器删掉；服务器 checkout 在 ea740b5，没有运行在跑。
 
 ## 0. 一句话
 
