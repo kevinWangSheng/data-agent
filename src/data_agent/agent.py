@@ -108,7 +108,19 @@ Follow these skills.
 {skills}
 """
 
-QUERY_PROMPT = """\
+# The final-answer rule of query tasks, shared with the DAB runner's task prompt (ticket 68):
+# answers that were right but scored wrong put another column between a name and its value, cut a
+# name short, or listed other candidates in a table beside the answer (ADR-0005 Update 2026-11-14).
+ANSWER_RULE = """\
+End with a final message that gives the answer first. The answer holds only what the task asks \
+for: no rows, columns or entities it did not ask about. Put each value right after its name, with \
+no other column between them. Write names and text exactly as they appear in the data; do not \
+shorten them or add an ellipsis. After the answer, state your assumptions in short sentences: no \
+tables, no alternative answers or alternative methods.
+"""
+
+QUERY_PROMPT = (
+    """\
 Task type: query
 Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
@@ -117,8 +129,9 @@ Workspace (your working directory): {workspace}
 {task}
 </task>
 
-End with a final message that gives the answer first, then the assumptions you made.
 """
+    + ANSWER_RULE
+)
 
 DBT_SYSTEM_PROMPT = """\
 You are a data agent. You build and fix the models of a user's dbt project, materialize them with \

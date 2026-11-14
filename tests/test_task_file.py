@@ -42,7 +42,8 @@ End with a final message that lists the models you created or changed, how the l
 then the assumptions you made.
 """
 
-QUERY_PROMPT_BEFORE = """\
+QUERY_PROMPT_BEFORE = (
+    """\
 Task type: query
 Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
@@ -51,8 +52,9 @@ Workspace (your working directory): {workspace}
 {task}
 </task>
 
-End with a final message that gives the answer first, then the assumptions you made.
 """
+    + agent.ANSWER_RULE
+)  # the final-answer rule of ticket 68
 
 RESULT = ResultMessage(
     subtype="success",
