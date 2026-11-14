@@ -707,10 +707,13 @@ def uses_verifiers(task_type: str, config: RunConfig) -> bool:
 
 # Ticket 69: a query agent is reminded once at each of these counts of turns left.
 REMINDER_POINTS = (10, 3)
+# It follows the tool results of a response, so the count is anchored to the next response: "this
+# response" was read both as the one whose tools just ran and as the next one (ticket 69, round 1).
 REMINDER_TEXT = (
-    "Turn budget: {left} {turns} left, counting this response. A response that calls a tool uses "
-    "a turn, and after the last one the run ends with no answer; give your final answer, a "
-    "response with no tool calls, before then."
+    "Turn budget: {left} {turns} left, your next response included: you can send {left} more "
+    "{responses} that call tools, and after the last of them the run ends with no answer. The "
+    "response whose tool results you are reading has already used its turn. Give your final "
+    "answer, a response with no tool calls, before then."
 )
 
 
@@ -771,7 +774,13 @@ class TurnBudget:
         if left < 1 or not due:
             return None
         self._reminded |= due
-        return turn, left, REMINDER_TEXT.format(left=left, turns="turn" if left == 1 else "turns")
+        one = left == 1
+        text = REMINDER_TEXT.format(
+            left=left,
+            turns="turn" if one else "turns",
+            responses="response" if one else "responses",
+        )
+        return turn, left, text
 
     def hooks(self, emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
         """PostToolUse and PostToolUseFailure on every tool; subagents' calls are left alone."""

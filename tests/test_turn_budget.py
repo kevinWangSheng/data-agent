@@ -88,6 +88,17 @@ async def test_reminders_come_once_at_ten_and_at_three_turns_left() -> None:
     assert "3 turns left" in three
 
 
+async def test_the_reminder_counts_from_the_next_response() -> None:
+    """The reminder arrives after a response's tool results, so "this response" could mean the one
+    whose tools just ran; the count names the next response instead (returned in round 1)."""
+    got = await play(TurnBudget(50), 50)
+    (three,) = got[47]
+    assert "this response" not in three
+    assert "your next response included" in three
+    assert "3 more responses that call tools" in three
+    assert "already used its turn" in three
+
+
 async def test_the_reminder_goes_back_as_post_tool_use_context() -> None:
     budget = TurnBudget(4)
     for message in response(1):

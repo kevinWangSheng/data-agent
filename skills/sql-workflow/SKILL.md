@@ -115,7 +115,7 @@ After executing, run these checks IN ORDER before answering:
 
 ## 6. Turn Budget Management
 
-The task prompt gives your **Turn limit** (each response that calls a tool uses a turn). Reminders say how many turns are left: one at 10 turns left, one at 3.
+The task prompt gives your **Turn limit** (each response that calls a tool uses a turn). Reminders say how many turns are left, your next response included: one at 10 turns left, one at 3.
 
 - **First 3 turns**: Schema exploration only (`list_tables`, distinct values of key categorical columns). STOP exploring.
 - **Until the 3-turns-left reminder**: Write query iteratively - execute and verify each step.
