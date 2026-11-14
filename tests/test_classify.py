@@ -276,6 +276,69 @@ async def test_labels_outside_the_categories_and_failed_calls_count_in_no_catego
     ]
 
 
+async def classify_with(
+    model: FakeModel, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, db: Path, workspace: Path
+) -> str:
+    """The product server's classify_text reply for the articles, with `model` as the endpoint."""
+    with serve(model):
+        for name, value in model_env(model, make_ledger(tmp_path)).items():
+            monkeypatch.setenv(name, value)
+        outcome = await call_tool(product_server(db, workspace), "classify_text", classify_args())
+    text = text_of(outcome)
+    assert not outcome.is_error, text
+    return text
+
+
+async def test_every_batch_asks_for_no_thinking_at_temperature_0(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    monkeypatch.setattr(classify, "BATCH_ROWS", 7)
+    model = FakeModel(by_fixture)
+    text = await classify_with(model, monkeypatch, tmp_path, articles_db, workspace)
+    assert "20 rows fetched; 20 labeled with a category." in text
+    assert len(model.requests) == 3
+    for request in model.requests:
+        assert request["body"]["thinking"] == {"type": "disabled"}
+        assert request["body"]["temperature"] == 0
+
+
+async def test_a_reply_cut_at_the_output_limit_is_reported_as_cut(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    # The output limit reached inside the JSON: no closing brace, nothing readable.
+    model = FakeModel(
+        by_fixture, reply=lambda text: text[: len(text) // 2], stop_reason="max_tokens"
+    )
+    text = await classify_with(model, monkeypatch, tmp_path, articles_db, workspace)
+    assert "20 rows fetched; 0 labeled with a category." in text
+    assert "  failed: 20 " in text
+    assert f"cut off at the output limit ({classify.MAX_OUTPUT_TOKENS} tokens)" in text
+    assert "has no JSON object" not in text
+    rows = list(csv.DictReader((workspace / "data_agent_labels" / "labels_1.csv").open()))
+    assert {r["outcome"] for r in rows} == {"failed"}
+
+
+async def test_a_reply_without_json_that_was_not_cut_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    model = FakeModel(by_fixture, reply=lambda text: "I cannot classify these.")
+    text = await classify_with(model, monkeypatch, tmp_path, articles_db, workspace)
+    assert "  failed: 20 " in text
+    assert "unreadable reply: the reply has no JSON object" in text
+    assert "output limit" not in text
+
+
+async def test_only_the_text_block_is_read_when_the_endpoint_thinks_anyway(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    # The thinking holds a JSON object of its own, with labels the text block does not give.
+    model = FakeModel(by_fixture, thinking='Maybe {"1": "music", "2": "music"}? Check again.')
+    text = await classify_with(model, monkeypatch, tmp_path, articles_db, workspace)
+    assert "20 rows fetched; 20 labeled with a category." in text
+    for category in CATEGORIES:
+        assert f"  {category}: 5" in text
+
+
 async def test_the_budget_stops_the_classification_and_keeps_what_is_done(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
 ) -> None:

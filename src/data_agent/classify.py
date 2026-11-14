@@ -84,8 +84,9 @@ TEXT_BLOCK = '<text id="{number}">\n{text}\n</text>'
 
 @dataclass(frozen=True)
 class Reply:
-    text: str
+    text: str  # the reply's text blocks (any thinking left out)
     tokens: ToolTokens
+    stop_reason: str | None = None  # "max_tokens": cut off at MAX_OUTPUT_TOKENS
 
 
 # (system prompt, user prompt) -> the model's reply.
@@ -94,7 +95,8 @@ ModelCall = Callable[[str, str], Reply]
 
 def anthropic_model(base_url: str, api_key: str, model: str) -> ModelCall:
     """A call to an Anthropic-compatible endpoint, authenticated as the CLI is
-    (`ANTHROPIC_AUTH_TOKEN`: a bearer token). Temperature 0, so a batch's labels repeat."""
+    (`ANTHROPIC_AUTH_TOKEN`: a bearer token). Temperature 0, so a batch's labels repeat; thinking
+    off, so an endpoint that thinks by default spends the output on the labels' JSON."""
     client = anthropic.Anthropic(
         base_url=base_url,
         auth_token=api_key,
@@ -109,6 +111,7 @@ def anthropic_model(base_url: str, api_key: str, model: str) -> ModelCall:
             max_tokens=MAX_OUTPUT_TOKENS,
             # Not a parameter of this SDK's create(); the endpoint takes it in the body.
             extra_body={"temperature": 0},
+            thinking={"type": "disabled"},
             system=system,
             messages=messages,
         )
@@ -119,7 +122,7 @@ def anthropic_model(base_url: str, api_key: str, model: str) -> ModelCall:
             usage.output_tokens,
         )
         text = "".join(block.text for block in message.content if block.type == "text")
-        return Reply(text, tokens)
+        return Reply(text, tokens, message.stop_reason)
 
     return call
 
@@ -299,7 +302,14 @@ def run_batch(
         labels = parse_labels(reply.text)
     except ValueError as exc:
         failed = Outcome(None, FAILED, None)
-        return BatchResult({i: failed for i, _ in batch}, reply.tokens, f"unreadable reply: {exc}")
+        if reply.stop_reason == "max_tokens":
+            error = (
+                f"unreadable reply: it was cut off at the output limit ({MAX_OUTPUT_TOKENS} "
+                "tokens) before its JSON was complete"
+            )
+        else:
+            error = f"unreadable reply: {exc}"
+        return BatchResult({i: failed for i, _ in batch}, reply.tokens, error)
     allowed = set(categories)
     outcomes = {}
     for number, (index, _) in enumerate(batch, 1):
