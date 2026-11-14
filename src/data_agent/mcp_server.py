@@ -6,12 +6,22 @@ table line, and the row estimate from `db_facts`), and the row display cap in `f
 `gateway/mcp/tools/query.py` (`query_database`; the same floor, budget, maximum and notice).
 """
 
+import os
 from functools import partial
 from pathlib import Path
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from data_agent.classify import (
+    DESCRIPTION,
+    ROW_LIMIT,
+    check_categories,
+    classify,
+    fetch_sql,
+    report,
+    setup_from_env,
+)
 from data_agent.context_tools import (
     Dictionary,
     DictionaryBuild,
@@ -34,6 +44,7 @@ from data_agent.gateway import (
     QueryResult,
     QueryTimedOut,
 )
+from data_agent.label_tables import LABELS_DIR, LabelTables
 from data_agent.run_config import RunConfig
 from data_agent.tool_annotations import READ_ONLY
 from data_agent.verifier_tools import register_verifier_tools
@@ -261,6 +272,49 @@ def build_server(
         as query_database would run it, row cap included.
         """
         return run_explain(gateway, sql)
+
+    labels = LabelTables(workspace)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=DESCRIPTION.format(
+            source="`sql` is one read-only SQL query, run through the same gateway as "
+            "query_database.",
+            limit=ROW_LIMIT,
+            stored=f"a table `labels_<n>` that query_labels reads, also saved as "
+            f"`{LABELS_DIR}/labels_<n>.csv` in the workspace.",
+        ),
+    )
+    def classify_text(
+        sql: str,
+        key_column: str,
+        text_column: str,
+        categories: list[str],
+        instructions: str = "",
+    ) -> str:
+        allowed = check_categories(categories)
+        setup = setup_from_env(os.environ)
+        rows = fetch_sql(run, sql, gateway.dialect, key_column)
+        classification = classify(rows, key_column, text_column, allowed, instructions, setup)
+        name, path = labels.add(classification.columns, classification.rows)
+        stored = f"`{name}` (read it with query_labels)"
+        if path is not None and workspace is not None:
+            stored += f", also the file `{path.relative_to(workspace)}` in the workspace"
+        return report(classification, stored)
+
+    @server.tool(annotations=READ_ONLY)
+    def query_labels(sql: str, row_limit: int = 1000) -> str:
+        """Run one read-only SQL query (DuckDB dialect) over the label tables classify_text made
+        in this run (`labels_1`, `labels_2`, ...), and return the rows as text.
+
+        Only the label tables are there, not the database's tables: to combine labels with other
+        data, have the classify_text query return the columns you need. The same read-only checks
+        and row cap as query_database apply.
+        """
+        try:
+            return format_rows(labels.query(sql, row_limit))
+        except (QueryBlocked, QueryFailed) as exc:
+            raise tool_error(exc) from exc
 
     if config.context:
         if dictionary is None:

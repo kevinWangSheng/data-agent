@@ -4,6 +4,7 @@
 client `timeoutMS` stops it, as the server does with the `maxTimeMS` pymongo sends (with
 `"client_side": true`, the client's socket gives up first, as pymongo's does). A query with
 `"unreachable"` fails after that many seconds with a server-selection error, whatever the timeout.
+A query with `"documents"` returns those documents instead of the echo.
 """
 
 import json
@@ -53,4 +54,6 @@ class MongoClient:
                 raise NetworkTimeout("localhost:27017: timed out")
             raise ExecutionTimeout("operation exceeded time limit")
         time.sleep(seconds)
+        if "documents" in request:
+            return request["documents"]
         return [{"echo": query}]

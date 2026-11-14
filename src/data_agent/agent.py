@@ -49,6 +49,7 @@ from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
 from data_agent.gateway import TIMEOUT_SECONDS, DuckDBGateway, Gateway, PostgresGateway
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
+from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
 from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
     AGENT_TOOL,
@@ -371,6 +372,11 @@ class Spend:
     its output limit, and not while a subagent runs: a run may pass it by its last main call and
     the subagents it started (human decision 2026-10-16), and a final answer that passes it is
     kept.
+
+    With a `ledger` (`tool_ledger`), the model calls the tool servers make (classify_text) count
+    too: this cap publishes its own spend there for the tools to keep to the budget, and adds the
+    tools' tokens to its spend and to every result event (`tool_fields`). A tool call that is
+    still running when the run ends is counted as far as it got.
     """
 
     price: Price
@@ -383,6 +389,7 @@ class Spend:
     # may be checked then.
     between_calls: bool = False
     stopped: bool = False
+    ledger: Ledger | None = None
     # The main call in progress: its id, its usage at message_start, whether it used tools.
     _call: str | None = None
     _call_start: dict[str, Any] = field(default_factory=dict)
@@ -398,12 +405,14 @@ class Spend:
                 self.between_calls = False
                 self.running.clear()  # the main thread waits for its subagents
                 self.main[self._call] = usage_tokens(self._call_start)
+                self.publish()
             elif event.get("type") == "message_delta" and self._call is not None:
                 final = {k: v for k, v in (event.get("usage") or {}).items() if v is not None}
                 self.main[self._call] = usage_tokens(self._call_start | final)
                 # A response cut at its output limit is no final answer: the CLI calls again.
                 cut = (event.get("delta") or {}).get("stop_reason") == "max_tokens"
                 self.between_calls = self._call_uses_tools or cut
+                self.publish()
         elif isinstance(message, AssistantMessage) and message.parent_tool_use_id is None:
             if any(isinstance(block, ToolUseBlock) for block in message.content):
                 self._call_uses_tools = True
@@ -431,6 +440,7 @@ class Spend:
                 if not isinstance(path, str) or not path:
                     raise TranscriptError("SubagentStop gave no agent_transcript_path")
                 self.subagents |= await finished_transcript_usage(Path(path))
+                self.publish()
             except TranscriptError as exc:
                 self.transcript_failed = True
                 emit(
@@ -456,8 +466,51 @@ class Spend:
             sum(c.output for c in calls),
         )
 
-    def cost_usd(self) -> float:
+    def tool_tokens(self) -> Tokens:
+        if self.ledger is None:
+            return Tokens(0, 0, 0)
+        return Tokens(*self.ledger.tool_tokens())
+
+    def model_cost_usd(self) -> float:
+        """The run's own model calls (main thread and verifiers), the tools' not included."""
         return priced_usd(self.price, *self.tokens())
+
+    def cost_usd(self) -> float:
+        return self.model_cost_usd() + priced_usd(self.price, *self.tool_tokens())
+
+    def publish(self) -> None:
+        """Write the budget, the price and the run's own spend to the ledger for the tools."""
+        if self.ledger is None:
+            return
+        self.ledger.publish(
+            RunState(
+                budget_usd=self.budget,
+                spent_usd=self.model_cost_usd(),
+                input_price=self.price.input,
+                cached_input_price=self.price.cached_input,
+                output_price=self.price.output,
+            )
+        )
+
+    def tool_fields(self) -> dict[str, Any]:
+        """The tools' tokens and cost for a result event; nothing when no tool called a model."""
+        tokens = self.tool_tokens()
+        if not any(tokens):
+            return {}
+        return {
+            "tool_uncached_input_tokens": tokens.uncached,
+            "tool_cached_input_tokens": tokens.cached,
+            "tool_output_tokens": tokens.output,
+            "tool_cost_usd": priced_usd(self.price, *tokens),
+        }
+
+    def with_tools(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """A result event of a run the SDK ended (its cost is the SDK's tokens only), with the
+        tools' spend added to `cost_usd`."""
+        tools = self.tool_fields()
+        if not tools:
+            return fields
+        return fields | tools | {"cost_usd": fields["cost_usd"] + tools["tool_cost_usd"]}
 
     def check(self) -> bool:
         """Whether the run is to stop now: the cap may be checked and spend is over it."""
@@ -506,7 +559,22 @@ class Spend:
             "sdk_cost_usd": None,
             "cost_basis": "price_table",
             "errors": [error],
+            **self.tool_fields(),
         }
+
+
+@contextmanager
+def tool_ledger(spend: Spend | None, workspace: Path) -> Iterator[None]:
+    """The run's spend ledger (`tool_spend`), in a directory of its own outside the workspace,
+    for the tool servers' model calls. None without a price-table cap: a tool could not keep to
+    a budget it has no price for, so it refuses to call a model."""
+    if spend is None:
+        yield
+        return
+    with run_directory(workspace, "data-agent-spend-") as directory:
+        spend.ledger = Ledger(directory)
+        spend.publish()
+        yield
 
 
 def spend_cap(model: str, budget: float) -> Spend | None:
@@ -599,6 +667,14 @@ class ModelSettings:
             api_key=api_key,
             model=env.get("DATA_AGENT_MODEL") or DEFAULT_MODEL,
         )
+
+    def tool_env(self) -> dict[str, str]:
+        """The model settings for the tool servers' own model calls (classify_text)."""
+        return {
+            "DATA_AGENT_BASE_URL": self.base_url,
+            "DATA_AGENT_API_KEY": self.api_key,
+            "DATA_AGENT_MODEL": self.model,
+        }
 
     def sdk_env(self) -> dict[str, str]:
         """Variables for the SDK subprocess only; they override what it inherits."""
@@ -774,6 +850,10 @@ def build_options(
     server_env = dict(database_env or {})
     if snapshot is not None:
         server_env[SNAPSHOT_ENV] = str(snapshot)
+    if spend is not None and spend.ledger is not None:
+        # Like the Postgres URL, through the SDK subprocess's environment: never argv or the MCP
+        # config. The key is the one `sdk_env` already gives the CLI.
+        server_env |= settings.tool_env() | {LEDGER_ENV: str(spend.ledger.directory)}
     return ClaudeAgentOptions(
         model=settings.model,
         env=settings.sdk_env() | server_env,
@@ -954,7 +1034,7 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
 def ended_by_sdk(message: ResultMessage | None, model: str, spend: Spend | None) -> dict[str, Any]:
     """The result event of a run the SDK ended: `result_fields`, and what `spend` missed."""
     fields = result_fields(message, model)
-    return fields if spend is None else fields | spend.unmetered(fields)
+    return fields if spend is None else spend.with_tools(fields | spend.unmetered(fields))
 
 
 # How long before the trial deadline the run stops itself (ticket 54): the gateway's statement
@@ -1016,6 +1096,7 @@ async def run(
         if (
             task.postgres_env in PRINTABLE_VARIABLES
             or task.postgres_env in settings.sdk_env()
+            or task.postgres_env in (*settings.tool_env(), LEDGER_ENV)
             or task.postgres_env.startswith(("BASH_", "CLAUDE_"))
         ):
             raise ConfigError(
@@ -1042,6 +1123,7 @@ async def run(
     with (
         saving as task_file,
         snapshotting as snapshot,
+        tool_ledger(spend, task.workspace),
         EventLog(path, secrets=secrets, names=names) as log,
     ):
         log.emit(
