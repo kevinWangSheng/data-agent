@@ -71,3 +71,13 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
   - Tests: `tests/test_agent_prompts.py` (3 tests; the first fails on main). `make check`: 2084 passed before, 2087 passed, 1 skipped after.
   - `da-review main`: no findings (its sandbox could not run pytest). `eng:code-review main`: fixed in fbbd910 — snapshot test compared the rule with itself; a comment used grader wording; dbt test strengthened. Not fixed: phrase-by-phrase asserts break on rewording (deliberate); the test splits the prompt on blank lines (low risk).
 - 2026-11-14 main session, real run on the branch: `data-agent run --task "Which three customers spent the most in total, and how much did each spend?" --type query --duckdb <db built from tests/fixtures/shop.sql> --config no-context`. Final message: "Avery Lane spent 285.25, Blake Moss spent 232.50, Emery Cole spent 185.75." then "Assumptions:" with two sentences; no table, no alternatives. All four rules hold.
+
+### 主会话 2026-11-14：5/9 的处理（独立上下文的 agent 定，人委托）
+- 结论：68 按它的目标算完成。过线标准 6/9 差一次，记录在案，不再为这两道题开工单。
+- 依据（独立 agent 对照 `runs/f19-dab/diagnosis/reference.json` 读了 `runs/v18c-no-context-*` 的九次轨迹）：九次的最终答案都是"名称在前、数值在后"的列表，没有表格、没有备选答案；修复前这三道题是 1/15，现在 5/9。
+  - PATENTS 第 3 题：run0 和标准答案一致；run1、run2 给的是 group 级别的标题，标准答案是 subclass 级别。两次都考虑过四字符的 subclass 读法，因为 DAB 提示里写"每个 CPC code 的标题"而放弃。内容错误。
+  - DEPS_DEV_V1 第 1 题：run1 漏了两行 typescript，内容错误。run0 和 run2 的四行必需内容都对。主会话在服务器上逐次打分：run0 过，run2 不过。两者能看到的差别只有写法（run2 写 "— version **2.6.2** (94,931 stars)"，run0 写 "— 2.6.2"），所以 run2 算一次残留的写法失败。只有这一次，不重开 68。
+  - googlelocal 第 2 题：3/3。
+- 没有共同的、便宜的基础层原因；针对这两道题的修法都是题目专属的，ADR-0005 不允许。
+- 要留意的行为变化：PATENTS 第 3 题修复前内容 5/5 是对的（但表格写法判不过），修复后 1/3。"不给备选答案"这条规则让 agent 不再两种读法都写。
+- 什么情况下重看：全量重跑的诊断里答案写法失败仍然多（修复前是 270 次里 15 次）；或者原本 5/5 的题因为只给一个答案而失败。

@@ -1,10 +1,10 @@
 # 72 — classify_text 写明运行的真实预算和已花金额
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0005-dab-integration.md（Update 2026-11-14）；工单 70、71 的 Comments
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 72-classify-states-run-budget)
+Branch: worktree-72-classify-states-run-budget
 
 ## Goal
 
@@ -79,10 +79,31 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: —
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0.90, main session's real runs (local $0.003, server validation about $0.90; data-agent model calls only)
+- Outcome: accepted
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+- Implementation: 79632f9 + aef9017 (branch worktree-72-classify-states-run-budget). Every classify_text reply ends with the "Run spend so far" line, figures read from the ledger after the last batch; on both servers the description's last sentence is replaced by the budget paragraph, amount read from the ledger at registration. Without a ledger the tool is still registered and the description has no budget paragraph.
+- TDD: on the original code 4 of the new or extended tests failed (reply line, budget-stop spend ≥ budget, description on both servers). The 2 no-ledger tests pass on old and new code; they guard that the tool is still registered. After the change tests/test_classify.py: 44 passed. make check after the review fixes: 2168 passed, 1 skipped.
+- Review 1, da-review main (Codex): "No actionable correctness issues were found."
+- Review 2, eng:code-review main: Spec: every requirement implemented, nothing out of scope; one gap, the DAB no-ledger test did not check that the "no answer" sentence is absent, fixed in aef9017. Standards: duplicated ledger lookup in setup_from_env and description() fixed by extracting run_ledger() (aef9017). Not fixed:
+  - run_spent_usd / run_budget_usd travel together: minor, they sit next to the existing budget field.
+  - The name `after`: reads clearly in context.
+  - Repetition across the four description tests: one test per acceptance item.
+  - Budget printed as a raw float ("$1.0"): follows the existing convention and the ticket's wording.
+  - The description says "Every reply ends with the run's spend"; error replies (ToolError) do not carry the line. The ticket fixes this wording.
+
+### 主会话 2026-11-14：真实运行与合入
+- 本机真实运行（aef9017，deepseek-flash，baseline，20 篇文章的样本库）：`uv run data-agent run --type query --config baseline --duckdb articles20.duckdb ... --task "How many of the articles are about sports, by the meaning of their text? Use the classify_text tool ..."`，退出码 0，答案 Sports 5。工具返回的最后一行："Run spend so far: $0.0025 of the run's $1.0 budget (US dollars at this run's model prices, this tool's calls included). The run ends with no answer once its spend passes the budget."。说明真实运行里工具读得到 `run.json`。
+- PR #80：CI 绿；Codex PR 审查（aef9017）没有意见；squash 合入 main（cc8cdef）。
+- 服务器复验（cc8cdef，no-context，`runs/v18u-no-context-*`，实付约 $0.90）：
+  - 十道原本通过的题各 1 次：10/10，过线。
+  - agnews 第 4 题 ×3：没有 `error_max_budget_usd`（花费 $0.75、$0.28、$0.39）。两次给出答案（North America，判错），一次（run0）上下文写满、没有答案。按"第 4 题三次都有答案"这条没过，原因不是预算。
+  - agnews 第 2 题 ×3：三次都调了工具并给出答案（17/111、15/111、16/111），1/3 通过。
+  - 思考里引用的预算：三次第 4 题运行都同时提到 $1.0 和 $83，并说明 $1.0 是这个工具的预算（run0 seq 19："$1.0 separate from USD budget $83"）。"$83 来自 CLI 提醒"由此得到印证。
+  - 轨迹诊断（sonnet agent，推断）：答错是分类波动，不是预算文字造成的；第 4 题 Africa 和 North America 只差 2–7 篇。
+- 按本工单"只做一轮"：不再改措辞。第 4 题因反复验证写满上下文而没有答案，记成已知限制，写进 HANDOFF 交给人。
