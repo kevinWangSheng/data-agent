@@ -444,11 +444,11 @@ def build_server(
 
     @server.tool(
         name=classify.TOOL,
-        description=classify.DESCRIPTION.format(
+        description=classify.description(
             source="`sql` is one query on database `db_name`, run like query_database (SQL "
             "passes the read-only gateway; a MongoDB query is its JSON request).",
-            limit=classify.ROW_LIMIT,
             stored="a variable for execute_python, as query results are (one dict per row).",
+            env=os.environ,
         ),
     )
     def classify_text(

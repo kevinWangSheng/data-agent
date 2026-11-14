@@ -14,10 +14,9 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.classify import (
-    DESCRIPTION,
-    ROW_LIMIT,
     check_categories,
     classify,
+    description,
     fetch_sql,
     report,
     setup_from_env,
@@ -277,12 +276,12 @@ def build_server(
 
     @server.tool(
         annotations=READ_ONLY,
-        description=DESCRIPTION.format(
+        description=description(
             source="`sql` is one read-only SQL query, run through the same gateway as "
             "query_database.",
-            limit=ROW_LIMIT,
             stored=f"a table `labels_<n>` that query_labels reads, also saved as "
             f"`{LABELS_DIR}/labels_<n>.csv` in the workspace.",
+            env=os.environ,
         ),
     )
     def classify_text(

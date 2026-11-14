@@ -26,7 +26,7 @@ from data_agent.agent import ConfigError, ModelSettings
 from data_agent.db_facts import RunQuery
 from data_agent.events import known_secrets, mask
 from data_agent.gateway import MAX_ROWS, QueryResult
-from data_agent.tool_spend import LEDGER_ENV, Ledger, ToolTokens
+from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState, ToolTokens
 
 TOOL = "classify_text"
 # Rows one call may classify (provisional; the main session sets it from the measured cost per
@@ -70,8 +70,16 @@ Returns the number of rows per category; the rows that got no category, by reaso
 outside the categories, no label in the reply, a failed model call, an empty text, or the \
 run's budget reached); and where the label table is: {stored} It has the query's columns \
 except the text, then `label` (a category, or null), `outcome` and `model_label` (the model's \
-answer as given). The model calls count toward this run's spend and budget.
+answer as given).{budget}
 """
+# DESCRIPTION's last paragraph when the run's ledger is there; {budget} is the ledger's.
+BUDGET_NOTE = """
+
+The model calls are paid from this run's budget of ${budget} (US dollars at this run's model \
+prices). Every reply ends with the run's spend so far against it. Once the spend passes the \
+budget the run ends at once with no answer, so a call that reaches the budget leaves no turn to \
+use its labels. This is the limit that ends the run: a "USD budget" system reminder, if you see \
+one, is counted at other prices against a higher backstop and leaves this tool's calls out."""
 
 SYSTEM_PROMPT = """\
 You sort texts into categories. You get a list of categories, possibly instructions on how to \
@@ -134,13 +142,21 @@ class Setup:
     secrets: list[str]  # masked out of every error the tool returns
 
 
+def run_ledger(env: Mapping[str, str]) -> tuple[Ledger, RunState] | None:
+    """The run's spend ledger and what the run last wrote to it; None for a server not started
+    by a run, or before the run has written its state."""
+    directory = env.get(LEDGER_ENV)
+    ledger = Ledger(Path(directory)) if directory else None
+    state = ledger.run_state() if ledger else None
+    return (ledger, state) if ledger and state else None
+
+
 def setup_from_env(env: Mapping[str, str]) -> Setup:
     """The run's model and spend ledger, from the variables the run gives the server. A server not
     started by a run (or a run whose model has no price, so no budget the tool could keep to)
     has no ledger, and the tool refuses to call a model."""
-    directory = env.get(LEDGER_ENV)
-    ledger = Ledger(Path(directory)) if directory else None
-    if ledger is None or ledger.run_state() is None:
+    found = run_ledger(env)
+    if found is None:
         raise ToolError(
             f"{TOOL} is unavailable: this tool server has no spend ledger from a data-agent run "
             "(the run's model needs a price in the price table), so its model calls could not "
@@ -151,7 +167,15 @@ def setup_from_env(env: Mapping[str, str]) -> Setup:
     except ConfigError as exc:
         raise ToolError(f"{TOOL} is unavailable: {exc} for the tool server") from exc
     model = anthropic_model(settings.base_url, settings.api_key, settings.model)
-    return Setup(model, ledger, known_secrets(env))
+    return Setup(model, found[0], known_secrets(env))
+
+
+def description(source: str, stored: str, env: Mapping[str, str]) -> str:
+    """DESCRIPTION for a server; with the run's budget when the run's ledger is there (without
+    one the tool refuses to call a model, and the description names no budget)."""
+    found = run_ledger(env)
+    note = BUDGET_NOTE.format(budget=found[1].budget_usd) if found else ""
+    return DESCRIPTION.format(source=source, limit=ROW_LIMIT, stored=stored, budget=note)
 
 
 def check_categories(categories: Sequence[str]) -> list[str]:
@@ -285,6 +309,8 @@ class Classification:
     calls: int
     tokens: ToolTokens
     cost_usd: float
+    run_spent_usd: float | None  # the run's spend after the last batch, every tool call's included
+    run_budget_usd: float | None
 
 
 def run_batch(
@@ -412,6 +438,7 @@ def classify(
             if o.outcome == OUTSIDE and o.model_label is not None:
                 outside[o.model_label] += 1
     total = ToolTokens(*tokens)
+    after = setup.ledger.run_state()
     return Classification(
         columns=[*(result.columns[i] for i in keep), *ADDED_COLUMNS],
         rows=rows,
@@ -426,6 +453,8 @@ def classify(
         calls=calls,
         tokens=total,
         cost_usd=state.priced_usd(total) if state else 0.0,
+        run_spent_usd=setup.ledger.spent_usd(after) if after else None,
+        run_budget_usd=after.budget_usd if after else None,
     )
 
 
@@ -459,4 +488,10 @@ def report(c: Classification, stored: str) -> str:
         f"Model calls: {c.calls} ({t.uncached} input, {t.cached} cached input, {t.output} output "
         f"tokens; ${c.cost_usd:.4f}, counted in the run's spend)."
     )
+    if c.run_spent_usd is not None:
+        lines.append(
+            f"Run spend so far: ${c.run_spent_usd:.4f} of the run's ${c.run_budget_usd} budget "
+            "(US dollars at this run's model prices, this tool's calls included). The run ends "
+            "with no answer once its spend passes the budget."
+        )
     return "\n".join(lines)
