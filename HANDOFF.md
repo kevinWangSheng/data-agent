@@ -244,6 +244,18 @@
   - 服务器停在 ea740b5，没有在跑的批次。`da-remote check` 0 failure，余额 ¥56.70（约 $7.77），第 18 项正式评测前要充值。
   - 下一步：第 18 项 DAB 开跑前要人确认。先 `da-remote setup b7c6071`，跑 34 个 trial 的小试跑，测单价和串行墙钟。第 19 项上传、开上游 PR 由人做。
 
+- 2026-11-13：第 18 项跑完（结果、自查和已知限制 14 见 ADR-0008 Update 2026-11-13）。
+  - 小试跑 34 个 trial，实付 $0.88。正式评测 540 个 trial（b7c6071，12 个数据集、54 题 × 5 次 × 2 个配置），全部 exit 0，0 个 infra 错误，实付 $10.00，全在闲时。
+  - Pass@1（54 题，用了 hints）：no-context 0.7421，baseline 0.7012，差值 +4.09 分（95% 区间 +1.18 到 +6.88，显著）。
+  - 运行方式：本机 `runs/f18/par.py` 经 `da-remote` 同时调度 4 个数据集，每个（配置、数据集）一个 `--out`；合并在服务器 `runs/f18-merged-<config>`，算分在 `runs/f18-score`（本机有 `run.log` 和 `report.json`）。
+  - 正式评测累计实付 $62.26，预算 ¥700。2026-11-14 余额 ¥84.04。
+- 2026-11-14：第 19 项的准备（编排会话做；上传和开 PR 由人做）。
+  - data-eng-bench：服务器 `runs/f17/jobs/` 下 3 个 Harbor job，共 309 个 trial（103 题 × 3），每个都有 `trajectory.json`，job 配置 `timeout_multiplier` 为空、agent 名 `data-agent`、模型 `deepseek/deepseek-flash`；`evals board` 每批结束时已 scrub。人要做：把 3 个 job 上传 Harbor Hub（公开），再在 data-eng-bench 的 `leaderboard/` 里 `uv run lb submit <3 个 job 链接>`（`SUBMIT.md`）。
+  - DAB：提交包在本机和服务器的 `runs/f19-dab/`：`pkg/submission.json`（no-context 的 270 条，和算分用的那份逐字节相同）、`data-agent-dab-traces.zip`（270 个 trial 的 `events.jsonl`、`dab_tool_calls.jsonl`、`execute_python_artifacts.jsonl`，32 MB，不含 workspace）、`PR.md`（提交说明草稿）。上游先例（DAB PR #111、#113）：PR 里只放答案 JSON，轨迹给外部压缩包链接。
+  - DAB 轨迹的 scrub（ea740b5）改了 562 个文件（IP 105 处、home 路径 7944 处，密钥和 endpoint 0 处），exit 1：剩 8 处 `/home/corbax`，都在 GITHUB_REPOS query2，是数据集里一个 SVG 文件的内容，不是本机或服务器的路径，没有处理。
+  - 服务器停在 ea740b5（跑 scrub 用），没有在跑的批次。
+  - 等人定：DAB 轨迹压缩包放哪里（PR 附件上限 25 MB，放不下；可以放本仓库的 GitHub Release）；榜单上显示的 agent 名和组织名；已知限制 14 修不修。GitHub 仓库 `kevinWangSheng/data-agent` 现在已经是 PUBLIC（2026-11-14 `gh repo view` 核实），plan 第 22 项还写着待做。
+
 ## 0. 一句话
 
 做一个开源、可自托管的**通用 data agent**，对标 **SignalPilot**，主语是 agent（skills 方法、验证子 agent、问/做策略、上下文策略、失败归因自改进），工具层复用现成，在四个公开榜单上出分并做消融。目的是求职作品集，目标岗位 **agent 应用开发为主**。

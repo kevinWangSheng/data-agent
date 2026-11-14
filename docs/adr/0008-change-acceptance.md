@@ -235,3 +235,22 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
   11. 并发 3 时服务器内存已到上限：第 17 项第 3 批峰值 7.0 / 7.9 GB，另换出约 2 GB swap，内存 PSI full avg10 最高约 4.7%（前两批峰值 4.5 GB）。这台服务器不能再加并发；要提速只能加机器或换大内存的机器（plan §7）。
   12. `--budget` 的 80% 线只在每个 Harbor job 开始前查。累计花费超过 80% 后，续跑 infra 错误的 trial 会被拦住，要人调高 `--budget`。
   13. DAB 的运行器是串行的（`evals/dab.py:660`；服务器上同一时间只装一个数据集），540 个 trial 的墙钟没估。第 18 项小试跑时测出来，再定要不要并行。
+
+## Update 2026-11-13：第 18 项（DAB 正式评测）的结果
+
+- **小试跑**：2026-11-13 12:39Z 至 13:43Z，b7c6071，17 个数据集 × query1 × baseline、no-context 各 1 次，共 34 个 trial，全部 exit 0，实付 $0.88。27 个 finished，7 个 unfinished（crmarenapro baseline，cve、krama、usaspending 两个配置；后三个数据集不在榜单内）。内存峰值 4.0 / 7.9 GB。
+- **正式评测**：2026-11-13 13:44Z 至 23:30Z，b7c6071，榜单的 12 个数据集、54 题 × 5 次 × 2 个配置，共 540 个 trial，全在闲时。
+  - 每个（配置、数据集）一个 `evals dab` 运行、各自的 `--out`（`runs/f18-<config>-<dataset>`），由本机脚本 `runs/f18/par.py` 经 `da-remote` 调度，同时跑 4 个不同的数据集；同一个数据集的两个配置不同时跑（DAB 的库名固定）。这代替了已知限制 13 的串行跑法；墙钟约 9.8 小时，内存峰值 5.2 / 7.9 GB。
+  - 16:37Z 一次 `da-remote start` 的 SSH 连接被关闭，调度脚本停止派新任务；17:28Z 重新启动调度，已完成的运行跳过，没有重跑。
+  - 24 个运行全部 exit 0，0 个 infra 错误，540 个事件文件都有结果事件。523 个正常结束；17 个没做完，按 0 分计：12 个用完 `max_turns`（baseline 7，no-context 5），5 个撞上下文长度上限（baseline 4，no-context 1）。
+  - 按配置合并（`runs/f18-merged-<config>`，各 270 条）后算分：`dab-score --runs 5 --strict`，exit 0（服务器 `runs/f18-score`）。
+  - **Pass@1（54 题，数据集宏平均，用了 hints）**：no-context 0.7421，baseline 0.7012；差值 +4.09 分，95% 区间 +1.18 到 +6.88，显著。
+  - 按数据集（baseline → no-context）：DEPS_DEV_V1 0.30 → 0.60，GITHUB_REPOS 0.70 → 0.70，PANCANCER_ATLAS 0.67 → 0.67，PATENTS 0.33 → 0.40，agnews 0.25 → 0.30，bookreview 1.00 → 1.00，crmarenapro 0.92 → 0.86，googlelocal 0.75 → 0.75，music_brainz_20k 0.87 → 0.87，stockindex 0.93 → 1.00，stockmarket 0.72 → 0.76，yelp 0.97 → 1.00。
+  - 实付 $10.00（baseline $4.84，no-context $5.16），每个 trial $0.0185。
+  - 可比性：只跑了榜单的 54 题，没跑 clone 里另外 50 题；DAB 没有开发集和留出集之分，结果不用来改 Skill（ADR-0005）。
+- **正式评测累计实付**：$62.26（16 是 $36.22，17 是 $15.16，18 是 $10.88），预算 ¥700。
+- **对照 DAB 提交规则的自查**（`SUBMISSION_RUBRIC.md` 第 2 节，2026-11-14，540 个 trial 的工具输入和输出都查了）：
+  - 没有 trial 读过 `ground_truth`、`validate.py`、`queries.json` 或别的提交文件。
+  - agnews 上有 trial 想从外网取 AG News 的标签（HuggingFace、GitHub，用 `execute_python`）：no-context 8 个（query2、3 各 3 个，query4 2 个），baseline 6 个；baseline 另有 1 个 crmarenapro query12 的 trial 只探测了网络是否可达。全部失败：沙箱没有外网（域名解析失败），没有 `datasets` 包，也没有本地缓存。
+  - no-context 这 8 个 trial 的答案都没通过，不影响分数；baseline 探测网络的那个通过了，答案来自数据库查询。按规则（取到了榜外数据并且靠它答对才算）不构成泄漏，提交说明里照实写。
+- **已知限制 14**：分类题没有可用的模型或标签时，agent 会去试外网下载标签。现在只靠沙箱没有外网挡住，提示词和 Skill 里没有"只用给定数据源"的规则。修不修、怎么修由人定（ADR-0005：不能写针对 DAB 的内容）。
