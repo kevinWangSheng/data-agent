@@ -90,13 +90,28 @@ async def test_reminders_come_once_at_ten_and_at_three_turns_left() -> None:
 
 async def test_the_reminder_counts_from_the_next_response() -> None:
     """The reminder arrives after a response's tool results, so "this response" could mean the one
-    whose tools just ran; the count names the next response instead (returned in round 1)."""
+    whose tools just ran; the count names the next response instead."""
     got = await play(TurnBudget(50), 50)
     (three,) = got[47]
     assert "this response" not in three
     assert "your next response included" in three
-    assert "3 more responses that call tools" in three
+    assert "3 more tool-calling responses" in three
     assert "already used its turn" in three
+
+
+async def test_a_reminder_at_one_turn_left_is_singular() -> None:
+    """A point passed before its response was observed is reminded late, as low as 1 left."""
+    budget = TurnBudget(4)
+    for turn in (1, 2):  # each hook runs before its response is observed: no reminder
+        assert await after_tool(budget, f"t{turn}-0") == []
+        for message in response(turn):
+            budget.observe(message)
+    for message in response(3):
+        budget.observe(message)
+    (output,) = await after_tool(budget, "t3-0")
+    text = output["hookSpecificOutput"]["additionalContext"]
+    assert "1 turn left" in text
+    assert "1 more tool-calling response," in text
 
 
 async def test_the_reminder_goes_back_as_post_tool_use_context() -> None:
