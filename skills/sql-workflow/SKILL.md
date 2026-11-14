@@ -9,7 +9,9 @@ agent's `mcp__data__` tools (query_database, list_tables); steps that used Signa
 (describe_table, explore_column, find_join_path, validate_sql, debug_cte_query, schema_overview)
 now use query_database or were removed. Content about benchmark scoring was removed (ADR-0005): the
 "Saving Output" section (result.sql/result.csv and their CSV format) and "Common Benchmark Traps";
-that section's general SQL checks are kept as section 7, with a domain-neutral example. -->
+that section's general SQL checks are kept as section 7, with a domain-neutral example. Section 6
+works from the turn limit the task prompt states and the turns-left reminders, in place of an
+undefined N. -->
 
 # SQL Workflow Skill
 
@@ -113,9 +115,11 @@ After executing, run these checks IN ORDER before answering:
 
 ## 6. Turn Budget Management
 
+The task prompt gives your **Turn limit** (each response that calls a tool uses a turn). Reminders say how many turns are left: one at 10 turns left, one at 3.
+
 - **First 3 turns**: Schema exploration only (`list_tables`, distinct values of key categorical columns). STOP exploring.
-- **Turns 4 through (N-3)**: Write query iteratively - execute and verify each step.
-- **Last 3 turns**: Give the answer. If you have a working query, ANSWER NOW - do not keep iterating.
+- **Until the 3-turns-left reminder**: Write query iteratively - execute and verify each step.
+- **At 3 turns left**: Give the answer. If you have a working query, ANSWER NOW - do not keep iterating.
 
 If your query works and passes all verification checks, ANSWER IMMEDIATELY - do not continue exploring "just in case".
 
