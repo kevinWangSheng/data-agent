@@ -47,6 +47,7 @@ from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import McpStdioServerConfig
 
 from data_agent.agent import (
+    ANSWER_RULE,
     MCP_SERVER,
     SKILLS_PROMPT,
     SYSTEM_PROMPT,
@@ -82,7 +83,8 @@ EXEC_IMAGE = "python-data:3.12"  # DAB's ExecTool runs code in this image
 SQL_WORKFLOW = "sql-workflow"
 DIALECT_SKILLS = {"duckdb": "duckdb-sql", "sqlite": "sqlite-sql", "postgres": "postgres-sql"}
 
-TASK_PROMPT = """\
+TASK_PROMPT = (
+    """\
 Task type: query
 Databases, reachable only through the `{server}` MCP tools (pass the name as `db_name`):
 {databases}
@@ -96,8 +98,9 @@ Workspace (your working directory): {workspace}
 {description}
 </database_description>
 
-End with a final message that gives the answer first, then the assumptions you made.
 """
+    + ANSWER_RULE
+)
 
 
 class BudgetReached(Exception):
