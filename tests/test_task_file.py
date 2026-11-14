@@ -42,6 +42,7 @@ End with a final message that lists the models you created or changed, how the l
 then the assumptions you made.
 """
 
+# Its last paragraph is the final-answer rule of ticket 68.
 # Ticket 69 added the turn-limit line (both configs here run with the query limit of 50).
 QUERY_PROMPT_BEFORE = """\
 Task type: query
@@ -54,7 +55,11 @@ run ends with no answer. A response with no tool calls is your final answer.
 {task}
 </task>
 
-End with a final message that gives the answer first, then the assumptions you made.
+End with a final message that gives the answer first. The answer holds only what the task asks \
+for: no rows, columns or entities it did not ask about. Put each value right after its name, with \
+no other column between them. Write names and text exactly as they appear in the data; do not \
+shorten them or add an ellipsis. After the answer, state your assumptions in short sentences: no \
+tables, no alternative answers or alternative methods.
 """
 
 RESULT = ResultMessage(
