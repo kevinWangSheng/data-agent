@@ -231,7 +231,8 @@ async def test_labels_outside_the_categories_and_failed_calls_count_in_no_catego
 
     def label(text: str) -> str | None:
         if "cello" in text:
-            return "chamber music"  # not a category
+            # Not a category, and quoting the key (the model never sees it; masked all the same).
+            return f"chamber music {API_KEY}"
         if "fog" in text:
             return None  # left out of the reply
         return by_fixture(text)
@@ -260,14 +261,15 @@ async def test_labels_outside_the_categories_and_failed_calls_count_in_no_catego
     assert "  no_label: 1 " in text
     assert "  failed: 1 " in text
     assert "  empty_text: 1 " in text
-    assert "Labels outside the categories: 'chamber music' x1" in text
+    assert "Labels outside the categories: 'chamber music [REDACTED]' x1" in text
     # The failed call's error is reported, the key it quoted masked.
     assert "fake failure for Bearer [REDACTED]" in text
     assert API_KEY not in text
     # 20 calls: the empty text was not sent.
     assert len(model.requests) == 20
+    assert API_KEY not in (workspace / "data_agent_labels" / "labels_1.csv").read_text()
     assert text_of(table).splitlines()[2:-1] == [
-        "4 | None | outside_categories | chamber music",
+        "4 | None | outside_categories | chamber music [REDACTED]",
         "6 | None | failed | None",
         "9 | None | no_label | None",
         "99 | None | empty_text | None",
@@ -296,6 +298,34 @@ async def test_the_budget_stops_the_classification_and_keeps_what_is_done(
     assert "  not classified: 10 (the run's budget of $" in text
     assert text_of(kept).splitlines()[2] == "10"
     assert ledger.tool_tokens() == ToolTokens(2000, 400, 100)
+
+
+async def test_concurrent_batches_keep_to_the_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    """Ten batches fit eight at a time, but the budget holds two and a half calls: the first call
+    runs alone to learn a call's cost, then each running batch reserves that much."""
+    monkeypatch.setattr(classify, "BATCH_ROWS", 2)
+    ledger = make_ledger(tmp_path, budget=2.5 * CALL_USD)
+    with serve(FakeModel(by_fixture)) as model:
+        for name, value in model_env(model, ledger).items():
+            monkeypatch.setenv(name, value)
+        outcome = await call_tool(
+            product_server(articles_db, workspace), "classify_text", classify_args()
+        )
+    assert 2 <= len(model.requests) <= 3, text_of(outcome)
+    state = ledger.run_state()
+    assert state is not None
+    assert ledger.spent_usd(state) <= state.budget_usd + CALL_USD
+
+
+async def test_an_empty_result_classifies_nothing(
+    fake: FakeModel, articles_db: Path, workspace: Path
+) -> None:
+    server = product_server(articles_db, workspace)
+    outcome = await call_tool(server, "classify_text", classify_args(f"{ARTICLES} WHERE id < 0"))
+    assert "0 rows fetched; 0 labeled with a category." in text_of(outcome)
+    assert fake.requests == []
 
 
 async def test_without_a_ledger_the_tool_calls_no_model(
@@ -428,6 +458,31 @@ async def test_dab_classifies_mongo_documents(
     text = text_of(outcome)
     assert "4 rows fetched; 4 labeled with a category." in text
     assert "  weather: 1" in text and "  music: 1" in text
+
+
+@pytest.mark.parametrize(
+    ("db_name", "query"),
+    [
+        ("prices_db", "SELECT id, body FROM notes WHERE id < 0"),
+        ("articles_db", json.dumps({"collection": "articles", "documents": []})),
+    ],
+)
+async def test_dab_classifies_an_empty_result_as_zero_rows(
+    db_name: str, query: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DAB's rows are dicts, so an empty result has no column names to check."""
+    root = make_dab(tmp_path / "dab")
+    add_notes(root)
+    with serve(FakeModel(by_fixture)) as model:
+        ledger = make_ledger(tmp_path)
+        async with dab_with_model(
+            root, tmp_path / "t.jsonl", model, ledger, monkeypatch
+        ) as session:
+            args = classify_args(query) | {"db_name": db_name}
+            outcome = await session.call_tool("classify_text", args)
+    assert not outcome.is_error, text_of(outcome)
+    assert "0 rows fetched; 0 labeled with a category." in text_of(outcome)
+    assert model.requests == []
 
 
 async def test_dab_blocks_writes_before_they_reach_dab(

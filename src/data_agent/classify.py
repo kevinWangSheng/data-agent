@@ -195,6 +195,8 @@ def check_rows(result: QueryResult, key_column: str, text_column: str) -> None:
     """Refuse, before any model call, rows the label table could not key."""
     if len(result.rows) > ROW_LIMIT:
         raise too_many(len(result.rows))
+    if not result.rows and not result.columns:
+        return  # DAB's rows are dicts: an empty result names no columns
     for name in (key_column, text_column):
         if name not in result.columns:
             raise ToolError(f"the query returns no column {name!r}; it returns {result.columns}")
@@ -307,15 +309,17 @@ def run_batch(
         elif answer in allowed:
             outcomes[index] = Outcome(answer, LABELED, answer)
         else:
-            outcomes[index] = Outcome(None, OUTSIDE, answer)
+            outcomes[index] = Outcome(None, OUTSIDE, mask(answer, setup.secrets))
     return BatchResult(outcomes, reply.tokens)
 
 
-def over_budget(ledger: Ledger) -> tuple[bool, float | None]:
+def over_budget(ledger: Ledger, reserved: float) -> tuple[bool, float | None]:
+    """Whether the run's spend so far plus `reserved` (for the calls still running) has reached
+    its budget; and the budget."""
     state = ledger.run_state()
     if state is None:
         return True, None
-    return ledger.spent_usd(state) >= state.budget_usd, state.budget_usd
+    return ledger.spent_usd(state) + reserved >= state.budget_usd, state.budget_usd
 
 
 def classify(
@@ -327,11 +331,14 @@ def classify(
     setup: Setup,
 ) -> Classification:
     """Label every row of `result`; rows checked by `check_rows`. Up to MAX_CONCURRENT_BATCHES
-    batches run at once; before each starts, the run's spend (its own and every tool call's) is
-    checked against its budget, and once it is reached no more start."""
+    batches run at once. A batch starts only while the run's spend (its own and every tool
+    call's), with the costliest call so far reserved for each batch still running, is under the
+    budget; until one call's cost is known, one batch runs at a time. Once the budget is reached
+    with nothing running, no more start: a classification passes the budget by one call at most,
+    as a run passes it by its last main call (`agent.Spend`)."""
     allowed = check_categories(categories)
     check_rows(result, key_column, text_column)
-    text_at = result.columns.index(text_column)
+    text_at = result.columns.index(text_column) if result.columns else -1
     texts: list[tuple[int, str]] = []
     outcomes: dict[int, Outcome] = {}
     for index, row in enumerate(result.rows):
@@ -347,13 +354,22 @@ def classify(
     errors: list[str] = []
     budget: float | None = None
     stopped = False
+    state = setup.ledger.run_state()
+    per_call: float | None = None  # the costliest call so far
     with ThreadPoolExecutor(MAX_CONCURRENT_BATCHES) as pool:
         running: set[Future[BatchResult]] = set()
         while True:
-            while todo and not stopped and len(running) < MAX_CONCURRENT_BATCHES:
-                stopped, budget = over_budget(setup.ledger)
-                if not stopped:
-                    running.add(pool.submit(run_batch, setup, allowed, instructions, todo.pop(0)))
+            while (
+                todo
+                and len(running) < MAX_CONCURRENT_BATCHES
+                and (per_call is not None or not running)
+            ):
+                in_flight = sum(not future.done() for future in running)
+                over, budget = over_budget(setup.ledger, in_flight * (per_call or 0.0))
+                if over:
+                    stopped = not running  # with calls running, wait for their real cost
+                    break
+                running.add(pool.submit(run_batch, setup, allowed, instructions, todo.pop(0)))
             if not running:
                 break
             done, running = wait(running, return_when=FIRST_COMPLETED)
@@ -363,9 +379,11 @@ def classify(
                 calls += 1
                 if batch.tokens is not None:
                     tokens = [t + n for t, n in zip(tokens, batch.tokens, strict=True)]
+                    if state is not None:
+                        per_call = max(per_call or 0.0, state.priced_usd(batch.tokens))
                 if batch.error and batch.error not in errors:
                     errors.append(batch.error)
-    keep = [i for i, name in enumerate(result.columns) if i != text_at]
+    keep = [i for i in range(len(result.columns)) if i != text_at]
     rows = [
         (*(row[i] for i in keep), o.label, o.outcome, o.model_label)
         for index, row in enumerate(result.rows)
@@ -382,7 +400,6 @@ def classify(
             if o.outcome == OUTSIDE and o.model_label is not None:
                 outside[o.model_label] += 1
     total = ToolTokens(*tokens)
-    state = setup.ledger.run_state()
     return Classification(
         columns=[*(result.columns[i] for i in keep), *ADDED_COLUMNS],
         rows=rows,
