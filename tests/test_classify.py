@@ -307,7 +307,7 @@ async def test_a_reply_cut_at_the_output_limit_is_reported_as_cut(
 ) -> None:
     # The output limit reached inside the JSON: no closing brace, nothing readable.
     model = FakeModel(
-        by_fixture, reply=lambda text: text[: len(text) // 2], stop_reason="max_tokens"
+        by_fixture, rewrite=lambda text: text[: len(text) // 2], stop_reason="max_tokens"
     )
     text = await classify_with(model, monkeypatch, tmp_path, articles_db, workspace)
     assert "20 rows fetched; 0 labeled with a category." in text
@@ -321,7 +321,7 @@ async def test_a_reply_cut_at_the_output_limit_is_reported_as_cut(
 async def test_a_reply_without_json_that_was_not_cut_says_so(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
 ) -> None:
-    model = FakeModel(by_fixture, reply=lambda text: "I cannot classify these.")
+    model = FakeModel(by_fixture, rewrite=lambda text: "I cannot classify these.")
     text = await classify_with(model, monkeypatch, tmp_path, articles_db, workspace)
     assert "  failed: 20 " in text
     assert "unreadable reply: the reply has no JSON object" in text

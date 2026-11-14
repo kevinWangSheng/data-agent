@@ -86,7 +86,7 @@ TEXT_BLOCK = '<text id="{number}">\n{text}\n</text>'
 class Reply:
     text: str  # the reply's text blocks (any thinking left out)
     tokens: ToolTokens
-    stop_reason: str | None = None  # "max_tokens": cut off at MAX_OUTPUT_TOKENS
+    stop_reason: str | None  # "max_tokens": cut off at MAX_OUTPUT_TOKENS
 
 
 # (system prompt, user prompt) -> the model's reply.
@@ -304,8 +304,8 @@ def run_batch(
         failed = Outcome(None, FAILED, None)
         if reply.stop_reason == "max_tokens":
             error = (
-                f"unreadable reply: it was cut off at the output limit ({MAX_OUTPUT_TOKENS} "
-                "tokens) before its JSON was complete"
+                f"unreadable reply: the reply was cut off at the output limit ({MAX_OUTPUT_TOKENS} "
+                "tokens) and has no readable JSON object"
             )
         else:
             error = f"unreadable reply: {exc}"
