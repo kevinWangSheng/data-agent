@@ -42,8 +42,8 @@ End with a final message that lists the models you created or changed, how the l
 then the assumptions you made.
 """
 
-QUERY_PROMPT_BEFORE = (
-    """\
+# Its last paragraph is the final-answer rule of ticket 68.
+QUERY_PROMPT_BEFORE = """\
 Task type: query
 Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
@@ -52,9 +52,12 @@ Workspace (your working directory): {workspace}
 {task}
 </task>
 
+End with a final message that gives the answer first. The answer holds only what the task asks \
+for: no rows, columns or entities it did not ask about. Put each value right after its name, with \
+no other column between them. Write names and text exactly as they appear in the data; do not \
+shorten them or add an ellipsis. After the answer, state your assumptions in short sentences: no \
+tables, no alternative answers or alternative methods.
 """
-    + agent.ANSWER_RULE
-)  # the final-answer rule of ticket 68
 
 RESULT = ResultMessage(
     subtype="success",

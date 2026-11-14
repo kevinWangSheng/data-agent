@@ -109,8 +109,9 @@ Follow these skills.
 """
 
 # The final-answer rule of query tasks, shared with the DAB runner's task prompt (ticket 68):
-# answers that were right but scored wrong put another column between a name and its value, cut a
-# name short, or listed other candidates in a table beside the answer (ADR-0005 Update 2026-11-14).
+# correct answers were hard to read when another column sat between a name and its value, a name
+# was cut short, or a table of other candidates stood beside the answer (ADR-0005 Update
+# 2026-11-14). Both prompts go through `str.format`, so the rule holds no braces.
 ANSWER_RULE = """\
 End with a final message that gives the answer first. The answer holds only what the task asks \
 for: no rows, columns or entities it did not ask about. Put each value right after its name, with \

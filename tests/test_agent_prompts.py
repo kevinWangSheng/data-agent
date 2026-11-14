@@ -32,4 +32,5 @@ def test_the_answer_rule_names_no_benchmark() -> None:
 
 
 def test_the_dbt_prompt_keeps_its_own_ending() -> None:
+    assert agent.ANSWER_RULE not in agent.DBT_PROMPT
     assert "answer first" not in agent.DBT_PROMPT
