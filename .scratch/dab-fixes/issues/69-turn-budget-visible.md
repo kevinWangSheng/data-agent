@@ -1,10 +1,10 @@
 # 69 — 查询任务里 agent 能看见轮数预算
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0005-dab-integration.md（Update 2026-11-14）
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 69-turn-budget-visible)
+Branch: worktree-69-turn-budget-visible
 
 ## Goal
 
@@ -67,10 +67,88 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Attempts: 2
+- Review rounds: 3
+- Model spend: $0.05, main session's real runs (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
+- Outcome: accepted (returned once)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+### 取证结论（工单会话，分支 worktree-69-turn-budget-visible：5306be9、14dac99、a98147c）
+
+对象是自带 CLI 2.1.301（`claude_agent_sdk/_bundled/claude`，在二进制里搜内嵌的 JS 原文）。
+
+- **CLI 怎么数轮**：一轮是主线程上一次调了工具、工具也跑了的模型回复。
+  - 计数从 1 开始（`turnCount:1`）。
+  - 每轮工具跑完后算 `rr=Jo+1, Xr=M&&rr>M?M:void 0`；超过上限就以 `error_max_turns` 结束，`num_turns` 报的是 `turnCount`，也就是上限+1。
+  - 计数只在两处增加：工具轮之后，和 Stop 钩子拦下收尾时（`Ce=Jo+1`）。
+  - 截断续写、只有思考的回复、拒答重试、工具调用解析失败的重试，都原样带着旧计数（`{...St,...}`；里面的 `Ar` 不含 `turnCount`）。
+  - 所以第 k 轮的工具跑完后，还剩 M−k 次回复，含下一次。
+- **56/63/70 怎么来的**：正常结束时的 `num_turns` 用的是另一个数 `Et`。它每遇到一条 `user` 类型消息加一（`if(u.type==="user"){...Et++`），一条工具结果就是一条，所以一轮里调几个工具就多算几次。
+- **实测对得上**：`runs/f19-dab` 里撞上限的 5 次运行，主线程回复都正好 50 次（按每次回复一个 thinking 块数），`num_turns` 都是 51。
+- **钩子里怎么得到剩余轮数**：`TurnBudget.observe` 按到达顺序给主线程里带工具调用的回复（按 `message_id`）编号，工具调用 id 对应到这个编号；PostToolUse / PostToolUseFailure 钩子算 `剩余 = 上限 − 编号`。
+  - 270 次运行里共 8484 个钩子事件，每个都晚于同一工具的 `tool_start`。万一钩子先到、还没看到那次回复，就不提醒，下一轮按实际剩余补上，不会猜数。
+- **到达模型**：`additionalContext` 会被渲染成一条 meta user 消息（`"<hookName> hook additional context: ..."`），能进模型上下文。
+- **子 agent**：查询任务现在不派子 agent（`uses_verifiers` 只对 dbt 为真）。即使有，带 `parent_tool_use_id` 或 `agent_id` 的调用也不计数、不提醒。
+
+### 实现与审查（工单会话）
+
+
+- 实现：src/data_agent/agent.py（TurnBudget、TURN_LIMIT、build_options(turn_budget=)、run() 喂消息）；evals/dab.py（大库的 large 上限通过 TurnBudget 传进 build_options，不再用 replace 覆盖 max_turns；task_prompt 带上限）；skills/sql-workflow/SKILL.md 第 6 节去掉 N、文件头注释补一句。
+- 低上限的行为：到不了的提醒点直接不发（上限 8 只在剩 3 时提醒；上限 ≤3 不提醒），按工单例子"只发还适用的那个提醒"。
+- 越出 Authority：tests/test_task_file.py 逐字固定查询提示，只在 QUERY_PROMPT_BEFORE 补了上限这一行。
+- 第 3 步真实运行：工单会话读不到模型环境变量，没跑。主会话怎么跑见下面的 Evidence。
+- 审查第 1 轮：
+  - Spec：用户级 Stop 钩子拦下收尾会让 CLI 多算一轮，预算却不算，剩余轮数就偏多。已修：一次没调工具的主线程回复后面如果又来了回复，预算就停止提醒（是重试还是 Stop 拦截，消息流里分不出来）。f19-dab 里 270 次只有 1 次会因此停止提醒。另外 reminder 改名 take_reminder。
+  - Codex P2（"每次 API 往返都算一轮"）：不属实。CLI 源码里截断续写是 {...St,maxOutputTokensRecoveryCount:_o+1}，不加 turnCount；它说的场景已由上一条停止提醒处理。
+  - Standards 不修：build_options 在没传预算时自建一个，保证任何查询构建都带钩子（验收"任意组合都有钩子"）；turns 和 budget 一起传、测试里 hook_input 重复，都是小问题。
+- 审查第 2 轮：Codex P2，turn_budget 事件记了本机的 transcript 绝对路径，而事件日志是可公开的。已修，改记 session_id。第 2 轮后没有新的意见。
+
+### 主会话 2026-11-14（PR #77）
+- 接受越出 Authority 的 `tests/test_task_file.py` 改动（68 也改了同一个逐字快照）。
+- 合并 main（含 68）进分支：b3f1b70，只有 `tests/test_task_file.py` 一行注释冲突，两句都留；`make check` 2120 passed，1 skipped。
+- 真实运行（deepseek-flash；临时 worktree 里把 `query` 上限改成 12，不提交；库由 `tests/fixtures/shop.sql` 建）。首个提交 5306be9 和合并后的 b3f1b70 各跑一遍：
+  - 每次回复调 1 次工具、要求不停（baseline）：5306be9 上 `turn_budget` 在第 2、第 9 次回复各一条（剩 10、剩 3），之后正好 3 次回复，`error_max_turns`，`num_turns` 13。b3f1b70 上提醒位置相同，agent 在第 10 次调用后自己交了答案。
+  - 每次回复并行调 2 次工具、要求不停（baseline）：两个提交上都是 24 次调用、12 次回复后 `error_max_turns`，提醒在第 2、第 9 次回复（第 3、第 17 次调用之后）各一条。上限数的是带工具调用的回复，不是调用次数。
+  - 普通查询题（no-context）：只有"剩 10"一条提醒，6 次带工具的回复后正常作答；`num_turns` 记 13/14 但正常结束，和取证里 `Et` 的口径一致。
+  - 提醒进了模型上下文：模型的思考里引用了它（"3 turns left. Used 9. So turns 10, 11, 12 remain"）。
+  - 发现：提醒原文 "N turns left, counting this response" 有歧义。b3f1b70 的两次运行里模型把 "this response" 理解成刚跑完工具的那次回复，于是认为只剩 2 次（实际还剩 3 次）。偏差在保守一侧，但数是错的。
+  - 花费：6 次运行合计约 $0.03。
+- PR #77：CI 绿；Codex PR 审查（b3f1b70）没有意见。
+
+### 退回：提醒原文的剩余轮数有歧义（主会话 2026-11-14，第 1 轮）
+- 原因：`REMINDER_TEXT` 写 "{left} turns left, counting this response"。提醒是跟在工具结果后面进上下文的，模型读到时"this response"可以指刚跑完工具的那次回复，也可以指它接下来要写的那次。b3f1b70 上的两次真实运行里，模型的思考是 "3 turns left counting this response means after this one there are 2 more" 和 "Turn budget warned 3 turns left including that prior response"，少算了一次；5306be9 上那次理解对了。工单要求不告诉 agent 错的剩余轮数。
+- 要改的：只改 `REMINDER_TEXT` 的措辞（需要时连同 `TURN_LIMIT` 和 Skill 第 6 节里对应的说法、相关测试），让"还能再发几次带工具调用的回复"只有一种读法，不依赖"this response"指哪一次。计数逻辑不动。
+- 分支已合入 main（含 68），最新 b3f1b70，已 push；在这个分支上接着提交，不要 rebase。
+- 最终回复里给出新的原文；真实运行仍由主会话做。
+
+### 退回第 1 轮的修复（工单会话，dbc31d8、46f7e5a，基于 b3f1b70，未 rebase）
+- 改动：只改措辞，计数逻辑没动。`REMINDER_TEXT`（src/data_agent/agent.py:708-717）把剩余轮数落在"下一次回复"上，并明说刚跑完工具的那次回复已经用掉了自己的一轮。新原文见上。Skill 第 6 节 :118 改为 "Reminders say how many turns are left, your next response included"。`TURN_LIMIT` 不变。
+- 测试：tests/test_turn_budget.py 新增两个。
+  - `test_the_reminder_counts_from_the_next_response`：原文没有 "this response"，带 "your next response included"、"3 more tool-calling responses"、"already used its turn"。修改前失败过。
+  - `test_a_reminder_at_one_turn_left_is_singular`：剩 3 的提醒点到得晚的话，可能在剩 1 时才发，此时用单数。
+- 检查：`make check` 2122 passed，1 skipped；basedpyright 0 errors。
+- 审查：
+  - da-review b3f1b70：没有意见。Codex 的沙箱跑不了 pytest，审查只看了 diff。
+  - eng:code-review 的 Standards、Spec 两项都报了同一处：单数时原文是 "1 more response that call tools"，动词不一致。已修，改用 "tool-calling response(s)"，并配了上面那个单数测试。
+  - Standards 还提到代码注释写的是审查经过，已改成写不变式；变量 `one` 改名 `singular`。
+  - 没修的：
+    - "原文三种说法重复、偏长"：是有意的消歧，有没有用要看真实运行。
+    - "测试用子串锁定原文"：这是提示的约定测试，可以接受。
+    - Spec 提的 "before then" 两种读法：两种读法下该做的事一样，不影响计数。
+- 第 3 步真实运行：没跑，工单会话读不到模型的环境变量。配法同上次：临时 worktree 里把 `query` 上限改成 12，不提交，跑一道查询题。在 events.jsonl 里看三处：
+  - `turn_budget` 事件的 `text`：应该在第 2、第 9 次回复后各一条。
+  - 模型的思考里对剩余次数的理解：应该是剩 3 次，不是 2 次。
+  - 结束时是 `error_max_turns`，还是提前作答。
+- 新原文（剩 3 时）："Turn budget: 3 turns left, your next response included: you can send 3 more tool-calling responses, and after the last of them the run ends with no answer. The response whose tool results you are reading has already used its turn. Give your final answer, a response with no tool calls, before then."
+
+### 主会话 2026-11-14：退回修复后的真实运行
+- 合并 main（含 70）进分支：a48261f，无冲突。
+- 在 a48261f 上重跑（deepseek-flash，上限临时 12，不提交），4 次，合计约 $0.02：
+  - 每次回复 1 次调用、要求不停：提醒在第 2、第 9 次回复各一条；之后模型的思考依次是 "3 turns left"、"2 turns left"、"1 turn left"，数对了；正好 3 次回复后 `error_max_turns`，`num_turns` 13。
+  - 每次回复并行 2 次调用、要求不停：24 次调用、12 次回复后 `error_max_turns`；提醒在第 3、第 17 次调用之后；模型在第 22 次调用后写 "One turn left"，数对了。
+  - 要求用尽轮数但必须作答：模型读到剩 3 的提醒后写 "I can send 3 more tool-calling responses but the last ends with no answer. So I should do at most 2 more tool calls, then final answer"，做了第 10、11 次调用后正常作答（答案 "Last k run: 11"）。这是上限 12 时能作答的最多调用数。
+  - 普通查询题（no-context）：只有"剩 10"一条提醒，正常作答。
+- 结论：b3f1b70 上少算一次的问题在这 4 次里没有再出现。
+- PR #77：a48261f 上 CI 绿，Codex PR 审查没有意见；squash 合入 main（c1f5503）。
