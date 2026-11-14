@@ -1,10 +1,10 @@
 # 68 — 查询任务的最终答案只答所问、名称紧跟数值
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../../../docs/adr/0005-dab-integration.md（Update 2026-11-14）
-Claimed by: —
-Branch: —
+Claimed by: claude-code (68-answer-format worktree)
+Branch: worktree-68-answer-format
 
 ## Goal
 
@@ -57,10 +57,17 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #76 → 6a3b53b); CI green, Codex PR review no findings
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+- 2026-11-14 ticket agent (opus), branch `worktree-68-answer-format`, commits de5f573, fbbd910; PR #76
+  - Change: new constant `ANSWER_RULE` in `src/data_agent/agent.py`; `QUERY_PROMPT` ends with it and `evals/dab.py` imports it for `TASK_PROMPT`. dbt prompt unchanged. Rule text: "End with a final message that gives the answer first. The answer holds only what the task asks for: no rows, columns or entities it did not ask about. Put each value right after its name, with no other column between them. Write names and text exactly as they appear in the data; do not shorten them or add an ellipsis. After the answer, state your assumptions in short sentences: no tables, no alternative answers or alternative methods."
+  - Other uses of the old sentence: only `tests/test_task_file.py` (updated). Verifiers run on dbt tasks only (`src/data_agent/verifiers.py:6`); nothing parses the old format. No stop condition hit.
+  - Tests: `tests/test_agent_prompts.py` (3 tests; the first fails on main). `make check`: 2084 passed before, 2087 passed, 1 skipped after.
+  - `da-review main`: no findings (its sandbox could not run pytest). `eng:code-review main`: fixed in fbbd910 — snapshot test compared the rule with itself; a comment used grader wording; dbt test strengthened. Not fixed: phrase-by-phrase asserts break on rewording (deliberate); the test splits the prompt on blank lines (low risk).
+- 2026-11-14 main session, real run on the branch: `data-agent run --task "Which three customers spent the most in total, and how much did each spend?" --type query --duckdb <db built from tests/fixtures/shop.sql> --config no-context`. Final message: "Avery Lane spent 285.25, Blake Moss spent 232.50, Emery Cole spent 185.75." then "Assumptions:" with two sentences; no table, no alternatives. All four rules hold.
