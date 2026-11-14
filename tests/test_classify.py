@@ -6,6 +6,7 @@ import dataclasses
 import itertools
 import json
 import os
+import re
 import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -361,6 +362,63 @@ async def test_the_budget_stops_the_classification_and_keeps_what_is_done(
     assert "  not classified: 10 (the run's budget of $" in text
     assert text_of(kept).splitlines()[2] == "10"
     assert ledger.tool_tokens() == ToolTokens(2000, 400, 100)
+    # The run's spend, read after the last batch, has passed the budget.
+    spent, budget = run_spend(text)
+    assert budget == 2 * CALL_USD
+    assert spent >= budget
+
+
+RUN_SPEND = re.compile(
+    r"^Run spend so far: \$(\d+\.\d{4}) of the run's \$(\S+) budget \(US dollars at this run's "
+    r"model prices, this tool's calls included\)\. The run ends with no answer once its spend "
+    r"passes the budget\.$"
+)
+
+
+def run_spend(text: str) -> tuple[float, float]:
+    """The reply's last line: the run's spend so far and its budget."""
+    match = RUN_SPEND.match(text.splitlines()[-1])
+    assert match, text.splitlines()[-1]
+    return float(match[1]), float(match[2])
+
+
+async def test_the_reply_ends_with_the_runs_spend_and_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    ledger = make_ledger(tmp_path, budget=1.0, spent=0.25)
+    with serve(FakeModel(by_fixture)) as model:
+        for name, value in model_env(model, ledger).items():
+            monkeypatch.setenv(name, value)
+        server = product_server(articles_db, workspace)
+        first = text_of(await call_tool(server, "classify_text", classify_args()))
+        second = text_of(await call_tool(server, "classify_text", classify_args()))
+    assert len(model.requests) == 2  # one batch per call
+    assert run_spend(first) == (round(0.25 + CALL_USD, 4), 1.0)
+    # The second call's spend includes the first's.
+    assert run_spend(second) == (round(0.25 + 2 * CALL_USD, 4), 1.0)
+
+
+NO_ANSWER = "Once the spend passes the budget the run ends at once with no answer"
+
+
+async def test_the_product_description_states_the_ledgers_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    monkeypatch.setenv(LEDGER_ENV, str(make_ledger(tmp_path, budget=0.75).directory))
+    tools = {tool.name: tool for tool in await product_server(articles_db, workspace).list_tools()}
+    description = tools["classify_text"].description or ""
+    assert "this run's budget of $0.75 (US dollars at this run's model prices)" in description
+    assert NO_ANSWER in description
+
+
+async def test_without_a_ledger_the_tool_is_served_without_a_budget(
+    monkeypatch: pytest.MonkeyPatch, articles_db: Path, workspace: Path
+) -> None:
+    monkeypatch.delenv(LEDGER_ENV, raising=False)
+    tools = {tool.name: tool for tool in await product_server(articles_db, workspace).list_tools()}
+    description = tools["classify_text"].description or ""
+    assert "budget of $" not in description
+    assert NO_ANSWER not in description
 
 
 async def test_concurrent_batches_keep_to_the_budget(
@@ -504,6 +562,30 @@ async def test_dab_classifies_sql_rows_into_a_python_variable(
     # The rows came through DAB's query tool, the count first.
     queries = [c["args"]["query"] for c in logged_calls(log) if c["tool_name"] == "query_db"]
     assert queries[0].startswith("SELECT COUNT(*) AS n FROM (")
+
+
+async def test_the_dab_description_states_the_ledgers_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = make_dab(tmp_path / "dab")
+    ledger = make_ledger(tmp_path, budget=0.75)
+    with serve(FakeModel(by_fixture)) as model:
+        async with dab_with_model(root, tmp_path / "tools.jsonl", model, ledger, monkeypatch) as s:
+            tools = {tool.name: tool for tool in (await s.list_tools()).tools}
+    description = tools["classify_text"].description or ""
+    assert "this run's budget of $0.75 (US dollars at this run's model prices)" in description
+    assert NO_ANSWER in description
+
+
+async def test_without_a_ledger_dab_serves_the_tool_without_a_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = make_dab(tmp_path / "dab")
+    monkeypatch.delenv(LEDGER_ENV, raising=False)
+    async with dab_server(root, tmp_path / "tools.jsonl") as session:
+        tools = {tool.name: tool for tool in (await session.list_tools()).tools}
+    description = tools["classify_text"].description or ""
+    assert "budget of $" not in description
 
 
 async def test_dab_classifies_mongo_documents(
