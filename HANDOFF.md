@@ -254,7 +254,7 @@
   - DAB：提交包在本机和服务器的 `runs/f19-dab/`：`pkg/submission.json`（no-context 的 270 条，和算分用的那份逐字节相同）、`data-agent-dab-traces.zip`（270 个 trial 的 `events.jsonl`、`dab_tool_calls.jsonl`、`execute_python_artifacts.jsonl`，32 MB，不含 workspace）、`PR.md`（提交说明草稿）。上游先例（DAB PR #111、#113）：PR 里只放答案 JSON，轨迹给外部压缩包链接。
   - DAB 轨迹的 scrub（ea740b5）改了 562 个文件（IP 105 处、home 路径 7944 处，密钥和 endpoint 0 处），exit 1：剩 8 处 `/home/corbax`，都在 GITHUB_REPOS query2，是数据集里一个 SVG 文件的内容，不是本机或服务器的路径，没有处理。
   - 服务器停在 ea740b5（跑 scrub 用），没有在跑的批次。
-  - 等人定：DAB 轨迹压缩包放哪里（PR 附件上限 25 MB，放不下；可以放本仓库的 GitHub Release）；榜单上显示的 agent 名和组织名；已知限制 14 修不修。GitHub 仓库 `kevinWangSheng/data-agent` 现在已经是 PUBLIC（2026-11-14 `gh repo view` 核实），plan 第 22 项还写着待做。
+  - 等人定：DAB 轨迹压缩包放哪里（PR 附件上限 25 MB，放不下；可以放本仓库的 GitHub Release）；榜单上显示的 agent 名和组织名。已知限制 14 不加规则（人 2026-11-14 定）；agnews 低分的原因见 ADR-0008 Update 2026-11-13，建议不修，等人确认。GitHub 仓库 `kevinWangSheng/data-agent` 现在已经是 PUBLIC（2026-11-14 `gh repo view` 核实），plan 第 22 项还写着待做。
 
 ## 0. 一句话
 

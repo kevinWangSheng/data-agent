@@ -253,4 +253,9 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
   - 没有 trial 读过 `ground_truth`、`validate.py`、`queries.json` 或别的提交文件。
   - agnews 上有 trial 想从外网取 AG News 的标签（HuggingFace、GitHub，用 `execute_python`）：no-context 8 个（query2、3 各 3 个，query4 2 个），baseline 6 个；baseline 另有 1 个 crmarenapro query12 的 trial 只探测了网络是否可达。全部失败：沙箱没有外网（域名解析失败），没有 `datasets` 包，也没有本地缓存。
   - no-context 这 8 个 trial 的答案都没通过，不影响分数；baseline 探测网络的那个通过了，答案来自数据库查询。按规则（取到了榜外数据并且靠它答对才算）不构成泄漏，提交说明里照实写。
-- **已知限制 14**：分类题没有可用的模型或标签时，agent 会去试外网下载标签。现在只靠沙箱没有外网挡住，提示词和 Skill 里没有"只用给定数据源"的规则。修不修、怎么修由人定（ADR-0005：不能写针对 DAB 的内容）。
+- **已知限制 14**：agnews 的分类题上，agent 会去试外网下载标签。不加提示词规则（人 2026-11-14 定）：DAB 的工具有意断开沙箱的网络（`common_scaffold/tools/ExecTool.py:15-27`，`_NetworkIsolatedDockerExecutor`），评测的公平性由环境保证；"不取榜外数据"是榜单的规矩，不是产品需求。
+- **agnews 低分的原因**（2026-11-14，对照 no-context 的 15 个答案、`ground_truth` 和 `validate.py`；没有逐条读轨迹）：数据里没有类别字段，要 agent 自己按语义给文章分类，而评分要求和 AG News 原标签算出的数字完全一致。
+  - query2：标准答案 16/111，容差 1e-4。agent 读完 111 篇自己分类，得到约 17 到 28 篇不等，边界文章的判断和原标签不同。
+  - query3：标准答案 336.64（11 年共 3703 篇），容差 0.01，等于要求欧洲约 14,860 篇文章的分类计数一篇不差。agent 按四类各占 25% 估算，答 337.7 左右。
+  - query4：标准答案 Africa。5 次里 3 次用完轮数没有答案，1 次撞上下文上限，1 次答 South America，agent 自己写明各地区差距在噪声范围内。算分记的 1/5 就是答 South America 的这一次：`validate.py` 只查答案文字里有没有 Africa，而它在列举接近的地区时提到了 Africa。这一次不是真答对，上游审核可能改判。
+  - baseline 同样是 query2、3 为 0/5。这不是代码缺陷；建议不修，等人确认。按 ADR-0005 也不能针对 DAB 调。
