@@ -47,6 +47,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
+from data_agent import classify
 from data_agent.db_facts import RunQuery, describe, plan_text, row_estimates, timeout_report
 from data_agent.engine import inject_limit, validate_sql
 from data_agent.gateway import MAX_ROWS, TIMEOUT_SECONDS, QueryResult
@@ -207,6 +208,13 @@ def governed(sql: str, dialect: str) -> str:
     return inject_limit(sql, max_rows=MAX_ROWS, dialect=dialect)
 
 
+def records(rows: list[dict[str, Any]]) -> QueryResult:
+    """DAB's rows as the gateway's result when they may differ in fields (MongoDB documents):
+    every field any row has, in the order first seen, None where a row lacks it."""
+    columns = list(dict.fromkeys(name for row in rows for name in row))
+    return QueryResult(columns=columns, rows=[tuple(row.get(c) for c in columns) for row in rows])
+
+
 def as_result(rows: list[dict[str, Any]]) -> QueryResult:
     """DAB's rows (a dict per row, in column order) as the gateway's result."""
     columns = list(rows[0]) if rows else []
@@ -245,19 +253,27 @@ class Results:
             if len(error) > RESULT_CHARS:
                 error = f"{error[:RESULT_CHARS]}\n... (cut at {RESULT_CHARS} characters)"
             raise ToolError(error)
-        text = json.dumps(finite(outcome["result"]), ensure_ascii=False, default=str)
-        name = f"var_{len(self.variables) + 1}"
-        if len(text) <= RESULT_CHARS:
-            # Through JSON, so the value is plain data whatever types the database returned.
-            self.variables[name] = json.loads(text)
+        name, text, path = self.keep(outcome["result"])
+        if path is None:
             return f"Result `{name}`:\n{text}"
-        self.save(f"{name}.json", text)
-        path = f"{STORAGE_DIR}/{name}.json"
-        self.variables[name] = path
         return (
             f"Result `{name}` is {len(text)} characters, saved in `{path}` (the value of "
             f"`{name}`); its first {RESULT_CHARS} characters:\n{text[:RESULT_CHARS]}"
         )
+
+    def keep(self, value: Any) -> tuple[str, str, str | None]:
+        """Keep `value` under the next variable name; returns the name, the value as JSON, and
+        the path (relative to the workspace) of the file it was saved in when too long to hold."""
+        text = json.dumps(finite(value), ensure_ascii=False, default=str)
+        name = f"var_{len(self.variables) + 1}"
+        if len(text) <= RESULT_CHARS:
+            # Through JSON, so the value is plain data whatever types the database returned.
+            self.variables[name] = json.loads(text)
+            return name, text, None
+        self.save(f"{name}.json", text)
+        path = f"{STORAGE_DIR}/{name}.json"
+        self.variables[name] = path
+        return name, text, path
 
     def save(self, file_name: str, text: str) -> None:
         """Write a new file in the storage directory. execute_python code can change the workspace
@@ -425,6 +441,44 @@ def build_server(
         dialect = with_facts(db_name)
         with results.lock:
             return sql_explain(db_name, dialect)(sql)
+
+    @server.tool(
+        name=classify.TOOL,
+        description=classify.DESCRIPTION.format(
+            source="`sql` is one query on database `db_name`, run like query_database (SQL "
+            "passes the read-only gateway; a MongoDB query is its JSON request).",
+            limit=classify.ROW_LIMIT,
+            stored="a variable for execute_python, as query results are (one dict per row).",
+        ),
+    )
+    def classify_text(
+        db_name: str,
+        sql: str,
+        key_column: str,
+        text_column: str,
+        categories: list[str],
+        instructions: str = "",
+    ) -> str:
+        allowed = classify.check_categories(categories)
+        setup = classify.setup_from_env(os.environ)
+        db_type = checkable(db_name)
+        # The fetch holds the lock like any query; the model calls do not.
+        with results.lock:
+            if db_type in SQL_DIALECTS:
+                dialect = SQL_DIALECTS[db_type]
+                rows = classify.fetch_sql(sql_run(db_name, dialect), sql, dialect, key_column)
+            else:
+                args = {"db_name": db_name, "query": sql}
+                outcome = timeout.run(lambda: query_tool.exec(args))
+                if not outcome["success"]:
+                    raise ToolError(str(outcome["result"]))
+                rows = records(outcome["result"])
+        labeled = classify.classify(rows, key_column, text_column, allowed, instructions, setup)
+        table = [dict(zip(labeled.columns, row, strict=True)) for row in labeled.rows]
+        with results.lock:
+            name, _, path = results.keep(table)
+        stored = f"variable `{name}`" + (f" (saved in `{path}`, its value)" if path else "")
+        return classify.report(labeled, stored)
 
     exec_description = f"{exec_spec['description']}\n\n{PRINT_NOTE.format(marker=marker)}"
 

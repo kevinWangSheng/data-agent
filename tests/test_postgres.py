@@ -18,6 +18,7 @@ from data_agent import agent
 from data_agent.agent import DBT_SKILLS, QUERY_SKILLS, SKILLS_DIR, ConfigError, Task
 from data_agent.gateway import PostgresGateway, QueryBlocked, QueryFailed
 from data_agent.run_config import load_config
+from data_agent.tool_spend import LEDGER_ENV
 
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
 URL_ENV = "DATA_AGENT_TEST_POSTGRES_URL"
@@ -166,7 +167,9 @@ async def test_run_hands_the_database_variable_from_its_env_to_the_sdk(
     options, _ = await run_postgres(monkeypatch, tmp_path, "query", url=url)
     assert options.env["DA_TEST_URL"] == url
     settings = agent.ModelSettings.from_env({"DATA_AGENT_API_KEY": "sk-test"})
-    assert set(options.env) == {*settings.sdk_env(), "DA_TEST_URL"}
+    # The tool servers' model settings and spend ledger go the same way (ticket 70).
+    tools = {*settings.tool_env(), LEDGER_ENV}
+    assert set(options.env) == {*settings.sdk_env(), *tools, "DA_TEST_URL"}
 
 
 async def test_run_without_the_database_variable_in_its_env_is_a_config_error(
@@ -191,6 +194,9 @@ async def test_run_without_the_database_variable_in_its_env_is_a_config_error(
         "BASH_MAX_TIMEOUT_MS",
         "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR",
         "ANTHROPIC_BASE_URL",
+        # The tool servers' model settings and spend ledger (ticket 70).
+        "DATA_AGENT_MODEL",
+        "DATA_AGENT_SPEND_DIR",
     ],
 )
 async def test_run_rejects_a_database_variable_the_agent_could_print_or_that_configures_the_cli(
