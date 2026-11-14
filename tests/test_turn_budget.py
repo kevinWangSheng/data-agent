@@ -111,13 +111,11 @@ async def test_a_failed_tool_call_carries_the_reminder_too() -> None:
     [
         # 10 left after turn 1 (11 - 1): both points still apply.
         (11, {1: ["10 turns left"], 8: ["3 turns left"]}),
-        # Fewer than 10 left from the start: the 10 point is gone, the first reminder says what
-        # is left, and the 3 point still comes.
-        (8, {1: ["7 turns left"], 5: ["3 turns left"]}),
-        # Both points passed together: one reminder.
-        (3, {1: ["2 turns left"]}),
+        # Never 10 left: only the 3 point applies (the prompt already states the limit).
+        (8, {5: ["3 turns left"]}),
         (4, {1: ["3 turns left"]}),
-        # The run ends right after the only turn: no response could read a reminder.
+        # Never 3 left either: no reminder.
+        (3, {}),
         (1, {}),
     ],
 )
@@ -133,16 +131,31 @@ async def test_low_limits_get_the_reminders_that_still_apply(
             assert want in text
 
 
-async def test_one_turn_left_is_singular() -> None:
-    budget = TurnBudget(2)
-    for message in response(1):
+async def test_a_point_missed_comes_with_the_next_tool_result() -> None:
+    # A hook that ran before its response was observed said nothing; the next one says what is
+    # actually left.
+    budget = TurnBudget(4)
+    for turn in (1, 2, 3):
+        for message in response(turn):
+            budget.observe(message)
+    (output,) = await after_tool(budget, "t3-0")
+    assert "1 turn left," in output["hookSpecificOutput"]["additionalContext"]
+    assert await after_tool(budget, "t1-0") == []
+
+
+async def test_a_response_without_tool_calls_followed_by_another_stops_the_reminders() -> None:
+    # The CLI may or may not count such a response (a blocking Stop hook adds a turn, a retry
+    # does not), so from then on the count is unknown.
+    budget = TurnBudget(4)  # counted as turn 1, response 2 would get "3 turns left"
+    for message in response(1, tools=0):
         budget.observe(message)
-    (output,) = await after_tool(budget, "t1-0")
-    assert "1 turn left" in output["hookSpecificOutput"]["additionalContext"]
+    for message in response(2):
+        budget.observe(message)
+    assert await after_tool(budget, "t2-0") == []
 
 
 async def test_subagent_tool_calls_neither_count_nor_get_reminders() -> None:
-    budget = TurnBudget(5)
+    budget = TurnBudget(4)
     for turn in range(1, 4):
         for message in response(100 + turn, parent="agent-call"):
             budget.observe(message)
@@ -150,7 +163,7 @@ async def test_subagent_tool_calls_neither_count_nor_get_reminders() -> None:
     for message in response(1):
         budget.observe(message)
     (output,) = await after_tool(budget, "t1-0")
-    assert "4 turns left" in output["hookSpecificOutput"]["additionalContext"]
+    assert "3 turns left" in output["hookSpecificOutput"]["additionalContext"]
 
 
 async def test_a_tool_call_the_budget_has_not_seen_gets_no_reminder() -> None:

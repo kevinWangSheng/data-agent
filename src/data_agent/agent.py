@@ -709,31 +709,46 @@ class TurnBudget:
     `max_turns - k` responses are left, counting the next. The budget counts the same responses:
     each main-thread `message_id` whose blocks hold a tool call, in order of arrival (`observe`,
     fed every SDK message). The PostToolUse hooks put a reminder after the first tool result of the
-    response at which a point in REMINDER_POINTS is reached or passed; the next response reads it.
-    A tool call it has not seen gets no reminder, and a response without an id stops the
-    reminders: a wrong count is worse than none."""
+    response at which a point in REMINDER_POINTS is reached or passed (a point is passed when its
+    hook ran before the response was observed); the next response reads it. A point the run can
+    never reach (above `max_turns - 1`) is dropped: the prompt already states the limit.
+
+    A wrong count is worse than none, so the budget goes quiet when it cannot follow the CLI: a
+    tool call it has not seen gets no reminder, and a response without an id, or a main-thread
+    response without tool calls that another response follows, stops the reminders. The CLI
+    counts that response when a Stop hook blocked the end of the run and not when it retried
+    the response (a thinking-only or truncated one); the stream does not say which."""
 
     def __init__(self, max_turns: int) -> None:
         self.max_turns = max_turns
         self._responses: dict[str, int] = {}
         self._calls: dict[str, int] = {}
-        self._reminded: set[int] = set()
+        self._reminded = {point for point in REMINDER_POINTS if point > max_turns - 1}
+        self._last: str | None = None
+        self._last_called = False
         self._lost = False
 
     def observe(self, message: Any) -> None:
         if not isinstance(message, AssistantMessage) or message.parent_tool_use_id is not None:
             return
         calls = [block.id for block in message.content if isinstance(block, ToolUseBlock)]
+        response = message.message_id
+        if response is None:
+            self._lost = self._lost or bool(calls)
+            return
+        if response != self._last:
+            if self._last is not None and not self._last_called:
+                self._lost = True
+            self._last, self._last_called = response, False
         if not calls:
             return
-        if message.message_id is None:
-            self._lost = True
-            return
-        turn = self._responses.setdefault(message.message_id, len(self._responses) + 1)
+        self._last_called = True
+        turn = self._responses.setdefault(response, len(self._responses) + 1)
         self._calls |= dict.fromkeys(calls, turn)
 
-    def reminder(self, tool_use_id: str) -> tuple[int, int, str] | None:
-        """The turn of this call, the turns left after it and the reminder, when one is due."""
+    def take_reminder(self, tool_use_id: str) -> tuple[int, int, str] | None:
+        """The turn of this call, the turns left after it and the reminder, when one is due; the
+        points it covers are used up."""
         turn = self._calls.get(tool_use_id)
         if turn is None or self._lost:
             return None
@@ -754,7 +769,7 @@ class TurnBudget:
             if fields.get("agent_id"):
                 return {}
             call = str(fields.get("tool_use_id", tool_use_id))
-            due = self.reminder(call)
+            due = self.take_reminder(call)
             if due is None:
                 return {}
             turn, left, text = due
