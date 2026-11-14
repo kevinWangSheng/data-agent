@@ -25,6 +25,7 @@ import duckdb
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
+    HookContext,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -792,6 +793,56 @@ async def test_the_agent_gets_the_task_and_dab_tools_but_no_answer(
     assert options.max_turns == 50
     # The price-table cap holds the configured $1; the SDK gets its backstop.
     assert options.max_budget_usd == agent.sdk_budget_usd(1.0, agent.DEFAULT_MODEL)
+
+
+async def test_the_prompt_states_the_turn_limit_in_force(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # Ticket 69: the agent is told the limit the session runs under, `large` on a large database.
+    seen = await run_dab(monkeypatch, dab_root, tmp_path / "small", runs=1)
+    assert "Turn limit: 50." in seen[0]["prompt"]
+    big = dab_root / "query_toyset" / "dump" / "big.bson"
+    with big.open("wb") as f:
+        f.truncate(dab.LARGE_DB_BYTES)  # sparse: no real disk use
+    seen = await run_dab(monkeypatch, dab_root, tmp_path / "large", runs=1)
+    assert "Turn limit: 75." in seen[0]["prompt"]
+    assert "Turn limit: 50" not in seen[0]["prompt"]
+    assert seen[0]["options"].max_turns == 75
+
+
+async def test_the_turn_budget_follows_the_session(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # The run feeds the budget the session's messages, so its hooks remind at 10 turns left.
+    reminders: dict[int, str] = {}
+
+    async def fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        for turn in range(1, 42):
+            call = ToolUseBlock(id=f"c{turn}", name="Read", input={})
+            yield AssistantMessage(content=[call], model="m", message_id=f"m{turn}")
+            for matcher in options.hooks["PostToolUse"]:
+                for callback in matcher.hooks:
+                    hook_input: Any = {
+                        "hook_event_name": "PostToolUse",
+                        "session_id": "s",
+                        "transcript_path": "t",
+                        "cwd": "/w",
+                        "tool_name": "Read",
+                        "tool_input": {},
+                        "tool_response": "ok",
+                        "tool_use_id": f"c{turn}",
+                    }
+                    output: Any = await callback(hook_input, None, HookContext(signal=None))
+                    text = (output or {}).get("hookSpecificOutput", {}).get("additionalContext")
+                    if text:
+                        reminders[turn] = text
+        yield result("done")
+
+    monkeypatch.setattr(dab, "query", fake_query)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 1, ENV)
+    assert list(reminders) == [40]
+    assert "10 turns left" in reminders[40]
 
 
 async def test_skills_follow_the_run_config(

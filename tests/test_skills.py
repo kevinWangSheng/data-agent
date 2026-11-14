@@ -50,6 +50,17 @@ def test_query_skills_say_nothing_about_how_answers_are_scored() -> None:
             assert term not in body, (name, term)
 
 
+def test_the_turn_budget_section_uses_what_the_agent_is_told() -> None:
+    """Ticket 69: the agent is never told an N; section 6 works from the limit the task prompt
+    states and the turns-left reminders."""
+    text = (SKILLS_DIR / "sql-workflow" / "SKILL.md").read_text()
+    section = text.split("## 6. Turn Budget Management", 1)[1].split("\n## ", 1)[0]
+    assert not re.search(r"\bN\b", section)
+    assert "Turn limit" in section
+    assert "turns left" in section
+    assert "ANSWER IMMEDIATELY" in section
+
+
 def test_duckdb_skill_states_division_as_duckdb_does_it() -> None:
     text = (SKILLS_DIR / "duckdb-sql" / "SKILL.md").read_text()
     assert duckdb.sql("SELECT 5 / 2, 5 // 2").fetchone() == (2.5, 2)

@@ -51,9 +51,11 @@ from data_agent.agent import (
     MCP_SERVER,
     SKILLS_PROMPT,
     SYSTEM_PROMPT,
+    TURN_LIMIT,
     ConfigError,
     ModelSettings,
     Task,
+    TurnBudget,
     build_options,
     capped,
     ended_by_sdk,
@@ -90,6 +92,7 @@ Task type: query
 Databases, reachable only through the `{server}` MCP tools (pass the name as `db_name`):
 {databases}
 Workspace (your working directory): {workspace}
+{turn_limit}
 
 <task>
 {question}
@@ -281,10 +284,11 @@ def system_prompt(dab_query: DabQuery, config: RunConfig) -> str:
     return prompt
 
 
-def task_prompt(dab_query: DabQuery, workspace: Path) -> str:
+def task_prompt(dab_query: DabQuery, workspace: Path, max_turns: int) -> str:
     databases = "\n".join(f"- {name} ({kind})" for name, kind in dab_query.databases.items())
     return TASK_PROMPT.format(
         server=MCP_SERVER,
+        turn_limit=TURN_LIMIT.format(max_turns=max_turns),
         databases=databases,
         workspace=workspace.resolve(),
         question=dab_query.question,
@@ -388,6 +392,8 @@ async def run_once(
     workspace = directory / "workspace"
     workspace.mkdir()
     turns = max_turns(dab_query, config)
+    # The session's limit and the budget that reminds the agent of it (ticket 69).
+    budget = TurnBudget(turns)
     tool_log = directory / "dab_tool_calls.jsonl"
     server: McpStdioServerConfig = {
         "type": "stdio",
@@ -401,17 +407,16 @@ async def run_once(
     # replaces the DuckDB one.
     task = Task(text="", type="query", workspace=workspace, duckdb=dab_query.db_config)
     final: ResultMessage | None = None
-    # The same price-table cap as `data-agent run`; the session's turns follow `max_turns` here.
+    # The same price-table cap as `data-agent run`; the session's turns follow `budget`.
     cap = spend_cap(settings.model, config.max_budget_usd)
     with (
         tool_ledger(cap, workspace),  # the spend of classify_text's model calls (ticket 70)
         EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log,
     ):
         options = replace(
-            build_options(task, config, settings, stderr, log.emit, cap),
+            build_options(task, config, settings, stderr, log.emit, cap, turn_budget=budget),
             system_prompt=system_prompt(dab_query, config),
             mcp_servers={MCP_SERVER: server},
-            max_turns=turns,
         )
         log.emit(
             "version",
@@ -446,12 +451,13 @@ async def run_once(
         tools: dict[str, str] = {}
         server_up = True
         try:
-            stream = query(prompt=task_prompt(dab_query, workspace), options=options)
+            stream = query(prompt=task_prompt(dab_query, workspace, turns), options=options)
             async with aclosing(capped(stream, cap)) as messages:
                 async for message in messages:
                     if isinstance(message, ResultMessage):
                         final = message
                         continue
+                    budget.observe(message)
                     record_message(log, message, tools)
                     if isinstance(message, SystemMessage) and message.subtype == "init":
                         # Without DAB's tools the agent can only say the data is unreachable;

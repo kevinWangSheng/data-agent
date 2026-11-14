@@ -43,10 +43,13 @@ then the assumptions you made.
 """
 
 # Its last paragraph is the final-answer rule of ticket 68.
+# Ticket 69 added the turn-limit line (both configs here run with the query limit of 50).
 QUERY_PROMPT_BEFORE = """\
 Task type: query
 Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
+Turn limit: 50. Each response of yours that calls a tool uses one turn; once all 50 are used, the \
+run ends with no answer. A response with no tool calls is your final answer.
 
 <task>
 {task}

@@ -126,6 +126,7 @@ QUERY_PROMPT = (
 Task type: query
 Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
+{turn_limit}
 
 <task>
 {task}
@@ -133,6 +134,13 @@ Workspace (your working directory): {workspace}
 
 """
     + ANSWER_RULE
+)
+
+# The query prompts' turn line (ticket 69); TurnBudget reminds the agent as the turns run out.
+TURN_LIMIT = (
+    "Turn limit: {max_turns}. Each response of yours that calls a tool uses one turn; once all "
+    "{max_turns} are used, the run ends with no answer. A response with no tool calls is your "
+    "final answer."
 )
 
 DBT_SYSTEM_PROMPT = """\
@@ -773,6 +781,118 @@ def uses_verifiers(task_type: str, config: RunConfig) -> bool:
     return task_type == "dbt" and config.verifiers
 
 
+# Ticket 69: a query agent is reminded once at each of these counts of turns left.
+REMINDER_POINTS = (10, 3)
+# The agent reads it after a response's tool results, so the count names the next response as the
+# first of those left and says the response whose tools ran has used its turn.
+REMINDER_TEXT = (
+    "Turn budget: {left} {turns} left, your next response included: you can send {left} more "
+    "tool-calling {responses}, and after the last of them the run ends with no answer. The "
+    "response whose tool results you are reading has already used its turn. Give your final "
+    "answer, a response with no tool calls, before then."
+)
+
+
+class TurnBudget:
+    """What is left of a query run's turn limit, told to the agent (ticket 69).
+
+    The bundled CLI counts a turn per main-thread response whose tool calls ran: the count starts
+    at 1 and goes up after each such response's tools; once it would pass `max_turns` the run ends
+    with `error_max_turns` (`num_turns` then reports limit + 1). So after the tools of response k,
+    `max_turns - k` responses are left, counting the next. The budget counts the same responses:
+    each main-thread `message_id` whose blocks hold a tool call, in order of arrival (`observe`,
+    fed every SDK message). The PostToolUse hooks put a reminder after the first tool result of the
+    response at which a point in REMINDER_POINTS is reached or passed (a point is passed when its
+    hook ran before the response was observed); the next response reads it. A point the run can
+    never reach (above `max_turns - 1`) is dropped: the prompt already states the limit.
+
+    A wrong count is worse than none, so the budget goes quiet when it cannot follow the CLI: a
+    tool call it has not seen gets no reminder, and a response without an id, or a main-thread
+    response without tool calls that another response follows, stops the reminders. The CLI
+    counts that response when a Stop hook blocked the end of the run and not when it retried
+    the response (a thinking-only or truncated one); the stream does not say which."""
+
+    def __init__(self, max_turns: int) -> None:
+        self.max_turns = max_turns
+        self._responses: dict[str, int] = {}
+        self._calls: dict[str, int] = {}
+        self._reminded = {point for point in REMINDER_POINTS if point > max_turns - 1}
+        self._last: str | None = None
+        self._last_called = False
+        self._lost = False
+
+    def observe(self, message: Any) -> None:
+        if not isinstance(message, AssistantMessage) or message.parent_tool_use_id is not None:
+            return
+        calls = [block.id for block in message.content if isinstance(block, ToolUseBlock)]
+        response = message.message_id
+        if response is None:
+            self._lost = self._lost or bool(calls)
+            return
+        if response != self._last:
+            if self._last is not None and not self._last_called:
+                self._lost = True
+            self._last, self._last_called = response, False
+        if not calls:
+            return
+        self._last_called = True
+        turn = self._responses.setdefault(response, len(self._responses) + 1)
+        self._calls |= dict.fromkeys(calls, turn)
+
+    def take_reminder(self, tool_use_id: str) -> tuple[int, int, str] | None:
+        """The turn of this call, the turns left after it and the reminder, when one is due; the
+        points it covers are used up."""
+        turn = self._calls.get(tool_use_id)
+        if turn is None or self._lost:
+            return None
+        left = self.max_turns - turn
+        due = {point for point in REMINDER_POINTS if left <= point} - self._reminded
+        if left < 1 or not due:
+            return None
+        self._reminded |= due
+        singular = left == 1
+        text = REMINDER_TEXT.format(
+            left=left,
+            turns="turn" if singular else "turns",
+            responses="response" if singular else "responses",
+        )
+        return turn, left, text
+
+    def hooks(self, emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
+        """PostToolUse and PostToolUseFailure on every tool; subagents' calls are left alone."""
+
+        async def remind(
+            hook_input: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            fields: dict[str, Any] = dict(hook_input)
+            if fields.get("agent_id"):
+                return {}
+            call = str(fields.get("tool_use_id", tool_use_id))
+            due = self.take_reminder(call)
+            if due is None:
+                return {}
+            turn, left, text = due
+            emit(
+                "turn_budget",
+                turn=turn,
+                turns_left=left,
+                max_turns=self.max_turns,
+                tool_use_id=call,
+                session_id=fields.get("session_id"),
+                text=text,
+            )
+            event = fields.get("hook_event_name")
+            return cast(
+                HookJSONOutput,
+                {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}},
+            )
+
+        return {
+            "PostToolUse": [HookMatcher(hooks=[remind])],
+            "PostToolUseFailure": [HookMatcher(hooks=[remind])],
+        }
+
+
 def build_options(
     task: Task,
     config: RunConfig,
@@ -785,6 +905,7 @@ def build_options(
     dictionary: Path | None = None,
     snapshot: Path | None = None,
     deadline: float | None = None,
+    turn_budget: TurnBudget | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
@@ -796,7 +917,15 @@ def build_options(
     is the directory the v2 tools compare the workspace against; it reaches the MCP server the
     way the Postgres URL does, through the SDK subprocess's environment. `deadline` (monotonic
     seconds, ticket 54) is when the trial ends: the v2 hooks stop dispatching verifiers once too
-    little of it is left."""
+    little of it is left. A query run always gets the turn-budget hooks (ticket 69), whatever its
+    layers; `turn_budget` holds the run's limit and is the one the caller feeds every SDK message
+    (`TurnBudget.observe`), so a caller that streams the session passes its own. Without one the
+    limit is the run config's, and nothing feeds the budget, so it reminds no one."""
+    if task.type == "dbt":
+        max_turns, budget = config.max_turns["dbt"], None
+    else:
+        budget = turn_budget or TurnBudget(config.max_turns[task.type])
+        max_turns = budget.max_turns
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
@@ -844,6 +973,9 @@ def build_options(
                 all_hooks.setdefault(event, []).extend(matchers)
     for event, matchers in tool_timing_hooks(emit).items():
         all_hooks.setdefault(event, []).extend(matchers)
+    if budget is not None:
+        for event, matchers in budget.hooks(emit).items():
+            all_hooks.setdefault(event, []).extend(matchers)
     if spend is not None:
         for event, matchers in spend.hooks(emit).items():
             all_hooks.setdefault(event, []).extend(matchers)
@@ -871,7 +1003,7 @@ def build_options(
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.
         setting_sources=["user"],
         skills=[],
-        max_turns=config.max_turns[task.type],
+        max_turns=max_turns,
         max_budget_usd=(
             config.max_budget_usd
             if spend is None
@@ -1136,8 +1268,10 @@ async def run(
             sdk_version=claude_agent_sdk.__version__,
             cli_version=__cli_version__,
         )
+        budget = None if task.type == "dbt" else TurnBudget(config.max_turns[task.type])
         prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
             server=MCP_SERVER,
+            turn_limit=TURN_LIMIT.format(max_turns=budget.max_turns) if budget else "",
             database=DATABASE_NAMES[task.dialect],
             workspace=task.workspace.resolve(),
             task=task.text,
@@ -1163,6 +1297,7 @@ async def run(
                 dictionary=dictionary,
                 snapshot=snapshot,
                 deadline=deadline,
+                turn_budget=budget,
             )
             open_calls: dict[str, str] = {}
             # Cancels the stream at the deadline less its margin; closing the cancelled stream
@@ -1181,6 +1316,8 @@ async def run(
                                 if isinstance(message, ResultMessage):
                                     final = message
                                 else:
+                                    if budget is not None:
+                                        budget.observe(message)
                                     record_message(log, message, tools)
                                     track_open_calls(message, open_calls)
                     except Exception as exc:
