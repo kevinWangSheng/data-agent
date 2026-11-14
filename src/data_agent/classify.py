@@ -2,7 +2,7 @@
 sent to the run's own model. Both tool servers (`mcp_server`, `evals.dab_server`) serve it from
 here; each fetches the rows through its read-only path and stores the label table its own way.
 
-The model and its endpoint are the run's (`MODEL_ENV`, set by the run for the server's process);
+The model and its endpoint are the run's (`ModelSettings.tool_env`, set for the server's process);
 every call's tokens go into the run's spend ledger (`tool_spend`), and no batch starts once the
 run's spend has reached its budget. Labels are facts: a label outside the categories, a row the
 reply left out, or a failed call is reported as such and gets no category.
@@ -22,6 +22,7 @@ from anthropic.types import MessageParam
 from mcp.server.mcpserver.exceptions import ToolError
 from sqlglot import exp
 
+from data_agent.agent import ConfigError, ModelSettings
 from data_agent.db_facts import RunQuery
 from data_agent.events import known_secrets, mask
 from data_agent.gateway import MAX_ROWS, QueryResult
@@ -37,8 +38,6 @@ MAX_CONCURRENT_BATCHES = 8
 MAX_OUTPUT_TOKENS = 8192
 MODEL_TIMEOUT_S = 120.0
 MODEL_RETRIES = 2
-# The run's model settings, as `data-agent run` reads them (agent.ModelSettings).
-MODEL_ENV = ("DATA_AGENT_BASE_URL", "DATA_AGENT_API_KEY", "DATA_AGENT_MODEL")
 
 # The columns the label table adds to the query's (its text column left out).
 LABEL, OUTCOME, MODEL_LABEL = "label", "outcome", "model_label"
@@ -144,11 +143,12 @@ def setup_from_env(env: Mapping[str, str]) -> Setup:
             "(the run's model needs a price in the price table), so its model calls could not "
             "count toward the run's budget"
         )
-    missing = [name for name in MODEL_ENV if not env.get(name)]
-    if missing:
-        raise ToolError(f"{TOOL} is unavailable: {', '.join(missing)} not set for the tool server")
-    base_url, api_key, model = (env[name] for name in MODEL_ENV)
-    return Setup(anthropic_model(base_url, api_key, model), ledger, known_secrets(env))
+    try:
+        settings = ModelSettings.from_env(env)
+    except ConfigError as exc:
+        raise ToolError(f"{TOOL} is unavailable: {exc} for the tool server") from exc
+    model = anthropic_model(settings.base_url, settings.api_key, settings.model)
+    return Setup(model, ledger, known_secrets(env))
 
 
 def check_categories(categories: Sequence[str]) -> list[str]:
@@ -334,8 +334,10 @@ def classify(
     batches run at once. A batch starts only while the run's spend (its own and every tool
     call's), with the costliest call so far reserved for each batch still running, is under the
     budget; until one call's cost is known, one batch runs at a time. Once the budget is reached
-    with nothing running, no more start: a classification passes the budget by one call at most,
-    as a run passes it by its last main call (`agent.Spend`)."""
+    with nothing running, no more start. So a classification passes the budget by the calls in
+    flight when it is reached: one call when every batch costs about the same, more when a batch
+    costs more than every one before it (a run passes it the same way by its last main call,
+    `agent.Spend`)."""
     allowed = check_categories(categories)
     check_rows(result, key_column, text_column)
     text_at = result.columns.index(text_column) if result.columns else -1
