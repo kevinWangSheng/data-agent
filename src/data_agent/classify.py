@@ -26,7 +26,7 @@ from data_agent.agent import ConfigError, ModelSettings
 from data_agent.db_facts import RunQuery
 from data_agent.events import known_secrets, mask
 from data_agent.gateway import MAX_ROWS, QueryResult
-from data_agent.tool_spend import LEDGER_ENV, Ledger, ToolTokens
+from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState, ToolTokens
 
 TOOL = "classify_text"
 # Rows one call may classify (provisional; the main session sets it from the measured cost per
@@ -142,13 +142,21 @@ class Setup:
     secrets: list[str]  # masked out of every error the tool returns
 
 
+def run_ledger(env: Mapping[str, str]) -> tuple[Ledger, RunState] | None:
+    """The run's spend ledger and what the run last wrote to it; None for a server not started
+    by a run, or before the run has written its state."""
+    directory = env.get(LEDGER_ENV)
+    ledger = Ledger(Path(directory)) if directory else None
+    state = ledger.run_state() if ledger else None
+    return (ledger, state) if ledger and state else None
+
+
 def setup_from_env(env: Mapping[str, str]) -> Setup:
     """The run's model and spend ledger, from the variables the run gives the server. A server not
     started by a run (or a run whose model has no price, so no budget the tool could keep to)
     has no ledger, and the tool refuses to call a model."""
-    directory = env.get(LEDGER_ENV)
-    ledger = Ledger(Path(directory)) if directory else None
-    if ledger is None or ledger.run_state() is None:
+    found = run_ledger(env)
+    if found is None:
         raise ToolError(
             f"{TOOL} is unavailable: this tool server has no spend ledger from a data-agent run "
             "(the run's model needs a price in the price table), so its model calls could not "
@@ -159,15 +167,14 @@ def setup_from_env(env: Mapping[str, str]) -> Setup:
     except ConfigError as exc:
         raise ToolError(f"{TOOL} is unavailable: {exc} for the tool server") from exc
     model = anthropic_model(settings.base_url, settings.api_key, settings.model)
-    return Setup(model, ledger, known_secrets(env))
+    return Setup(model, found[0], known_secrets(env))
 
 
 def description(source: str, stored: str, env: Mapping[str, str]) -> str:
     """DESCRIPTION for a server; with the run's budget when the run's ledger is there (without
     one the tool refuses to call a model, and the description names no budget)."""
-    directory = env.get(LEDGER_ENV)
-    state = Ledger(Path(directory)).run_state() if directory else None
-    note = BUDGET_NOTE.format(budget=state.budget_usd) if state else ""
+    found = run_ledger(env)
+    note = BUDGET_NOTE.format(budget=found[1].budget_usd) if found else ""
     return DESCRIPTION.format(source=source, limit=ROW_LIMIT, stored=stored, budget=note)
 
 

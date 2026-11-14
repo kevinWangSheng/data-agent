@@ -586,6 +586,7 @@ async def test_without_a_ledger_dab_serves_the_tool_without_a_budget(
         tools = {tool.name: tool for tool in (await session.list_tools()).tools}
     description = tools["classify_text"].description or ""
     assert "budget of $" not in description
+    assert NO_ANSWER not in description
 
 
 async def test_dab_classifies_mongo_documents(
