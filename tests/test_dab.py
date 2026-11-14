@@ -139,6 +139,7 @@ async def test_server_exposes_dab_tools_under_our_tool_names(
         "execute_python",
         "describe_table",  # ours, for Postgres and DuckDB databases (ticket 37)
         "explain_query",
+        "classify_text",  # ours, for every database (ticket 70)
     }
     # The descriptions are DAB's own, read from its tool specs at run time.
     assert tools["query_database"].description == "FAKE-DAB query description."

@@ -65,6 +65,7 @@ from data_agent.agent import (
     record_message,
     skill_version,
     spend_cap,
+    tool_ledger,
 )
 from data_agent.events import REDACTED, EventLog, known_secrets
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT, RunConfig, load_config
@@ -408,7 +409,10 @@ async def run_once(
     final: ResultMessage | None = None
     # The same price-table cap as `data-agent run`; the session's turns follow `budget`.
     cap = spend_cap(settings.model, config.max_budget_usd)
-    with EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log:
+    with (
+        tool_ledger(cap, workspace),  # the spend of classify_text's model calls (ticket 70)
+        EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log,
+    ):
         options = replace(
             build_options(task, config, settings, stderr, log.emit, cap, turn_budget=budget),
             system_prompt=system_prompt(dab_query, config),
