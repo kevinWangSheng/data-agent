@@ -779,7 +779,7 @@ class TurnBudget:
                 turns_left=left,
                 max_turns=self.max_turns,
                 tool_use_id=call,
-                transcript_path=fields.get("transcript_path"),
+                session_id=fields.get("session_id"),
                 text=text,
             )
             event = fields.get("hook_event_name")

@@ -208,7 +208,7 @@ async def test_each_reminder_is_recorded_as_an_event() -> None:
                 "turns_left": 3,
                 "max_turns": 4,
                 "tool_use_id": "t1-0",
-                "transcript_path": "/t/session.jsonl",
+                "session_id": "s",
                 "text": events[0][1]["text"],
             },
         )
