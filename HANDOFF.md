@@ -309,6 +309,12 @@
     - 开 PR 时静态检查的评论还没出现，只有一个 security-bot 检查在 pending。之后要看：静态检查的结果（红了就改同一个文件再 push）、晋升后的 bot PR、维护者的 `/judge` 和 `/apply`。
   - 没做的：降分的 9 道题没有诊断（这一轮不再修，读出来也只进已知限制）。
   - 服务器在 cc8cdef，没有任务在跑。余额 ¥151.26（2026-11-15 `da-remote check`）。
+- 2026-11-15 收尾：评测和上榜提交这条线做完了。**下一会话从这里开始。**
+  - 两个 PR 都是 open，等对方处理：DAB #144 还没有评论；data-eng-bench #20 的静态检查结果还没出。有回复时要核对并回应（data-eng-bench 报红就改同一个文件再 push；原 PR 被机器人 PR 取代后关闭是正常流程）。
+  - 一期剩下的（plan §10）：21 README（仓库已公开但根目录没有 README）、20 报告、5/10 网页界面（还没讨论，只有 `docs/research/2026-11-01-upstream-web-ui.md`）、23 博客（可选）。编排会话的建议（人还没定）：先 README 第一版，再报告，网页界面最后并先讨论要不要做。这些都是"怎么构建"的内容，先和人逐项对齐再落文件。
+  - 报告的失败归因要用到、还没做的：第 18b 项里降分的 9 道题没有读轨迹（先看 GITHUB_REPOS query2）。
+  - 留下没清理的东西：本机 6 个已合并工单的 worktree 和分支；服务器 `/root/da-benchmarks/deb-submit`（提交用的 clone）和 Harbor 登录状态；人账号下的两个 fork（`kevinWangSheng/DataAgentBench`、`kevinWangSheng/data-eng-bench`，PR 还开着时不能删）。
+  - 服务器在 cc8cdef，没有任务在跑。余额 ¥151.26（2026-11-15）。
 
 ## 0. 一句话
 
