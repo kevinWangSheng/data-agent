@@ -786,11 +786,16 @@ def skill_names(task_type: str, dialect: str) -> tuple[str, ...]:
     return tuple(DIALECT_SKILLS[dialect] if name == "duckdb-sql" else name for name in names)
 
 
+def injected_skills(task_type: str, config: RunConfig, dialect: str) -> tuple[str, ...]:
+    """The Skills the main agent's system prompt holds, in order; none when the layer is off."""
+    return skill_names(task_type, dialect) if config.skill else ()
+
+
 def system_prompt(task_type: str, config: RunConfig, dialect: str = "duckdb") -> str:
     base = DBT_SYSTEM_PROMPT if task_type == "dbt" else SYSTEM_PROMPT
-    names = skill_names(task_type, dialect)
+    names = injected_skills(task_type, config, dialect)
     prompt = base.format(server=MCP_SERVER)
-    if config.skill:
+    if names:
         prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
     if uses_verifiers(task_type, config):
         prompt += VERIFIERS_PROMPT
@@ -1360,6 +1365,7 @@ async def run(
             "version",
             git_commit=git_commit(),
             skill_version=skill_version(config.skills_dir) if config.skill else "none",
+            skills=list(injected_skills(task.type, config, task.dialect)),
             config=config.name,
             layers=config.layers(),
             model=settings.model,
