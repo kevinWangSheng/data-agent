@@ -315,6 +315,14 @@
   - 报告的失败归因要用到、还没做的：第 18b 项里降分的 9 道题没有读轨迹（先看 GITHUB_REPOS query2）。
   - 留下没清理的东西：本机 6 个已合并工单的 worktree 和分支；服务器 `/root/da-benchmarks/deb-submit`（提交用的 clone）和 Harbor 登录状态；人账号下的两个 fork（`kevinWangSheng/DataAgentBench`、`kevinWangSheng/data-eng-bench`，PR 还开着时不能删）。
   - 服务器在 cc8cdef，没有任务在跑。余额 ¥151.26（2026-11-15）。
+- 2026-11-15 晚：README 第一版写完并提交（plan §10 第 21 项）。**下一会话从这里开始。**
+  - `README.md`（英文，197 行）和 `docs/assets/architecture.svg`（手写的架构图，自带深色底；人嫌 mermaid 难看后换的）。人已看过，说没有问题。
+  - 写法：主会话直接写；sonnet 子 agent 读了 SignalPilot、ktx、nao、dash、harbor 的 README 结构；写完由无上下文的 Opus 子 agent 冷读并逐条核对，约 46 条陈述里改了 14 处（轮数提醒只在查数任务、查数任务没有 shell、许可段落按 `NOTICE` 列三个上游、合入 PR 是 77 个等）。
+  - 快速上手的命令真跑过一次（`tests/fixtures/shop.sql` 建的 DuckDB，no-verifiers，22 秒、13 轮、$0.007，答案 Gold 710.00），README 贴的是这次的输出。
+  - README 里的表述选择（人已看过）：DAB 写明 0.7588 不是盲跑分数、盲跑是 0.7421；消融写"数据说不出哪层有用"；no-verifiers 叫"推荐配置"（CLI 的 `--config` 是必填）；没放榜上别人的分数。
+  - README 还没做的：中文版（语言问题人没答，先只有英文）；dbt 用法只有一句参数说明，没有真跑过的例子；没有动图（等网页界面）；两个 PR 合入后要把 "open" 和"还没上榜"改掉。
+  - 一期剩下的：20 报告（先补第 18b 项降分 9 道题的轨迹阅读）、5/10 网页界面（还没讨论）、23 博客（可选）；跟进 DAB #144 和 data-eng-bench #20（2026-11-15 晚查：都 open，没有评论；#20 的 security-bot 和 codeowners 检查已过，榜单静态检查的评论还没出）。
+  - 没清理的东西同上一条（6 个已合并工单的 worktree 和旧分支、服务器的提交用 clone、两个 fork）。
 
 ## 0. 一句话
 
