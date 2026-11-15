@@ -8,6 +8,7 @@ import asyncio
 import dataclasses
 import json
 from collections.abc import AsyncIterator, Callable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -745,6 +746,8 @@ async def system_prompt_and_version(
 
     monkeypatch.setattr(agent, "query", fake_query)
     monkeypatch.setattr(agent.shutil, "which", lambda *_, **__: "/usr/bin/dbt")
+    # The context layer's dictionary build would connect to the database.
+    monkeypatch.setattr(agent, "prebuilt_dictionary", lambda *_: nullcontext())
     if dialect == "postgres":
         task = Task(text="q", type=task_type, workspace=tmp_path, postgres_env="DA_TEST_URL")  # pyright: ignore[reportArgumentType]
         env = ENV | {"DA_TEST_URL": "postgresql://someone:pw@127.0.0.1:1/nowhere"}
