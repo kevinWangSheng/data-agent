@@ -263,7 +263,7 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
 ## Update 2026-11-15：第 18b 项（DAB 修复一轮后全量重跑）的结果
 
 - **运行**：2026-11-14 18:34Z 至 2026-11-15 02:41Z，cc8cdef（含工单 68–72），和第 18 项同样的 12 个数据集、54 题 × 5 次 × 2 个配置，共 540 个 trial，全在周末闲时。跑法照第 18 项（本机 `runs/f18b/par.py`，运行名 `f18b-<config>-<dataset>`）；唯一改动是 agnews 的批次预算按每个 trial $0.5 算（分类工具让单次花费到 $0.03–$0.75）。24 个运行全部 exit 0，没有批次触发预算停止线，调度没有中断。墙钟约 8.1 小时，内存峰值 3.6 / 7.9 GB。
-- 没做完的 trial 5 个，都在 agnews，按 0 分计：baseline 3 个（query3 1 个、query4 2 个），no-context 2 个（query3 2 个）。没做完的原因没有读轨迹，未确认。第 18 项是 17 个。
+- 没做完的 trial 5 个，都在 agnews，按 0 分计：baseline 3 个（query3 1 个、query4 2 个），no-context 2 个（query3 2 个）。第 18 项是 17 个。no-context 的 270 个事件文件查过（2026-11-15）：没有一次用完轮数；3 次撞上下文长度上限、没有答案（agnews query3 的那 2 个，另有 stockmarket query2 run0，运行器把它记成了 finished，答案栏是报错文字 "Prompt is too long"）。baseline 的 3 个没查原因。
 - 按配置合并（服务器 `runs/f18b-merged-<config>`，各 270 条）后算分：`dab-score --runs 5 --strict`，exit 0（服务器 `runs/f18b-score`，本机有 `run.log`）。
 - **Pass@1（54 题，数据集宏平均，用了 hints），新旧并排**：
 
@@ -282,3 +282,6 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
 - 读法：修复瞄准的题确实变好了，但其他题有零散的下降，no-context 净增 2 次（+1.67 分）。新旧两次全量之间的差值没有做配对检验；降的那些题没有读轨迹，是模型波动还是修复造成的，未确认（GITHUB_REPOS query2 在两个配置里都是 4 → 2，最值得先看）。两次全量里 no-context 都高于 baseline，但这一次区间跨过 0。主会话开跑前的预估（no-context 约 76–80%）偏高。
 - 实付 $13.57（baseline $6.50，no-context $7.07；其中 agnews 两个配置共 $5.33），每个 trial $0.0251。
 - **正式评测累计实付**：约 $81.1（到第 18 项 $62.26；修复一轮的实验和三次小范围验证约 $5.26，按 HANDOFF 各条相加；本次 $13.57），预算 ¥700。
+- **人定（2026-11-15）**：DAB 用第 18b 项的新结果提交。
+- **提交包**（本机和服务器的 `runs/f19b-dab/`，第 18 项的旧包 `runs/f19-dab/` 保留）：`pkg/submission.json`（no-context 的 270 条，和算分用的那份逐字节相同）、`data-agent-dab-traces.zip`（28 MB）、`PR.md`（写明修复是看过本榜失败后做的，以及修复前的分数）。scrub（cc8cdef）改了 528 个文件，密钥和 endpoint 0 处；剩 2 处 `/home/corbax`，是 GITHUB_REPOS 数据集里 SVG 文件的内容，没有处理。
+- **对照 DAB 提交规则的自查**（脚本 `runs/f19b-dab/selfcheck/check.py`，查 no-context 270 个 trial 的工具输入；同一脚本在第 18 项的旧包上能找出当时记录的那 8 个 agnews trial）：没有 trial 尝试取榜外数据，没有 trial 读 `ground_truth`、`validate.py`、`queries.json` 或别的提交文件。`classify_text` 调用 152 次，都在 agnews。agnews query4 通过的 4 次答案都直接答 Africa，不是靠评分宽松。
