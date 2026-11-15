@@ -162,8 +162,12 @@ def held_out(manifest: dict[str, Any]) -> set[str]:
 
 def read_events(path: Path) -> list[dict[str, Any]]:
     """The events of a file, lines that do not parse aside (a run killed mid-line)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise Refused(f"cannot read the event file {path}: {exc}") from exc
     events: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -212,7 +216,12 @@ def featured_run(run_dir: Path) -> tuple[dict[str, Any], Path]:
 def instruction(tasks_dir: Path | None, task: str) -> str:
     """The task's instruction in Harbor's task directory, else its id."""
     path = tasks_dir / task / "instruction.md" if tasks_dir else None
-    return path.read_text() if path and path.is_file() else task
+    if path is None or not path.is_file():
+        return task
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise Refused(f"cannot read the task instruction {path}: {exc}") from exc
 
 
 def trial_notes(trial: Trial, events: Path, tasks_dir: Path | None) -> dict[str, Any]:
@@ -417,7 +426,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         try:
             n = build(args, stage)
-        except Refused as exc:
+        except (Refused, OSError) as exc:
             print(f"export: {exc}", file=sys.stderr)
             return 2
         cleaned = scrub.run(

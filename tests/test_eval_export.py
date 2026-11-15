@@ -337,3 +337,16 @@ def test_two_runs_with_one_id_are_refused(tmp_path: Path) -> None:
     )
     assert proc.returncode != 0
     assert not out.exists()
+
+
+def test_an_event_file_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
+    run = tmp_path / "r1"
+    run.mkdir()
+    (run / "run-1.jsonl").write_bytes(b'{"type": "text", "text": "\xff"}\n')
+    (run / "notes.json").write_text(json.dumps({"title": "t", "failure_reason": None}))
+    out = tmp_path / "site"
+    proc = export("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run))
+    assert proc.returncode == 2
+    assert "Traceback" not in proc.stderr
+    assert not out.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["manifest.json", "r1"]  # no staging left
