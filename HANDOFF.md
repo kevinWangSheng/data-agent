@@ -352,7 +352,7 @@
 - 2026-11-15（样板）：人改主意，三个样板在同一会话里派了、做完了，**人选定 B（三栏追踪查看器）**，记在 plan §2"样板"。**下一步：`/to-spec`（测试接缝由人确认），再 `/to-tickets`。**
   - 样板和数据在本机 `runs/web-prototypes/`（不进 git）：`BRIEF.md`、`data/runs/` 三条运行、`a/` `b/` `c/` 三个样板、`compare/index.html` 对比页。B 的启动：在 `b/` 下 `pnpm preview`，端口 5182。
   - 上一条说的长运行 `runs/t46-real2` 没用上：它早于工单 47、59–64，没有 `verifier_dispatch` 和 `tool_timing` 事件。实际用的三条：README 快速上手重跑的查数运行；`runs/u1-full-rest/jobs/full/dbt-cart-abandonment-recovery__dSJJ5j9`（122 次调用，FAIL → PASS）；`runs/u1-target/jobs/full/dbt-fix-division-by-zero__tzXXxtE`（270 次调用，评分失败）。
-  - spec 里要定的：B 的三个缺点怎么处理、哪些事件数据缺口要补（都列在 plan §2"样板"）；加上上一条留下的三项。
+  - Q30–Q37 已由人确认（plan §2"样板"），spec 写在 `.scratch/web-ui/spec.md`，Status 是 needs-info：还有"待人确认"一节的 4 条（数据源配置文件、dbt 运行的工作目录、同时只跑一条、在线版数据放 release）。4 条定了之后改成 ready-for-agent，再 `/to-tickets`。
   - 核实范围：三个样板 `pnpm build` 通过是各 agent 报告的；主会话只看过 24 张截图（没有页面报错、没有横向溢出），没有实测回放、键盘操作和手机布局。
 
 ## 0. 一句话
