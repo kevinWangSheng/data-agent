@@ -1,6 +1,6 @@
 # 77 — 后端：`data-agent web`，列出运行、读事件、实时推送
 
-Status: in-review
+Status: done
 Blocked by: 73
 Spec: ../spec.md
 Claimed by: Claude Code (opus) 2026-11-15 (filled in by the main session; the worktree session could not write the main checkout)
@@ -52,7 +52,7 @@ Branch: worktree-77-web-backend-read
 - Attempts: 1
 - Review rounds: 1 (Codex run again after the fixes: clean)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #83 → 3511df0; CI green, Codex no findings)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
