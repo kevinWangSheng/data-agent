@@ -259,3 +259,26 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
   - query3：标准答案 336.64（11 年共 3703 篇），容差 0.01，等于要求欧洲约 14,860 篇文章的分类计数一篇不差。agent 按四类各占 25% 估算，答 337.7 左右。
   - query4：标准答案 Africa。5 次里 3 次用完轮数没有答案，1 次撞上下文上限，1 次答 South America，agent 自己写明各地区差距在噪声范围内。算分记的 1/5 就是答 South America 的这一次：`validate.py` 只查答案文字里有没有 Africa，而它在列举接近的地区时提到了 Africa。这一次不是真答对，上游审核可能改判。
   - baseline 同样是 query2、3 为 0/5。这不是代码缺陷；建议不修，等人确认。按 ADR-0005 也不能针对 DAB 调。
+
+## Update 2026-11-15：第 18b 项（DAB 修复一轮后全量重跑）的结果
+
+- **运行**：2026-11-14 18:34Z 至 2026-11-15 02:41Z，cc8cdef（含工单 68–72），和第 18 项同样的 12 个数据集、54 题 × 5 次 × 2 个配置，共 540 个 trial，全在周末闲时。跑法照第 18 项（本机 `runs/f18b/par.py`，运行名 `f18b-<config>-<dataset>`）；唯一改动是 agnews 的批次预算按每个 trial $0.5 算（分类工具让单次花费到 $0.03–$0.75）。24 个运行全部 exit 0，没有批次触发预算停止线，调度没有中断。墙钟约 8.1 小时，内存峰值 3.6 / 7.9 GB。
+- 没做完的 trial 5 个，都在 agnews，按 0 分计：baseline 3 个（query3 1 个、query4 2 个），no-context 2 个（query3 2 个）。没做完的原因没有读轨迹，未确认。第 18 项是 17 个。
+- 按配置合并（服务器 `runs/f18b-merged-<config>`，各 270 条）后算分：`dab-score --runs 5 --strict`，exit 0（服务器 `runs/f18b-score`，本机有 `run.log`）。
+- **Pass@1（54 题，数据集宏平均，用了 hints），新旧并排**：
+
+  | | 第 18 项（b7c6071） | 第 18b 项（cc8cdef） |
+  |---|---|---|
+  | no-context | 0.7421（210/270） | 0.7588（212/270） |
+  | baseline | 0.7012（206/270） | 0.7218（205/270） |
+  | no-context − baseline | +4.09 分，区间 +1.18 到 +6.88，显著 | +3.70 分，区间 −1.51 到 +9.07，不显著 |
+
+- 按数据集（baseline → no-context，第 18b 项）：DEPS_DEV_V1 0.20 → 0.50，GITHUB_REPOS 0.60 → 0.60，PANCANCER_ATLAS 0.67 → 0.67，PATENTS 0.60 → 0.47，agnews 0.25 → 0.40，bookreview 0.93 → 1.00，crmarenapro 0.82 → 0.83，googlelocal 1.00 → 0.95，music_brainz_20k 1.00 → 1.00，stockindex 0.93 → 1.00，stockmarket 0.72 → 0.72，yelp 0.94 → 0.97。
+- no-context 逐题通过次数的变化（旧 → 新，每题 5 次；没列的题不变）：
+  - 升：googlelocal query2 0 → 5，agnews query4 1 → 4，PATENTS query3 0 → 2，music_brainz_20k query3 3 → 5。合计 +12。
+  - 降：GITHUB_REPOS query2 4 → 2；DEPS_DEV_V1 query2、PATENTS query2、agnews query1、crmarenapro query12 和 query13、googlelocal query3、stockmarket query2、yelp query4 各降 1。合计 −10。
+  - agnews query2、query3 仍是 0/5。
+- baseline 变化较大的题：PATENTS query3 0 → 4，googlelocal query2 0 → 5，crmarenapro query12 5 → 0，GITHUB_REPOS query2 4 → 2，DEPS_DEV_V1 query2 3 → 1，stockmarket query3 3 → 1，yelp query2 5 → 3。
+- 读法：修复瞄准的题确实变好了，但其他题有零散的下降，no-context 净增 2 次（+1.67 分）。新旧两次全量之间的差值没有做配对检验；降的那些题没有读轨迹，是模型波动还是修复造成的，未确认（GITHUB_REPOS query2 在两个配置里都是 4 → 2，最值得先看）。两次全量里 no-context 都高于 baseline，但这一次区间跨过 0。主会话开跑前的预估（no-context 约 76–80%）偏高。
+- 实付 $13.57（baseline $6.50，no-context $7.07；其中 agnews 两个配置共 $5.33），每个 trial $0.0251。
+- **正式评测累计实付**：约 $81.1（到第 18 项 $62.26；修复一轮的实验和三次小范围验证约 $5.26，按 HANDOFF 各条相加；本次 $13.57），预算 ¥700。
