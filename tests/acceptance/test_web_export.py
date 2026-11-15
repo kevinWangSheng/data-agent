@@ -40,10 +40,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import pytest
 from seam_support import FIXTURES, REPO_ROOT
-
-pytestmark = pytest.mark.xfail(strict=True, reason="ticket 80: the export command")
 
 NEW_FIELDS = FIXTURES / "web" / "new-fields" / "events.jsonl"
 NOTES_FIELDS = {
