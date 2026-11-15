@@ -302,7 +302,8 @@
   - Pass@1：no-context 0.7421 → 0.7588（210 → 212/270），baseline 0.7012 → 0.7218（206 → 205/270）；no-context − baseline 从 +4.09（显著）变成 +3.70（区间 −1.51 到 +9.07，不显著）。
   - 修复瞄准的题变好（no-context 合计 +12 次），其他 9 道题零散下降（合计 −10 次），原因没有读轨迹，未确认；GITHUB_REPOS query2 两个配置都是 4 → 2。
   - 新提交包在本机和服务器的 `runs/f19b-dab/`：`pkg/submission.json`、`data-agent-dab-traces.zip`（28 MB）、`PR.md`；自查通过（没有取榜外数据的尝试，没有读答案文件），细节见 ADR-0008 Update 2026-11-15。旧包 `runs/f19-dab/` 保留。
-  - 等人定、由人做：`PR.md` 里 Tuned prompt 一栏怎么填、轨迹压缩包放哪里（两处都标了 TODO）；榜单上显示的 agent 名和组织名；上传并开 DAB 的 PR。data-eng-bench 的提交不受影响，照 2026-11-14 那条做。
+  - **DAB 已提交（2026-11-15，人让编排会话代交）**：PR https://github.com/ucbepic/DataAgentBench/pull/144 ，分支在 fork `kevinWangSheng/DataAgentBench` 的 `data-agent-deepseek-flash`，文件 `leaderboard_submissions/data-agent_deepseek-flash_n5.json`。人定：Tuned prompt 报 no 并附修复说明；显示名 `data-agent (DeepSeek deepseek-flash)`；轨迹放本仓库的 release `dab-submission-2026-11-15`（tag 指向 cc8cdef）。上游在 6ad9d68 之后只改过 README 和榜单数据。之后要看 PR 上维护者的验证结果。
+  - **data-eng-bench 还没交**：服务器上 Harbor 没登录（`harbor auth status`：Not authenticated），要人用 GitHub 登录一次；之后 `harbor upload --public` 3 个 job（`runs/f17/jobs/`，252 MB），再在 `leaderboard/` 里 `uv run lb submit`。`display-names.json` 里没有 `data-agent` 和 deepseek 的显示名，要先填。
   - 没做的：降分的 9 道题没有诊断（这一轮不再修，读出来也只进已知限制）。
   - 服务器在 cc8cdef，没有任务在跑。余额 ¥151.26（2026-11-15 `da-remote check`）。
 
