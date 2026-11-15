@@ -140,7 +140,7 @@
 - 没有 `task` 事件：任务等信息读运行说明；都没有就显示"未记录"。
 - 检查没有名字：显示编号。
 - 没有最终答案标记：取最后一段文本；依据的查询取它之前最后一条成功的查询。
-- 没有拒绝种类：按结果里的文字分辨，分辨不出就只标"被拒绝"。
+- 没有 `rejected_by`（新旧文件都适用，2026-11-15 定）：按结果里的文字分辨——守卫或只读网关的措辞给对应种类；hook 报错（如验证者自己的 `deny_dispatch`、`deny_query`，结果以 `PreToolUse:<tool> hook error` 开头）记 `unknown`，只标"被拒绝"；其他都不算被拒绝。验证者的 hook 是流程规则，不是安全机制，事件里不另记种类。
 - `verifier_dispatch` 没有关联：按它在 `verifier_start` 和 `verifier_end` 之间的位置对应。
 - `version` 没有 `skills`：显示"未记录"，不从工具调用或 `layers.skill` 推断；和 `skills: []`（Skill 层关掉）区分开。
 
