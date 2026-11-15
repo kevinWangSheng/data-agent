@@ -238,6 +238,10 @@ describe('phases', () => {
     const firstVerify = view.phases.findIndex((p) => p.kind === 'verify')
     const before = view.phases.slice(0, firstVerify)
     expect(inOrder(before.map((p) => p.kind), BEFORE_VERIFY)).toBe(true)
+    // Both runs look around, query the data and write models before they verify; self-check is
+    // optional. The run opens by learning its environment (Bash: `echo $DB_TYPE`, `ls`).
+    expect(before.map((p) => p.kind)).toEqual(expect.arrayContaining(['orient', 'explore', 'build']))
+    expect(phaseOf(view, view.steps[0].id).kind).toBe('orient')
 
     // Both runs end on their last verification: no main-agent call follows it.
     const after = view.phases.slice(firstVerify)
@@ -434,6 +438,23 @@ describe('status', () => {
   test.fails('without a result event or other information the run is running', () => {
     expect(buildRunView(upTo(query, 57)).summary.status).toBe('running')
     expect(buildRunView(upTo(query, 57), loadNotes(QUERY)).summary.status).toBe('running')
+  })
+})
+
+// --- Context tools -------------------------------------------------------------------------
+
+describe('context tools', () => {
+  test.fails('calls are counted per context tool', () => {
+    expect(buildRunView(cart).contextToolUses).toEqual({
+      discover: 2,
+      hydrate: 0,
+      dictionary_search: 0,
+    })
+    expect(buildRunView(query).contextToolUses).toEqual({
+      discover: 0,
+      hydrate: 0,
+      dictionary_search: 0,
+    })
   })
 })
 
