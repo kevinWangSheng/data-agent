@@ -27,6 +27,11 @@ DUCKDB_MEMORY_LIMIT = "2GiB"
 DUCKDB_MAX_TEMP_DIRECTORY_SIZE = "4GiB"
 
 
+# How the MCP tools word a statement the gateway refused (`mcp_server.tool_error`); the run's
+# event file reads it back to mark the call rejected by the gateway (`agent.rejected_by`).
+BLOCKED_PREFIX = "Query blocked by the read-only gateway"
+
+
 class QueryBlocked(Exception):
     """The gateway refused the statement; the message says why."""
 

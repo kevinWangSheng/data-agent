@@ -448,5 +448,5 @@ async def test_run_without_the_context_layer_builds_no_dictionary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config: str
 ) -> None:
     events, options = await run_config(monkeypatch, tmp_path, config)
-    assert [event["type"] for event in events] == ["version", "result"]
+    assert [event["type"] for event in events] == ["version", "task", "answer", "result"]
     assert "--dictionary" not in options.mcp_servers["data"]["args"]

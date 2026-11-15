@@ -5,9 +5,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pytest
+
+from data_agent import cli
+from data_agent.agent import Outcome, Task
 
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
 
@@ -94,3 +98,23 @@ def test_dbt_task_without_dbt_on_path_is_rejected(tmp_path: Path) -> None:
     make_db(tmp_path / "x.duckdb")
     proc = run(tmp_path, *run_args(tmp_path, **{"--type": "dbt"}), env={"PATH": "/usr/bin:/bin"})
     assert_config_error(proc, tmp_path, "dbt is not on PATH")
+
+
+@pytest.mark.parametrize(
+    ("extra", "name"), [((), "x.duckdb"), (("--data-source-name", "shop"), "shop")]
+)
+def test_data_source_name_is_the_file_name_or_the_name_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: tuple[str, ...], name: str
+) -> None:
+    """Ticket 74: the name the `task` event records; the caller may give it directly."""
+    make_db(tmp_path / "x.duckdb")
+    seen: list[Task] = []
+
+    async def fake_run(task: Task, *_: Any) -> Outcome:
+        seen.append(task)
+        return Outcome("", True, False, [], tmp_path / "events.jsonl")
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    with pytest.raises(SystemExit):
+        cli.main(["run", *run_args(tmp_path), *extra])
+    assert seen[0].data_source_name == name

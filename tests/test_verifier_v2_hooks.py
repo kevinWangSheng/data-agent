@@ -427,3 +427,24 @@ async def test_subagent_stop_settles_its_dispatch_even_when_recording_fails(
     await call(hooks, "PreToolUse", **VERIFIER)
     await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
     assert await call(hooks, "Stop", stop_hook_active=False) == {}
+
+
+async def test_verifier_end_names_each_check_from_the_prompts_check_list(
+    edited: tuple[Path, Path],
+) -> None:
+    """Ticket 74: the names come from the report template in `agents/verifier.md`, not the model;
+    `checks` keeps its shape."""
+    events: list[dict[str, Any]] = []
+    hooks = hooks_for(edited, events)
+    await call(hooks, "SubagentStop", **subagent_stop("verifier", TRANSCRIPT, ALPHA_PASS))
+    [end] = events
+    assert end["check_names"] == {
+        1: "exists",
+        2: "columns",
+        3: "grain",
+        4: "window ordering",
+        5: "sources",
+        6: "row logic",
+        7: "compare_by_key",
+    }
+    assert end["checks"] == {"alpha": {1: "PASS"}}

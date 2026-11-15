@@ -72,9 +72,11 @@ async def call(
     return merged
 
 
-async def dispatch(hooks: dict[HookEvent, list[HookMatcher]]) -> list[str]:
-    """The models the rewritten dispatch prompt lists."""
-    output = await call(hooks, "PreToolUse", **VERIFIER)
+async def dispatch(
+    hooks: dict[HookEvent, list[HookMatcher]], tool_use_id: str = "toolu_1"
+) -> list[str]:
+    """The models the rewritten dispatch prompt lists. `tool_use_id` is the Agent call's."""
+    output = await call(hooks, "PreToolUse", **VERIFIER, tool_use_id=tool_use_id)
     prompt = output["hookSpecificOutput"]["updatedInput"]["prompt"]
     labels = tuple(f"{label}: " for label in (FIRST_MODELS_LABEL, AGAIN_MODELS_LABEL))
     [line] = [line for line in prompt.splitlines() if line.startswith(labels)]
@@ -103,7 +105,13 @@ async def test_the_first_dispatch_records_its_models(edited: tuple[Path, Path]) 
     hooks = hooks_for(edited, events)
     listed = await dispatch(hooks)
     assert dispatch_events(events) == [
-        {"type": "verifier_dispatch", "n": 1, "models": listed, "source": "first"}
+        {
+            "type": "verifier_dispatch",
+            "n": 1,
+            "models": listed,
+            "source": "first",
+            "tool_use_id": "toolu_1",
+        }
     ]
     assert listed == ["a", "b"]
 
@@ -113,13 +121,14 @@ async def test_a_redispatch_records_the_models_to_verify_again(edited: tuple[Pat
     hooks = hooks_for(edited, events)
     await dispatch(hooks)
     await report(hooks, a="PASS", b="FAIL")
-    listed = await dispatch(hooks)
+    listed = await dispatch(hooks, "toolu_2")
     assert listed == ["b"]
     assert dispatch_events(events)[1] == {
         "type": "verifier_dispatch",
         "n": 2,
         "models": ["b"],
         "source": "again",
+        "tool_use_id": "toolu_2",
     }
 
 
@@ -130,13 +139,14 @@ async def test_a_redispatch_with_nothing_to_verify_again_falls_back_to_all(
     hooks = hooks_for(edited, events)
     await dispatch(hooks)
     await report(hooks, a="PASS", b="PASS")
-    listed = await dispatch(hooks)
+    listed = await dispatch(hooks, "toolu_2")
     assert listed == ["a", "b"]
     assert dispatch_events(events)[1] == {
         "type": "verifier_dispatch",
         "n": 2,
         "models": ["a", "b"],
         "source": "fallback_all",
+        "tool_use_id": "toolu_2",
     }
 
 

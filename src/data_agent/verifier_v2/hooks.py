@@ -49,7 +49,7 @@ from data_agent.verifier_v2.dispatch import (
     rewrite_dispatch,
 )
 from data_agent.verifier_v2.project import dbt_projects
-from data_agent.verifier_v2.report import parse_report, summarize_transcript
+from data_agent.verifier_v2.report import check_names, parse_report, summarize_transcript
 from data_agent.verifier_v2.sql import table_references
 from data_agent.verifier_v2.stop import (
     changed_models,
@@ -61,7 +61,7 @@ from data_agent.verifier_v2.stop import (
     redispatch_models,
     stop_decision,
 )
-from data_agent.verifiers import AGENT_TOOL, VERIFIER_NAMES, Emit
+from data_agent.verifiers import AGENT_TOOL, AGENTS_DIR, VERIFIER_NAMES, Emit
 
 # Where a verifier dispatch's model list came from (the `verifier_dispatch` event, ticket 59).
 type DispatchSource = Literal["first", "again", "fallback_all"]
@@ -155,6 +155,8 @@ def run_hooks(
     dispatches = 0
     blocks = 0
     state: dict[str, Any] = {}
+    # Each verifier's check names, from the report template in its prompt (ticket 74).
+    names = {name: check_names((AGENTS_DIR / f"{name}.md").read_text()) for name in VERIFIER_NAMES}
     # Each verifier dispatch whose report has not arrived (its fingerprints, models, number and
     # counter-evidence), oldest first. The SDK gives no field linking a SubagentStop to its
     # PreToolUse, and reports may arrive in any order, so every report takes the *oldest*
@@ -224,7 +226,14 @@ def run_hooks(
         )
         if output:
             dispatches += 1
-            emit("verifier_dispatch", n=dispatches, models=models, source=source)
+            emit(
+                "verifier_dispatch",
+                n=dispatches,
+                models=models,
+                source=source,
+                # The Agent call this dispatch rewrote (ticket 74).
+                tool_use_id=fields.get("tool_use_id") or tool_use_id,
+            )
             last_dispatch_models = tuple(models)
             hashes: dict[str, str] | None
             try:
@@ -307,6 +316,7 @@ def run_hooks(
             tool_calls=summary["tool_calls"],
             hit_max_turns=hit_max_turns,
             checks=parsed["models"],
+            check_names=names[fields["agent_type"]],
             overall=parsed["overall"],
             report=report,
         )

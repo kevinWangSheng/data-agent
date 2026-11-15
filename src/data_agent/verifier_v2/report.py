@@ -26,6 +26,23 @@ CHECK_RE = re.compile(
 )
 
 
+# A check line of the report template in the verifier's prompt:
+# `CHECK 3: <PASS|FAIL|NEEDS_INFO|N/A> — grain <key columns>: <...>`. The name is what stands
+# between the dash and the colon, without its `<...>` placeholders or a trailing `on`.
+TEMPLATE_CHECK_RE = re.compile(r"^CHECK (\d+): <[^>]*> — ([^:]+):", re.M)
+PLACEHOLDER_RE = re.compile(r"<[^>]*>")
+
+
+def check_names(prompt: str) -> dict[int, str]:
+    """Check number -> name, from the report template's check lines in the verifier's prompt
+    (`agents/verifier.md`), so the names are the prompt's own, never the model's."""
+    names: dict[int, str] = {}
+    for number, label in TEMPLATE_CHECK_RE.findall(prompt):
+        name = " ".join(PLACEHOLDER_RE.sub("", label).split())
+        names[int(number)] = name.removesuffix(" on")
+    return names
+
+
 def model_name(heading: str, workspace: Path | None = None) -> str:
     """The model a `### ...` heading names, as `model_files` keys it: the heading's first word
     after any list number or `Model:` label, without backticks or bold, a directory or schema
