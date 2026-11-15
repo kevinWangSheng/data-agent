@@ -285,3 +285,21 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
 - **人定（2026-11-15）**：DAB 用第 18b 项的新结果提交。
 - **提交包**（本机和服务器的 `runs/f19b-dab/`，第 18 项的旧包 `runs/f19-dab/` 保留）：`pkg/submission.json`（no-context 的 270 条，和算分用的那份逐字节相同）、`data-agent-dab-traces.zip`（28 MB）、`PR.md`（写明修复是看过本榜失败后做的，以及修复前的分数）。scrub（cc8cdef）改了 528 个文件，密钥和 endpoint 0 处；剩 2 处 `/home/corbax`，是 GITHUB_REPOS 数据集里 SVG 文件的内容，没有处理。
 - **对照 DAB 提交规则的自查**（脚本 `runs/f19b-dab/selfcheck/check.py`，查 no-context 270 个 trial 的工具输入；同一脚本在第 18 项的旧包上能找出当时记录的那 8 个 agnews trial）：没有 trial 尝试取榜外数据，没有 trial 读 `ground_truth`、`validate.py`、`queries.json` 或别的提交文件。`classify_text` 调用 152 次，都在 agnews。agnews query4 通过的 4 次答案都直接答 Africa，不是靠评分宽松。
+
+## Update 2026-11-15（补充）：第 18b 项降分 9 道题的轨迹阅读
+
+- **做法**：三个 sonnet 子 agent 只读本机的新旧轨迹（`runs/f19-dab/pkg/traces`、`runs/f19b-dab/pkg/traces`，只有 no-context），每组 3 题，记录在本机 `runs/f18b/reading/group-{a,b,c}.md`（不进 git）。逐次官方判定只在服务器，没有取；"哪一次失败"多数靠对比新旧 10 份答案推断。GITHUB_REPOS query2、PATENTS query2、crmarenapro query12 用了本机 `runs/f19-dab/diagnosis/reference.json` 里的标准答案和评分脚本。
+- **结论**：no-context 降的 10 次里约 6 次和工单 68 有关，1 次来自工单 70，其余 3 次是波动或定不了。45 次新运行里没有一次出现轮数提醒（工单 69 无关）；`classify_text` 只在 agnews query1 被调用。
+- **逐题**（旧 → 新，每题 5 次）：
+  - GITHUB_REPOS query2（4 → 2）：工单 68，把握高。评分脚本是子串匹配；旧的 3 次主答案是 `uacaps/PageMenu`（错），靠一句备选里带了 `SwiftAndroid/swift` 通过。68 禁止备选答案后这句话没了。真正答对的旧 1 次、新 2 次。思考里没找到直接引用规则的句子，这一环是推断。
+  - crmarenapro query12（2 → 1）：工单 68，把握高。同样是备选答案里带正确 ID 的通过消失；真正答对新旧都是 1 次。
+  - crmarenapro query13（降 1）：模型波动加同样的机制，把握中。新 run3 关联订单和合同时少了日期条件；旧 run1 靠备注里的正确 ID 通过。真正答对新旧都是 4 次（标准答案是推断的）。
+  - PATENTS query2（1 → 0）：工单 68 造成的真实退步，把握高。标准答案要求列出全部 23 个 CPC 类别；新的 5 次都算出了 23 个，但只答并列第一的 2 个，思考里直接引用了 68 的规则"答案只写题目问的"。
+  - yelp query4（降 1）：可能是工单 68，把握中。新 run2 在两种平均口径里选了 3.43（商户等权），其余答 3.63（评论加权）；旧的 3 次把 3.43 写成备选。旧的另 2 次不写备选也选了 3.63，所以也可能是波动。
+  - agnews query1（降 1）：工单 70 带来的新失败方式，把握中高。新 run0 只把 `title` 列交给 `classify_text`（工具只看传入的列，`src/data_agent/classify.py:65`），正确那篇的标题看不出类别；其余 4 次用正文列，答案和旧的一致。
+  - stockmarket query2（降 1）：模型波动，把握中高。新 run0 把 19–24K 字符的 SQL 文件反复读回上下文、再写进查询入参，又多做一遍验证，"Prompt is too long"，没有答案；旧 run0 同样做法、字符少约 7%，答完了。
+  - DEPS_DEV_V1 query2（5 → 4）：定不了，偏波动。第 3–5 名用包许可证还是项目许可证，新旧比例反了过来；本机没有这题的评分脚本。
+  - googlelocal query3（降 1）：定不了。10 份答案内容一致，只有排序和格式不同。
+- **读法**：工单 68 修好了瞄准的题（合计 +12 次），同时去掉了一批靠"备选答案含正确字符串"的通过，这部分不是真实能力下降；PATENTS query2 是它造成的真实退步。DAB 的评分脚本对多数题是子串匹配，写备选答案能提高通过率，新旧分数并排时要说明。
+- **未确认**：baseline 配置里 GITHUB_REPOS query2（4 → 2）、crmarenapro query12（5 → 0）的下降，轨迹只在服务器，推测是同一个机制；DEPS_DEV_V1 query2、googlelocal query3、yelp query4 要逐次官方判定才能定案。
+- 这一轮不再修（工单 68–72 规定只做一轮）；以上进报告的失败归因和已知限制。
