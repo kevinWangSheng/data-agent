@@ -752,6 +752,22 @@ async def test_a_run_without_a_final_answer_has_no_answer_event(
     assert "answer" not in [e["type"] for e in events]
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"is_error": False, "terminal_reason": "api_error"},
+        {"is_error": False, "api_error_status": 529},
+    ],
+)
+async def test_an_api_error_reported_as_success_is_not_an_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, overrides: dict[str, Any]
+) -> None:
+    """The run reads these as infrastructure errors whatever the subtype says."""
+    final = result(result="API Error: Connection error.", **overrides)
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert "answer" not in [e["type"] for e in events]
+
+
 async def test_an_api_error_is_not_an_answer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

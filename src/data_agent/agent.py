@@ -1122,7 +1122,9 @@ def result_text(content: Any) -> str:
     return ""
 
 
-def rejected_by(block: ToolResultBlock, tool: str | None, guarded: Container[str]) -> str | None:
+def rejected_by(
+    block: ToolResultBlock, tool: str | None, guarded: Container[str]
+) -> Literal["guard", "gateway"] | None:
     """`guard` when a guard hook denied the call (`guarded` holds those calls' ids), `gateway`
     when the read-only gateway refused its statement, else None."""
     if block.tool_use_id in guarded:
@@ -1250,8 +1252,11 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
 
 def final_answer(message: ResultMessage | None) -> str | None:
     """The text of a run the SDK ended with a final answer: its `result`, the agent's final
-    message. None when the run failed or ended without one."""
+    message. None when the run failed or ended without one, an API error among them (whose
+    `result` is the error's text, as `run` reads an infrastructure error)."""
     if message is None or message.subtype != "success" or message.is_error:
+        return None
+    if message.api_error_status is not None or message.terminal_reason == "api_error":
         return None
     return message.result or None
 

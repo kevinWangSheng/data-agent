@@ -103,7 +103,7 @@ def test_dbt_task_without_dbt_on_path_is_rejected(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("extra", "name"), [((), "x.duckdb"), (("--data-source-name", "shop"), "shop")]
 )
-def test_data_source_name_defaults_to_the_file_name(
+def test_data_source_name_is_the_file_name_or_the_name_given(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: tuple[str, ...], name: str
 ) -> None:
     """Ticket 74: the name the `task` event records; the caller may give it directly."""
