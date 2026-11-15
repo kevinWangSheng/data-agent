@@ -694,3 +694,145 @@ async def test_closing_the_query_ends_the_sdk_session_before_it_returns(
         break
     await stream.aclose()
     assert closed == [True]
+
+
+# Ticket 74: the fields the web UI reads. Each is only added; the events around them are unchanged.
+
+
+async def test_task_event_follows_the_version_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A DuckDB run names its data source by the file name, never the path."""
+    _, events = await run_with(monkeypatch, tmp_path, scripted(result()))
+    assert [e["type"] for e in events[:2]] == ["version", "task"]
+    task = events[1]
+    assert (task["task"], task["task_type"], task["data_source"]) == ("q", "query", "x.duckdb")
+
+
+def test_data_source_is_the_variable_name_or_the_name_given(tmp_path: Path) -> None:
+    """A Postgres run is named by its variable, not the URL it holds; a given name wins."""
+    postgres = Task(text="q", type="query", workspace=tmp_path, postgres_env="SHOP_URL")
+    assert postgres.data_source_name == "SHOP_URL"
+    named = dataclasses.replace(postgres, data_source="shop")
+    assert named.data_source_name == "shop"
+
+
+async def test_task_event_text_is_masked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(agent, "query", scripted(result()))
+    db = tmp_path / "x.duckdb"
+    duckdb.connect(str(db)).close()
+    task = Task(text="ask sk-test-secret", type="query", workspace=tmp_path, duckdb=db)
+    outcome = await agent.run(task, load_config("full"), tmp_path / "events", ENV)
+    [event] = [
+        json.loads(line)
+        for line in outcome.events_path.read_text().splitlines()
+        if json.loads(line)["type"] == "task"
+    ]
+    assert event["task"] == "ask [REDACTED]"
+
+
+async def test_answer_event_marks_the_final_answer_before_the_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The answer is the SDK's result text. The agent names no query its answer rests on (no
+    prompt asks it to), so `sql_tool_use_id` is null rather than a guess."""
+    final_text = AssistantMessage(content=[TextBlock(text="42")], model="m")
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final_text, result()))
+    assert [e["type"] for e in events[-3:]] == ["text", "answer", "result"]
+    assert (events[-2]["text"], events[-2]["sql_tool_use_id"]) == ("42", None)
+
+
+async def test_a_run_without_a_final_answer_has_no_answer_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    final = result(
+        subtype="error_max_turns", is_error=True, terminal_reason="max_turns", result=None
+    )
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert "answer" not in [e["type"] for e in events]
+
+
+async def test_an_api_error_is_not_an_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    final = result(
+        is_error=True, terminal_reason="api_error", result="API Error: Connection error."
+    )
+    _, events = await run_with(monkeypatch, tmp_path, scripted(final))
+    assert "answer" not in [e["type"] for e in events]
+
+
+def tool_call(call_id: str, name: str, tool_input: dict[str, Any]) -> AssistantMessage:
+    return AssistantMessage(
+        content=[ToolUseBlock(id=call_id, name=name, input=tool_input)], model="m"
+    )
+
+
+def tool_result(call_id: str, content: Any, is_error: bool) -> UserMessage:
+    return UserMessage(
+        content=[ToolResultBlock(tool_use_id=call_id, content=content, is_error=is_error)]
+    )
+
+
+@dataclasses.dataclass
+class PreToolUse:
+    """In a scripted stream: the CLI calls the PreToolUse hooks that match the tool."""
+
+    call_id: str
+    tool: str
+    tool_input: dict[str, Any]
+
+
+def guarded_script(*steps: Any) -> Callable[..., AsyncIterator[Any]]:
+    async def fake_query(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        for step in steps:
+            if not isinstance(step, PreToolUse):
+                yield step
+                continue
+            hook_input = {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s",
+                "tool_name": step.tool,
+                "tool_input": step.tool_input,
+                "tool_use_id": step.call_id,
+            }
+            for matcher in options.hooks.get("PreToolUse", []):
+                if matcher.matcher is None or step.tool in matcher.matcher.split("|"):
+                    for hook in matcher.hooks:
+                        await hook(hook_input, step.call_id, {"signal": None})
+
+    return fake_query
+
+
+async def test_tool_end_says_which_layer_rejected_the_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`guard` for a call a guard hook denied, `gateway` for a statement the read-only gateway
+    blocked; a call neither rejected has no `rejected_by`, even when it failed."""
+    query = agent.QUERY_TOOL
+    # How Claude Code words the MCP server's ToolError (as recorded in real event files).
+    blocked = (
+        "Error executing tool query_database: Query blocked by the read-only gateway: "
+        "Blocked: only SELECT queries are allowed"
+    )
+    script = guarded_script(
+        tool_call("t_guard", "Read", {"file_path": "/etc/passwd"}),
+        PreToolUse("t_guard", "Read", {"file_path": "/etc/passwd"}),
+        tool_result("t_guard", "PreToolUse:Read hook error: Only files inside ...", True),
+        tool_call("t_gate", query, {"sql": "DROP TABLE x"}),
+        PreToolUse("t_gate", query, {"sql": "DROP TABLE x"}),
+        tool_result("t_gate", [{"type": "text", "text": blocked}], True),
+        tool_call("t_fail", query, {"sql": "SELECT nope"}),
+        PreToolUse("t_fail", query, {"sql": "SELECT nope"}),
+        tool_result("t_fail", "Query error: column nope not found", True),
+        tool_call("t_ok", "Read", {"file_path": "notes.md"}),
+        PreToolUse("t_ok", "Read", {"file_path": "notes.md"}),
+        tool_result("t_ok", "ok", False),
+        result(),
+    )
+    _, events = await run_with(monkeypatch, tmp_path, script)
+    ends = {e["tool_use_id"]: e for e in events if e["type"] == "tool_end"}
+    assert ends["t_guard"]["rejected_by"] == "guard"
+    assert ends["t_gate"]["rejected_by"] == "gateway"
+    assert "rejected_by" not in ends["t_fail"]
+    assert "rejected_by" not in ends["t_ok"]

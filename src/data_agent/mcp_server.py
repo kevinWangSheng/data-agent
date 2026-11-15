@@ -36,6 +36,7 @@ from data_agent.db_facts import (
     timeout_report,
 )
 from data_agent.gateway import (
+    BLOCKED_PREFIX,
     MAX_ROWS,
     Gateway,
     QueryBlocked,
@@ -66,7 +67,7 @@ ORDER BY t.table_schema, t.table_name
 
 def tool_error(exc: QueryBlocked | QueryFailed) -> ToolError:
     if isinstance(exc, QueryBlocked):
-        return ToolError(f"Query blocked by the read-only gateway: {exc}")
+        return ToolError(f"{BLOCKED_PREFIX}: {exc}")
     return ToolError(f"Query error: {exc}")
 
 

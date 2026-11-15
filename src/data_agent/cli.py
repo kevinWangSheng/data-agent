@@ -68,6 +68,11 @@ def main(argv: list[str] | None = None) -> None:
     run_cmd.add_argument("--config", required=True, choices=CONFIG_NAMES)
     run_cmd.add_argument("--events-dir", required=True, type=Path, help="where the event file goes")
     run_cmd.add_argument(
+        "--data-source-name",
+        help="the data source's name in the event file (default: the --postgres-env variable's "
+        "name or the --duckdb file's name)",
+    )
+    run_cmd.add_argument(
         "--agent-timeout-sec",
         type=float,
         help="the trial's time limit, counted from now; the run stops itself before it",
@@ -114,6 +119,7 @@ def main(argv: list[str] | None = None) -> None:
         workspace=args.workspace,
         duckdb=args.duckdb,
         postgres_env=args.postgres_env,
+        data_source=args.data_source_name,
     )
     try:
         deadline = None if args.agent_timeout_sec is None else started + args.agent_timeout_sec

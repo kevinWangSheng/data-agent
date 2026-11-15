@@ -7,13 +7,14 @@ the `ANTHROPIC_*` variables it reads, so the user's own Claude Code setup is unt
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncGenerator, Iterator, Mapping
+from collections.abc import AsyncGenerator, Container, Iterator, Mapping
 from contextlib import aclosing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ import claude_agent_sdk
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    HookCallback,
     HookContext,
     HookInput,
     HookJSONOutput,
@@ -47,7 +49,13 @@ from data_agent import verifier_v2
 from data_agent.command_guard import command_guard
 from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
-from data_agent.gateway import TIMEOUT_SECONDS, DuckDBGateway, Gateway, PostgresGateway
+from data_agent.gateway import (
+    BLOCKED_PREFIX,
+    TIMEOUT_SECONDS,
+    DuckDBGateway,
+    Gateway,
+    PostgresGateway,
+)
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
 from data_agent.verifier_tools import SNAPSHOT_ENV
@@ -621,17 +629,30 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Task:
     """The database is a DuckDB file, or a Postgres URL held in the variable `postgres_env`
-    names: the run passes the name on, so the URL reaches no argv or MCP config."""
+    names: the run passes the name on, so the URL reaches no argv or MCP config. `data_source` is
+    the name the `task` event gives the data source, when the caller has one of its own."""
 
     text: str
     type: Literal["dbt", "query"]
     workspace: Path
     duckdb: Path | None = None
     postgres_env: str | None = None
+    data_source: str | None = None
 
     @property
     def dialect(self) -> Literal["duckdb", "postgres"]:
         return "postgres" if self.postgres_env else "duckdb"
+
+    @property
+    def data_source_name(self) -> str:
+        """The name given, else the Postgres variable's name or the DuckDB file's: never the
+        connection string or the file's path."""
+        if self.data_source:
+            return self.data_source
+        if self.postgres_env:
+            return self.postgres_env
+        assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
+        return self.duckdb.name
 
     def database_args(self) -> tuple[str, ...]:
         if self.postgres_env:
@@ -893,6 +914,25 @@ class TurnBudget:
         }
 
 
+def guard_recorder(guard: HookCallback, guarded: set[str] | None) -> HookCallback:
+    """`guard` as is, adding the id of each call it denies to `guarded` (when given), so the
+    call's `tool_end` can say a guard rejected it. What the guard returns is unchanged."""
+    if guarded is None:
+        return guard
+
+    async def recorded(
+        hook_input: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        output = await guard(hook_input, tool_use_id, context)
+        decision = cast(dict[str, Any], output).get("hookSpecificOutput") or {}
+        call = cast(dict[str, Any], hook_input).get("tool_use_id") or tool_use_id
+        if decision.get("permissionDecision") == "deny" and call:
+            guarded.add(str(call))
+        return output
+
+    return recorded
+
+
 def build_options(
     task: Task,
     config: RunConfig,
@@ -906,8 +946,10 @@ def build_options(
     snapshot: Path | None = None,
     deadline: float | None = None,
     turn_budget: TurnBudget | None = None,
+    guarded: set[str] | None = None,
 ) -> ClaudeAgentOptions:
-    """`emit` records events from hooks (the verifiers' start and end). With `spend` (the
+    """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
+    ids of the calls the command and workspace guards deny (`guard_recorder`). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
     its own cap becomes the backstop (`sdk_budget_usd`). `database_env` holds the Postgres
     variable: it reaches the MCP server through the SDK subprocess's environment. `task_file`
@@ -941,14 +983,19 @@ def build_options(
     if task.type == "dbt":
         tools = DBT_BUILTIN_TOOLS
         file_tools = (*GUARDED_TOOLS, *WRITE_TOOLS)
-        bash_guard = command_guard(task.workspace, dbt_scripts(config), PRINTABLE_VARIABLES)
+        bash_guard = guard_recorder(
+            command_guard(task.workspace, dbt_scripts(config), PRINTABLE_VARIABLES), guarded
+        )
         hooks = [HookMatcher(matcher="Bash", hooks=[bash_guard])]
     else:
         tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
-    guard = workspace_guard(
-        task.workspace,
-        protected=(task.duckdb,) if task.duckdb else (),
-        readable=(task_file,) if task_file else (),
+    guard = guard_recorder(
+        workspace_guard(
+            task.workspace,
+            protected=(task.duckdb,) if task.duckdb else (),
+            readable=(task_file,) if task_file else (),
+        ),
+        guarded,
     )
     hooks.append(HookMatcher(matcher="|".join(file_tools), hooks=[guard]))
     all_hooks: dict[HookEvent, list[HookMatcher]] = {"PreToolUse": hooks}
@@ -1057,8 +1104,43 @@ def events_file(events_dir: Path) -> Path:
     return events_dir / f"run-{stamp}-{uuid.uuid4().hex[:8]}.jsonl"
 
 
-def record_message(log: EventLog, message: Any, tools: dict[str, str]) -> None:
-    """Translate one SDK message into events. `tools` maps tool_use ids to tool names."""
+# How Claude Code words the error of an MCP tool call (`Error executing tool <name>: <message>`,
+# as real event files record it) whose server refused the statement at the gateway.
+GATEWAY_BLOCKED = re.compile(rf"Error executing tool \S+: {re.escape(BLOCKED_PREFIX)}:")
+
+
+def result_text(content: Any) -> str:
+    """A tool result's text: the string itself, or its text blocks joined."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(block.get("text") or "")
+            for block in cast(list[Any], content)
+            if isinstance(block, dict) and cast(dict[str, Any], block).get("type") == "text"
+        )
+    return ""
+
+
+def rejected_by(block: ToolResultBlock, tool: str | None, guarded: Container[str]) -> str | None:
+    """`guard` when a guard hook denied the call (`guarded` holds those calls' ids), `gateway`
+    when the read-only gateway refused its statement, else None."""
+    if block.tool_use_id in guarded:
+        return "guard"
+    if (
+        block.is_error
+        and (tool or "").startswith(GATEWAY_TOOLS)
+        and GATEWAY_BLOCKED.match(result_text(block.content))
+    ):
+        return "gateway"
+    return None
+
+
+def record_message(
+    log: EventLog, message: Any, tools: dict[str, str], guarded: Container[str] = ()
+) -> None:
+    """Translate one SDK message into events. `tools` maps tool_use ids to tool names; `guarded`
+    holds the ids of the calls a guard denied (`guard_recorder`)."""
     if isinstance(message, SystemMessage) and message.subtype == "init":
         log.emit(
             "status",
@@ -1089,13 +1171,16 @@ def record_message(log: EventLog, message: Any, tools: dict[str, str]) -> None:
     elif isinstance(message, UserMessage) and isinstance(message.content, list):
         for block in message.content:
             if isinstance(block, ToolResultBlock):
+                tool = tools.get(block.tool_use_id)
+                rejected = rejected_by(block, tool, guarded)
                 log.emit(
                     "tool_end",
-                    tool=tools.get(block.tool_use_id),
+                    tool=tool,
                     tool_use_id=block.tool_use_id,
                     parent=message.parent_tool_use_id,
                     is_error=bool(block.is_error),
                     content=block.content,
+                    **({"rejected_by": rejected} if rejected else {}),
                 )
 
 
@@ -1161,6 +1246,14 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
         "cost_basis": basis,
         "errors": message.errors or [],
     }
+
+
+def final_answer(message: ResultMessage | None) -> str | None:
+    """The text of a run the SDK ended with a final answer: its `result`, the agent's final
+    message. None when the run failed or ended without one."""
+    if message is None or message.subtype != "success" or message.is_error:
+        return None
+    return message.result or None
 
 
 def ended_by_sdk(message: ResultMessage | None, model: str, spend: Spend | None) -> dict[str, Any]:
@@ -1268,6 +1361,7 @@ async def run(
             sdk_version=claude_agent_sdk.__version__,
             cli_version=__cli_version__,
         )
+        log.emit("task", task=task.text, task_type=task.type, data_source=task.data_source_name)
         budget = None if task.type == "dbt" else TurnBudget(config.max_turns[task.type])
         prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
             server=MCP_SERVER,
@@ -1279,6 +1373,7 @@ async def run(
             task_file_note=TASK_FILE_NOTE.format(path=task_file) if task_file else "",
         )
         tools: dict[str, str] = {}
+        guarded: set[str] = set()
         building = (
             prebuilt_dictionary(task.gateway(env), task.workspace, log.emit)
             if config.context
@@ -1298,6 +1393,7 @@ async def run(
                 snapshot=snapshot,
                 deadline=deadline,
                 turn_budget=budget,
+                guarded=guarded,
             )
             open_calls: dict[str, str] = {}
             # Cancels the stream at the deadline less its margin; closing the cancelled stream
@@ -1318,7 +1414,7 @@ async def run(
                                 else:
                                     if budget is not None:
                                         budget.observe(message)
-                                    record_message(log, message, tools)
+                                    record_message(log, message, tools, guarded)
                                     track_open_calls(message, open_calls)
                     except Exception as exc:
                         # A failed run ends with a ResultMessage and then a ResultError, whose
@@ -1338,6 +1434,10 @@ async def run(
             stopped = deadline_fields(spend, open_calls)
         else:
             stopped = None
+        if stopped is None and (answer := final_answer(final)) is not None:
+            # The agent's final message, the run's answer. The agent names no query it rests on
+            # (no prompt asks it to), so the query is left empty rather than guessed.
+            log.emit("answer", text=answer, sql_tool_use_id=None)
         log.emit("result", **(stopped or ended_by_sdk(final, settings.model, spend)))
     if stopped is not None:
         return Outcome(
