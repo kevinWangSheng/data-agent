@@ -29,10 +29,11 @@ runs every trial with `--type dbt`).
 
 Everything is written to a staging directory beside DIR and scrubbed there with `evals scrub`'s
 rules (`--hostname`, `--home`, `--user` as in `scrub`); only a clean scrub is moved to DIR, which
-must be new or empty. Nothing turns scrubbing off. A trial of a task held out by the given
-manifest or by the repo's evals/manifest.json is refused before anything is written; the error
-gives a count, never a task or its outcome (ADR-0004). The holdout and the whole benchmark reach
-the site only as the aggregates of `--board`.
+must be new or empty. Nothing turns scrubbing off. A trial of a task outside the manifest's dev
+set, or held out by it or by the repo's evals/manifest.json, is refused before anything is
+written; the error gives a count, never a task or its outcome (ADR-0004). The holdout and the
+whole benchmark reach the site only as the aggregates of `--board`. A featured run names no task
+id, so it is not checked against the holdout: choose featured runs from dev tasks or local data.
 
 Exit 0 with the export; 2 on anything refused.
 """
@@ -146,18 +147,21 @@ def read_json(path: Path, what: str) -> Any:
         raise Refused(f"cannot read {what} {path}: {exc}") from exc
 
 
-def held_out(manifest: dict[str, Any]) -> set[str]:
-    """The tasks the manifest or the repo's manifest holds out (a temporary manifest may hold out
-    nothing, as `evals.report.check_dev_list` reasons)."""
-    tasks: set[str] = set()
-    for name, m in (("the manifest", manifest), (str(REPO_MANIFEST), None)):
-        holdout = (m if m is not None else read_json(REPO_MANIFEST, "the repo manifest")).get(
-            "holdout"
-        )
-        if not isinstance(holdout, list) or not all(isinstance(t, str) for t in holdout):
-            raise Refused(f"cannot read the holdout of {name}: not a list of task ids")
-        tasks |= set(holdout)
-    return tasks
+def task_list(manifest: Any, split: str, name: Path) -> set[str]:
+    tasks = manifest.get(split) if isinstance(manifest, dict) else None
+    if not isinstance(tasks, list) or not all(isinstance(t, str) for t in tasks):
+        raise Refused(f"cannot read the {split} of {name}: not a list of task ids")
+    return set(tasks)
+
+
+def exportable(manifest_path: Path) -> set[str]:
+    """The manifest's dev tasks, less any the manifest or the repo's manifest holds out (a
+    temporary manifest may hold out nothing, as `evals.report.check_dev_list` reasons)."""
+    manifest = read_json(manifest_path, "the manifest")
+    repo = read_json(REPO_MANIFEST, "the repo manifest")
+    held_out = task_list(manifest, "holdout", manifest_path)
+    held_out |= task_list(repo, "holdout", REPO_MANIFEST)
+    return task_list(manifest, "dev", manifest_path) - held_out
 
 
 def read_events(path: Path) -> list[dict[str, Any]]:
@@ -167,7 +171,8 @@ def read_events(path: Path) -> list[dict[str, Any]]:
     except (OSError, UnicodeDecodeError) as exc:
         raise Refused(f"cannot read the event file {path}: {exc}") from exc
     events: list[dict[str, Any]] = []
-    for line in text.splitlines():
+    # Not splitlines(): it also splits at U+2028 and the like inside a string (evals.attribute).
+    for line in text.split("\n"):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -241,9 +246,8 @@ def trial_notes(trial: Trial, events: Path, tasks_dir: Path | None) -> dict[str,
     }
 
 
-def duration_seconds(trial: Trial) -> float | None:
+def duration_seconds(result: dict[str, Any]) -> float | None:
     """The trial's wall clock from Harbor's result.json, None when unrecorded."""
-    result = read_json(trial.dir / "result.json", "a trial's result.json")
     try:
         start = datetime.fromisoformat(result["started_at"])
         end = datetime.fromisoformat(result["finished_at"])
@@ -259,8 +263,8 @@ def trial_rows(trials: list[tuple[Trial, str | None]]) -> list[dict[str, Any]]:
     timed = []
     for trial, config in trials:
         result = read_json(trial.dir / "result.json", "a trial's result.json")
-        timed.append((str(result.get("started_at") or ""), trial.dir.name, trial, config))
-    for _, _, trial, config in sorted(timed, key=lambda t: t[:2]):
+        timed.append((str(result.get("started_at") or ""), trial.dir.name, trial, config, result))
+    for _, _, trial, config, result in sorted(timed, key=lambda t: t[:2]):
         seen[(trial.task, config)] += 1
         rows.append(
             {
@@ -271,7 +275,7 @@ def trial_rows(trials: list[tuple[Trial, str | None]]) -> list[dict[str, Any]]:
                 "passed": is_success(trial.reward),
                 "reward": trial.reward,
                 "cost_usd": trial.cost_usd,
-                "duration_seconds": duration_seconds(trial),
+                "duration_seconds": duration_seconds(result),
             }
         )
     return sorted(rows, key=lambda r: r["id"])
@@ -359,25 +363,25 @@ def dab_summary(path: Path) -> dict[str, Any]:
     return out
 
 
-def load_dev_trials(
-    job_dirs: list[Path], holdout: set[str]
-) -> list[tuple[Trial, Path, str | None]]:
-    """Every trial of the jobs with its event file and config; refused, with a count only, when
-    any is a holdout task's, or has no event file."""
+def load_dev_trials(job_dirs: list[Path], dev: set[str]) -> list[tuple[Trial, Path, str | None]]:
+    """Every trial of the jobs by name, with its event file and config; refused, with a count
+    only, when any is of a task outside `dev` (held out, or not in the manifest's dev set), or
+    has no event file."""
     trials: list[Trial] = []
     for job in job_dirs:
         try:
             trials.extend(load_trials(job))
         except (OSError, ValueError, KeyError) as exc:
             raise Refused(f"cannot read the job {job}: {exc}") from exc
-    refused = sum(1 for t in trials if t.task in holdout)
+    refused = sum(1 for t in trials if t.task not in dev)
     if refused:
         raise Refused(
-            f"{refused} trial(s) of holdout tasks; only dev trials are exported, the holdout "
-            "reaches the site as aggregates only (ADR-0004)"
+            f"{refused} trial(s) of holdout tasks or tasks outside the dev set; only dev trials "
+            "are exported, the holdout and the whole benchmark reach the site as aggregates "
+            "only (ADR-0004)"
         )
     out: list[tuple[Trial, Path, str | None]] = []
-    for trial in trials:
+    for trial in sorted(trials, key=lambda t: t.dir.name):
         events = last_event_file(trial)
         if events is None:
             raise Refused(f"the trial {trial.dir} has no event file")
@@ -392,10 +396,7 @@ def write_json(path: Path, value: Any) -> None:
 
 def build(args: argparse.Namespace, stage: Path) -> int:
     """Write the export into `stage`; the number of runs."""
-    manifest = read_json(args.manifest, "the manifest")
-    if not isinstance(manifest, dict):
-        raise Refused(f"{args.manifest} is not a manifest")
-    trials = load_dev_trials(args.job, held_out(manifest))
+    trials = load_dev_trials(args.job, exportable(args.manifest))
     runs: list[tuple[dict[str, Any], Path]] = [featured_run(r) for r in args.runs]
     runs += [(trial_notes(t, events, args.tasks_dir), events) for t, events, _ in trials]
     ids = [notes["id"] for notes, _ in runs]
@@ -407,12 +408,12 @@ def build(args: argparse.Namespace, stage: Path) -> int:
         shutil.copyfile(events, run_dir / "events.jsonl")
         write_json(run_dir / "meta.json", notes)
     write_json(stage / "index.json", {"runs": [notes for notes, _ in runs]})
-    summary_ = {
+    evaluation = {
         "dev": dev_summary([(t, config) for t, _, config in trials]),
         "data_eng_bench": board_summary(args.board) if args.board else None,
         "dab": dab_summary(args.dab) if args.dab else None,
     }
-    write_json(stage / "eval.json", summary_)
+    write_json(stage / "eval.json", evaluation)
     return len(runs)
 
 
@@ -437,6 +438,7 @@ def run(args: argparse.Namespace) -> int:
             return 2
         if out.exists():
             out.rmdir()  # empty, checked above
+        stage.chmod(0o755)  # mkdtemp's 0700 would follow the directory to the site
         stage.rename(out)
     finally:
         if stage.exists():

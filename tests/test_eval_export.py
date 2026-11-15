@@ -339,6 +339,46 @@ def test_two_runs_with_one_id_are_refused(tmp_path: Path) -> None:
     assert not out.exists()
 
 
+def test_a_trial_of_a_task_outside_the_dev_set_is_refused(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task", "x", 1.0)
+    write_trial(job, "other-task", "y", 0.0)
+    out = tmp_path / "site"
+    proc = export(
+        *("--manifest", str(manifest(tmp_path, ["dev-task"])), "--out", str(out)),
+        *("--job", str(job)),
+    )
+    assert proc.returncode == 2
+    assert "other-task" not in proc.stdout + proc.stderr
+    assert not out.exists()
+
+
+def test_a_line_separator_inside_a_string_keeps_the_task_event(tmp_path: Path) -> None:
+    run = tmp_path / "r1"
+    run.mkdir()
+    task = {"type": "task", "task": "line one\u2028line two", "task_type": "query"}
+    (run / "run-1.jsonl").write_text(json.dumps(task, ensure_ascii=False) + "\n")
+    (run / "notes.json").write_text(json.dumps({"title": "t", "failure_reason": None}))
+    out = tmp_path / "site"
+    proc = export("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run))
+    assert proc.returncode == 0, proc.stderr
+    assert read(out / "runs" / "r1" / "meta.json")["task"] == "line one\u2028line two"
+
+
+def test_trials_are_indexed_by_name_and_the_output_is_readable(tmp_path: Path) -> None:
+    jobs = [tmp_path / "j1", tmp_path / "j2"]
+    write_trial(jobs[0], "a", "z", 1.0)
+    write_trial(jobs[1], "a", "b", 1.0)
+    out = tmp_path / "site"
+    proc = export(
+        *("--manifest", str(manifest(tmp_path, ["a"])), "--out", str(out)),
+        *("--job", str(jobs[0]), "--job", str(jobs[1])),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert [r["id"] for r in read(out / "index.json")["runs"]] == ["a__b", "a__z"]
+    assert out.stat().st_mode & 0o777 == 0o755
+
+
 def test_an_event_file_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
     run = tmp_path / "r1"
     run.mkdir()
