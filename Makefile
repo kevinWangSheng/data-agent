@@ -1,11 +1,23 @@
-.PHONY: check fmt test
+.PHONY: check fmt test web-install
 
 # Fast checks: no network, no model calls. Run after every change; must pass before commit.
-check:
+check: web/node_modules
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run basedpyright
 	uv run pytest -q
+	pnpm --dir web typecheck
+	pnpm --dir web test
+
+# The web UI's packages, installed from the lockfile whenever it changes; offline, from pnpm's
+# store, so `check` stays off the network. Run `make web-install` once where the store is empty.
+web/node_modules: web/package.json web/pnpm-lock.yaml
+	pnpm --dir web install --frozen-lockfile --offline
+	touch web/node_modules
+
+web-install:
+	pnpm --dir web install --frozen-lockfile
+	touch web/node_modules
 
 # Auto-fix lint and formatting.
 fmt:
