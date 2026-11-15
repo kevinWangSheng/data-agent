@@ -90,3 +90,28 @@ def test_an_idle_stream_sends_keepalives_then_the_events(
     first_frame = lines.index("id: 0")
     assert ": keepalive" in lines[:first_frame]
     assert "id: 1" in lines[first_frame:]
+
+
+def test_a_damaged_event_file_leaves_the_other_runs_listed(tmp_path: Path) -> None:
+    (tmp_path / "good").mkdir()
+    (tmp_path / "good" / "run.jsonl").write_text(event(0, "version", "2026-11-15T09:00:00+00:00"))
+    (tmp_path / "damaged").mkdir()
+    (tmp_path / "damaged" / "run.jsonl").write_text("not json\n")
+    response = client(tmp_path).get("/api/runs")
+    assert response.status_code == 200
+    assert [run["id"] for run in response.json()] == ["good"]
+
+
+def test_the_summary_finds_the_result_after_a_long_run(tmp_path: Path) -> None:
+    """The result event is the last line, however far it is from the header."""
+    filler = "".join(
+        event(seq, "text", "2026-11-15T09:00:01+00:00", text="x" * 5000) for seq in range(1, 60)
+    )
+    (tmp_path / "long").mkdir()
+    (tmp_path / "long" / "run.jsonl").write_text(
+        event(0, "version", "2026-11-15T09:00:00+00:00", config="full")
+        + filler
+        + event(60, "result", "2026-11-15T09:01:00+00:00", subtype="success", cost_usd=1.5)
+    )
+    [listed] = client(tmp_path).get("/api/runs").json()
+    assert (listed["status"], listed["cost_usd"], listed["duration_ms"]) == ("success", 1.5, 60000)

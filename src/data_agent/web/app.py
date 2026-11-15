@@ -17,7 +17,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from data_agent.run_config import CONFIG_NAMES
-from data_agent.web.runs import RunsDir, read_from
+from data_agent.web.runs import RunsDir
 
 TASK_TYPES = ("query", "dbt")
 # How often a stream looks for new events, and how long it stays silent before a keepalive.
@@ -78,8 +78,7 @@ def create_app(runs_dir: Path, data_sources: Sequence[DataSource], start_run: St
             return StreamingResponse(
                 stream(runs, run_id, cursor, request), media_type="text/event-stream"
             )
-        path = runs.event_file(run_id)
-        chunk = await to_thread.run_sync(read_from, path) if path is not None else None
+        chunk = await to_thread.run_sync(runs.read, run_id)
         events = chunk.events if chunk is not None else []
         return JSONResponse({"events": [event for event in events if event["seq"] > after]})
 
@@ -94,8 +93,7 @@ async def stream(runs: RunsDir, run_id: str, cursor: int, request: Request) -> A
     offset = 0
     idle = 0.0
     while not await request.is_disconnected():
-        path = runs.event_file(run_id)
-        chunk = await to_thread.run_sync(read_from, path, offset) if path is not None else None
+        chunk = await to_thread.run_sync(runs.read, run_id, offset)
         if chunk is None or not chunk.events:
             await anyio.sleep(POLL_SECONDS)
             idle += POLL_SECONDS
