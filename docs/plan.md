@@ -58,6 +58,11 @@
     - 在线版放 `data-agent` 仓库自己的 GitHub Pages（`https://kevinwangsheng.github.io/data-agent/`，和博客 `my-blog` 不冲突）；da-server 不对外提供网页。
     - 精选运行就是 3 条，不加"网关拦写操作"那条。
     - 评测页三块：两个榜单的总分、消融条形图、开发集 270 个 trial 的表格。
+  - **Q38–Q41（2026-11-15，人确认）**：
+    - `data-agent web` 读一个数据源配置文件（名字、种类、可选的 dbt 项目目录）；连接串不进文件、不进浏览器。
+    - 每次运行有自己的工作目录；dbt 运行先复制 dbt 项目目录（DuckDB 连库文件一起复制），原目录不动。
+    - 同时只跑一条，再提交会被拒绝。
+    - 在线版的数据打成压缩包放 release，Pages 构建时下载；不进 git。
   - 样板暴露的事件数据缺口（补哪些见上一条）：
     - 没有事件记录加载了哪个 Skill。
     - `verifier_end.checks` 只有检查编号，没有名字。

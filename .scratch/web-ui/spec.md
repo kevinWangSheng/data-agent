@@ -1,8 +1,8 @@
 # 网页界面：运行页、历史列表、评测页，加一个只读的在线版
 
-日期：2026-11-15。Status: needs-info（"待人确认"一节的 4 条定了之后改成 ready-for-agent）。
+日期：2026-11-15。Status: ready-for-agent。
 
-决策来源：`docs/plan.md` §2"网页界面的基础决定"（Q1–Q29）和"样板"（选定 B、Q30–Q37）、§5"界面"。上游取证：`docs/research/2026-11-01-upstream-web-ui.md`。样板（只在本机，不进 git）：`runs/web-prototypes/b/`，共用数据在 `runs/web-prototypes/data/runs/`。
+决策来源：`docs/plan.md` §2"网页界面的基础决定"（Q1–Q29）和"样板"（选定 B、Q30–Q41）、§5"界面"。上游取证：`docs/research/2026-11-01-upstream-web-ui.md`。样板（只在本机，不进 git）：`runs/web-prototypes/b/`，共用数据在 `runs/web-prototypes/data/runs/`。
 
 ## Problem Statement
 
@@ -185,14 +185,16 @@
 - 加一个 404 回退页，让直接打开 `/data-agent/runs/<id>` 这样的地址也能进到单页应用。
 - da-server 不对外提供网页。
 
-### 待人确认
+### 本地运行的数据源、工作目录和并发（Q38–Q40，人已确认）
 
-下面 4 条是写 spec 时才露出来的，Q1–Q37 没有覆盖；写的是建议，人确认前不算决定。
+- **数据源配置**：`data-agent web` 启动时读一个配置文件。每个数据源有名字、种类（DuckDB 文件路径，或存着 Postgres 连接串的环境变量名）、可选的 dbt 项目目录。连接串本身不进这个文件，也不进浏览器；表单只显示名字。
+- **工作目录**：每次运行有自己的目录。dbt 运行先把数据源的 dbt 项目目录复制进去再跑，原目录不动；DuckDB 数据源连库文件一起复制，Postgres 数据源直接写配置的那个库。查数运行用空的工作目录。
+- **同时只跑一条**：已有运行在跑时，再提交会被拒绝并说明原因。这一版不处理并发。
 
-1. **数据源怎么配**：`data-agent web` 读一个配置文件，里面每个数据源有名字、种类（DuckDB 文件路径，或存着 Postgres 连接串的环境变量名）、可选的 dbt 项目目录。表单只显示名字。
-2. **dbt 运行的工作目录**：`data-agent run` 需要一个工作目录，dbt 运行会改里面的文件、也会写数据库。建议每次运行把数据源的 dbt 项目目录复制到这次运行自己的目录里再跑；DuckDB 数据源连库文件一起复制，Postgres 数据源直接写配置的那个库。查数运行用一个空的工作目录。
-3. **同时只跑一条**：已有运行在跑时，再提交会被拒绝并说明原因。建议这样做，因为多条 dbt 运行同时写一个库会互相干扰。
-4. **在线版的数据放哪**：`runs/` 不进 git，GitHub Actions 拿不到事件文件。270 个 trial 的事件文件按抽样估算约 130 MB（40 个 full trial 是 24.5 MB，40 个 baseline 是 15.0 MB）。建议把导出结果打成一个压缩包传到仓库的一个 release，Pages 的构建流程下载它再构建；数据不进 git。
+### 在线版的数据放哪（Q41，人已确认）
+
+- `runs/` 不进 git，GitHub Actions 拿不到事件文件。270 个 trial 的事件文件按抽样估算约 130 MB（40 个 full trial 是 24.5 MB，40 个 baseline 是 15.0 MB）。
+- 导出结果打成压缩包，传到仓库的一个 release；Pages 的构建流程下载它再构建。数据不进 git。
 
 ## Testing Decisions
 
