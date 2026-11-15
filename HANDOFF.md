@@ -349,6 +349,11 @@
     3. 三个都做完后，主会话把每个跑起来，用无头浏览器对同样的画面截图（第一屏、长运行概览、展开一次验证、展开一条 SQL 和结果表，深浅色各一套），做成一个对比页，附对照硬约束的核对结果和推荐；人来选，可以混选。
     4. 选定后 `/to-spec`（测试接缝由人确认）、拆工单。
   - 没定、留到 spec 的：静态站点托管在哪；评测页的具体图表；第 4 条"网关拦写操作"的精选运行要不要。README 和报告的中文版仍待人定。
+- 2026-11-15（样板）：人改主意，三个样板在同一会话里派了、做完了，**人选定 B（三栏追踪查看器）**，记在 plan §2"样板"。**下一步：`/to-spec`（测试接缝由人确认），再 `/to-tickets`。**
+  - 样板和数据在本机 `runs/web-prototypes/`（不进 git）：`BRIEF.md`、`data/runs/` 三条运行、`a/` `b/` `c/` 三个样板、`compare/index.html` 对比页。B 的启动：在 `b/` 下 `pnpm preview`，端口 5182。
+  - 上一条说的长运行 `runs/t46-real2` 没用上：它早于工单 47、59–64，没有 `verifier_dispatch` 和 `tool_timing` 事件。实际用的三条：README 快速上手重跑的查数运行；`runs/u1-full-rest/jobs/full/dbt-cart-abandonment-recovery__dSJJ5j9`（122 次调用，FAIL → PASS）；`runs/u1-target/jobs/full/dbt-fix-division-by-zero__tzXXxtE`（270 次调用，评分失败）。
+  - spec 里要定的：B 的三个缺点怎么处理、哪些事件数据缺口要补（都列在 plan §2"样板"）；加上上一条留下的三项。
+  - 核实范围：三个样板 `pnpm build` 通过是各 agent 报告的；主会话只看过 24 张截图（没有页面报错、没有横向溢出），没有实测回放、键盘操作和手机布局。
 
 ## 0. 一句话
 
