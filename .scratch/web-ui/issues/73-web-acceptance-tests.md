@@ -22,7 +22,7 @@ Branch: —
 - spec 的 "Testing Decisions" 列了每处接缝要断言的行为，照它逐条写；"运行视图模型"一节定了产出的结构和旧文件的退路。
 - 夹具来源（只在本机主 checkout，绝对路径）：`/Users/shenghuikevin/dev/AI/data-agent/runs/web-prototypes/data/runs/` 下三条运行，各有 `events.jsonl` 和 `meta.json`，已过 `evals scrub`（0 处改动）。复制进 `tests/fixtures/web/` 前再跑一次脱敏。
   - `dbt-division-by-zero/events.jsonl` 是 1.2 MB，超过 pre-commit 的 1000 KB 上限：用 gzip 存，测试里解压读。
-  - 这三份是旧事件文件，没有工单 74 要加的字段，正好用来测"旧文件的退路"。新字段的行为另写小的手工夹具（几条事件即可），字段名在本工单定下来并写进测试，工单 74 照此实现。
+  - 这三份是旧事件文件，没有工单 74 要加的字段，正好用来测"旧文件的退路"。新字段的行为另写小的手工夹具（几条事件即可），字段名用 spec "事件：新增和补充的字段"里的表，工单 74 用同一组。
 - 样板 B 怎么读这些事件（只作参考，不复制进来）：`/Users/shenghuikevin/dev/AI/data-agent/runs/web-prototypes/b/src/`；事件字段说明在 `/Users/shenghuikevin/dev/AI/data-agent/runs/web-prototypes/BRIEF.md` 的 "Data" 一节；写事件的代码是 `src/data_agent/events.py` 和它的调用处。
 - 前端验收测试只针对一个纯函数（事件列表加可选的运行说明 → 运行视图模型）。本工单定下它的 TypeScript 类型和函数签名，函数体留空（抛出未实现）。
 - 后端验收测试用 FastAPI 测试客户端；`data-agent run` 子进程换成按脚本往事件文件写事件的假进程。本工单定下创建应用的入口签名（接收运行目录、数据源配置、启动子进程的函数），实现留空。先例：`tests/test_run_cli.py`、`tests/fake_model.py`、`tests/lifecycle_events.py`、已有的 `tests/acceptance/`。
@@ -35,7 +35,7 @@ Branch: —
 - [ ] 所有验收测试当前都以预期失败的方式通过检查（`xfail` / `test.fails`），没有被跳过的
 - [ ] `make check` 包含前端的类型检查和 vitest；CI 也跑
 - [ ] 夹具里没有密钥、地址、主机名（脱敏命令的输出为 0 处改动）
-- [ ] 视图模型的类型、后端应用入口的签名、新事件字段的名字都写在代码里，并在最终回复里列出，供人审
+- [ ] 视图模型的类型、后端应用入口的签名都写在代码里，并在最终回复里列出，供人审
 - [ ] `make check` 通过
 
 ## Evidence required

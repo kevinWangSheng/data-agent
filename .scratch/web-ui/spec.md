@@ -100,6 +100,16 @@
 - **`verifier_dispatch`**：带上对应的 Agent 工具调用的 `tool_use_id`。
 - **不补**：加载了哪个 Skill（从工具调用推出）、`sql` 事件的 `parent`（经 `tool_use_id` 找到工具调用再取）、验证者自己的思考和文本、失败的 `dbt run` 的 `is_error`。
 
+字段名（2026-11-15 定，工单 73 的测试和工单 74 的实现都用这一组）：
+
+| 内容 | 写法 |
+|---|---|
+| 任务 | 新事件 `task`：`task`（原文）、`task_type`（`query` 或 `dbt`）、`data_source`（名字） |
+| 检查的名字 | `verifier_end.check_names`：检查编号 → 名字。`checks` 的结构不变 |
+| 最终答案 | 新事件 `answer`：`text`、`sql_tool_use_id`（没有时为 null） |
+| 拒绝种类 | `tool_end.rejected_by`：`guard` 或 `gateway`；没被拒绝时不带 |
+| 验证派出的关联 | `verifier_dispatch.tool_use_id` |
+
 ### 运行视图模型（前端的核心模块）
 
 一个纯函数，把一条运行的事件列表（可以是不完整的前缀）和可选的运行说明转成页面要显示的结构。实时显示和回放都只调它：回放是把按时间截断的前缀喂给它。
