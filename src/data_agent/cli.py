@@ -7,8 +7,10 @@ limit stopped it), 2 config or infrastructure error.
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from data_agent.agent import ConfigError, Task, run
@@ -18,6 +20,9 @@ from data_agent.mcp_server import build_server
 from data_agent.run_config import CONFIG_NAMES, load_config
 
 EXIT_OK, EXIT_UNFINISHED, EXIT_ERROR = 0, 1, 2
+# `data-agent web` listens here only; no option changes it (spec "后端接口", user story 35).
+WEB_HOST = "127.0.0.1"
+WEB_PORT = 8765
 
 
 def add_database(parser: argparse.ArgumentParser) -> None:
@@ -78,7 +83,14 @@ def main(argv: list[str] | None = None) -> None:
         help="the trial's time limit, counted from now; the run stops itself before it",
     )
 
+    web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
+    web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
+    web.add_argument("--port", type=int, default=WEB_PORT)
+
     args = parser.parse_args(argv)
+    if args.command == "web":
+        serve_web(web, args.runs_dir, args.port)
+        return
     # The deadline counts from the earliest point the process can see (ticket 54).
     started = time.monotonic()
     command = serve if args.command == "mcp-server" else run_cmd
@@ -133,3 +145,18 @@ def main(argv: list[str] | None = None) -> None:
     if outcome.infra_error:
         sys.exit(EXIT_ERROR)
     sys.exit(EXIT_OK if outcome.finished else EXIT_UNFINISHED)
+
+
+def serve_web(parser: argparse.ArgumentParser, runs_dir: Path, port: int) -> None:
+    if not runs_dir.is_dir():
+        parser.error(f"runs directory not found: {runs_dir}")
+    # Imported here so `data-agent run` does not load the web stack.
+    import uvicorn
+
+    from data_agent.web.app import create_app
+
+    def start_run(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
+        return subprocess.Popen([sys.executable, "-m", "data_agent", "run", *args], cwd=cwd)
+
+    # Data sources come from the config file ticket 78 adds; until then the form offers none.
+    uvicorn.run(create_app(runs_dir, [], start_run), host=WEB_HOST, port=port)

@@ -229,7 +229,6 @@ def flag(args: list[str], name: str) -> str:
 # --- Listing runs --------------------------------------------------------------------------
 
 
-@TICKET_77
 def test_lists_every_run_in_the_runs_dir(web: Web) -> None:
     """Runs from the command line list too: finished, still going, and an old event file."""
     events = read_events(NEW_FIELDS)
@@ -259,7 +258,6 @@ def test_lists_every_run_in_the_runs_dir(web: Web) -> None:
 # --- Reading events by cursor --------------------------------------------------------------
 
 
-@TICKET_77
 def test_reads_events_after_a_cursor(web: Web) -> None:
     events = read_events(NEW_FIELDS)
     write_run(web.runs_dir, "r1", events)
@@ -277,7 +275,6 @@ def test_reads_events_after_a_cursor(web: Web) -> None:
     assert web.client.get("/api/runs/no-such-run/events").status_code == 404
 
 
-@TICKET_77
 def test_a_half_written_last_line_is_not_returned(web: Web) -> None:
     """The event file is append-only and may be read while a line is being written."""
     events = read_events(NEW_FIELDS)
@@ -291,7 +288,6 @@ def test_a_half_written_last_line_is_not_returned(web: Web) -> None:
 # --- SSE -----------------------------------------------------------------------------------
 
 
-@TICKET_77
 def test_sse_sends_the_backlog_then_new_events_then_closes(web: Web) -> None:
     events = read_events(NEW_FIELDS)
     path = write_run(web.runs_dir, "live", events[:5])
@@ -303,7 +299,6 @@ def test_sse_sends_the_backlog_then_new_events_then_closes(web: Web) -> None:
     assert [event for _, event in frames] == events
 
 
-@TICKET_77
 def test_sse_resumes_after_last_event_id_without_loss_or_repeat(web: Web) -> None:
     events = read_events(NEW_FIELDS)
     write_run(web.runs_dir, "done", events)
@@ -329,7 +324,6 @@ def assert_no_connection_string(text: str) -> None:
         assert secret not in text
 
 
-@TICKET_77
 def test_read_endpoints_hold_no_connection_string(web: Web) -> None:
     write_run(web.runs_dir, "r1", read_events(NEW_FIELDS))
     options = web.client.get("/api/options")
@@ -487,7 +481,6 @@ def server_answers(host: str, port: int) -> bool:
         return False
 
 
-@TICKET_77
 def test_data_agent_web_listens_on_loopback_only(tmp_path: Path) -> None:
     refused = subprocess.run(
         [str(DATA_AGENT), "web", "--runs-dir", str(tmp_path), "--host", "0.0.0.0"],
