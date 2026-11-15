@@ -10,7 +10,7 @@ import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 import pytest
@@ -736,7 +736,11 @@ async def test_task_event_text_is_masked(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 async def system_prompt_and_version(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, task_type: str, dialect: str, config: str
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    task_type: Literal["dbt", "query"],
+    dialect: str,
+    config: str,
 ) -> tuple[str, dict[str, Any]]:
     prompts: list[str] = []
 
@@ -749,12 +753,12 @@ async def system_prompt_and_version(
     # The context layer's dictionary build would connect to the database.
     monkeypatch.setattr(agent, "prebuilt_dictionary", lambda *_: nullcontext())
     if dialect == "postgres":
-        task = Task(text="q", type=task_type, workspace=tmp_path, postgres_env="DA_TEST_URL")  # pyright: ignore[reportArgumentType]
+        task = Task(text="q", type=task_type, workspace=tmp_path, postgres_env="DA_TEST_URL")
         env = ENV | {"DA_TEST_URL": "postgresql://someone:pw@127.0.0.1:1/nowhere"}
     else:
         db = tmp_path / "x.duckdb"
         duckdb.connect(str(db)).close()
-        task = Task(text="q", type=task_type, workspace=tmp_path, duckdb=db)  # pyright: ignore[reportArgumentType]
+        task = Task(text="q", type=task_type, workspace=tmp_path, duckdb=db)
         env = ENV
     outcome = await agent.run(task, load_config(config), tmp_path / "events", env)
     version = json.loads(outcome.events_path.read_text().splitlines()[0])
@@ -775,7 +779,7 @@ async def system_prompt_and_version(
 async def test_version_event_names_the_skills_in_the_system_prompt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    task_type: str,
+    task_type: Literal["dbt", "query"],
     dialect: str,
     config: str,
     skills: list[str],
@@ -800,7 +804,6 @@ async def test_version_event_skills_leave_out_the_verifiers(
     )
     assert agent.VERIFIERS_PROMPT in system
     assert version["skills"] == ["dbt-workflow", "dbt-write", "dbt-debugging", "duckdb-sql"]
-    assert not [name for name in version["skills"] if "verif" in name]
 
 
 async def test_answer_event_marks_the_final_answer_before_the_result(
