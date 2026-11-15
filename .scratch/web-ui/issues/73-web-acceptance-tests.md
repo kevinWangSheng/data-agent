@@ -1,10 +1,10 @@
 # 73 — 网页界面：三处接缝的验收测试
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (opus-5.5)
+Branch: worktree-73-web-acceptance-tests
 
 ## Goal
 
