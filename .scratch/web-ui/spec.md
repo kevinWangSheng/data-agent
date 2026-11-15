@@ -98,7 +98,8 @@
 - **最终答案**：标记哪一段文本是最终答案，并带上它依据的那条查询的 `tool_use_id`（没有就留空）。
 - **被拒绝的调用**：`tool_end` 带一个拒绝种类字段，取值区分守卫和只读网关；没被拒绝时不带。
 - **`verifier_dispatch`**：带上对应的 Agent 工具调用的 `tool_use_id`。
-- **不补**：加载了哪个 Skill（从工具调用推出）、`sql` 事件的 `parent`（经 `tool_use_id` 找到工具调用再取）、验证者自己的思考和文本、失败的 `dbt run` 的 `is_error`。
+- **`version.skills`**（2026-11-15 人定，工单 83）：运行开始时注入主 agent 系统提示的 Skill 名字列表，按注入顺序。不是从工具调用推出的，也不是模型实际用到的。Skill 层关掉时为 `[]`；验证者的提示不算 Skill；只写名字，不写内容、路径或密钥。旧事件文件没有这个字段，视为未记录。
+- **不补**：`sql` 事件的 `parent`（经 `tool_use_id` 找到工具调用再取）、验证者自己的思考和文本、失败的 `dbt run` 的 `is_error`。
 
 字段名（2026-11-15 定，工单 73 的测试和工单 74 的实现都用这一组）：
 
@@ -109,6 +110,7 @@
 | 最终答案 | 新事件 `answer`：`text`、`sql_tool_use_id`（没有时为 null） |
 | 拒绝种类 | `tool_end.rejected_by`：`guard` 或 `gateway`；没被拒绝时不带 |
 | 验证派出的关联 | `verifier_dispatch.tool_use_id` |
+| 注入的 Skill | `version.skills`：名字列表；Skill 层关掉时 `[]`（工单 83） |
 
 ### 运行视图模型（前端的核心模块）
 
@@ -125,7 +127,7 @@
   - 查数运行没有验证，分成：了解环境、探索数据、回答。
 - **关键时刻**：每次验证的结论、被拒绝的调用、报错、最终答案，各一条，指向对应的步骤。
 - **最终答案**：文本、依据的查询、那条查询的结果表。
-- **加载的 Skill 和上下文工具的使用次数**（`discover`、`hydrate`、`dictionary_search`）。
+- **注入的 Skill**（读 `version.skills`）**和上下文工具的使用次数**（`discover`、`hydrate`、`dictionary_search`）。
 
 状态的取值：运行中、成功、失败、已取消。来源：
 
@@ -140,6 +142,7 @@
 - 没有最终答案标记：取最后一段文本；依据的查询取它之前最后一条成功的查询。
 - 没有拒绝种类：按结果里的文字分辨，分辨不出就只标"被拒绝"。
 - `verifier_dispatch` 没有关联：按它在 `verifier_start` 和 `verifier_end` 之间的位置对应。
+- `version` 没有 `skills`：显示"未记录"，不从工具调用或 `layers.skill` 推断；和 `skills: []`（Skill 层关掉）区分开。
 
 ### 运行页
 

@@ -1,7 +1,7 @@
 # 75 — 运行视图模型
 
 Status: ready-for-agent
-Blocked by: 73
+Blocked by: 73, 83
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -20,7 +20,8 @@ Branch: —
 ## Context
 
 - spec "运行视图模型"一节是全部规则，包括阶段怎么分、状态的来源、旧文件的五条退路。
-- 类型和签名由工单 73 定，不改；需要改时停下交回。
+- 类型和签名由工单 73 定，不改；需要改时停下交回。唯一例外（2026-11-15 人定）：`RunView.skills` 改成 `string[] | null`。
+- 注入的 Skill：`RunView.skills` 读 `version.skills`（工单 83 写），原样取名字列表。`version` 没有 `skills` 字段（旧文件）时为 `null`，表示未记录；`[]` 表示 Skill 层关掉。不从工具调用、`layers.skill` 或任务类型推断。验收测试不测这一项，本工单在 `web/src/` 里另加单元测试覆盖三种情况（有名字、`[]`、缺字段）。
 - 参考（只在本机，不复制文件）：样板 B 的事件配对、验证报告解析、结果表解析在 `/Users/shenghuikevin/dev/AI/data-agent/runs/web-prototypes/b/src/`；A 的阶段细分在 `/Users/shenghuikevin/dev/AI/data-agent/runs/web-prototypes/a/src/`。
 - 性能：1.2 MB、270 次调用的那条运行，整份转换要快到回放时每帧重算前缀也不卡；需要时做增量。
 - 只用 pnpm，不用 npm；只用 uv，不用 pip。
