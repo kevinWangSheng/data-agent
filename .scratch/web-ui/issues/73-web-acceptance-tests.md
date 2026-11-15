@@ -1,6 +1,6 @@
 # 73 — 网页界面：三处接缝的验收测试
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -58,7 +58,7 @@ Branch: worktree-73-web-acceptance-tests
 - Attempts: 1
 - Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #82, human-approved 2026-11-15; CI green, Codex no findings)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
