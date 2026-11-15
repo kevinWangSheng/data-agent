@@ -16,5 +16,14 @@ jobs:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.3.0
       - run: uv sync --locked
+      # `make check` runs the web UI's type check and tests; pnpm's version is web/package.json's.
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
       - run: make check
       - run: uv run pre-commit run --all-files --show-diff-on-failure

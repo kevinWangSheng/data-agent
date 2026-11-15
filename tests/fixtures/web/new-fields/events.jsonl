@@ -1,0 +1,45 @@
+{"seq": 0, "type": "version", "ts": "2026-11-15T09:00:00+00:00", "git_commit": "0000000000000000000000000000000000000000", "skill_version": "abc123", "config": "full", "layers": {"skill": true, "verifiers": true, "context": true}, "model": "test-model", "sdk_version": "0.2.168", "cli_version": "2.1.301"}
+{"seq": 1, "type": "task", "ts": "2026-11-15T09:00:01+00:00", "task": "Build the orders mart from raw.orders.", "task_type": "dbt", "data_source": "shop"}
+{"seq": 2, "type": "status", "ts": "2026-11-15T09:00:02+00:00", "state": "started", "model": "test-model"}
+{"seq": 3, "type": "tool_start", "ts": "2026-11-15T09:00:03+00:00", "tool": "Bash", "tool_use_id": "t-ls", "input": {"command": "ls"}, "parent": null}
+{"seq": 4, "type": "tool_timing", "ts": "2026-11-15T09:00:04+00:00", "tool": "Bash", "tool_use_id": "t-ls", "duration_ms": 250, "failed": false, "timed_out": false, "agent_id": null}
+{"seq": 5, "type": "tool_end", "ts": "2026-11-15T09:00:05+00:00", "tool": "Bash", "tool_use_id": "t-ls", "content": "dbt_project.yml\nmodels", "is_error": false, "parent": null}
+{"seq": 6, "type": "tool_start", "ts": "2026-11-15T09:00:06+00:00", "tool": "mcp__data__query_database", "tool_use_id": "t-q1", "input": {"sql": "SELECT count(*) AS n FROM raw.orders"}, "parent": null}
+{"seq": 7, "type": "sql", "ts": "2026-11-15T09:00:07+00:00", "sql": "SELECT count(*) AS n FROM raw.orders", "tool_use_id": "t-q1"}
+{"seq": 8, "type": "tool_timing", "ts": "2026-11-15T09:00:08+00:00", "tool": "mcp__data__query_database", "tool_use_id": "t-q1", "duration_ms": 250, "failed": false, "timed_out": false, "agent_id": null}
+{"seq": 9, "type": "tool_end", "ts": "2026-11-15T09:00:09+00:00", "tool": "mcp__data__query_database", "tool_use_id": "t-q1", "content": "{\"result\": \"n\\n-\\n3\\n(1 rows)\"}", "is_error": false, "parent": null}
+{"seq": 10, "type": "tool_start", "ts": "2026-11-15T09:00:10+00:00", "tool": "Write", "tool_use_id": "t-w1", "input": {"file_path": "/app/models/orders_mart.sql", "content": "select 1"}, "parent": null}
+{"seq": 11, "type": "tool_timing", "ts": "2026-11-15T09:00:11+00:00", "tool": "Write", "tool_use_id": "t-w1", "duration_ms": 250, "failed": false, "timed_out": false, "agent_id": null}
+{"seq": 12, "type": "tool_end", "ts": "2026-11-15T09:00:12+00:00", "tool": "Write", "tool_use_id": "t-w1", "content": "File created", "is_error": false, "parent": null}
+{"seq": 13, "type": "tool_start", "ts": "2026-11-15T09:00:13+00:00", "tool": "Bash", "tool_use_id": "t-g1", "input": {"command": "cat secrets.txt"}, "parent": null}
+{"seq": 14, "type": "tool_timing", "ts": "2026-11-15T09:00:14+00:00", "tool": "Bash", "tool_use_id": "t-g1", "duration_ms": 250, "failed": true, "timed_out": false, "agent_id": null}
+{"seq": 15, "type": "tool_end", "ts": "2026-11-15T09:00:15+00:00", "tool": "Bash", "tool_use_id": "t-g1", "content": "Not allowed here.", "is_error": true, "parent": null, "rejected_by": "guard"}
+{"seq": 16, "type": "tool_start", "ts": "2026-11-15T09:00:16+00:00", "tool": "mcp__data__query_database", "tool_use_id": "t-q2", "input": {"sql": "SELECT 1; SELECT 2"}, "parent": null}
+{"seq": 17, "type": "sql", "ts": "2026-11-15T09:00:17+00:00", "sql": "SELECT 1; SELECT 2", "tool_use_id": "t-q2"}
+{"seq": 18, "type": "tool_timing", "ts": "2026-11-15T09:00:18+00:00", "tool": "mcp__data__query_database", "tool_use_id": "t-q2", "duration_ms": 250, "failed": true, "timed_out": false, "agent_id": null}
+{"seq": 19, "type": "tool_end", "ts": "2026-11-15T09:00:19+00:00", "tool": "mcp__data__query_database", "tool_use_id": "t-q2", "content": "Error executing tool query_database: not allowed.", "is_error": true, "parent": null, "rejected_by": "gateway"}
+{"seq": 20, "type": "tool_start", "ts": "2026-11-15T09:00:20+00:00", "tool": "Agent", "tool_use_id": "t-a1", "input": {"description": "Verify orders_mart", "subagent_type": "verifier", "prompt": "Verify orders_mart"}, "parent": null}
+{"seq": 21, "type": "tool_start", "ts": "2026-11-15T09:00:21+00:00", "tool": "Agent", "tool_use_id": "t-x1", "input": {"description": "Look around", "subagent_type": "Explore", "prompt": "List the models"}, "parent": null}
+{"seq": 22, "type": "tool_end", "ts": "2026-11-15T09:00:22+00:00", "tool": "Agent", "tool_use_id": "t-x1", "content": [{"type": "text", "text": "orders_mart"}], "is_error": false, "parent": null}
+{"seq": 23, "type": "verifier_dispatch", "ts": "2026-11-15T09:00:23+00:00", "n": 1, "models": ["orders_mart"], "source": "first", "tool_use_id": "t-a1"}
+{"seq": 24, "type": "verifier_start", "ts": "2026-11-15T09:00:24+00:00", "verifier": "verifier", "agent_id": "v-1"}
+{"seq": 25, "type": "tool_start", "ts": "2026-11-15T09:00:25+00:00", "tool": "mcp__data__grain_facts", "tool_use_id": "t-v1", "input": {"model": "orders_mart", "key_columns": ["order_id"]}, "parent": "t-a1"}
+{"seq": 26, "type": "tool_timing", "ts": "2026-11-15T09:00:26+00:00", "tool": "mcp__data__grain_facts", "tool_use_id": "t-v1", "duration_ms": 250, "failed": false, "timed_out": false, "agent_id": null}
+{"seq": 27, "type": "tool_end", "ts": "2026-11-15T09:00:27+00:00", "tool": "mcp__data__grain_facts", "tool_use_id": "t-v1", "content": "{\"result\": \"0 duplicate keys\"}", "is_error": false, "parent": "t-a1"}
+{"seq": 28, "type": "verifier_end", "ts": "2026-11-15T09:00:28+00:00", "verifier": "verifier", "agent_id": "v-1", "turns": 3, "tool_calls": 1, "checks": {"orders_mart": {"1": "PASS", "2": "FAIL"}}, "check_names": {"1": "exists", "2": "columns"}, "overall": "FAIL", "report": "## Verification Report\n\nCHECK 1: PASS\nCHECK 2: FAIL", "hit_max_turns": false}
+{"seq": 29, "type": "tool_end", "ts": "2026-11-15T09:00:29+00:00", "tool": "Agent", "tool_use_id": "t-a1", "content": [{"type": "text", "text": "FAIL"}], "is_error": false, "parent": null}
+{"seq": 30, "type": "tool_start", "ts": "2026-11-15T09:00:30+00:00", "tool": "Edit", "tool_use_id": "t-e1", "input": {"file_path": "/app/models/orders_mart.sql", "old_string": "select 1", "new_string": "select order_id from raw.orders"}, "parent": null}
+{"seq": 31, "type": "tool_timing", "ts": "2026-11-15T09:00:31+00:00", "tool": "Edit", "tool_use_id": "t-e1", "duration_ms": 250, "failed": false, "timed_out": false, "agent_id": null}
+{"seq": 32, "type": "tool_end", "ts": "2026-11-15T09:00:32+00:00", "tool": "Edit", "tool_use_id": "t-e1", "content": "File edited", "is_error": false, "parent": null}
+{"seq": 33, "type": "tool_start", "ts": "2026-11-15T09:00:33+00:00", "tool": "Agent", "tool_use_id": "t-a2", "input": {"description": "Re-verify orders_mart", "subagent_type": "verifier", "prompt": "Re-verify orders_mart"}, "parent": null}
+{"seq": 34, "type": "verifier_dispatch", "ts": "2026-11-15T09:00:34+00:00", "n": 2, "models": ["orders_mart"], "source": "again", "tool_use_id": "t-a2"}
+{"seq": 35, "type": "verifier_start", "ts": "2026-11-15T09:00:35+00:00", "verifier": "verifier", "agent_id": "v-2"}
+{"seq": 36, "type": "tool_start", "ts": "2026-11-15T09:00:36+00:00", "tool": "mcp__data__grain_facts", "tool_use_id": "t-v2", "input": {"model": "orders_mart", "key_columns": ["order_id"]}, "parent": "t-a2"}
+{"seq": 37, "type": "tool_timing", "ts": "2026-11-15T09:00:37+00:00", "tool": "mcp__data__grain_facts", "tool_use_id": "t-v2", "duration_ms": 250, "failed": false, "timed_out": false, "agent_id": null}
+{"seq": 38, "type": "tool_end", "ts": "2026-11-15T09:00:38+00:00", "tool": "mcp__data__grain_facts", "tool_use_id": "t-v2", "content": "{\"result\": \"0 duplicate keys\"}", "is_error": false, "parent": "t-a2"}
+{"seq": 39, "type": "verifier_end", "ts": "2026-11-15T09:00:39+00:00", "verifier": "verifier", "agent_id": "v-2", "turns": 2, "tool_calls": 1, "checks": {"orders_mart": {"1": "PASS", "2": "PASS"}}, "check_names": {"1": "exists", "2": "columns"}, "overall": "PASS", "report": "## Verification Report\n\nCHECK 1: PASS\nCHECK 2: PASS", "hit_max_turns": false}
+{"seq": 40, "type": "tool_end", "ts": "2026-11-15T09:00:40+00:00", "tool": "Agent", "tool_use_id": "t-a2", "content": [{"type": "text", "text": "PASS"}], "is_error": false, "parent": null}
+{"seq": 41, "type": "text", "ts": "2026-11-15T09:00:41+00:00", "text": "orders_mart is built: 3 orders."}
+{"seq": 42, "type": "answer", "ts": "2026-11-15T09:00:42+00:00", "text": "orders_mart is built: 3 orders.", "sql_tool_use_id": "t-q1"}
+{"seq": 43, "type": "text", "ts": "2026-11-15T09:00:43+00:00", "text": "Anything else?"}
+{"seq": 44, "type": "result", "ts": "2026-11-15T09:00:44+00:00", "subtype": "success", "is_error": false, "num_turns": 9, "terminal_reason": "completed", "uncached_input_tokens": 1000, "cached_input_tokens": 5000, "output_tokens": 300, "cost_usd": 0.05, "sdk_cost_usd": 1.25, "cost_basis": "price_table", "errors": []}

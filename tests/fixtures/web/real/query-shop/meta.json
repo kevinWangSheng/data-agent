@@ -1,0 +1,10 @@
+{
+  "id": "query-shop",
+  "title": "Shop: top customer tier by completed orders",
+  "task": "Which customer tier has the highest total amount of completed orders, and how much is it?",
+  "task_type": "query",
+  "data_source": "shop.duckdb",
+  "grade": null,
+  "failure_reason": null,
+  "featured": true
+}
