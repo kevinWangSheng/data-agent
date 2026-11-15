@@ -354,6 +354,14 @@
   - 上一条说的长运行 `runs/t46-real2` 没用上：它早于工单 47、59–64，没有 `verifier_dispatch` 和 `tool_timing` 事件。实际用的三条：README 快速上手重跑的查数运行；`runs/u1-full-rest/jobs/full/dbt-cart-abandonment-recovery__dSJJ5j9`（122 次调用，FAIL → PASS）；`runs/u1-target/jobs/full/dbt-fix-division-by-zero__tzXXxtE`（270 次调用，评分失败）。
   - Q30–Q37 已由人确认（plan §2"样板"），Q38–Q41 也已确认；spec 在 `.scratch/web-ui/spec.md`，Status 是 ready-for-agent。**下一步：`/to-tickets`**，第一张工单是三处接缝的验收测试，人审过才合并。
   - 核实范围：三个样板 `pnpm build` 通过是各 agent 报告的；主会话只看过 24 张截图（没有页面报错、没有横向溢出），没有实测回放、键盘操作和手机布局。
+- 2026-11-15（工单）：网页界面的 spec 和 10 张工单写完并推送，73、74 已派出。**下一会话从这里开始。**
+  - spec：`.scratch/web-ui/spec.md`（ready-for-agent，Q1–Q41 都已由人确认；事件新字段的名字写在"事件：新增和补充的字段"的表里）。工单：`.scratch/web-ui/issues/73`–`82`。
+  - 依赖：73（验收测试）和 74（事件补字段）没有依赖；75（视图模型）、77（后端读）、80（导出）等 73；76 等 75；78 等 77；79 等 76、78；81 等 76、80；82 等 74、81。
+  - **已派出（2026-11-15，本会话后台启动）**：`claude -p -w 73-web-acceptance-tests` 和 `claude -p -w 74-event-fields`，都是 `--model opus --permission-mode auto`，输出在 `runs/dispatch/73-web-acceptance-tests.txt`、`runs/dispatch/74-event-fields.txt`。人随后说要清上下文、在新会话里接着做；本会话没有等它们跑完，也没有停它们。
+  - 新会话先核对这两个的状态：看两个输出文件是否写完、工单的 `Status:` 和 `Branch:`、`git worktree list`。跑完了就照 AGENTS.md 第 6、7 步处理；中途断了就在原分支上重新派同一条命令。
+  - **73 要人审过才合并**：把它定的视图模型类型、后端入口签名、测试清单整理给人看。74 做完后主会话真跑一次 README 快速上手的查数运行核对新字段，再走审查和 PR。
+  - 82 里由主会话做的对外操作：重跑或重选 3 条精选运行、跑导出、把数据包传到 release、在仓库设置里开启 Pages。
+  - 三个样板的预览服务都已停。76 要对照样板 B 时在 `runs/web-prototypes/b/` 下 `pnpm preview`（端口 5182）。
 
 ## 0. 一句话
 
