@@ -256,6 +256,7 @@
    - 19 清理轨迹，然后由人上榜提交（17、18）。data-eng-bench 现在可交；DAB 等 18b 重跑完再交。
      - 已完成（2026-11-15）：18b 全量重跑完（no-context 0.7588，baseline 0.7218，见 ADR-0008 Update 2026-11-15）；人让编排会话代交，DAB 是 ucbepic/DataAgentBench PR #144，data-eng-bench 是 Snowflake-Labs/data-eng-bench PR #20，都在等对方处理。
    - 20 报告：消融、基线对比、花费、失败归因（16、17、18）。
+     - 第一版已完成（2026-11-15，英文，`docs/report.md`，README 链接过去）；中文版待人定。
    - 21 README 与动图（20，最好也等 10）。
      - README 第一版已完成（2026-11-15，英文，架构图是 `docs/assets/architecture.svg`）；动图等网页界面，中文版待人定。
    - 22 仓库转公开（19、21）。仓库已经是公开的（2026-11-14 核实），README 已有（2026-11-15）。

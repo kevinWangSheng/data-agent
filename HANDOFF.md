@@ -328,6 +328,12 @@
   - 没查的：baseline 配置的下降（轨迹只在服务器）；三道定不了的题要服务器上的逐次官方判定。
   - 第 20 项报告的输入齐了，报告还没开始：没有 spec 和工单，形式和章节要先和人对齐（一次一个主题）。编排会话的建议（人还没定）：独立的英文 `docs/report.md`，README 链接过去；和网页界面评测页的内容重叠，先做哪个要人定。
   - 其余不变：5/10 网页界面没讨论；README 的中文版和动图；两个榜单 PR 等对方；没清理的 worktree、服务器 clone、fork。
+- 2026-11-15 深夜：第 20 项报告第一版写完并提交（`docs/report.md`，英文，README 的"Reproducing the evaluations"一节链接过去）。**下一会话从这里开始。**
+  - 人说可以直接开工；做法照 README 的先例：主会话直接写，无上下文的 Opus 子 agent 冷读并对照来源核对（约 200 条陈述，改了 17 处：agnews 属于第三类失败而不是第一类、开发集日期、过程指标是第 1 段 full 的 40 个 trial、补上 dev-3 full 显著低于 baseline、"fixed"改成"修复瞄准的类别"等）。人还没读过成稿。
+  - 报告里标了未确认的：baseline 配置在 DAB 重跑里的下降；DEPS_DEV_V1 query2、googlelocal query3、yelp query4 的归因；no-context 在留出集最低的原因；统一评估第 2 段的失败没读。
+  - 博客（23）：人问过，定为现在不写，等网页界面有了动图或视频再写（和 README 动图一起）。
+  - 一期剩下的：5/10 网页界面（还没讨论，是剩下最长的一条，下一步从 `docs/research/2026-11-01-upstream-web-ui.md` 待定的三点开始）；README 和报告的中文版待人定；跟进两个榜单 PR；没清理的东西同前。
+  - 小事：README 第 145 行"three trials at a time"对 DAB 不准确（DAB 是 4 个数据集并行），报告里已写准，README 没改。
 
 ## 0. 一句话
 
