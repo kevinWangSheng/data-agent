@@ -1,4 +1,4 @@
-.PHONY: check fmt test
+.PHONY: check fmt test web-install
 
 # Fast checks: no network, no model calls. Run after every change; must pass before commit.
 check: web/node_modules
@@ -9,8 +9,13 @@ check: web/node_modules
 	pnpm --dir web typecheck
 	pnpm --dir web test
 
-# The web UI's packages, installed from the lockfile whenever it changes.
+# The web UI's packages, installed from the lockfile whenever it changes; offline, from pnpm's
+# store, so `check` stays off the network. Run `make web-install` once where the store is empty.
 web/node_modules: web/package.json web/pnpm-lock.yaml
+	pnpm --dir web install --frozen-lockfile --offline
+	touch web/node_modules
+
+web-install:
 	pnpm --dir web install --frozen-lockfile
 	touch web/node_modules
 

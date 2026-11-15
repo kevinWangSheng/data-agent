@@ -11,7 +11,7 @@
 //   new-fields            dbt run, 2 dispatches, `task` / `answer` / `check_names` /
 //                         `rejected_by` / `verifier_dispatch.tool_use_id`
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, test } from 'vitest'
@@ -35,11 +35,9 @@ function parseLines(text: string): RunEvent[] {
 
 function loadEvents(dir: string): RunEvent[] {
   const path = join(FIXTURES, dir, 'events.jsonl')
-  try {
-    return parseLines(readFileSync(path, 'utf8'))
-  } catch {
-    return parseLines(gunzipSync(readFileSync(path + '.gz')).toString('utf8'))
-  }
+  if (existsSync(path)) return parseLines(readFileSync(path, 'utf8'))
+  // Files over pre-commit's size limit are stored gzipped.
+  return parseLines(gunzipSync(readFileSync(path + '.gz')).toString('utf8'))
 }
 
 function loadNotes(dir: string): RunNotes {
@@ -54,7 +52,7 @@ const NEW = 'new-fields'
 const query = loadEvents(QUERY)
 const cart = loadEvents(CART)
 const div = loadEvents(DIV)
-const fresh = loadEvents(NEW)
+const newFields = loadEvents(NEW)
 
 /** Events up to and including `seq`: what a live run or a replay has shown so far. */
 function upTo(events: RunEvent[], seq: number): RunEvent[] {
@@ -323,7 +321,7 @@ describe('key moments', () => {
 
 describe('final answer', () => {
   test.fails('the marked answer and the query it names', () => {
-    const view = buildRunView(fresh)
+    const view = buildRunView(newFields)
     expect(view.answer).toEqual({
       text: 'orders_mart is built: 3 orders.',
       seq: 42,
@@ -345,7 +343,7 @@ describe('final answer', () => {
 
 describe('rejected calls', () => {
   test.fails('the rejected_by field names the kind', () => {
-    const view = buildRunView(fresh)
+    const view = buildRunView(newFields)
     expect(stepOf(view, 't-g1').rejectedBy).toBe('guard')
     expect(stepOf(view, 't-q2').rejectedBy).toBe('gateway')
     expect(view.steps.filter((s) => s.rejectedBy !== null).map((s) => s.id)).toEqual([
@@ -389,12 +387,12 @@ describe('run summary', () => {
 
   test.fails('cost is cost_usd, never sdk_cost_usd', () => {
     expect(buildRunView(query).summary.costUsd).toBe(0.006241872)
-    expect(buildRunView(fresh).summary.costUsd).toBe(0.05)
+    expect(buildRunView(newFields).summary.costUsd).toBe(0.05)
   })
 
   test.fails('the task event gives task, type and data source', () => {
     const notes: RunNotes = { task: 'something else', task_type: 'query', data_source: 'other' }
-    const { summary } = buildRunView(fresh, notes)
+    const { summary } = buildRunView(newFields, notes)
     expect(summary.task).toBe('Build the orders mart from raw.orders.')
     expect(summary.taskType).toBe('dbt')
     expect(summary.dataSource).toBe('shop')
@@ -507,7 +505,7 @@ describe('event prefixes', () => {
 
 describe('verifier events, new and old', () => {
   test.fails('check names come from check_names', () => {
-    const [first] = buildRunView(fresh).dispatches
+    const [first] = buildRunView(newFields).dispatches
     expect(first.checks).toEqual([
       { model: 'orders_mart', check: '1', name: 'exists', verdict: 'PASS' },
       { model: 'orders_mart', check: '2', name: 'columns', verdict: 'FAIL' },
@@ -521,7 +519,7 @@ describe('verifier events, new and old', () => {
 
   test.fails('the dispatch names its Agent call', () => {
     // Another Agent call started after the verifier's: only the field links the right one.
-    const view = buildRunView(fresh)
+    const view = buildRunView(newFields)
     expect(view.dispatches.map((d) => d.toolUseId)).toEqual(['t-a1', 't-a2'])
     expect(view.dispatches.map((d) => d.steps)).toEqual([['t-v1'], ['t-v2']])
     expect(stepOf(view, 't-x1').dispatch).toBeNull()

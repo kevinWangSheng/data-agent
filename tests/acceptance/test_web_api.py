@@ -72,8 +72,8 @@ INET = re.compile(r"\binet (?:addr:)?(\d+\.\d+\.\d+\.\d+)")
 # 198.18/15, the benchmarking range proxies give their TUN interface (RFC 2544), as an integer.
 TUN_RANGE = ipaddress.ip_network((0xC612_0000, 15))
 
-STORY_77 = pytest.mark.xfail(strict=True, reason="ticket 77: list runs, read events, SSE")
-STORY_78 = pytest.mark.xfail(strict=True, reason="ticket 78: submit and cancel runs")
+TICKET_77 = pytest.mark.xfail(strict=True, reason="ticket 77: list runs, read events, SSE")
+TICKET_78 = pytest.mark.xfail(strict=True, reason="ticket 78: submit and cancel runs")
 
 
 @dataclass
@@ -218,6 +218,10 @@ def event_file(web: Web, run_id: str) -> Path:
     return path
 
 
+def event_file_exists(web: Web, run_id: str) -> bool:
+    return any((web.runs_dir / run_id).glob("*.jsonl"))
+
+
 def flag(args: list[str], name: str) -> str:
     return args[args.index(name) + 1]
 
@@ -225,7 +229,7 @@ def flag(args: list[str], name: str) -> str:
 # --- Listing runs --------------------------------------------------------------------------
 
 
-@STORY_77
+@TICKET_77
 def test_lists_every_run_in_the_runs_dir(web: Web) -> None:
     """Runs from the command line list too: finished, still going, and an old event file."""
     events = read_events(NEW_FIELDS)
@@ -255,7 +259,7 @@ def test_lists_every_run_in_the_runs_dir(web: Web) -> None:
 # --- Reading events by cursor --------------------------------------------------------------
 
 
-@STORY_77
+@TICKET_77
 def test_reads_events_after_a_cursor(web: Web) -> None:
     events = read_events(NEW_FIELDS)
     write_run(web.runs_dir, "r1", events)
@@ -273,7 +277,7 @@ def test_reads_events_after_a_cursor(web: Web) -> None:
     assert web.client.get("/api/runs/no-such-run/events").status_code == 404
 
 
-@STORY_77
+@TICKET_77
 def test_a_half_written_last_line_is_not_returned(web: Web) -> None:
     """The event file is append-only and may be read while a line is being written."""
     events = read_events(NEW_FIELDS)
@@ -287,7 +291,7 @@ def test_a_half_written_last_line_is_not_returned(web: Web) -> None:
 # --- SSE -----------------------------------------------------------------------------------
 
 
-@STORY_77
+@TICKET_77
 def test_sse_sends_the_backlog_then_new_events_then_closes(web: Web) -> None:
     events = read_events(NEW_FIELDS)
     path = write_run(web.runs_dir, "live", events[:5])
@@ -299,7 +303,7 @@ def test_sse_sends_the_backlog_then_new_events_then_closes(web: Web) -> None:
     assert [event for _, event in frames] == events
 
 
-@STORY_77
+@TICKET_77
 def test_sse_resumes_after_last_event_id_without_loss_or_repeat(web: Web) -> None:
     events = read_events(NEW_FIELDS)
     write_run(web.runs_dir, "done", events)
@@ -325,7 +329,7 @@ def assert_no_connection_string(text: str) -> None:
         assert secret not in text
 
 
-@STORY_77
+@TICKET_77
 def test_read_endpoints_hold_no_connection_string(web: Web) -> None:
     write_run(web.runs_dir, "r1", read_events(NEW_FIELDS))
     options = web.client.get("/api/options")
@@ -337,7 +341,7 @@ def test_read_endpoints_hold_no_connection_string(web: Web) -> None:
         assert_no_connection_string(web.client.get(url).text)
 
 
-@STORY_78
+@TICKET_78
 def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> None:
     response = submit(web, data_source="warehouse")
     assert response.status_code == 201, response.text
@@ -353,14 +357,10 @@ def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> N
         assert_no_connection_string(web.client.get(url).text)
 
 
-def event_file_exists(web: Web, run_id: str) -> bool:
-    return any((web.runs_dir / run_id).glob("*.jsonl"))
-
-
 # --- Submitting runs -----------------------------------------------------------------------
 
 
-@STORY_78
+@TICKET_78
 def test_a_submitted_run_appears_and_streams(web: Web) -> None:
     run_id = submit_ok(web, task="How many orders are there?", config="baseline")
     [run] = web.started
@@ -382,7 +382,7 @@ def test_a_submitted_run_appears_and_streams(web: Web) -> None:
     wait_until(lambda: runs_by_id(web)[run_id]["status"] == "success")
 
 
-@STORY_78
+@TICKET_78
 def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     run_id = submit_ok(web)
     wait_until(
@@ -398,7 +398,7 @@ def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     )
 
 
-@STORY_78
+@TICKET_78
 def test_an_unknown_data_source_is_refused(web: Web) -> None:
     response = submit(web, data_source="no-such-source")
     assert 400 <= response.status_code < 500
@@ -407,7 +407,7 @@ def test_an_unknown_data_source_is_refused(web: Web) -> None:
     assert runs_by_id(web) == {}
 
 
-@STORY_78
+@TICKET_78
 def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     first = submit_ok(web)
     response = submit(web, task="Another question")
@@ -423,7 +423,7 @@ def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     assert set(runs_by_id(web)) == {first, second}
 
 
-@STORY_78
+@TICKET_78
 def test_cancel_stops_only_the_run_this_server_started(web: Web) -> None:
     write_run(web.runs_dir, "cli-run", read_events(NEW_FIELDS)[:20])
     bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
@@ -487,7 +487,7 @@ def server_answers(host: str, port: int) -> bool:
         return False
 
 
-@STORY_77
+@TICKET_77
 def test_data_agent_web_listens_on_loopback_only(tmp_path: Path) -> None:
     refused = subprocess.run(
         [str(DATA_AGENT), "web", "--runs-dir", str(tmp_path), "--host", "0.0.0.0"],
