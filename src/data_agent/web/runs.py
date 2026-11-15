@@ -28,8 +28,9 @@ class RunsDir:
         self.path = path
 
     def run_dir(self, run_id: str) -> Path | None:
-        """The run's directory, or None when there is no run by that id. An id is a plain directory
-        name: anything that would point outside the runs directory is no run."""
+        """The run's directory, or None when there is no run by that id. An id from a URL is a plain
+        directory name: `..`, a path or a hidden name is no run. Entries the user placed in the
+        runs directory, symlinks included, are runs like any other."""
         if run_id in ("", ".", "..") or "/" in run_id or "\\" in run_id or run_id.startswith("."):
             return None
         path = self.path / run_id
