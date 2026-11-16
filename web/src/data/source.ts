@@ -124,6 +124,8 @@ function browserStream(url: string): EventStream {
 
 /** How long new events wait to be handed over together, so a burst renders once. */
 const BATCH_MS = 100
+/** `readyState` once the browser gave up on a stream and will not reconnect. */
+const CLOSED = 2
 /** How long to wait before opening a stream the browser gave up on. */
 const REOPEN_MS = 2000
 
@@ -165,39 +167,48 @@ export function localSource(
       stream.close()
       clearTimeout(reopenTimer)
     }
-    const open = () => {
-      stream = openStream(`${root}${runPath(id)}/events?after=${last}`)
-      stream.onmessage = (message) => {
-        const event = JSON.parse(message.data) as RunEvent
-        // A frame sent again after a reconnect.
-        if (stopped || event.seq <= last) return
-        last = event.seq
-        buffer.push(event)
-        if (event.type === 'result') return end()
-        batchTimer ??= setTimeout(flush, BATCH_MS)
-      }
-      stream.onerror = () => {
+    /** Takes an event not seen yet; a `result` event, the run's last, ends the follow. */
+    const take = (event: RunEvent) => {
+      // A frame sent again after a reconnect.
+      if (stopped || event.seq <= last) return
+      last = event.seq
+      buffer.push(event)
+      if (event.type === 'result') return end()
+      batchTimer ??= setTimeout(flush, BATCH_MS)
+    }
+    /** After the stream fails. The server closes it once the run ended; a run that ended is told
+     *  apart by its row, and the events it wrote after the last one seen (while the connection
+     *  was down, say) are read before the follow ends. A run no longer listed is not followed.
+     *  Otherwise the connection dropped: the browser reconnects with Last-Event-ID, or, when it
+     *  gave up, the stream is opened again here. */
+    const recover = async (failed: EventStream) => {
+      try {
+        const row = (await rows()).find((r) => r.id === id)
         if (stopped) return
-        const current = stream
-        // The server closes the stream once the run ended; one that ended without a `result`
-        // event is told apart by its row. Otherwise the connection dropped: the browser
-        // reconnects with Last-Event-ID, or, when it gave up, the stream is opened again here.
-        rows()
-          .then((all) => {
-            const row = all.find((r) => r.id === id)
-            if (stopped || row === undefined || row.status === 'running') return false
-            end()
-            on.notes(notesOf(row))
-            return true
-          })
-          .catch(() => false)
-          .then((ended) => {
-            if (!ended && !stopped && current.readyState === 2 && current === stream) {
-              reopenTimer = setTimeout(() => {
-                if (!stopped) open()
-              }, REOPEN_MS)
-            }
-          })
+        if (row === undefined) return end()
+        if (row.status !== 'running') {
+          const { events } = await send<{ events: RunEvent[] }>(`${runPath(id)}/events?after=${last}`)
+          if (stopped) return
+          events.forEach(take)
+          end()
+          on.notes(notesOf(row))
+          return
+        }
+      } catch {
+        // The backend is unreachable for now; try again below.
+      }
+      if (!stopped && failed === stream && failed.readyState === CLOSED) {
+        reopenTimer = setTimeout(() => {
+          if (!stopped) open()
+        }, REOPEN_MS)
+      }
+    }
+    const open = () => {
+      const opened = openStream(`${root}${runPath(id)}/events?after=${last}`)
+      stream = opened
+      opened.onmessage = (message) => take(JSON.parse(message.data) as RunEvent)
+      opened.onerror = () => {
+        if (!stopped) void recover(opened)
       }
     }
     open()

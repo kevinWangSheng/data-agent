@@ -7,6 +7,7 @@ import { Monitor, Moon, Plus, Sun } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { isLive, localSource, notesOf, staticSource, type DataSource, type LiveSource, type RunData } from './data/source'
+import { errorText } from './format'
 import { HistoryPage } from './local/HistoryPage'
 import { NewRun } from './local/NewRun'
 import type { RunEvent, RunNotes } from './run-view/model'
@@ -19,7 +20,6 @@ const source: DataSource = import.meta.env.VITE_DATA_SOURCE === 'local' ? localS
 const live = source.live
 
 const currentRoute = () => readRoute(window.location.pathname, window.location.search, BASE)
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 type Loaded = { id: string; run?: RunData; error?: string }
 
@@ -45,7 +45,7 @@ function useRun(id: string | null): [Loaded | null, (notes: RunNotes) => void] {
           notes: (notes) => update((r) => ({ ...r, notes })),
         })
       })
-      .catch((e: unknown) => !gone && setLoaded({ id, error: message(e) }))
+      .catch((e: unknown) => !gone && setLoaded({ id, error: errorText(e) }))
     return () => {
       gone = true
       stop()
@@ -68,7 +68,7 @@ function CancelButton({ live, id, onCancelled }: { live: LiveSource; id: string;
     try {
       onCancelled(notesOf(await live.cancel(id)))
     } catch (e: unknown) {
-      setError(message(e))
+      setError(errorText(e))
     } finally {
       setBusy(false)
     }

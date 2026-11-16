@@ -36,6 +36,11 @@ export function fmtStart(iso: string | null): string {
   return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`
 }
 
+/** What a caught error says, for showing on the page. */
+export function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
 export function fmtCost(usd: number): string {
   return `$${usd.toFixed(usd < 1 ? 3 : 2)}`
 }
