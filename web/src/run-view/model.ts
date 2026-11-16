@@ -204,8 +204,10 @@ function resultText(content: unknown): string {
   return content
 }
 
-/** The gateway's text table: a `a | b` header, a dash rule, rows, then `(n rows)` and notes. A
- *  line with fewer cells than the header continues the last cell of the row above it. */
+/** The gateway's text table: a `a | b` header, a dash rule, rows, then `(n rows)` and notes
+ *  (`format_rows`, `mcp_server.py`). Only the `(n rows)` line ends the table: a blank line before
+ *  it is data, since the gateway writes empty values as they are. A line with fewer cells than the
+ *  header continues the last cell of the row above it. No `(n rows)` line: no table. */
 function parseTable(text: string): ResultTable | null {
   const lines = text.split('\n')
   if (lines.length < 2 || !/^-+$/.test(lines[1].trim())) return null
@@ -213,7 +215,7 @@ function parseTable(text: string): ResultTable | null {
   const split = (line: string) => (columns.length === 1 ? [line] : line.split(' | '))
   const rows: string[][] = []
   for (const line of lines.slice(2)) {
-    if (/^\(\d+ rows?\b/.test(line) || line.trim() === '') break
+    if (/^\(\d+ rows?\b/.test(line)) return { columns, rows }
     const cells = split(line)
     if (cells.length === columns.length) rows.push(cells)
     else if (cells.length < columns.length && rows.length > 0) {
@@ -221,7 +223,7 @@ function parseTable(text: string): ResultTable | null {
       last[last.length - 1] += '\n' + line
     } else return null
   }
-  return { columns, rows }
+  return null
 }
 
 const GATEWAY_BLOCKED = /^Error executing tool \S+: Query blocked by the read-only gateway:/

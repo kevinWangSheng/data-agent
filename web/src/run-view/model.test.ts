@@ -56,6 +56,27 @@ describe('result tables', () => {
     expect(step.table).toEqual({ columns: ['a', 'b'], rows: [['1', 'x\ny']] })
   })
 
+  test('a blank line in a one-column table is a row with an empty value', () => {
+    const step = buildRunView(queryCall('{"result": "value\\n-----\\n\\nnext\\n(2 rows)"}')).steps[0]
+    expect(step.table).toEqual({ columns: ['value'], rows: [[''], ['next']] })
+  })
+
+  test('empty values in the middle and at the end of a one-column table', () => {
+    const step = buildRunView(queryCall('{"result": "v\\n-\\na\\n\\nb\\n   \\n(4 rows)\\nnote"}')).steps[0]
+    expect(step.table).toEqual({ columns: ['v'], rows: [['a'], [''], ['b'], ['   ']] })
+  })
+
+  test('a blank line in a multi-column table continues the last cell', () => {
+    const step = buildRunView(queryCall('{"result": "a | b\\n-----\\n1 | x\\n\\ny\\n(1 rows)"}')).steps[0]
+    expect(step.table).toEqual({ columns: ['a', 'b'], rows: [['1', 'x\n\ny']] })
+  })
+
+  test('a table with no (n rows) line is no table', () => {
+    const step = buildRunView(queryCall('{"result": "v\\n-\\na\\n\\nb"}')).steps[0]
+    expect(step.table).toBeNull()
+    expect(step.result).toBe('v\n-\na\n\nb')
+  })
+
   test('text with no dash rule is no table', () => {
     const step = buildRunView(queryCall('{"result": "0 duplicate keys"}')).steps[0]
     expect(step.table).toBeNull()
