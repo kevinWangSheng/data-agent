@@ -1,10 +1,10 @@
 # 76 — 运行页：三栏布局和回放（读静态文件）
 
-Status: ready-for-agent
+Status: ready-for-human
 Blocked by: 75（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5, worktree 76-run-page-replay)
+Branch: worktree-76-run-page-replay
 
 ## Goal
 
@@ -60,3 +60,7 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+- 2026-11-16 claude（opus-5-5）：认领后停下（停止条件"视图模型缺页面需要的东西"），没写代码、没提交。分支 worktree-76-run-page-replay（无提交）。
+  - 缺口 1：RunView 不含 thinking 和中间的 text（夹具里 thinking 7/40/85 条、text 1/12/30 条）；buildRunView 只取最后一条 text 做答案退路（`model.ts:262-433`）。plan §2 硬约束"思考默认收起"、user story 15 都需要；样板 B 把两者作为独立条目显示（Detail.tsx:332-349）。
+  - 缺口 2：Step 只有 seq 和 durationMs，VerifierDispatch 没有时间；左栏缩略时间轴在样板 B 里按每步起止时间放（Outline.tsx:206-300）。
+- 2026-11-16 主会话核实两条属实（`model.ts:140-154` 的 RunView 字段；spec 第 24、48 行，plan 第 44 行）。另补一条缺口 3：回放的"跳过空闲间隔"要每条事件的时间，页面不能自己读事件。改视图模型类型属工单 73 的契约，交人定。
