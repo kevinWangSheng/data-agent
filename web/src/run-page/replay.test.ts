@@ -1,6 +1,21 @@
 import { describe, expect, test } from 'vitest'
 
-import { IDLE_CAP_MS, replayClock, revealedAt } from './replay'
+import { autoplaySpeed, IDLE_CAP_MS, replayClock, revealedAt } from './replay'
+
+describe('autoplaySpeed', () => {
+  test('plays a run in about the target time', () => {
+    expect(autoplaySpeed(50_000, 25_000)).toBe(2)
+    expect(autoplaySpeed(10_000, 25_000)).toBe(0.4)
+  })
+
+  test('a run with no time plays at 1x', () => {
+    expect(autoplaySpeed(0, 25_000)).toBe(1)
+  })
+
+  test('the default target is 25 seconds', () => {
+    expect(autoplaySpeed(250_000)).toBe(10)
+  })
+})
 
 describe('replayClock', () => {
   test('follows the event times when idle gaps are kept', () => {

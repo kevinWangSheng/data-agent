@@ -12,7 +12,7 @@ import { ReplayControls } from './ReplayControls'
 import { Side } from './Side'
 import { TimeAxis } from './TimeAxis'
 import { buildRows, defaultExpanded, isIssue, isSql, sectionsOf, type Item } from './outline'
-import { replayClock, revealedAt } from './replay'
+import { autoplaySpeed, replayClock, revealedAt } from './replay'
 import type { Filter, Route } from './route'
 import { timeline } from './timeline'
 import { StatusChip } from './ui'
@@ -28,13 +28,21 @@ const FILTER_LABELS: [Filter, string][] = [
   ['verifier', 'Verifier'],
 ]
 
-export function RunPage({ run, route, navigate }: { run: RunData; route: Route; navigate: Navigate }) {
+/**
+ * `autoplay` (the online site's first screen): the replay starts at once, skipping idle gaps, at
+ * the speed that plays it in about 25 seconds, and stops with everything shown. Otherwise the run
+ * opens with everything shown.
+ */
+export function RunPage({ run, route, navigate, autoplay = false }: { run: RunData; route: Route; navigate: Navigate; autoplay?: boolean }) {
   const { events, notes } = run
-  const [reading, setReading] = useState<number | null>(null)
-  const [playing, setPlaying] = useState(false)
-  const [speed, setSpeed] = useState<number>(10)
+  const [reading, setReading] = useState<number | null>(autoplay ? 0 : null)
+  const [playing, setPlaying] = useState(autoplay)
+  // Two significant digits, so the speed reads as a short label (0.58×).
+  const [autoSpeed] = useState(() => Number(autoplaySpeed(replayClock(eventTimes(events), true).at(-1) ?? 0).toPrecision(2)))
+  const [speed, setSpeed] = useState<number>(autoplay ? autoSpeed : 10)
   const [skipIdle, setSkipIdle] = useState(true)
-  const [follow, setFollow] = useState(false)
+  const [follow, setFollow] = useState(autoplay)
+  const speeds = useMemo(() => (autoplay && !SPEEDS.some((s) => s === autoSpeed) ? [autoSpeed, ...SPEEDS].sort((a, b) => a - b) : SPEEDS), [autoplay, autoSpeed])
   const [expanded, setExpanded] = useState<Set<string> | null>(null)
 
   const times = useMemo(() => eventTimes(events), [events])
@@ -245,7 +253,7 @@ export function RunPage({ run, route, navigate }: { run: RunData; route: Route; 
             playing={playing}
             showingAll={reading === null}
             speed={speed}
-            speeds={SPEEDS}
+            speeds={speeds}
             skipIdle={skipIdle}
             onSpeedChange={setSpeed}
             onTogglePlay={togglePlay}
