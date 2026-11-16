@@ -12,12 +12,12 @@ ADR-0008's conditions hold:
    regresses when the rerun is at most 1/3 again.
 
 The old results are reused only when, against the new job, the version headers agree on every
-field but the code and Skill versions, the run records (ticket 27's `OUT/records/`) agree on the
-benchmark commit and the machine, the old job started at most two weeks before the new one ended,
-and the old round had no infrastructure error (none left in the job, none dropped by a resume
-into `OUT/dropped/<config>/`, where an interrupted trial is kept too). Otherwise the verdict is
-`rerun-old`, unless a regression task regressed: that is judged on the new version alone,
-so the verdict is `fail` either way.
+field but the code and Skill versions and the injected Skill names, the run records (ticket 27's
+`OUT/records/`) agree on the benchmark commit and the machine, the old job started at most two
+weeks before the new one ended, and the old round had no infrastructure error (none left in the
+job, none dropped by a resume into `OUT/dropped/<config>/`, where an interrupted trial is kept
+too). Otherwise the verdict is `rerun-old`, unless a regression task regressed: that is judged
+on the new version alone, so the verdict is `fail` either way.
 
 Dev set only: any job, target or regression task outside the manifest's dev set is refused, by
 count, so no holdout task is named (ADR-0004).
@@ -50,7 +50,9 @@ from evals.report import (
 
 MAX_AGE = timedelta(days=14)
 # Version header fields that a change is expected to alter, or that differ per event file.
-CHANGED_BY_DESIGN = frozenset({"git_commit", "skill_version"})
+# `skills` (ticket 83) is observation metadata: the injected Skill names follow from `config`,
+# `layers` and the task, which are compared already, and versions before it do not record it.
+CHANGED_BY_DESIGN = frozenset({"git_commit", "skill_version", "skills"})
 PER_FILE = frozenset({"seq", "type", "ts"})
 # Written by every run (data_agent.agent); one no trial has cannot be matched either.
 REQUIRED = frozenset({"config", "layers", "model", "sdk_version", "cli_version"})
