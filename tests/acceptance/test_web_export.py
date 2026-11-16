@@ -1,15 +1,19 @@
 """Seam 3 of the web UI (.scratch/web-ui/spec.md "Testing Decisions"): the export command that turns
 chosen runs into the online site's static data, run as `python -m evals export` from the repo root.
 
-Written by ticket 73. Every test is xfail(strict) until ticket 80 makes it pass and removes the
-marker, changing nothing else. The manifest and job here are fakes; no real holdout data is read.
+Written by ticket 73; the featured-run holdout check added by ticket 84. Every test is
+xfail(strict) until ticket 80 makes it pass and removes the marker, changing nothing else. The
+manifest and job here are fakes; no real holdout data is read.
 
 External interface fixed here:
 
 - `export --manifest FILE --out DIR [--run RUN_DIR ...] [--job JOB_DIR ...] [--hostname NAME ...]`
   - `--run RUN_DIR`: a featured run: its event file (`*.jsonl`, as `data-agent run --events-dir`
     leaves it) and `notes.json` with the maintainer's `title` and `failure_reason` (and a `grade`
-    when there is one). Its id is the directory name.
+    when there is one). Its id is the directory name. `notes.json` also says where the run came
+    from, with at least one of: `task_id` (the leaderboard task it ran) or `local_data: true` (a
+    run on genuinely local data). A run with neither is refused, not taken as local. These two
+    fields are input only; the output notes are the same as for any other run.
   - `--job JOB_DIR`: a Harbor job; every trial in it (`<trial>/result.json`, events under
     `<trial>/agent/events/`) is exported. Its id is the trial directory name.
 - Output: `DIR/index.json` = `{"runs": [notes, ...]}` and per run `DIR/runs/<id>/events.jsonl` and
@@ -20,6 +24,10 @@ External interface fixed here:
 - Every output file is scrubbed with the `evals scrub` rules; nothing turns that off.
 - A trial of a task in the manifest's holdout is refused: non-zero exit, nothing exported, and no
   failure detail of that trial printed (ADR-0004).
+- A featured run with a `task_id` gets the same check as a trial: only a task in the manifest's
+  dev set is let through; a holdout task, or one the manifest does not list, is refused. On any
+  refusal (this one or a run with neither field) the exit is non-zero, nothing is exported, and
+  stdout and stderr give only counts: no task id, failure reason or result.
 """
 
 import json
@@ -129,7 +137,7 @@ def test_every_run_is_exported_with_complete_notes(tmp_path: Path) -> None:
     featured = write_featured(
         tmp_path / "featured",
         "orders-mart",
-        {"title": "dbt: orders mart", "failure_reason": None},
+        {"title": "dbt: orders mart", "failure_reason": None, "local_data": True},
         read_events(NEW_FIELDS),
     )
     job = tmp_path / "job"
@@ -179,7 +187,11 @@ def test_keys_endpoints_addresses_and_hostnames_are_scrubbed(tmp_path: Path) -> 
     featured = write_featured(
         tmp_path / "featured",
         "leaky",
-        {"title": f"Run on {HOSTNAME} ({STRAY_IP})", "failure_reason": f"{ENDPOINT} timed out"},
+        {
+            "title": f"Run on {HOSTNAME} ({STRAY_IP})",
+            "failure_reason": f"{ENDPOINT} timed out",
+            "local_data": True,
+        },
         leaky,
     )
     before = all_text(featured)
@@ -216,7 +228,10 @@ def test_scrubbing_cannot_be_turned_off(tmp_path: Path) -> None:
     assert not {o for o in options if re.search(r"scrub|redact|raw|unsafe|skip", o)}
 
     featured = write_featured(
-        tmp_path / "featured", "r1", {"title": "t", "failure_reason": None}, read_events(NEW_FIELDS)
+        tmp_path / "featured",
+        "r1",
+        {"title": "t", "failure_reason": None, "local_data": True},
+        read_events(NEW_FIELDS),
     )
     manifest = write_manifest(tmp_path / "manifest.json", [], [])
     out = tmp_path / "site"
@@ -254,3 +269,133 @@ def test_holdout_trials_are_refused(tmp_path: Path) -> None:
     assert not (out / "index.json").exists()
     assert not (out / "runs").exists()
     assert detail not in proc.stdout + proc.stderr
+
+
+# --- Featured runs and the holdout ---------------------------------------------------------
+
+
+def write_task_run(root: Path, run_id: str, task: str, **notes: Any) -> Path:
+    """A featured run of `task`, with `notes` added to its `notes.json`."""
+    return write_featured(
+        root,
+        run_id,
+        {"title": f"Featured {task}", "failure_reason": None, **notes},
+        task_events(task),
+    )
+
+
+def write_local_run(root: Path, run_id: str) -> Path:
+    return write_featured(
+        root,
+        run_id,
+        {"title": "dbt: orders mart", "failure_reason": None, "local_data": True},
+        read_events(NEW_FIELDS),
+    )
+
+
+def assert_refused(proc: subprocess.CompletedProcess[str], out: Path, *hidden: str) -> None:
+    assert proc.returncode != 0
+    assert not (out / "index.json").exists()
+    assert not (out / "runs").exists()
+    for text in hidden:
+        assert text not in proc.stdout + proc.stderr, f"{text} was printed"
+
+
+def test_featured_run_of_a_dev_task_is_exported(tmp_path: Path) -> None:
+    featured = write_task_run(tmp_path / "featured", "dev-run", "dbt-alpha", task_id="dbt-alpha")
+    manifest = write_manifest(tmp_path / "manifest.json", ["dbt-alpha"], ["dbt-delta"])
+    out = tmp_path / "site"
+
+    proc = export("--manifest", str(manifest), "--out", str(out), "--run", str(featured))
+    assert proc.returncode == 0, proc.stderr
+
+    (entry,) = json.loads((out / "index.json").read_text())["runs"]
+    assert entry["id"] == "dev-run"
+    assert set(entry) >= NOTES_FIELDS, f"lacks {NOTES_FIELDS - set(entry)}"
+    # `task_id` is input only; the output notes are the usual ones.
+    assert "task_id" not in entry
+    assert entry["featured"] is True
+    assert entry["task"] == "Solve dbt-alpha."
+    assert json.loads((out / "runs" / "dev-run" / "meta.json").read_text()) == entry
+
+
+def test_featured_run_with_local_data_is_exported(tmp_path: Path) -> None:
+    featured = write_local_run(tmp_path / "featured", "local-run")
+    manifest = write_manifest(tmp_path / "manifest.json", ["dbt-alpha"], ["dbt-delta"])
+    out = tmp_path / "site"
+
+    proc = export("--manifest", str(manifest), "--out", str(out), "--run", str(featured))
+    assert proc.returncode == 0, proc.stderr
+
+    (entry,) = json.loads((out / "index.json").read_text())["runs"]
+    assert entry["id"] == "local-run"
+    assert set(entry) >= NOTES_FIELDS, f"lacks {NOTES_FIELDS - set(entry)}"
+    # `local_data` is input only; the output notes are the usual ones.
+    assert "local_data" not in entry
+    assert entry["featured"] is True
+    assert json.loads((out / "runs" / "local-run" / "meta.json").read_text()) == entry
+
+
+def test_featured_run_of_a_holdout_task_is_refused(tmp_path: Path) -> None:
+    local = write_local_run(tmp_path / "featured", "local-run")
+    manifest = write_manifest(tmp_path / "manifest.json", ["dbt-alpha"], ["dbt-delta"])
+    # The local run alone exports.
+    local_only = export(
+        "--manifest", str(manifest), "--out", str(tmp_path / "local"), "--run", str(local)
+    )
+    assert local_only.returncode == 0, local_only.stderr
+
+    reason = "holdout-featured-reason-" + "v7k"
+    result = "holdout-featured-grade-" + "m2w"
+    held = write_task_run(
+        tmp_path / "featured",
+        "held-run",
+        "dbt-delta",
+        task_id="dbt-delta",
+        failure_reason=reason,
+        grade={"passed": False, "detail": result},
+    )
+    out = tmp_path / "site"
+    proc = export(
+        "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(held)
+    )
+    assert_refused(proc, out, "dbt-delta", reason, result)
+
+
+def test_featured_run_of_an_unlisted_task_is_refused(tmp_path: Path) -> None:
+    local = write_local_run(tmp_path / "featured", "local-run")
+    manifest = write_manifest(tmp_path / "manifest.json", ["dbt-alpha"], ["dbt-delta"])
+    local_only = export(
+        "--manifest", str(manifest), "--out", str(tmp_path / "local"), "--run", str(local)
+    )
+    assert local_only.returncode == 0, local_only.stderr
+
+    unlisted = write_task_run(
+        tmp_path / "featured", "unlisted-run", "dbt-omega", task_id="dbt-omega"
+    )
+    out = tmp_path / "site"
+    proc = export(
+        "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(unlisted)
+    )
+    assert_refused(proc, out, "dbt-omega")
+
+
+def test_featured_run_with_neither_task_id_nor_local_data_is_refused(tmp_path: Path) -> None:
+    local = write_local_run(tmp_path / "featured", "local-run")
+    manifest = write_manifest(tmp_path / "manifest.json", ["dbt-alpha"], ["dbt-delta"])
+    local_only = export(
+        "--manifest", str(manifest), "--out", str(tmp_path / "local"), "--run", str(local)
+    )
+    assert local_only.returncode == 0, local_only.stderr
+
+    unmarked = write_featured(
+        tmp_path / "featured",
+        "unmarked-run",
+        {"title": "t", "failure_reason": None},
+        read_events(NEW_FIELDS),
+    )
+    out = tmp_path / "site"
+    proc = export(
+        "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(unmarked)
+    )
+    assert_refused(proc, out)
