@@ -708,3 +708,27 @@ def test_a_failed_install_fails_setup_and_leaves_its_output_in_the_log(
     log = (tmp_path / "logs" / "agent" / "setup" / "install.log").read_text()
     assert "uv: pip install" in log
     assert "installed in" not in log
+
+
+def test_the_agents_wheel_is_built_without_the_web_ui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An evaluation must not depend on the frontend build (hatch_build.py: DATA_AGENT_WHEEL_UI)."""
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((args, kwargs.get("env")))
+        if "build" in args:
+            out = Path(args[args.index("--out-dir") + 1])
+            (out / "data_agent-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(harbor_agent, "_built", None)
+    monkeypatch.setattr(harbor_agent.subprocess, "run", run)
+    monkeypatch.setattr(harbor_agent.tempfile, "mkdtemp", lambda prefix: str(tmp_path))
+    wheel, _ = harbor_agent.build_artifacts()
+    assert wheel.name == "data_agent-0.1.0-py3-none-any.whl"
+    (env,) = [env for args, env in calls if "build" in args]
+    assert env is not None
+    assert env["DATA_AGENT_WHEEL_UI"] == "0"
+    assert env["PATH"] == os.environ["PATH"]  # the rest of the environment is kept

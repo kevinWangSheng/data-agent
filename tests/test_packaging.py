@@ -215,6 +215,35 @@ def fetch(url: str) -> tuple[int, str, str]:
         return exc.code, exc.headers["content-type"], exc.read().decode()
 
 
+def test_wheel_built_with_the_ui_turned_off_never_calls_pnpm(tmp_path: Path) -> None:
+    """An evaluation builds the agent's wheel with DATA_AGENT_WHEEL_UI=0: no frontend build, so no
+    pnpm (or network) in a pinned checkout, and a broken frontend build cannot fail the run."""
+    fake = tmp_path / "fake-pnpm"
+    fake.mkdir()
+    pnpm = fake / "pnpm"
+    pnpm.write_text("#!/bin/sh\necho 'pnpm was called' >&2\nexit 1\n")
+    pnpm.chmod(0o755)
+    path = f"{fake}{os.pathsep}{os.environ['PATH']}"
+    # The fake is what the build hook finds: left on, the UI build calls it and the wheel fails.
+    uv = shutil.which("uv")
+    assert uv is not None
+    on = subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(tmp_path / "on")],
+        cwd=REPO_ROOT,
+        env=os.environ | {"PATH": path},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert on.returncode != 0
+    assert "pnpm was called" in on.stderr
+    site = build_and_extract_wheel(
+        tmp_path, env=os.environ | {"PATH": path, "DATA_AGENT_WHEEL_UI": "0"}
+    )
+    assert not (site / "data_agent" / "web" / "static").exists()
+    assert (site / "data_agent" / "BUILD_COMMIT").is_file()
+
+
 def test_data_agent_web_from_the_wheel_serves_the_ui(tmp_path: Path) -> None:
     """Built where pnpm is on PATH (a checkout, CI): the wheel carries the built UI."""
     site = build_and_extract_wheel(tmp_path)
