@@ -704,3 +704,77 @@ details[open] > summary .caret {
   background: var(--info-bg);
   border-color: color-mix(in srgb, var(--info) 40%, transparent);
 }
+
+/* The local history list. */
+.runs-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12.5px;
+}
+.runs-tbl th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--ink-3);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.runs-tbl td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.runs-tbl td.num,
+.runs-tbl th.num {
+  text-align: right;
+  font-family: var(--font-mono);
+}
+.runs-tbl tbody tr {
+  cursor: pointer;
+}
+.runs-tbl tbody tr:hover {
+  background: var(--sel);
+}
+
+/* The local run form. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.field input,
+.field select,
+.field textarea {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 4px 7px;
+}
+.field textarea {
+  resize: vertical;
+  min-height: 84px;
+  line-height: 1.45;
+}
+.field select {
+  height: 26px;
+  padding-block: 0;
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--panel);
+}
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, var(--ink));
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

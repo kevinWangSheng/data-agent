@@ -1,15 +1,23 @@
-// The app shell: the data source, the address, the theme and the top bar around the pages.
+// The app shell: the data source, the address, the theme and the top bar around the pages. The
+// build picks the data source (src/data/source.ts): `VITE_DATA_SOURCE=local` for `data-agent web`,
+// the static files otherwise.
 //
 // Online pages: the base address is the first screen, which replays the short query run with the
 // benchmark scores above it and stays at the base address while it plays; `runs/<id>` opens a run
 // with everything shown; `eval` is the evaluation page.
+//
+// Local pages: the base address is the history list, the bar has New run, and a running run
+// follows its events live and can be cancelled.
 
-import { Monitor, Moon, Sun } from 'lucide-react'
+import { Monitor, Moon, Plus, Sun } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 
 import { firstScreenRun, type Home } from './data/home'
-import { staticSource, type RunData } from './data/source'
+import { isLive, localSource, notesOf, staticSource, type DataSource, type LiveSource, type RunData } from './data/source'
 import { evalUrl, isEvalPath, readTrialFilter, type TrialFilter } from './eval-page/trials'
+import { HistoryPage } from './local/HistoryPage'
+import { NewRun } from './local/NewRun'
+import type { RunEvent, RunNotes } from './run-view/model'
 import { RunPage } from './run-page/RunPage'
 import { readRoute, routeUrl, type Route } from './run-page/route'
 import { HomeStrip } from './site/HomeStrip'
@@ -21,22 +29,92 @@ import { useTheme } from './theme'
 const EvalPage = lazy(() => import('./eval-page/EvalPage').then((m) => ({ default: m.EvalPage })))
 
 const BASE = import.meta.env.BASE_URL
-const source = staticSource(`${BASE}data/`)
+/** The online site's data source; null in the local build. */
+const site = import.meta.env.VITE_DATA_SOURCE === 'local' ? null : staticSource(`${BASE}data/`)
+const source: DataSource = site ?? localSource(`${BASE}api/`)
+const live = source.live
 
 type Place = { page: 'eval'; filter: TrialFilter } | { page: 'run'; route: Route }
 
 const currentPlace = (): Place =>
-  isEvalPath(window.location.pathname, BASE)
+  site && isEvalPath(window.location.pathname, BASE)
     ? { page: 'eval', filter: readTrialFilter(window.location.search) }
     : { page: 'run', route: readRoute(window.location.pathname, window.location.search, BASE) }
 
 const runHref = (id: string) => routeUrl({ id, step: null, filter: 'all' }, BASE)
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+type Loaded = { id: string; run?: RunData; error?: string }
+
+/** Loads the run; a live one then follows its events until it ends. */
+function useRun(id: string | null): [Loaded | null, (notes: RunNotes) => void] {
+  const [loaded, setLoaded] = useState<Loaded | null>(null)
+
+  useEffect(() => {
+    if (id === null) return
+    let gone = false
+    let stop = () => {}
+    setLoaded({ id })
+    const update = (change: (run: RunData) => RunData) =>
+      setLoaded((current) => (current?.id === id && current.run ? { id, run: change(current.run) } : current))
+    source
+      .loadRun(id)
+      .then((run) => {
+        if (gone) return
+        setLoaded({ id, run })
+        if (!live || !isLive(run)) return
+        stop = live.follow(id, run.events.at(-1)?.seq ?? -1, {
+          events: (batch: RunEvent[]) => update((r) => ({ ...r, events: [...r.events, ...batch] })),
+          notes: (notes) => update((r) => ({ ...r, notes })),
+        })
+      })
+      .catch((e: unknown) => !gone && setLoaded({ id, error: message(e) }))
+    return () => {
+      gone = true
+      stop()
+    }
+  }, [id])
+
+  const setNotes = useCallback(
+    (notes: RunNotes) => setLoaded((current) => (current?.id === id && current.run ? { id, run: { ...current.run, notes } } : current)),
+    [id],
+  )
+  return [loaded?.id === id ? loaded : null, setNotes]
+}
+
+function CancelButton({ live, id, onCancelled }: { live: LiveSource; id: string; onCancelled: (notes: RunNotes) => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const cancel = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      onCancelled(notesOf(await live.cancel(id)))
+    } catch (e: unknown) {
+      setError(message(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <>
+      <button type="button" className="btn btn-sm" onClick={cancel} disabled={busy}>
+        {busy ? 'Cancelling…' : 'Cancel run'}
+      </button>
+      {error && (
+        <span className="text-[11.5px] text-fail" role="alert">
+          {error}
+        </span>
+      )}
+    </>
+  )
+}
 
 export default function App() {
   const [place, setPlace] = useState<Place>(currentPlace)
   const [home, setHome] = useState<Home | null>(null)
-  const [loaded, setLoaded] = useState<Record<string, RunData>>({})
   const [error, setError] = useState<string | null>(null)
+  const [newRun, setNewRun] = useState(false)
   const [theme, cycleTheme] = useTheme()
 
   useEffect(() => {
@@ -46,8 +124,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    source
-      .home()
+    site
+      ?.home()
       .then(setHome)
       .catch((e: unknown) => setError(String(e)))
   }, [])
@@ -61,24 +139,18 @@ export default function App() {
 
   const featured = home?.runs ?? []
   const route = place.page === 'run' ? place.route : null
-  const onFirstScreen = route !== null && route.id === null
-  const id = route === null ? null : (route.id ?? firstScreenRun(featured)?.id ?? null)
-  const run = id !== null ? loaded[id] : undefined
-
-  useEffect(() => {
-    if (id === null || loaded[id]) return
-    setError(null)
-    source
-      .loadRun(id)
-      .then((data) => setLoaded((all) => ({ ...all, [id]: data })))
-      .catch((e: unknown) => setError(String(e)))
-  }, [id, loaded])
+  // Locally the base address is the history list; online it is the first screen.
+  const onFirstScreen = site !== null && route !== null && route.id === null
+  const onHistory = live !== undefined && route !== null && route.id === null
+  const id = route === null ? null : (route.id ?? (site ? (firstScreenRun(featured)?.id ?? null) : null))
+  const [loaded, setNotes] = useRun(id)
+  const run = loaded?.run
 
   useEffect(() => {
     if (place.page !== 'run') return
-    const title = onFirstScreen ? null : run?.notes.title
+    const title = onHistory ? 'Runs' : onFirstScreen ? null : run?.notes.title
     document.title = title ? `${title} · data-agent` : 'data-agent'
-  }, [place.page, onFirstScreen, run])
+  }, [place.page, onFirstScreen, onHistory, run])
 
   // A run page's own changes (selected step, filter) replace the address. The first screen keeps
   // the base address: its route has no id, and routeUrl gives the base for that.
@@ -100,14 +172,22 @@ export default function App() {
     setPlace({ page: 'eval', filter })
   }, [])
 
+  const shownError = error ?? loaded?.error ?? null
   const ThemeIcon = theme === 'dark' ? Moon : theme === 'light' ? Sun : Monitor
   const evalHref = evalUrl({ config: null, outcome: 'all' }, BASE)
   return (
     <div className="h-full flex flex-col">
-      <header className="flex items-center gap-x-4 gap-y-1.5 px-4 min-h-11 py-1.5 border-b border-line bg-panel shrink-0 flex-wrap">
-        <Link href={BASE} onGo={go} className="mono font-semibold text-[13px] tracking-tight hover:underline" title="First screen">
+      <header className="relative flex items-center gap-x-4 gap-y-1.5 px-4 min-h-11 py-1.5 border-b border-line bg-panel shrink-0 flex-wrap">
+        <Link href={BASE} onGo={go} className="mono font-semibold text-[13px] tracking-tight hover:underline" title={live ? 'All runs' : 'First screen'}>
           data-agent
         </Link>
+        {live && (
+          <nav className="seg" aria-label="Pages">
+            <button type="button" className={onHistory ? 'on' : ''} aria-current={onHistory ? 'page' : undefined} onClick={() => go(BASE)}>
+              Runs
+            </button>
+          </nav>
+        )}
         {featured.length > 0 && (
           <nav className="seg max-w-full overflow-x-auto" aria-label="Featured runs">
             {featured.map((r) => (
@@ -125,25 +205,54 @@ export default function App() {
             ))}
           </nav>
         )}
-        <Link href={evalHref} onGo={go} className={`text-[12.5px] hover:underline ${place.page === 'eval' ? 'font-semibold text-ink' : 'text-ink-2'}`}>
-          Evaluation
-        </Link>
+        {site && (
+          <Link href={evalHref} onGo={go} className={`text-[12.5px] hover:underline ${place.page === 'eval' ? 'font-semibold text-ink' : 'text-ink-2'}`}>
+            Evaluation
+          </Link>
+        )}
         <div className="flex-1" />
-        <NewRunUnavailable />
+        {live ? (
+          <button type="button" className={`btn ${newRun ? 'on' : ''}`} onClick={() => setNewRun((open) => !open)} aria-expanded={newRun}>
+            <Plus className="h-3 w-3" /> New run
+          </button>
+        ) : (
+          <NewRunUnavailable />
+        )}
         <button type="button" className="btn" onClick={cycleTheme} title="Theme: system → light → dark" aria-label={`Theme: ${theme}`}>
           <ThemeIcon className="h-3 w-3" /> {theme}
         </button>
+        {live && newRun && (
+          <div className="absolute right-3 top-full mt-1.5 z-20">
+            <NewRun
+              live={live}
+              onClose={() => setNewRun(false)}
+              onStarted={(runId) => {
+                setNewRun(false)
+                go(runHref(runId))
+              }}
+            />
+          </div>
+        )}
       </header>
       {onFirstScreen && home && <HomeStrip home={home} evalHref={evalHref} onGo={go} />}
-      {error && <div className="banner banner-fail m-3">Could not load the data: {error}</div>}
-      {place.page === 'eval' ? (
+      {shownError && <div className="banner banner-fail m-3">Could not load the data: {shownError}</div>}
+      {place.page === 'eval' && site ? (
         <Suspense fallback={<div className="p-8 text-ink-3">Loading the evaluation page…</div>}>
-          <EvalPage source={source} filter={place.filter} onFilter={setFilter} runHref={runHref} onGo={go} />
+          <EvalPage source={site} filter={place.filter} onFilter={setFilter} runHref={runHref} onGo={go} />
         </Suspense>
-      ) : run && route ? (
-        <RunPage key={`${onFirstScreen ? 'first' : 'run'}:${id}`} run={run} route={{ ...route, id }} navigate={navigate} autoplay={onFirstScreen} />
+      ) : live && onHistory ? (
+        <HistoryPage live={live} runUrl={runHref} onOpen={(runId) => go(runHref(runId))} />
+      ) : run && route && id !== null ? (
+        <RunPage
+          key={`${onFirstScreen ? 'first' : 'run'}:${id}`}
+          run={run}
+          route={{ ...route, id }}
+          navigate={navigate}
+          autoplay={onFirstScreen}
+          actions={live && isLive(run) ? <CancelButton live={live} id={id} onCancelled={setNotes} /> : undefined}
+        />
       ) : (
-        !error && <div className="p-8 text-ink-3">{id === null ? 'Loading…' : `Loading ${id}…`}</div>
+        !shownError && <div className="p-8 text-ink-3">{id === null ? 'Loading…' : `Loading ${id}…`}</div>
       )}
     </div>
   )

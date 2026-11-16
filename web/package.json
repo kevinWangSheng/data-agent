@@ -6,7 +6,9 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "vite",
+    "dev:local": "VITE_DATA_SOURCE=local vite",
     "build": "tsc -p tsconfig.json && vite build",
+    "build:local": "VITE_DATA_SOURCE=local vite build --outDir ../src/data_agent/web/static --emptyOutDir",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run --reporter=verbose"
   },

@@ -15,9 +15,12 @@ dist/
 build/
 *.egg-info/
 
-# Node (web/ later)
+# Node
 node_modules/
 .next/
+# The built UI `data-agent web` serves from a checkout (`pnpm --dir web build:local`); a wheel
+# gets its own build (hatch_build.py).
+src/data_agent/web/static/
 
 # Run outputs stay out of git; only summary reports are committed
 runs/

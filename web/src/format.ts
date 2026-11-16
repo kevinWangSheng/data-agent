@@ -26,6 +26,16 @@ export function fmtTokens(n: number): string {
   return String(n)
 }
 
+/** A start time (ISO 8601) in local time to the minute, `2026-11-16 05:09`; independent of the
+ *  browser's language, since the pages are English only. */
+export function fmtStart(iso: string | null): string {
+  if (iso === null) return '—'
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return iso
+  const two = (n: number) => String(n).padStart(2, '0')
+  return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`
+}
+
 export function fmtCost(usd: number): string {
   return `$${usd.toFixed(usd < 1 ? 3 : 2)}`
 }

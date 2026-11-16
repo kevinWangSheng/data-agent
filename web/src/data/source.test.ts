@@ -1,6 +1,7 @@
-import { describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
-import { parseEventLines, staticSource } from './source'
+import type { RunEvent } from '../run-view/model'
+import { isLive, localSource, newestFirst, notesOf, parseEventLines, staticSource, type EventStream, type RunRow } from './source'
 
 const home = { runs: [{ id: 'r1', title: 'One', featured: true }], data_eng_bench: null, dab: null }
 const evaluation = { dev: { reference: 'full', configs: [], contributions: [], trials: [] }, data_eng_bench: null, dab: null }
@@ -62,5 +63,246 @@ describe('staticSource', () => {
 
   test('a missing run fails with the status', async () => {
     await expect(source.loadRun('nope')).rejects.toThrow(/404/)
+  })
+
+  test('offers no live operations', () => {
+    expect(source.live).toBeUndefined()
+  })
+})
+
+// --- The local backend (src/data_agent/web/app.py) ---
+
+const row = (fields: Partial<RunRow>): RunRow => ({
+  id: 'r1',
+  task: 'How many orders?',
+  task_type: 'query',
+  config: 'full',
+  status: 'running',
+  started_at: '2026-11-16T09:00:00+00:00',
+  duration_ms: null,
+  cost_usd: null,
+  ...fields,
+})
+
+const ev = (seq: number, type = 'tool_start'): RunEvent => ({ seq, type, ts: '2026-11-16T09:00:00+00:00' })
+
+type Call = { url: string; method: string; body: unknown }
+
+/** A backend answering from `routes` ("METHOD url" → [status, body]); records every call. */
+function fakeBackend(routes: Record<string, [number, unknown]>) {
+  const calls: Call[] = []
+  const fetchFn = (async (url: string, init?: RequestInit) => {
+    const method = init?.method ?? 'GET'
+    calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    const found = routes[`${method} ${url}`]
+    if (!found) return new Response(JSON.stringify({ detail: 'Not Found' }), { status: 404, statusText: 'Not Found' })
+    return new Response(JSON.stringify(found[1]), { status: found[0], headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  return { fetchFn, calls }
+}
+
+class FakeStream implements EventStream {
+  static all: FakeStream[] = []
+  onmessage: ((message: { data: string }) => void) | null = null
+  onerror: (() => void) | null = null
+  readyState = 1
+  closed = false
+  constructor(public url: string) {
+    FakeStream.all.push(this)
+  }
+  close() {
+    this.closed = true
+    this.readyState = 2
+  }
+  send(event: RunEvent) {
+    this.onmessage?.({ data: JSON.stringify(event) })
+  }
+  /** The server closed the stream; the browser will reconnect (readyState CONNECTING). */
+  drop(readyState = 0) {
+    this.readyState = readyState
+    this.onerror?.()
+  }
+}
+
+const openStream = (url: string) => new FakeStream(url)
+
+describe('notesOf and isLive', () => {
+  test('the row gives the task and type; cancelled and failed come from its status', () => {
+    expect(notesOf(row({ status: 'cancelled' }))).toEqual({ id: 'r1', task: 'How many orders?', task_type: 'query', cancelled: true, failed: false })
+    expect(notesOf(row({ status: 'failure' }))).toMatchObject({ cancelled: false, failed: true })
+    expect(notesOf(row({ status: 'running' }))).toMatchObject({ cancelled: false, failed: false })
+  })
+
+  test('a run is live until it has a result event or the backend says it ended', () => {
+    expect(isLive({ notes: {}, events: [ev(0, 'version')] })).toBe(true)
+    expect(isLive({ notes: {}, events: [ev(0, 'version'), ev(1, 'result')] })).toBe(false)
+    expect(isLive({ notes: { cancelled: true }, events: [] })).toBe(false)
+    expect(isLive({ notes: { failed: true }, events: [] })).toBe(false)
+  })
+})
+
+describe('newestFirst', () => {
+  test('sorts by start time, newest first; runs without one go last', () => {
+    const rows = [row({ id: 'a', started_at: '2026-11-16T09:00:00+00:00' }), row({ id: 'b', started_at: null }), row({ id: 'c', started_at: '2026-11-16T10:00:00+00:00' })]
+    expect(newestFirst(rows).map((r) => r.id)).toEqual(['c', 'a', 'b'])
+  })
+
+  test('compares instants, not strings', () => {
+    const rows = [row({ id: 'utc', started_at: '2026-11-16T09:30:00+00:00' }), row({ id: 'plus2', started_at: '2026-11-16T11:00:00+02:00' })]
+    expect(newestFirst(rows).map((r) => r.id)).toEqual(['utc', 'plus2'])
+  })
+})
+
+describe('localSource', () => {
+  beforeEach(() => {
+    FakeStream.all = []
+  })
+
+  test('lists the runs as notes', async () => {
+    const { fetchFn } = fakeBackend({ 'GET /api/runs': [200, [row({ status: 'cancelled' })]] })
+    expect(await localSource('/api/', fetchFn, openStream).listRuns()).toEqual([notesOf(row({ status: 'cancelled' }))])
+  })
+
+  test('loads a run: its events and the notes from its row', async () => {
+    const { fetchFn, calls } = fakeBackend({
+      'GET /api/runs': [200, [row({ id: 'other' }), row({ id: 'a b', status: 'failure' })]],
+      'GET /api/runs/a%20b/events': [200, { events: [ev(0, 'version'), ev(1)] }],
+    })
+    const run = await localSource('/api/', fetchFn, openStream).loadRun('a b')
+    expect(run.events.map((e) => e.seq)).toEqual([0, 1])
+    expect(run.notes).toEqual(notesOf(row({ id: 'a b', status: 'failure' })))
+    expect(calls.map((c) => c.url).sort()).toEqual(['/api/runs', '/api/runs/a%20b/events'])
+  })
+
+  test('an unknown run fails with the reason', async () => {
+    const { fetchFn } = fakeBackend({ 'GET /api/runs': [200, []], 'GET /api/runs/nope/events': [404, { detail: 'no run nope' }] })
+    await expect(localSource('/api/', fetchFn, openStream).loadRun('nope')).rejects.toThrow('no run nope')
+  })
+
+  test('history: every row, newest first', async () => {
+    const rows = [row({ id: 'old', started_at: '2026-11-15T09:00:00+00:00' }), row({ id: 'new' })]
+    const { fetchFn } = fakeBackend({ 'GET /api/runs': [200, rows] })
+    expect((await localSource('/api/', fetchFn, openStream).live!.history()).map((r) => r.id)).toEqual(['new', 'old'])
+  })
+
+  test('options: what the form offers', async () => {
+    const options = { data_sources: ['shop'], task_types: ['query', 'dbt'], configs: ['baseline', 'full'] }
+    const { fetchFn } = fakeBackend({ 'GET /api/options': [200, options] })
+    expect(await localSource('/api/', fetchFn, openStream).live!.options()).toEqual(options)
+  })
+
+  test('submit posts the form and answers the new run id', async () => {
+    const { fetchFn, calls } = fakeBackend({ 'POST /api/runs': [201, { id: 'new-run' }] })
+    const submission = { task: 'How many orders?', task_type: 'query' as const, data_source: 'shop', config: 'full' }
+    expect(await localSource('/api/', fetchFn, openStream).live!.submit(submission)).toBe('new-run')
+    expect(calls).toEqual([{ url: '/api/runs', method: 'POST', body: submission }])
+  })
+
+  test('a refused submit fails with the reason the backend gives', async () => {
+    const detail = 'no data source is configured; start the server with --data-sources FILE'
+    const { fetchFn } = fakeBackend({ 'POST /api/runs': [400, { detail }] })
+    const submission = { task: 'x', task_type: 'query' as const, data_source: '', config: 'full' }
+    await expect(localSource('/api/', fetchFn, openStream).live!.submit(submission)).rejects.toThrow(detail)
+  })
+
+  test('a malformed submit fails with the fields FastAPI names', async () => {
+    const detail = [{ loc: ['body', 'task'], msg: 'Field required', type: 'missing' }]
+    const { fetchFn } = fakeBackend({ 'POST /api/runs': [422, { detail }] })
+    const submission = { task: 'x', task_type: 'query' as const, data_source: 's', config: 'full' }
+    await expect(localSource('/api/', fetchFn, openStream).live!.submit(submission)).rejects.toThrow('body.task: Field required')
+  })
+
+  test('cancel posts to the run and answers its row', async () => {
+    const { fetchFn, calls } = fakeBackend({ 'POST /api/runs/r1/cancel': [200, row({ status: 'cancelled' })] })
+    expect((await localSource('/api/', fetchFn, openStream).live!.cancel('r1')).status).toBe('cancelled')
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(['POST /api/runs/r1/cancel'])
+  })
+
+  test('a refused cancel fails with the reason', async () => {
+    const { fetchFn } = fakeBackend({ 'POST /api/runs/r1/cancel': [409, { detail: 'run r1 is not a run this server is running' }] })
+    await expect(localSource('/api/', fetchFn, openStream).live!.cancel('r1')).rejects.toThrow('not a run this server is running')
+  })
+})
+
+describe('follow', () => {
+  beforeEach(() => {
+    FakeStream.all = []
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function follow(rows: RunRow[], after = 1) {
+    const { fetchFn } = fakeBackend({ 'GET /api/runs': [200, rows] })
+    const batches: number[][] = []
+    const notes: unknown[] = []
+    const stop = localSource('/api/', fetchFn, openStream).live!.follow('r1', after, {
+      events: (batch) => batches.push(batch.map((e) => e.seq)),
+      notes: (n) => notes.push(n),
+    })
+    return { batches, notes, stop, stream: () => FakeStream.all.at(-1)! }
+  }
+
+  test('streams the events after the cursor, in batches', async () => {
+    const { batches, stream } = follow([row({})])
+    expect(stream().url).toBe('/api/runs/r1/events?after=1')
+    stream().send(ev(2))
+    stream().send(ev(3))
+    expect(batches).toEqual([])
+    await vi.advanceTimersByTimeAsync(200)
+    expect(batches).toEqual([[2, 3]])
+  })
+
+  test('drops events it already has, so a reconnect neither loses nor repeats any', async () => {
+    const { batches, stream } = follow([row({})])
+    stream().send(ev(1))
+    stream().send(ev(2))
+    stream().drop()
+    await vi.advanceTimersByTimeAsync(0)
+    // The browser reconnects with Last-Event-ID; a frame it sees again is dropped.
+    stream().send(ev(2))
+    stream().send(ev(3))
+    await vi.advanceTimersByTimeAsync(200)
+    expect(batches.flat()).toEqual([2, 3])
+    expect(stream().closed).toBe(false)
+  })
+
+  test('closes at the result event and hands over what it has at once', async () => {
+    const { batches, stream } = follow([row({})])
+    stream().send(ev(2))
+    stream().send(ev(3, 'result'))
+    expect(batches).toEqual([[2, 3]])
+    expect(stream().closed).toBe(true)
+  })
+
+  test('a run that ended without a result: closes and hands over the row as notes', async () => {
+    const { notes, stream } = follow([row({ status: 'cancelled' })])
+    stream().drop()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(stream().closed).toBe(true)
+    expect(notes).toEqual([notesOf(row({ status: 'cancelled' }))])
+  })
+
+  test('a stream the browser gave up on is opened again after the last event seen', async () => {
+    const { batches, stream } = follow([row({})])
+    stream().send(ev(2))
+    const first = stream()
+    first.drop(2)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(FakeStream.all).toHaveLength(2)
+    expect(stream().url).toBe('/api/runs/r1/events?after=2')
+    stream().send(ev(3))
+    await vi.advanceTimersByTimeAsync(200)
+    expect(batches.flat()).toEqual([2, 3])
+  })
+
+  test('stop closes the stream and hands over nothing more', async () => {
+    const { batches, stop, stream } = follow([row({})])
+    stream().send(ev(2))
+    stop()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(stream().closed).toBe(true)
+    expect(batches).toEqual([])
   })
 })

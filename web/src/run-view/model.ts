@@ -28,6 +28,8 @@ export type RunNotes = {
   featured?: boolean
   /** Set by the local backend for a run it cancelled. */
   cancelled?: boolean
+  /** Set by the local backend for a run whose process exited without a `result` event. */
+  failed?: boolean
 }
 
 export type RunStatus = 'running' | 'success' | 'failure' | 'cancelled'
@@ -500,7 +502,7 @@ function summarize(
   else if (notes?.grade) runStatus = notes.grade.passed ? 'success' : 'failure'
   else if (result) {
     runStatus = result.is_error === true || result.subtype !== 'success' ? 'failure' : 'success'
-  }
+  } else if (notes?.failed) runStatus = 'failure'
 
   const uncached = asNumber(result?.uncached_input_tokens)
   const cached = asNumber(result?.cached_input_tokens)
