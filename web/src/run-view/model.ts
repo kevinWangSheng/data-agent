@@ -206,33 +206,29 @@ function resultText(content: unknown): string {
 
 const ROW_COUNT = /^\((\d+) rows\)$/
 const INCOMPLETE_DISPLAY = '[INCOMPLETE DISPLAY]'
+const SHOWN_COUNT = /only the first (\d+) are shown/
 
 /** The gateway's text table (`format_rows`, `mcp_server.py`): a `a | b` header, a dash rule, the
  *  rows, then `(n rows)` as the last line, or followed by the `[INCOMPLETE DISPLAY]` note when only
- *  the first rows are shown. The footer is found from the end, so every line above it is data: a
- *  blank line is an empty value, and a value that reads like `(n rows)` stays a value. A line with
- *  fewer cells than the header continues the last cell of the row above it. No footer, or a count
- *  that does not fit the rows: no table. */
+ *  the first rows are shown. The footer is found from the end, so every line above it is data: in a
+ *  one-column table a blank line is an empty value, and a value that reads like `(n rows)` stays a
+ *  value. A value with a line break is written as is, so in a multi-column table a line whose cell
+ *  count differs from the header's cannot be told from a row: no table. The rows must number the
+ *  footer's count, or the note's shown count when the display is cut; otherwise no table. */
 function parseTable(text: string): ResultTable | null {
   const lines = text.split('\n')
   if (lines.length < 2 || !/^-+$/.test(lines[1].trim())) return null
-  const cut = lines[lines.length - 1].startsWith(INCOMPLETE_DISPLAY)
+  const note = lines[lines.length - 1]
+  const cut = note.startsWith(INCOMPLETE_DISPLAY)
   const footer = lines.length - (cut ? 2 : 1)
   const count = footer >= 2 ? ROW_COUNT.exec(lines[footer]) : null
   if (!count) return null
+  const shown = cut ? SHOWN_COUNT.exec(note) : count
+  if (!shown) return null
   const columns = lines[0].split(' | ')
-  const split = (line: string) => (columns.length === 1 ? [line] : line.split(' | '))
-  const rows: string[][] = []
-  for (const line of lines.slice(2, footer)) {
-    const cells = split(line)
-    if (cells.length === columns.length) rows.push(cells)
-    else if (cells.length < columns.length && rows.length > 0) {
-      const last = rows[rows.length - 1]
-      last[last.length - 1] += '\n' + line
-    } else return null
-  }
-  const n = Number(count[1])
-  return n === rows.length || (cut && n > rows.length) ? { columns, rows } : null
+  const rows = lines.slice(2, footer).map((line) => (columns.length === 1 ? [line] : line.split(' | ')))
+  if (rows.some((cells) => cells.length !== columns.length)) return null
+  return rows.length === Number(shown[1]) ? { columns, rows } : null
 }
 
 const GATEWAY_BLOCKED = /^Error executing tool \S+: Query blocked by the read-only gateway:/

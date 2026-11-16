@@ -51,9 +51,16 @@ describe('result tables', () => {
     expect(step.table).toEqual({ columns: ['s'], rows: [['a | b']] })
   })
 
-  test('a multi-line value continues the cell above it', () => {
+  test('a multi-line value in a multi-column table is no table: rows and lines cannot be told apart', () => {
+    // format_rows of rows ['first', 'value'] and ['x\ny', 'z']: the cells split as ['first', 'value\nx'], ['y', 'z'].
+    const step = buildRunView(queryCall('{"result": "a | b\\n-----\\nfirst | value\\nx\\ny | z\\n(2 rows)"}')).steps[0]
+    expect(step.table).toBeNull()
+    expect(step.result).toBe('a | b\n-----\nfirst | value\nx\ny | z\n(2 rows)')
+  })
+
+  test('a multi-line value in the last column of a multi-column table is no table', () => {
     const step = buildRunView(queryCall('{"result": "a | b\\n-----\\n1 | x\\ny\\n(1 rows)"}')).steps[0]
-    expect(step.table).toEqual({ columns: ['a', 'b'], rows: [['1', 'x\ny']] })
+    expect(step.table).toBeNull()
   })
 
   test('a blank line in a one-column table is a row with an empty value', () => {
@@ -66,9 +73,9 @@ describe('result tables', () => {
     expect(step.table).toEqual({ columns: ['v'], rows: [['a'], [''], ['b'], ['   ']] })
   })
 
-  test('a blank line in a multi-column table continues the last cell', () => {
+  test('a blank line in a multi-column table is no table', () => {
     const step = buildRunView(queryCall('{"result": "a | b\\n-----\\n1 | x\\n\\ny\\n(1 rows)"}')).steps[0]
-    expect(step.table).toEqual({ columns: ['a', 'b'], rows: [['1', 'x\n\ny']] })
+    expect(step.table).toBeNull()
   })
 
   test('a table with no (n rows) line is no table', () => {
@@ -96,6 +103,19 @@ describe('result tables', () => {
     const text = 'v\\n-\\na\\nb\\n(5 rows)\\n[INCOMPLETE DISPLAY] 5 rows total; only the first 2 are shown above.'
     const step = buildRunView(queryCall(`{"result": "${text}"}`)).steps[0]
     expect(step.table).toEqual({ columns: ['v'], rows: [['a'], ['b']] })
+  })
+
+  test('a display cut short whose rows do not match the shown count is no table', () => {
+    // A two-line value in a one-column table reads as two rows; the note says one row is shown.
+    const text = 'v\\n-\\na\\nb\\n(5 rows)\\n[INCOMPLETE DISPLAY] 5 rows total; only the first 1 are shown above.'
+    const step = buildRunView(queryCall(`{"result": "${text}"}`)).steps[0]
+    expect(step.table).toBeNull()
+  })
+
+  test('a display cut short whose note gives no shown count is no table', () => {
+    const text = 'v\\n-\\na\\nb\\n(5 rows)\\n[INCOMPLETE DISPLAY] 5 rows total.'
+    const step = buildRunView(queryCall(`{"result": "${text}"}`)).steps[0]
+    expect(step.table).toBeNull()
   })
 
   test('text with no dash rule is no table', () => {
