@@ -499,3 +499,50 @@ def test_a_malformed_featured_run_is_named_by_position_not_by_its_directory(
     assert "--run #2" in printed
     assert "Traceback" not in printed
     assert not out.exists()
+
+
+def no_stage_left(parent: Path) -> bool:
+    return not any(p.name.startswith(".site.export-") for p in parent.iterdir())
+
+
+# The scrub's hostname rule matches whole labels: `build-box-7-shop` names another host.
+@pytest.mark.parametrize(
+    ("name", "refused"),
+    [("build-box-7.shop", True), ("shop.build-box-7", True), ("build-box-7-shop", False)],
+)
+def test_a_featured_run_id_the_scrub_would_change_is_refused(
+    tmp_path: Path, name: str, refused: bool
+) -> None:
+    run = tmp_path / name
+    run.mkdir()
+    (run / "run-1.jsonl").write_text(NEW_FIELDS.read_text())
+    (run / "notes.json").write_text(json.dumps(LOCAL_NOTES))
+    out = tmp_path / "site"
+    proc = export(
+        *("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run)),
+        *("--hostname", "build-box-7"),
+    )
+    if not refused:
+        assert proc.returncode == 0, proc.stderr
+        assert (out / "runs" / name / "events.jsonl").is_file()
+        return
+    assert proc.returncode == 2
+    assert "1 run id(s)" in proc.stderr
+    assert "build-box-7" not in proc.stdout + proc.stderr
+    assert not out.exists()
+    assert no_stage_left(tmp_path)
+
+
+def test_a_trial_name_holding_an_ip_is_refused(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "a", "10.1.2.3", 1.0)
+    write_trial(job, "a", "ok", 1.0)
+    out = tmp_path / "site"
+    proc = export(
+        *("--manifest", str(manifest(tmp_path, ["a"])), "--out", str(out), "--job", str(job))
+    )
+    assert proc.returncode == 2
+    assert "1 run id(s)" in proc.stderr
+    assert "10.1.2.3" not in proc.stdout + proc.stderr
+    assert not out.exists()
+    assert no_stage_left(tmp_path)

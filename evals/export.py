@@ -29,7 +29,9 @@ runs every trial with `--type dbt`).
 
 Everything is written to a staging directory beside DIR and scrubbed there with `evals scrub`'s
 rules (`--hostname`, `--home`, `--user` as in `scrub`); only a clean scrub is moved to DIR, which
-must be new or empty. Nothing turns scrubbing off. A trial of a task outside the manifest's dev
+must be new or empty. Nothing turns scrubbing off. Scrubbing changes files, not paths, so a run
+id (a run or trial directory's name) the scrub would change is refused, by count, before anything
+is written (`check_ids`). A trial of a task outside the manifest's dev
 set, or held out by it or by the repo's evals/manifest.json, is refused before anything is
 written; the error gives a count, never a task or its outcome (ADR-0004). The holdout and the
 whole benchmark reach the site only as the aggregates of `--board`. A featured run's notes.json
@@ -47,7 +49,7 @@ import json
 import shutil
 import sys
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -439,6 +441,25 @@ def load_dev_trials(job_dirs: list[Path], dev: set[str]) -> list[tuple[Trial, Pa
     return out
 
 
+def check_ids(ids: list[str], args: argparse.Namespace) -> None:
+    """Refused, with a count only, when `evals scrub`'s rules would change a run id: scrubbing
+    rewrites the files, not their paths, so `runs/<id>/` would keep the hostname, IP or user name
+    the notes lose, and the site would not find the run. The id is not printed; it may be the
+    very value to hide. Not renamed automatically: the run's directory is renamed by hand."""
+    rules = scrub.build_rules(args.hostname, args.home, args.user)
+    changed = 0
+    for run_id in ids:
+        try:
+            changed += scrub.scrub_string(run_id, rules, Counter()) != run_id
+        except scrub.Unchecked:
+            changed += 1
+    if changed:
+        raise Refused(
+            f"{changed} run id(s) hold a value scrubbing removes (a hostname, IP, home or user "
+            "name); rename the run or trial directory and export again"
+        )
+
+
 def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
 
@@ -455,6 +476,7 @@ def build(args: argparse.Namespace, stage: Path) -> int:
     ids = [notes["id"] for notes, _ in runs]
     if len(set(ids)) < len(ids):
         raise Refused(f"{len(ids) - len(set(ids))} run id(s) repeat; each run needs its own id")
+    check_ids(ids, args)
     for notes, events in runs:
         run_dir = stage / "runs" / notes["id"]
         run_dir.mkdir(parents=True)
