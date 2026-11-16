@@ -54,14 +54,18 @@ type Loaded = { id: string; run?: RunData; error?: string }
 /** Loads the run; a live one then follows its events until it ends. */
 function useRun(id: string | null): [Loaded | null, (notes: RunNotes) => void] {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
+  /** Changes the loaded run, if it is still this one. */
+  const update = useCallback(
+    (change: (run: RunData) => RunData) =>
+      setLoaded((current) => (current?.id === id && current.run ? { id, run: change(current.run) } : current)),
+    [id],
+  )
 
   useEffect(() => {
     if (id === null) return
     let gone = false
     let stop = () => {}
     setLoaded({ id })
-    const update = (change: (run: RunData) => RunData) =>
-      setLoaded((current) => (current?.id === id && current.run ? { id, run: change(current.run) } : current))
     source
       .loadRun(id)
       .then((run) => {
@@ -78,12 +82,9 @@ function useRun(id: string | null): [Loaded | null, (notes: RunNotes) => void] {
       gone = true
       stop()
     }
-  }, [id])
+  }, [id, update])
 
-  const setNotes = useCallback(
-    (notes: RunNotes) => setLoaded((current) => (current?.id === id && current.run ? { id, run: { ...current.run, notes } } : current)),
-    [id],
-  )
+  const setNotes = useCallback((notes: RunNotes) => update((r) => ({ ...r, notes })), [update])
   return [loaded?.id === id ? loaded : null, setNotes]
 }
 
@@ -132,7 +133,7 @@ export default function App() {
     site
       ?.home()
       .then(setHome)
-      .catch((e: unknown) => setError(String(e)))
+      .catch((e: unknown) => setError(errorText(e)))
   }, [])
 
   /** Goes to an in-app address, as a new history entry. */

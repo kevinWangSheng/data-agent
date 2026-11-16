@@ -16,7 +16,8 @@ import type { Home } from './home'
 
 export type RunData = { notes: RunNotes; events: RunEvent[] }
 
-/** A run's row in the backend's run list (`GET /api/runs`). */
+/** A run's row in the history list: the backend's run list (`GET /api/runs`) locally, `rowOf`
+ *  online. */
 export type RunRow = {
   id: string
   task: string | null
