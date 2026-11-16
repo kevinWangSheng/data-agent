@@ -439,8 +439,10 @@ def check_ids(ids: list[str], args: argparse.Namespace) -> None:
     changed = 0
     for run_id in ids:
         try:
-            changed += scrub.scrub_string(run_id, rules, Counter()) != run_id
+            scrubbed = scrub.scrub_string(run_id, rules, Counter())
         except scrub.Unchecked:
+            scrubbed = None  # a `\uXXXX` escape hides a name: refused, not exported unchecked
+        if scrubbed != run_id:
             changed += 1
     if changed:
         raise Refused(

@@ -501,18 +501,9 @@ def test_a_malformed_featured_run_is_named_by_position_not_by_its_directory(
     assert not out.exists()
 
 
-def no_stage_left(parent: Path) -> bool:
-    return not any(p.name.startswith(".site.export-") for p in parent.iterdir())
-
-
-# The scrub's hostname rule matches whole labels: `build-box-7-shop` names another host.
-@pytest.mark.parametrize(
-    ("name", "refused"),
-    [("build-box-7.shop", True), ("shop.build-box-7", True), ("build-box-7-shop", False)],
-)
-def test_a_featured_run_id_the_scrub_would_change_is_refused(
-    tmp_path: Path, name: str, refused: bool
-) -> None:
+def featured_with_hostname(
+    tmp_path: Path, name: str
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
     run = tmp_path / name
     run.mkdir()
     (run / "run-1.jsonl").write_text(NEW_FIELDS.read_text())
@@ -522,15 +513,26 @@ def test_a_featured_run_id_the_scrub_would_change_is_refused(
         *("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run)),
         *("--hostname", "build-box-7"),
     )
-    if not refused:
-        assert proc.returncode == 0, proc.stderr
-        assert (out / "runs" / name / "events.jsonl").is_file()
-        return
+    return out, proc
+
+
+# The hostname as a whole label, and spelled with `\uXXXX` escapes, which scrub cannot check.
+@pytest.mark.parametrize("name", ["build-box-7.shop", "shop.build-box-7", r"build\u002dbox\u002d7"])
+def test_a_featured_run_id_the_scrub_would_change_is_refused(tmp_path: Path, name: str) -> None:
+    out, proc = featured_with_hostname(tmp_path, name)
     assert proc.returncode == 2
     assert "1 run id(s)" in proc.stderr
     assert "build-box-7" not in proc.stdout + proc.stderr
+    assert name not in proc.stdout + proc.stderr
     assert not out.exists()
-    assert no_stage_left(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["manifest.json", name])
+
+
+def test_a_featured_run_id_the_scrub_leaves_alone_is_exported(tmp_path: Path) -> None:
+    # The scrub's hostname rule matches whole labels: `build-box-7-shop` names another host.
+    out, proc = featured_with_hostname(tmp_path, "build-box-7-shop")
+    assert proc.returncode == 0, proc.stderr
+    assert (out / "runs" / "build-box-7-shop" / "events.jsonl").is_file()
 
 
 def test_a_trial_name_holding_an_ip_is_refused(tmp_path: Path) -> None:
@@ -545,4 +547,4 @@ def test_a_trial_name_holding_an_ip_is_refused(tmp_path: Path) -> None:
     assert "1 run id(s)" in proc.stderr
     assert "10.1.2.3" not in proc.stdout + proc.stderr
     assert not out.exists()
-    assert no_stage_left(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["job", "manifest.json"]
