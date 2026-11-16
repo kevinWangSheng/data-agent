@@ -4,12 +4,12 @@
 
 import { useEffect, useMemo, useState } from 'react'
 
-import type { Board, Contribution, Dab, DevSummary, Evaluation } from '../data/evaluation'
+import type { Aggregate, Board, Contribution, Dab, DevSummary, Evaluation } from '../data/evaluation'
 import type { SiteSource } from '../data/source'
 import { fmtCost, fmtDur } from '../format'
 import { Link } from '../site/Link'
 import { AblationChart } from './AblationChart'
-import { dabTotals, fmtDabComparison, fmtPass1, fmtPct, fmtPoints } from './scores'
+import { fmtBoardScore, fmtDabComparison, fmtDabCounts, fmtPass1, fmtPct, fmtPoints } from './scores'
 import { filterTrials, OUTCOMES, sortTrials, type Outcome, type TrialFilter } from './trials'
 
 /** Where DAB's trajectories are (README, "Results"); they are not on this site. */
@@ -60,14 +60,14 @@ function Leaderboards({ board, dab }: { board: Board | null; dab: Dab | null }) 
   const candidate = dab?.candidate
   return (
     <div className="grid gap-3 md:grid-cols-2">
-      {lb?.accuracy !== undefined ? (
+      {lb?.accuracy != null ? (
         <Tile
           label="data-eng-bench, every task"
-          value={fmtPct(lb.accuracy)}
-          unit={lb.accuracy_stderr !== undefined ? `± ${lb.accuracy_stderr.toFixed(1)} (1 SE) accuracy` : 'accuracy'}
+          value={fmtBoardScore(lb)}
+          unit={lb.accuracy_stderr != null ? 'accuracy (± 1 SE)' : 'accuracy'}
           lines={[
             `${lb.n_tasks ?? '?'} tasks × ${board?.trials_per_task ?? '?'} trials = ${lb.n_trials ?? '?'}; ${lb.n_succeeded ?? '?'} passed${board?.complete === false ? ' (incomplete run)' : ''}`,
-            ...(lb.pass_at_3 !== undefined ? [`pass@3 ${lb.pass_at_3.toFixed(3)}`] : []),
+            ...(lb.pass_at_3 != null ? [`pass@3 ${lb.pass_at_3.toFixed(3)}`] : []),
             [board?.config && `config ${board.config}`, board?.model && `model ${board.model}`].filter(Boolean).join(' · '),
           ].filter(Boolean)}
         />
@@ -80,7 +80,7 @@ function Leaderboards({ board, dab }: { board: Board | null; dab: Dab | null }) 
           value={fmtPass1(candidate.pass_at_1)}
           unit="Pass@1"
           lines={[
-            `${dabTotals(candidate).queries} queries, ${dabTotals(candidate).runs} runs`,
+            fmtDabCounts(candidate),
             ...(dab?.baseline ? [`baseline ${fmtPass1(dab.baseline.pass_at_1)}`] : []),
             ...(dab?.comparison
               ? [`scored − baseline: ${fmtDabComparison(dab.comparison)}`]
@@ -95,7 +95,7 @@ function Leaderboards({ board, dab }: { board: Board | null; dab: Dab | null }) 
 }
 
 function Totals({ board }: { board: Board | null }) {
-  const rows: [string, Board['holdout']][] = board
+  const rows: [string, Aggregate][] = board
     ? [
         ['Holdout', board.holdout],
         ['Whole benchmark', board.leaderboard],
@@ -126,7 +126,7 @@ function Totals({ board }: { board: Board | null }) {
                   <td className="num">{t.n_tasks ?? '—'}</td>
                   <td className={`num ${NARROW_HIDDEN}`}>{t.n_trials ?? '—'}</td>
                   <td className={`num ${NARROW_HIDDEN}`}>{t.n_succeeded ?? '—'}</td>
-                  <td className="num">{t.accuracy !== undefined ? fmtPct(t.accuracy) : '—'}</td>
+                  <td className="num">{fmtPct(t.accuracy)}</td>
                 </tr>
               ))}
             </tbody>

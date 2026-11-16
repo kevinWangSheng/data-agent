@@ -46,23 +46,22 @@ export type DevSummary = {
   trials: TrialRow[]
 }
 
+/** Counts and accuracy of a set of trials, naming none; `accuracy` (percent) is null for a set
+ * with no trials (evals/board.py `aggregate`). */
+export type Aggregate = { n_tasks?: number; n_trials?: number; n_succeeded?: number; accuracy?: number | null }
+
 /** data-eng-bench: the leaderboard over every task, and the holdout's total. */
 export type Board = {
   complete?: boolean | null
   trials_per_task?: number | null
   config?: string | null
   model?: string | null
-  leaderboard: {
-    /** Percent. */
-    accuracy?: number
-    accuracy_stderr?: number
-    pass_at_2?: number
-    pass_at_3?: number
-    n_tasks?: number
-    n_trials?: number
-    n_succeeded?: number
+  leaderboard: Aggregate & {
+    accuracy_stderr?: number | null
+    pass_at_2?: number | null
+    pass_at_3?: number | null
   }
-  holdout: { n_tasks?: number; n_trials?: number; n_succeeded?: number; accuracy?: number }
+  holdout: Aggregate
 }
 
 export type DabDataset = { pass_at_1: number | null; queries: number; runs: number; passed: number }

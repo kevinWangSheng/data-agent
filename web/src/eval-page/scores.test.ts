@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { dabTotals, fmtDabComparison, fmtPass1, fmtPoints } from './scores'
+import { dabTotals, fmtBoardScore, fmtDabCounts, fmtDabComparison, fmtPass1, fmtPct, fmtPoints } from './scores'
 
 describe('dabTotals', () => {
   test('queries from the coverage, runs summed over the datasets', () => {
@@ -13,6 +13,10 @@ describe('dabTotals', () => {
       },
     }
     expect(dabTotals(output)).toEqual({ queries: 54, runs: 55 })
+  })
+
+  test('reads as queries and runs', () => {
+    expect(fmtDabCounts({ pass_at_1: 1, coverage: { queries: 54 }, datasets: { a: { pass_at_1: 1, queries: 2, runs: 270, passed: 10 } } })).toBe('54 queries, 270 runs')
   })
 
   test('no coverage: queries summed over the datasets', () => {
@@ -43,5 +47,21 @@ describe('formats', () => {
 
   test('Pass@1 has four decimals, as the README', () => {
     expect(fmtPass1(0.7420726)).toBe('0.7421')
+  })
+
+  test('a percentage that was not recorded reads as a dash (a holdout with no trials has accuracy null)', () => {
+    expect(fmtPct(67.777)).toBe('67.8%')
+    expect(fmtPct(null)).toBe('—')
+    expect(fmtPct(undefined)).toBe('—')
+  })
+})
+
+describe('fmtBoardScore', () => {
+  test('accuracy with its standard error', () => {
+    expect(fmtBoardScore({ accuracy: 64.077, accuracy_stderr: 1.552 })).toBe('64.1% ± 1.6')
+  })
+
+  test('no standard error: accuracy alone', () => {
+    expect(fmtBoardScore({ accuracy: 64.077 })).toBe('64.1%')
   })
 })

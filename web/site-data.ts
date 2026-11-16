@@ -1,8 +1,9 @@
 // The site's data at `<base>data/`, in the layout the static data source reads (src/data/source.ts).
 //
 // - `SITE_DATA=<dir>`: an export of `evals export` (evals/export.py). `pnpm dev` and `pnpm preview`
-//   serve it; `pnpm build` copies it into `dist/data/`. Either way `home.json`, the first screen's
-//   data (src/data/home.ts), is made from its `index.json` and `eval.json`.
+//   serve it; `pnpm build` copies it into `dist/data/`, all but `index.json`. Either way
+//   `home.json`, the first screen's data (src/data/home.ts), is made from its `index.json` and
+//   `eval.json`.
 // - Without it: the test fixture runs (tests/fixtures/web/real/) for `pnpm dev` and `pnpm preview`,
 //   all featured and without an evaluation summary; `pnpm build` writes no data.
 //
@@ -24,8 +25,9 @@ type File = { body: Buffer; type: string }
 const json = (value: unknown): File => ({ body: Buffer.from(JSON.stringify(value)), type: 'application/json' })
 const RUN_FILE = /^runs\/([^/]+)\/(meta\.json|events\.jsonl)$/
 
-/** An export directory: its own files, and `home.json` made from them. */
-function exportFiles(dir: string): (path: string) => File | null {
+/** An export directory: the files the site reads (a run's two files, `eval.json`) and `home.json`
+ * made from them; null for anything else. */
+export function exportFiles(dir: string): (path: string) => File | null {
   const readJson = (name: string) => JSON.parse(readFileSync(join(dir, name), 'utf8')) as unknown
   return (path) => {
     if (path === 'home.json') return json(exportHome(dir))
@@ -107,7 +109,8 @@ export function siteData(): Plugin {
     closeBundle() {
       if (!dir) return
       const target = join(outDir, 'data')
-      cpSync(dir, target, { recursive: true })
+      // Not index.json: it holds every trial's notes, and the site reads home.json instead.
+      cpSync(dir, target, { recursive: true, filter: (src) => src !== join(dir, 'index.json') })
       writeFileSync(join(target, 'home.json'), JSON.stringify(exportHome(dir)))
     },
   }

@@ -29,7 +29,7 @@ export function sortTrials(rows: readonly TrialRow[]): TrialRow[] {
   )
 }
 
-const rootOf =(base: string) => (base.endsWith('/') ? base : `${base}/`)
+const rootOf = (base: string) => (base.endsWith('/') ? base : `${base}/`)
 
 export function isEvalPath(pathname: string, base: string): boolean {
   const root = rootOf(base)
