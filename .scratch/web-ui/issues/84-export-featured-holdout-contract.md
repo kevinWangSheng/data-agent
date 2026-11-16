@@ -3,8 +3,8 @@
 Status: ready-for-agent
 Blocked by: 73
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (Claude Code) (filled in by the main session; the worktree session could not write the main checkout)
+Branch: worktree-84-export-featured-holdout-contract
 
 ## Goal
 
@@ -59,10 +59,22 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: returned ×1
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+- 2026-11-15 claude-opus-5-5，第 1 次实现（worktree-84-export-featured-holdout-contract，3 个提交）：只改 `tests/acceptance/test_web_export.py`。
+  - 模块文档写明新契约；五个新测试经模块级 `pytestmark` 都是 `xfail(strict)`：`test_featured_run_of_a_dev_task_is_exported`、`test_featured_run_with_local_data_is_exported`、`test_featured_run_of_a_holdout_task_is_refused`、`test_featured_run_of_an_unlisted_task_is_refused`、`test_featured_run_with_neither_task_id_nor_local_data_is_refused`。
+  - 现有三个测试的精选运行只在输入里加了 `"local_data": True`；主会话核对 `git diff origin/main...HEAD`：删掉的行只有旧模块文档和这三处 `notes.json` 输入，断言未改。
+  - `uv run pytest tests/acceptance/test_web_export.py -q` → "9 xfailed"；make check exit 0，"2195 passed, 1 skipped, 39 deselected, 15 xfailed"。
+  - 临时参考实现（工单 80 的草稿 + 精选运行检查，未提交，已删）：`--runxfail` 下 9 passed。反向检查：关掉精选检查 → 3 条拒绝测试失败；拒绝时打印题目 id 或失败原因、或把 `task_id`/`local_data` 抄进输出 → 4 failed；拒绝后留下 `eval.json` → 3 条拒绝测试失败；先查 `local_data` 再查 `task_id` → 留出集那条失败。
+  - da-review：P2"拒绝后可能留下别的文件"已修（`assert_refused` 要求输出里没有任何文件）；P1"只报数量"部分修（每个拒绝场景都带独特的失败原因和 grade detail 并检查未打印），不钉死消息格式。
+  - eng:code-review：Spec 已修"留出集 `task_id` + `local_data: true` 没测"（留出集测试加第二个场景）；不修：`local_data: false` 且无 `task_id`；文档的"只报数量"比测试严。Standards 无违规，几处写法问题按判断不改。
+- **退回第 1 轮（主会话，2026-11-15；只是让测试真正检查已定的契约，按人的规则由主会话直接定）**：
+  1. 拒绝时不能打印被拒运行的 id 或目录路径：`assert_refused`（第 305 行）现在只查题目 id、失败原因、grade detail。精选运行的目录常按题目命名（真实夹具 `dbt-cart-abandonment` 就是），打印 run id 等于泄露留出集题名，也违反"只报数量"。三个拒绝测试都要把被拒运行的 id 和 `--run` 目录路径加进不能出现的串。
+  2. `local_data: false` 且没有 `task_id` 要拒绝：在 `test_featured_run_with_neither_task_id_nor_local_data_is_refused` 里加这个场景，防止实现只看键在不在（fail-open）。
+  - 在原分支上接着改；修完重跑 `pytest tests/acceptance/test_web_export.py -q`、`make check`、参考实现对着跑（含一个反向检查：拒绝时打印 run id → 失败），和两道审查。
