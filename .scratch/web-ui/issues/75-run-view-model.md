@@ -1,6 +1,6 @@
 # 75 — 运行视图模型
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 73, 83
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -52,7 +52,7 @@ Branch: worktree-75-run-view-model
 - Attempts: 2
 - Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review (returned ×1)
+- Outcome: returned ×2
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -81,3 +81,8 @@ Branch: worktree-75-run-view-model
   - eng:code-review：两边都指出像 `(n rows)` 的值仍会提前结束表 → 52a779d 修；注释错字、页脚正则改命名常量。不修：`phasesOf`/`keyMomentsOf` 的可推导参数、`stepById.get(String(...))` 三处——第 0 轮代码、本轮不碰、不是 bug。
   - da-review（Codex）：1fbcab0 那次 20 分钟超时没结论；52a779d：P2 值等于上面行数时仍被当页脚 → 6ec5c96 修；6ec5c96：无意见。
   - 已知限制：0 行结果是网关的一句"Query returned 0 rows"，显示为文字而不是空表（spec："解析不了就保留原文"）。
+- **退回第 2 轮（PR #86 上 Codex GitHub app 对 6ec5c96 的 P2，主会话 2026-11-16 核实属实；只是落实 spec"解析不了就保留原文"，由主会话直接定）**：`format_rows` 用 ` | ` 拼格、值里的换行原样输出，所以多列表里一个不在最后一列的多行值和新行分不开。例：行 `['first','value']`、`['x\ny','z']` 输出 `a | b\n-----\nfirst | value\nx\ny | z\n(2 rows)`，现在解析成 `['first','value\nx']`、`['y','z']`，行数还对得上，静默显示错数据。修法：
+  - 多列表里出现格数少于表头的行（即第 1 轮"接到上一行最后一格"那条）→ 整张表 `null`，保留原文；格数多于表头的行同样 `null`（现状）。单列表的空行仍是空值。
+  - 有 `[INCOMPLETE DISPLAY]` 说明时，从说明里取 "only the first N are shown" 的 N，要求解析出的行数等于 N（现在只要求小于总数，单列里多行值会被拆成多行而查不出）；取不到 N → `null`。
+  - 单元测试：上面这个例子 → `null`；多列里最后一列的多行值 → `null`；INCOMPLETE 时行数和 N 对不上 → `null`、对得上 → 表。删掉或改写第 1 轮"多列空行接续上一格"那条单元测试（它测的正是被退回的规则）。验收测试不改。
+  - 这是本 PR 最后一轮退回；修完重跑 `make check` 和两道审查，真实运行用 `runs/scratch75/tables.ts` 对四个夹具报修前修后的表数。

@@ -1,6 +1,6 @@
 # 80 — 导出命令：把选定的运行转成在线版的静态数据
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 73, 84（done）
 Spec: ../spec.md
 Claimed by: claude-code (opus)
@@ -56,7 +56,7 @@ Branch: worktree-80-web-export
 - Attempts: 2
 - Review rounds: 4 (round 1: da-review 1 fix, eng:code-review 1 fix round; return round 1: da-review 1 fix, eng:code-review 1 fix round)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1, fixed, in review
+- Outcome: returned ×2
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -93,3 +93,7 @@ Branch: worktree-80-web-export
   - da-review（Codex）：P2 格式坏但已放行的精选运行（事件文件数不对、没标题、grade 坏、事件读不了）报错带目录 → 013fb0d 改成 `--run #N`，5 种情况参数化测试。
   - eng:code-review：Spec 无缺口；Standards 无硬违规。aac5c01 修：留出集 trial 的 `result.json` 读不了时报错带 trial 路径 → 只报 `strerror`（新测试修前失败、修后通过）；`notes.json` 读两次 → 读一次；事件文件读错不再一律说 UTF-8。
   - 不修（理由）：留出集检查信任自报的 `task_id`/`local_data`，不和 `task` 事件交叉核对（84 契约的已知限制）；notes 的类型化记录、notes 和事件文件的元组属写法判断；开发集检查之后的错误路径（trial 没有事件文件、instruction 读不了）仍带路径，只会是开发集题，ADR-0004 允许；模块约 500 行，同第 1 轮。
+- **退回（PR #88 第 1 轮，Codex GitHub app 对 aac5c01 的 P2，主会话 2026-11-16 核实属实；只是落实"强制脱敏"，由主会话直接定）**：脱敏只改文件内容，不改路径。运行目录名（精选运行的 id）或 trial 名里有可脱敏的值（主机名、IP、home 路径、用户名等）时，`index.json`/`meta.json`/`eval.json` 里的 id 被换成 `[redacted-…]`，`runs/<原名>/` 目录名却没变：IP 留在公开的路径里，网页按 `runs/<id>/events.jsonl` 也找不到文件。修法：
+  - 建目录之前，用 `evals scrub` 同一套规则检查每个要导出的 id（精选运行和 trial）；脱敏会改动的 id → 整次导出拒绝、非零退出、什么都不写，报错只给数量（不打印 id 本身，它可能就是要藏的值），提示改目录名后重来。不自动改名。
+  - 单元测试：精选运行 id 带 `--hostname` 指定的主机名 → 拒绝且输出里没有它；trial 名带 IP → 拒绝；正常 id 不受影响。验收测试不改。
+  - 修完重跑 `make check`、真实导出（三条原型运行）和两道审查。
