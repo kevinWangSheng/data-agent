@@ -10,7 +10,7 @@
 //   live operations: the run list with each run's status, the form's options, submit, cancel, and
 //   following a running run over SSE.
 
-import type { RunEvent, RunNotes, RunStatus, TaskType } from '../run-view/model'
+import { buildRunView, type RunEvent, type RunNotes, type RunStatus, type TaskType } from '../run-view/model'
 import type { Evaluation } from './evaluation'
 import type { Home } from './home'
 
@@ -38,8 +38,6 @@ export type Submission = { task: string; task_type: TaskType; data_source: strin
 export type FollowHandlers = { events(batch: RunEvent[]): void; notes(notes: RunNotes): void }
 
 export interface LiveSource {
-  /** Every run, newest start first. */
-  history(): Promise<RunRow[]>
   options(): Promise<RunOptions>
   /** Starts a run; answers its id. Fails with the backend's reason when refused. */
   submit(submission: Submission): Promise<string>
@@ -53,6 +51,9 @@ export interface DataSource {
   /** The notes of every run the source offers, in its order. */
   listRuns(): Promise<RunNotes[]>
   loadRun(id: string): Promise<RunData>
+  /** The history list's rows (spec "历史列表"), newest start first: every run locally, the
+   *  featured runs online. */
+  history(): Promise<RunRow[]>
   /** Only the local backend has these. */
   live?: LiveSource
 }
@@ -87,10 +88,21 @@ export function staticSource(root: string, fetchFn: typeof fetch = fetch): DataS
         home = null
         throw e
       }))
+  const loadRun = async (id: string): Promise<RunData> => {
+    const dir = `runs/${encodeURIComponent(id)}/`
+    const [notes, events] = await Promise.all([
+      get(`${dir}meta.json`).then((r) => r.json() as Promise<RunNotes>),
+      get(`${dir}events.jsonl`).then(async (r) => parseEventLines(await r.text())),
+    ])
+    return { notes, events }
+  }
+  const featured = async () => (await readHome()).runs.flatMap((r) => (r.id ? [r.id] : []))
   return {
     async listRuns() {
       return (await readHome()).runs
     },
+    // The files hold no row, so each featured run is read for its own; there are three.
+    history: async () => newestFirst(await Promise.all((await featured()).map(async (id) => rowOf(id, await loadRun(id))))),
     home: readHome,
     async evaluation() {
       const response = await fetchFn(`${root}eval.json`)
@@ -98,14 +110,23 @@ export function staticSource(root: string, fetchFn: typeof fetch = fetch): DataS
       if (!response.ok) throw new Error(`${root}eval.json: ${response.status} ${response.statusText}`)
       return (await response.json()) as Evaluation
     },
-    async loadRun(id) {
-      const dir = `runs/${encodeURIComponent(id)}/`
-      const [notes, events] = await Promise.all([
-        get(`${dir}meta.json`).then((r) => r.json() as Promise<RunNotes>),
-        get(`${dir}events.jsonl`).then(async (r) => parseEventLines(await r.text())),
-      ])
-      return { notes, events }
-    },
+    loadRun,
+  }
+}
+
+/** A run's history row as the run view model reads it, like the backend's row for a local run. */
+export function rowOf(id: string, run: RunData): RunRow {
+  const { summary } = buildRunView(run.events, run.notes)
+  const started = run.events[0]?.ts ?? null
+  return {
+    id,
+    task: summary.task,
+    task_type: summary.taskType,
+    config: summary.config,
+    status: summary.status,
+    started_at: started,
+    duration_ms: started === null ? null : summary.durationMs,
+    cost_usd: summary.costUsd,
   }
 }
 
@@ -257,8 +278,8 @@ export function localSource(
       const row = all.find((r) => r.id === id)
       return { events, notes: row ? notesOf(row) : { id } }
     },
+    history: async () => newestFirst(await rows()),
     live: {
-      history: async () => newestFirst(await rows()),
       options: () => send<RunOptions>('options'),
       submit: async (submission) => (await post<{ id: string }>('runs', submission)).id,
       cancel: (id) => post<RunRow>(`${runPath(id)}/cancel`),

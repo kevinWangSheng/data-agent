@@ -1,28 +1,40 @@
-// The local history list (spec "历史列表"): every run, one row each, newest start first; a row
-// opens the run page.
+// The history list (spec "历史列表"): one row a run, newest start first; a row opens the run page.
+// Locally it lists every run; online, the featured runs (the dev trials open from the evaluation
+// page).
 
 import { useEffect, useState } from 'react'
 
-import type { LiveSource, RunRow } from '../data/source'
+import type { DataSource, RunRow } from '../data/source'
 import { errorText, fmtCost, fmtDur, fmtStart } from '../format'
 import { StatusChip } from '../run-page/ui'
 
 const dash = <span className="text-ink-3">—</span>
 
-export function HistoryPage({ live, runUrl, onOpen }: { live: LiveSource; runUrl: (id: string) => string; onOpen: (id: string) => void }) {
+export function HistoryPage({
+  source,
+  empty,
+  runUrl,
+  onOpen,
+}: {
+  source: Pick<DataSource, 'history'>
+  /** What to say when there is no run. */
+  empty: string
+  runUrl: (id: string) => string
+  onOpen: (id: string) => void
+}) {
   const [rows, setRows] = useState<RunRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let gone = false
-    live
+    source
       .history()
       .then((r) => !gone && setRows(r))
       .catch((e: unknown) => !gone && setError(errorText(e)))
     return () => {
       gone = true
     }
-  }, [live])
+  }, [source])
 
   return (
     <main className="flex-1 min-h-0 overflow-auto p-4">
@@ -33,7 +45,7 @@ export function HistoryPage({ live, runUrl, onOpen }: { live: LiveSource; runUrl
         </div>
         {error && <div className="banner banner-fail m-3">Could not list the runs: {error}</div>}
         {rows === null && !error && <div className="sec text-ink-3">Loading runs…</div>}
-        {rows !== null && rows.length === 0 && <div className="sec text-ink-3">No runs yet. Start one with New run.</div>}
+        {rows !== null && rows.length === 0 && <div className="sec text-ink-3">{empty}</div>}
         {rows !== null && rows.length > 0 && (
           <div className="overflow-x-auto">
             <table className="runs-tbl" aria-label="Runs">

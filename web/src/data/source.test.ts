@@ -68,6 +68,62 @@ describe('staticSource', () => {
   test('offers no live operations', () => {
     expect(source.live).toBeUndefined()
   })
+
+  test('history: a row per featured run, from its notes and events, newest start first', async () => {
+    const featured = [
+      { id: 'old', title: 'Old', task: 'Fix the model', task_type: 'dbt', featured: true, grade: { passed: false, detail: 'x' } },
+      { id: 'new', title: 'New', featured: true },
+    ]
+    const lines = (events: object[]) => events.map((e) => JSON.stringify(e)).join('\n')
+    const site = staticSource(
+      '/data/',
+      fakeFetch({
+        '/data/home.json': JSON.stringify({ runs: featured, data_eng_bench: null, dab: null }),
+        '/data/runs/old/meta.json': JSON.stringify(featured[0]),
+        '/data/runs/old/events.jsonl': lines([
+          { seq: 0, type: 'version', ts: '2026-11-01T10:00:00Z', config: 'full' },
+          { seq: 1, type: 'result', ts: '2026-11-01T10:02:00Z', cost_usd: 0.5 },
+        ]),
+        '/data/runs/new/meta.json': JSON.stringify(featured[1]),
+        '/data/runs/new/events.jsonl': lines([
+          { seq: 0, type: 'version', ts: '2026-11-02T08:00:00Z', config: 'baseline' },
+          { seq: 1, type: 'task', ts: '2026-11-02T08:00:00Z', task: 'How many orders?', task_type: 'query', data_source: 'shop' },
+          { seq: 2, type: 'result', ts: '2026-11-02T08:00:30Z', subtype: 'success', cost_usd: 0.01 },
+        ]),
+      }),
+    )
+    expect(await site.history()).toEqual([
+      {
+        id: 'new',
+        task: 'How many orders?',
+        task_type: 'query',
+        config: 'baseline',
+        status: 'success',
+        started_at: '2026-11-02T08:00:00Z',
+        duration_ms: 30_000,
+        cost_usd: 0.01,
+      },
+      {
+        id: 'old',
+        task: 'Fix the model',
+        task_type: 'dbt',
+        config: 'full',
+        status: 'failure',
+        started_at: '2026-11-01T10:00:00Z',
+        duration_ms: 120_000,
+        cost_usd: 0.5,
+      },
+    ])
+  })
+
+  test('history: a run without events has no start or duration', async () => {
+    expect(await source.history()).toEqual([expect.objectContaining({ id: 'r1', started_at: 't' })])
+    const empty = staticSource(
+      '/data/',
+      fakeFetch({ ...files, '/data/home.json': JSON.stringify({ runs: [{ id: 'a b', featured: true }], data_eng_bench: null, dab: null }) }),
+    )
+    expect(await empty.history()).toEqual([expect.objectContaining({ id: 'a b', started_at: null, duration_ms: null, cost_usd: null })])
+  })
 })
 
 // --- The local backend (src/data_agent/web/app.py) ---
@@ -182,7 +238,7 @@ describe('localSource', () => {
   test('history: every row, newest first', async () => {
     const rows = [row({ id: 'old', started_at: '2026-11-15T09:00:00+00:00' }), row({ id: 'new' })]
     const { fetchFn } = fakeBackend({ 'GET /api/runs': [200, rows] })
-    expect((await localSource('/api/', fetchFn, openStream).live!.history()).map((r) => r.id)).toEqual(['new', 'old'])
+    expect((await localSource('/api/', fetchFn, openStream).history()).map((r) => r.id)).toEqual(['new', 'old'])
   })
 
   test('options: what the form offers', async () => {

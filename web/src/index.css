@@ -705,7 +705,7 @@ details[open] > summary .caret {
   border-color: color-mix(in srgb, var(--info) 40%, transparent);
 }
 
-/* The local history list. */
+/* The history list. */
 .runs-tbl {
   width: 100%;
   border-collapse: collapse;

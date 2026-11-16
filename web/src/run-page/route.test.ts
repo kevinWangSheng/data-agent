@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { readRoute, routeUrl } from './route'
+import { historyUrl, isHistoryPath, readRoute, routeUrl } from './route'
 
 describe('readRoute', () => {
   test('a run under the root base', () => {
@@ -44,5 +44,24 @@ describe('routeUrl', () => {
   test('leaves out the defaults', () => {
     expect(routeUrl({ id: 'r', step: null, filter: 'all' }, '/')).toBe('/runs/r')
     expect(routeUrl({ id: null, step: null, filter: 'all' }, '/data-agent/')).toBe('/data-agent/')
+  })
+})
+
+describe('the history list address', () => {
+  test('is runs under the base', () => {
+    expect(historyUrl('/data-agent/')).toBe('/data-agent/runs')
+    expect(historyUrl('/')).toBe('/runs')
+  })
+
+  test('is told apart from a run and from the base', () => {
+    expect(isHistoryPath('/data-agent/runs', '/data-agent/')).toBe(true)
+    expect(isHistoryPath('/data-agent/runs/', '/data-agent/')).toBe(true)
+    expect(isHistoryPath('/data-agent/runs/x', '/data-agent/')).toBe(false)
+    expect(isHistoryPath('/data-agent/', '/data-agent/')).toBe(false)
+    expect(isHistoryPath('/runs', '/data-agent/')).toBe(false)
+  })
+
+  test('names no run', () => {
+    expect(readRoute(historyUrl('/data-agent/'), '', '/data-agent/').id).toBeNull()
   })
 })

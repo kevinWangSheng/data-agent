@@ -4,10 +4,11 @@
 //
 // Online pages: the base address is the first screen, which replays the short query run with the
 // benchmark scores above it and stays at the base address while it plays; `runs/<id>` opens a run
-// with everything shown; `eval` is the evaluation page.
+// with everything shown; `runs` is the history list of the featured runs; `eval` is the evaluation
+// page.
 //
-// Local pages: the base address is the history list, the bar has New run, and a running run
-// follows its events live and can be cancelled.
+// Local pages: the base address (and `runs`) is the history list of every run, the bar has New
+// run, and a running run follows its events live and can be cancelled.
 
 import { Monitor, Moon, Plus, Sun } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
@@ -16,11 +17,11 @@ import { firstScreenRun, type Home } from './data/home'
 import { isLive, localSource, notesOf, staticSource, type DataSource, type LiveSource, type RunData } from './data/source'
 import { evalUrl, isEvalPath, readTrialFilter, type TrialFilter } from './eval-page/trials'
 import { errorText } from './format'
-import { HistoryPage } from './local/HistoryPage'
+import { HistoryPage } from './history-page/HistoryPage'
 import { NewRun } from './local/NewRun'
 import type { RunEvent, RunNotes } from './run-view/model'
 import { RunPage } from './run-page/RunPage'
-import { readRoute, routeUrl, type Route } from './run-page/route'
+import { historyUrl, isHistoryPath, readRoute, routeUrl, type Route } from './run-page/route'
 import { HomeStrip } from './site/HomeStrip'
 import { Link } from './site/Link'
 import { NewRunUnavailable } from './site/NewRunUnavailable'
@@ -35,14 +36,18 @@ const site = import.meta.env.VITE_DATA_SOURCE === 'local' ? null : staticSource(
 const source: DataSource = site ?? localSource(`${BASE}api/`)
 const live = source.live
 
-type Place = { page: 'eval'; filter: TrialFilter } | { page: 'run'; route: Route }
+type Place = { page: 'eval'; filter: TrialFilter } | { page: 'history' } | { page: 'run'; route: Route }
 
-const currentPlace = (): Place =>
-  site && isEvalPath(window.location.pathname, BASE)
-    ? { page: 'eval', filter: readTrialFilter(window.location.search) }
-    : { page: 'run', route: readRoute(window.location.pathname, window.location.search, BASE) }
+const currentPlace = (): Place => {
+  const { pathname, search } = window.location
+  if (site && isEvalPath(pathname, BASE)) return { page: 'eval', filter: readTrialFilter(search) }
+  const route = readRoute(pathname, search, BASE)
+  if (isHistoryPath(pathname, BASE) || (live && route.id === null)) return { page: 'history' }
+  return { page: 'run', route }
+}
 
 const runHref = (id: string) => routeUrl({ id, step: null, filter: 'all' }, BASE)
+const historyHref = live ? BASE : historyUrl(BASE)
 
 type Loaded = { id: string; run?: RunData; error?: string }
 
@@ -139,18 +144,17 @@ export default function App() {
 
   const featured = home?.runs ?? []
   const route = place.page === 'run' ? place.route : null
-  // Locally the base address is the history list; online it is the first screen.
-  const onFirstScreen = site !== null && route !== null && route.id === null
-  const onHistory = live !== undefined && route !== null && route.id === null
-  const id = route === null ? null : (route.id ?? (site ? (firstScreenRun(featured)?.id ?? null) : null))
+  // Online the base address is the first screen (locally it is the history list).
+  const onFirstScreen = route !== null && route.id === null
+  const id = route === null ? null : (route.id ?? firstScreenRun(featured)?.id ?? null)
   const [loaded, setNotes] = useRun(id)
   const run = loaded?.run
 
   useEffect(() => {
-    if (place.page !== 'run') return
-    const title = onHistory ? 'Runs' : onFirstScreen ? null : run?.notes.title
+    if (place.page === 'eval') return
+    const title = place.page === 'history' ? 'Runs' : onFirstScreen ? null : run?.notes.title
     document.title = title ? `${title} · data-agent` : 'data-agent'
-  }, [place.page, onFirstScreen, onHistory, run])
+  }, [place.page, onFirstScreen, run])
 
   // A run page's own changes (selected step, filter) replace the address. The first screen keeps
   // the base address: its route has no id, and routeUrl gives the base for that.
@@ -181,13 +185,9 @@ export default function App() {
         <Link href={BASE} onGo={go} className="mono font-semibold text-[13px] tracking-tight hover:underline" title={live ? 'All runs' : 'First screen'}>
           data-agent
         </Link>
-        {live && (
-          <nav className="seg" aria-label="Pages">
-            <button type="button" className={onHistory ? 'on' : ''} aria-current={onHistory ? 'page' : undefined} onClick={() => go(BASE)}>
-              Runs
-            </button>
-          </nav>
-        )}
+        <Link href={historyHref} onGo={go} className={`text-[12.5px] hover:underline ${place.page === 'history' ? 'font-semibold text-ink' : 'text-ink-2'}`}>
+          Runs
+        </Link>
         {featured.length > 0 && (
           <nav className="seg max-w-full overflow-x-auto" aria-label="Featured runs">
             {featured.map((r) => (
@@ -240,8 +240,13 @@ export default function App() {
         <Suspense fallback={<div className="p-8 text-ink-3">Loading the evaluation page…</div>}>
           <EvalPage source={site} filter={place.filter} onFilter={setFilter} runHref={runHref} onGo={go} />
         </Suspense>
-      ) : live && onHistory ? (
-        <HistoryPage live={live} runUrl={runHref} onOpen={(runId) => go(runHref(runId))} />
+      ) : place.page === 'history' ? (
+        <HistoryPage
+          source={source}
+          empty={live ? 'No runs yet. Start one with New run.' : 'No featured runs.'}
+          runUrl={runHref}
+          onOpen={(runId) => go(runHref(runId))}
+        />
       ) : run && route && id !== null ? (
         <RunPage
           key={`${onFirstScreen ? 'first' : 'run'}:${id}`}
