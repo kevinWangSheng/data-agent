@@ -62,7 +62,7 @@ describe('result tables', () => {
   })
 
   test('empty values in the middle and at the end of a one-column table', () => {
-    const step = buildRunView(queryCall('{"result": "v\\n-\\na\\n\\nb\\n   \\n(4 rows)\\nnote"}')).steps[0]
+    const step = buildRunView(queryCall('{"result": "v\\n-\\na\\n\\nb\\n   \\n(4 rows)"}')).steps[0]
     expect(step.table).toEqual({ columns: ['v'], rows: [['a'], [''], ['b'], ['   ']] })
   })
 
@@ -80,6 +80,16 @@ describe('result tables', () => {
   test('a value that reads like the row count line is data', () => {
     const step = buildRunView(queryCall('{"result": "v\\n-\\n(9 rows)\\nb\\n(2 rows)"}')).steps[0]
     expect(step.table).toEqual({ columns: ['v'], rows: [['(9 rows)'], ['b']] })
+  })
+
+  test('a value that reads like the count of the rows above it is data', () => {
+    const step = buildRunView(queryCall('{"result": "v\\n-\\na\\n(1 rows)\\n(2 rows)"}')).steps[0]
+    expect(step.table).toEqual({ columns: ['v'], rows: [['a'], ['(1 rows)']] })
+  })
+
+  test('a row count that does not match the rows is no table', () => {
+    const step = buildRunView(queryCall('{"result": "v\\n-\\na\\n(3 rows)"}')).steps[0]
+    expect(step.table).toBeNull()
   })
 
   test('a display cut short ends at its row count line before the note', () => {
