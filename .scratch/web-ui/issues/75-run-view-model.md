@@ -1,6 +1,6 @@
 # 75 — 运行视图模型
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 73, 83
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -49,10 +49,10 @@ Branch: worktree-75-run-view-model
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1
+- Attempts: 2
+- Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1
+- Outcome: in-review (returned ×1)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -72,3 +72,12 @@ Branch: worktree-75-run-view-model
   - 没找到 `(n rows)` 行就返回 `null`，保留原文，不猜。
   - 单元测试（`model.test.ts`）：单列里有空值的行、中间和开头的空值、没有 `(n rows)` 时为 `null`；验收测试不改。
   - 在原分支 `worktree-75-run-view-model` 上接着修；修完重跑 `make check` 和两道审查。
+- 2026-11-15 claude-code (opus-5.5)，退回第 1 轮修复（1fbcab0、52a779d、6ec5c96）：
+  - `parseTable` 的 `(n rows)` 页脚从文字末尾按位置找，和 `format_rows`（`mcp_server.py:105-128`）一致：最后一行，后面跟 `[INCOMPLETE DISPLAY]` 说明时是倒数第二行。页脚以上全是数据：单列的空行是空值，多列的空行接到上一行最后一格；看起来像 `(n rows)` 的值仍是值。没有页脚，或行数对不上（相等；只有跟 INCOMPLETE 说明时可以更大）→ `null`，保留原文。
+  - 单元测试（`model.test.ts`）：单列开头、中间、末尾的空值（含全空白）；多列空行接续；没有页脚 → `null`；像页脚的值（两种）；行数对不上 → `null`；INCOMPLETE 截断。删了自己第 0 轮单元测试里 `(4 rows)` 后一行虚构的 note（`format_rows` 不写）。主会话核对验收文件和 main 相比只有 `test.fails` → `test` 的标记。
+  - `pnpm --dir web test` 60/60；make check exit 0：ruff 通过，basedpyright 0 errors，pytest 2202 passed, 1 skipped, 10 xfailed，vitest 60 passed。
+  - 真实运行：`show.ts` 四个夹具的概况、阶段、答案和第 0 轮相同；新 `runs/scratch75/tables.ts`：每个夹具解析出的表数修前修后一样（cart 45/72、div 96/177、query-shop 11/12、new-fields 1/3），真实页脚都在末尾、都是 `(N rows)`，夹具里没有空值。
+  - 最大夹具（1,221,975 字节，1,057 条事件）：整份 0.41 ms；全部前缀 174 ms，每帧 0.165 ms。
+  - eng:code-review：两边都指出像 `(n rows)` 的值仍会提前结束表 → 52a779d 修；注释错字、页脚正则改命名常量。不修：`phasesOf`/`keyMomentsOf` 的可推导参数、`stepById.get(String(...))` 三处——第 0 轮代码、本轮不碰、不是 bug。
+  - da-review（Codex）：1fbcab0 那次 20 分钟超时没结论；52a779d：P2 值等于上面行数时仍被当页脚 → 6ec5c96 修；6ec5c96：无意见。
+  - 已知限制：0 行结果是网关的一句"Query returned 0 rows"，显示为文字而不是空表（spec："解析不了就保留原文"）。
