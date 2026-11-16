@@ -1,6 +1,6 @@
 # 79 — 本地版前端：提交、实时过程、取消、历史列表
 
-Status: in-progress
+Status: in-review
 Blocked by: 76（done）, 78（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16
@@ -52,10 +52,10 @@ Branch: worktree-79-web-local-frontend
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1
+- Attempts: 2
+- Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1 (PR #92)
+- Outcome: returned ×1 (PR #92); round-1 fix in review
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -74,3 +74,10 @@ Branch: worktree-79-web-local-frontend
   - 测试：`tests/test_packaging.py` 加一条——设了变量构建出的 wheel 没有 `data_agent/web/static`、也不调用 pnpm（可以用 PATH 里放一个会失败的假 pnpm 证明）；评测那边有单元测试覆盖 `build_artifacts` 传了这个变量（看现有 `tests/` 里有没有 harbor_agent 的测试，照它的写法）。
   - 在原分支上接着修；修完重跑 `make check` 和两道审查。
 - 2026-11-16 主会话：工单 81 先开 PR；81 合入后本工单 rebase 到 main，解决和 81 在 `App.tsx`、`RunPage.tsx`、`source.ts` 的冲突，并补上面新加的那条验收（在线版历史列表）。
+- 2026-11-16 工单 agent（Claude Code, Opus 5.5）退回第 1 轮（c050f78、af03aa4）：
+  - 修：`hatch_build.py` 在 `DATA_AGENT_WHEEL_UI=0` 时跳过前端构建，在找 pnpm 之前返回，不警告；默认照旧构建。`evals/harbor_agent.py` 的 `build_artifacts` 只在 `uv build --wheel` 那次调用上设 `env=os.environ | {"DATA_AGENT_WHEEL_UI": "0"}`（加 `import os`）。
+  - 测试：`tests/test_packaging.py::test_wheel_built_with_the_ui_turned_off_never_calls_pnpm`（PATH 前放总是失败的假 pnpm：不设变量构建失败、stderr 有 "pnpm was called"；设变量构建成功、stderr 不含 "pnpm"、wheel 没有 `data_agent/web/static`、有 `BUILD_COMMIT`）；`tests/test_harbor_agent.py::test_the_agents_wheel_is_built_without_the_web_ui`（断言构建 wheel 那次 env 有 `DATA_AGENT_WHEEL_UI=0` 且保留 PATH）。都先红后绿；变异检查：跳过分支加警告 → stderr 断言失败。`tests/test_harbor_agent.py` 是退回意见要求的评测单元测试，主会话认可在范围内。
+  - 真实运行：假 pnpm 在 PATH 上直接调 `build_artifacts()` → wheel 和 requirements.txt，`web/static entries: 0`，`BUILD_COMMIT: True`，没有 pnpm 警告。
+  - make check（af03aa4）：exit 0；ruff 通过；basedpyright 0 errors；pytest 2307 passed、1 skipped；vitest 179 passed。
+  - da-review（Codex，c050f78）：无意见。eng:code-review：无阻塞；af03aa4 修三条（"不警告"补断言；对照构建先去掉 shell 里已有的 `DATA_AGENT_WHEEL_UI`；注释"不联网"改成"no pnpm and no frontend build"）。不修：变量名两处各写一次（评测代码不 import 构建 hook，单元测试钉住字面值）；只认 `"0"`（内部开关）；测试 monkeypatch `subprocess.run`（会还原）；打包测试多跑两次 `uv build`（对照需要）。
+  - 本轮没做"在线版历史列表"那条验收（是本轮开始后才加的），等 81 合入后 rebase 时做。
