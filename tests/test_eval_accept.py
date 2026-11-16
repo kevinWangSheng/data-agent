@@ -256,6 +256,18 @@ def test_reuse_needs_the_same_version_fields(
     assert problems == ["version field model: ['\"m0\"'] old, ['\"m1\"'] new"]
 
 
+def test_reuse_ignores_the_injected_skills_an_old_version_did_not_record(
+    tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Ticket 83: the new version header names the injected Skills; the old one predates it.
+    # The names follow from `config`, `layers` and the task, which are compared already.
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    with_skills = VERSION | {"skills": ["sql-workflow", "duckdb-sql"]}
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c", version=with_skills)
+    code, result = accept(tmp_path, manifest, old, new, capsys=capsys)
+    assert (code, result["verdict"], result["old_reusable"]) == (0, "pass", True)
+
+
 def test_reuse_needs_the_same_benchmark_commit(
     tmp_path: Path, manifest: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

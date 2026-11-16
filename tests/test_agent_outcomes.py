@@ -8,8 +8,9 @@ import asyncio
 import dataclasses
 import json
 from collections.abc import AsyncIterator, Callable
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 import pytest
@@ -729,6 +730,80 @@ async def test_task_event_text_is_masked(monkeypatch: pytest.MonkeyPatch, tmp_pa
         if json.loads(line)["type"] == "task"
     ]
     assert event["task"] == "ask [REDACTED]"
+
+
+# Ticket 83: the version event names the Skills injected into the main agent's system prompt.
+
+
+async def system_prompt_and_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    task_type: Literal["dbt", "query"],
+    dialect: str,
+    config: str,
+) -> tuple[str, dict[str, Any]]:
+    prompts: list[str] = []
+
+    async def fake_query(*, options: ClaudeAgentOptions, **_: Any) -> AsyncIterator[Any]:
+        prompts.append(str(options.system_prompt))
+        yield result()
+
+    monkeypatch.setattr(agent, "query", fake_query)
+    monkeypatch.setattr(agent.shutil, "which", lambda *_, **__: "/usr/bin/dbt")
+    # The context layer's dictionary build would connect to the database.
+    monkeypatch.setattr(agent, "prebuilt_dictionary", lambda *_: nullcontext())
+    if dialect == "postgres":
+        task = Task(text="q", type=task_type, workspace=tmp_path, postgres_env="DA_TEST_URL")
+        env = ENV | {"DA_TEST_URL": "postgresql://someone:pw@127.0.0.1:1/nowhere"}
+    else:
+        db = tmp_path / "x.duckdb"
+        duckdb.connect(str(db)).close()
+        task = Task(text="q", type=task_type, workspace=tmp_path, duckdb=db)
+        env = ENV
+    outcome = await agent.run(task, load_config(config), tmp_path / "events", env)
+    version = json.loads(outcome.events_path.read_text().splitlines()[0])
+    assert version["type"] == "version"
+    return prompts[0], version
+
+
+@pytest.mark.parametrize(
+    ("task_type", "dialect", "config", "skills"),
+    [
+        ("query", "duckdb", "full", ["sql-workflow", "duckdb-sql"]),
+        ("dbt", "postgres", "full", ["dbt-workflow", "dbt-write", "dbt-debugging", "postgres-sql"]),
+        ("query", "duckdb", "no-skill", []),
+        ("dbt", "postgres", "no-skill", []),
+        ("dbt", "duckdb", "baseline", []),
+    ],
+)
+async def test_version_event_names_the_skills_in_the_system_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    task_type: Literal["dbt", "query"],
+    dialect: str,
+    config: str,
+    skills: list[str],
+) -> None:
+    """In injection order; `[]`, not a missing field, when the Skill layer is off. A Skill is
+    named exactly when the system prompt holds it."""
+    system, version = await system_prompt_and_version(
+        monkeypatch, tmp_path, task_type, dialect, config
+    )
+    assert version["skills"] == skills
+    every_skill = [path.parent.name for path in agent.SKILLS_DIR.glob("*/SKILL.md")]
+    for name in every_skill:
+        assert (f"name: {name}\n" in system) == (name in skills), name
+
+
+async def test_version_event_skills_leave_out_the_verifiers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The verifiers' prompt is in a dbt run's system prompt but is not a Skill."""
+    system, version = await system_prompt_and_version(
+        monkeypatch, tmp_path, "dbt", "duckdb", "full"
+    )
+    assert agent.VERIFIERS_PROMPT in system
+    assert version["skills"] == ["dbt-workflow", "dbt-write", "dbt-debugging", "duckdb-sql"]
 
 
 async def test_answer_event_marks_the_final_answer_before_the_result(
