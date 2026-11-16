@@ -15,10 +15,15 @@ the file's directory:
 
 The connection string stays in the server's environment; the file, responses, run arguments and
 events carry only the variable's name.
+
+A DuckDB source with a dbt project keeps its file inside the project, and the runs directory and a
+dbt project do not contain each other (`check_layout`): each dbt run works on its own copy of the
+project, the DuckDB file included, and leaves the original alone.
 """
 
 import re
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -94,3 +99,35 @@ def resolve(base: Path, value: Any, what: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{what} must be a non-empty path")
     return base / Path(value).expanduser()
+
+
+def check_layout(runs_dir: Path, sources: Sequence[DataSource]) -> None:
+    """ValueError naming the first source a dbt run could not copy into its own working directory:
+    a runs directory and a dbt project inside one another would copy the workspace into itself,
+    and a DuckDB file outside its dbt project has no place in the copy that `profiles.yml`'s
+    relative path still reaches."""
+    runs = runs_dir.resolve()
+    for source in sources:
+        if source.dbt_project is None:
+            continue
+        project = source.dbt_project.resolve()
+        where = f"[sources.{source.name}]"
+        if runs.is_relative_to(project) or project.is_relative_to(runs):
+            raise ValueError(
+                f"{where}: dbt_project {project} and the runs directory {runs} contain one "
+                "another; dbt runs copy the project into the runs directory, so keep them apart"
+            )
+        if source.duckdb is not None and duckdb_in_project(source) is None:
+            raise ValueError(
+                f"{where}: the DuckDB file must be inside dbt_project ({project}) so each dbt "
+                "run's copy of the project carries its own copy of the file"
+            )
+
+
+def duckdb_in_project(source: DataSource) -> Path | None:
+    """The DuckDB file's path relative to the source's dbt project, or None when it is outside.
+    The file itself is not resolved: a link inside the project counts as inside."""
+    assert source.duckdb is not None and source.dbt_project is not None
+    file = source.duckdb.parent.resolve() / source.duckdb.name
+    project = source.dbt_project.resolve()
+    return file.relative_to(project) if file.is_relative_to(project) else None

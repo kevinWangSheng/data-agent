@@ -2,8 +2,9 @@
 
 One run at a time. Each run gets `<runs_dir>/<id>/` for its event file and
 `<runs_dir>/<id>/workspace/` as its working directory: empty for a query run, a copy of the data
-source's dbt project (without `target/` and `logs/`) for a dbt run, with the DuckDB file copied in
-too. A query run reads the DuckDB file in place through the read-only gateway.
+source's dbt project (without `target/` and `logs/`) for a dbt run, with the DuckDB file (which
+lives inside the project, `check_layout`) copied to the same place in it. A query run reads the
+DuckDB file in place through the read-only gateway.
 
 Cancelling signals only the process this server started, by its recorded pid (and its own process
 group when it leads one). When a run's process exits, whatever it left running in its group is
@@ -27,7 +28,7 @@ from typing import Any
 
 from data_agent.run_config import CONFIG_NAMES
 from data_agent.web.runs import RunsDir
-from data_agent.web.sources import DataSource
+from data_agent.web.sources import DataSource, check_layout, duckdb_in_project
 
 TASK_TYPES = ("query", "dbt")
 # How long a run being stopped has to exit after SIGTERM before it gets SIGKILL.
@@ -64,6 +65,7 @@ class Running:
 
 class Launcher:
     def __init__(self, runs: RunsDir, sources: Sequence[DataSource], start_run: StartRun) -> None:
+        check_layout(runs.path, sources)
         self.runs = runs
         self.sources = {source.name: source for source in sources}
         self.start_run = start_run
@@ -278,14 +280,12 @@ def prepare_workspace(workspace: Path, source: DataSource, task_type: str) -> li
     )
     if source.duckdb is None:
         return database
-    # A DuckDB file inside the project keeps its place in the copy; one outside goes to the
-    # workspace's top.
-    try:
-        inside: Path | None = source.duckdb.resolve().relative_to(project.resolve())
-    except ValueError:
-        inside = None
-    copy = workspace / (inside if inside is not None else source.duckdb.name)
-    if inside is None or inside.parts[0] in NOT_COPIED:
+    # Inside the project (`check_layout`): the copy keeps the file's place, so `profiles.yml`'s
+    # relative path reaches it. `target/` is not copied, so a file there is copied on its own.
+    inside = duckdb_in_project(source)
+    assert inside is not None
+    copy = workspace / inside
+    if inside.parts[0] in NOT_COPIED:
         copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source.duckdb, copy)
     return ["--duckdb", str(copy)]

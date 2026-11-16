@@ -175,4 +175,8 @@ def serve_web(
             [sys.executable, "-m", "data_agent", "run", *args], cwd=cwd, start_new_session=True
         )
 
-    uvicorn.run(create_app(runs_dir.resolve(), sources, start_run), host=WEB_HOST, port=port)
+    try:
+        app = create_app(runs_dir.resolve(), sources, start_run)
+    except ValueError as exc:
+        parser.error(str(exc))
+    uvicorn.run(app, host=WEB_HOST, port=port)

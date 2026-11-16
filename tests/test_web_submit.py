@@ -137,13 +137,11 @@ def test_a_query_run_gets_an_empty_workspace_and_reads_the_duckdb_file_in_place(
     assert flag(args, "--data-source-name") == "shop"
 
 
-@pytest.mark.parametrize("db_inside_project", [True, False])
 def test_a_dbt_run_works_on_a_copy_of_the_project_and_the_duckdb_file(
-    tmp_path: Path, recorder: Recorder, db_inside_project: bool
+    tmp_path: Path, recorder: Recorder
 ) -> None:
-    project = dbt_project(tmp_path, with_db=db_inside_project)
-    shop = project / "shop.duckdb" if db_inside_project else tmp_path / "shop.duckdb"
-    shop.write_bytes(b"db")
+    project = dbt_project(tmp_path, with_db=True)
+    shop = project / "shop.duckdb"
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     source = DataSource(name="shop", duckdb=shop, dbt_project=project)
@@ -211,6 +209,58 @@ def test_a_duckdb_file_under_target_is_still_copied(tmp_path: Path, recorder: Re
     assert Path(flag(args, "--duckdb")) == cwd / "target" / "shop.duckdb"
     assert (cwd / "target" / "shop.duckdb").read_bytes() == b"db"
     assert not (cwd / "target" / "x.txt").exists()
+
+
+@pytest.mark.parametrize("where", ["runs_inside_project", "project_inside_runs", "same"])
+def test_a_runs_dir_overlapping_a_dbt_project_is_refused(tmp_path: Path, where: str) -> None:
+    """A workspace inside the project it copies would be copied into itself."""
+    project = dbt_project(tmp_path, with_db=False)
+    runs_dir = {
+        "runs_inside_project": project / "runs",
+        "project_inside_runs": tmp_path,
+        "same": project,
+    }[where]
+    runs_dir.mkdir(exist_ok=True)
+    source = DataSource(name="pg", postgres_env=PG_ENV, dbt_project=project)
+    with pytest.raises(ValueError, match=r"pg.*dbt_project.*runs"):
+        create_app(runs_dir, [source], never_start)
+
+
+def test_a_duckdb_file_outside_its_dbt_project_is_refused(tmp_path: Path) -> None:
+    """dbt finds the file through profiles.yml relative to the project, so a copy of it has to
+    stay at the same place in the workspace, which only a file inside the project can."""
+    project = dbt_project(tmp_path, with_db=False)
+    shop = tmp_path / "shop.duckdb"
+    shop.write_bytes(b"db")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    source = DataSource(name="shop", duckdb=shop, dbt_project=project)
+    with pytest.raises(ValueError, match=r"shop.*inside.*dbt_project"):
+        create_app(runs_dir, [source], never_start)
+
+
+def test_a_duckdb_link_inside_the_project_counts_as_inside(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    project = dbt_project(tmp_path, with_db=False)
+    real = tmp_path / "data" / "shop.duckdb"
+    real.parent.mkdir()
+    real.write_bytes(b"db")
+    (project / "shop.duckdb").symlink_to(real)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    source = DataSource(name="shop", duckdb=project / "shop.duckdb", dbt_project=project)
+    with TestClient(create_app(runs_dir, [source], recorder)) as client:
+        assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
+    [(args, cwd)] = recorder.calls
+    copy = Path(flag(args, "--duckdb"))
+    assert copy == cwd / "shop.duckdb"
+    assert not copy.is_symlink()
+    assert copy.read_bytes() == b"db"
+
+
+def never_start(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
+    raise AssertionError("no run should start")
 
 
 def statuses(client: TestClient) -> dict[str, str]:
@@ -373,3 +423,30 @@ def test_the_web_command_refuses_a_bad_data_source_file(tmp_path: Path) -> None:
     )
     assert done.returncode != 0
     assert "kind" in done.stderr
+
+
+def test_the_web_command_refuses_a_runs_dir_inside_a_dbt_project(tmp_path: Path) -> None:
+    project = dbt_project(tmp_path, with_db=True)
+    runs_dir = project / "runs"
+    runs_dir.mkdir()
+    sources = tmp_path / "sources.toml"
+    sources.write_text(
+        '[sources.shop]\nkind = "duckdb"\npath = "proj/shop.duckdb"\ndbt_project = "proj"\n'
+    )
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "data_agent",
+            "web",
+            "--runs-dir",
+            str(runs_dir),
+            "--data-sources",
+            str(sources),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT,
+    )
+    assert done.returncode != 0
+    assert "dbt_project" in done.stderr

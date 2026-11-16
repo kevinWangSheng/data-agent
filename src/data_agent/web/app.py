@@ -37,7 +37,8 @@ class Submit(BaseModel):
 
 def create_app(runs_dir: Path, data_sources: Sequence[DataSource], start_run: StartRun) -> FastAPI:
     """The app serving the runs under `runs_dir` (one subdirectory per run, named by run id, holding
-    its event file) and starting new runs through `start_run`."""
+    its event file) and starting new runs through `start_run`. ValueError when a dbt run could not
+    copy a source's project into its own working directory (`check_layout`)."""
     runs = RunsDir(runs_dir)
     launcher = Launcher(runs, data_sources, start_run)
 
