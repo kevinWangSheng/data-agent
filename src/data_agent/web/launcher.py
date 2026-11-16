@@ -281,7 +281,11 @@ def prepare_workspace(
         skipped: list[str] = list(NOT_COPIED) if Path(directory) == project else []
         for name in set(names) - set(skipped):
             entry = Path(directory) / name
-            if entry.is_symlink() and entry.is_dir() and overlap(entry.resolve(), runs):
+            if entry.is_symlink() and not entry.exists():
+                # Dangling. `Path.exists` resolves a relative link from the directory holding
+                # it; `copytree`'s own `ignore_dangling_symlinks` resolves it from the cwd.
+                skipped.append(name)
+            elif entry.is_symlink() and entry.is_dir() and overlap(entry.resolve(), runs):
                 raise Refused(
                     400,
                     f"data source {source.name!r}: {entry.relative_to(project)} in dbt_project "
@@ -291,7 +295,7 @@ def prepare_workspace(
         return skipped
 
     # Link targets are copied, so no write in the workspace reaches the original project.
-    shutil.copytree(project, workspace, ignore=ignore, ignore_dangling_symlinks=True)
+    shutil.copytree(project, workspace, ignore=ignore)
     if source.duckdb is None:
         return database
     # Inside the project (`check_layout`): the copy keeps the file's place, so `profiles.yml`'s

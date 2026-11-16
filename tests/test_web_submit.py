@@ -297,6 +297,50 @@ def test_a_linked_directory_in_the_project_reaching_the_runs_dir_refuses_the_dbt
     assert list(runs_dir.iterdir()) == []
 
 
+def test_relative_links_in_the_project_are_copied_whatever_the_server_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative link resolves from the directory holding it, not from the server's current
+    directory, so a valid one is copied (as its target) rather than skipped as dangling."""
+    project = dbt_project(tmp_path, with_db=False)
+    (project / "real.duckdb").write_bytes(b"db")
+    (project / "shop.duckdb").symlink_to("real.duckdb")
+    (project / "shared").mkdir()
+    (project / "shared" / "b.sql").write_text("select 2\n")
+    (project / "models" / "shared").symlink_to(Path("..") / "shared")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    workspace = runs_dir / "r" / "workspace"
+    workspace.parent.mkdir()
+    source = DataSource(name="shop", duckdb=project / "shop.duckdb", dbt_project=project)
+    args = launcher.prepare_workspace(workspace, source, "dbt", runs_dir)
+    copy = Path(args[args.index("--duckdb") + 1])
+    assert copy == workspace / "shop.duckdb"
+    assert not copy.is_symlink()
+    assert copy.read_bytes() == b"db"
+    assert (workspace / "models" / "shared" / "b.sql").read_text() == "select 2\n"
+
+
+def test_a_dangling_link_in_the_project_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = dbt_project(tmp_path, with_db=True)
+    (project / "models" / "gone.sql").symlink_to("missing.sql")
+    monkeypatch.chdir(tmp_path)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    workspace = runs_dir / "r" / "workspace"
+    workspace.parent.mkdir()
+    source = DataSource(name="shop", duckdb=project / "shop.duckdb", dbt_project=project)
+    launcher.prepare_workspace(workspace, source, "dbt", runs_dir)
+    assert (workspace / "models" / "a.sql").is_file()
+    assert not (workspace / "models" / "gone.sql").exists()
+    assert not (workspace / "models" / "gone.sql").is_symlink()
+
+
 def never_start(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
     raise AssertionError("no run should start")
 
