@@ -293,11 +293,20 @@ def write_local_run(root: Path, run_id: str) -> Path:
     )
 
 
+# What a refused featured run must not print: its failure reason and its result.
+REFUSED_REASON = "refused-featured-reason-" + "v7k"
+REFUSED_RESULT = "refused-featured-grade-" + "m2w"
+REFUSED_NOTES = {
+    "failure_reason": REFUSED_REASON,
+    "grade": {"passed": False, "detail": REFUSED_RESULT},
+}
+
+
 def assert_refused(proc: subprocess.CompletedProcess[str], out: Path, *hidden: str) -> None:
     assert proc.returncode != 0
-    assert not (out / "index.json").exists()
-    assert not (out / "runs").exists()
-    for text in hidden:
+    # Nothing exported: no index, no runs, no other file.
+    assert not out.exists() or not any(p.is_file() for p in out.rglob("*"))
+    for text in (REFUSED_REASON, REFUSED_RESULT, *hidden):
         assert text not in proc.stdout + proc.stderr, f"{text} was printed"
 
 
@@ -345,21 +354,14 @@ def test_featured_run_of_a_holdout_task_is_refused(tmp_path: Path) -> None:
     )
     assert local_only.returncode == 0, local_only.stderr
 
-    reason = "holdout-featured-reason-" + "v7k"
-    result = "holdout-featured-grade-" + "m2w"
     held = write_task_run(
-        tmp_path / "featured",
-        "held-run",
-        "dbt-delta",
-        task_id="dbt-delta",
-        failure_reason=reason,
-        grade={"passed": False, "detail": result},
+        tmp_path / "featured", "held-run", "dbt-delta", task_id="dbt-delta", **REFUSED_NOTES
     )
     out = tmp_path / "site"
     proc = export(
         "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(held)
     )
-    assert_refused(proc, out, "dbt-delta", reason, result)
+    assert_refused(proc, out, "dbt-delta")
 
 
 def test_featured_run_of_an_unlisted_task_is_refused(tmp_path: Path) -> None:
@@ -371,7 +373,7 @@ def test_featured_run_of_an_unlisted_task_is_refused(tmp_path: Path) -> None:
     assert local_only.returncode == 0, local_only.stderr
 
     unlisted = write_task_run(
-        tmp_path / "featured", "unlisted-run", "dbt-omega", task_id="dbt-omega"
+        tmp_path / "featured", "unlisted-run", "dbt-omega", task_id="dbt-omega", **REFUSED_NOTES
     )
     out = tmp_path / "site"
     proc = export(
@@ -391,7 +393,7 @@ def test_featured_run_with_neither_task_id_nor_local_data_is_refused(tmp_path: P
     unmarked = write_featured(
         tmp_path / "featured",
         "unmarked-run",
-        {"title": "t", "failure_reason": None},
+        {"title": "t", **REFUSED_NOTES},
         read_events(NEW_FIELDS),
     )
     out = tmp_path / "site"
