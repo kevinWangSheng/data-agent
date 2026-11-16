@@ -25,23 +25,31 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def build_and_extract_wheel(tmp_path: Path, env: dict[str, str] | None = None) -> Path:
+def build_wheel(out: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     uv = shutil.which("uv")
     assert uv is not None
-    proc = subprocess.run(
-        [uv, "build", "--wheel", "--out-dir", str(tmp_path / "dist")],
+    return subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(out)],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
         text=True,
         timeout=120,
     )
-    assert proc.returncode == 0, proc.stderr
-    (wheel,) = (tmp_path / "dist").glob("*.whl")
+
+
+def extract_wheel(tmp_path: Path, out: Path) -> Path:
+    (wheel,) = out.glob("*.whl")
     site = tmp_path / "site"
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(site)
     return site
+
+
+def build_and_extract_wheel(tmp_path: Path, env: dict[str, str] | None = None) -> Path:
+    proc = build_wheel(tmp_path / "dist", env)
+    assert proc.returncode == 0, proc.stderr
+    return extract_wheel(tmp_path, tmp_path / "dist")
 
 
 def run_installed(tmp_path: Path, site: Path, probe: str) -> subprocess.CompletedProcess[str]:
@@ -216,30 +224,23 @@ def fetch(url: str) -> tuple[int, str, str]:
 
 
 def test_wheel_built_with_the_ui_turned_off_never_calls_pnpm(tmp_path: Path) -> None:
-    """An evaluation builds the agent's wheel with DATA_AGENT_WHEEL_UI=0: no frontend build, so no
-    pnpm (or network) in a pinned checkout, and a broken frontend build cannot fail the run."""
+    """An evaluation builds the agent's wheel with DATA_AGENT_WHEEL_UI=0: no frontend build, so a
+    pinned checkout needs no pnpm, and a broken frontend build cannot fail the run."""
     fake = tmp_path / "fake-pnpm"
     fake.mkdir()
     pnpm = fake / "pnpm"
     pnpm.write_text("#!/bin/sh\necho 'pnpm was called' >&2\nexit 1\n")
     pnpm.chmod(0o755)
-    path = f"{fake}{os.pathsep}{os.environ['PATH']}"
+    env = {k: v for k, v in os.environ.items() if k != "DATA_AGENT_WHEEL_UI"}
+    env["PATH"] = f"{fake}{os.pathsep}{env['PATH']}"
     # The fake is what the build hook finds: left on, the UI build calls it and the wheel fails.
-    uv = shutil.which("uv")
-    assert uv is not None
-    on = subprocess.run(
-        [uv, "build", "--wheel", "--out-dir", str(tmp_path / "on")],
-        cwd=REPO_ROOT,
-        env=os.environ | {"PATH": path},
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    on = build_wheel(tmp_path / "on", env)
     assert on.returncode != 0
     assert "pnpm was called" in on.stderr
-    site = build_and_extract_wheel(
-        tmp_path, env=os.environ | {"PATH": path, "DATA_AGENT_WHEEL_UI": "0"}
-    )
+    off = build_wheel(tmp_path / "off", env | {"DATA_AGENT_WHEEL_UI": "0"})
+    assert off.returncode == 0, off.stderr
+    assert "pnpm" not in off.stderr  # neither called nor warned about: skipping is on purpose
+    site = extract_wheel(tmp_path, tmp_path / "off")
     assert not (site / "data_agent" / "web" / "static").exists()
     assert (site / "data_agent" / "BUILD_COMMIT").is_file()
 

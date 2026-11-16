@@ -6,8 +6,8 @@ reads `BUILD_COMMIT` first. `data-agent web` serves the UI from `data_agent/web/
 so it is built here, with pnpm, for each wheel. Where pnpm is missing (a slim image building the
 agent's wheel for an evaluation) the wheel is built without the UI and the build warns; the API
 still works. `DATA_AGENT_WHEEL_UI=0` skips the UI on purpose, without the warning: an evaluation
-builds the agent's wheel that way (evals.harbor_agent.build_artifacts), so it needs no pnpm, network
-or frontend build. Editable installs skip both: they keep asking git, and a checkout builds its UI
+builds the agent's wheel that way (evals.harbor_agent.build_artifacts), so it needs no pnpm and no
+frontend build. Editable installs skip both: they keep asking git, and a checkout builds its UI
 with `pnpm --dir web build:local`.
 """
 
