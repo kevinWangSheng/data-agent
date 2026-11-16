@@ -26,11 +26,13 @@ const json = (value: unknown): File => ({ body: Buffer.from(JSON.stringify(value
 const RUN_FILE = /^runs\/([^/]+)\/(meta\.json|events\.jsonl)$/
 
 /** An export directory: the files the site reads (a run's two files, `eval.json`) and `home.json`
- * made from them; null for anything else. */
+ * made from them; null for anything else. Throws, so `pnpm dev`, `pnpm preview` and `pnpm build`
+ * stop at the start, when the export has no featured run for the first screen to replay. */
 export function exportFiles(dir: string): (path: string) => File | null {
   const readJson = (name: string) => JSON.parse(readFileSync(join(dir, name), 'utf8')) as unknown
+  const home = json(exportHome(dir))
   return (path) => {
-    if (path === 'home.json') return json(exportHome(dir))
+    if (path === 'home.json') return home
     if (path === 'eval.json') return existsSync(join(dir, path)) ? json(readJson(path)) : null
     const match = RUN_FILE.exec(path)
     if (!match) return null
@@ -45,7 +47,13 @@ function exportHome(dir: string) {
   const index = JSON.parse(readFileSync(join(dir, 'index.json'), 'utf8')) as { runs: RunNotes[] }
   const evalPath = join(dir, 'eval.json')
   const evaluation = existsSync(evalPath) ? (JSON.parse(readFileSync(evalPath, 'utf8')) as Evaluation) : null
-  return homeData(index, evaluation)
+  const home = homeData(index, evaluation)
+  if (home.runs.length === 0) {
+    throw new Error(
+      `${dir}: no featured run, and the first screen replays one; export the runs to feature with \`evals export --run <run dir>\``,
+    )
+  }
+  return home
 }
 
 function fixtureIds(): string[] {
@@ -111,7 +119,8 @@ export function siteData(): Plugin {
       const target = join(outDir, 'data')
       // Not index.json: it holds every trial's notes, and the site reads home.json instead.
       cpSync(dir, target, { recursive: true, filter: (src) => src !== join(dir, 'index.json') })
-      writeFileSync(join(target, 'home.json'), JSON.stringify(exportHome(dir)))
+      const home = file('home.json')
+      if (home) writeFileSync(join(target, 'home.json'), home.body)
     },
   }
 }

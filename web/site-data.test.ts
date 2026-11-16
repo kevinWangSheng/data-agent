@@ -7,14 +7,14 @@ import { describe, expect, test } from 'vitest'
 import { exportFiles } from './site-data'
 
 /** An export directory in `evals export`'s layout, with a secret file beside it. */
-function makeExport(withEval: boolean): string {
+function makeExport(withEval: boolean, featured = true): string {
   const root = mkdtempSync(join(tmpdir(), 'site-data-'))
   const dir = join(root, 'site')
   mkdirSync(join(dir, 'runs', 'q'), { recursive: true })
   writeFileSync(join(root, 'secret.json'), '"outside"')
   writeFileSync(join(dir, 'secret.json'), '"beside runs"')
   const runs = [
-    { id: 'q', featured: true, task_type: 'query' },
+    { id: 'q', featured, task_type: 'query' },
     { id: 't1', featured: false },
   ]
   writeFileSync(join(dir, 'index.json'), JSON.stringify({ runs }))
@@ -49,6 +49,10 @@ describe('exportFiles', () => {
     const file = exportFiles(makeExport(false))
     expect(file('eval.json')).toBeNull()
     expect(JSON.parse(text(file('home.json'))!).data_eng_bench).toBeNull()
+  })
+
+  test('an export without featured runs: an error that says how to give them', () => {
+    expect(() => exportFiles(makeExport(true, false))).toThrow(/no featured run.*evals export --run/)
   })
 
   test('a run id that climbs out of runs/ is not served', () => {

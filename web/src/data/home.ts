@@ -21,7 +21,9 @@ export function homeData(index: { runs: RunNotes[] }, evaluation: Evaluation | n
   }
 }
 
-/** The run the first screen replays: the first query run (the short one), else the first run. */
-export function firstScreenRun(runs: readonly RunNotes[]): RunNotes | null {
-  return runs.find((r) => r.task_type === 'query') ?? runs[0] ?? null
+/** The featured run the first screen replays: the first query run (the short one), else the first
+ * featured run; none only before `home.json` loads, as the site build stops on an export without
+ * featured runs (site-data.ts). */
+export function firstScreenRun(featured: readonly RunNotes[]): RunNotes | null {
+  return featured.find((r) => r.task_type === 'query') ?? featured[0] ?? null
 }
