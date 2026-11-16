@@ -1,6 +1,6 @@
 # 75 — 运行视图模型
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 73, 83
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
