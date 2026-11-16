@@ -1,6 +1,6 @@
 # 83 — `version` 事件记录注入的 Skill 名字
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-code (opus) 2026-11-15
@@ -59,10 +59,10 @@ Branch: worktree-83-version-skills
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1
+- Attempts: 2
+- Review rounds: 2
 - Model spend: $0.0066 (main-session real run, price table; data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1
+- Outcome: accepted after 1 return (PR #84 → 2b45e99; CI green)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -80,3 +80,11 @@ Branch: worktree-83-version-skills
   - `docs/setup.md:83` 和 `accept.py` 的注释写明：`skills` 是观测用的元数据，不参与复用匹配（它由已比较的 `config`/`layers` 和任务决定）。
   - 人的基线：`tests/test_eval_accept.py` 44 passed；工单 83 的事件测试 47 passed。
   - 在原分支 `worktree-83-version-skills` 上接着修；修完重跑 `make check` 和两道审查。
+- 2026-11-15 claude-code (opus)，退回第 1 轮修复（worktree-83-version-skills：96173d6、b92a89b；PR #84）：
+  - `evals/accept.py`：`skills` 加进 `CHANGED_BY_DESIGN`；旁边注释与模块文档写明 `skills` 是观测用的元数据，由已比较的 `config`/`layers` 和任务决定，旧版没有记录，不参与复用匹配。`REQUIRED` 与 `config`、`layers`、`model`、`sdk_version`、`cli_version` 的比较未改。`docs/setup.md:83` 同步写明。
+  - 回归测试 `tests/test_eval_accept.py::test_reuse_ignores_the_injected_skills_an_old_version_did_not_record`：修复前 "1 failed, 44 passed"（判 `rerun-old`），修复后 "45 passed"；现有测试未改。主会话在分支上复跑 45 passed。
+  - make check（96173d6）：ruff "All checks passed!"，basedpyright "0 errors, 0 warnings, 0 notes"，pytest "2202 passed, 1 skipped, 39 deselected, 10 xfailed"。b92a89b 只改注释：ruff check/format 通过，test_eval_accept 45 passed（全量由 PR CI 跑）。
+  - da-review（Codex）："No actionable correctness issues were found in the diff"。
+  - eng:code-review：Spec 无缺漏、无越权（审查者把 `CHANGED_BY_DESIGN` 改回旧值，新测试 1 failed）；Standards 修于 b92a89b（`CHANGED_BY_DESIGN` 首行注释改成"不参与复用比较的字段"）。不修：`docs/setup.md:83` 句子偏长；测试用 `agent.SKILLS_DIR` 而非 `config.skills_dir`；helper 的 `dialect` 没用 Literal；新旧 `skills` 取值不同的情况没测（按设计同样忽略）。
+- 已知限制（人 2026-11-15 同意接受）：`evals/dab.py:438` 的 DAB version 事件把 Skill 名字记在 `dab.skills`，不是顶层 `version.skills`；网页只读精选运行和开发集 Harbor trial，DAB 只出汇总，不受影响。
+- 合入前核对 Codex GitHub app（PR #84，b92a89b）：P1"`evals/accept.py` 不在 Authority 里"不属实——它读的是 PR 分支上 912d36d 时的旧工单副本；main 上 254d149 已把 `evals/accept.py`、`tests/test_eval_accept.py`、`docs/setup.md` 加进 Authority（第 15 行"退回第 1 轮加（2026-11-15 人定）"）。理由已回复在 PR 上。

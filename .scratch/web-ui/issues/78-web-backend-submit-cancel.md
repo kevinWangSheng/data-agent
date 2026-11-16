@@ -1,10 +1,10 @@
 # 78 — 后端：提交和取消运行
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 77
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5)
+Branch: worktree-78-web-backend-submit-cancel
 
 ## Goal
 
