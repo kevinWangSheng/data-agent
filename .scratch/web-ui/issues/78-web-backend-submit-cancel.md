@@ -1,6 +1,6 @@
 # 78 — 后端：提交和取消运行
 
-Status: in-review
+Status: done
 Blocked by: 77
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -59,7 +59,7 @@ Branch: worktree-78-web-backend-submit-cancel
 - Attempts: 3
 - Review rounds: 4
 - Model spend: $0.0082 (main-session real run, price table; the cancelled run wrote no result, cost unrecorded) (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×2
+- Outcome: accepted after 2 returns (PR #85; CI green; Codex 943358e 1 new P2 recorded as known limit)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -106,3 +106,4 @@ Branch: worktree-78-web-backend-submit-cancel
   - da-review 超时没结论（10 分钟后台上限；上一轮 60 分钟也没结论），改用只读 Fable 审查本轮 diff：无 P1/P2，确认两条新测试修前失败。两条 P3（修前修后行为相同）记为已知限制：链接目标名超过 NAME_MAX 时 `Path.exists` 抛 OSError、提交返回 500；`proj/lnk/../d.duckdb`（`lnk` 指向项目外）能过 `check_layout`（abspath 按字面折叠 `..`），但工作区里没有这份拷贝。
   - eng:code-review：Spec 指出悬空链接测试修前也通过 → 943358e 在 cwd 放同名文件，现在修前失败；无越界。Standards 无硬违规；合并重复的 `is_symlink` 检查、补文档。不修：两条测试的 5 行准备代码重复（只两份）；`ignore` 回调做三件事（仍很短）。
   - 已知限制：链接成环（`models/self -> .`）原来抛 shutil.Error，现在复制约 30 层到 ELOOP 后跳过，工作区会变大。本 PR 退回已满 2 轮，之后的新意见记成已知限制。
+- 2026-11-16 主会话：PR #85 CI 绿。Codex GitHub app 对 943358e 一条新 P2，核实属实，本 PR 已退回满 2 轮，按流程记成已知限制：**有浏览器开着某条运行的 SSE 时，Ctrl+C 停不掉那条运行**。uvicorn 先等活着的响应结束再发 lifespan shutdown，`stream()` 要等运行结束才关，`serve_web` 调 `uvicorn.run(app, host=WEB_HOST, port=port)`（`cli.py:182`）没给 `timeout_graceful_shutdown`，所以 `launcher.shutdown`（`app.py:49`）要等运行跑完才执行，期间继续花模型费；第二次 Ctrl+C 强退不走 cleanup，单独 session 的子进程留下。修法候选：给 `timeout_graceful_shutdown`，或在连接排空前先取消运行。待人定是否开后续工单。
