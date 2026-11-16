@@ -1,6 +1,6 @@
 # 75 — 运行视图模型
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 73, 83
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -52,7 +52,7 @@ Branch: worktree-75-run-view-model
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: returned ×1
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -67,3 +67,8 @@ Branch: worktree-75-run-view-model
 - agent 交主会话的两点（主会话 2026-11-15 定，只是落实已定的规则）：
   1. 守卫与 `unknown` 的区分：守卫自己的拒绝也以 `PreToolUse:<tool> hook error` 开头，验收测试要求它们是 `guard`。按工具区分：落在 Bash、Read、Glob、Grep、Write、Edit（守卫注册的工具，`agent.py:994-1005`）上记 `guard`，其他记 `unknown`。主会话核对：验证者的 `deny_dispatch` 只在 Agent 上（`verifier_v2/hooks.py:361`），`guard_query` 虽然不带 matcher（第 362 行），但只对 `mcp__*` 查询工具生效（第 255 行），所以这个划分是准的。spec 已按此改写。
   2. spec 没写的四个默认（已写进 spec"旧事件文件缺新字段时的退路"）：旧文件"最后一段文本"只在有 `result` 后才算答案；旧文件的 `verifier_dispatch` 配给最近一次还没配上的 Agent 调用；没记录任务类型时，没有 Write/Edit 也没有验证的算查数运行；查数运行的"回答"阶段从答案依据的查询开始。
+- **退回第 1 轮（PR #86 上 Codex GitHub app 的 P2，主会话 2026-11-15 核实属实）**：`parseTable`（`web/src/run-view/model.ts:216`）遇到空行就当表结束；但网关的 `format_rows`（`src/data_agent/mcp_server.py:113`）把空字符串或全空白的值原样写成一行，单列结果里就是空行。例如 `value\n-----\n\nnext\n(2 rows)` 被解析成 0 行，后面的行全丢且不报错。修法：
+  - 表只在 `(n rows)` 那一行结束；之前的空行是数据（单列时是一行空值；多列时按现有规则接到上一行最后一格）。
+  - 没找到 `(n rows)` 行就返回 `null`，保留原文，不猜。
+  - 单元测试（`model.test.ts`）：单列里有空值的行、中间和开头的空值、没有 `(n rows)` 时为 `null`；验收测试不改。
+  - 在原分支 `worktree-75-run-view-model` 上接着修；修完重跑 `make check` 和两道审查。
