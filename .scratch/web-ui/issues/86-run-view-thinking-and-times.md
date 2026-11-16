@@ -1,6 +1,6 @@
 # 86 — 运行视图模型：思考、叙述和时间
 
-Status: in-review
+Status: done
 Blocked by: 75（done）
 Spec: ../spec.md
 Claimed by: Claude Code (claude-opus-5-5), 2026-11-16
@@ -56,7 +56,7 @@ Branch: worktree-86-run-view-thinking-and-times
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review
+- Outcome: accepted (PR #90; CI green, Codex no findings on 6a2c63b)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -70,3 +70,4 @@ Branch: worktree-86-run-view-thinking-and-times
   - 性能（最大夹具，新旧交替各 5 次）：整份 0.42 → 0.49 ms；全部前缀 193 → 207 ms（每帧 0.18 → 0.20 ms），多出约 400 次 `Date.parse`，没做缓存。主会话判定不算明显变差（每帧远低于 16 ms）。
   - 两个 spec 没写的默认，主会话 2026-11-16 认可并写进 spec：第一条事件 `ts` 读不出时所有时间为 `null`；派出的 `startMs` 在 `verifier_start` 之前为 `null`。
   - da-review（Codex）：无意见。eng:code-review：Standards 无硬违规；`summarize` 自己算时间、和新时间函数重复 → 已修（输出不变）；测试夹具加载代码和验收测试重复 → 不修（验收文件不能改）；text/thinking 两行 push 相似 → 不修。Spec：无缺失、无多做；缺 `ts` 的叙述和派出没测 → 已补。6a2c63b 没再审一轮（已用全部前缀比对和 make check 验证）。
+- 2026-11-16 主会话：PR #90 CI 绿，Codex GitHub app 对 6a2c63b 无意见，squash 合并。

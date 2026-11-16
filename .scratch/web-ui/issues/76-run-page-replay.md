@@ -1,9 +1,9 @@
 # 76 — 运行页：三栏布局和回放（读静态文件）
 
 Status: ready-for-agent
-Blocked by: 75（done）, 86
+Blocked by: 75（done）, 86（done）
 Spec: ../spec.md
-Claimed by: claude (opus-5-5, worktree 76-run-page-replay)
+Claimed by: —
 Branch: worktree-76-run-page-replay
 
 ## Goal
