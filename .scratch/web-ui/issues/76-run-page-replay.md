@@ -1,6 +1,6 @@
 # 76 — 运行页：三栏布局和回放（读静态文件）
 
-Status: in-review
+Status: done
 Blocked by: 75（done）, 86（done）
 Spec: ../spec.md
 Claimed by: claude (opus-5-5), 2026-11-16 second attempt
@@ -56,7 +56,7 @@ Branch: worktree-76-run-page-replay
 - Attempts: 2
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review
+- Outcome: accepted (PR #91; CI green, Codex no findings on 3049dcc)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -76,3 +76,4 @@ Branch: worktree-76-run-page-replay
   - da-review（Codex，decfc54）：无意见（第一次 20 分钟超时后重跑）；没审 3049dcc。eng:code-review，3049dcc 修：时间轴直接读事件的 `seq`（spec 不允许）→ 改从视图模型取；在 state updater 里调 `setPlaying`（第一版修法让回放在末尾循环，浏览器检查发现后修好）；`sectionStats` 移到有测试的 helper 旁并补测试；阶段和验证视图对"改动"的定义不一致 → 共用一个；其他小修（section id helper、右栏显示检查名、270 次调用运行的第一屏、过期错误条、标题退路、复制头补全、过时 docstring）。
   - 不修（理由）：几处小的重复条件和 helper（各自局部且短）；`Detail.tsx` 630 行（五个视图共用局部 helper）；工具列表保留 `verify_model_values`（ADR-0009 之前的事件文件还有）；运行切换和基础路径默认运行和 81 重叠，但现在打开三条运行需要，81 可重做；额外快捷键服务 user story 8。
   - 已知：主 JS 包 761 kB（gzip 239 kB），主要是 CodeMirror SQL 解析和 Markdown；Vite 有警告；SQL 排版按需加载。
+- 2026-11-16 主会话：PR #91 CI 绿，Codex GitHub app 对 3049dcc 无意见，squash 合并。
