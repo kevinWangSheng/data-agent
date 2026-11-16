@@ -492,9 +492,8 @@ function summarize(
   found: { version?: RunEvent; task?: RunEvent; status?: RunEvent; result?: RunEvent },
 ): RunSummary {
   const { version, task, status, result } = found
-  const first = events.length ? Date.parse(events[0].ts) : NaN
-  const last = events.length ? Date.parse(events[events.length - 1].ts) : NaN
-  const durationMs = Number.isFinite(last - first) ? last - first : 0
+  const end = events.at(-1)
+  const durationMs = (end ? clockOf(events)(end) : null) ?? 0
 
   let runStatus: RunStatus = 'running'
   if (notes?.cancelled) runStatus = 'cancelled'

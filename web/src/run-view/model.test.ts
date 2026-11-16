@@ -192,6 +192,7 @@ const FIXTURES = join(import.meta.dirname, '../../../tests/fixtures/web')
 
 function loadEvents(dir: string): RunEvent[] {
   const path = join(FIXTURES, dir, 'events.jsonl')
+  // Files over pre-commit's size limit are stored gzipped.
   const text = existsSync(path)
     ? readFileSync(path, 'utf8')
     : gunzipSync(readFileSync(path + '.gz')).toString('utf8')
@@ -338,5 +339,24 @@ describe('dispatch times', () => {
     // seq 307 verifier_dispatch, 308 verifier_start, 366 verifier_end.
     expect(buildRunView(cart.filter((e) => e.seq <= 307)).dispatches[0]).toMatchObject({ startMs: null, endMs: null })
     expect(buildRunView(cart.filter((e) => e.seq <= 320)).dispatches[0]).toMatchObject({ startMs: 307391, endMs: null })
+  })
+})
+
+describe('unknown times', () => {
+  test('a thinking, text, verifier_start or verifier_end event without a readable ts has no time', () => {
+    const ts = '2026-11-15T09:00:00+00:00'
+    const events: RunEvent[] = [
+      version({}),
+      { seq: 1, type: 'thinking', ts: 'later', text: 'Look first.' },
+      { seq: 2, type: 'text', text: 'Checking.' } as unknown as RunEvent,
+      { seq: 3, type: 'tool_start', ts, tool: 'Agent', tool_use_id: 'a', input: {}, parent: null },
+      { seq: 4, type: 'verifier_dispatch', ts, n: 1, models: ['m'], tool_use_id: 'a' },
+      { seq: 5, type: 'verifier_start', ts: '', agent_id: 'v' },
+      { seq: 6, type: 'verifier_end', agent_id: 'v', overall: 'PASS', checks: {} } as unknown as RunEvent,
+    ]
+    const view = buildRunView(events)
+    expect(view.narration.map((n) => n.atMs)).toEqual([null, null])
+    expect(view.dispatches[0]).toMatchObject({ overall: 'PASS', startMs: null, endMs: null })
+    expect(view.summary.durationMs).toBe(0)
   })
 })
