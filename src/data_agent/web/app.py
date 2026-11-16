@@ -5,9 +5,8 @@ app through it); tickets 77 and 78 implement it.
 """
 
 import json
-import subprocess
-from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -15,39 +14,41 @@ import anyio
 from anyio import to_thread
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel
 
 from data_agent.run_config import CONFIG_NAMES
+from data_agent.web.launcher import TASK_TYPES, Launcher, Refused, StartRun
 from data_agent.web.runs import RunsDir
 
-TASK_TYPES = ("query", "dbt")
+# Re-exported: the acceptance tests (ticket 73) import DataSource from this module.
+from data_agent.web.sources import DataSource as DataSource
+
 # How often a stream looks for new events, and how long it stays silent before a keepalive.
 POLL_SECONDS = 0.25
 KEEPALIVE_SECONDS = 15.0
 
 
-@dataclass(frozen=True)
-class DataSource:
-    """A data source the run form offers by name (spec Q38). Exactly one of `duckdb` and
-    `postgres_env` is set; a Postgres connection string stays in the server's environment under
-    that variable and never reaches a browser."""
-
-    name: str
-    duckdb: Path | None = None
-    postgres_env: str | None = None
-    # dbt runs copy this project into their own working directory (spec Q39).
-    dbt_project: Path | None = None
-
-
-StartRun = Callable[[Sequence[str], Path], "subprocess.Popen[bytes]"]
-"""Starts `data-agent run` with the given arguments (those after `data-agent run`) in the given
-working directory and returns the process."""
+class Submit(BaseModel):
+    task: str
+    task_type: str
+    data_source: str
+    config: str
 
 
 def create_app(runs_dir: Path, data_sources: Sequence[DataSource], start_run: StartRun) -> FastAPI:
     """The app serving the runs under `runs_dir` (one subdirectory per run, named by run id, holding
-    its event file) and starting new runs through `start_run`."""
+    its event file) and starting new runs through `start_run`. ValueError when a dbt run could not
+    copy a source's project into its own working directory (`check_layout`)."""
     runs = RunsDir(runs_dir)
-    app = FastAPI(title="data-agent")
+    launcher = Launcher(runs, data_sources, start_run)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        # The server leaves no run it started behind.
+        await to_thread.run_sync(launcher.shutdown)
+
+    app = FastAPI(title="data-agent", lifespan=lifespan)
 
     @app.get("/api/options")
     def options() -> dict[str, list[str]]:
@@ -82,19 +83,43 @@ def create_app(runs_dir: Path, data_sources: Sequence[DataSource], start_run: St
         events = chunk.events if chunk is not None else []
         return JSONResponse({"events": [event for event in events if event["seq"] > after]})
 
+    @app.post("/api/runs", status_code=201)
+    async def submit(body: Submit) -> dict[str, str]:
+        """Starts a run; the data source is named, never given as a connection."""
+        try:
+            run_id = await to_thread.run_sync(
+                launcher.submit, body.task, body.task_type, body.data_source, body.config
+            )
+        except Refused as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+        return {"id": run_id}
+
+    @app.post("/api/runs/{run_id}/cancel")
+    async def cancel(run_id: str) -> dict[str, Any]:
+        """Stops the run; answers with its row as it ended."""
+        try:
+            return await to_thread.run_sync(launcher.cancel, run_id)
+        except Refused as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+
     return app
 
 
 async def stream(runs: RunsDir, run_id: str, cursor: int, request: Request) -> AsyncIterator[str]:
     """SSE after SignalPilot's run stream (docs/research/2026-11-01-upstream-web-ui.md "后端"):
     the backlog after the cursor, then each new event as the run appends it, one frame per event
-    with its `seq` as the frame id; the stream closes once the `result` event is sent. While nothing
-    arrives it sends a comment line now and then, so proxies and browsers keep the connection."""
+    with its `seq` as the frame id; the stream closes once the `result` event is sent, or once a run
+    this server saw exit without one has nothing more to send. While nothing arrives it sends a
+    comment line now and then, so proxies and browsers keep the connection."""
     offset = 0
     idle = 0.0
     while not await request.is_disconnected():
+        # Checked before the read: the record says a run ended only after its process exited.
+        ended = await to_thread.run_sync(runs.ended, run_id)
         chunk = await to_thread.run_sync(runs.read, run_id, offset)
         if chunk is None or not chunk.events:
+            if ended:
+                return
             await anyio.sleep(POLL_SECONDS)
             idle += POLL_SECONDS
             if idle >= KEEPALIVE_SECONDS:

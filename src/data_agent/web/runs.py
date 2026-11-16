@@ -3,10 +3,16 @@
 One subdirectory per run, named by run id, holding the run's append-only JSONL event file. There
 is no index: every listing scans the directory (spec "运行索引"). A reader may catch the writer
 mid-line, so only complete lines (ending in a newline) count as events.
+
+A run this server started also has `web-run.json` (data_agent.web.launcher): its row as submitted,
+with `status` "running" until the process exits, then "cancelled" or "failure" when it exits
+without a `result` event. It lists the run before the event file exists and ends a run that never
+writes its `result`.
 """
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +22,7 @@ from typing import Any
 HEAD_LINES = 8
 # The tail is read back in blocks of this size until it holds the last complete line.
 TAIL_BLOCK = 64 * 1024
+RECORD = "web-run.json"
 
 log = logging.getLogger(__name__)
 
@@ -49,24 +56,60 @@ class RunsDir:
         files = sorted(run_dir.glob("*.jsonl"))
         return files[0] if files else None
 
+    def record(self, run_id: str) -> dict[str, Any] | None:
+        """The server's record of a run it started; None for any other run."""
+        run_dir = self.run_dir(run_id)
+        path = run_dir / RECORD if run_dir is not None else None
+        return json.loads(path.read_text()) if path is not None and path.is_file() else None
+
+    def write_record(self, run_id: str, record: dict[str, Any]) -> None:
+        """Replaces the record whole, so a reader never sees half of it."""
+        path = self.path / run_id / RECORD
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(record))
+        os.replace(tmp, path)
+
+    def ended(self, run_id: str) -> bool:
+        """Whether the server saw its run exit without a `result` event."""
+        record = self.record(run_id)
+        return record is not None and record["status"] != "running"
+
+    def has_result(self, run_id: str) -> bool:
+        """Whether the run has written its `result` event, its last event."""
+        path = self.event_file(run_id)
+        last = last_line(path) if path is not None else None
+        return last is not None and is_result(json.loads(last))
+
     def read(self, run_id: str, offset: int = 0) -> Chunk | None:
         """The run's complete events from byte `offset` on; None before its event file exists."""
         path = self.event_file(run_id)
         return read_from(path, offset) if path is not None else None
 
     def summaries(self) -> list[dict[str, Any]]:
-        """Every run with an event file, newest start first. A file that does not parse as events
-        leaves that one run out (and says so in the log), not the whole list."""
+        """Every run, newest start first. A run whose files do not parse is left out (and the log
+        says so), not the whole list."""
         runs: list[dict[str, Any]] = []
         for entry in self.path.iterdir():
-            event_file = self.event_file(entry.name)
-            if event_file is None:
-                continue
             try:
-                runs.append(summarize_run(entry.name, event_file))
+                summary = self.summary(entry.name)
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
-                log.warning("run %s: unreadable event file %s: %s", entry.name, event_file, exc)
+                log.warning("run %s: unreadable run files: %s", entry.name, exc)
+                continue
+            if summary is not None:
+                runs.append(summary)
         return sorted(runs, key=lambda run: run["started_at"] or "", reverse=True)
+
+    def summary(self, run_id: str) -> dict[str, Any] | None:
+        """The run's row: from its event file when there is one, else from the server's record;
+        None when there is neither (not a run)."""
+        event_file = self.event_file(run_id)
+        record = self.record(run_id)
+        if event_file is None:
+            return record
+        summary = summarize_run(run_id, event_file)
+        if summary["status"] == "running" and record is not None:
+            summary["status"] = record["status"]
+        return summary
 
 
 def read_from(path: Path, offset: int = 0) -> Chunk:
@@ -81,7 +124,7 @@ def read_from(path: Path, offset: int = 0) -> Chunk:
 
 def summarize_run(run_id: str, path: Path) -> dict[str, Any]:
     """A run's row in the list, from its header events and its `result` event. A run without a
-    `result` event is still going (ticket 78 adds `cancelled` for the runs this server stops)."""
+    `result` event is still going (as far as its event file says)."""
     head: list[dict[str, Any]] = []
     with path.open("rb") as file:
         for line in file:
@@ -95,7 +138,7 @@ def summarize_run(run_id: str, path: Path) -> dict[str, Any]:
     first_by_type = {event["type"]: event for event in reversed(head)}
     version = first_by_type.get("version", {})
     task = first_by_type.get("task", {})
-    result = last_event if last_event is not None and last_event.get("type") == "result" else None
+    result = last_event if last_event is not None and is_result(last_event) else None
     started_at: str | None = head[0].get("ts") if head else None
     if result is None:
         status, duration_ms, cost_usd = "running", None, None
@@ -114,6 +157,10 @@ def summarize_run(run_id: str, path: Path) -> dict[str, Any]:
         "duration_ms": duration_ms,
         "cost_usd": cost_usd,
     }
+
+
+def is_result(event: dict[str, Any]) -> bool:
+    return event.get("type") == "result"
 
 
 def last_line(path: Path) -> bytes | None:

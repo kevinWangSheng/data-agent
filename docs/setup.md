@@ -84,6 +84,25 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 命令不查 `--old` 是不是上一次合入的版本，由调用者保证。ADR-0008 的验收就是 `--trials 3`；别的值只用来试跑（如 k=1 的 `runs/dev-2`）。工单 29 之前的 `--out`（dev-2、dev-3）里，续跑删掉的、没写事件文件的 trial 没在 `dropped/` 留下 `result.json`，这种基础设施报错查不出来。
 - 结论：`pass`（退出 0）；`fail`、`rerun-regression`、`rerun-old`（退出 1）。回归题已判退步时，不管旧版能否复用都是 `fail`。
 
+本地网页的后端（工单 77、78）：`uv run data-agent web --runs-dir runs/web [--port 8765] [--data-sources sources.toml]`，只听 `127.0.0.1`。
+
+- 数据源文件只在给了 `--data-sources` 时才读，没有默认路径。不给时表单没有数据源，列出运行、读事件照常，提交运行返回 400。写法（相对路径从文件所在目录算）：
+
+  ```toml
+  [sources.shop]
+  kind = "duckdb"
+  path = "shop.duckdb"
+
+  [sources.warehouse]
+  kind = "postgres"
+  env = "WAREHOUSE_URL"          # 存连接串的环境变量名；连接串本身不写进文件
+  dbt_project = "warehouse_dbt"  # 可选；dbt 类型的任务要求有
+  ```
+
+- 启动时校验：`kind` 只能是 `duckdb` 或 `postgres`；`duckdb` 要 `path`，`postgres` 要 `env`（必须是变量名，像连接串的拒绝）；`dbt_project` 给了就要存在；未知的表和键都拒绝；配了 `dbt_project` 的 DuckDB 数据源，库文件的路径必须写在 `dbt_project` 里面（按写的路径算，不跟符号链接：项目里的链接或链接目录下的文件都算在里面）；`--runs-dir` 和任何一个 `dbt_project` 互相包含（含相同）时拒绝启动，否则复制项目时会把工作目录复制进自己。提交时再查 DuckDB 文件存在、环境变量已设置。
+- 每条运行 `<runs-dir>/<id>/` 放事件文件，`<runs-dir>/<id>/workspace/` 是工作目录：查数运行是空目录，DuckDB 原地只读；dbt 运行复制 `dbt_project`（不含 `target/`、`logs/`；符号链接复制成它指向的内容），DuckDB 文件一起复制，留在原相对位置（`profiles.yml` 用相对路径才会指向副本）。复制会跟进目录链接，所以项目里有指向 `--runs-dir`（或它的上级、下级）的目录链接时，这次提交返回 400，不复制。
+- 同时只跑一条，再提交返回 409。取消只对本服务启动、还在跑的那条有效：按记录的进程号发 SIGTERM（运行在自己的进程组里，连同它起的工具进程），10 秒不退再 SIGKILL；返回运行结束时的概况。服务给自己启动的运行写 `<id>/web-run.json`（提交时的概况）；进程退出时组里剩下的进程一并停掉，没写 `result` 事件的记成"已取消"（本服务停的）或"失败"。服务正常退出时同样停掉在跑的那条。已知限制：服务被强杀时没机会记，那条运行一直显示运行中。
+
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。
 
 ## 以后才要
