@@ -179,22 +179,92 @@ def test_a_postgres_dbt_run_copies_the_project_and_names_only_the_variable(
     assert "pa55word" not in " ".join(args)
 
 
-def test_a_run_that_exits_before_writing_events_lists_as_failed(
+def test_a_symlink_in_the_project_is_copied_as_its_target(
     tmp_path: Path, recorder: Recorder
 ) -> None:
+    """A write through the workspace never reaches the original project."""
+    project = dbt_project(tmp_path, with_db=True)
+    outside = tmp_path / "shared.sql"
+    outside.write_text("select 2\n")
+    (project / "models" / "linked.sql").symlink_to(outside)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    source = DataSource(name="shop", duckdb=project / "shop.duckdb", dbt_project=project)
+    with TestClient(create_app(runs_dir, [source], recorder)) as client:
+        assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
+    [(_, cwd)] = recorder.calls
+    linked = cwd / "models" / "linked.sql"
+    assert not linked.is_symlink()
+    assert linked.read_text() == "select 2\n"
+
+
+def test_a_duckdb_file_under_target_is_still_copied(tmp_path: Path, recorder: Recorder) -> None:
+    project = dbt_project(tmp_path, with_db=False)
+    shop = project / "target" / "shop.duckdb"
+    shop.write_bytes(b"db")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    source = DataSource(name="shop", duckdb=shop, dbt_project=project)
+    with TestClient(create_app(runs_dir, [source], recorder)) as client:
+        assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
+    [(args, cwd)] = recorder.calls
+    assert Path(flag(args, "--duckdb")) == cwd / "target" / "shop.duckdb"
+    assert (cwd / "target" / "shop.duckdb").read_bytes() == b"db"
+    assert not (cwd / "target" / "x.txt").exists()
+
+
+def statuses(client: TestClient) -> dict[str, str]:
+    return {run["id"]: run["status"] for run in client.get("/api/runs").json()}
+
+
+def test_runs_that_exit_without_a_result_list_as_failed_for_good(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    """One exits before writing any event (a config error), one after writing some (a crash);
+    both stay listed as failures after later runs, and their streams close."""
     shop = tmp_path / "shop.duckdb"
     shop.write_bytes(b"")
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     with TestClient(create_app(runs_dir, [DataSource(name="shop", duckdb=shop)], recorder)) as c:
-        run_id = c.post("/api/runs", json=body()).json()["id"]
-        recorder.processes[0].wait(timeout=TIMEOUT)
-        [listed] = c.get("/api/runs").json()
-        assert (listed["id"], listed["status"], listed["task"]) == (run_id, "failure", "t")
-        # It no longer blocks the next run.
-        assert c.post("/api/runs", json=body()).status_code == 201
+        recorder.command = [sys.executable, "-c", "raise SystemExit(2)"]
+        eventless = c.post("/api/runs", json=body()).json()["id"]
+        wait_until(lambda: statuses(c).get(eventless) == "failure")
+        assert c.get("/api/runs").json()[0]["task"] == "t"
+
+        recorder.command = [sys.executable, "-c", WRITES_EVENTS_THEN_CRASHES]
+        crashed = c.post("/api/runs", json=body()).json()["id"]
+        wait_until(lambda: statuses(c).get(crashed) == "failure")
+        assert statuses(c) == {eventless: "failure", crashed: "failure"}
+        headers = {"Accept": "text/event-stream"}
+        for run_id, expected in ((crashed, ["id: 0", "id: 1"]), (eventless, [])):
+            with c.stream("GET", f"/api/runs/{run_id}/events", headers=headers) as response:
+                frames = [line for line in response.iter_lines() if line.startswith("id:")]
+            assert frames == expected
 
 
+def event_lines(*types: str) -> str:
+    """Event lines as Python source text; a `result` is a successful one."""
+    fields = {"result": ', "subtype": "success", "is_error": false'}
+    return "".join(
+        f'{{"seq": {seq}, "type": "{type_}", "ts": "2026-11-15T09:00:0{seq}+00:00"'
+        f"{fields.get(type_, '')}}}\\n"
+        for seq, type_ in enumerate(types)
+    )
+
+
+# Stand-ins for `data-agent run`, started in the run's workspace; the event file goes next to it.
+WRITES_EVENTS_THEN_CRASHES = f"""
+open("../run.jsonl", "w").write('{event_lines("version", "status")}')
+raise SystemExit(1)
+"""
+FINISHES_THEN_IGNORES_SIGTERM = f"""
+import os, signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+open("../run.jsonl", "w").write('{event_lines("version", "result")}')
+open("ready", "w").close()
+time.sleep(120)
+"""
 # The run starts a tool that ignores SIGTERM and says its pid once it does.
 STUBBORN_CHILD = """
 import os, signal, time
@@ -205,10 +275,35 @@ os.rename("child.pid.tmp", "child.pid")
 time.sleep(120)
 """
 SPAWNS_A_CHILD = f"""
-import subprocess, sys, time
+import os, subprocess, sys, time
 subprocess.Popen([sys.executable, "-c", {STUBBORN_CHILD!r}])
 time.sleep(120)
 """
+SPAWNS_A_CHILD_AND_EXITS = f"""
+import os, subprocess, sys, time
+subprocess.Popen([sys.executable, "-c", {STUBBORN_CHILD!r}])
+while not os.path.exists("child.pid"):
+    time.sleep(0.05)
+"""
+
+
+def test_a_run_that_finished_just_before_the_cancel_keeps_its_result(
+    tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(launcher, "STOP_GRACE_SECONDS", 1.0)
+    recorder.command = [sys.executable, "-c", FINISHES_THEN_IGNORES_SIGTERM]
+    shop = tmp_path / "shop.duckdb"
+    shop.write_bytes(b"")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    with TestClient(create_app(runs_dir, [DataSource(name="shop", duckdb=shop)], recorder)) as c:
+        run_id = c.post("/api/runs", json=body()).json()["id"]
+        [(_, cwd)] = recorder.calls
+        wait_until((cwd / "ready").is_file)
+        response = c.post(f"/api/runs/{run_id}/cancel")
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "success"
+        assert statuses(c) == {run_id: "success"}
 
 
 def alive(pid: int) -> bool:
@@ -220,33 +315,42 @@ def alive(pid: int) -> bool:
     return True
 
 
-@pytest.mark.parametrize("how", ["cancel", "shutdown"])
-def test_stopping_a_run_in_its_own_session_stops_the_processes_it_started(
-    tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch, how: str
+@pytest.mark.parametrize(
+    ("how", "status"), [("cancel", "cancelled"), ("shutdown", "cancelled"), ("exit", "failure")]
+)
+def test_a_run_in_its_own_session_leaves_no_process_behind(
+    tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch, how: str, status: str
 ) -> None:
-    """`data-agent web` starts each run in a new session; stopping it reaches the run's own
-    process group, so the tools the run started stop too, one ignoring SIGTERM included, before
-    the cancel answers or the server exits; and the run lists cancelled."""
+    """`data-agent web` starts each run in a new session. Stopping it (cancel, server shutdown)
+    reaches the run's own process group, so the tools it started stop too, one ignoring SIGTERM
+    included, before the cancel answers or the server exits; a run that exits on its own has what
+    it left running stopped the same way."""
     monkeypatch.setattr(launcher, "STOP_GRACE_SECONDS", 1.0)
-    recorder.command = [sys.executable, "-c", SPAWNS_A_CHILD]
+    script = SPAWNS_A_CHILD_AND_EXITS if how == "exit" else SPAWNS_A_CHILD
+    recorder.command = [sys.executable, "-c", script]
     recorder.new_session = True
     shop = tmp_path / "shop.duckdb"
     shop.write_bytes(b"")
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    app = create_app(runs_dir, [DataSource(name="shop", duckdb=shop)], recorder)
-    with TestClient(app) as client:
+    sources = [DataSource(name="shop", duckdb=shop)]
+    with TestClient(create_app(runs_dir, sources, recorder)) as client:
         run_id = client.post("/api/runs", json=body()).json()["id"]
         [(_, cwd)] = recorder.calls
         pid_file = cwd / "child.pid"
         wait_until(pid_file.is_file)
         child = int(pid_file.read_text())
         if how == "cancel":
-            assert client.post(f"/api/runs/{run_id}/cancel").status_code == 200
+            response = client.post(f"/api/runs/{run_id}/cancel")
+            assert response.status_code == 200
+            assert response.json()["status"] == "cancelled"
             assert not alive(child)
+        if how == "exit":
+            wait_until(lambda: not alive(child))
     assert recorder.processes[0].poll() is not None
     assert not alive(child)
-    assert (runs_dir / run_id / "cancelled").is_file()
+    with TestClient(create_app(runs_dir, sources, recorder)) as client:
+        assert statuses(client) == {run_id: status}
 
 
 def test_the_web_command_refuses_a_bad_data_source_file(tmp_path: Path) -> None:
@@ -269,21 +373,3 @@ def test_the_web_command_refuses_a_bad_data_source_file(tmp_path: Path) -> None:
     )
     assert done.returncode != 0
     assert "kind" in done.stderr
-
-
-def test_a_stream_of_a_cancelled_run_closes_once_its_events_are_sent(
-    tmp_path: Path, recorder: Recorder
-) -> None:
-    run = tmp_path / "r1"
-    run.mkdir()
-    (run / "run.jsonl").write_text(
-        '{"seq": 0, "type": "version", "ts": "2026-11-15T09:00:00+00:00", "config": "full"}\n'
-        '{"seq": 1, "type": "status", "ts": "2026-11-15T09:00:01+00:00", "state": "started"}\n'
-    )
-    (run / "cancelled").touch()
-    with TestClient(create_app(tmp_path, [], recorder)) as client:
-        headers = {"Accept": "text/event-stream"}
-        with client.stream("GET", "/api/runs/r1/events", headers=headers) as response:
-            frames = [line for line in response.iter_lines() if line.startswith("id:")]
-        assert frames == ["id: 0", "id: 1"]
-        assert client.get("/api/runs").json()[0]["status"] == "cancelled"

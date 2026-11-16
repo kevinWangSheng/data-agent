@@ -58,8 +58,7 @@ def create_app(runs_dir: Path, data_sources: Sequence[DataSource], start_run: St
 
     @app.get("/api/runs")
     async def list_runs() -> list[dict[str, Any]]:
-        listed = await to_thread.run_sync(runs.summaries)
-        return await to_thread.run_sync(launcher.unwritten) + listed
+        return await to_thread.run_sync(runs.summaries)
 
     @app.get("/api/runs/{run_id}/events", response_model=None)
     async def read_events(
@@ -93,12 +92,12 @@ def create_app(runs_dir: Path, data_sources: Sequence[DataSource], start_run: St
         return {"id": run_id}
 
     @app.post("/api/runs/{run_id}/cancel")
-    async def cancel(run_id: str) -> dict[str, str]:
+    async def cancel(run_id: str) -> dict[str, Any]:
+        """Stops the run; answers with its row as it ended."""
         try:
-            await to_thread.run_sync(launcher.cancel, run_id)
+            return await to_thread.run_sync(launcher.cancel, run_id)
         except Refused as exc:
             raise HTTPException(exc.status, exc.detail) from exc
-        return {"id": run_id, "status": "cancelled"}
 
     return app
 
@@ -107,16 +106,16 @@ async def stream(runs: RunsDir, run_id: str, cursor: int, request: Request) -> A
     """SSE after SignalPilot's run stream (docs/research/2026-11-01-upstream-web-ui.md "后端"):
     the backlog after the cursor, then each new event as the run appends it, one frame per event
     with its `seq` as the frame id; the stream closes once the `result` event is sent, or once a run
-    this server cancelled has nothing more to send. While nothing
-    arrives it sends a comment line now and then, so proxies and browsers keep the connection."""
+    this server saw exit without one has nothing more to send. While nothing arrives it sends a
+    comment line now and then, so proxies and browsers keep the connection."""
     offset = 0
     idle = 0.0
     while not await request.is_disconnected():
-        # Read before the events: a cancelled run writes nothing after its marker.
-        cancelled = await to_thread.run_sync(runs.cancelled, run_id)
+        # Checked before the read: the record says a run ended only after its process exited.
+        ended = await to_thread.run_sync(runs.ended, run_id)
         chunk = await to_thread.run_sync(runs.read, run_id, offset)
         if chunk is None or not chunk.events:
-            if cancelled:
+            if ended:
                 return
             await anyio.sleep(POLL_SECONDS)
             idle += POLL_SECONDS

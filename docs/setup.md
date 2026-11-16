@@ -100,8 +100,8 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
   ```
 
 - 启动时校验：`kind` 只能是 `duckdb` 或 `postgres`；`duckdb` 要 `path`，`postgres` 要 `env`（必须是变量名，像连接串的拒绝）；`dbt_project` 给了就要存在；未知的表和键都拒绝。提交时再查 DuckDB 文件存在、环境变量已设置。
-- 每条运行 `<runs-dir>/<id>/` 放事件文件，`<runs-dir>/<id>/workspace/` 是工作目录：查数运行是空目录，DuckDB 原地只读；dbt 运行复制 `dbt_project`（不含 `target/`、`logs/`），DuckDB 文件一起复制（在项目里的随项目复制，在项目外的复制到工作目录根下；`profiles.yml` 用相对路径才会指向副本）。
-- 同时只跑一条，再提交返回 409。取消只对本服务启动、还在跑的那条有效：按记录的进程号发 SIGTERM（运行在自己的进程组里，连同它起的工具进程），10 秒不退再 SIGKILL；没写 `result` 事件就退出的，在运行目录写一个 `cancelled` 文件，列表显示"已取消"。服务正常退出时同样停掉在跑的那条。
+- 每条运行 `<runs-dir>/<id>/` 放事件文件，`<runs-dir>/<id>/workspace/` 是工作目录：查数运行是空目录，DuckDB 原地只读；dbt 运行复制 `dbt_project`（不含 `target/`、`logs/`；符号链接复制成它指向的内容），DuckDB 文件一起复制（在项目里的留在原相对位置，在项目外的复制到工作目录根下；`profiles.yml` 用相对路径才会指向副本）。
+- 同时只跑一条，再提交返回 409。取消只对本服务启动、还在跑的那条有效：按记录的进程号发 SIGTERM（运行在自己的进程组里，连同它起的工具进程），10 秒不退再 SIGKILL；返回运行结束时的概况。服务给自己启动的运行写 `<id>/web-run.json`（提交时的概况）；进程退出时组里剩下的进程一并停掉，没写 `result` 事件的记成"已取消"（本服务停的）或"失败"。服务正常退出时同样停掉在跑的那条。已知限制：服务被强杀时没机会记，那条运行一直显示运行中。
 
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。
 

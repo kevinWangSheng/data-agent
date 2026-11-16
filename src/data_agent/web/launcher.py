@@ -6,8 +6,10 @@ source's dbt project (without `target/` and `logs/`) for a dbt run, with the Duc
 too. A query run reads the DuckDB file in place through the read-only gateway.
 
 Cancelling signals only the process this server started, by its recorded pid (and its own process
-group when it leads one). A run that exits without writing its `result` event after that is marked
-cancelled with a file next to its event file, which the run list and the event stream read.
+group when it leads one). When a run's process exits, whatever it left running in its group is
+stopped too, and a run without a `result` event gets status "cancelled" (when this server stopped
+it) or "failure" in its `web-run.json` record (data_agent.web.runs), which the run list and the
+event stream read.
 """
 
 import os
@@ -24,13 +26,15 @@ from pathlib import Path
 from typing import Any
 
 from data_agent.run_config import CONFIG_NAMES
-from data_agent.web.runs import CANCELLED_MARKER, RunsDir
+from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource
 
 TASK_TYPES = ("query", "dbt")
-# How long a cancelled run has to exit after SIGTERM before it gets SIGKILL.
+# How long a run being stopped has to exit after SIGTERM before it gets SIGKILL.
 STOP_GRACE_SECONDS = 10.0
 WORKSPACE = "workspace"
+# A dbt run's copy of the project leaves out the build output and logs of earlier runs.
+NOT_COPIED = ("target", "logs")
 
 StartRun = Callable[[Sequence[str], Path], "subprocess.Popen[bytes]"]
 """Starts `data-agent run` with the given arguments (those after `data-agent run`) in the given
@@ -50,8 +54,12 @@ class Refused(Exception):
 class Running:
     run_id: str
     process: "subprocess.Popen[bytes]"
-    # What was submitted, for the run list until the run writes its event file.
-    summary: dict[str, Any]
+    # Whether the run leads its own process group, which is then signalled as a whole.
+    group: bool
+    record: dict[str, Any]
+    cancelling: bool = False
+    # Set once the server has seen the run exit and cleaned up after it (`finish`).
+    done: bool = False
 
 
 class Launcher:
@@ -66,13 +74,26 @@ class Launcher:
         """Checks the request, prepares the run's directories and starts it; returns its id."""
         source = self.check(task, task_type, source_name, config)
         with self.lock:
-            if self.current is not None and self.current.process.poll() is None:
-                raise Refused(409, f"run {self.current.run_id} is still going; one run at a time")
+            current = self.current
+            if current is not None and not current.done:
+                if current.process.poll() is None:
+                    raise Refused(409, f"run {current.run_id} is still going; one run at a time")
+                self.finish(current)
             started_at = datetime.now(UTC)
             run_id = new_run_id(started_at)
             run_dir = self.runs.path / run_id
             workspace = run_dir / WORKSPACE
             run_dir.mkdir()
+            record: dict[str, Any] = {
+                "id": run_id,
+                "task": task,
+                "task_type": task_type,
+                "config": config,
+                "status": "running",
+                "started_at": started_at.isoformat(),
+                "duration_ms": None,
+                "cost_usd": None,
+            }
             try:
                 database = prepare_workspace(workspace, source, task_type)
                 args = [
@@ -89,33 +110,15 @@ class Launcher:
                     "--data-source-name",
                     source.name,
                 ]
+                self.runs.write_record(run_id, record)
                 process = self.start_run(args, workspace)
             except Exception:
                 shutil.rmtree(run_dir, ignore_errors=True)
                 raise
-            summary = {
-                "id": run_id,
-                "task": task,
-                "task_type": task_type,
-                "config": config,
-                "status": "running",
-                "started_at": started_at.isoformat(),
-                "duration_ms": None,
-                "cost_usd": None,
-            }
-            self.current = Running(run_id, process, summary)
+            running = Running(run_id, process, leads_its_group(process), record)
+            self.current = running
+            threading.Thread(target=self.watch, args=(running,), daemon=True).start()
             return run_id
-
-    def unwritten(self) -> list[dict[str, Any]]:
-        """The started run's row while it has not written its event file yet (the run list reads
-        event files, so it would leave the run out)."""
-        current = self.current
-        if current is None or self.runs.event_file(current.run_id) is not None:
-            return []
-        if current.process.poll() is None:
-            return [current.summary]
-        status = "cancelled" if self.runs.cancelled(current.run_id) else "failure"
-        return [{**current.summary, "status": status}]
 
     def check(self, task: str, task_type: str, source_name: str, config: str) -> DataSource:
         if not self.sources:
@@ -148,34 +151,61 @@ class Launcher:
             )
         return source
 
-    def cancel(self, run_id: str) -> None:
-        """Stops the run if it is the one this server started and it is still going."""
+    def cancel(self, run_id: str) -> dict[str, Any]:
+        """Stops the run if it is the one this server started and it is still going; returns its
+        row as it ended (a run that wrote its `result` just before the signal keeps that)."""
         with self.lock:
             current = self.current
             if current is None or current.run_id != run_id or current.process.poll() is not None:
                 raise Refused(409, f"run {run_id} is not a run this server is running")
+            current.cancelling = True
             self.stop(current)
+            self.finish(current)
+            summary = self.runs.summary(run_id)
+            assert summary is not None, "the run's record is written at submit"
+            return summary
 
     def shutdown(self) -> None:
-        """Stops the running run, if any, so the server leaves no process behind."""
+        """Stops the run if it is still going, and whatever it left running, so the server leaves
+        no process behind."""
         with self.lock:
-            if self.current is not None and self.current.process.poll() is None:
-                self.stop(self.current)
+            current = self.current
+            if current is None or current.done:
+                return
+            if current.process.poll() is None:
+                current.cancelling = True
+                self.stop(current)
+            self.finish(current)
+
+    def watch(self, running: Running) -> None:
+        """Waits for the run to exit on its own, then finishes it."""
+        running.process.wait()
+        with self.lock:
+            self.finish(running)
+
+    def finish(self, running: Running) -> None:
+        """After the run's process exits: stops what it left running in its group, and records
+        how it ended when it wrote no `result` event. Runs once per run."""
+        if running.done:
+            return
+        if running.group and group_alive(running.process.pid):
+            self.stop(running)
+        if not self.runs.has_result(running.run_id):
+            status = "cancelled" if running.cancelling else "failure"
+            self.runs.write_record(running.run_id, {**running.record, "status": status})
+        running.done = True
 
     def stop(self, running: Running) -> None:
         """SIGTERM, then SIGKILL for whatever is left after the grace period. A run that leads its
         own process group (`data-agent web` starts runs in a new session) is signalled as that
         group, and is stopped only once every process in it has exited, so the tools it started
         (the model CLI, the MCP server, dbt) stop with it."""
-        process = running.process
-        group = leads_its_group(process)
+        process, group = running.process, running.group
         deadline = time.monotonic() + STOP_GRACE_SECONDS
         signal_run(process, group, signal.SIGTERM)
         if not wait_stopped(process, group, deadline):
             signal_run(process, group, signal.SIGKILL)
             wait_stopped(process, group, time.monotonic() + STOP_GRACE_SECONDS)
-        if not self.runs.has_result(running.run_id):
-            (self.runs.path / running.run_id / CANCELLED_MARKER).touch()
 
 
 def leads_its_group(process: "subprocess.Popen[bytes]") -> bool:
@@ -237,19 +267,24 @@ def prepare_workspace(workspace: Path, source: DataSource, task_type: str) -> li
         assert source.duckdb is not None
         return ["--duckdb", str(source.duckdb)]
     project = source.dbt_project
+    # Link targets are copied, so no write in the workspace reaches the original project.
     shutil.copytree(
         project,
         workspace,
-        symlinks=True,
-        ignore=lambda directory, _: ["target", "logs"] if Path(directory) == project else [],
+        ignore=lambda directory, _: list(NOT_COPIED) if Path(directory) == project else [],
+        ignore_dangling_symlinks=True,
     )
     if source.postgres_env is not None:
         return ["--postgres-env", source.postgres_env]
     assert source.duckdb is not None
-    # A DuckDB file inside the project was copied with it; one outside goes next to the project.
+    # A DuckDB file inside the project keeps its place in the copy; one outside goes to the
+    # workspace's top.
     try:
-        copy = workspace / source.duckdb.resolve().relative_to(project.resolve())
+        inside: Path | None = source.duckdb.resolve().relative_to(project.resolve())
     except ValueError:
-        copy = workspace / source.duckdb.name
+        inside = None
+    copy = workspace / (inside if inside is not None else source.duckdb.name)
+    if inside is None or inside.parts[0] in NOT_COPIED:
+        copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source.duckdb, copy)
     return ["--duckdb", str(copy)]
