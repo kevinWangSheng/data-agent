@@ -1,6 +1,6 @@
 # 85 — 网页服务停止时取消正在跑的运行，即使有浏览器开着 SSE
 
-Status: in-review
+Status: done
 Blocked by: 78（done）
 Spec: ../spec.md
 Claimed by: claude (opus-5-5), 2026-11-16
@@ -47,7 +47,7 @@ Ctrl+C（SIGINT）或 SIGTERM 停 `data-agent web` 时，它启动的运行一�
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review
+- Outcome: accepted (PR #89; CI green, Codex no findings on 0bf080c)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -61,3 +61,4 @@ Ctrl+C（SIGINT）或 SIGTERM 停 `data-agent web` 时，它启动的运行一�
   - da-review（Codex）：无意见。eng:code-review：Standards 无硬违规，Spec 无阻塞；0bf080c 修：`cli.py` 注释说错了"其他响应远在上限内结束"、删多余的 `took < EXIT_SECONDS` 断言、改名 `tool_pid`、`serving`。
   - 不修：`3` 没提成 `WEB_HOST` 旁的命名常量（Authority 只许动 `serve_web`）；测试 helper 和其他 web 测试文件重复（各文件都各留一份，没有共用模块）；测试里的小重复。
   - 已知限制：3 秒宽限内第二次 Ctrl+C 会让 uvicorn `force_exit`、跳过 cleanup、运行留下（原来就有，窗口从"直到运行结束"缩到约 3 秒）；超时时 uvicorn 对每个开着的流打一条 `CancelledError` 的 ERROR 日志（设计行为）；被上限截断的 submit 若还在 `check()`（拿锁之前）而 cleanup 已结束，可能在 cleanup 之后起一条运行，`check()` 只查文件和环境变量，实际极少。
+- 2026-11-16 主会话：PR #89 CI 绿，Codex GitHub app 对 0bf080c 无意见，squash 合并。
