@@ -77,6 +77,17 @@ describe('result tables', () => {
     expect(step.result).toBe('v\n-\na\n\nb')
   })
 
+  test('a value that reads like the row count line is data', () => {
+    const step = buildRunView(queryCall('{"result": "v\\n-\\n(9 rows)\\nb\\n(2 rows)"}')).steps[0]
+    expect(step.table).toEqual({ columns: ['v'], rows: [['(9 rows)'], ['b']] })
+  })
+
+  test('a display cut short ends at its row count line before the note', () => {
+    const text = 'v\\n-\\na\\nb\\n(5 rows)\\n[INCOMPLETE DISPLAY] 5 rows total; only the first 2 are shown above.'
+    const step = buildRunView(queryCall(`{"result": "${text}"}`)).steps[0]
+    expect(step.table).toEqual({ columns: ['v'], rows: [['a'], ['b']] })
+  })
+
   test('text with no dash rule is no table', () => {
     const step = buildRunView(queryCall('{"result": "0 duplicate keys"}')).steps[0]
     expect(step.table).toBeNull()

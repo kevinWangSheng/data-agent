@@ -204,18 +204,29 @@ function resultText(content: unknown): string {
   return content
 }
 
+const ROW_COUNT = /^\((\d+) rows\)$/
+const INCOMPLETE_DISPLAY = '[INCOMPLETE DISPLAY]'
+
 /** The gateway's text table: a `a | b` header, a dash rule, rows, then `(n rows)` and notes
  *  (`format_rows`, `mcp_server.py`). Only the `(n rows)` line ends the table: a blank line before
- *  it is data, since the gateway writes empty values as they are. A line with fewer cells than the
- *  header continues the last cell of the row above it. No `(n rows)` line: no table. */
+ *  it is data, since the gateway writes empty values as they are. It is that line when `n` is the
+ *  number of rows above it, or more with the `[INCOMPLETE DISPLAY]` note after it; otherwise a
+ *  value that reads the same. A line with fewer cells than the header continues the last cell of
+ *  the row above it. No `(n rows)` line: no table. */
 function parseTable(text: string): ResultTable | null {
   const lines = text.split('\n')
   if (lines.length < 2 || !/^-+$/.test(lines[1].trim())) return null
   const columns = lines[0].split(' | ')
   const split = (line: string) => (columns.length === 1 ? [line] : line.split(' | '))
   const rows: string[][] = []
-  for (const line of lines.slice(2)) {
-    if (/^\(\d+ rows?\b/.test(line)) return { columns, rows }
+  for (let i = 2; i < lines.length; i++) {
+    const line = lines[i]
+    const count = ROW_COUNT.exec(line)
+    if (count) {
+      const n = Number(count[1])
+      const cut = n > rows.length && (lines[i + 1] ?? '').startsWith(INCOMPLETE_DISPLAY)
+      if (n === rows.length || cut) return { columns, rows }
+    }
     const cells = split(line)
     if (cells.length === columns.length) rows.push(cells)
     else if (cells.length < columns.length && rows.length > 0) {
@@ -464,7 +475,7 @@ function summarize(
   }
 }
 
-/** The markedAnswer answer; in an old file the last text of a finished run, resting on the last
+/** The marked answer (the `answer` event); in an old file the last text of a finished run, resting on the last
  *  successful query of the main agent before it. */
 function finalAnswer(
   steps: Step[],
