@@ -26,8 +26,10 @@ External interface fixed here:
   failure detail of that trial printed (ADR-0004).
 - A featured run with a `task_id` gets the same check as a trial: only a task in the manifest's
   dev set is let through; a holdout task, or one the manifest does not list, is refused. On any
-  refusal (this one or a run with neither field) the exit is non-zero, nothing is exported, and
-  stdout and stderr give only counts: no task id, failure reason or result.
+  refusal (this one or a run with neither field; `local_data: false` counts as not having it) the
+  exit is non-zero, nothing is exported, and stdout and stderr give only counts: no task id, run
+  id, run directory, failure reason or result. A run directory is often named after its task, so
+  its id and path count as task ids.
 """
 
 import json
@@ -293,7 +295,8 @@ def write_local_run(root: Path, run_id: str) -> Path:
     )
 
 
-# What a refused featured run must not print: its failure reason and its result.
+# What a refused featured run must not print, besides its id, directory and task id: its failure
+# reason and its result.
 REFUSED_REASON = "refused-featured-reason-" + "v7k"
 REFUSED_RESULT = "refused-featured-grade-" + "m2w"
 REFUSED_NOTES = {
@@ -302,11 +305,13 @@ REFUSED_NOTES = {
 }
 
 
-def assert_refused(proc: subprocess.CompletedProcess[str], out: Path, *hidden: str) -> None:
+def assert_refused(
+    proc: subprocess.CompletedProcess[str], out: Path, refused: Path, *hidden: str
+) -> None:
     assert proc.returncode != 0
     # Nothing exported: no index, no runs, no other file.
     assert not out.exists() or not any(p.is_file() for p in out.rglob("*"))
-    for text in (REFUSED_REASON, REFUSED_RESULT, *hidden):
+    for text in (REFUSED_REASON, REFUSED_RESULT, refused.name, str(refused), *hidden):
         assert text not in proc.stdout + proc.stderr, f"{text} was printed"
 
 
@@ -361,7 +366,7 @@ def test_featured_run_of_a_holdout_task_is_refused(tmp_path: Path) -> None:
     proc = export(
         "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(held)
     )
-    assert_refused(proc, out, "dbt-delta")
+    assert_refused(proc, out, held, "dbt-delta")
 
     # `local_data: true` does not let a run with a holdout `task_id` through.
     both = write_task_run(
@@ -376,7 +381,7 @@ def test_featured_run_of_a_holdout_task_is_refused(tmp_path: Path) -> None:
     proc = export(
         "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(both)
     )
-    assert_refused(proc, out, "dbt-delta")
+    assert_refused(proc, out, both, "dbt-delta")
 
 
 def test_featured_run_of_an_unlisted_task_is_refused(tmp_path: Path) -> None:
@@ -394,7 +399,7 @@ def test_featured_run_of_an_unlisted_task_is_refused(tmp_path: Path) -> None:
     proc = export(
         "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(unlisted)
     )
-    assert_refused(proc, out, "dbt-omega")
+    assert_refused(proc, out, unlisted, "dbt-omega")
 
 
 def test_featured_run_with_neither_task_id_nor_local_data_is_refused(tmp_path: Path) -> None:
@@ -415,4 +420,17 @@ def test_featured_run_with_neither_task_id_nor_local_data_is_refused(tmp_path: P
     proc = export(
         "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(unmarked)
     )
-    assert_refused(proc, out)
+    assert_refused(proc, out, unmarked)
+
+    # `local_data: false` is the same as leaving it out.
+    unlocal = write_featured(
+        tmp_path / "featured",
+        "unlocal-run",
+        {"title": "t", "local_data": False, **REFUSED_NOTES},
+        read_events(NEW_FIELDS),
+    )
+    out = tmp_path / "site-false"
+    proc = export(
+        "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(unlocal)
+    )
+    assert_refused(proc, out, unlocal)
