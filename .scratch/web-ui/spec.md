@@ -140,7 +140,11 @@
 - 没有 `task` 事件：任务等信息读运行说明；都没有就显示"未记录"。
 - 检查没有名字：显示编号。
 - 没有最终答案标记：取最后一段文本；依据的查询取它之前最后一条成功的查询。
-- 没有 `rejected_by`（新旧文件都适用，2026-11-15 定）：按结果里的文字分辨——守卫或只读网关的措辞给对应种类；hook 报错（如验证者自己的 `deny_dispatch`、`deny_query`，结果以 `PreToolUse:<tool> hook error` 开头）记 `unknown`，只标"被拒绝"；其他都不算被拒绝。验证者的 hook 是流程规则，不是安全机制，事件里不另记种类。
+- 没有 `rejected_by`（新旧文件都适用，2026-11-15 定）：按结果里的文字和工具分辨——结果含 `Query blocked by the read-only gateway:` 记 `gateway`；`PreToolUse:<tool> hook error` 落在守卫注册的工具上（Bash、Read、Glob、Grep、Write、Edit，`agent.py:994-1005`）记 `guard`；落在其他工具上（验证者自己的 `deny_dispatch` 在 Agent、`deny_query` 在 MCP 查询工具）记 `unknown`，只标"被拒绝"；其他都不算被拒绝。按工具不按守卫的提示文字分，因为那段文字改过多次（工单 41、53）。验证者的 hook 是流程规则，不是安全机制，事件里不另记种类。
+- 旧文件没有 `answer` 事件时，"最后一段文本"只在有 `result` 事件之后才算最终答案，免得运行中把最新的叙述当成答案。
+- 旧文件的 `verifier_dispatch` 配给最近一次还没配上的 Agent 调用（事件顺序是 Agent 开始 → `verifier_dispatch` → `verifier_start`）。
+- 没记录任务类型时：没有 Write、Edit 调用也没有验证的运行算查数运行。
+- 查数运行的"回答"阶段从答案依据的那条查询开始。
 - `verifier_dispatch` 没有关联：按它在 `verifier_start` 和 `verifier_end` 之间的位置对应。
 - `version` 没有 `skills`：显示"未记录"，不从工具调用或 `layers.skill` 推断；和 `skills: []`（Skill 层关掉）区分开。
 
