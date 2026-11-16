@@ -1,7 +1,7 @@
 # 79 — 本地版前端：提交、实时过程、取消、历史列表
 
 Status: ready-for-agent
-Blocked by: 76, 78
+Blocked by: 76（done）, 78（done）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -58,3 +58,4 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+- 2026-11-16 主会话：76 已合入（PR #91）。数据来源接口在 `web/src/data/source.ts`，本工单加后端实现；运行切换和基础路径默认运行是 76 为打开三条夹具加的，在线版的部分归 81。工单 81 同时在做，两边都改 `web/`：本工单只动本地版需要的部分（数据来源后端实现、提交表单、取消、历史列表、实时追加、打包），不改 81 的评测页和第一屏；谁后合入谁 rebase 解决冲突。

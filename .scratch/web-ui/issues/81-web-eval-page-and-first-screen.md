@@ -1,7 +1,7 @@
 # 81 — 评测页和在线版第一屏
 
 Status: ready-for-agent
-Blocked by: 76, 80
+Blocked by: 76（done）, 80（done）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -58,3 +58,4 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+- 2026-11-16 主会话：76 已合入（PR #91）。数据来源接口在 `web/src/data/source.ts`，静态实现读导出布局；76 加了运行切换和基础路径的默认运行（为了打开三条夹具），本工单可按在线版需要重做。工单 79 同时在做，两边都改 `web/`：本工单只动在线版的部分（第一屏、精选切换、评测页、trial 表格、不可用的新建运行），不改 79 的本地提交、取消、历史列表和后端数据来源；谁后合入谁 rebase 解决冲突。
