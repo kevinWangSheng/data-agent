@@ -10,11 +10,14 @@ from typing import Any
 
 import pytest
 
+from evals.export import featured_allowed
 from evals.harbor import load_trials
 from evals.report import score
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NEW_FIELDS = REPO_ROOT / "tests" / "fixtures" / "web" / "new-fields" / "events.jsonl"
+# A featured run's notes.json on local data, which the holdout check lets through.
+LOCAL_NOTES = {"title": "t", "failure_reason": None, "local_data": True}
 
 
 def export(*args: str) -> subprocess.CompletedProcess[str]:
@@ -255,7 +258,7 @@ def test_a_featured_run_without_a_task_event_takes_its_task_from_its_notes(
     old = [line for line in NEW_FIELDS.read_text().splitlines() if '"type": "task"' not in line]
     (run / "run-1.jsonl").write_text("\n".join(old) + "\n")
     given = {"task": "Which tier?", "task_type": "query", "data_source": "shop"}
-    (run / "notes.json").write_text(json.dumps({"title": "t", "failure_reason": None, **given}))
+    (run / "notes.json").write_text(json.dumps({**LOCAL_NOTES, **given}))
     out = tmp_path / "site"
     proc = export("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run))
     assert proc.returncode == 0, proc.stderr
@@ -268,7 +271,7 @@ def test_a_featured_runs_task_event_wins_over_its_notes(tmp_path: Path) -> None:
     run.mkdir()
     (run / "run-1.jsonl").write_text(NEW_FIELDS.read_text())
     stale = {"task": "stale", "task_type": "query", "data_source": "stale"}
-    (run / "notes.json").write_text(json.dumps({"title": "t", "failure_reason": None, **stale}))
+    (run / "notes.json").write_text(json.dumps({**LOCAL_NOTES, **stale}))
     out = tmp_path / "site"
     proc = export("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run))
     assert proc.returncode == 0, proc.stderr
@@ -282,7 +285,7 @@ def test_a_featured_runs_grade_comes_from_its_notes(tmp_path: Path) -> None:
     (run / "run-1.jsonl").write_text(NEW_FIELDS.read_text())
     grade = {"passed": False, "detail": "14 of 15 components passed"}
     (run / "notes.json").write_text(
-        json.dumps({"title": "t", "failure_reason": "f", "grade": grade})
+        json.dumps({"title": "t", "failure_reason": "f", "grade": grade, "local_data": True})
     )
     out = tmp_path / "site"
     proc = export("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run))
@@ -358,7 +361,7 @@ def test_a_line_separator_inside_a_string_keeps_the_task_event(tmp_path: Path) -
     run.mkdir()
     task = {"type": "task", "task": "line one\u2028line two", "task_type": "query"}
     (run / "run-1.jsonl").write_text(json.dumps(task, ensure_ascii=False) + "\n")
-    (run / "notes.json").write_text(json.dumps({"title": "t", "failure_reason": None}))
+    (run / "notes.json").write_text(json.dumps(LOCAL_NOTES))
     out = tmp_path / "site"
     proc = export("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run))
     assert proc.returncode == 0, proc.stderr
@@ -383,10 +386,59 @@ def test_an_event_file_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
     run = tmp_path / "r1"
     run.mkdir()
     (run / "run-1.jsonl").write_bytes(b'{"type": "text", "text": "\xff"}\n')
-    (run / "notes.json").write_text(json.dumps({"title": "t", "failure_reason": None}))
+    (run / "notes.json").write_text(json.dumps(LOCAL_NOTES))
     out = tmp_path / "site"
     proc = export("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run))
     assert proc.returncode == 2
     assert "Traceback" not in proc.stderr
     assert not out.exists()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["manifest.json", "r1"]  # no staging left
+
+
+# --- Featured runs and the holdout ------------------------------------------------------------
+
+DEV = {"dbt-alpha"}  # what `exportable` leaves of a manifest with dev [alpha], holdout [delta]
+
+
+@pytest.mark.parametrize(
+    ("given", "allowed"),
+    [
+        ({"task_id": "dbt-alpha"}, True),  # a dev task
+        ({"task_id": "dbt-delta"}, False),  # a holdout task
+        ({"task_id": "dbt-omega"}, False),  # a task the manifest does not list
+        ({"local_data": True}, True),
+        ({}, False),  # neither: not taken as local
+        ({"task_id": "dbt-delta", "local_data": True}, False),  # local_data does not override
+        ({"local_data": False}, False),
+        ({"local_data": "yes"}, False),  # only the boolean true counts
+        ({"local_data": 1}, False),
+        ({"task_id": 7, "local_data": True}, False),  # a task id that is not a string
+        ({"task_id": ["dbt-alpha"]}, False),
+    ],
+)
+def test_a_featured_run_is_let_through_only_from_a_dev_task_or_local_data(
+    given: dict[str, Any], allowed: bool
+) -> None:
+    assert featured_allowed({"title": "t", **given}, DEV) is allowed
+
+
+def test_a_refused_featured_run_is_reported_as_a_count_only(tmp_path: Path) -> None:
+    run = tmp_path / "secret-task-run"
+    run.mkdir()
+    (run / "run-1.jsonl").write_text(NEW_FIELDS.read_text())
+    notes = {"title": "t", "failure_reason": "secret-reason", "local_data": "yes"}
+    (run / "notes.json").write_text(json.dumps(notes))
+    unreadable = tmp_path / "other-task-run"
+    unreadable.mkdir()
+    (unreadable / "run-1.jsonl").write_text(NEW_FIELDS.read_text())
+    out = tmp_path / "site"
+    proc = export(
+        *("--manifest", str(manifest(tmp_path, ["dbt-alpha"])), "--out", str(out)),
+        *("--run", str(run), "--run", str(unreadable)),
+    )
+    assert proc.returncode == 2
+    printed = proc.stdout + proc.stderr
+    for hidden in ("secret-task-run", "other-task-run", "secret-reason", str(tmp_path)):
+        assert hidden not in printed
+    assert "2 featured run(s)" in printed
+    assert not out.exists()

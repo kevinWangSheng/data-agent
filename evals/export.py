@@ -32,8 +32,11 @@ rules (`--hostname`, `--home`, `--user` as in `scrub`); only a clean scrub is mo
 must be new or empty. Nothing turns scrubbing off. A trial of a task outside the manifest's dev
 set, or held out by it or by the repo's evals/manifest.json, is refused before anything is
 written; the error gives a count, never a task or its outcome (ADR-0004). The holdout and the
-whole benchmark reach the site only as the aggregates of `--board`. A featured run names no task
-id, so it is not checked against the holdout: choose featured runs from dev tasks or local data.
+whole benchmark reach the site only as the aggregates of `--board`. A featured run's notes.json
+says where it came from: `task_id`, checked as a trial's task is, or `local_data: true` for a run
+on genuinely local data (`featured_allowed`). One with neither, or with notes.json unreadable, is
+refused, and so is the whole export; that error gives a count too, not a run id or directory,
+which is often named after its task. These two fields are input only, not in the notes.
 
 Exit 0 with the export; 2 on anything refused.
 """
@@ -186,8 +189,40 @@ def task_event(path: Path) -> dict[str, Any] | None:
     return next((e for e in read_events(path) if e.get("type") == "task"), None)
 
 
+def featured_allowed(given: Any, dev: set[str]) -> bool:
+    """Whether a featured run's notes.json lets it be exported: a `task_id` in `dev` (a task id
+    wins over `local_data`, so a holdout run cannot pass as local), or else `local_data` being
+    the boolean true; neither is refused, not taken as local."""
+    if not isinstance(given, dict):
+        return False
+    if "task_id" in given:
+        return isinstance(given["task_id"], str) and given["task_id"] in dev
+    return given.get("local_data") is True
+
+
+def given_notes(run_dir: Path) -> Any:
+    """A featured run's notes.json, None when it cannot be read."""
+    try:
+        return json.loads((run_dir / "notes.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def check_featured(run_dirs: list[Path], dev: set[str]) -> None:
+    """Refuse, with a count only, when any featured run is not let through (`featured_allowed`):
+    its id and directory are often its task's name, so neither is printed (ADR-0004)."""
+    refused = sum(1 for r in run_dirs if not featured_allowed(given_notes(r), dev))
+    if refused:
+        raise Refused(
+            f"{refused} featured run(s) refused: each needs a readable notes.json with a "
+            "`task_id` of the dev set or `local_data: true`; holdout and unlisted tasks are not "
+            "exported (ADR-0004)"
+        )
+
+
 def featured_run(run_dir: Path) -> tuple[dict[str, Any], Path]:
-    """The notes and event file of a featured run; its id is the directory name."""
+    """The notes and event file of a featured run that `check_featured` let through; its id is
+    the directory name."""
     files = sorted(run_dir.glob("*.jsonl"))
     if len(files) != 1:
         raise Refused(f"{run_dir} must hold one event file (*.jsonl), not {len(files)}")
@@ -396,7 +431,9 @@ def write_json(path: Path, value: Any) -> None:
 
 def build(args: argparse.Namespace, stage: Path) -> int:
     """Write the export into `stage`; the number of runs."""
-    trials = load_dev_trials(args.job, exportable(args.manifest))
+    dev = exportable(args.manifest)
+    check_featured(args.runs, dev)
+    trials = load_dev_trials(args.job, dev)
     runs: list[tuple[dict[str, Any], Path]] = [featured_run(r) for r in args.runs]
     runs += [(trial_notes(t, events, args.tasks_dir), events) for t, events, _ in trials]
     ids = [notes["id"] for notes, _ in runs]
