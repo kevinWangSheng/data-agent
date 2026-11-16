@@ -1,11 +1,14 @@
 // Copied from SignalPilot (https://github.com/SignalPilot-Labs/SignalPilot, commit f5eee22,
 // signalpilot/web/components/chat/replay-controls.tsx), Apache License 2.0; see NOTICE.
-// Modified: this app's classes and colours instead of upstream's; speeds are a prop; the exit
-// button became "Show all" (spec: replay controls have show all); added the "skip idle" toggle;
-// the time label is a clock (m:ss) and reads "all shown" when the whole run is shown.
+// Modified: this app's classes and colours instead of upstream's, and no "Replay" badge; the play
+// button has a text label and a title; speeds are a prop, without per-speed test ids, and the root
+// test id is `replay-controls`; the exit button became "Show all" (spec: replay controls have show
+// all), and the position slider sits at the end while everything is shown; added the "skip idle"
+// toggle; the time label is a clock (m:ss) and reads "all shown" when the whole run is shown.
 import { ListChecks, Pause, Play, RotateCcw } from 'lucide-react'
 
-import { fmtClock } from '../format'
+import { fmtClock, fmtDur } from '../format'
+import { IDLE_CAP_MS } from './replay'
 
 /**
  * Control bar for replaying a recorded run. With "skip idle", every wait between two events is cut
@@ -69,7 +72,7 @@ export function ReplayControls({
           </button>
         ))}
       </div>
-      <label className="flex items-center gap-1 text-[11.5px] text-ink-2 cursor-pointer whitespace-nowrap" title="Cut every pause between events to 1.5 s">
+      <label className="flex items-center gap-1 text-[11.5px] text-ink-2 cursor-pointer whitespace-nowrap" title={`Cut every pause between events to ${fmtDur(IDLE_CAP_MS)}`}>
         <input type="checkbox" checked={skipIdle} onChange={(e) => onSkipIdleChange(e.target.checked)} className="accent-[var(--accent)]" />
         skip idle
       </label>

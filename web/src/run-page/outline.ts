@@ -26,6 +26,10 @@ export type Row =
 export const narrationId = (seq: number) => `n${seq}`
 
 export const sectionId = (phase: Phase) => (phase.dispatch === null ? phase.kind : `${phase.kind}-${phase.dispatch}`)
+/** Outline id of the verify section of dispatch `n` (a verifier's detail). */
+export const verifyId = (n: number) => `verify-${n}`
+/** Outline id of the fix section after dispatch `n`. */
+export const fixId = (n: number) => `fix-${n}`
 
 export const isSql = (step: Step) => toolKind(step.tool) === 'sql' || step.sql !== null
 export const isIssue = (step: Step) => step.rejectedBy !== null || step.isError
@@ -60,6 +64,38 @@ export function sectionsOf(view: RunView): { sections: Section[]; loose: Item[] 
   }
   for (const s of sections) s.items.sort((a, b) => a.seq - b.seq)
   return { sections, loose }
+}
+
+export type SectionStats = {
+  calls: number
+  sql: number
+  /** Writes, edits and shell calls (`isChange`). */
+  changes: number
+  issues: number
+  /** First call's start, in ms after the run's first event; null when no call has a time. */
+  startMs: number | null
+  /** From the first call's start to the last call's end; null when no call has a time. */
+  durationMs: number | null
+}
+
+export function sectionStats(section: Section): SectionStats {
+  const steps = section.items.flatMap((i) => (i.kind === 'step' ? [i.step] : []))
+  let start = Infinity
+  let end = -Infinity
+  for (const s of steps) {
+    if (s.startMs === null) continue
+    start = Math.min(start, s.startMs)
+    end = Math.max(end, s.startMs + (s.durationMs ?? 0))
+  }
+  const timed = end >= start
+  return {
+    calls: steps.length,
+    sql: steps.filter(isSql).length,
+    changes: steps.filter(isChange).length,
+    issues: steps.filter(isIssue).length,
+    startMs: timed ? start : null,
+    durationMs: timed ? end - start : null,
+  }
 }
 
 /** Short runs open every section; long ones start as an outline of their phases. */

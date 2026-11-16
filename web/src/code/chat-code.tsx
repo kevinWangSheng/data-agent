@@ -2,7 +2,8 @@
 // signalpilot/web/components/chat/chat-code.tsx), Apache License 2.0; see NOTICE.
 // Modified: dropped "use client" and the Python parser (only SQL and plain text here); styles come
 // from this app's `code` and `tok-*` classes (index.css) instead of upstream's colours; the height
-// cap is a pixel value; `CopyButton` uses this app's button class.
+// cap is a pixel value; `CopyButton` uses this app's button class; the block's comment no longer
+// mentions upstream's notebook.
 import { Check, Copy } from "lucide-react";
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
@@ -63,8 +64,8 @@ export function CopyButton({
 }
 
 /**
- * Static, dependency-light highlighted code block. Uses the lezer parsers the
- * notebook already ships instead of mounting a CodeMirror editor per block.
+ * Static, dependency-light highlighted code block. Uses the lezer SQL parser
+ * instead of mounting a CodeMirror editor per block.
  */
 export const ChatCode = memo(function ChatCode({
   code,

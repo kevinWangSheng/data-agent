@@ -41,6 +41,7 @@ export default function App() {
 
   useEffect(() => {
     if (id === null || loaded[id]) return
+    setError(null)
     source
       .loadRun(id)
       .then((data) => setLoaded((all) => ({ ...all, [id]: data })))

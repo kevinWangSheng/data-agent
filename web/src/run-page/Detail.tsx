@@ -7,8 +7,7 @@ import { ChatCode, CopyButton } from '../code/chat-code'
 import { Md } from '../code/markdown'
 import { fmtClock, fmtDur } from '../format'
 import type { KeyMoment, Narration, RunView, Step, VerifierDispatch } from '../run-view/model'
-import { sectionStats } from './OutlinePane'
-import { isChange, narrationId, type Item, type Section } from './outline'
+import { fixId, isChange, narrationId, sectionStats, verifyId, type Item, type Section } from './outline'
 import { KIND_NAME, shortTool, toolKind } from './tools'
 import {
   Caret,
@@ -97,7 +96,7 @@ export function Detail({
 // --- Key moments (nothing selected) ------------------------------------------------------------
 
 function momentTarget(view: RunView, m: KeyMoment): string | null {
-  if (m.kind === 'verdict') return `verify-${m.dispatch}`
+  if (m.kind === 'verdict' && m.dispatch !== null) return verifyId(m.dispatch)
   if (m.step !== null) return m.step
   return view.narration.some((n) => n.seq === m.seq) ? narrationId(m.seq) : null
 }
@@ -297,7 +296,7 @@ function ResultView({ view, step, onSelect }: { view: RunView; step: Step; onSel
       {dispatch && (
         <div className="text-[12px]">
           The verifier's report went back to the main agent.{' '}
-          <button type="button" className="link" onClick={() => onSelect(`verify-${dispatch.n}`)}>
+          <button type="button" className="link" onClick={() => onSelect(verifyId(dispatch.n))}>
             See verifier #{dispatch.n}
           </button>
         </div>
@@ -455,10 +454,8 @@ function FailedChecks({ dispatch }: { dispatch: VerifierDispatch }) {
 
 function SectionDetail({ view, section, numbers, onSelect }: { view: RunView; section: Section; numbers: Map<string, number>; onSelect: Select }) {
   const stats = sectionStats(section)
-  const steps = section.items.flatMap((i) => (i.kind === 'step' ? [i.step] : []))
-  const changes = steps.filter((s) => s.tool === 'Edit' || s.tool === 'Write')
+  const changes = section.items.flatMap((i) => (i.kind === 'step' && isChange(i.step) ? [i.step] : []))
   const after = section.phase.kind === 'fix' ? view.dispatches.find((d) => d.n === section.phase.dispatch) : undefined
-  const start = steps.find((s) => s.startMs !== null)?.startMs ?? null
   return (
     <div>
       <Header
@@ -467,7 +464,7 @@ function SectionDetail({ view, section, numbers, onSelect }: { view: RunView; se
         right={<CopyLink />}
         sub={
           <>
-            main agent · {at(start) || 'unknown start'} · {stats.durationMs !== null ? fmtDur(stats.durationMs) : '—'} · {stats.calls} tool calls · {stats.sql} SQL · {stats.edits} edits ·{' '}
+            main agent · {at(stats.startMs) || 'unknown start'} · {stats.durationMs !== null ? fmtDur(stats.durationMs) : '—'} · {stats.calls} tool calls · {stats.sql} SQL · {stats.changes} changes ·{' '}
             {stats.issues} rejected or failed
           </>
         }
@@ -496,7 +493,7 @@ function SectionDetail({ view, section, numbers, onSelect }: { view: RunView; se
 
 // --- A verification ------------------------------------------------------------------------------
 
-export function CheckGrid({ dispatch }: { dispatch: VerifierDispatch }) {
+function CheckGrid({ dispatch }: { dispatch: VerifierDispatch }) {
   const checks = [...new Map(dispatch.checks.map((c) => [c.check, c.name])).entries()]
   const verdict = new Map(dispatch.checks.map((c) => [`${c.model}\u0000${c.check}`, c.verdict]))
   const models = [...new Set(dispatch.checks.map((c) => c.model))]
@@ -550,7 +547,7 @@ function DispatchDetail({ view, dispatch, sections, numbers, onSelect }: { view:
     const s = stepById.get(id)
     return s ? [{ kind: 'step' as const, id, seq: s.seq, step: s }] : []
   })
-  const before = dispatch.n > 1 ? sections.find((s) => s.id === `fix-${dispatch.n - 1}`) : undefined
+  const before = dispatch.n > 1 ? sections.find((s) => s.id === fixId(dispatch.n - 1)) : undefined
   const changes = before ? before.items.flatMap((i) => (i.kind === 'step' && isChange(i.step) ? [i.step] : [])) : []
   const previous = view.dispatches.find((d) => d.n === dispatch.n - 1)
   const done = dispatch.overall !== null

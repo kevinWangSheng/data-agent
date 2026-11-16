@@ -10,13 +10,20 @@ export type Timeline = {
   unit: 'ms' | 'seq'
   /** The axis length: the whole run's duration or last `seq`, so it stays put while a replay grows. */
   extent: number
+  /** Where the given view ends: the replay's position on this axis. */
+  now: number
   step(step: Step): Span
   dispatch(dispatch: VerifierDispatch): Span
   at(narration: Narration): number
 }
 
-/** `extent`: the whole run's duration (ms) if every time is known, else its last `seq`. */
-export function timeline(view: RunView, extent: number): Timeline {
+/** The latest `seq` the view model names (a call, a thinking or text, a key moment); 0 for none. */
+export function lastSeq(view: RunView): number {
+  return Math.max(0, ...view.steps.map((s) => s.seq), ...view.narration.map((n) => n.seq), ...view.keyMoments.map((m) => m.seq))
+}
+
+/** The axis for `view` (the events shown so far), sized to `whole` (the view of every event). */
+export function timeline(view: RunView, whole: RunView): Timeline {
   const timed =
     view.steps.every((s) => s.startMs !== null) &&
     view.narration.every((n) => n.atMs !== null) &&
@@ -27,7 +34,8 @@ export function timeline(view: RunView, extent: number): Timeline {
   if (timed) {
     return {
       unit: 'ms',
-      extent,
+      extent: whole.summary.durationMs,
+      now,
       step: (s) => ({ start: s.startMs!, end: s.startMs! + (s.durationMs ?? 0) }),
       dispatch: (d) => {
         const agent = d.toolUseId !== null ? stepById.get(d.toolUseId) : undefined
@@ -37,9 +45,11 @@ export function timeline(view: RunView, extent: number): Timeline {
       at: (n) => n.atMs!,
     }
   }
+  const extent = lastSeq(whole)
   return {
     unit: 'seq',
     extent,
+    now: lastSeq(view),
     step: (s) => ({ start: s.seq, end: s.seq }),
     dispatch: (d) => {
       const agent = d.toolUseId !== null ? stepById.get(d.toolUseId) : undefined

@@ -4,7 +4,7 @@ import { gunzipSync } from 'node:zlib'
 import { describe, expect, test } from 'vitest'
 
 import { buildRunView, type RunEvent, type RunView } from '../run-view/model'
-import { buildRows, defaultExpanded, isChange, isIssue, isSql, sectionsOf, type Item } from './outline'
+import { buildRows, defaultExpanded, isChange, isIssue, isSql, sectionStats, sectionsOf, verifyId, type Item } from './outline'
 import { toolKind } from './tools'
 
 const FIXTURES = join(import.meta.dirname, '../../../tests/fixtures/web/real')
@@ -126,6 +126,35 @@ describe('buildRows', () => {
     const rows = buildRows(parts.sections, parts.loose, 'all', new Set())
     expect(rows.map((r) => r.id)).toEqual(view.narration.map((n) => `n${n.seq}`))
     expect(rows.every((r) => r.type === 'item' && r.depth === 0)).toBe(true)
+  })
+})
+
+describe('sectionStats', () => {
+  test('counts the calls of a phase and spans them in time', () => {
+    const { sections } = sectionsOf(views.cart)
+    const explore = sections.find((s) => s.id === 'explore')!
+    const steps = explore.items.flatMap((i) => (i.kind === 'step' ? [i.step] : []))
+    const stats = sectionStats(explore)
+    expect(stats.calls).toBe(steps.length)
+    expect(stats.sql).toBe(steps.filter(isSql).length)
+    expect(stats.changes).toBe(steps.filter(isChange).length)
+    expect(stats.issues).toBe(steps.filter(isIssue).length)
+    const start = Math.min(...steps.map((s) => s.startMs!))
+    const end = Math.max(...steps.map((s) => s.startMs! + (s.durationMs ?? 0)))
+    expect(stats.startMs).toBe(start)
+    expect(stats.durationMs).toBe(end - start)
+  })
+
+  test('no known times: no span', () => {
+    const { sections } = sectionsOf(buildRunView(loadEvents('query-shop').map(({ ts: _ts, ...e }) => e as RunEvent)))
+    expect(sectionStats(sections[0])).toMatchObject({ startMs: null, durationMs: null })
+  })
+})
+
+describe('section ids', () => {
+  test('verifyId names the verify section of a dispatch', () => {
+    const { sections } = sectionsOf(views.cart)
+    for (const d of views.cart.dispatches) expect(sections.some((s) => s.id === verifyId(d.n))).toBe(true)
   })
 })
 

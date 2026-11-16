@@ -6,29 +6,9 @@ import { useEffect, useMemo, useRef } from 'react'
 
 import { fmtDur } from '../format'
 import type { RunView } from '../run-view/model'
-import { isIssue, isSql, type Item, type Row, type Section } from './outline'
-import { shortTool, toolKind } from './tools'
+import { sectionStats, type Item, type Row } from './outline'
+import { shortTool } from './tools'
 import { Caret, StepChip, StepTag, Tag, VerdictChip, inputLine, phaseLabel } from './ui'
-
-export type SectionStats = { calls: number; sql: number; edits: number; issues: number; durationMs: number | null }
-
-export function sectionStats(section: Section): SectionStats {
-  const steps = section.items.flatMap((i) => (i.kind === 'step' ? [i.step] : []))
-  let start = Infinity
-  let end = -Infinity
-  for (const s of steps) {
-    if (s.startMs === null) continue
-    start = Math.min(start, s.startMs)
-    end = Math.max(end, s.startMs + (s.durationMs ?? 0))
-  }
-  return {
-    calls: steps.length,
-    sql: steps.filter(isSql).length,
-    edits: steps.filter((s) => toolKind(s.tool) === 'edit').length,
-    issues: steps.filter(isIssue).length,
-    durationMs: end >= start ? end - start : null,
-  }
-}
 
 function ItemRow({ item, depth, selected, number, onClick }: { item: Item; depth: number; selected: boolean; number: number | undefined; onClick: () => void }) {
   const inVerifier = item.kind === 'step' && item.step.dispatch !== null
@@ -99,7 +79,7 @@ function GroupRow({ row, view, selected, onClick, onToggle }: { row: Extract<Row
           <span className="mono text-[10.5px] text-ink-3 shrink-0">
             {stats.calls}
             {stats.sql ? ` · ${stats.sql} sql` : ''}
-            {stats.edits ? ` · ${stats.edits} ed` : ''}
+            {stats.changes ? ` · ${stats.changes} chg` : ''}
           </span>
         )
       )}

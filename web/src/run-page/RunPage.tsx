@@ -50,11 +50,8 @@ export function RunPage({ run, route, navigate }: { run: RunData; route: Route; 
   const numbers = useMemo(() => new Map(view.steps.map((s, i) => [s.id, i + 1])), [view])
   const order = useMemo<Item[]>(() => [...loose, ...sections.flatMap((s) => s.items)], [loose, sections])
 
-  const axis = useMemo(() => {
-    const unit = timeline(view, 0).unit
-    return timeline(view, unit === 'ms' ? full.summary.durationMs : (events.at(-1)?.seq ?? 0))
-  }, [view, full, events])
-  const playhead = !replaying ? null : axis.unit === 'ms' ? view.summary.durationMs : (events[revealed - 1]?.seq ?? 0)
+  const axis = useMemo(() => timeline(view, full), [view, full])
+  const playhead = replaying ? axis.now : null
 
   const selectedId = route.step
   const selected = useMemo<Selected>(() => {
@@ -100,13 +97,11 @@ export function RunPage({ run, route, navigate }: { run: RunData; route: Route; 
     const tick = (now: number) => {
       const dt = lastFrame.current === null ? 0 : now - lastFrame.current
       lastFrame.current = now
+      // null: the end was reached (play and restart set a number first), so stay there.
       setReading((r) => {
-        const next = (r ?? 0) + dt * speed
-        if (next >= total) {
-          setPlaying(false)
-          return null
-        }
-        return next
+        if (r === null) return null
+        const next = r + dt * speed
+        return next >= total ? null : next
       })
       frame = requestAnimationFrame(tick)
     }
@@ -116,6 +111,10 @@ export function RunPage({ run, route, navigate }: { run: RunData; route: Route; 
       lastFrame.current = null
     }
   }, [playing, speed, total])
+  // The replay reached the end: everything is shown, so it stops.
+  useEffect(() => {
+    if (playing && reading === null) setPlaying(false)
+  }, [playing, reading])
 
   // While following, the newest item is the selected one.
   const newest = order.reduce<Item | null>((a, b) => (a === null || b.seq > a.seq ? b : a), null)
@@ -225,7 +224,7 @@ export function RunPage({ run, route, navigate }: { run: RunData; route: Route; 
     issues: view.steps.filter(isIssue).length,
     verifier: view.dispatches.length,
   }
-  const title = notes.title ?? full.summary.task?.split('\n')[0].replace(/^#+\s*/, '') ?? notes.id ?? 'Run'
+  const title = notes.title || full.summary.task?.split('\n')[0].replace(/^#+\s*/, '') || notes.id || 'Run'
 
   return (
     <>

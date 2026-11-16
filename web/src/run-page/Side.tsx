@@ -6,7 +6,7 @@ import { useState, type ReactNode } from 'react'
 import { Md } from '../code/markdown'
 import { fmtCost, fmtDur, fmtTokens } from '../format'
 import type { RunNotes, RunView } from '../run-view/model'
-import { isIssue, isSql, narrationId } from './outline'
+import { isIssue, isSql, narrationId, verifyId } from './outline'
 import { DataTable, StatusChip, VerdictCell, VerdictChip } from './ui'
 
 function Block({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
@@ -95,7 +95,7 @@ export function Side({
         {!replaying && notes.failure_reason && (
           <div className="text-[12px] mt-2 pt-2 border-t border-line">
             <div className="font-semibold mb-0.5">Why it failed</div>
-            <Clipped height={90} label="show all">
+            <Clipped height={54} label="show all">
               <div className="text-ink-2">{notes.failure_reason}</div>
             </Clipped>
           </div>
@@ -129,7 +129,7 @@ export function Side({
         }
       >
         {answer ? (
-          <Clipped height={210} label="show all">
+          <Clipped height={150} label="show all">
             <Md>{answer.text}</Md>
           </Clipped>
         ) : (
@@ -172,7 +172,7 @@ export function Side({
                 {view.dispatches.map((d) => {
                   const models = d.overall !== null && d.checks.length ? [...new Set(d.checks.map((c) => c.model))] : ['']
                   const verdict = new Map(d.checks.map((c) => [`${c.model}\u0000${c.check}`, c.verdict]))
-                  const id = `verify-${d.n}`
+                  const id = verifyId(d.n)
                   return models.map((m, i) => (
                     <tr key={`${d.n}-${m}`} className={'cursor-pointer hover:bg-panel-2 ' + (selected === id ? 'bg-[var(--sel-strong)]' : '') + (i === 0 ? ' border-t border-line' : '')} onClick={() => onSelect(id)}>
                       <td className="mono text-ink-2 py-[2px]">{i === 0 ? `#${d.n}` : ''}</td>
@@ -190,7 +190,7 @@ export function Side({
                 })}
               </tbody>
             </table>
-            <details className="mt-1.5">
+            <details className="mt-1.5" open>
               <summary className="text-[11px] text-ink-3">check names</summary>
               <dl className="grid grid-cols-[auto_1fr] text-[11px] gap-x-1.5 mt-1">
                 {checks.map(([n, name]) => (

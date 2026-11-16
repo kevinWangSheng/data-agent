@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { fmtClock } from '../format'
 import type { RunView } from '../run-view/model'
-import { isIssue, type Section } from './outline'
+import { isIssue, verifyId, type Section } from './outline'
 import type { Span, Timeline } from './timeline'
 import { toolKind } from './tools'
 
@@ -99,7 +99,7 @@ export function TimeAxis({
               key={d.n}
               onClick={(e) => {
                 e.stopPropagation()
-                onPick(`verify-${d.n}`)
+                onPick(verifyId(d.n))
               }}
               style={{ cursor: 'pointer' }}
             >
