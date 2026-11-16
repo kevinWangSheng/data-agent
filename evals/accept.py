@@ -49,7 +49,8 @@ from evals.report import (
 )
 
 MAX_AGE = timedelta(days=14)
-# Version header fields that a change is expected to alter, or that differ per event file.
+# Version header fields not compared for reuse: ones a change is expected to alter, or that only
+# observe the run.
 # `skills` (ticket 83) is observation metadata: the injected Skill names follow from `config`,
 # `layers` and the task, which are compared already, and versions before it do not record it.
 CHANGED_BY_DESIGN = frozenset({"git_commit", "skill_version", "skills"})
