@@ -155,9 +155,11 @@ export type RunView = {
 
 // --- Tool kinds -----------------------------------------------------------------------------
 
-const QUERY_TOOL = 'mcp__data__query_database'
+/** The data agent's MCP tools (src/data_agent/mcp_server.py, server `data`). */
+const DATA_TOOL_PREFIX = 'mcp__data__'
+const QUERY_TOOL = `${DATA_TOOL_PREFIX}query_database`
 /** Tools that run SQL on the data: the first of them ends "learning the environment". */
-const SQL_TOOLS = new Set([QUERY_TOOL, 'mcp__data__explain_query'])
+const SQL_TOOLS = new Set([QUERY_TOOL, `${DATA_TOOL_PREFIX}explain_query`])
 const WRITE_TOOLS = new Set(['Write', 'Edit'])
 const AGENT_TOOLS = new Set(['Agent', 'Task'])
 const CONTEXT_TOOLS = ['discover', 'hydrate', 'dictionary_search'] as const
@@ -235,15 +237,15 @@ function rejectionFromText(text: string): Rejection | null {
 
 // --- The model ------------------------------------------------------------------------------
 
-function str(value: unknown): string | null {
+function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null
 }
 
-function num(value: unknown): number | null {
+function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function taskType(value: unknown): TaskType | null {
+function asTaskType(value: unknown): TaskType | null {
   return value === 'query' || value === 'dbt' ? value : null
 }
 
@@ -253,19 +255,22 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
   const steps: Step[] = []
   const stepById = new Map<string, Step>()
   const parentOf = new Map<string, string | null>()
-  const startTs = new Map<string, string>()
   const endSeq = new Map<string, number>()
   const dispatches: OpenDispatch[] = []
   const dispatchByAgentCall = new Map<string, OpenDispatch>()
   const dispatchByAgentId = new Map<string, OpenDispatch>()
   /** Main-agent Agent calls not yet tied to a dispatch, in start order. */
   const openAgentCalls: Step[] = []
+  const removeOpenCall = (step: Step) => {
+    const at = openAgentCalls.indexOf(step)
+    if (at >= 0) openAgentCalls.splice(at, 1)
+  }
   const verdicts: KeyMoment[] = []
   let version: RunEvent | undefined
   let task: RunEvent | undefined
   let status: RunEvent | undefined
   let result: RunEvent | undefined
-  let marked: RunEvent | undefined
+  let markedAnswer: RunEvent | undefined
   let lastText: RunEvent | undefined
   let current: OpenDispatch | undefined
 
@@ -284,7 +289,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
         result = e
         break
       case 'answer':
-        marked = e
+        markedAnswer = e
         break
       case 'text':
         lastText = e
@@ -304,22 +309,21 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
           dispatch: null,
           sql: null,
         }
-        const parent = str(e.parent)
+        const parent = asString(e.parent)
         steps.push(step)
         stepById.set(id, step)
         parentOf.set(id, parent)
-        startTs.set(id, e.ts)
         if (parent === null && AGENT_TOOLS.has(step.tool)) openAgentCalls.push(step)
         break
       }
       case 'sql': {
         const step = stepById.get(String(e.tool_use_id))
-        if (step) step.sql = str(e.sql)
+        if (step) step.sql = asString(e.sql)
         break
       }
       case 'tool_timing': {
         const step = stepById.get(String(e.tool_use_id))
-        const ms = num(e.duration_ms)
+        const ms = asNumber(e.duration_ms)
         if (step && ms !== null) step.durationMs = ms
         break
       }
@@ -330,7 +334,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
         const text = resultText(e.content)
         step.result = text
         step.isError = e.is_error === true
-        step.table = step.tool.startsWith('mcp__data__') && !step.isError ? parseTable(text) : null
+        step.table = step.tool.startsWith(DATA_TOOL_PREFIX) && !step.isError ? parseTable(text) : null
         const named = e.rejected_by
         step.rejectedBy =
           named === 'guard' || named === 'gateway'
@@ -338,27 +342,19 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
             : step.isError
               ? rejectionFromText(text)
               : null
-        if (step.durationMs === null) {
-          const ms = Date.parse(e.ts) - Date.parse(startTs.get(id) ?? e.ts)
-          if (Number.isFinite(ms)) step.durationMs = ms
-        }
         endSeq.set(id, e.seq)
-        const waiting = openAgentCalls.indexOf(step)
-        if (waiting >= 0) openAgentCalls.splice(waiting, 1)
+        removeOpenCall(step)
         break
       }
       case 'verifier_dispatch': {
         // New files name the Agent call; in old ones it is the latest one still open.
-        const named = str(e.tool_use_id)
+        const named = asString(e.tool_use_id)
         const agentCall = named !== null ? stepById.get(named) : openAgentCalls.at(-1)
         const toolUseId = named ?? agentCall?.id ?? null
-        if (agentCall) {
-          const waiting = openAgentCalls.indexOf(agentCall)
-          if (waiting >= 0) openAgentCalls.splice(waiting, 1)
-        }
+        if (agentCall) removeOpenCall(agentCall)
         const models = Array.isArray(e.models) ? e.models.map(String) : []
         current = {
-          n: num(e.n) ?? dispatches.length + 1,
+          n: asNumber(e.n) ?? dispatches.length + 1,
           toolUseId,
           models,
           checks: [],
@@ -373,7 +369,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
         break
       }
       case 'verifier_start': {
-        const agentId = str(e.agent_id)
+        const agentId = asString(e.agent_id)
         if (current && agentId !== null) {
           current.agentId = agentId
           dispatchByAgentId.set(agentId, current)
@@ -381,7 +377,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
         break
       }
       case 'verifier_end': {
-        const agentId = str(e.agent_id)
+        const agentId = asString(e.agent_id)
         const d = (agentId !== null ? dispatchByAgentId.get(agentId) : undefined) ?? current
         if (!d) break
         const names = (e.check_names ?? {}) as Record<string, unknown>
@@ -390,12 +386,12 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
           Object.entries(byCheck ?? {}).map(([check, verdict]) => ({
             model,
             check,
-            name: str(names[check]) ?? check,
+            name: asString(names[check]) ?? check,
             verdict: String(verdict),
           })),
         )
-        d.overall = str(e.overall)
-        d.report = str(e.report)
+        d.overall = asString(e.overall)
+        d.report = asString(e.report)
         verdicts.push({ kind: 'verdict', seq: e.seq, step: d.toolUseId, dispatch: d.n })
         if (d === current) current = undefined
         break
@@ -413,11 +409,11 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
     }
   }
 
-  const answer = finalAnswer(steps, stepById, marked, result ? lastText : undefined)
-  const kind = taskType(task?.task_type) ?? taskType(notes?.task_type) ?? null
+  const answer = finalAnswer(steps, stepById, markedAnswer, result ? lastText : undefined)
+  const kind = asTaskType(task?.task_type) ?? asTaskType(notes?.task_type)
 
   return {
-    summary: summarize(events, notes, { version, task, status, result }),
+    summary: summarize(events, notes, kind, { version, task, status, result }),
     steps,
     dispatches: dispatches.map(({ seq: _seq, agentId: _agentId, ...d }) => d),
     phases: phasesOf(steps, dispatches, dispatchByAgentCall, answer, kind),
@@ -431,6 +427,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
 function summarize(
   events: readonly RunEvent[],
   notes: RunNotes | undefined,
+  kind: TaskType | null,
   found: { version?: RunEvent; task?: RunEvent; status?: RunEvent; result?: RunEvent },
 ): RunSummary {
   const { version, task, status, result } = found
@@ -445,19 +442,19 @@ function summarize(
     runStatus = result.is_error === true || result.subtype !== 'success' ? 'failure' : 'success'
   }
 
-  const uncached = num(result?.uncached_input_tokens)
-  const cached = num(result?.cached_input_tokens)
-  const output = num(result?.output_tokens)
+  const uncached = asNumber(result?.uncached_input_tokens)
+  const cached = asNumber(result?.cached_input_tokens)
+  const output = asNumber(result?.output_tokens)
   return {
-    task: task ? str(task.task) : (notes?.task ?? null),
-    taskType: task ? taskType(task.task_type) : (notes?.task_type ?? null),
-    config: str(version?.config),
-    model: str(version?.model) ?? str(status?.model),
-    dataSource: task ? str(task.data_source) : (notes?.data_source ?? null),
+    task: asString(task?.task) ?? notes?.task ?? null,
+    taskType: kind,
+    config: asString(version?.config),
+    model: asString(version?.model) ?? asString(status?.model),
+    dataSource: asString(task?.data_source) ?? notes?.data_source ?? null,
     status: runStatus,
     durationMs,
-    turns: num(result?.num_turns),
-    costUsd: num(result?.cost_usd),
+    turns: asNumber(result?.num_turns),
+    costUsd: asNumber(result?.cost_usd),
     tokens:
       uncached === null && cached === null && output === null
         ? null
@@ -465,19 +462,19 @@ function summarize(
   }
 }
 
-/** The marked answer; in an old file the last text of a finished run, resting on the last
+/** The markedAnswer answer; in an old file the last text of a finished run, resting on the last
  *  successful query of the main agent before it. */
 function finalAnswer(
   steps: Step[],
   stepById: Map<string, Step>,
-  marked: RunEvent | undefined,
+  markedAnswer: RunEvent | undefined,
   lastText: RunEvent | undefined,
 ): FinalAnswer | null {
-  if (marked) {
-    const sqlStep = str(marked.sql_tool_use_id)
+  if (markedAnswer) {
+    const sqlStep = asString(markedAnswer.sql_tool_use_id)
     return {
-      text: String(marked.text ?? ''),
-      seq: marked.seq,
+      text: String(markedAnswer.text ?? ''),
+      seq: markedAnswer.seq,
       sqlStep,
       table: (sqlStep !== null ? stepById.get(sqlStep)?.table : null) ?? null,
     }
@@ -577,7 +574,7 @@ function keyMomentsOf(
 function countContextTools(steps: Step[]): RunView['contextToolUses'] {
   const counts = { discover: 0, hydrate: 0, dictionary_search: 0 }
   for (const step of steps) {
-    for (const name of CONTEXT_TOOLS) if (step.tool === `mcp__data__${name}`) counts[name]++
+    for (const name of CONTEXT_TOOLS) if (step.tool === `${DATA_TOOL_PREFIX}${name}`) counts[name]++
   }
   return counts
 }

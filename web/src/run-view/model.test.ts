@@ -1,5 +1,5 @@
 // Unit tests for what the acceptance tests leave out: the injected Skills (`version.skills`,
-// ticket 83) and the result-table parser's edge cases.
+// ticket 83), the result-table parser's edge cases, task fields per field, durations.
 
 import { describe, expect, test } from 'vitest'
 
@@ -66,5 +66,28 @@ describe('result tables', () => {
     const step = buildRunView(queryCall([{ type: 'text', text: 'n\n-\n3\n(1 rows)' }])).steps[0]
     expect(step.result).toBe('n\n-\n3\n(1 rows)')
     expect(step.table).toEqual({ columns: ['n'], rows: [['3']] })
+  })
+})
+
+describe('task fields and durations', () => {
+  const ts = '2026-11-15T09:00:00+00:00'
+
+  test('a field the task event lacks comes from the notes', () => {
+    const events: RunEvent[] = [
+      version({}),
+      { seq: 1, type: 'task', ts, task: 'Build it.', task_type: 'other' },
+    ]
+    const view = buildRunView(events, { task_type: 'dbt', data_source: 'shop' })
+    const { summary } = view
+    expect([summary.task, summary.taskType, summary.dataSource]).toEqual(['Build it.', 'dbt', 'shop'])
+  })
+
+  test('a call without tool_timing has no duration', () => {
+    const later = '2026-11-15T09:00:05+00:00'
+    const events: RunEvent[] = [
+      { seq: 0, type: 'tool_start', ts, tool: 'Bash', tool_use_id: 'b', input: { command: 'ls' } },
+      { seq: 1, type: 'tool_end', ts: later, tool: 'Bash', tool_use_id: 'b', content: 'x', is_error: false },
+    ]
+    expect(buildRunView(events).steps[0].durationMs).toBeNull()
   })
 })
