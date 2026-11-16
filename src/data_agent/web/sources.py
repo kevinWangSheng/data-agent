@@ -70,7 +70,7 @@ def parse_source(name: str, entry: Any, base: Path) -> DataSource:
     if not isinstance(entry, dict):
         raise ValueError(f"{where} must be a table")
     kind = entry.get("kind")
-    if kind not in KEYS:
+    if not isinstance(kind, str) or kind not in KEYS:
         raise ValueError(f"{where}: kind must be one of {sorted(KEYS)}, got {kind!r}")
     unknown = set(entry) - KEYS[kind]
     if unknown:
@@ -113,7 +113,7 @@ def check_layout(runs_dir: Path, sources: Sequence[DataSource]) -> None:
             continue
         project = source.dbt_project.resolve()
         where = f"[sources.{source.name}]"
-        if runs.is_relative_to(project) or project.is_relative_to(runs):
+        if overlap(runs, project):
             raise ValueError(
                 f"{where}: dbt_project {project} and the runs directory {runs} contain one "
                 "another; dbt runs copy the project into the runs directory, so keep them apart"
@@ -133,3 +133,8 @@ def duckdb_in_project(source: DataSource) -> Path | None:
     file = Path(os.path.abspath(source.duckdb))
     project = Path(os.path.abspath(source.dbt_project))
     return file.relative_to(project) if file.is_relative_to(project) else None
+
+
+def overlap(a: Path, b: Path) -> bool:
+    """Whether one of two resolved directories is, or is inside, the other."""
+    return a.is_relative_to(b) or b.is_relative_to(a)

@@ -28,7 +28,7 @@ from typing import Any
 
 from data_agent.run_config import CONFIG_NAMES
 from data_agent.web.runs import RunsDir
-from data_agent.web.sources import DataSource, check_layout, duckdb_in_project
+from data_agent.web.sources import DataSource, check_layout, duckdb_in_project, overlap
 
 TASK_TYPES = ("query", "dbt")
 # How long a run being stopped has to exit after SIGTERM before it gets SIGKILL.
@@ -97,7 +97,7 @@ class Launcher:
                 "cost_usd": None,
             }
             try:
-                database = prepare_workspace(workspace, source, task_type)
+                database = prepare_workspace(workspace, source, task_type, self.runs.path)
                 args = [
                     f"--task={task}",
                     "--type",
@@ -260,8 +260,12 @@ def new_run_id(started_at: datetime) -> str:
     return f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(3)}"
 
 
-def prepare_workspace(workspace: Path, source: DataSource, task_type: str) -> list[str]:
-    """Creates the run's working directory; returns the database arguments for `data-agent run`."""
+def prepare_workspace(
+    workspace: Path, source: DataSource, task_type: str, runs_dir: Path
+) -> list[str]:
+    """Creates the run's working directory; returns the database arguments for `data-agent run`.
+    Refused when the dbt project holds a directory link reaching the runs directory, which the
+    copy (it follows links) would copy into itself."""
     if source.postgres_env is not None:
         database = ["--postgres-env", source.postgres_env]
     else:
@@ -271,13 +275,23 @@ def prepare_workspace(workspace: Path, source: DataSource, task_type: str) -> li
         workspace.mkdir()
         return database
     project = source.dbt_project
+    runs = runs_dir.resolve()
+
+    def ignore(directory: str, names: list[str]) -> list[str]:
+        skipped: list[str] = list(NOT_COPIED) if Path(directory) == project else []
+        for name in set(names) - set(skipped):
+            entry = Path(directory) / name
+            if entry.is_symlink() and entry.is_dir() and overlap(entry.resolve(), runs):
+                raise Refused(
+                    400,
+                    f"data source {source.name!r}: {entry.relative_to(project)} in dbt_project "
+                    "links to the runs directory, which a dbt run's copy of the project "
+                    "would copy into itself",
+                )
+        return skipped
+
     # Link targets are copied, so no write in the workspace reaches the original project.
-    shutil.copytree(
-        project,
-        workspace,
-        ignore=lambda directory, _: list(NOT_COPIED) if Path(directory) == project else [],
-        ignore_dangling_symlinks=True,
-    )
+    shutil.copytree(project, workspace, ignore=ignore, ignore_dangling_symlinks=True)
     if source.duckdb is None:
         return database
     # Inside the project (`check_layout`): the copy keeps the file's place, so `profiles.yml`'s

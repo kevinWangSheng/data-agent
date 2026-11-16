@@ -277,6 +277,26 @@ def test_a_duckdb_file_under_a_linked_directory_in_the_project_counts_as_inside(
     assert (cwd / "data" / "shop.duckdb").read_bytes() == b"db"
 
 
+@pytest.mark.parametrize("target", ["runs_dir", "its_parent"])
+def test_a_linked_directory_in_the_project_reaching_the_runs_dir_refuses_the_dbt_run(
+    tmp_path: Path, recorder: Recorder, target: str
+) -> None:
+    """Copying follows directory links, so such a link would copy the workspace into itself."""
+    project = dbt_project(tmp_path, with_db=True)
+    runs_dir = tmp_path / "work" / "runs"
+    runs_dir.mkdir(parents=True)
+    (project / "models" / "linked").symlink_to(
+        runs_dir if target == "runs_dir" else runs_dir.parent
+    )
+    source = DataSource(name="shop", duckdb=project / "shop.duckdb", dbt_project=project)
+    with TestClient(create_app(runs_dir, [source], recorder)) as client:
+        response = client.post("/api/runs", json=body(task_type="dbt"))
+    assert response.status_code == 400, response.text
+    assert "models/linked" in response.json()["detail"]
+    assert recorder.calls == []
+    assert list(runs_dir.iterdir()) == []
+
+
 def never_start(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
     raise AssertionError("no run should start")
 

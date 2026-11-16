@@ -39,6 +39,7 @@ dbt_project = "proj"
     ("body", "message"),
     [
         ('kind = "mysql"\npath = "x"', "kind"),
+        ('kind = ["duckdb"]\npath = "x"', "kind"),
         ('path = "x.duckdb"', "kind"),
         ('kind = "duckdb"', "path"),
         ('kind = "postgres"', "env"),
