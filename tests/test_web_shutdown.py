@@ -81,7 +81,7 @@ def alive(pid: int) -> bool:
     return True
 
 
-def answers(port: int) -> bool:
+def serving(port: int) -> bool:
     try:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
         connection.request("GET", "/api/options")
@@ -110,7 +110,7 @@ class Server:
             ]
         )
         self.run_pid: int | None = None
-        wait_until(lambda: answers(self.port) or self.process.poll() is not None)
+        wait_until(lambda: serving(self.port) or self.process.poll() is not None)
         assert self.process.poll() is None, "the server did not start"
 
     def close(self) -> None:
@@ -169,22 +169,19 @@ def test_stopping_the_server_cancels_its_run_even_with_a_stream_open(
     run_id = submit(server.port)
     pids = tmp_path / "runs" / run_id / "workspace" / "pids"
     wait_until(pids.is_file)
-    server.run_pid, tool = (int(pid) for pid in pids.read_text().split())
+    server.run_pid, tool_pid = (int(pid) for pid in pids.read_text().split())
     stream = open_stream(server.port, run_id) if with_stream else None
 
-    started = time.monotonic()
     server.process.send_signal(sig)
     try:
         server.process.wait(timeout=EXIT_SECONDS)
     except subprocess.TimeoutExpired:
         pytest.fail(f"the server was still up {EXIT_SECONDS}s after {sig.name}")
-    took = time.monotonic() - started
     if stream is not None:
         stream.close()
 
-    assert took < EXIT_SECONDS
     assert not alive(server.run_pid)
-    assert not alive(tool)
+    assert not alive(tool_pid)
     with TestClient(
         create_app(
             tmp_path / "runs",
