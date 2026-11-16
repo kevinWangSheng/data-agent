@@ -442,3 +442,41 @@ def test_a_refused_featured_run_is_reported_as_a_count_only(tmp_path: Path) -> N
         assert hidden not in printed
     assert "2 featured run(s)" in printed
     assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ["no event file", "two event files", "no title", "bad grade", "not utf-8"],
+)
+def test_a_malformed_featured_run_is_named_by_position_not_by_its_directory(
+    tmp_path: Path, broken: str
+) -> None:
+    good = tmp_path / "good-run"
+    good.mkdir()
+    (good / "run-1.jsonl").write_text(NEW_FIELDS.read_text())
+    (good / "notes.json").write_text(json.dumps(LOCAL_NOTES))
+    run = tmp_path / "secret-task-run"
+    run.mkdir()
+    notes: dict[str, Any] = dict(LOCAL_NOTES)
+    if broken != "no event file":
+        (run / "run-1.jsonl").write_text(NEW_FIELDS.read_text())
+    if broken == "two event files":
+        (run / "run-2.jsonl").write_text(NEW_FIELDS.read_text())
+    if broken == "no title":
+        del notes["title"]
+    if broken == "bad grade":
+        notes["grade"] = {"passed": "yes"}
+    if broken == "not utf-8":
+        (run / "run-1.jsonl").write_bytes(b'{"type": "text", "text": "\xff"}\n')
+    (run / "notes.json").write_text(json.dumps(notes))
+    out = tmp_path / "site"
+    proc = export(
+        *("--manifest", str(manifest(tmp_path, [])), "--out", str(out)),
+        *("--run", str(good), "--run", str(run)),
+    )
+    assert proc.returncode == 2
+    printed = proc.stdout + proc.stderr
+    assert "secret-task-run" not in printed and str(tmp_path) not in printed
+    assert "--run #2" in printed
+    assert "Traceback" not in printed
+    assert not out.exists()

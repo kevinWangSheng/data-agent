@@ -36,7 +36,8 @@ whole benchmark reach the site only as the aggregates of `--board`. A featured r
 says where it came from: `task_id`, checked as a trial's task is, or `local_data: true` for a run
 on genuinely local data (`featured_allowed`). One with neither, or with notes.json unreadable, is
 refused, and so is the whole export; that error gives a count too, not a run id or directory,
-which is often named after its task. These two fields are input only, not in the notes.
+which is often named after its task; a featured run refused later, as malformed, is named by its
+position among the `--run`s. These two fields are input only, not in the notes.
 
 Exit 0 with the export; 2 on anything refused.
 """
@@ -220,24 +221,28 @@ def check_featured(run_dirs: list[Path], dev: set[str]) -> None:
         )
 
 
-def featured_run(run_dir: Path) -> tuple[dict[str, Any], Path]:
+def featured_run(run_dir: Path, position: int) -> tuple[dict[str, Any], Path]:
     """The notes and event file of a featured run that `check_featured` let through; its id is
-    the directory name."""
+    the directory name. An error names it by its `position` among the `--run`s, not by its
+    directory, which is often its task's name."""
+    which = f"the featured run given as --run #{position}"
     files = sorted(run_dir.glob("*.jsonl"))
     if len(files) != 1:
-        raise Refused(f"{run_dir} must hold one event file (*.jsonl), not {len(files)}")
-    given = read_json(run_dir / "notes.json", "the featured run's notes.json")
+        raise Refused(f"{which} must hold one event file (*.jsonl), not {len(files)}")
+    given = given_notes(run_dir)
     if not isinstance(given, dict) or not isinstance(given.get("title"), str):
-        raise Refused(f"{run_dir / 'notes.json'} gives no title")
+        raise Refused(f"{which}: its notes.json gives no title")
     grade = given.get("grade")
     if grade is not None and not (
         isinstance(grade, dict) and isinstance(grade.get("passed"), bool)
     ):
-        raise Refused(
-            f"{run_dir / 'notes.json'}: grade must be {{'passed': bool, 'detail'}} or null"
-        )
+        raise Refused(f"{which}: its grade must be {{'passed': bool, 'detail'}} or null")
+    try:
+        found = task_event(files[0])
+    except Refused:
+        raise Refused(f"{which}: its event file cannot be read as UTF-8 text") from None
     # An event file from before the `task` event: the notes give task, type and data source.
-    task = task_event(files[0]) or given
+    task = found or given
     notes = {
         "id": run_dir.name,
         "title": given["title"],
@@ -434,7 +439,9 @@ def build(args: argparse.Namespace, stage: Path) -> int:
     dev = exportable(args.manifest)
     check_featured(args.runs, dev)
     trials = load_dev_trials(args.job, dev)
-    runs: list[tuple[dict[str, Any], Path]] = [featured_run(r) for r in args.runs]
+    runs: list[tuple[dict[str, Any], Path]] = [
+        featured_run(r, i) for i, r in enumerate(args.runs, 1)
+    ]
     runs += [(trial_notes(t, events, args.tasks_dir), events) for t, events, _ in trials]
     ids = [notes["id"] for notes, _ in runs]
     if len(set(ids)) < len(ids):
