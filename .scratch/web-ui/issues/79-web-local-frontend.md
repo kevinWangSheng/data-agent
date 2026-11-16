@@ -81,3 +81,4 @@ Branch: worktree-79-web-local-frontend
   - make check（af03aa4）：exit 0；ruff 通过；basedpyright 0 errors；pytest 2307 passed、1 skipped；vitest 179 passed。
   - da-review（Codex，c050f78）：无意见。eng:code-review：无阻塞；af03aa4 修三条（"不警告"补断言；对照构建先去掉 shell 里已有的 `DATA_AGENT_WHEEL_UI`；注释"不联网"改成"no pnpm and no frontend build"）。不修：变量名两处各写一次（评测代码不 import 构建 hook，单元测试钉住字面值）；只认 `"0"`（内部开关）；测试 monkeypatch `subprocess.run`（会还原）；打包测试多跑两次 `uv build`（对照需要）。
   - 本轮没做"在线版历史列表"那条验收（是本轮开始后才加的），等 81 合入后 rebase 时做。
+- 2026-11-16 主会话：PR #92 对 af03aa4 CI 绿；Codex 再次报同一条"回到历史列表后旧错误还显示"，理由同前不属实（`App.tsx:57`），已在 PR 上回复。本 PR 没有属实的新意见；等 81 合入后 rebase 并做在线版历史列表。
