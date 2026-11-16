@@ -1,6 +1,6 @@
 # 78 — 后端：提交和取消运行
 
-Status: in-progress
+Status: in-review
 Blocked by: 77
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -28,7 +28,7 @@ Branch: worktree-78-web-backend-submit-cancel
   - 连接串不出现在 TOML、HTTP 响应、子进程参数和事件里。每条规则都要有单元测试。
 - `tests/acceptance/test_web_api.py` 里工单 77 留下的 `TICKET_77` 定义已没用，按 AGENTS.md 的机械清理例外可以顺手删；不删也行。
 - 工作目录：每次运行一个目录。dbt 运行先复制数据源的 dbt 项目目录（不复制 `target/` 和 `logs/`），DuckDB 数据源连库文件一起复制；查数运行用空目录。
-- 取消：只对本服务启动、还在跑的子进程，按记录的确切进程号发终止信号；不按名字找进程，不发给进程组以外的东西。取消后的状态要能被列出运行和读事件的接口看到（子进程没写 `result` 事件就退出时，由服务记下"已取消"）。
+- 取消：只对本服务启动、还在跑的子进程，按记录的确切进程号发终止信号；不按名字找进程，不发给进程组以外的东西。取消后的状态要能被列出运行的接口看到（子进程没写 `result` 事件就退出时，由服务记下"已取消"）；读事件的接口只返回事件，不另带状态（2026-11-15 主会话按 spec"被取消的读后端给的状态"定：前端的 `RunNotes.cancelled` 从运行列表取）。
 - 同时只跑一条：已有运行在跑时再提交，拒绝并说明原因。
 - 提交的校验：数据源名字存在、类型和配置合法、dbt 类型的任务要求数据源配了 dbt 项目目录。
 - 只用 uv。
@@ -56,10 +56,27 @@ Branch: worktree-78-web-backend-submit-cancel
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0.0082 (main-session real run, price table; the cancelled run wrote no result, cost unrecorded) (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+- 2026-11-15 claude-opus（worktree-78-web-backend-submit-cancel：6854ac1、f23d768、2866f60；PR #85）：
+  - 设计：`data-agent web --data-sources FILE`（TOML，`[sources.<name>]`，kind = duckdb|postgres，path / env，可选 dbt_project；只在给了时读，无默认路径），写进 `docs/setup.md`。每条运行 `<runs-dir>/<id>/`（事件文件 + `web-run.json`，服务自己的记录）和 `<id>/workspace/`（查数为空目录；dbt 复制项目，不含 target/、logs/，符号链接复制成目标内容，连同 DuckDB 文件）。运行在自己的 session 里启动；取消对记录的 pid 及其领头的进程组发信号，10 s 后 SIGKILL。没写 result 就退出的记成 cancelled（本服务停的）或 failure。
+  - make check：2231 passed, 1 skipped, 39 deselected, 4 xfailed；ruff、format、basedpyright 0 errors；web vitest 通过。
+  - agent 自己的无模型检查（假的 `DATA_AGENT_API_KEY` 指向不应答的本地 socket，$0）：提交 201、再提交 409、dbt 任务配了没 dbt_project 的数据源 400；取消前进程组 3 个进程（data-agent run、claude CLI、MCP server），取消 200 后组立即为空，再取消 409；服务 SIGINT 时在跑的组为空、web-run.json 记 cancelled。真实运行发现并修好：起初 claude CLI 活过了取消响应，现在取消等整组退出。
+  - 审查 1 da-review（Codex）5 条，f23d768 全修且各带测试：[P1] 没 result 的运行卡在 running / 没事件的运行从列表消失 → web-run.json 记录；[P1] 运行退出后组里残留进程 → 退出时和关服务时停掉；[P2] 复制时保留符号链接 → 复制目标；[P2] target/ 下的 DuckDB 文件没复制 → 复制；[P2] 取消和自然结束竞争 → 取消返回结束时的那行。
+  - 审查 2 eng:code-review：Standards 无硬违规，2866f60 修（重复的数据库参数分支；给验收测试要的 DataSource 再导出加注释）；不修：status 用字符串、记录用 dict（JSON 行就是接口契约）；四个参数分开传（只有一条调用路径）；launcher.py 290 行。Spec 无阻塞项。
+  - 工单外的增加（主会话接受）：没 result 的运行记 failure；提交时再查 DuckDB 文件存在、环境变量已设置；拒绝未知的 TOML 表和键；SIGKILL 兜底。
+  - 已知限制：服务被强杀时不更新 web-run.json，那条一直显示 running；验收夹具不在自己的 session 里起运行，进程组清理只由 `tests/test_web_submit.py` 覆盖；macOS 上全量测试时 `killpg(pgid, 0)` 在组员还活着时报过 EPERM（原因未确认），只把"no such process"当作组已结束。
+  - 按 AGENTS.md 机械清理例外删了 `TICKET_77` 定义。
+- 读事件的接口不带 cancelled（agent 交主会话）：主会话判定接受。spec"被取消的读后端给的状态"由运行列表满足，前端 `RunNotes.cancelled` 从列表取；Context 第 31 行已改成这样，工单 79 加了说明。
+- 真实运行（主会话，2026-11-15，分支 2866f60，脚本 scratchpad `t78-real.sh`）：`data-agent web --runs-dir runs/t78-real/web --port 18778 --data-sources runs/t78-real/sources.toml`（一个 DuckDB 源 shop）。
+  - `GET /api/options` → `{"data_sources":["shop"],"task_types":["query","dbt"],"configs":[…6 个]}`
+  - `POST /api/runs`（README 快速上手查数，no-verifiers）→ `{"id":"20261116T054032Z-3fd17f"} HTTP 201`；轮询到 `success`，24.9 s，$0.0082，79 条事件，answer "Gold — 710.00 …"
+  - 再提交 → 201 `20261116T054102Z-dd666a`；8 s 后第三次提交 → 409 "run … is still going; one run at a time"
+  - `POST …/dd666a/cancel` → 200，`"status":"cancelled"`；再取消 → 409 "… is not a run this server is running"
+  - `GET /api/runs` → dd666a cancelled，3fd17f success 0.00817692；`web-run.json` 记 cancelled；SIGTERM 停服务 "Application shutdown complete"；之后没有残留进程。
