@@ -34,6 +34,7 @@ Branch: worktree-80-web-export
 
 - [ ] 导出命令的验收测试全部通过，`xfail` 标记已删，测试内容一字未改
 - [ ] 没有任何参数或环境变量能跳过脱敏或留出集检查
+- [ ] （退回第 1 轮加）精选运行检查的单元测试覆盖开发集、留出集、清单里没有的题、`local_data: true`、两个都没有五种情况，另加 `local_data` 是非布尔真值（如 `"yes"`、`1`）时按没有处理、拒绝
 - [ ] `make check` 通过
 
 ## Evidence required

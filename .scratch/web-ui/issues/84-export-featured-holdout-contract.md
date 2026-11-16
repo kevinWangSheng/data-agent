@@ -1,6 +1,6 @@
 # 84 — 导出验收契约：精选运行也过留出集检查
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 73
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (Claude Code) (filled in by the main session; the worktree session could not write the main checkout)
@@ -59,10 +59,10 @@ Branch: worktree-84-export-featured-holdout-contract
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
+- Attempts: 2
+- Review rounds: 3
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1
+- Outcome: returned ×1, fixed
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -78,3 +78,12 @@ Branch: worktree-84-export-featured-holdout-contract
   1. 拒绝时不能打印被拒运行的 id 或目录路径：`assert_refused`（第 305 行）现在只查题目 id、失败原因、grade detail。精选运行的目录常按题目命名（真实夹具 `dbt-cart-abandonment` 就是），打印 run id 等于泄露留出集题名，也违反"只报数量"。三个拒绝测试都要把被拒运行的 id 和 `--run` 目录路径加进不能出现的串。
   2. `local_data: false` 且没有 `task_id` 要拒绝：在 `test_featured_run_with_neither_task_id_nor_local_data_is_refused` 里加这个场景，防止实现只看键在不在（fail-open）。
   - 在原分支上接着改；修完重跑 `pytest tests/acceptance/test_web_export.py -q`、`make check`、参考实现对着跑（含一个反向检查：拒绝时打印 run id → 失败），和两道审查。
+- 2026-11-15 claude-opus-5-5，退回第 1 轮修复（新提交 5f660fe；PR #87）：只改 `tests/acceptance/test_web_export.py`。
+  1. 拒绝时不打印 run id 和路径：`assert_refused` 接收被拒的 `--run` 目录，stdout/stderr 里出现目录名（run id）或 `str(path)` 就失败；五处拒绝调用都传了（留出集两个场景、清单外、两种都没有的两个场景）。模块文档写明拒绝时不打印"题目 id、run id、运行目录、失败原因或结果"，理由是运行目录常按题目命名。
+  2. `local_data: false` 且没有 `task_id` 要拒绝：`test_featured_run_with_neither_task_id_nor_local_data_is_refused` 加 `unlocal-run` 场景；文档写明 `local_data: false` 等于没有。
+  - 本轮没动现有测试和断言（主会话核对 5f660fe 删掉的行只是 84 第一轮自己写的 `assert_refused` 和调用）。
+  - `pytest tests/acceptance/test_web_export.py -q` → "9 xfailed"（主会话复跑同样）；make check：ruff 通过，basedpyright 0 errors，"2195 passed, 1 skipped, 39 deselected, 15 xfailed"，web vitest 通过。
+  - 临时参考实现（未提交，已删）`--runxfail`：正确版 9 passed；反向：不查精选运行 → 3 failed；只看 `local_data` 键在不在 → 1 failed（新场景）；拒绝时打印 run id → 3 failed。
+  - da-review：P2"断言拒绝输出只含数量"——不修，理由同第一轮：测试查了所有可能泄露的串，不钉死消息格式（由工单 80 定）。
+  - eng:code-review：Standards 无违规，几处写法问题按判断不改；Spec 两项退回都到位。不修：路径只按绝对路径精确匹配（run id 那条已覆盖相对路径和 `~` 形式）；文档"只报数量"比测试严；`"local_data": "yes"` 这类非布尔真值没钉——主会话已写进工单 80 的验收标准。
+- PR #87 待人审（验收测试改动，plan §142）。
