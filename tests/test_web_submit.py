@@ -329,6 +329,8 @@ def test_a_dangling_link_in_the_project_is_skipped(
 ) -> None:
     project = dbt_project(tmp_path, with_db=True)
     (project / "models" / "gone.sql").symlink_to("missing.sql")
+    # A file of that name in the server's cwd must not make the link count as valid.
+    (tmp_path / "missing.sql").write_text("select 9\n")
     monkeypatch.chdir(tmp_path)
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()

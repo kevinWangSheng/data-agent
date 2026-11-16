@@ -264,8 +264,8 @@ def prepare_workspace(
     workspace: Path, source: DataSource, task_type: str, runs_dir: Path
 ) -> list[str]:
     """Creates the run's working directory; returns the database arguments for `data-agent run`.
-    Refused when the dbt project holds a directory link reaching the runs directory, which the
-    copy (it follows links) would copy into itself."""
+    The copy follows links and skips dangling ones. Refused when the dbt project holds a
+    directory link reaching the runs directory, which the copy would copy into itself."""
     if source.postgres_env is not None:
         database = ["--postgres-env", source.postgres_env]
     else:
@@ -281,11 +281,13 @@ def prepare_workspace(
         skipped: list[str] = list(NOT_COPIED) if Path(directory) == project else []
         for name in set(names) - set(skipped):
             entry = Path(directory) / name
-            if entry.is_symlink() and not entry.exists():
+            if not entry.is_symlink():
+                continue
+            if not entry.exists():
                 # Dangling. `Path.exists` resolves a relative link from the directory holding
                 # it; `copytree`'s own `ignore_dangling_symlinks` resolves it from the cwd.
                 skipped.append(name)
-            elif entry.is_symlink() and entry.is_dir() and overlap(entry.resolve(), runs):
+            elif entry.is_dir() and overlap(entry.resolve(), runs):
                 raise Refused(
                     400,
                     f"data source {source.name!r}: {entry.relative_to(project)} in dbt_project "
