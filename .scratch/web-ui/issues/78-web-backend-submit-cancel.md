@@ -1,6 +1,6 @@
 # 78 — 后端：提交和取消运行
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 77
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -59,7 +59,7 @@ Branch: worktree-78-web-backend-submit-cancel
 - Attempts: 1
 - Review rounds: 2
 - Model spend: $0.0082 (main-session real run, price table; the cancelled run wrote no result, cost unrecorded) (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: returned ×1
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -80,3 +80,7 @@ Branch: worktree-78-web-backend-submit-cancel
   - 再提交 → 201 `20261116T054102Z-dd666a`；8 s 后第三次提交 → 409 "run … is still going; one run at a time"
   - `POST …/dd666a/cancel` → 200，`"status":"cancelled"`；再取消 → 409 "… is not a run this server is running"
   - `GET /api/runs` → dd666a cancelled，3fd17f success 0.00817692；`web-run.json` 记 cancelled；SIGTERM 停服务 "Application shutdown complete"；之后没有残留进程。
+- **退回第 1 轮（PR #85 上 Codex GitHub app 的两条 P2，主会话 2026-11-15 核实属实）**：
+  1. `--runs-dir` 在某个 `dbt_project` 里面时，`prepare_workspace` 的 `copytree`（`src/data_agent/web/launcher.py:272-277`）只跳过 `target/`、`logs/`，新建的工作区就在被复制的树里，会一层层复制进去，直到递归或路径过长报错。修法：启动时校验，`--runs-dir` 和任何一个数据源的 `dbt_project` 互相包含就拒绝启动并说明原因；加测试。
+  2. DuckDB 文件在 `dbt_project` 外面时，副本放到工作区根下（`launcher.py:285-291`），但 dbt 从工作区按 `profiles.yml` 的相对路径找库：例如 `path: ../shop.duckdb` 指向 `<run-dir>/shop.duckdb`，网关拿到的是 `<run-dir>/workspace/shop.duckdb`，dbt 和只读工具连的不是同一份（dbt 还可能新建一个空库）。保留相对位置又可能跑出运行目录（`../../data/x.duckdb`）。修法（主会话定，按"原目录不动、每条运行用自己的副本"）：配了 `dbt_project` 的 DuckDB 数据源，库文件必须在 `dbt_project` 里面，否则启动时拒绝并说明原因；去掉"在项目外的复制到工作目录根下"这条路径；`docs/setup.md` 同步改；加测试。
+  - 在原分支 `worktree-78-web-backend-submit-cancel` 上接着修；修完重跑 `make check` 和两道审查。真实运行由主会话复跑。
