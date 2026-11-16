@@ -1,10 +1,10 @@
 # 80 — 导出命令：把选定的运行转成在线版的静态数据
 
 Status: ready-for-agent
-Blocked by: 73
+Blocked by: 73, 84（退回第 1 轮：要等 84 改好的验收契约人审合入）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (opus)
+Branch: worktree-80-web-export
 
 ## Goal
 
@@ -25,6 +25,7 @@ Branch: —
 - 命令行：`evals` 按 `args.run` 分派子命令，所以导出命令的 `--run` 参数必须写成 `dest="runs"`，否则会冲突。
 - 运行说明的字段：id、标题、任务、类型、数据源名字、评分结果、失败原因、是否精选。事件文件里有 `task` 事件时从它取，没有时从 Harbor 的题目目录取。
 - 评测页的汇总：两个榜单的总分和误差、各配置的通过率和误差、开发集每个 trial 一行。这些数字从现有的评测代码算（`evals/report.py`、`evals/metrics.py`、`evals/dab_score.py`），不另写一套算法。
+- **精选运行的留出集检查**（退回第 1 轮加，2026-11-15 人定，spec 同名一条，契约在工单 84）：`notes.json` 必须有 `task_id` 或 `local_data: true` 之一，两个都没有就拒绝；有 `task_id` 的和 trial 走同一套开发集/留出集检查；拒绝时只报数量。这两个字段只是输入，输出的运行说明字段不变。
 - **留出集**：对照清单，任何属于留出集的 trial 都拒绝导出并以非零退出；留出集和全量只输出汇总数字。实现和测试都不读、不打印留出集的逐题失败细节（ADR-0004）；测试用假清单。
 - 脱敏不能关：没有跳过脱敏的参数。
 - 只用 uv。
@@ -51,10 +52,34 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2 (da-review: 1 fix; eng:code-review: 1 fix round)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: returned ×1
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+- 2026-11-15 claude-code (opus)，第 1 次实现（worktree-80-web-export：aac399c、298f87f、6a16e5a）：新增 `evals/export.py`（注册在 `evals/__main__.py`），`tests/test_eval_export.py` 14 条单元测试；4 条导出验收测试去掉 `xfail` 后通过。
+- 评测页汇总的位置（工单 76、81 照它读）：`DIR/eval.json` = `{"dev": {"reference": "full", "configs": [...], "contributions": [...], "trials": [...]}, "data_eng_bench": {...} | null, "dab": {...} | null}`；结构写在 `evals/export.py` 的模块文档里。
+  - `configs`：每个配置一行，通过率和误差来自 `report.summary`。
+  - `contributions`：full 减各配置，`compare.paired_bootstrap`（seed 0、10000 次，和 `ablate` 一样），每条带 `significant`。
+  - `trials`：开发集每个 trial 一行 `{id, task, config, attempt, passed, reward, cost_usd, duration_seconds}`。
+  - `data_eng_bench` 来自 `--board board.json`，只抄榜单分数和误差、题数和 trial 数、留出集汇总；`dab` 来自 `--dab dab_score.json`，只抄每个输出和每个数据集的 Pass@1 及对比。"为什么只有汇总"那句由页面自己写。
+- 只导出开发集 trial：题目不在清单开发集里，或被清单或仓库 `evals/manifest.json` 留出的，都拒绝，报错只给数量。
+- 旧事件文件（没有 `task` 事件）：精选运行从 `notes.json` 取 task、类型、数据源；trial 从 `--tasks-dir/<task>/instruction.md` 取任务（没有就用题目 id），类型 `dbt`，数据源 null。270 个真实 trial 都没有 `task` 事件，不给 `--tasks-dir` 时显示题目 id（工单 81、82 的导出命令要带 `--tasks-dir`）。
+- 输出安全：输出目录必须是新的或空的；先在暂存目录里建好，用 `evals scrub` 的规则脱敏，干净了才移过去。
+- 真实运行：三条 `runs/web-prototypes/data/runs/` 的原型运行，meta.json 转成各自的 notes.json（暂存脚本 /tmp/80-prepare.py）。`uv run python -m evals export --manifest evals/manifest.json --out /tmp/80-export4/site --run …/query-shop --run …/dbt-cart-abandonment --run …/dbt-division-by-zero` → "scrub: changed 0 file(s) of 8; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0" / "export: 3 run(s) -> /tmp/80-export4/site"，exit 0。文件：eval.json、index.json、runs/{query-shop,dbt-cart-abandonment,dbt-division-by-zero}/{events.jsonl,meta.json}，目录 755。index.json：query-shop（query，grade null，featured true）；dbt-cart-abandonment（dbt，passed true "benchmark tests passed (reward 1)"）；dbt-division-by-zero（dbt，passed false "14 of 15 graded components passed; …"，failure_reason 是失败归因）。eval.json：dev 为空，data_eng_bench、dab 为 null。
+- 真实开发集数据的额外核对：导出 `runs/u2-rest/jobs/{full,baseline}`（100 个 trial），eval.json 的数和 `ablate` 自己的报告一致：full 64.0±2.83，baseline 66.0±2.0，贡献 −2.0 [−12, 10]，不显著。
+- make check：ruff 和格式通过；basedpyright 0 errors；pytest "2214 passed, 1 skipped, 6 xfailed"；web typecheck 和测试通过。
+- 验收测试文件还删了因去掉 `xfail` 而没用的 `import pytest`（否则 ruff F401），其余没改。人 2026-11-15 认可，AGENTS.md 的例外已扩成"因此没用的 import 或标记定义"。
+- da-review（Codex）：P2 非 UTF-8 事件文件导致 traceback、exit 1 → 298f87f 修，带测试。
+- eng:code-review，6a16e5a 修：清单开发集以外的题也拒绝（原来只拒留出集）；事件行只按 \n 分，字符串里的 U+2028 不再丢 task 事件；每个 trial 的 result.json 只读一次；trial 按名字跨 job 列出；站点目录 0755；held_out 改成两句；改名 summary_。
+- 不修（理由）：精选运行不查留出集（说明里没有题目 id，已写进模块文档）——**已被人退回，见下**；留出集读取和 `report.check_dev_list` 重复（错误类型不同，改 report.py 超出本工单）；trial_notes 里三处 `if task else` 保留；模块 450 行偏长，保留；没有 DAB 运行总数（页面可按数据集加）；pass@k 和 cost_usd 保留；没有 `task` 事件的 trial 数据源为 null（Harbor 题目目录不记数据源名字）。
+- **退回：精选运行没过留出集检查，fail-open**（2026-11-15 人核实）。trial 按题目 id 检查，但 `featured_run()` 没有题目 id，`export.py:30-36` 明说精选运行不查留出集；今天的精选运行恰好都是开发集题，只是现状，不是边界。修法（契约由工单 84 先改，人审合入后再修）：
+  - 来自榜单题目的精选运行，`notes.json` 带 `task_id`；真正的本地运行带 `local_data: true`；至少有一个，两个都没有就拒绝，不当成本地。
+  - 带 `task_id` 的和 trial 走同一套开发集/留出集检查。
+  - 拒绝只报数量，不打印题目 id、失败原因或结果。
+  - 单元测试覆盖开发集、留出集、清单里没有的题、本地、缺元数据五种情况（验收测试由 84 加）。
+  - 84 合入后把本分支 rebase 到新 main，删 84 新测试的 `xfail` 标记（按 AGENTS.md 例外），修完重跑 `make check` 和两道审查。
+  - 人的基线：工单 80 的测试 19 passed。
