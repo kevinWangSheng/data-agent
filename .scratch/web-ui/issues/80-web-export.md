@@ -1,6 +1,6 @@
 # 80 — 导出命令：把选定的运行转成在线版的静态数据
 
-Status: in-review
+Status: done
 Blocked by: 73, 84（done）
 Spec: ../spec.md
 Claimed by: claude-code (opus)
@@ -56,7 +56,7 @@ Branch: worktree-80-web-export
 - Attempts: 3
 - Review rounds: 5 (round 1: da-review 1 fix, eng:code-review 1 fix round; return round 1: same; PR #88 return round 1: same)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×2 (1 before PR, PR #88 ×1), in review
+- Outcome: accepted after 2 returns (1 before PR, PR #88 ×1); CI green, Codex no findings on 217af69
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -106,3 +106,4 @@ Branch: worktree-80-web-export
   - da-review（Codex）：P3 未用的 `NOTES_FIELDS` 常量 → 5bbf0ef 删。eng:code-review：Spec 无缺口；Standards 无硬违规；217af69 修：`Unchecked` 分支补测试、`changed += bool` 改普通 `if`、不拒绝的情况拆成单独测试、删重复 helper。
   - 不修（理由）：`check_ids` 和 `scrub.run` 各建一次规则（改 `scrub.run` 越界）；`check_ids` 收整个 `args`（唯一调用方）；被拒的导出可能留下 `--out` 的空父目录（早就有，里面没有文件或 id）；之前那些带开发集 trial 路径的报错同第 1 轮。
   - 已知限制（主会话核实，属 `evals/scrub.py` 的既有取舍，不在本工单）：紧跟在 `.` 后的 IPv4 不被脱敏，内容和目录名里都会留下。
+- 2026-11-16 主会话：PR #88 CI 绿，Codex GitHub app 对 217af69 无意见（has_any_findings false），squash 合并。
