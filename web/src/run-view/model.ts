@@ -222,13 +222,12 @@ function parseTable(text: string): ResultTable | null {
   const cut = note.startsWith(INCOMPLETE_DISPLAY)
   const footer = lines.length - (cut ? 2 : 1)
   const count = footer >= 2 ? ROW_COUNT.exec(lines[footer]) : null
-  if (!count) return null
-  const shown = cut ? SHOWN_COUNT.exec(note) : count
-  if (!shown) return null
+  const expected = cut ? SHOWN_COUNT.exec(note) : count
+  if (!count || !expected) return null
   const columns = lines[0].split(' | ')
   const rows = lines.slice(2, footer).map((line) => (columns.length === 1 ? [line] : line.split(' | ')))
   if (rows.some((cells) => cells.length !== columns.length)) return null
-  return rows.length === Number(shown[1]) ? { columns, rows } : null
+  return rows.length === Number(expected[1]) ? { columns, rows } : null
 }
 
 const GATEWAY_BLOCKED = /^Error executing tool \S+: Query blocked by the read-only gateway:/
