@@ -26,6 +26,14 @@ export function replayClock(times: readonly (number | null)[], skipIdle: boolean
   return clock
 }
 
+/** How long the online site's first screen takes to play its run (spec: about 20–30 seconds). */
+export const AUTOPLAY_MS = 25_000
+
+/** The speed that plays a replay clock of `totalMs` in `targetMs`; 1x when the clock is empty. */
+export function autoplaySpeed(totalMs: number, targetMs: number = AUTOPLAY_MS): number {
+  return totalMs > 0 ? totalMs / targetMs : 1
+}
+
 /** How many events have come by clock reading `t` (at least the first one). */
 export function revealedAt(clock: readonly number[], t: number): number {
   let lo = 0

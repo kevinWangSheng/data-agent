@@ -57,6 +57,8 @@
   --tok-type: #0a7169;
   --tok-op: #4f4b42;
   --code-bg: #f4f2ec;
+  /* The evaluation chart's bars; checked with the dataviz skill's validator against --panel. */
+  --chart-bar: #2348c8;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -106,6 +108,7 @@
     --tok-type: #4fd1c1;
     --tok-op: #b3afa4;
     --code-bg: #101316;
+    --chart-bar: #6f8af5;
   }
 }
 
@@ -155,6 +158,7 @@
   --tok-type: #4fd1c1;
   --tok-op: #b3afa4;
   --code-bg: #101316;
+  --chart-bar: #6f8af5;
 }
 
 @theme {
