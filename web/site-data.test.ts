@@ -7,7 +7,7 @@ import { describe, expect, test } from 'vitest'
 import { exportFiles } from './site-data'
 
 /** An export directory in `evals export`'s layout, with a secret file beside it. */
-function makeExport(withEval: boolean, featured = true): string {
+function makeExport({ withEval = true, featured = true } = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'site-data-'))
   const dir = join(root, 'site')
   mkdirSync(join(dir, 'runs', 'q'), { recursive: true })
@@ -31,13 +31,13 @@ const text = (file: { body: Buffer } | null) => file?.body.toString('utf8')
 
 describe('exportFiles', () => {
   test("serves a run's files", () => {
-    const file = exportFiles(makeExport(true))
+    const file = exportFiles(makeExport())
     expect(text(file('runs/q/meta.json'))).toContain('"id":"q"')
     expect(file('runs/q/events.jsonl')?.type).toBe('application/x-ndjson')
   })
 
   test('makes home.json: featured runs and the leaderboard summaries, no trials', () => {
-    const home = JSON.parse(text(exportFiles(makeExport(true))('home.json'))!)
+    const home = JSON.parse(text(exportFiles(makeExport())('home.json'))!)
     expect(home).toEqual({
       runs: [{ id: 'q', featured: true, task_type: 'query' }],
       data_eng_bench: { leaderboard: { accuracy: 64.1 }, holdout: { accuracy: null } },
@@ -46,24 +46,24 @@ describe('exportFiles', () => {
   })
 
   test('without eval.json: no eval.json, and home.json has no scores', () => {
-    const file = exportFiles(makeExport(false))
+    const file = exportFiles(makeExport({ withEval: false }))
     expect(file('eval.json')).toBeNull()
     expect(JSON.parse(text(file('home.json'))!).data_eng_bench).toBeNull()
   })
 
   test('an export without featured runs: an error that says how to give them', () => {
-    expect(() => exportFiles(makeExport(true, false))).toThrow(/no featured run.*evals export --run/)
+    expect(() => exportFiles(makeExport({ featured: false }))).toThrow(/no featured run.*evals export --run/)
   })
 
   test('a run id that climbs out of runs/ is not served', () => {
-    const file = exportFiles(makeExport(true))
+    const file = exportFiles(makeExport())
     expect(file('runs/..%2F..%2Fsecret.json/meta.json')).toBeNull()
     expect(file('runs/%2E%2E/meta.json')).toBeNull()
     expect(file('runs/..%2Fsecret.json/meta.json')).toBeNull()
   })
 
   test('only the files the site reads', () => {
-    const file = exportFiles(makeExport(true))
+    const file = exportFiles(makeExport())
     expect(file('secret.json')).toBeNull()
     expect(file('index.json')).toBeNull()
     expect(file('runs/q/notes.json')).toBeNull()

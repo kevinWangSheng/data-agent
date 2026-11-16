@@ -30,9 +30,9 @@ const RUN_FILE = /^runs\/([^/]+)\/(meta\.json|events\.jsonl)$/
  * stop at the start, when the export has no featured run for the first screen to replay. */
 export function exportFiles(dir: string): (path: string) => File | null {
   const readJson = (name: string) => JSON.parse(readFileSync(join(dir, name), 'utf8')) as unknown
-  const home = json(exportHome(dir))
+  exportHome(dir) // the check, at the start
   return (path) => {
-    if (path === 'home.json') return home
+    if (path === 'home.json') return json(exportHome(dir))
     if (path === 'eval.json') return existsSync(join(dir, path)) ? json(readJson(path)) : null
     const match = RUN_FILE.exec(path)
     if (!match) return null
@@ -119,8 +119,7 @@ export function siteData(): Plugin {
       const target = join(outDir, 'data')
       // Not index.json: it holds every trial's notes, and the site reads home.json instead.
       cpSync(dir, target, { recursive: true, filter: (src) => src !== join(dir, 'index.json') })
-      const home = file('home.json')
-      if (home) writeFileSync(join(target, 'home.json'), home.body)
+      writeFileSync(join(target, 'home.json'), JSON.stringify(exportHome(dir)))
     },
   }
 }

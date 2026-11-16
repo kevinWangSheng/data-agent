@@ -143,7 +143,7 @@ export default function App() {
       ) : run && route ? (
         <RunPage key={`${onFirstScreen ? 'first' : 'run'}:${id}`} run={run} route={{ ...route, id }} navigate={navigate} autoplay={onFirstScreen} />
       ) : (
-        !error && <div className="p-8 text-ink-3">{home === null ? 'Loading…' : id === null ? 'No runs to show.' : `Loading ${id}…`}</div>
+        !error && <div className="p-8 text-ink-3">{id === null ? 'Loading…' : `Loading ${id}…`}</div>
       )}
     </div>
   )
