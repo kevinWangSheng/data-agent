@@ -1,6 +1,6 @@
 # 79 — 本地版前端：提交、实时过程、取消、历史列表
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 76（done）, 78（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16
@@ -32,6 +32,7 @@ Branch: worktree-79-web-local-frontend
 - [ ] 提交、实时显示、刷新后续读、取消、历史列表都在浏览器里真实操作过
 - [ ] 历史列表显示任务、类型、配置、状态、用时、花费、开始时间，按开始时间倒序
 - [ ] 从 wheel 安装后 `data-agent web` 能打开页面（打包测试覆盖）
+- [ ] （2026-11-16 主会话加，spec "历史列表"）静态构建里历史列表页列出精选运行（`staticSource.listRuns()` 已只返回精选，工单 81），点一行进运行页；开发集 trial 不在这一页
 - [ ] 浏览器控制台没有报错
 - [ ] `make check` 通过
 
@@ -72,3 +73,4 @@ Branch: worktree-79-web-local-frontend
   - `evals/harbor_agent.py` 的 `build_artifacts` 构建 wheel 时设这个变量（只改那一次 `subprocess.run` 的 `env`）。
   - 测试：`tests/test_packaging.py` 加一条——设了变量构建出的 wheel 没有 `data_agent/web/static`、也不调用 pnpm（可以用 PATH 里放一个会失败的假 pnpm 证明）；评测那边有单元测试覆盖 `build_artifacts` 传了这个变量（看现有 `tests/` 里有没有 harbor_agent 的测试，照它的写法）。
   - 在原分支上接着修；修完重跑 `make check` 和两道审查。
+- 2026-11-16 主会话：工单 81 先开 PR；81 合入后本工单 rebase 到 main，解决和 81 在 `App.tsx`、`RunPage.tsx`、`source.ts` 的冲突，并补上面新加的那条验收（在线版历史列表）。

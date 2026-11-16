@@ -1,10 +1,10 @@
 # 81 — 评测页和在线版第一屏
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 76（done）, 80（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (Opus 5.5), 2026-11-16 (filled in by the main session; the worktree could not write the main checkout)
+Branch: worktree-81-web-eval-page-and-first-screen
 
 ## Goal
 
@@ -51,11 +51,23 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2 (da-review 1 fix; eng:code-review 1 fix round)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: in-review
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
 - 2026-11-16 主会话：76 已合入（PR #91）。数据来源接口在 `web/src/data/source.ts`，静态实现读导出布局；76 加了运行切换和基础路径的默认运行（为了打开三条夹具），本工单可按在线版需要重做。工单 79 同时在做，两边都改 `web/`：本工单只动在线版的部分（第一屏、精选切换、评测页、trial 表格、不可用的新建运行），不改 79 的本地提交、取消、历史列表和后端数据来源；谁后合入谁 rebase 解决冲突。
+- 2026-11-16 Claude Code (Opus 5.5)（fb3ec68、2ec83f4、9c20ebd）：
+  - 基线 make check：pytest 2299 passed，vitest 152。
+  - 新 `web/site-data.ts`（替换 `fixture-data.ts`）：`SITE_DATA=<导出目录>` 时 dev/preview 提供导出，build 时复制进 `dist/data`（不含 `index.json`）；两种都生成小的 `home.json`（精选运行加榜单和 DAB 汇总）；缺数据回 404。新 `src/data/{home,evaluation}.ts`、`src/eval-page/{EvalPage,AblationChart,trials,scores}`、`src/site/{HomeStrip,Link,NewRunUnavailable}`。`RunPage` 加 `autoplay`（`autoplaySpeed(total) = total / 25 s`，查数运行 0.58×）。`staticSource.listRuns()` 从 `home.json` 读精选运行，新 `home()`、`evaluation()`（404 → null）。唯一新依赖 recharts；图的颜色用 dataviz 校验器查过（浅 `#2348c8`、深 `#6f8af5`）。
+  - **和计划不同的一处**：导出的 `index.json` 2.47 MB（含全部 trial）、`eval.json` 含 270 行 trial，第一屏都不能读；改为构建时从导出生成 `home.json`，第一屏只取它和要回放的那条运行；`eval.json` 和图表库只在评测页加载。主会话认可（只是前端怎么读导出，不改导出契约）。工单 82 构建要带 `SITE_DATA=<导出目录> pnpm --dir web build --base /data-agent/`。
+  - 测试数据 `runs/81-site-in/export.sh`：三条原型运行作精选（`local_data` 或 `task_id`）；9 个 job（`u1-target`、`u1-full-rest`、`u2-rest` × full/baseline/no-verifiers）；board `f17/reports/20261112T155019.560470Z`；DAB `f18-score/report.json`；`--tasks-dir data-agent-refs/data-eng-bench/tasks` → "scrub: changed 0 file(s) of 548" / "export: 273 run(s) -> runs/81-site"。
+  - 构建：`SITE_DATA=../runs/81-site pnpm build --base /data-agent/` ✓；主包 766 kB，EvalPage + recharts 单独 390 kB。
+  - 浏览器（vite preview，截图在 worktree 的 `runs/81-shots/` 01–16）：第一屏 25.3 s 播完停在全部显示，地址仍是 `/data-agent/`，只请求 `home.json` 和 `query-shop` 的 `meta.json`、`events.jsonl`；切精选运行到 `/runs/<id>` 全部显示；筛 no-verifiers + Failed 得 29/270，和 `n_failed` 29 一致，URL 保留筛选，trial 事件点开才加载，后退回到筛选后的表；1280/1440 深浅色布局正常；400 宽第一屏条和评测汇总可读、无横向溢出；构建版控制台干净。
+  - 没有留出集数据：`runs/81-site-in/check_holdout.py` 只报数量——trial 题目在留出集 0、在开发集外 0、留出集命名的运行目录 0、`eval.json`/`home.json` 里留出集 id 0。
+  - make check（9c20ebd）：ruff 通过，basedpyright 0 errors，pytest "2299 passed, 1 skipped, 39 deselected"，vitest 187 passed。
+  - da-review（Codex）：P2 DAB 对比没有区间（每个数据集一题）显示 "95% CI 0.00 to 0.00" → 2ec83f4 改说"题太少估不出"，测试修前失败。
+  - eng:code-review，9c20ebd 修：留出集没有 trial 时 board 的 `accuracy: null`（`evals/board.py:396`）让评测页崩溃 → `fmtPct(null)` 显示 "—"、类型可空，测试修前失败，浏览器里拦截 `eval.json` 也确认；第一屏条和评测页共用分数格式；新 `web/site-data.test.ts`（提供的文件、`home.json`、缺 `eval.json`、`..` 越界、站点不读的文件）；不再把 `index.json` 复制进构建。
+  - 不修（理由）：在线版历史列表页（79 在做列表组件；数据侧 `listRuns()` 已只返回精选，顶栏有精选切换）——**主会话：spec 要求在线版这一页列出精选运行，记为缺口，交给工单 79 rebase 到 81 之后一并做**；显著性不画在每根柱上（显著性属于配置之间的差，标在图下的贡献列表）；保留 `listRuns`（和 79 共用接口）；`rootOf` 和 `route.ts` 重复（76 的文件、79 也在改）；其余小重复；`autoplaySpeed` 的 `targetMs` 参数；DAB 表的 "Scored"/"Baseline" 标签（导出没有配置名，"scored" 是 `dab-score` 的候选，`evals/dab_score.py:253`）。
