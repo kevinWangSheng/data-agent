@@ -1,6 +1,6 @@
 # 78 — 后端：提交和取消运行
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 77
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -56,10 +56,10 @@ Branch: worktree-78-web-backend-submit-cancel
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
+- Attempts: 2
+- Review rounds: 3
 - Model spend: $0.0082 (main-session real run, price table; the cancelled run wrote no result, cost unrecorded) (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1
+- Outcome: in-review (returned ×1)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -84,3 +84,13 @@ Branch: worktree-78-web-backend-submit-cancel
   1. `--runs-dir` 在某个 `dbt_project` 里面时，`prepare_workspace` 的 `copytree`（`src/data_agent/web/launcher.py:272-277`）只跳过 `target/`、`logs/`，新建的工作区就在被复制的树里，会一层层复制进去，直到递归或路径过长报错。修法：启动时校验，`--runs-dir` 和任何一个数据源的 `dbt_project` 互相包含就拒绝启动并说明原因；加测试。
   2. DuckDB 文件在 `dbt_project` 外面时，副本放到工作区根下（`launcher.py:285-291`），但 dbt 从工作区按 `profiles.yml` 的相对路径找库：例如 `path: ../shop.duckdb` 指向 `<run-dir>/shop.duckdb`，网关拿到的是 `<run-dir>/workspace/shop.duckdb`，dbt 和只读工具连的不是同一份（dbt 还可能新建一个空库）。保留相对位置又可能跑出运行目录（`../../data/x.duckdb`）。修法（主会话定，按"原目录不动、每条运行用自己的副本"）：配了 `dbt_project` 的 DuckDB 数据源，库文件必须在 `dbt_project` 里面，否则启动时拒绝并说明原因；去掉"在项目外的复制到工作目录根下"这条路径；`docs/setup.md` 同步改；加测试。
   - 在原分支 `worktree-78-web-backend-submit-cancel` 上接着修；修完重跑 `make check` 和两道审查。真实运行由主会话复跑。
+- 2026-11-16 claude-opus，退回第 1 轮修复（83f9ed1、431c8b3、948211c）：
+  - 退回 1：`--runs-dir` 和任何 `dbt_project` 互相包含（含相同）就拒绝启动（`sources.check_layout`，`Launcher.__init__` 调；`create_app` 抛 ValueError，`serve_web` 转 `parser.error`）。测试覆盖三种重叠，另有一条 CLI 测试。
+  - 退回 2：配了 `dbt_project` 的 DuckDB 源，库文件必须在项目里，否则拒绝启动；删了"项目外的文件复制到工作目录根"那条路径，`docs/setup.md` 同步，带测试。是否在项目里按写的路径判断、不跟符号链接（431c8b3），和 `copytree` 实际复制的位置一致，两种都有测试。
+  - Codex 另报 2 条 P2（核实属实，948211c 修，各带测试）：`kind` 是数组或表时 TypeError 崩溃 → 先查是字符串，报配置错误；项目里的目录链接指向 runs 目录（或其上下级）时 `copytree` 会把工作区复制进自己 → 复制时发现就拒绝这次提交，400，删掉 run 目录。
+  - make check：2240 passed, 1 skipped, 39 deselected, 4 xfailed；ruff、format 通过；basedpyright 0 errors；vitest 通过。主会话核对验收文件只删了 `xfail` 标记和 `TICKET_77`/`TICKET_78` 定义。
+  - agent 的真实运行（$0）：runs 目录和项目重叠 → exit 2；DuckDB 在项目外 → exit 2；`kind = ["duckdb"]` → 配置错误；项目里链接指向 runs 上级时提交 dbt 运行 → HTTP 400，runs 目录为空。
+  - 主会话在 948211c 上重跑 `t78-real.sh`：`GET /api/options` 正常；提交查数运行 201 → success，"Gold has the highest total amount of completed orders: 710.00"，69 条事件，$0.0067；第二次提交 201，期间第三次 409 "one run at a time"；取消 200 cancelled；再取消 409；`GET /api/runs` 显示 cancelled 和 success 两条；服务 SIGTERM 正常退出，没有残留进程。
+  - eng:code-review：Spec 两条退回都满足；Standards 无硬违规，web 命令测试重复代码抽成 `web_command`。不修：`prepare_workspace` 的 assert 只写明 `check_layout` 已跑的前提；校验分在解析 TOML 和 `check_layout` 两处（后者需要 runs 目录）；`where` 标签重复、改名、测试准备代码重复属小取舍；runs 在 `proj/target/` 下也拒绝，照退回原文。
+  - agent 对 948211c 的 da-review 复审跑满 60 分钟没结论，以 PR 上 Codex app 的审查为准。
+  - 已知限制：链接只在提交时查，复制过程中新出现的链接查不到。
