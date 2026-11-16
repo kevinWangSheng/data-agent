@@ -363,6 +363,21 @@ def test_featured_run_of_a_holdout_task_is_refused(tmp_path: Path) -> None:
     )
     assert_refused(proc, out, "dbt-delta")
 
+    # `local_data: true` does not let a run with a holdout `task_id` through.
+    both = write_task_run(
+        tmp_path / "featured",
+        "both-run",
+        "dbt-delta",
+        task_id="dbt-delta",
+        local_data=True,
+        **REFUSED_NOTES,
+    )
+    out = tmp_path / "site-both"
+    proc = export(
+        "--manifest", str(manifest), "--out", str(out), "--run", str(local), "--run", str(both)
+    )
+    assert_refused(proc, out, "dbt-delta")
+
 
 def test_featured_run_of_an_unlisted_task_is_refused(tmp_path: Path) -> None:
     local = write_local_run(tmp_path / "featured", "local-run")
