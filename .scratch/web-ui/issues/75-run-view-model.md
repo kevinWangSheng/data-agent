@@ -1,6 +1,6 @@
 # 75 — 运行视图模型
 
-Status: in-progress
+Status: in-review
 Blocked by: 73, 83
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -49,10 +49,10 @@ Branch: worktree-75-run-view-model
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2
+- Attempts: 3
+- Review rounds: 3
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×2
+- Outcome: returned ×2, round-2 fixes in review
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -86,3 +86,10 @@ Branch: worktree-75-run-view-model
   - 有 `[INCOMPLETE DISPLAY]` 说明时，从说明里取 "only the first N are shown" 的 N，要求解析出的行数等于 N（现在只要求小于总数，单列里多行值会被拆成多行而查不出）；取不到 N → `null`。
   - 单元测试：上面这个例子 → `null`；多列里最后一列的多行值 → `null`；INCOMPLETE 时行数和 N 对不上 → `null`、对得上 → 表。删掉或改写第 1 轮"多列空行接续上一格"那条单元测试（它测的正是被退回的规则）。验收测试不改。
   - 这是本 PR 最后一轮退回；修完重跑 `make check` 和两道审查，真实运行用 `runs/scratch75/tables.ts` 对四个夹具报修前修后的表数。
+- 2026-11-16 claude-code (opus-5.5)，退回第 2 轮修复（796d785、b6d9d68、dc8d96f）：
+  - `parseTable`（796d785）：多列表里格数和表头不同（少或多）的行 → 整张表 `null`，保留原文；单列表空行仍是空值。有 `[INCOMPLETE DISPLAY]` 时从说明取 "only the first N are shown" 的 N，解析行数必须等于 N，取不到 → `null`；没有说明时行数必须等于 `(n rows)`。
+  - 单元测试 5 条新写或改写，修前都红：工单例子 → `null`；最后一列多行值 → `null`；多列空行 → `null`（改写第 1 轮"空行接续上一格"）；INCOMPLETE 行数和 N 不符 → `null`；没有 N → `null`。验收测试本轮未改（主会话核对和 main 相比只有 `test.fails` 标记）。
+  - `tables.ts` 四个夹具修前修后表数相同（cart 45/72、div 96/177、query-shop 11/12、new-fields 1/3）；`show.ts` 四个夹具输出和第 0 轮逐字节相同。最大夹具整份 0.41 ms，全部前缀 170 ms，每帧 0.161 ms。
+  - `pnpm --dir web test` 64/64；make check exit 0：ruff 通过，basedpyright 0 errors，pytest 2202 passed, 1 skipped, 10 xfailed，vitest 64 passed。
+  - eng:code-review（796d785）：Spec 无缺漏；Standards：`shown` 改名 `expected`（b6d9d68）。不修：`SHOWN_COUNT` 照抄 `format_rows` 的措辞，措辞变了截断表退回原文（约定的退路），绑定两边要改 `src/data_agent/`，越界；截断时不查 `(n rows)` 总数和 N 的关系，`format_rows` 不会写 N ≥ 总数。
+  - da-review（Codex）：796d785 那次 40 分钟没结论；b6d9d68：P2 `query_labels`（`mcp_server.py:306`，只读 SQL、返回 `format_rows`）没算查询，`classify_text` → `query_labels` 的运行只有一个"了解环境"阶段、答案没有依据的查询和表 → dc8d96f 修：`query_labels` 算查询工具（阶段分界和答案回退），`classify_text`（接收并执行 `sql`）结束了解阶段，新单元测试修前红。主会话核对 `query_labels` 确实返回 `format_rows`。dc8d96f：无意见。eng:code-review 没在 dc8d96f 上重跑。
