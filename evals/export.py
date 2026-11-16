@@ -61,17 +61,6 @@ from evals.harbor import Trial, by_task, last_event_file, load_trials, version_h
 from evals.metrics import is_success
 from evals.report import REPO_MANIFEST, summary
 
-# The run notes' fields, in the order they are written.
-NOTES_FIELDS = (
-    "id",
-    "title",
-    "task",
-    "task_type",
-    "data_source",
-    "grade",
-    "failure_reason",
-    "featured",
-)
 # What a config's row of the evaluation page keeps of `evals.report.summary`.
 CONFIG_KEYS = (
     "accuracy",
