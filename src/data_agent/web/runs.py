@@ -2,7 +2,8 @@
 
 One subdirectory per run, named by run id, holding the run's append-only JSONL event file. There
 is no index: every listing scans the directory (spec "运行索引"). A reader may catch the writer
-mid-line, so only complete lines (ending in a newline) count as events.
+mid-line, so only complete lines (ending in a newline) count as events. A run this server
+cancelled has an empty `cancelled` file next to its event file (data_agent.web.launcher).
 """
 
 import json
@@ -16,6 +17,7 @@ from typing import Any
 HEAD_LINES = 8
 # The tail is read back in blocks of this size until it holds the last complete line.
 TAIL_BLOCK = 64 * 1024
+CANCELLED_MARKER = "cancelled"
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +51,16 @@ class RunsDir:
         files = sorted(run_dir.glob("*.jsonl"))
         return files[0] if files else None
 
+    def cancelled(self, run_id: str) -> bool:
+        run_dir = self.run_dir(run_id)
+        return run_dir is not None and (run_dir / CANCELLED_MARKER).is_file()
+
+    def has_result(self, run_id: str) -> bool:
+        """Whether the run has written its `result` event, its last event."""
+        path = self.event_file(run_id)
+        last = last_line(path) if path is not None else None
+        return last is not None and is_result(json.loads(last))
+
     def read(self, run_id: str, offset: int = 0) -> Chunk | None:
         """The run's complete events from byte `offset` on; None before its event file exists."""
         path = self.event_file(run_id)
@@ -63,7 +75,7 @@ class RunsDir:
             if event_file is None:
                 continue
             try:
-                runs.append(summarize_run(entry.name, event_file))
+                runs.append(summarize_run(entry.name, event_file, self.cancelled(entry.name)))
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
                 log.warning("run %s: unreadable event file %s: %s", entry.name, event_file, exc)
         return sorted(runs, key=lambda run: run["started_at"] or "", reverse=True)
@@ -79,9 +91,9 @@ def read_from(path: Path, offset: int = 0) -> Chunk:
     return Chunk(events, offset + end)
 
 
-def summarize_run(run_id: str, path: Path) -> dict[str, Any]:
+def summarize_run(run_id: str, path: Path, cancelled: bool) -> dict[str, Any]:
     """A run's row in the list, from its header events and its `result` event. A run without a
-    `result` event is still going (ticket 78 adds `cancelled` for the runs this server stops)."""
+    `result` event is still going, unless this server cancelled it."""
     head: list[dict[str, Any]] = []
     with path.open("rb") as file:
         for line in file:
@@ -95,10 +107,10 @@ def summarize_run(run_id: str, path: Path) -> dict[str, Any]:
     first_by_type = {event["type"]: event for event in reversed(head)}
     version = first_by_type.get("version", {})
     task = first_by_type.get("task", {})
-    result = last_event if last_event is not None and last_event.get("type") == "result" else None
+    result = last_event if last_event is not None and is_result(last_event) else None
     started_at: str | None = head[0].get("ts") if head else None
     if result is None:
-        status, duration_ms, cost_usd = "running", None, None
+        status, duration_ms, cost_usd = "cancelled" if cancelled else "running", None, None
     else:
         ok = result.get("subtype") == "success" and not result.get("is_error")
         status = "success" if ok else "failure"
@@ -114,6 +126,10 @@ def summarize_run(run_id: str, path: Path) -> dict[str, Any]:
         "duration_ms": duration_ms,
         "cost_usd": cost_usd,
     }
+
+
+def is_result(event: dict[str, Any]) -> bool:
+    return event.get("type") == "result"
 
 
 def last_line(path: Path) -> bytes | None:

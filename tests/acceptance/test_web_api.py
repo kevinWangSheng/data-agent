@@ -72,9 +72,6 @@ INET = re.compile(r"\binet (?:addr:)?(\d+\.\d+\.\d+\.\d+)")
 # 198.18/15, the benchmarking range proxies give their TUN interface (RFC 2544), as an integer.
 TUN_RANGE = ipaddress.ip_network((0xC612_0000, 15))
 
-TICKET_77 = pytest.mark.xfail(strict=True, reason="ticket 77: list runs, read events, SSE")
-TICKET_78 = pytest.mark.xfail(strict=True, reason="ticket 78: submit and cancel runs")
-
 
 @dataclass
 class Started:
@@ -335,7 +332,6 @@ def test_read_endpoints_hold_no_connection_string(web: Web) -> None:
         assert_no_connection_string(web.client.get(url).text)
 
 
-@TICKET_78
 def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> None:
     response = submit(web, data_source="warehouse")
     assert response.status_code == 201, response.text
@@ -354,7 +350,6 @@ def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> N
 # --- Submitting runs -----------------------------------------------------------------------
 
 
-@TICKET_78
 def test_a_submitted_run_appears_and_streams(web: Web) -> None:
     run_id = submit_ok(web, task="How many orders are there?", config="baseline")
     [run] = web.started
@@ -376,7 +371,6 @@ def test_a_submitted_run_appears_and_streams(web: Web) -> None:
     wait_until(lambda: runs_by_id(web)[run_id]["status"] == "success")
 
 
-@TICKET_78
 def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     run_id = submit_ok(web)
     wait_until(
@@ -392,7 +386,6 @@ def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     )
 
 
-@TICKET_78
 def test_an_unknown_data_source_is_refused(web: Web) -> None:
     response = submit(web, data_source="no-such-source")
     assert 400 <= response.status_code < 500
@@ -401,7 +394,6 @@ def test_an_unknown_data_source_is_refused(web: Web) -> None:
     assert runs_by_id(web) == {}
 
 
-@TICKET_78
 def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     first = submit_ok(web)
     response = submit(web, task="Another question")
@@ -417,7 +409,6 @@ def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     assert set(runs_by_id(web)) == {first, second}
 
 
-@TICKET_78
 def test_cancel_stops_only_the_run_this_server_started(web: Web) -> None:
     write_run(web.runs_dir, "cli-run", read_events(NEW_FIELDS)[:20])
     bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])

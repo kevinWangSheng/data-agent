@@ -86,10 +86,15 @@ def main(argv: list[str] | None = None) -> None:
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
     web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
     web.add_argument("--port", type=int, default=WEB_PORT)
+    web.add_argument(
+        "--data-sources",
+        type=Path,
+        help="TOML file naming the data sources the run form offers (none without it)",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "web":
-        serve_web(web, args.runs_dir, args.port)
+        serve_web(web, args.runs_dir, args.port, args.data_sources)
         return
     # The deadline counts from the earliest point the process can see (ticket 54).
     started = time.monotonic()
@@ -147,16 +152,27 @@ def main(argv: list[str] | None = None) -> None:
     sys.exit(EXIT_OK if outcome.finished else EXIT_UNFINISHED)
 
 
-def serve_web(parser: argparse.ArgumentParser, runs_dir: Path, port: int) -> None:
+def serve_web(
+    parser: argparse.ArgumentParser, runs_dir: Path, port: int, sources_file: Path | None
+) -> None:
     if not runs_dir.is_dir():
         parser.error(f"runs directory not found: {runs_dir}")
     # Imported here so `data-agent run` does not load the web stack.
     import uvicorn
 
     from data_agent.web.app import create_app
+    from data_agent.web.sources import load_data_sources
+
+    # Read only when given: there is no default path (spec "本地运行的数据源").
+    try:
+        sources = load_data_sources(sources_file) if sources_file is not None else []
+    except ValueError as exc:
+        parser.error(str(exc))
 
     def start_run(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
-        return subprocess.Popen([sys.executable, "-m", "data_agent", "run", *args], cwd=cwd)
+        # Its own session, so cancelling can stop the run with the tools it started.
+        return subprocess.Popen(
+            [sys.executable, "-m", "data_agent", "run", *args], cwd=cwd, start_new_session=True
+        )
 
-    # Data sources come from the config file ticket 78 adds; until then the form offers none.
-    uvicorn.run(create_app(runs_dir, [], start_run), host=WEB_HOST, port=port)
+    uvicorn.run(create_app(runs_dir.resolve(), sources, start_run), host=WEB_HOST, port=port)
