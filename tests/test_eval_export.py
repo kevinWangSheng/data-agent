@@ -320,6 +320,25 @@ def test_a_task_the_repo_manifest_holds_out_is_refused(tmp_path: Path) -> None:
     assert not out.exists()
 
 
+def test_an_unreadable_trial_result_does_not_name_the_trial(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_trial(job, "dev-task", "x", 1.0)
+    name = write_trial(job, "held-task", "y", 0.0)
+    result = job / name / "result.json"
+    result.chmod(0)
+    try:
+        out = tmp_path / "site"
+        proc = export(
+            *("--manifest", str(manifest(tmp_path, ["dev-task"], ["held-task"]))),
+            *("--out", str(out), "--job", str(job)),
+        )
+    finally:
+        result.chmod(0o644)
+    assert proc.returncode == 2
+    assert "held-task" not in proc.stdout + proc.stderr
+    assert not out.exists()
+
+
 def test_an_output_directory_with_files_is_left_alone(tmp_path: Path) -> None:
     out = tmp_path / "site"
     out.mkdir()

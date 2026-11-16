@@ -209,28 +209,32 @@ def given_notes(run_dir: Path) -> Any:
         return None
 
 
-def check_featured(run_dirs: list[Path], dev: set[str]) -> None:
-    """Refuse, with a count only, when any featured run is not let through (`featured_allowed`):
-    its id and directory are often its task's name, so neither is printed (ADR-0004)."""
-    refused = sum(1 for r in run_dirs if not featured_allowed(given_notes(r), dev))
+def check_featured(run_dirs: list[Path], dev: set[str]) -> list[dict[str, Any]]:
+    """Each featured run's notes.json, read once; refused, with a count only, when any is not
+    let through (`featured_allowed`): a run's id and directory are often its task's name, so
+    neither is printed (ADR-0004)."""
+    given = [given_notes(r) for r in run_dirs]
+    refused = sum(1 for g in given if not featured_allowed(g, dev))
     if refused:
         raise Refused(
             f"{refused} featured run(s) refused: each needs a readable notes.json with a "
             "`task_id` of the dev set or `local_data: true`; holdout and unlisted tasks are not "
             "exported (ADR-0004)"
         )
+    return given
 
 
-def featured_run(run_dir: Path, position: int) -> tuple[dict[str, Any], Path]:
-    """The notes and event file of a featured run that `check_featured` let through; its id is
-    the directory name. An error names it by its `position` among the `--run`s, not by its
-    directory, which is often its task's name."""
+def featured_run(
+    run_dir: Path, given: dict[str, Any], position: int
+) -> tuple[dict[str, Any], Path]:
+    """The notes and event file of a featured run whose notes.json `given` `check_featured` let
+    through; its id is the directory name. An error names it by its `position` among the
+    `--run`s, not by its directory, which is often its task's name."""
     which = f"the featured run given as --run #{position}"
     files = sorted(run_dir.glob("*.jsonl"))
     if len(files) != 1:
         raise Refused(f"{which} must hold one event file (*.jsonl), not {len(files)}")
-    given = given_notes(run_dir)
-    if not isinstance(given, dict) or not isinstance(given.get("title"), str):
+    if not isinstance(given.get("title"), str):
         raise Refused(f"{which}: its notes.json gives no title")
     grade = given.get("grade")
     if grade is not None and not (
@@ -240,7 +244,8 @@ def featured_run(run_dir: Path, position: int) -> tuple[dict[str, Any], Path]:
     try:
         found = task_event(files[0])
     except Refused:
-        raise Refused(f"{which}: its event file cannot be read as UTF-8 text") from None
+        # read_events's message names the file; say what failed without it.
+        raise Refused(f"{which}: its event file cannot be read, or is not UTF-8") from None
     # An event file from before the `task` event: the notes give task, type and data source.
     task = found or given
     notes = {
@@ -411,7 +416,11 @@ def load_dev_trials(job_dirs: list[Path], dev: set[str]) -> list[tuple[Trial, Pa
     for job in job_dirs:
         try:
             trials.extend(load_trials(job))
-        except (OSError, ValueError, KeyError) as exc:
+        except OSError as exc:
+            # Not `exc`: it names the trial's file, and a trial is named after its task, maybe a
+            # held-out one; the holdout check below has not run yet (ADR-0004).
+            raise Refused(f"cannot read the job {job}: {exc.strerror}") from exc
+        except (ValueError, KeyError) as exc:
             raise Refused(f"cannot read the job {job}: {exc}") from exc
     refused = sum(1 for t in trials if t.task not in dev)
     if refused:
@@ -437,10 +446,10 @@ def write_json(path: Path, value: Any) -> None:
 def build(args: argparse.Namespace, stage: Path) -> int:
     """Write the export into `stage`; the number of runs."""
     dev = exportable(args.manifest)
-    check_featured(args.runs, dev)
+    given = check_featured(args.runs, dev)
     trials = load_dev_trials(args.job, dev)
     runs: list[tuple[dict[str, Any], Path]] = [
-        featured_run(r, i) for i, r in enumerate(args.runs, 1)
+        featured_run(r, g, i) for i, (r, g) in enumerate(zip(args.runs, given, strict=True), 1)
     ]
     runs += [(trial_notes(t, events, args.tasks_dir), events) for t, events, _ in trials]
     ids = [notes["id"] for notes, _ in runs]
