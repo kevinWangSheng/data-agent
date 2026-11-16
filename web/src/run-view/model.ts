@@ -157,9 +157,11 @@ export type RunView = {
 
 /** The data agent's MCP tools (src/data_agent/mcp_server.py, server `data`). */
 const DATA_TOOL_PREFIX = 'mcp__data__'
-const QUERY_TOOL = `${DATA_TOOL_PREFIX}query_database`
-/** Tools that run SQL on the data: the first of them ends "learning the environment". */
-const SQL_TOOLS = new Set([QUERY_TOOL, `${DATA_TOOL_PREFIX}explain_query`])
+/** Tools that return query rows (`format_rows`): `query_labels` reads the label tables
+ *  `classify_text` made. An answer is backed by one of them. */
+const QUERY_TOOLS = new Set([`${DATA_TOOL_PREFIX}query_database`, `${DATA_TOOL_PREFIX}query_labels`])
+/** Tools that run SQL: the first of them ends "learning the environment". */
+const SQL_TOOLS = new Set([...QUERY_TOOLS, `${DATA_TOOL_PREFIX}explain_query`, `${DATA_TOOL_PREFIX}classify_text`])
 const WRITE_TOOLS = new Set(['Write', 'Edit'])
 const AGENT_TOOLS = new Set(['Agent', 'Task'])
 const CONTEXT_TOOLS = ['discover', 'hydrate', 'dictionary_search'] as const
@@ -489,7 +491,7 @@ function finalAnswer(
   let backing: Step | null = null
   for (const step of steps) {
     if (step.seq > lastText.seq) break
-    const ok = step.tool === QUERY_TOOL && step.result !== null && !step.isError
+    const ok = QUERY_TOOLS.has(step.tool) && step.result !== null && !step.isError
     if (ok && step.dispatch === null) backing = step
   }
   return {

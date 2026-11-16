@@ -153,3 +153,31 @@ describe('task fields and durations', () => {
     expect(buildRunView(events).steps[0].durationMs).toBeNull()
   })
 })
+
+describe('label queries', () => {
+  const ts = '2026-11-15T09:00:00+00:00'
+  const call = (seq: number, tool: string, id: string, content: string): RunEvent[] => [
+    { seq, type: 'tool_start', ts, tool: `mcp__data__${tool}`, tool_use_id: id, input: {} },
+    { seq: seq + 1, type: 'tool_end', ts, tool: `mcp__data__${tool}`, tool_use_id: id, content, is_error: false },
+  ]
+  // classify_text runs SQL on the data; query_labels runs SQL on its label tables (mcp_server.py).
+  const events: RunEvent[] = [
+    { seq: 0, type: 'task', ts, task: 'Which reviews complain?', task_type: 'query' },
+    ...call(1, 'list_tables', 'l', 'reviews'),
+    ...call(3, 'classify_text', 'c', 'stored as labels_1'),
+    ...call(5, 'query_labels', 'q', 'label | n\n-----\nshipping | 4\n(1 rows)'),
+    { seq: 7, type: 'text', ts, text: 'Four complain about shipping.' },
+    { seq: 8, type: 'result', ts, subtype: 'success', is_error: false },
+  ]
+
+  test('classify_text ends learning the environment and query_labels backs the answer', () => {
+    const view = buildRunView(events)
+    expect(view.phases.map((p) => [p.kind, p.steps])).toEqual([
+      ['orient', ['l']],
+      ['explore', ['c']],
+      ['answer', ['q']],
+    ])
+    expect(view.answer?.sqlStep).toBe('q')
+    expect(view.answer?.table).toEqual({ columns: ['label', 'n'], rows: [['shipping', '4']] })
+  })
+})
