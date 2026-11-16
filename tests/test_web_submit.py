@@ -259,6 +259,24 @@ def test_a_duckdb_link_inside_the_project_counts_as_inside(
     assert copy.read_bytes() == b"db"
 
 
+def test_a_duckdb_file_under_a_linked_directory_in_the_project_counts_as_inside(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    project = dbt_project(tmp_path, with_db=False)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "shop.duckdb").write_bytes(b"db")
+    (project / "data").symlink_to(data)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    source = DataSource(name="shop", duckdb=project / "data" / "shop.duckdb", dbt_project=project)
+    with TestClient(create_app(runs_dir, [source], recorder)) as client:
+        assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
+    [(args, cwd)] = recorder.calls
+    assert Path(flag(args, "--duckdb")) == cwd / "data" / "shop.duckdb"
+    assert (cwd / "data" / "shop.duckdb").read_bytes() == b"db"
+
+
 def never_start(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
     raise AssertionError("no run should start")
 
@@ -403,37 +421,9 @@ def test_a_run_in_its_own_session_leaves_no_process_behind(
         assert statuses(client) == {run_id: status}
 
 
-def test_the_web_command_refuses_a_bad_data_source_file(tmp_path: Path) -> None:
-    sources = tmp_path / "sources.toml"
-    sources.write_text('[sources.s]\nkind = "mysql"\n')
-    done = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "data_agent",
-            "web",
-            "--runs-dir",
-            str(tmp_path),
-            "--data-sources",
-            str(sources),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=TIMEOUT,
-    )
-    assert done.returncode != 0
-    assert "kind" in done.stderr
-
-
-def test_the_web_command_refuses_a_runs_dir_inside_a_dbt_project(tmp_path: Path) -> None:
-    project = dbt_project(tmp_path, with_db=True)
-    runs_dir = project / "runs"
-    runs_dir.mkdir()
-    sources = tmp_path / "sources.toml"
-    sources.write_text(
-        '[sources.shop]\nkind = "duckdb"\npath = "proj/shop.duckdb"\ndbt_project = "proj"\n'
-    )
-    done = subprocess.run(
+def web_command(runs_dir: Path, sources: Path) -> "subprocess.CompletedProcess[str]":
+    """`data-agent web` as started from a shell; these tests only reach its startup checks."""
+    return subprocess.run(
         [
             sys.executable,
             "-m",
@@ -448,5 +438,24 @@ def test_the_web_command_refuses_a_runs_dir_inside_a_dbt_project(tmp_path: Path)
         text=True,
         timeout=TIMEOUT,
     )
+
+
+def test_the_web_command_refuses_a_bad_data_source_file(tmp_path: Path) -> None:
+    sources = tmp_path / "sources.toml"
+    sources.write_text('[sources.s]\nkind = "mysql"\n')
+    done = web_command(tmp_path, sources)
+    assert done.returncode != 0
+    assert "kind" in done.stderr
+
+
+def test_the_web_command_refuses_a_runs_dir_inside_a_dbt_project(tmp_path: Path) -> None:
+    project = dbt_project(tmp_path, with_db=True)
+    runs_dir = project / "runs"
+    runs_dir.mkdir()
+    sources = tmp_path / "sources.toml"
+    sources.write_text(
+        '[sources.shop]\nkind = "duckdb"\npath = "proj/shop.duckdb"\ndbt_project = "proj"\n'
+    )
+    done = web_command(runs_dir, sources)
     assert done.returncode != 0
     assert "dbt_project" in done.stderr

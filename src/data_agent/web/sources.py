@@ -21,6 +21,7 @@ dbt project do not contain each other (`check_layout`): each dbt run works on it
 project, the DuckDB file included, and leaves the original alone.
 """
 
+import os
 import re
 import tomllib
 from collections.abc import Sequence
@@ -126,8 +127,9 @@ def check_layout(runs_dir: Path, sources: Sequence[DataSource]) -> None:
 
 def duckdb_in_project(source: DataSource) -> Path | None:
     """The DuckDB file's path relative to the source's dbt project, or None when it is outside.
-    The file itself is not resolved: a link inside the project counts as inside."""
+    Compared as written, without following links, because that is the place the copy of the
+    project (which copies what links point to) gives the file."""
     assert source.duckdb is not None and source.dbt_project is not None
-    file = source.duckdb.parent.resolve() / source.duckdb.name
-    project = source.dbt_project.resolve()
+    file = Path(os.path.abspath(source.duckdb))
+    project = Path(os.path.abspath(source.dbt_project))
     return file.relative_to(project) if file.is_relative_to(project) else None
