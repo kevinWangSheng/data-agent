@@ -1,6 +1,6 @@
 # 80 — 导出命令：把选定的运行转成在线版的静态数据
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 73, 84（done）
 Spec: ../spec.md
 Claimed by: claude-code (opus)
@@ -53,10 +53,10 @@ Branch: worktree-80-web-export
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 4 (round 1: da-review 1 fix, eng:code-review 1 fix round; return round 1: da-review 1 fix, eng:code-review 1 fix round)
+- Attempts: 3
+- Review rounds: 5 (round 1: da-review 1 fix, eng:code-review 1 fix round; return round 1: same; PR #88 return round 1: same)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×2
+- Outcome: returned ×2 (1 before PR, PR #88 ×1), in review
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -97,3 +97,12 @@ Branch: worktree-80-web-export
   - 建目录之前，用 `evals scrub` 同一套规则检查每个要导出的 id（精选运行和 trial）；脱敏会改动的 id → 整次导出拒绝、非零退出、什么都不写，报错只给数量（不打印 id 本身，它可能就是要藏的值），提示改目录名后重来。不自动改名。
   - 单元测试：精选运行 id 带 `--hostname` 指定的主机名 → 拒绝且输出里没有它；trial 名带 IP → 拒绝；正常 id 不受影响。验收测试不改。
   - 修完重跑 `make check`、真实导出（三条原型运行）和两道审查。
+- 2026-11-16 claude-code (opus)，PR #88 退回第 1 轮修复（94914fd、5bbf0ef、217af69）：
+  - 新 `check_ids`：查完重复 id 之后、建任何目录之前，每个要导出的 id（精选运行的目录名、trial 名）过 `evals scrub` 的规则（`build_rules` + `scrub_string`，同样的 `--hostname/--home/--user`）。脱敏会改动的 id，或查不了的（`\uXXXX` 转义藏着名字，抛 `Unchecked`）→ 整次导出拒绝，exit 2，什么都不写，不留暂存目录；报错只给数量（"N run id(s) hold a value scrubbing removes …; rename the run or trial directory and export again"），不打印 id。不自动改名。
+  - 按 scrub 自己的匹配口径：主机名要整名匹配（`build-box-7-shop` 不算），紧跟在 `.` 后面的 IP 不算（`scrub.py:48` 的 `(?<![\d.])`，为了不误伤版本号）。这类 id 在文件内容里同样不改，所以 id 和目录名仍一致。
+  - 单元测试（修前失败）：精选运行 id `build-box-7.shop`、`shop.build-box-7`、转义的 `build\u002dbox\u002d7` 配 `--hostname build-box-7` → 拒绝，输出里没有 id 和主机名，没有输出或暂存目录；trial `a__10.1.2.3` → 拒绝，IP 不出现；`build-box-7-shop` 照常导出。验收测试不改。
+  - make check（217af69）：ruff 通过；basedpyright 0 errors；pytest "2249 passed, 1 skipped, 39 deselected, 6 xfailed"；web 测试通过；exit 0。
+  - 真实运行（217af69）：三条原型运行导出到 `/tmp/80-r5/site` → "scrub: changed 0 file(s) of 8; …" / "export: 3 run(s) -> /tmp/80-r5/site"，exit 0，文件和 index.json 同上一轮；反向：query-shop 改名 `query-shop-10.1.2.3` → "export: 1 run id(s) hold a value scrubbing removes …"，exit 2，没有输出目录。
+  - da-review（Codex）：P3 未用的 `NOTES_FIELDS` 常量 → 5bbf0ef 删。eng:code-review：Spec 无缺口；Standards 无硬违规；217af69 修：`Unchecked` 分支补测试、`changed += bool` 改普通 `if`、不拒绝的情况拆成单独测试、删重复 helper。
+  - 不修（理由）：`check_ids` 和 `scrub.run` 各建一次规则（改 `scrub.run` 越界）；`check_ids` 收整个 `args`（唯一调用方）；被拒的导出可能留下 `--out` 的空父目录（早就有，里面没有文件或 id）；之前那些带开发集 trial 路径的报错同第 1 轮。
+  - 已知限制（主会话核实，属 `evals/scrub.py` 的既有取舍，不在本工单）：紧跟在 `.` 后的 IPv4 不被脱敏，内容和目录名里都会留下。
