@@ -1,6 +1,6 @@
 # 80 — 导出命令：把选定的运行转成在线版的静态数据
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 73, 84（done）
 Spec: ../spec.md
 Claimed by: claude-code (opus)
@@ -53,10 +53,10 @@ Branch: worktree-80-web-export
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2 (da-review: 1 fix; eng:code-review: 1 fix round)
+- Attempts: 2
+- Review rounds: 4 (round 1: da-review 1 fix, eng:code-review 1 fix round; return round 1: da-review 1 fix, eng:code-review 1 fix round)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1
+- Outcome: returned ×1, fixed, in review
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -84,3 +84,12 @@ Branch: worktree-80-web-export
   - 单元测试覆盖开发集、留出集、清单里没有的题、本地、缺元数据五种情况（验收测试由 84 加）。
   - 84 合入后把本分支 rebase 到新 main，删 84 新测试的 `xfail` 标记（按 AGENTS.md 例外），修完重跑 `make check` 和两道审查。
   - 人的基线：工单 80 的测试 19 passed。
+- 2026-11-15 claude-code (opus)，退回第 1 轮修复（rebase 到 origin/main 8bb1c01，无冲突；新提交 c61f1c1、013fb0d、aac5c01）：
+  - 精选运行检查：`featured_allowed` 只放行 `task_id` 是字符串且在清单开发集里（减去两份清单的留出集，和 trial 同一个 `dev` 集合）的；没有 `task_id` 时 `local_data` 必须是布尔 `true`。`task_id` 优先于 `local_data`，留出集的题不能冒充本地。拒绝：两个都没有、`local_data` 为 false/`"yes"`/`1`、`task_id` 不是字符串、`notes.json` 读不了。`check_featured` 在读 trial 和写任何东西之前跑，每个 `notes.json` 只读一次，整次导出拒绝、只报数量（`N featured run(s) refused: …`），exit 2。`task_id`、`local_data` 不抄进输出。
+  - 单元测试：11 种情况的参数化测试（开发集、留出集、清单外、`local_data: true`、两个都没有、留出集 + `local_data: true`、`local_data` false、`"yes"`、`1`、非字符串 `task_id` 两种）；一条 CLI 测试查拒绝只报数量、不出现 run id、目录或失败原因。现有精选运行单元测试只在输入里加 `local_data: true`。
+  - 验收：`tests/acceptance/test_web_export.py` 9 passed；修之前 84 的 3 条拒绝测试 exit 0 失败。主会话核对验收文件和 main 相比只删了 `import pytest` 和 `pytestmark = pytest.mark.xfail(...)` 两行。
+  - make check（aac5c01）：ruff 通过；basedpyright 0 errors；pytest "2244 passed, 1 skipped, 39 deselected, 6 xfailed"；web 测试通过；exit 0。
+  - 真实运行：agent 在 c61f1c1 跑过；最后一个提交上主会话重跑：`uv run python -m evals export --manifest evals/manifest.json --out /tmp/80-r3/site --run /tmp/80-r2/in/query-shop --run /tmp/80-r2/in/dbt-cart-abandonment --run /tmp/80-r2/in/dbt-division-by-zero`（query-shop `local_data: true`；另两条 `task_id` 为 `dbt-cart-abandonment-recovery`、`dbt-fix-division-by-zero`，都在开发集）→ "scrub: changed 0 file(s) of 8; …" / "export: 3 run(s) -> /tmp/80-r3/site"，exit 0。文件：eval.json、index.json、runs/{query-shop,dbt-cart-abandonment,dbt-division-by-zero}/{events.jsonl,meta.json}（59、473、1057 行事件）；输出里没有 `task_id`、`local_data`。agent 的反向真实运行：同样三条不带这两个字段 → "export: 3 featured run(s) refused: …"，exit 2，没有输出目录。
+  - da-review（Codex）：P2 格式坏但已放行的精选运行（事件文件数不对、没标题、grade 坏、事件读不了）报错带目录 → 013fb0d 改成 `--run #N`，5 种情况参数化测试。
+  - eng:code-review：Spec 无缺口；Standards 无硬违规。aac5c01 修：留出集 trial 的 `result.json` 读不了时报错带 trial 路径 → 只报 `strerror`（新测试修前失败、修后通过）；`notes.json` 读两次 → 读一次；事件文件读错不再一律说 UTF-8。
+  - 不修（理由）：留出集检查信任自报的 `task_id`/`local_data`，不和 `task` 事件交叉核对（84 契约的已知限制）；notes 的类型化记录、notes 和事件文件的元组属写法判断；开发集检查之后的错误路径（trial 没有事件文件、instruction 读不了）仍带路径，只会是开发集题，ADR-0004 允许；模块约 500 行，同第 1 轮。
