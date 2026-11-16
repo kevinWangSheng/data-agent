@@ -9,7 +9,7 @@ import type { SiteSource } from '../data/source'
 import { fmtCost, fmtDur } from '../format'
 import { Link } from '../site/Link'
 import { AblationChart } from './AblationChart'
-import { dabTotals, fmtPass1, fmtPct, fmtPoints } from './scores'
+import { dabTotals, fmtDabComparison, fmtPass1, fmtPct, fmtPoints } from './scores'
 import { filterTrials, OUTCOMES, sortTrials, type Outcome, type TrialFilter } from './trials'
 
 /** Where DAB's trajectories are (README, "Results"); they are not on this site. */
@@ -83,9 +83,7 @@ function Leaderboards({ board, dab }: { board: Board | null; dab: Dab | null }) 
             `${dabTotals(candidate).queries} queries, ${dabTotals(candidate).runs} runs`,
             ...(dab?.baseline ? [`baseline ${fmtPass1(dab.baseline.pass_at_1)}`] : []),
             ...(dab?.comparison
-              ? [
-                  `scored − baseline: ${fmtPoints(dab.comparison.diff, 2)} points (95% CI ${fmtPoints(dab.comparison.ci_low, 2)} to ${fmtPoints(dab.comparison.ci_high, 2)}), ${dab.comparison.significant ? 'significant' : 'not significant'}`,
-                ]
+              ? [`scored − baseline: ${fmtDabComparison(dab.comparison)}`]
               : []),
           ]}
         />

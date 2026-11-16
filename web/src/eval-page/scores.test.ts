@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { dabTotals, fmtPass1, fmtPoints } from './scores'
+import { dabTotals, fmtDabComparison, fmtPass1, fmtPoints } from './scores'
 
 describe('dabTotals', () => {
   test('queries from the coverage, runs summed over the datasets', () => {
@@ -17,6 +17,20 @@ describe('dabTotals', () => {
 
   test('no coverage: queries summed over the datasets', () => {
     expect(dabTotals({ pass_at_1: 1, datasets: { a: { pass_at_1: 1, queries: 2, runs: 10, passed: 10 } } })).toEqual({ queries: 2, runs: 10 })
+  })
+})
+
+describe('fmtDabComparison', () => {
+  test('a difference with its interval and verdict', () => {
+    expect(fmtDabComparison({ diff: 4.086, ci_low: 1.178, ci_high: 6.876, significant: true })).toBe(
+      '+4.09 points (95% CI +1.18 to +6.88), significant',
+    )
+  })
+
+  test('no interval (every dataset has 1 query): says so, not a zero interval', () => {
+    expect(fmtDabComparison({ diff: -11.76, ci_low: null, ci_high: null, significant: false })).toBe(
+      '−11.76 points (every dataset has 1 query: too few to estimate an interval)',
+    )
   })
 })
 

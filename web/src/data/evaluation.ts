@@ -80,7 +80,8 @@ export type DabOutput = {
 export type Dab = {
   candidate?: DabOutput
   baseline?: DabOutput
-  comparison?: { diff: number; ci_low: number; ci_high: number; significant: boolean } | null
+  /** No interval (`ci_low`, `ci_high` null) when every dataset has 1 query (evals/dab_score.py). */
+  comparison?: { diff: number; ci_low: number | null; ci_high: number | null; significant: boolean } | null
 }
 
 export type Evaluation = {
