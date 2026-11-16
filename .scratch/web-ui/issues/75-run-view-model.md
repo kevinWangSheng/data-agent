@@ -1,6 +1,6 @@
 # 75 — 运行视图模型
 
-Status: in-review
+Status: done
 Blocked by: 73, 83
 Spec: ../spec.md
 Claimed by: claude-code (opus-5.5)
@@ -52,7 +52,7 @@ Branch: worktree-75-run-view-model
 - Attempts: 3
 - Review rounds: 3
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×2, round-2 fixes in review
+- Outcome: accepted after 2 returns (PR #86; CI green, Codex no findings on dc8d96f)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -93,3 +93,4 @@ Branch: worktree-75-run-view-model
   - `pnpm --dir web test` 64/64；make check exit 0：ruff 通过，basedpyright 0 errors，pytest 2202 passed, 1 skipped, 10 xfailed，vitest 64 passed。
   - eng:code-review（796d785）：Spec 无缺漏；Standards：`shown` 改名 `expected`（b6d9d68）。不修：`SHOWN_COUNT` 照抄 `format_rows` 的措辞，措辞变了截断表退回原文（约定的退路），绑定两边要改 `src/data_agent/`，越界；截断时不查 `(n rows)` 总数和 N 的关系，`format_rows` 不会写 N ≥ 总数。
   - da-review（Codex）：796d785 那次 40 分钟没结论；b6d9d68：P2 `query_labels`（`mcp_server.py:306`，只读 SQL、返回 `format_rows`）没算查询，`classify_text` → `query_labels` 的运行只有一个"了解环境"阶段、答案没有依据的查询和表 → dc8d96f 修：`query_labels` 算查询工具（阶段分界和答案回退），`classify_text`（接收并执行 `sql`）结束了解阶段，新单元测试修前红。主会话核对 `query_labels` 确实返回 `format_rows`。dc8d96f：无意见。eng:code-review 没在 dc8d96f 上重跑。
+- 2026-11-16 主会话：PR #86 CI 绿，Codex GitHub app 对 dc8d96f 无意见，squash 合并。

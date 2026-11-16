@@ -1,7 +1,7 @@
 # 76 — 运行页：三栏布局和回放（读静态文件）
 
 Status: ready-for-agent
-Blocked by: 75
+Blocked by: 75（done）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
