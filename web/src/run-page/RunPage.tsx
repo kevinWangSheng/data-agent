@@ -1,7 +1,7 @@
 // The run page (spec "运行页"): three panes over one run, read only through the run view model. A
 // replay feeds the model the events up to the replay clock; "show all" feeds it every event.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import type { RunData } from '../data/source'
 import { fmtCost, fmtDur } from '../format'
@@ -28,7 +28,8 @@ const FILTER_LABELS: [Filter, string][] = [
   ['verifier', 'Verifier'],
 ]
 
-export function RunPage({ run, route, navigate }: { run: RunData; route: Route; navigate: Navigate }) {
+/** `actions`: controls the data source adds to the run's bar, e.g. the local backend's cancel. */
+export function RunPage({ run, route, navigate, actions }: { run: RunData; route: Route; navigate: Navigate; actions?: ReactNode }) {
   const { events, notes } = run
   const [reading, setReading] = useState<number | null>(null)
   const [playing, setPlaying] = useState(false)
@@ -237,6 +238,7 @@ export function RunPage({ run, route, navigate }: { run: RunData; route: Route; 
           {fmtDur(full.summary.durationMs)}
           {full.summary.costUsd !== null && ` · ${fmtCost(full.summary.costUsd)}`}
         </span>
+        {actions}
         <div className="flex-1" />
         <div className="max-[900px]:hidden">
           <ReplayControls

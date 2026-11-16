@@ -63,6 +63,33 @@ environment variable holding a Postgres URL. For dbt work, use `--type dbt` and 
 at the dbt project. `events/` gets one JSONL file per run with every tool call, SQL statement, token
 count and cost.
 
+### Web UI
+
+`data-agent web` serves a page on this machine's loopback address only. You submit a task there and
+watch the run step by step as it happens. You can also cancel it, or open any earlier run from the
+run list. A wheel built where [pnpm](https://pnpm.io/) is on `PATH` carries the built page, so
+installing from it needs no Node. From a checkout, build the page once:
+
+```bash
+pnpm --dir web install && pnpm --dir web build:local
+
+cat > sources.toml <<'EOF'
+[sources.shop]
+kind = "duckdb"
+path = "shop.duckdb"
+EOF
+
+mkdir -p runs-web
+uv run data-agent web --runs-dir runs-web --data-sources sources.toml   # http://127.0.0.1:8765
+```
+
+The form offers the data sources by name only. A Postgres source names the environment variable
+holding its URL (`kind = "postgres"`, `env = "VAR"`), so the URL stays in the server's environment.
+A source used for dbt tasks adds `dbt_project = "DIR"`. Each dbt run works on its own copy of that
+project. Without `--data-sources` the page still lists and replays runs, but cannot start one. Runs
+started with `data-agent run --events-dir runs-web/<name>` appear in the list too. One run goes at a
+time.
+
 ## How it works
 
 ![Architecture: a task goes to the main agent; Skills, context tools and a verifier are switchable layers; the database is reached only through data tools and a read-only gateway; the dbt project is the only write path; every run writes an event log](docs/assets/architecture.svg)
@@ -156,8 +183,8 @@ in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
   specific to a query or dataset, but the 0.7588 is not a blind score; 0.7421 is.
 - Two DataAgentBench questions require the agent's text classification to match the dataset's own
   labels exactly; they failed in every run.
-- Data sources are DuckDB, Postgres and dbt projects. There is no web interface, no clarifying
-  question to the user, and no memory across runs yet.
+- Data sources are DuckDB, Postgres and dbt projects. There is no clarifying question to the user
+  and no memory across runs yet. The web UI is for one user on one machine: it has no login.
 
 ## How it was built
 

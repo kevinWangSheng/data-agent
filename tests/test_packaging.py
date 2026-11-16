@@ -1,15 +1,28 @@
-"""An installed agent (a wheel, as Harbor installs it) must find its Skills without the checkout."""
+"""An installed agent (a wheel, as Harbor installs it) must find its Skills without the checkout,
+and `data-agent web` from a wheel serves the built web UI, so its user needs no Node."""
 
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+from fastapi.testclient import TestClient
+
 from data_agent.agent import QUERY_SKILLS
+from data_agent.web.app import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Talk to the local server directly, whatever proxy the environment names.
+NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def build_and_extract_wheel(tmp_path: Path, env: dict[str, str] | None = None) -> Path:
@@ -120,3 +133,120 @@ def test_runtime_requirements_include_pytz() -> None:
     assert proc.returncode == 0, proc.stderr
     names = {line.split("==")[0].strip() for line in proc.stdout.splitlines() if "==" in line}
     assert "pytz" in names
+
+
+# --- The web UI ----------------------------------------------------------------------------------
+
+
+def no_runs(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
+    raise AssertionError("these tests start no run")
+
+
+@pytest.fixture
+def ui_dir(tmp_path: Path) -> Path:
+    """A built UI as Vite lays it out: index.html at the top, the bundle under assets/."""
+    ui = tmp_path / "ui"
+    (ui / "assets").mkdir(parents=True)
+    (ui / "index.html").write_text('<div id="root"></div><script src="/assets/app.js"></script>')
+    (ui / "assets" / "app.js").write_text("console.log('app')")
+    (tmp_path / "secret.txt").write_text("outside the UI")
+    return ui
+
+
+def ui_client(tmp_path: Path, ui_dir: Path) -> TestClient:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    return TestClient(create_app(runs, [], no_runs, ui_dir=ui_dir))
+
+
+def test_serves_the_built_ui(tmp_path: Path, ui_dir: Path) -> None:
+    client = ui_client(tmp_path, ui_dir)
+    page = client.get("/")
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert '<div id="root">' in page.text
+    script = client.get("/assets/app.js")
+    assert script.status_code == 200
+    assert "javascript" in script.headers["content-type"]
+
+
+def test_every_page_address_gets_the_app(tmp_path: Path, ui_dir: Path) -> None:
+    """The app routes in the browser, so a reload of `/runs/<id>` must get index.html too."""
+    client = ui_client(tmp_path, ui_dir)
+    for path in ("/runs/20261116T090000Z-abc123", "/runs/x?step=s1&filter=sql"):
+        page = client.get(path)
+        assert page.status_code == 200, path
+        assert '<div id="root">' in page.text
+
+
+def test_unknown_api_and_asset_paths_are_not_the_app(tmp_path: Path, ui_dir: Path) -> None:
+    client = ui_client(tmp_path, ui_dir)
+    assert client.get("/api/nope").status_code == 404
+    assert client.get("/assets/missing.js").status_code == 404
+    assert client.get("/api/runs").json() == []
+
+
+def test_serves_nothing_outside_the_ui(tmp_path: Path, ui_dir: Path) -> None:
+    client = ui_client(tmp_path, ui_dir)
+    for path in ("/assets/../../secret.txt", "/assets/%2e%2e/%2e%2e/secret.txt", "/../secret.txt"):
+        assert "outside the UI" not in client.get(path).text, path
+
+
+def test_without_a_built_ui_the_page_says_how_to_build_it(tmp_path: Path) -> None:
+    client = ui_client(tmp_path, tmp_path / "not-built")
+    page = client.get("/")
+    assert page.status_code == 503
+    assert "pnpm" in page.text
+    # The API works without the UI.
+    assert client.get("/api/options").status_code == 200
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def fetch(url: str) -> tuple[int, str, str]:
+    try:
+        with NO_PROXY.open(url, timeout=2) as response:
+            return response.status, response.headers["content-type"], response.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.headers["content-type"], exc.read().decode()
+
+
+def test_data_agent_web_from_the_wheel_serves_the_ui(tmp_path: Path) -> None:
+    """Built where pnpm is on PATH (a checkout, CI): the wheel carries the built UI."""
+    site = build_and_extract_wheel(tmp_path)
+    assert (site / "data_agent" / "web" / "static" / "index.html").is_file()
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    port = free_port()
+    server = subprocess.Popen(
+        [sys.executable, "-m", "data_agent", "web", "--runs-dir", str(runs), "--port", str(port)],
+        cwd=tmp_path,
+        env=os.environ | {"PYTHONPATH": str(site)},
+    )
+    base = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.monotonic() + 60
+        while True:
+            assert server.poll() is None, "server exited"
+            try:
+                status, _, page = fetch(f"{base}/runs/some-run")
+                break
+            except OSError:
+                assert time.monotonic() < deadline, "server never answered"
+                time.sleep(0.2)
+        assert status == 200
+        assert '<div id="root">' in page
+        (src,) = re.findall(r'<script[^>]+src="([^"]+)"', page)
+        status, content_type, bundle = fetch(f"{base}{src}")
+        assert status == 200, src
+        assert "javascript" in content_type
+        # The local build follows runs from the backend; the static site's reader is left out.
+        assert "new EventSource" in bundle
+        assert "index.json" not in bundle
+    finally:
+        server.terminate()
+        server.wait(timeout=60)
