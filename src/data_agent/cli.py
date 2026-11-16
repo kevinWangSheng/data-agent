@@ -179,4 +179,11 @@ def serve_web(
         app = create_app(runs_dir.resolve(), sources, start_run)
     except ValueError as exc:
         parser.error(str(exc))
-    uvicorn.run(app, host=WEB_HOST, port=port)
+    # On SIGINT or SIGTERM uvicorn first waits for open responses to end, and only then runs the
+    # app's lifespan shutdown, which stops the run (`Launcher.shutdown`). An open event stream ends
+    # only with its run, so without a limit the run would go on until it finished. Past the limit
+    # uvicorn cancels the remaining responses and goes on to the lifespan shutdown (uvicorn
+    # `Server.shutdown`). A few seconds. A cancel or submit cut off by the limit goes on in its
+    # thread, holding the launcher's lock, so the lifespan shutdown waits for it and then
+    # stops whatever run is left.
+    uvicorn.run(app, host=WEB_HOST, port=port, timeout_graceful_shutdown=3)
