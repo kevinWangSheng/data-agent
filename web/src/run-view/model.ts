@@ -1,7 +1,7 @@
 // The run view model: one pure function turns a run's events (all of them, or a prefix while the
 // run is live or being replayed) plus the optional run notes into what the run page shows
 // (.scratch/web-ui/spec.md, "运行视图模型"). Types and signature fixed by ticket 73; the body is
-// ticket 75's.
+// ticket 75's; ticket 86 added the narration and the times.
 
 /** One line of a run's event file (src/data_agent/events.py): `seq`, `type`, `ts` plus flat fields. */
 export type RunEvent = { seq: number; type: string; ts: string; [field: string]: unknown }
@@ -61,6 +61,8 @@ export type Step = {
   id: string
   /** `seq` of the `tool_start` event. */
   seq: number
+  /** When the `tool_start` event came, in milliseconds after the run's first event; null when unknown. */
+  startMs: number | null
   /** Tool name as the event gives it, e.g. `mcp__data__query_database`. */
   tool: string
   input: unknown
@@ -99,6 +101,10 @@ export type VerifierDispatch = {
   report: string | null
   /** Ids of the steps the verifier made, in order. */
   steps: string[]
+  /** When `verifier_start` came, in milliseconds after the run's first event; null before it or when unknown. */
+  startMs: number | null
+  /** When `verifier_end` came; null while the verifier is still running or when unknown. */
+  endMs: number | null
 }
 
 /**
@@ -137,6 +143,15 @@ export type FinalAnswer = {
   table: ResultTable | null
 }
 
+/** One `thinking` or `text` event of the main agent (the verifiers' are not in the event file). */
+export type Narration = {
+  kind: 'thinking' | 'text'
+  seq: number
+  /** Milliseconds after the run's first event; null when unknown. */
+  atMs: number | null
+  text: string
+}
+
 export type RunView = {
   summary: RunSummary
   /** Every tool call, main agent and verifiers, in `tool_start` order. */
@@ -151,6 +166,8 @@ export type RunView = {
   skills: string[] | null
   /** Calls per context tool. */
   contextToolUses: { discover: number; hydrate: number; dictionary_search: number }
+  /** The main agent's thinking and text, in `seq` order; the answer's text is one of them. */
+  narration: Narration[]
 }
 
 // --- Tool kinds -----------------------------------------------------------------------------
@@ -257,6 +274,30 @@ function asTaskType(value: unknown): TaskType | null {
   return value === 'query' || value === 'dbt' ? value : null
 }
 
+/** Milliseconds since the epoch, or null when `ts` is missing or cannot be read. */
+function parseTs(ts: unknown): number | null {
+  if (typeof ts !== 'string') return null
+  const ms = Date.parse(ts)
+  return Number.isFinite(ms) ? ms : null
+}
+
+/** A time reader for one run: an event's `ts` as milliseconds after the run's first event; null
+ *  when either `ts` is missing or cannot be read. */
+function clockOf(events: readonly RunEvent[]): (e: RunEvent) => number | null {
+  const start = events.length ? parseTs(events[0].ts) : null
+  return (e) => {
+    if (start === null) return null
+    const ms = parseTs(e.ts)
+    return ms === null ? null : ms - start
+  }
+}
+
+/** Each event's time, in milliseconds after the run's first event (null when unknown): replay cuts
+ *  its prefix and skips idle gaps by these. */
+export function eventTimes(events: readonly RunEvent[]): (number | null)[] {
+  return events.map(clockOf(events))
+}
+
 type OpenDispatch = VerifierDispatch & { seq: number; agentId: string | null }
 
 export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): RunView {
@@ -274,6 +315,8 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
     if (at >= 0) openAgentCalls.splice(at, 1)
   }
   const verdicts: KeyMoment[] = []
+  const narration: Narration[] = []
+  const timeOf = clockOf(events)
   let version: RunEvent | undefined
   let task: RunEvent | undefined
   let status: RunEvent | undefined
@@ -301,12 +344,17 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
         break
       case 'text':
         lastText = e
+        narration.push({ kind: 'text', seq: e.seq, atMs: timeOf(e), text: String(e.text ?? '') })
+        break
+      case 'thinking':
+        narration.push({ kind: 'thinking', seq: e.seq, atMs: timeOf(e), text: String(e.text ?? '') })
         break
       case 'tool_start': {
         const id = String(e.tool_use_id)
         const step: Step = {
           id,
           seq: e.seq,
+          startMs: timeOf(e),
           tool: String(e.tool),
           input: e.input ?? null,
           result: null,
@@ -369,6 +417,8 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
           overall: null,
           report: null,
           steps: [],
+          startMs: null,
+          endMs: null,
           seq: agentCall?.seq ?? e.seq,
           agentId: null,
         }
@@ -378,6 +428,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
       }
       case 'verifier_start': {
         const agentId = asString(e.agent_id)
+        if (current) current.startMs = timeOf(e)
         if (current && agentId !== null) {
           current.agentId = agentId
           dispatchByAgentId.set(agentId, current)
@@ -400,6 +451,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
         )
         d.overall = asString(e.overall)
         d.report = asString(e.report)
+        d.endMs = timeOf(e)
         verdicts.push({ kind: 'verdict', seq: e.seq, step: d.toolUseId, dispatch: d.n })
         if (d === current) current = undefined
         break
@@ -429,6 +481,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
     answer,
     skills: Array.isArray(version?.skills) ? version.skills.map(String) : null,
     contextToolUses: countContextTools(steps),
+    narration,
   }
 }
 

@@ -1,9 +1,13 @@
 // Unit tests for what the acceptance tests leave out: the injected Skills (`version.skills`,
-// ticket 83), the result-table parser's edge cases, task fields per field, durations.
+// ticket 83), the result-table parser's edge cases, task fields per field, durations, and the
+// narration and times (ticket 86).
 
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { gunzipSync } from 'node:zlib'
 import { describe, expect, test } from 'vitest'
 
-import { buildRunView, type RunEvent } from './model'
+import { buildRunView, eventTimes, type RunEvent } from './model'
 
 function version(fields: Record<string, unknown>): RunEvent {
   return { seq: 0, type: 'version', ts: '2026-11-15T09:00:00+00:00', config: 'full', ...fields }
@@ -179,5 +183,160 @@ describe('label queries', () => {
     ])
     expect(view.answer?.sqlStep).toBe('q')
     expect(view.answer?.table).toEqual({ columns: ['label', 'n'], rows: [['shipping', '4']] })
+  })
+})
+
+// --- Narration and times (ticket 86), on the real fixtures ----------------------------------
+
+const FIXTURES = join(import.meta.dirname, '../../../tests/fixtures/web')
+
+function loadEvents(dir: string): RunEvent[] {
+  const path = join(FIXTURES, dir, 'events.jsonl')
+  const text = existsSync(path)
+    ? readFileSync(path, 'utf8')
+    : gunzipSync(readFileSync(path + '.gz')).toString('utf8')
+  return text
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as RunEvent)
+}
+
+const FIXTURE_DIRS = ['real/query-shop', 'real/dbt-cart-abandonment', 'real/dbt-division-by-zero', 'new-fields']
+const fixtures = FIXTURE_DIRS.map((dir) => [dir, loadEvents(dir)] as const)
+const queryShop = loadEvents('real/query-shop')
+const cart = loadEvents('real/dbt-cart-abandonment')
+
+describe('event times', () => {
+  test.each(fixtures)('%s: one time per event, from the first event, never decreasing', (_dir, events) => {
+    const times = eventTimes(events)
+    expect(times).toHaveLength(events.length)
+    expect(times[0]).toBe(0)
+    expect(times.every((t) => t !== null)).toBe(true)
+    const known = times as number[]
+    expect(known.every((t, i) => i === 0 || t >= known[i - 1])).toBe(true)
+  })
+
+  test('milliseconds after the first event', () => {
+    // version 14:31:53.303, thinking 14:31:55.917, tool_start 14:31:55.976
+    expect(eventTimes(queryShop).slice(0, 5)).toEqual([0, 36, 1845, 2614, 2673])
+  })
+
+  test('a missing or unreadable ts is null; the others still count from the first event', () => {
+    const events: RunEvent[] = [
+      { seq: 0, type: 'version', ts: '2026-11-15T09:00:00+00:00' },
+      { seq: 1, type: 'status', ts: 'not a time' },
+      { seq: 2, type: 'thinking' } as unknown as RunEvent,
+      { seq: 3, type: 'text', ts: '2026-11-15T09:00:02.500+00:00' },
+    ]
+    expect(eventTimes(events)).toEqual([0, null, null, 2500])
+  })
+
+  test('no time at all when the first event has none', () => {
+    const events: RunEvent[] = [
+      { seq: 0, type: 'version', ts: '' },
+      { seq: 1, type: 'text', ts: '2026-11-15T09:00:02+00:00' },
+    ]
+    expect(eventTimes(events)).toEqual([null, null])
+    expect(eventTimes([])).toEqual([])
+  })
+})
+
+describe('narration', () => {
+  const counts = (events: RunEvent[]) => ({
+    thinking: events.filter((e) => e.type === 'thinking').length,
+    text: events.filter((e) => e.type === 'text').length,
+  })
+
+  test('the counts in the fixtures', () => {
+    // Counted with jq; no thinking or text event has a parent (agent.py record_message), so all are
+    // the main agent's.
+    expect(fixtures.map(([, events]) => counts(events))).toEqual([
+      { thinking: 7, text: 1 },
+      { thinking: 40, text: 12 },
+      { thinking: 85, text: 30 },
+      { thinking: 0, text: 2 },
+    ])
+  })
+
+  test.each(fixtures)('%s: every thinking and text event, in seq order, with its time', (_dir, events) => {
+    const { narration } = buildRunView(events)
+    const times = eventTimes(events)
+    const expected = events.flatMap((e, i) =>
+      e.type === 'thinking' || e.type === 'text' ? [{ kind: e.type, seq: e.seq, atMs: times[i], text: e.text }] : [],
+    )
+    expect(narration).toEqual(expected)
+    expect({
+      thinking: narration.filter((n) => n.kind === 'thinking').length,
+      text: narration.filter((n) => n.kind === 'text').length,
+    }).toEqual(counts(events))
+  })
+
+  test('the first entry of a run', () => {
+    expect(buildRunView(queryShop).narration[0]).toMatchObject({ kind: 'thinking', seq: 3, atMs: 2614 })
+  })
+
+  test('the answer text is an entry; the answer event is not', () => {
+    const events = loadEvents('new-fields')
+    const view = buildRunView(events)
+    const answerSeq = events.find((e) => e.type === 'answer')?.seq
+    expect(view.narration.map((n) => n.seq)).toEqual([41, 43])
+    expect(view.narration.some((n) => n.seq === answerSeq)).toBe(false)
+    expect(view.narration[0]).toMatchObject({ kind: 'text', text: view.answer?.text })
+  })
+
+  test('a prefix holds the entries so far', () => {
+    expect(buildRunView(cart.filter((e) => e.seq <= 10)).narration.map((n) => [n.kind, n.seq])).toEqual([
+      ['thinking', 3],
+      ['text', 4],
+      ['thinking', 10],
+    ])
+  })
+})
+
+describe('step start times', () => {
+  test.each(fixtures)('%s: each step starts at its tool_start, never decreasing', (_dir, events) => {
+    const times = eventTimes(events)
+    const starts = events.flatMap((e, i) => (e.type === 'tool_start' ? [times[i]] : []))
+    const view = buildRunView(events)
+    expect(view.steps.map((s) => s.startMs)).toEqual(starts)
+    const known = view.steps.map((s) => s.startMs as number)
+    expect(known.every((t, i) => t !== null && (i === 0 || t >= known[i - 1]))).toBe(true)
+  })
+
+  test('the first call of a run', () => {
+    expect(buildRunView(queryShop).steps[0].startMs).toBe(2673)
+  })
+
+  test('a tool_start without ts has no start time', () => {
+    const events: RunEvent[] = [
+      version({}),
+      { seq: 1, type: 'tool_start', tool: 'Bash', tool_use_id: 'b', input: {} } as unknown as RunEvent,
+    ]
+    expect(buildRunView(events).steps[0].startMs).toBeNull()
+  })
+})
+
+describe('dispatch times', () => {
+  test.each(fixtures)('%s: each dispatch runs from its verifier_start to its verifier_end', (_dir, events) => {
+    const times = eventTimes(events)
+    const at = (type: string) => events.flatMap((e, i) => (e.type === type ? [times[i]] : []))
+    const view = buildRunView(events)
+    expect(view.dispatches.map((d) => d.startMs)).toEqual(at('verifier_start'))
+    expect(view.dispatches.map((d) => d.endMs)).toEqual(at('verifier_end'))
+  })
+
+  test('the two dispatches of the cart run', () => {
+    // verifier_start / verifier_end at 19:13:49.709 / 19:17:33.263 and 19:18:23.025 / 19:21:40.846;
+    // the run began at 19:08:42.318.
+    expect(buildRunView(cart).dispatches.map((d) => [d.startMs, d.endMs])).toEqual([
+      [307391, 530945],
+      [580707, 778528],
+    ])
+  })
+
+  test('a dispatch still running has no end; before its verifier starts, no start either', () => {
+    // seq 307 verifier_dispatch, 308 verifier_start, 366 verifier_end.
+    expect(buildRunView(cart.filter((e) => e.seq <= 307)).dispatches[0]).toMatchObject({ startMs: null, endMs: null })
+    expect(buildRunView(cart.filter((e) => e.seq <= 320)).dispatches[0]).toMatchObject({ startMs: 307391, endMs: null })
   })
 })
