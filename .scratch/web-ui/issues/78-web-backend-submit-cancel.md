@@ -1,6 +1,6 @@
 # 78 — 后端：提交和取消运行
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 77
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -56,8 +56,8 @@ Branch: worktree-78-web-backend-submit-cancel
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 3
+- Attempts: 3
+- Review rounds: 4
 - Model spend: $0.0082 (main-session real run, price table; the cancelled run wrote no result, cost unrecorded) (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: returned ×2
 - Human review minutes: — (filled by the human at merge, optional)
@@ -98,3 +98,11 @@ Branch: worktree-78-web-backend-submit-cancel
   - 去掉 `ignore_dangling_symlinks=True`；在现有的 `ignore` 回调里，对 `entry.is_symlink() and not entry.exists()`（`Path.exists` 按链接所在目录跟随）的才跳过。
   - 单元测试（经 `prepare_workspace`，并且测试里 `chdir` 到项目以外的目录）：相对的文件链接（DuckDB）和目录链接（models）都被复制且内容可读；真正悬空的链接被跳过、不报错。修前要失败。
   - 这是本 PR 最后一轮退回；修完重跑 `make check` 和两道审查，真实运行至少用一个带相对 DuckDB 链接的 dbt 源提交一次（$0，被拒或跑起来都要记下）。
+- 2026-11-16 claude-opus，退回第 2 轮修复（bf810a2、943358e）：
+  - 去掉 `prepare_workspace` 的 `ignore_dangling_symlinks=True`；`ignore` 回调只跳过 `is_symlink()` 且 `not exists()` 的链接（`Path.exists` 按链接所在目录解析）；两处链接检查合成一处，文档注明跳过悬空链接。
+  - 测试（`tests/test_web_submit.py`，直接调 `prepare_workspace`，`monkeypatch.chdir` 到项目外）：相对文件链接 `shop.duckdb -> real.duckdb`、相对目录链接 `models/shared -> ../shared` 复制成真实内容且可读，返回的 `--duckdb` 存在；悬空链接 `gone.sql -> missing.sql` 被跳过不报错（cwd 里放同名 `missing.sql`）。换回 948211c 的 launcher 两条都失败，修后通过。
+  - make check：2242 passed, 1 skipped, 39 deselected, 4 xfailed；ruff、format 通过；basedpyright 0 errors；vitest 通过。
+  - 真实运行（$0，假 key 指向本机死端口）：项目里 `shop.duckdb -> real.duckdb`，服务从项目外的 cwd 启动；`GET /api/options` 正常；提交 dbt 运行 201，`workspace/shop.duckdb` 是普通文件 274432 字节（和 real.duckdb 相同）；取消 200 cancelled；服务正常退出，没有残留进程。查数路径本轮未改，主会话 948211c 上的真实运行仍适用。
+  - da-review 超时没结论（10 分钟后台上限；上一轮 60 分钟也没结论），改用只读 Fable 审查本轮 diff：无 P1/P2，确认两条新测试修前失败。两条 P3（修前修后行为相同）记为已知限制：链接目标名超过 NAME_MAX 时 `Path.exists` 抛 OSError、提交返回 500；`proj/lnk/../d.duckdb`（`lnk` 指向项目外）能过 `check_layout`（abspath 按字面折叠 `..`），但工作区里没有这份拷贝。
+  - eng:code-review：Spec 指出悬空链接测试修前也通过 → 943358e 在 cwd 放同名文件，现在修前失败；无越界。Standards 无硬违规；合并重复的 `is_symlink` 检查、补文档。不修：两条测试的 5 行准备代码重复（只两份）；`ignore` 回调做三件事（仍很短）。
+  - 已知限制：链接成环（`models/self -> .`）原来抛 shutil.Error，现在复制约 30 层到 ELOOP 后跳过，工作区会变大。本 PR 退回已满 2 轮，之后的新意见记成已知限制。
