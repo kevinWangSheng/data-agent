@@ -1,0 +1,39 @@
+// Replay timing: the run view model gives each event's time (`eventTimes`); replay turns those into
+// a clock it can play at any speed, and cuts the event prefix the page shows at a clock reading.
+
+/** Longest pause between two events while idle gaps are skipped. */
+export const IDLE_CAP_MS = 1500
+
+/**
+ * Each event's place on the replay clock, in milliseconds from the first event. An unknown time
+ * (null) adds no wait; a time earlier than the one before it adds none either, so the clock never
+ * runs backwards. With `skipIdle`, each wait is cut to `IDLE_CAP_MS`.
+ */
+export function replayClock(times: readonly (number | null)[], skipIdle: boolean): number[] {
+  const clock: number[] = []
+  let at = 0
+  let last: number | null = null
+  for (const time of times) {
+    if (time !== null) {
+      if (last !== null) {
+        const gap = Math.max(0, time - last)
+        at += skipIdle ? Math.min(gap, IDLE_CAP_MS) : gap
+      }
+      last = last === null ? time : Math.max(last, time)
+    }
+    clock.push(at)
+  }
+  return clock
+}
+
+/** How many events have come by clock reading `t` (at least the first one). */
+export function revealedAt(clock: readonly number[], t: number): number {
+  let lo = 0
+  let hi = clock.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (clock[mid] <= t) lo = mid + 1
+    else hi = mid
+  }
+  return Math.min(clock.length, Math.max(1, lo))
+}
