@@ -1,6 +1,6 @@
 # 79 — 本地版前端：提交、实时过程、取消、历史列表
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 76（done）, 78（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16
@@ -12,7 +12,7 @@ Branch: worktree-79-web-local-frontend
 
 ## Authority
 
-- May edit: `web/`（除验收测试外）；`src/data_agent/` 的 web 服务模块（提供前端文件）；`pyproject.toml`、打包相关配置；`tests/test_packaging.py`；README 的本地启动一节
+- May edit: `web/`（除验收测试外）；`evals/harbor_agent.py`（退回第 1 轮加，只动 `build_artifacts` 里构建 wheel 那次调用的环境）；`src/data_agent/` 的 web 服务模块（提供前端文件）；`pyproject.toml`、打包相关配置；`tests/test_packaging.py`；README 的本地启动一节
 - Must not edit: 验收测试（`web/src/**/acceptance/`、`tests/acceptance/test_web_api.py`、`tests/acceptance/test_web_export.py`、`tests/fixtures/web/`，由工单 73 合入；唯一例外是本工单让某个测试转绿时删掉它的 `xfail` 标记）、agent 的运行逻辑、其他工单的文件、`.claude/`、`CODING_STANDARDS.md`
 - Server access: none（真实运行由主会话做）
 - Spend cap: $0
@@ -54,7 +54,7 @@ Branch: worktree-79-web-local-frontend
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review (PR #92)
+- Outcome: returned ×1 (PR #92)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -66,3 +66,9 @@ Branch: worktree-79-web-local-frontend
   - make check：pytest 2305 passed、1 skipped；vitest 179 passed；basedpyright 0 errors。打包测试：构建 wheel、从中启动 `python -m data_agent web`，页面、`/runs/<id>` 深链接、脚本都能取到。
   - da-review（Codex）：无可执行问题。eng:code-review，c349e43 修：断线期间运行结束会丢最后的事件 → `onerror` 发现行已结束先读 `events?after=last`；行不存在时每 2 s 永远重开 → 直接结束；恢复逻辑改成一个 async 函数；共用 `errorText`；过时注释；NewRun 重复的 task_type 回退。
   - 不修（理由）：`RunNotes.failed` 新状态规则（spec 写"没有 result 且没有其他信息才算运行中"，后端行就是其他信息；主会话认可并写进 spec 状态来源）；409 控制台日志（浏览器行为）；静态版不再内存缓存已加载的运行（有 HTTP 缓存）；不是本服务启动的运行也显示 Cancel（后端会拒绝并显示原因；区分要给后端行加字段，超出范围）；hook 在没有 `node_modules` 时会 `pnpm install`（见下面主会话的意见）；`build:local` 和 hook 构建命令重复、dev 代理端口和 `WEB_PORT` 重复等风格项。
+- 2026-11-16 主会话：PR #92 CI 绿。Codex GitHub app 对 c349e43 一条 P2"回到历史列表后旧的运行加载错误还显示"——不属实：`useRun` 返回 `loaded?.id === id ? loaded : null`（`App.tsx:57`），历史路由上 `id` 为 `null`、旧的 `loaded.id` 是字符串，hook 返回 `null`，`shownError`（第 139 行）只剩运行列表的错误。已在 PR 上回复。
+- **退回第 1 轮（主会话 2026-11-16 定；评测不能依赖网页构建）**：`hatch_build.py` 让每次非 editable 的 wheel 构建在有 pnpm 时都构建前端；评测每次都用 `uv build --wheel` 建 agent 的 wheel（`evals/harbor_agent.py:154`），于是评测会：每次多一遍前端构建；在钉住的评测 worktree（没有 `node_modules`）里联网 `pnpm install --frozen-lockfile`；前端构建失败就让评测失败。修法：
+  - `hatch_build.py` 认一个环境变量（如 `DATA_AGENT_WHEEL_UI=0`）跳过前端构建，跳过时不警告（是有意的）；默认仍构建（给用户装的 wheel 照旧带前端）。
+  - `evals/harbor_agent.py` 的 `build_artifacts` 构建 wheel 时设这个变量（只改那一次 `subprocess.run` 的 `env`）。
+  - 测试：`tests/test_packaging.py` 加一条——设了变量构建出的 wheel 没有 `data_agent/web/static`、也不调用 pnpm（可以用 PATH 里放一个会失败的假 pnpm 证明）；评测那边有单元测试覆盖 `build_artifacts` 传了这个变量（看现有 `tests/` 里有没有 harbor_agent 的测试，照它的写法）。
+  - 在原分支上接着修；修完重跑 `make check` 和两道审查。
