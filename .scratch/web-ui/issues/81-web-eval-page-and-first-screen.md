@@ -1,6 +1,6 @@
 # 81 — 评测页和在线版第一屏
 
-Status: in-review
+Status: done
 Blocked by: 76（done）, 80（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16 (filled in by the main session; the worktree could not write the main checkout)
@@ -54,7 +54,7 @@ Branch: worktree-81-web-eval-page-and-first-screen
 - Attempts: 2
 - Review rounds: 4 (first: da-review 1 fix, eng:code-review 1 fix round; return 1: da-review none, eng:code-review 1 fix round)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1 (PR #93), fixed, in review
+- Outcome: accepted after 1 return (PR #93; CI green, Codex no findings on 03fb378)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -83,3 +83,4 @@ Branch: worktree-81-web-eval-page-and-first-screen
   - 真实运行：去掉精选运行的导出，`pnpm build`、`pnpm dev`、`vite preview` 都在启动时报上面那句；`SITE_DATA=../runs/81-site pnpm build --base /data-agent/` ✓，`home.json` 有 3 条精选；preview 第一屏自动回放 `query-shop`，只请求 `home.json` 和那条运行的两个文件，控制台 0 错误 0 警告。
   - make check（03fb378）：ruff 通过，basedpyright 0 errors，pytest "2299 passed, 1 skipped, 39 deselected"，vitest 188 passed。
   - da-review（Codex，04b0622）：无意见。eng:code-review，03fb378 修：`closeBundle` 里永真的 `if`；`home.json` 只在启动时生成一次；App 里走不到的提示；测试的位置布尔参数。不修：`exportFiles` 和 `exportHome` 读 JSON 的重复（本轮之前就有）。
+- 2026-11-16 主会话：PR #93 CI 绿，Codex GitHub app 对 03fb378 无意见，squash 合并。

@@ -1,6 +1,6 @@
 # 79 — 本地版前端：提交、实时过程、取消、历史列表
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 76（done）, 78（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16
@@ -82,3 +82,4 @@ Branch: worktree-79-web-local-frontend
   - da-review（Codex，c050f78）：无意见。eng:code-review：无阻塞；af03aa4 修三条（"不警告"补断言；对照构建先去掉 shell 里已有的 `DATA_AGENT_WHEEL_UI`；注释"不联网"改成"no pnpm and no frontend build"）。不修：变量名两处各写一次（评测代码不 import 构建 hook，单元测试钉住字面值）；只认 `"0"`（内部开关）；测试 monkeypatch `subprocess.run`（会还原）；打包测试多跑两次 `uv build`（对照需要）。
   - 本轮没做"在线版历史列表"那条验收（是本轮开始后才加的），等 81 合入后 rebase 时做。
 - 2026-11-16 主会话：PR #92 对 af03aa4 CI 绿；Codex 再次报同一条"回到历史列表后旧错误还显示"，理由同前不属实（`App.tsx:57`），已在 PR 上回复。本 PR 没有属实的新意见；等 81 合入后 rebase 并做在线版历史列表。
+- **2026-11-16 主会话：81 已合入（PR #93）。本轮任务**：在原分支 rebase 到 origin/main，解决和 81 在 `App.tsx`、`RunPage.tsx`、`source.ts` 等处的冲突（81 的第一屏、精选切换、评测页、`home.json`、`site-data.ts` 都要保留）；做验收里"静态构建里历史列表页列出精选运行"那条；重跑 `make check`、本地版无头浏览器走一遍（提交、实时、取消、历史列表）、静态构建（`SITE_DATA`）的第一屏和历史列表，和两道审查。这不算退回，是计划内的合并后续。
