@@ -1,6 +1,6 @@
 # 81 — 评测页和在线版第一屏
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 76（done）, 80（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16 (filled in by the main session; the worktree could not write the main checkout)
@@ -54,7 +54,7 @@ Branch: worktree-81-web-eval-page-and-first-screen
 - Attempts: 1
 - Review rounds: 2 (da-review 1 fix; eng:code-review 1 fix round)
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review
+- Outcome: returned ×1 (PR #93)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -71,3 +71,8 @@ Branch: worktree-81-web-eval-page-and-first-screen
   - da-review（Codex）：P2 DAB 对比没有区间（每个数据集一题）显示 "95% CI 0.00 to 0.00" → 2ec83f4 改说"题太少估不出"，测试修前失败。
   - eng:code-review，9c20ebd 修：留出集没有 trial 时 board 的 `accuracy: null`（`evals/board.py:396`）让评测页崩溃 → `fmtPct(null)` 显示 "—"、类型可空，测试修前失败，浏览器里拦截 `eval.json` 也确认；第一屏条和评测页共用分数格式；新 `web/site-data.test.ts`（提供的文件、`home.json`、缺 `eval.json`、`..` 越界、站点不读的文件）；不再把 `index.json` 复制进构建。
   - 不修（理由）：在线版历史列表页（79 在做列表组件；数据侧 `listRuns()` 已只返回精选，顶栏有精选切换）——**主会话：spec 要求在线版这一页列出精选运行，记为缺口，交给工单 79 rebase 到 81 之后一并做**；显著性不画在每根柱上（显著性属于配置之间的差，标在图下的贡献列表）；保留 `listRuns`（和 79 共用接口）；`rootOf` 和 `route.ts` 重复（76 的文件、79 也在改）；其余小重复；`autoplaySpeed` 的 `targetMs` 参数；DAB 表的 "Scored"/"Baseline" 标签（导出没有配置名，"scored" 是 `dab-score` 的候选，`evals/dab_score.py:253`）。
+- **退回第 1 轮（PR #93 上 Codex GitHub app 对 9c20ebd 的 P2，主会话 2026-11-16 核实属实；只是让第一屏的要求不静默落空，由主会话直接定）**：`homeData`（`web/src/data/home.ts:17`）只留 `featured` 的运行；导出里没有精选运行（例如 `evals export` 只给 `--job`、没给 `--run`）时 `home.json` 里一条运行都没有，第一屏显示 "No runs to show"，`firstScreenRun` 里"退到第一条运行"的分支永远走不到。在线版第一屏必须自动回放一条运行（spec），所以修法：
+  - `site-data.ts` 生成 `home.json` 时，导出里没有任何精选运行就让 build（和 dev/preview 启动）失败，报错写明要用 `evals export --run` 给精选运行；不退回到 trial。
+  - 删掉 `firstScreenRun` 里走不到的退路（或者让它只在精选里挑），别留死代码。
+  - 测试：`site-data.test.ts` 加"导出没有精选运行 → 报错"；现有测试照过。
+  - 在原分支上接着修；修完重跑 `make check`、`SITE_DATA=… pnpm build` 和两道审查。
