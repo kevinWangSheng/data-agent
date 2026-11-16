@@ -260,12 +260,14 @@ def new_run_id(started_at: datetime) -> str:
 
 def prepare_workspace(workspace: Path, source: DataSource, task_type: str) -> list[str]:
     """Creates the run's working directory; returns the database arguments for `data-agent run`."""
+    if source.postgres_env is not None:
+        database = ["--postgres-env", source.postgres_env]
+    else:
+        assert source.duckdb is not None
+        database = ["--duckdb", str(source.duckdb)]
     if task_type == "query" or source.dbt_project is None:
         workspace.mkdir()
-        if source.postgres_env is not None:
-            return ["--postgres-env", source.postgres_env]
-        assert source.duckdb is not None
-        return ["--duckdb", str(source.duckdb)]
+        return database
     project = source.dbt_project
     # Link targets are copied, so no write in the workspace reaches the original project.
     shutil.copytree(
@@ -274,9 +276,8 @@ def prepare_workspace(workspace: Path, source: DataSource, task_type: str) -> li
         ignore=lambda directory, _: list(NOT_COPIED) if Path(directory) == project else [],
         ignore_dangling_symlinks=True,
     )
-    if source.postgres_env is not None:
-        return ["--postgres-env", source.postgres_env]
-    assert source.duckdb is not None
+    if source.duckdb is None:
+        return database
     # A DuckDB file inside the project keeps its place in the copy; one outside goes to the
     # workspace's top.
     try:

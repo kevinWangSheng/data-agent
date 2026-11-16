@@ -19,6 +19,8 @@ from pydantic import BaseModel
 from data_agent.run_config import CONFIG_NAMES
 from data_agent.web.launcher import TASK_TYPES, Launcher, Refused, StartRun
 from data_agent.web.runs import RunsDir
+
+# Re-exported: the acceptance tests (ticket 73) import DataSource from this module.
 from data_agent.web.sources import DataSource as DataSource
 
 # How often a stream looks for new events, and how long it stays silent before a keepalive.
