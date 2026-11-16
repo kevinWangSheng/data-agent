@@ -1,6 +1,6 @@
 # 78 — 后端：提交和取消运行
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 77
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -59,7 +59,7 @@ Branch: worktree-78-web-backend-submit-cancel
 - Attempts: 2
 - Review rounds: 3
 - Model spend: $0.0082 (main-session real run, price table; the cancelled run wrote no result, cost unrecorded) (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review (returned ×1)
+- Outcome: returned ×2
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -94,3 +94,7 @@ Branch: worktree-78-web-backend-submit-cancel
   - eng:code-review：Spec 两条退回都满足；Standards 无硬违规，web 命令测试重复代码抽成 `web_command`。不修：`prepare_workspace` 的 assert 只写明 `check_layout` 已跑的前提；校验分在解析 TOML 和 `check_layout` 两处（后者需要 runs 目录）；`where` 标签重复、改名、测试准备代码重复属小取舍；runs 在 `proj/target/` 下也拒绝，照退回原文。
   - agent 对 948211c 的 da-review 复审跑满 60 分钟没结论，以 PR 上 Codex app 的审查为准。
   - 已知限制：链接只在提交时查，复制过程中新出现的链接查不到。
+- **退回第 2 轮（PR #85 上 Codex GitHub app 对 948211c 的 P2，主会话 2026-11-16 核实属实；只是让复制和已通过的源校验一致，由主会话直接定）**：`prepare_workspace`（`launcher.py:294`）用 `shutil.copytree(..., ignore_dangling_symlinks=True)`；`shutil._copytree` 判断悬空用的是 `os.path.exists(os.readlink(src))`，相对链接按服务进程的当前目录解析，不是按链接所在目录。所以项目里有效的相对链接（如 `shop.duckdb -> real.duckdb`、指向 models 或 profiles 的相对链接）会被静默跳过，返回的 `--duckdb` 路径在工作区里不存在，运行失败。修法：
+  - 去掉 `ignore_dangling_symlinks=True`；在现有的 `ignore` 回调里，对 `entry.is_symlink() and not entry.exists()`（`Path.exists` 按链接所在目录跟随）的才跳过。
+  - 单元测试（经 `prepare_workspace`，并且测试里 `chdir` 到项目以外的目录）：相对的文件链接（DuckDB）和目录链接（models）都被复制且内容可读；真正悬空的链接被跳过、不报错。修前要失败。
+  - 这是本 PR 最后一轮退回；修完重跑 `make check` 和两道审查，真实运行至少用一个带相对 DuckDB 链接的 dbt 源提交一次（$0，被拒或跑起来都要记下）。
