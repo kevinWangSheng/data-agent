@@ -15,6 +15,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { firstScreenRun, type Home } from './data/home'
 import { isLive, localSource, notesOf, staticSource, type DataSource, type LiveSource, type RunData } from './data/source'
 import { evalUrl, isEvalPath, readTrialFilter, type TrialFilter } from './eval-page/trials'
+import { errorText } from './format'
 import { HistoryPage } from './local/HistoryPage'
 import { NewRun } from './local/NewRun'
 import type { RunEvent, RunNotes } from './run-view/model'
@@ -42,7 +43,6 @@ const currentPlace = (): Place =>
     : { page: 'run', route: readRoute(window.location.pathname, window.location.search, BASE) }
 
 const runHref = (id: string) => routeUrl({ id, step: null, filter: 'all' }, BASE)
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 type Loaded = { id: string; run?: RunData; error?: string }
 
@@ -68,7 +68,7 @@ function useRun(id: string | null): [Loaded | null, (notes: RunNotes) => void] {
           notes: (notes) => update((r) => ({ ...r, notes })),
         })
       })
-      .catch((e: unknown) => !gone && setLoaded({ id, error: message(e) }))
+      .catch((e: unknown) => !gone && setLoaded({ id, error: errorText(e) }))
     return () => {
       gone = true
       stop()
@@ -91,7 +91,7 @@ function CancelButton({ live, id, onCancelled }: { live: LiveSource; id: string;
     try {
       onCancelled(notesOf(await live.cancel(id)))
     } catch (e: unknown) {
-      setError(message(e))
+      setError(errorText(e))
     } finally {
       setBusy(false)
     }

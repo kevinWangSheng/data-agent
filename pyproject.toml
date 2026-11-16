@@ -47,7 +47,7 @@ packages = ["src/data_agent"]
 "skills" = "data_agent/skills"
 "skills-frozen" = "data_agent/skills-frozen"
 
-# Writes the source commit into the wheel (hatch_build.py).
+# Writes the source commit and the built web UI into the wheel (hatch_build.py).
 [tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.ruff]

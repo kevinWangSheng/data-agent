@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
 import type { LiveSource, RunOptions } from '../data/source'
+import { errorText } from '../format'
 import type { TaskType } from '../run-view/model'
 
 const DEFAULT_CONFIG = 'full'
@@ -28,7 +29,7 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
         setDataSource((d) => d || (o.data_sources[0] ?? ''))
         setConfig((c) => c || (o.configs.includes(DEFAULT_CONFIG) ? DEFAULT_CONFIG : (o.configs[0] ?? '')))
       })
-      .catch((e: unknown) => !gone && setError(`Could not load the form's options: ${e instanceof Error ? e.message : String(e)}`))
+      .catch((e: unknown) => !gone && setError(`Could not load the form's options: ${errorText(e)}`))
     taskBox.current?.focus()
     return () => {
       gone = true
@@ -50,7 +51,7 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
     try {
       onStarted(await live.submit({ task, task_type: taskType, data_source: dataSource, config }))
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorText(err))
     } finally {
       setBusy(false)
     }
@@ -68,7 +69,7 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
         <label className="field">
           Type
           <select value={taskType} onChange={(e) => setTaskType(e.target.value as TaskType)}>
-            {(options?.task_types ?? ['query', 'dbt']).map((t) => (
+            {(options?.task_types ?? []).map((t) => (
               <option key={t} value={t}>
                 {t}
               </option>

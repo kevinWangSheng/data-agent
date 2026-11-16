@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 
 import type { LiveSource, RunRow } from '../data/source'
-import { fmtCost, fmtDur, fmtStart } from '../format'
+import { errorText, fmtCost, fmtDur, fmtStart } from '../format'
 import { StatusChip } from '../run-page/ui'
 
 const dash = <span className="text-ink-3">—</span>
@@ -18,7 +18,7 @@ export function HistoryPage({ live, runUrl, onOpen }: { live: LiveSource; runUrl
     live
       .history()
       .then((r) => !gone && setRows(r))
-      .catch((e: unknown) => !gone && setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => !gone && setError(errorText(e)))
     return () => {
       gone = true
     }

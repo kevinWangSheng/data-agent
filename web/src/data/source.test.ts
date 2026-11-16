@@ -233,8 +233,8 @@ describe('follow', () => {
     vi.useRealTimers()
   })
 
-  function follow(rows: RunRow[], after = 1) {
-    const { fetchFn } = fakeBackend({ 'GET /api/runs': [200, rows] })
+  function follow(rows: RunRow[], after = 1, routes: Record<string, [number, unknown]> = {}) {
+    const { fetchFn } = fakeBackend({ 'GET /api/runs': [200, rows], ...routes })
     const batches: number[][] = []
     const notes: unknown[] = []
     const stop = localSource('/api/', fetchFn, openStream).live!.follow('r1', after, {
@@ -277,11 +277,30 @@ describe('follow', () => {
   })
 
   test('a run that ended without a result: closes and hands over the row as notes', async () => {
-    const { notes, stream } = follow([row({ status: 'cancelled' })])
+    const { notes, stream } = follow([row({ status: 'cancelled' })], 1, { 'GET /api/runs/r1/events?after=1': [200, { events: [] }] })
     stream().drop()
     await vi.advanceTimersByTimeAsync(0)
     expect(stream().closed).toBe(true)
     expect(notes).toEqual([notesOf(row({ status: 'cancelled' }))])
+  })
+
+  test('a run that ended while the connection was down: the rest of its events still come', async () => {
+    const rest = { events: [ev(3), ev(4, 'result')] }
+    const { batches, notes, stream } = follow([row({ status: 'success' })], 1, { 'GET /api/runs/r1/events?after=2': [200, rest] })
+    stream().send(ev(2))
+    stream().drop()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(batches.flat()).toEqual([2, 3, 4])
+    expect(stream().closed).toBe(true)
+    expect(notes).toEqual([notesOf(row({ status: 'success' }))])
+  })
+
+  test('a run the backend no longer lists: stops following instead of reopening forever', async () => {
+    const { stream } = follow([])
+    stream().drop(2)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(FakeStream.all).toHaveLength(1)
+    expect(stream().closed).toBe(true)
   })
 
   test('a stream the browser gave up on is opened again after the last event seen', async () => {
