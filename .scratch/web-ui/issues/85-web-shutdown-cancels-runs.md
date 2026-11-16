@@ -1,10 +1,10 @@
 # 85 — 网页服务停止时取消正在跑的运行，即使有浏览器开着 SSE
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 78（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5), 2026-11-16
+Branch: worktree-85-web-shutdown-cancels-runs
 
 ## Goal
 
@@ -44,12 +44,20 @@ Ctrl+C（SIGINT）或 SIGTERM 停 `data-agent web` 时，它启动的运行一�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Outcome: in-review
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
 
 - 2026-11-16 主会话：人定开本工单并派发。
+- 2026-11-16 claude (opus-5-5)（16c8c91、0bf080c）：
+  - 修法：`serve_web` 的 `uvicorn.run` 加 `timeout_graceful_shutdown=3`（`cli.py`），`web/` 没改。依据 uvicorn 0.54.0 `server.py:281-311`：收到信号先关监听，进行中的响应只设 `keep_alive=False`，然后等所有连接关闭，上限是 `timeout_graceful_shutdown`（默认 `None` = 一直等）；超时后取消剩下的请求任务，再走 `lifespan.shutdown()` → `launcher.shutdown`。SSE 只随运行结束，所以这个上限保证 cleanup 会执行。
+  - 测试 `tests/test_web_shutdown.py`：子进程起真的 `data-agent web`，只把 `-m data_agent run` 换成一个写事件、再起一个工具进程的长运行替身；读到 SSE 第一帧后发信号，断言 15 秒内退出、运行和工具进程都不在、`/api/runs` 为 `cancelled`。三种：`sigint-with-stream`、`sigterm-with-stream`、`sigint-without-stream`。修前两条带流的失败（停在 `Waiting for connections to close`），不带流的通过；修后 3 passed，10.70s。
+  - make check（16c8c91）：ruff、basedpyright 0 errors；pytest 2299 passed, 1 skipped, 39 deselected；vitest 64 passed。0bf080c 只改注释和测试名，之后只重跑了 ruff、format、basedpyright 和 `pytest tests/test_web_shutdown.py tests/test_web_submit.py`（31 passed）。
+  - 真实运行（$0，`DATA_AGENT_BASE_URL` 指向本机一个收连接但不回的端点）：真的 `data-agent web` + 真的 `data-agent run`，提交一条，`curl -N` 开着事件流（收到 3 帧），`kill -INT` 服务的确切 PID → "server exit code 0, 3.56s after SIGINT"，curl exit 18；信号前运行的进程组有运行、模型 CLI、MCP 服务三个进程，停止后 `ps -g` 只剩表头、`ps -p` 三个都不在；重启后 `GET /api/runs` 那条为 `cancelled`。
+  - da-review（Codex）：无意见。eng:code-review：Standards 无硬违规，Spec 无阻塞；0bf080c 修：`cli.py` 注释说错了"其他响应远在上限内结束"、删多余的 `took < EXIT_SECONDS` 断言、改名 `tool_pid`、`serving`。
+  - 不修：`3` 没提成 `WEB_HOST` 旁的命名常量（Authority 只许动 `serve_web`）；测试 helper 和其他 web 测试文件重复（各文件都各留一份，没有共用模块）；测试里的小重复。
+  - 已知限制：3 秒宽限内第二次 Ctrl+C 会让 uvicorn `force_exit`、跳过 cleanup、运行留下（原来就有，窗口从"直到运行结束"缩到约 3 秒）；超时时 uvicorn 对每个开着的流打一条 `CancelledError` 的 ERROR 日志（设计行为）；被上限截断的 submit 若还在 `check()`（拿锁之前）而 cleanup 已结束，可能在 cleanup 之后起一条运行，`check()` 只查文件和环境变量，实际极少。
