@@ -1,7 +1,7 @@
 # 80 — 导出命令：把选定的运行转成在线版的静态数据
 
 Status: ready-for-agent
-Blocked by: 73, 84（退回第 1 轮：要等 84 改好的验收契约人审合入）
+Blocked by: 73, 84（done）
 Spec: ../spec.md
 Claimed by: claude-code (opus)
 Branch: worktree-80-web-export

@@ -1,6 +1,6 @@
 # 84 — 导出验收契约：精选运行也过留出集检查
 
-Status: in-review
+Status: done
 Blocked by: 73
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (Claude Code) (filled in by the main session; the worktree session could not write the main checkout)
@@ -62,7 +62,7 @@ Branch: worktree-84-export-featured-holdout-contract
 - Attempts: 2
 - Review rounds: 3
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1, fixed
+- Outcome: accepted after 1 return (PR #87 → b65efa2; human-approved 2026-11-15; CI green, Codex no findings)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
