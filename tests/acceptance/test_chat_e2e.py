@@ -74,10 +74,12 @@ GROSS_2024 = Decimal("2121.75")
 NET_2024 = Decimal("1474.50")
 # f: the answer says how it treated refunded orders, by naming refunds, order statuses ("all
 # order statuses included") or orders by the other status value ("only completed orders", "orders
-# marked completed"), not "completed" alone ("the analysis is completed").
+# marked completed"), not "completed" alone ("the analysis is completed"). Markdown marks (* _ `)
+# are taken out of the answer first, so "only **completed** orders" counts too.
 STATED_REFUND_TREATMENT = re.compile(
-    r"refund|\bstatus(?:es)?\b|\bcompleted orders?\b|\borders?\b[^.\n]{0,30}\bcompleted\b", re.I
+    r"refund|\bstatus(?:es)?\b|\bcompleted\s+orders?\b|\borders?\b[^.\n]{0,30}\bcompleted\b", re.I
 )
+MARKDOWN_MARKS = re.compile(r"[*_`]")
 # b: nothing in it changes with a reading of the data.
 PLAIN_QUESTION = "What is the order_id of the order with the largest amount?"
 LARGEST_ORDER = 1034  # SELECT order_id FROM sales.orders ORDER BY amount DESC LIMIT 1
@@ -449,7 +451,7 @@ def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
     answer = proc.stdout
     assert mentions(answer, GROSS_2024) or mentions(answer, NET_2024), answer
     # The assumption: how refunded orders were treated.
-    assert STATED_REFUND_TREATMENT.search(answer), answer
+    assert STATED_REFUND_TREATMENT.search(MARKDOWN_MARKS.sub("", answer)), answer
 
 
 # --- g: the agent picks the database, and uses both when it must ----------------------------
