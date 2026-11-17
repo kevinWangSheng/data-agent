@@ -252,7 +252,9 @@ def cli_run(
     `turns` collects the conversation turn it got."""
     seen: list[Task] = []
 
-    async def fake_run(task: Task, *_: Any, turn: ConversationTurn | None = None) -> Outcome:
+    async def fake_run(
+        task: Task, *_: Any, turn: ConversationTurn | None = None, **__: Any
+    ) -> Outcome:
         seen.append(task)
         if turns is not None:
             turns.append(turn)

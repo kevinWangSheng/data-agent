@@ -749,9 +749,9 @@ class SteeredTurn:
     when the model takes it in, and only then is `steer_delivered` emitted. A message the model
     has not taken in by the end of a step is not lost: the CLI takes it in as the next step, which
     ends with a result of its own (probes of 2026-11-17, ticket 92). So the turn ends at the
-    first result with no message waiting for its echo; an error result ends it anyway, and a
-    message still waiting is then an `error` event, as it is when the run stops the turn
-    itself.
+    first result with no message waiting for its echo; an error result, or one a hook stopped
+    (a clarification), ends it anyway, and a message still waiting is then an `error` event, as
+    it is when the run stops the turn itself.
 
     Each step gets the CLI's whole turn limit afresh, so the limit of the turn (`max_turns`,
     spec decision 13) is kept here over the steps after the first (`count_turns`)."""
@@ -826,11 +826,13 @@ class SteeredTurn:
 
     def end_step(self, result: ResultMessage) -> bool:
         """End the step `result` ends, and say whether the turn ends with it. It goes on while a
-        message waits for its echo, unless the step failed or the turn has no turn left for
-        another step."""
+        message waits for its echo, unless the step failed, a hook stopped it (the agent asked
+        the user, `clarification_hooks`: a step reading the message would answer past the
+        question), or the turn has no turn left for another step."""
         self.results.append(result)
         self.step_turns, self.open_calls = 1, {}
-        if result.is_error or result.subtype != "success" or not self.waiting:
+        stopped = result.terminal_reason == "hook_stopped"
+        if result.is_error or result.subtype != "success" or stopped or not self.waiting:
             return True
         return self.max_turns is not None and self.turns_used() >= self.max_turns
 

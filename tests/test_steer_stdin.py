@@ -7,6 +7,7 @@ model read it. The CLI session is a scripted fake client, so no model is called.
 """
 
 import asyncio
+import dataclasses
 import json
 import os
 import subprocess
@@ -15,7 +16,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 import pytest
@@ -706,3 +707,84 @@ async def test_a_message_unread_when_the_deadline_stops_the_turn_is_an_error_eve
     assert [e["error"] for e in of_type(events, "error")] == [
         f"message {STEER['id']!r} was not read: the turn ended"
     ]
+
+
+@dataclass(frozen=True)
+class Asked:
+    """In a script: the CLI calls the PostToolUse hooks on clarification call `call_id`, as it
+    does once the call goes through (tests/test_clarification.py)."""
+
+    call_id: str
+
+
+class AskingClient(FakeClient):
+    """A `FakeClient` that calls the clarification hooks where its script says `Asked`."""
+
+    async def receive_messages(self) -> AsyncIterator[Any]:
+        async for item in super().receive_messages():
+            if not isinstance(item, Asked):
+                yield item
+                continue
+            hook_input = {
+                "hook_event_name": "PostToolUse",
+                "session_id": "sess-1",
+                "transcript_path": "",
+                "cwd": "",
+                "tool_name": agent.CLARIFICATION_TOOL,
+                "tool_input": {"question": "Which period?", "options": ["2025", "2026"]},
+                "tool_response": [],
+                "tool_use_id": item.call_id,
+            }
+            hooks: dict[Any, Any] = dict(self.options.hooks or {})
+            for matcher in hooks.get("PostToolUse", []):
+                if matcher.matcher == agent.CLARIFICATION_TOOL:
+                    for hook in matcher.hooks:
+                        await hook(cast(Any, hook_input), item.call_id, {"signal": None})
+
+
+def clarification_call(call_id: str) -> AssistantMessage:
+    return AssistantMessage(
+        content=[
+            ToolUseBlock(
+                id=call_id,
+                name=agent.CLARIFICATION_TOOL,
+                input={"question": "Which period?", "options": ["2025", "2026"]},
+            )
+        ],
+        model="m",
+    )
+
+
+async def test_a_clarification_ends_the_turn_with_a_message_unread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Asking the user ends the turn (ticket 91: the hook's `continue: false`, a `success`
+    result with `terminal_reason: "hook_stopped"`): a message still waiting for its echo then
+    gets no step of its own, which would answer past the question; it is an `error` event saying
+    it was not read, and the turn ends at that result."""
+    outcome, client, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        clarification_call("c1"),
+        AwaitSteers(1),
+        Asked("c1"),
+        tool_result("c1"),
+        dataclasses.replace(result(""), stop_reason="tool_use", terminal_reason="hook_stopped"),
+        init(),
+        Echo(0),
+        answer("never read"),
+        result("never read"),
+        client=AskingClient,
+    )
+    assert outcome.finished and outcome.answer == ""
+    assert client.disconnected
+    assert len(of_type(events, "clarification")) == 1
+    assert not of_type(events, "steer_delivered")
+    assert not of_type(events, "answer")
+    assert [(e["source"], e["error"]) for e in of_type(events, "error")] == [
+        ("steer", f"message {STEER['id']!r} was not read: the turn ended")
+    ]
+    [turn_result] = of_type(events, "result")
+    assert (turn_result["subtype"], turn_result["terminal_reason"]) == ("success", "hook_stopped")
