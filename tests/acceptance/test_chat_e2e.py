@@ -297,6 +297,8 @@ def mentions_per_region(text: str, expected: dict[str, int]) -> bool:
 
 NET_WORDS = re.compile(r"\bnet\b|exclud|without|minus|subtract|deduct|less refund", re.I)
 GROSS_WORDS = re.compile(r"\bgross\b|includ|all orders|regardless", re.I)
+# f: the answer says how it treated refunded orders.
+STATED_REFUND_TREATMENT = re.compile(r"refund|\bstatus(?:es)?\b", re.I)
 
 
 def choose(options: list[str]) -> tuple[str, Decimal]:
@@ -442,8 +444,9 @@ def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
     assert not [e for e in of_type(run, "tool_start") if "clarification" in str(e["tool"])]
     answer = proc.stdout
     assert mentions(answer, GROSS_2024) or mentions(answer, NET_2024), answer
-    # The assumption: how refunded orders were treated.
-    assert "refund" in answer.lower(), answer
+    # The assumption: how refunded orders were treated, named as refunds or as order statuses
+    # ("all order statuses included").
+    assert STATED_REFUND_TREATMENT.search(answer), answer
 
 
 # --- g: the agent picks the database, and uses both when it must ----------------------------
