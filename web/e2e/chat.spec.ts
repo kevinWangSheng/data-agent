@@ -17,7 +17,7 @@
 // The data and the numbers are the end-to-end tests' (tests/acceptance/test_chat_e2e.py,
 // tests/fixtures/chat/orders.sql).
 
-import { expect, type Locator, test } from '@playwright/test'
+import { expect, type Locator, type Page, test } from '@playwright/test'
 
 const TICKET_95 = test.fail
 
@@ -55,6 +55,19 @@ function choose(options: string[]): { option: string; net: boolean } {
   throw new Error(`no option reads as net or gross revenue: ${JSON.stringify(options)}`)
 }
 
+type ConversationRow = { single_run: boolean; turns: { message: string | null; status: string }[] }
+
+/** The backend's status of the first turn of the conversation that this message started
+ *  (`GET /api/conversations`, tests/acceptance/test_chat_api.py). */
+async function firstTurnStatus(page: Page, message: string): Promise<string> {
+  const response = await page.request.get('/api/conversations')
+  expect(response.status()).toBe(200)
+  const rows = (await response.json()) as ConversationRow[]
+  const row = rows.find((r) => !r.single_run && r.turns[0]?.message === message)
+  if (!row) throw new Error(`no conversation started with ${JSON.stringify(message)}`)
+  return row.turns[0].status
+}
+
 async function send(input: Locator, button: Locator, text: string): Promise<void> {
   await input.fill(text)
   await button.click()
@@ -69,11 +82,13 @@ TICKET_95('send, see the cards live, pick a clarification option, follow up', as
   const sendButton = page.getByTestId('chat-send')
   const turns = page.getByTestId('turn')
 
-  // 1. The question; its step cards show up while the agent is still working.
+  // 1. The question; its step cards show up while the agent is still working: when the first card
+  //    is on the page, the backend still has the turn running.
   await send(input, sendButton, REVENUE_QUESTION)
   const first = turns.nth(0)
   await expect(first.getByTestId('turn-message')).toHaveText(REVENUE_QUESTION)
   await expect(first.getByTestId('step-card').first()).toBeVisible({ timeout: TURN_TIMEOUT })
+  expect(await firstTurnStatus(page, REVENUE_QUESTION)).toBe('running')
   expect(await first.getByTestId('answer').count()).toBe(0)
 
   // 2. The turn ends with a question; one of its options is clicked.

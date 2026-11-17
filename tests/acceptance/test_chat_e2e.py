@@ -271,12 +271,17 @@ def states(text: str, value: Decimal | int) -> bool:
 
 
 def states_per_region(text: str, expected: dict[str, int]) -> bool:
-    """Each region's count is on a line that names the region (a list or a table row)."""
-    lines = text.splitlines()
-    return all(
-        any(re.search(rf"\b{region}\b", line, re.I) and states(line, n) for line in lines)
-        for region, n in expected.items()
-    )
+    """Each region's count is the first number after the region's name, before the line or the
+    next region's name ends it ("North: 13", "| North | 13 |", "North 13, South 10"), at some
+    mention of the region."""
+    regions = "|".join(expected)
+    mention = re.compile(rf"\b({regions})\b([^\n]*?)(?=\b(?:{regions})\b|\n|$)", re.I)
+    found: dict[str, set[Decimal]] = {}
+    for match in mention.finditer(text):
+        after = numbers_in(match.group(2))
+        if after:
+            found.setdefault(match.group(1).title(), set()).add(after[0])
+    return all(Decimal(n) in found.get(region, set()) for region, n in expected.items())
 
 
 NET_WORDS = re.compile(r"\bnet\b|exclud|without|minus|subtract|deduct|less refund", re.I)
