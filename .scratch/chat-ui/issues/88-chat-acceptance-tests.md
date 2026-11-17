@@ -297,3 +297,9 @@ The backend contracts (items 1, 2, 4, 5, 6) are in the docstring of `tests/accep
 - `make playwright-install && make test-integration` (pytest half): "1 failed, 10 passed, 2318 deselected, 21 xfailed, 31 errors". All 32 non-passes are existing Postgres tests (`test_postgres.py`, `test_db_facts.py`, seam B `[postgres]`, `test_verifier_v2_tools.py`, `test_eval_jaffle.py::test_reset_drops_only_case_schemas`) failing with `KeyError: 'DATA_AGENT_TEST_POSTGRES_URL'`: this machine has no local test Postgres configured. None is a chat test. The chat e2e a–d, g are the 21 xfailed; f passed.
 - Because pytest failed, make stopped before the Playwright half; ran it by hand (`pnpm --dir web build:local`, `tsc -p e2e/tsconfig.json`, `playwright test`): "2 passed (1.1m)": the served-UI test passed, the main flow failed as expected (`test.fail`, ticket 95).
 - Model spend for these runs: not read from event files (f runs write to pytest tmp dirs); small (6 single-turn query runs on a 2-table fixture).
+
+### Main session, 2026-11-17: PR #97
+
+- https://github.com/kevinWangSheng/data-agent/pull/97 , CI `check` green.
+- Codex GitHub app (after `@codex review`) on a099ac2: "Didn't find any major issues."
+- Merge waits for the human review of the tests and contracts (spec: 工单 88 人审过才合并).
