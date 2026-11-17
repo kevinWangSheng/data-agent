@@ -1,7 +1,7 @@
 # 95 — 对话页面（A「对话流」）
 
 Status: ready-for-agent
-Blocked by: 93, 94
+Blocked by: 94（93 只挡合并：人 2026-11-17 定提前开工，见 Comments）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -55,3 +55,9 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+### Main session, 2026-11-17: early start
+
+- The human decided (2026-11-17) to start 95 before 93 (chat backend) merges; 94 is done. Build the page against the ticket-88 route contract (`tests/acceptance/test_chat_api.py` docstring) and the merged view model. Develop and test against a stand-in backend you run locally (for example `tests/fixtures/chat/fake_chat_run.py` through the existing `create_app`, or vitest mocks); don't add anything under `src/`.
+- Remove the `TICKET_95` marker as the ticket says. The Playwright main flow can only go green with a real backend, so the main session runs it after 93 merges; merge waits for that.
+- This is a frontend ticket: per `AGENTS.md` (after workflow step 7), step 5 runs only `eng:code-review main`, not `da-review`.
