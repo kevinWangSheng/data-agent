@@ -775,10 +775,12 @@ class SteeredTurn:
         self.sent: set[str] = set()
         self.results: list[ResultMessage] = []  # of the steps ended so far
         self.started = False
-        # The step running: its turns as the CLI counts them, and its main thread's tool calls
-        # still unanswered (tool_use id -> the response that made them).
+        # The step running: its turns as the CLI counts them, its main thread's tool calls
+        # still unanswered (tool_use id -> the response that made them), and the responses
+        # counted.
         self.step_turns = 1
         self.open_calls: dict[str, str] = {}
+        self.counted: set[str] = set()
 
     async def steer(self, lines: AsyncGenerator[str]) -> None:
         """Send each steering message among `lines` (`steer_message`). A line that is no
@@ -841,7 +843,7 @@ class SteeredTurn:
         question), or the turn has no turn or budget left for another step. Out of budget, the
         step's answer is kept, as `Spend` keeps a final answer that passes the cap."""
         self.results.append(result)
-        self.step_turns, self.open_calls = 1, {}
+        self.step_turns, self.open_calls, self.counted = 1, {}, set()
         stopped = result.terminal_reason == "hook_stopped"
         if result.is_error or result.subtype != "success" or stopped or not self.waiting:
             return True
@@ -854,7 +856,8 @@ class SteeredTurn:
         the turn past `max_turns` with it.
         The CLI counts a step's turns from 1, one more once a response's tool calls are all
         answered, and ends the step when that count would pass its limit (`TurnBudget`); the
-        steps together are held to that here."""
+        steps together are held to that here. A response counts once: the CLI may run its tools
+        while it still streams, so a call's result can come before its next call."""
         if isinstance(message, AssistantMessage) and message.parent_tool_use_id is None:
             calls = [block.id for block in message.content if isinstance(block, ToolUseBlock)]
             for call in calls:
@@ -868,7 +871,10 @@ class SteeredTurn:
                 if not isinstance(block, ToolResultBlock):
                     continue
                 response = self.open_calls.pop(block.tool_use_id, None)
-                if response is not None and response not in self.open_calls.values():
+                if response is None or response in self.open_calls.values():
+                    continue
+                if response not in self.counted:
+                    self.counted.add(response)
                     self.step_turns += 1
         over = self.max_turns is not None and self.turns_used() + self.step_turns > self.max_turns
         return bool(self.results) and over

@@ -125,10 +125,12 @@ def init() -> SystemMessage:
     )
 
 
-def tool_call(call_id: str) -> AssistantMessage:
+def tool_call(call_id: str, response: str | None = None) -> AssistantMessage:
+    """A main-thread tool call; `response` is the id of the model response it is a block of."""
     return AssistantMessage(
         content=[ToolUseBlock(id=call_id, name=QUERY_TOOL, input={"sql": "SELECT 1"})],
         model="m",
+        message_id=response,
     )
 
 
@@ -843,3 +845,33 @@ async def test_a_step_that_passes_the_spend_cap_ends_the_turn_with_a_message_unr
         ("steer", f"message {STEER['id']!r} was not read: the turn ended")
     ]
     assert len(of_type(events, "result")) == 1
+
+
+async def test_a_response_whose_tool_results_come_between_its_calls_is_one_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The CLI may run a response's tools while the response still streams, so a call's result
+    can come before the response's next call. The response is still one turn: the steps keep to
+    the turn limit as the CLI counts (here one turn short of it, so the turn ends as a success)."""
+    outcome, _, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        answer("all the customers"),
+        AwaitSteers(1),
+        result("all the customers", num_turns=MAX_TURNS - 2),
+        init(),
+        Echo(0),
+        tool_call("q1", "r1"),
+        tool_result("q1"),
+        tool_call("q2", "r1"),
+        tool_result("q2"),
+        tool_call("q3", "r1"),
+        tool_result("q3"),
+        answer("the top 3"),
+        result("the top 3", num_turns=2),
+    )
+    assert outcome.finished and outcome.answer == "the top 3"
+    [turn_result] = of_type(events, "result")
+    assert (turn_result["subtype"], turn_result["num_turns"]) == ("success", MAX_TURNS)
