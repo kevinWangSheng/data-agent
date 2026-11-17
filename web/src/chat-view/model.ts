@@ -4,7 +4,7 @@
 // is ticket 94's. The index and the event fields are the backend contract in
 // tests/acceptance/test_chat_api.py's docstring.
 
-import { buildRunView, type RunEvent, type RunNotes, type RunStatus, type RunView } from '../run-view/model'
+import { asString, buildRunView, type RunEvent, type RunNotes, type RunStatus, type RunView } from '../run-view/model'
 
 /** A message sent while a turn was running, as the index lists it. */
 export type IndexSteer = { id: string; text: string }
@@ -102,22 +102,22 @@ export function buildConversationView(
   runs: Readonly<Record<string, TurnRun>>,
 ): ConversationView {
   const singleRun = index.single_run === true
-  const turns = index.turns.map((t, i): TurnView => {
+  const turns: TurnView[] = []
+  index.turns.forEach((t, i) => {
     const { events, notes } = runs[t.run_id] ?? NO_RUN
     const run = buildRunView(events, notes)
-    const previous = index.turns[i - 1]
-    const asked = previous ? clarificationOf(runs[previous.run_id]?.events ?? []) : null
-    return {
+    turns.push({
       turn: t.turn,
       runId: t.run_id,
       message: t.message ?? (singleRun ? run.summary.task : null),
-      answersClarification: asked !== null && isOption(asked, t.message),
+      // The previous turn's clarification chose this turn's message exactly when it is an option.
+      answersClarification: (turns[i - 1]?.clarification?.chosen ?? null) !== null,
       run,
       status: run.summary.status,
       clarification: withChoice(clarificationOf(events), index.turns[i + 1]?.message ?? null),
       steers: steersOf(t.steers, events),
       queries: queriesOf(run, events),
-    }
+    })
   })
   const costs = turns.map((t) => t.run.summary.costUsd).filter((c) => c !== null)
   return {
@@ -132,14 +132,11 @@ export function buildConversationView(
 
 const NO_RUN: TurnRun = { events: [] }
 
-function asString(value: unknown): string | null {
-  return typeof value === 'string' ? value : null
-}
-
-type Question = Omit<Clarification, 'chosen'>
+/** A clarification as its event gives it, before the next turn tells what was chosen. */
+type AskedClarification = Omit<Clarification, 'chosen'>
 
 /** The turn's `clarification` event (the last one, should a file hold more), without its choice. */
-function clarificationOf(events: readonly RunEvent[]): Question | null {
+function clarificationOf(events: readonly RunEvent[]): AskedClarification | null {
   const e = events.findLast((ev) => ev.type === 'clarification')
   if (!e) return null
   return {
@@ -150,8 +147,10 @@ function clarificationOf(events: readonly RunEvent[]): Question | null {
   }
 }
 
-function isOption(question: Question, message: string | null): boolean {
-  return message !== null && question.options.includes(message)
+/** The question, with the next turn's message as its choice when that message is one of the options. */
+function withChoice(asked: AskedClarification | null, next: string | null): Clarification | null {
+  if (!asked) return null
+  return { ...asked, chosen: next !== null && asked.options.includes(next) ? next : null }
 }
 
 /**
@@ -160,24 +159,25 @@ function isOption(question: Question, message: string | null): boolean {
  * A delivered steer shows after the main agent's last step started before the delivery.
  */
 function steersOf(sent: readonly IndexSteer[], events: readonly RunEvent[]): Steer[] {
-  const delivered = new Map<string, { text: string; seq: number; afterStep: string | null }>()
+  const delivered = new Map<string, Steer>()
   let lastStep: string | null = null
   for (const e of events) {
-    if (e.type === 'tool_start' && e.parent == null) lastStep = String(e.tool_use_id)
+    // The main agent's calls have no parent, as the run view tells them (buildRunView).
+    if (e.type === 'tool_start' && asString(e.parent) === null) lastStep = String(e.tool_use_id)
     if (e.type !== 'steer_delivered') continue
     const id = String(e.id)
-    if (!delivered.has(id)) delivered.set(id, { text: String(e.text ?? ''), seq: e.seq, afterStep: lastStep })
+    if (!delivered.has(id)) {
+      delivered.set(id, { id, text: String(e.text ?? ''), delivered: true, seq: e.seq, afterStep: lastStep })
+    }
   }
   const listed = new Set(sent.map((s) => s.id))
-  const steers: Steer[] = sent.map(({ id, text }) => {
-    const d = delivered.get(id)
-    return { id, text, delivered: d !== undefined, seq: d?.seq ?? null, afterStep: d?.afterStep ?? null }
-  })
-  for (const [id, d] of delivered) {
-    if (!listed.has(id)) steers.push({ id, text: d.text, delivered: true, seq: d.seq, afterStep: d.afterStep })
-  }
-  return steers
+  return [
+    ...sent.map(({ id, text }) => ({ ...(delivered.get(id) ?? UNDELIVERED), id, text })),
+    ...[...delivered.values()].filter((s) => !listed.has(s.id)),
+  ]
 }
+
+const UNDELIVERED = { delivered: false, seq: null, afterStep: null } as const
 
 /** The database of each step that has an `sql` event, in step order; the last `sql` event of a
  *  step wins, as it does for the step's statement in the run view. */
@@ -189,10 +189,4 @@ function queriesOf(run: RunView, events: readonly RunEvent[]): QueryDatabase[] {
   return run.steps.flatMap((step) =>
     database.has(step.id) ? [{ step: step.id, database: database.get(step.id) ?? null }] : [],
   )
-}
-
-/** The question, with the next turn's message as its choice when that message is one of the options. */
-function withChoice(question: Question | null, next: string | null): Clarification | null {
-  if (!question) return null
-  return { ...question, chosen: isOption(question, next) ? next : null }
 }

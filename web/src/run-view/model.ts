@@ -269,7 +269,7 @@ function rejectionFromText(text: string): Rejection | null {
 
 // --- The model ------------------------------------------------------------------------------
 
-function asString(value: unknown): string | null {
+export function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null
 }
 
