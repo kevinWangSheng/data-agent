@@ -1,6 +1,6 @@
 # 82 — 发布到 GitHub Pages
 
-Status: in-review
+Status: done
 Blocked by: 74（done）, 79（done）, 81（done）
 Spec: ../spec.md
 Claimed by: claude-code (ticket agent, 2026-11-16)
@@ -51,8 +51,8 @@ Branch: worktree-82-web-pages-deploy
 
 - Attempts: 1
 - Review rounds: 1
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review; merge waits for the release and Pages
+- Model spend: $0.0061 (main session's re-run of the featured query run)
+- Outcome: accepted (PR #96; CI green, Codex no findings on 603d9c1); published 2026-11-17
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -64,3 +64,10 @@ Branch: worktree-82-web-pages-deploy
   - make check：ruff、basedpyright 0 errors；pytest 2307 passed / 1 skipped；vitest 221 passed；pre-commit 通过。
   - da-review（Codex）：无意见。eng:code-review：Spec 0、Standards 0 违规。不修：Pages 构建不在 PR 上跑（建议后续在 check.yml 加 `pnpm --dir web build`）；根目录测试和 tsconfig 文件列表手写（原来就这样）；vite 插件没有单独测试（本地构建和浏览器覆盖）；pnpm/node 设置和 check.yml 重复两份；测试临时目录不删（同 site-data.test.ts）。
   - 合并前提：合并会触发 Pages 流程；release `site-data` 和 Pages 没准备好时第一次会在下载那步失败、不发布。主会话先做对外操作再合并。
+- 2026-11-17 主会话，对外操作（人 2026-11-16 批准"按计划做"）：
+  1. 精选的查数运行在 main（692f409）上重跑：`uv run data-agent run --task "Which customer tier has the highest total amount of completed orders, and how much is it?" --type query --workspace runs/site-publish/query-run/ws --duckdb …/shop.duckdb --data-source-name shop --config no-verifiers --events-dir runs/site-publish/query-run/events` → 64 条事件，含 `task`、`answer`、`version.skills` `["sql-workflow","duckdb-sql"]`，success，14 turns，17 s，$0.0061，答案 "Gold tier … 710.00"。两条 dbt 精选沿用原型（`dbt-cart-abandonment`、`dbt-division-by-zero`，notes 带 `task_id`）。
+  2. 导出 `bash runs/site-publish/export.sh`（3 条精选 + `u1-target`、`u1-full-rest`、`u2-rest` × full/baseline/no-verifiers + board f17 + DAB f18 + `--tasks-dir`）→ "scrub: changed 0 file(s) of 548; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0" / "export: 273 run(s)"。留出集检查只报数量：548 个文件里留出集题目 id 出现 0 次；本地静态构建后 trials 270，在留出集 0、在开发集外 0，留出集命名的运行目录 0，`eval.json`/`home.json` 里留出集 id 0，board 的留出集只有 accuracy/n_succeeded/n_tasks/n_trials。
+  3. `tar -czf site-data.tar.gz -C runs/site-publish/site .`（25 MB）→ `gh release create site-data site-data.tar.gz`：https://github.com/kevinWangSheng/data-agent/releases/tag/site-data，公开下载 HTTP 200，26503618 字节。`gh api -X POST repos/kevinWangSheng/data-agent/pages -f build_type=workflow` 开启 Pages（build_type workflow，public）。
+  4. 合并 #96 → pages 流程 run 43999401365：build success、deploy success。
+  - 在线检查：`/data-agent/` 200、`data/home.json` 200；`/data-agent/runs`、`/data-agent/runs/dbt-cart-abandonment`、`/data-agent/eval` 都是 404 状态 + 应用（Pages 用 404.html 回退，预期）；无头浏览器打开 `runs/dbt-cart-abandonment` 是完整运行页（结果表标 "last query before the answer · #103"），`eval` 显示两个榜单总分（data-eng-bench 64.1% ± 1.6；DAB 0.7421）、留出集和全量只有汇总、消融图和贡献（都不显著）；控制台唯一的错误是文档自己的 404。README 第 10 行链接正确。截图 `runs/site-publish/live-cart.png`、`live-eval.png`（不进 git）。
+  - 更新数据：重新导出、`gh release upload site-data site-data.tar.gz --clobber`，再手动触发 pages 流程。
