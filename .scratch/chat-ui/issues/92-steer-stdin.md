@@ -1,6 +1,6 @@
 # 92 — 运行中插话：stdin 通道和送达事件
 
-Status: in-review
+Status: done
 Blocked by: 90
 Spec: ../spec.md
 Claimed by: claude-code (opus) 2026-11-17
@@ -50,7 +50,7 @@ Branch: worktree-92-steer-stdin
 - Attempts: 0
 - Review rounds: 0
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #103), one known limitation
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -332,3 +332,7 @@ What to expect:
 - Real run A at 5b48c63 (steer "Only the top 3, please." after the first `tool_start`): exit 0.
   - Events: two tool calls end (seq 7, 10), then `steer_delivered` (seq 11), then two more queries and one `result` (seq 25, num_turns 5, $0.0030). No clarification.
   - Answer: "C01: 9 orders, C02: 7 orders, C03: 6 orders".
+
+### Main session, 2026-11-17: merged
+
+- PR #103: CI `check` green; Codex GitHub app reacted 👍 with no comments. Squash-merged.

@@ -59,3 +59,15 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+## Comments
+
+### Main session, 2026-11-17: dispatch notes
+
+- 89–92 are merged. Read their tickets' Comments for what the child process now does:
+  - `--data-sources` (89);
+  - `--chat --conversation-dir --turn --resume` (90);
+  - the `clarification` event, after which a turn ends as a success with no answer (91);
+  - stdin `{"id","text"}` lines. `steer_delivered` is written when the CLI echoes the line. A steer still unread when the turn ends gets an `error` event, and lines after the turn's result are never sent (92).
+- Ticket 95's page (PR #100, not merged) is built against the ticket-88 contract. It waits for idle in the window after the last turn's `result` and before the process exits, and shows NOT DELIVERED for unread steers. Do not change the contract.
+- Known limitation from 92/95: a message sent after the child writes `result` but before it exits still gets 202 (steer) and is not delivered. The page shows it as NOT DELIVERED.
