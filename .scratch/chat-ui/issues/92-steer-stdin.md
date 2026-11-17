@@ -1,6 +1,6 @@
 # 92 — 运行中插话：stdin 通道和送达事件
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 90
 Spec: ../spec.md
 Claimed by: claude-code (opus) 2026-11-17
@@ -243,3 +243,92 @@ grep -E '"type": "(steer_delivered|text|tool_start|answer|result|error)"' "$R"/e
 ### Main session, 2026-11-17: rebase onto main
 
 退回：不是审查问题。91（PR #102，澄清）已合入 main，本分支很可能在 `src/data_agent/agent.py`、`cli.py` 冲突。rebase 到最新 `origin/main`，解决冲突并保留两边的行为：91 的 `clarification` 工具、PostToolUse 钩子（`continue: false` 结束本轮）、`DATA_AGENT_CHAT`；89 的多数据源；本工单的 stdin 插话和回显对账。要特别处理两者的交界：澄清结束本轮时，还在等回显的插话按本工单"这一轮结束"的规则记 `error`（未读），不能一直等；补一个测试。`test_chat_eval_unchanged.py` 必须通过。解决后 `make check`、`da-review main`；最终回复给出新的提交和主会话要重跑的命令（运行中插话 A 即可）。
+
+### Attempt 3 (ticket agent, rebase onto main after 91), final reply as given
+
+I rebased the branch onto `origin/main` and kept both sides' behaviour. Then I fixed the clarification/steer junction and two problems Codex found. The ticket's stop condition has now fired, though: the third `da-review` run still reported a P2 after my second round of fixes. So the new status is **`Status: ready-for-human`**, not `in-review`. Nothing is pushed.
+
+Branch `worktree-92-steer-stdin`, 8 commits on `ca75c43`: the 5 earlier commits rebased (`7c1b436`, `130c5c7`, `5a82de6`, `a3ee984`, `919ddfb`) plus 3 new ones (`393c362`, `3d18149`, `5b48c63`).
+
+**The P2 I left unfixed (my third review run):**
+- **What happens:** at the turn's last allowed step, the CLI can run a response's first tool while the response is still streaming. When that tool's result arrives before the response's next tool call, the harness counts the turn and stops right away.
+- **What stays right:** the turn still ends at the right turn with `error_max_turns`, and no extra model call is made.
+- **What is lost:** the response's remaining tool calls never run. If the model has a price, that response's last output tokens are also missing from the spend count.
+- **Why I didn't fix it:** for a model with no price, nothing marks a response as finished before the next model call starts (partial messages only exist when the cap is on). So the fix means choosing between "use the end-of-response event when there is one, otherwise keep today's behaviour" and "check when the next call starts, letting one more call begin". Whether the CLI really interleaves like this has also not been checked against the real CLI, only reproduced with the fake client.
+- **My suggestion:** accept it as a known limitation and merge. Or return the ticket with the signal you choose, and I'll do it on this branch.
+
+## Comments
+
+### Attempt 3 (ticket agent, branch `worktree-92-steer-stdin`, rebased onto `ca75c43`; new commits 393c362, 3d18149, 5b48c63)
+
+**Rebase:**
+- `git fetch` and then `git rebase origin/main`. There were two text conflicts, both in imports:
+  - `cli.py`: the import line now brings in both `source_gateway` and `stdin_lines`.
+  - `agent.py`: the `contextlib` import keeps 89's `ExitStack`.
+- The behaviour of both sides is kept:
+  - 91: the `clarification` tool, the PostToolUse hook with `continue: false`, and `DATA_AGENT_CHAT`.
+  - 89: `sql` events carry `source_names` in the steered path too.
+  - 92: stdin steering and the echo reconciliation.
+- One conflict only showed up when tests ran. In ticket 89's `tests/test_multi_source_run.py`, the fake `run` in `cli_run` has the signature `run` had before 92, so it can't take the `steering=` the CLI now passes, and 3 tests failed. I widened only that fake's signature to `**__: Any`; no assertion or input changed. That file is outside this ticket's Authority (it belongs to another ticket), so I'm noting it here.
+
+**Where clarification meets steering:** if a clarification ends the turn (a `success` result with `terminal_reason: "hook_stopped"`), the turn ends right there, even with a steer still waiting for its echo. Each waiting steer gets an `error` event saying `message '…' was not read: the turn ended`. Without this, the CLI would run the steer as another step and answer past the question. The fix is in `SteeredTurn.end_step`. The test is `test_a_clarification_ends_the_turn_with_a_message_unread`: the fake client calls the real clarification hook, and before the fix the turn's answer was "never read".
+
+**Reviews:**
+- `da-review main`, run 1, one P2, fixed (3d18149):
+  - The problem: a text-only step could pass the price-table cap, and the waiting steer still started another step. `Spend.check()` lets an answer with no tool call through, and nothing checked the cap where a step ends.
+  - The fix: a step's end now counts as a point between two calls. If spend is already past the cap (`Spend.passed()`), the turn ends with that step's answer and the waiting steer is logged as unread. This follows both "an answer that passes the cap is kept" and the existing handling of the last allowed turn.
+  - Test: `test_a_step_that_passes_the_spend_cap_ends_the_turn_with_a_message_unread`, which failed before the fix.
+- `da-review main`, run 2, one P2, fixed (5b48c63):
+  - The problem: when tool results come between a response's tool calls, the response was counted several times and the turn stopped too early. 3 calls in one response counted as 3 turns.
+  - The fix: following `TurnBudget`, each response (`message_id`) counts once.
+  - Test: `test_a_response_whose_tool_results_come_between_its_calls_is_one_turn`, which failed before the fix.
+- `da-review main`, run 3 (checking run 2's fix), one P2, **not fixed**: this is the issue described at the top. The ticket's stop condition "第二轮审查修复后仍不过" (review still failing after the second round of fixes) applies.
+- `eng:code-review`: not run this attempt. The return note asked for `make check` and `da-review`; attempt 2 already ran Standards and Spec. If the main session wants it, it can run it on 5b48c63.
+
+**`make check` (5b48c63), exit 0:**
+- ruff: `All checks passed!`
+- format: `318 files already formatted`
+- basedpyright: `0 errors, 0 warnings, 0 notes`
+- pytest: `2397 passed, 1 skipped, 63 deselected, 8 xfailed`
+- vitest: `241 passed`
+- `test_chat_eval_unchanged.py` passes, and `tests/test_steer_stdin.py` now has 22 tests.
+
+**Command for the main session to rerun** (in-turn steer A, from the worktree root):
+```bash
+set -a; . ~/.config/data-agent/env; set +a
+R=runs/steer-92-$(date +%H%M%S); mkdir -p "$R"
+uv run python tests/fixtures/chat/build_sources.py "$R/db"
+C="$R/conv-20261117T000000Z-steer092"; mkdir -p "$C/workspace"; mkfifo "$R/stdin"
+uv run data-agent run --task "List every customer_id in the orders data with its number of orders, from most to fewest." \
+  --type query --config full --duckdb "$R/db/orders.duckdb" --events-dir "$R/events" \
+  --workspace "$C/workspace" --chat --conversation-dir "$C" --turn 1 \
+  < "$R/stdin" > "$R/answer.txt" 2> "$R/stderr.txt" & pid=$!
+exec 3> "$R/stdin"
+until grep -qs '"type": "tool_start"' "$R"/events/*.jsonl; do sleep 0.5; done
+printf '%s\n' '{"id": "6f1c2a9e-0b7d-4f3e-9a51-2d8c7e4b1a60", "text": "只要前 3 名"}' >&3
+wait $pid; echo "exit=$?"; exec 3>&-
+grep -E '"type": "(steer_delivered|clarification|answer|result|error)"' "$R"/events/*.jsonl | cut -c1-300; cat "$R/answer.txt"
+```
+What to expect:
+- Exit code 0.
+- Exactly one `steer_delivered`, coming after some `tool_end`.
+- Exactly one `result`.
+- The answer lists only C01–C03.
+- The question is clear, so there should be no `clarification`. If the model asks one anyway, the turn ends as a success with an empty answer, and the steer is either delivered (read before the question) or logged as an unread `error`.
+
+**Known limitations:**
+- The P2 above that I left unfixed.
+- For ticket 93, unchanged from attempt 1: between the child process writing `result` and exiting, the backend still treats the conversation as running.
+- From attempt 2: if the CLI drops a steer for some reason other than a repeated id and the conversation has no deadline, the turn waits until it is cancelled.
+
+### Main session, 2026-11-17: after attempt 3
+
+- The open P2 (at the last allowed step, a response whose first tool's result arrives before its next tool call is counted and stopped early) is recorded as a **known limitation**, per workflow step 7: findings after the two fix rounds become known limitations.
+  - Where it applies: only steered chat turns that reach their turn limit (50).
+  - Why it is acceptable: the turn still ends with `error_max_turns`.
+  - Not reproduced on the real CLI.
+  - Checked: `query()` takes the old path when `steering is None` (`agent.py:697`), and the CLI passes `steering=None` outside `--chat` (`cli.py:278`). Single runs and evals do not use `SteeredTurn`.
+- `tests/test_multi_source_run.py` (ticket 89's file): only the fake `run` signature was widened to `**__`. No assertion or input changed. Accepted.
+- Real run A at 5b48c63 (steer "Only the top 3, please." after the first `tool_start`): exit 0.
+  - Events: two tool calls end (seq 7, 10), then `steer_delivered` (seq 11), then two more queries and one `result` (seq 25, num_turns 5, $0.0030). No clarification.
+  - Answer: "C01: 9 orders, C02: 7 orders, C03: 6 orders".
