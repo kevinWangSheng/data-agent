@@ -14,7 +14,7 @@ import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, SystemMessage
 
 from data_agent import agent, cli
-from data_agent.agent import ModelSettings, Outcome, Task, Turn
+from data_agent.agent import ConversationTurn, ModelSettings, Outcome, Task
 from data_agent.run_config import load_config
 
 ENV = {"DATA_AGENT_API_KEY": "sk-test-secret"}
@@ -32,7 +32,7 @@ def make_conversation(tmp_path: Path) -> tuple[Path, Task]:
     return conversation, Task(text="q", type="query", workspace=workspace, duckdb=db)
 
 
-def options_of(task: Task, turn: Turn | None) -> ClaudeAgentOptions:
+def options_of(task: Task, turn: ConversationTurn | None) -> ClaudeAgentOptions:
     return agent.build_options(
         task, load_config("full"), SETTINGS, [], lambda *_, **__: None, turn=turn
     )
@@ -40,7 +40,7 @@ def options_of(task: Task, turn: Turn | None) -> ClaudeAgentOptions:
 
 def test_first_turn_starts_a_session_in_the_conversation_config_dir(tmp_path: Path) -> None:
     conversation, task = make_conversation(tmp_path)
-    options = options_of(task, Turn(conversation, 1))
+    options = options_of(task, ConversationTurn(conversation, 1))
     assert options.resume is None
     assert options.env["CLAUDE_CONFIG_DIR"] == str((conversation / "claude-config").resolve())
     assert options.cwd == str(task.workspace.resolve())
@@ -48,8 +48,8 @@ def test_first_turn_starts_a_session_in_the_conversation_config_dir(tmp_path: Pa
 
 def test_later_turn_resumes_the_previous_session_in_the_same_place(tmp_path: Path) -> None:
     conversation, task = make_conversation(tmp_path)
-    first = options_of(task, Turn(conversation, 1))
-    second = options_of(task, Turn(conversation, 2, resume="sess-1"))
+    first = options_of(task, ConversationTurn(conversation, 1))
+    second = options_of(task, ConversationTurn(conversation, 2, resume="sess-1"))
     assert second.resume == "sess-1"
     assert second.env["CLAUDE_CONFIG_DIR"] == first.env["CLAUDE_CONFIG_DIR"]
     assert second.cwd == first.cwd
@@ -87,7 +87,7 @@ def init(session_id: str) -> SystemMessage:
 async def run_turn(
     monkeypatch: pytest.MonkeyPatch,
     task: Task,
-    turn: Turn | None,
+    turn: ConversationTurn | None,
     *messages: Any,
     prompts: list[str] | None = None,
 ) -> tuple[ClaudeAgentOptions, list[dict[str, Any]]]:
@@ -119,7 +119,7 @@ async def test_turn_event_file_names_its_conversation_turn_and_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     conversation, task = make_conversation(tmp_path)
-    turn = Turn(conversation, 2, resume="sess-1")
+    turn = ConversationTurn(conversation, 2, resume="sess-1")
     options, events = await run_turn(
         monkeypatch, task, turn, init("sess-1"), result(session_id="sess-1")
     )
@@ -242,7 +242,7 @@ async def test_resumed_turn_counts_only_its_own_spend(
         cost_state("other", 999, 999, 999, 9.0),
         cost_state("sess-1", 100, 40, 20, 0.5),
     )
-    turn = Turn(conversation, 2, resume="sess-1")
+    turn = ConversationTurn(conversation, 2, resume="sess-1")
     _, events = await run_turn(monkeypatch, task, turn, cumulative_result())
     turn_result = of_type(events, "result")
     assert tokens_and_sdk_cost(turn_result) == (30, 10, 7, 0.02)
@@ -254,11 +254,35 @@ async def test_first_turn_and_single_run_spend_is_the_result_as_given(
 ) -> None:
     conversation, task = make_conversation(tmp_path)
     write_record(conversation, "sess-1", cost_state("sess-1", 100, 40, 20, 0.5))
-    for turn in (Turn(conversation, 1), None):
+    for turn in (ConversationTurn(conversation, 1), None):
         _, events = await run_turn(monkeypatch, task, turn, cumulative_result())
         given = of_type(events, "result")
         assert tokens_and_sdk_cost(given) == (130, 50, 27, 0.52)
         assert "restored_sdk_cost_usd" not in given
+
+
+async def test_result_below_the_restored_state_is_kept_and_reported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A result smaller than the cost state it would have restored means the CLI did not restore
+    it: the result is kept as given and the mismatch is an error event, not a negative spend."""
+    conversation, task = make_conversation(tmp_path)
+    write_record(conversation, "sess-1", cost_state("sess-1", 500, 40, 20, 0.5))
+    turn = ConversationTurn(conversation, 2, resume="sess-1")
+    _, events = await run_turn(monkeypatch, task, turn, cumulative_result())
+    assert tokens_and_sdk_cost(of_type(events, "result")) == (130, 50, 27, 0.52)
+    assert "restored_sdk_cost_usd" not in of_type(events, "result")
+    assert of_type(events, "error")["source"] == "spend"
+
+
+async def test_a_session_id_is_not_a_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`--resume` names a session; it reaches no record outside the session's own file."""
+    conversation, task = make_conversation(tmp_path)
+    write_record(conversation, "sess-1", cost_state("sess-1", 100, 40, 20, 0.5))
+    for resume in ("*", "../-some-cwd/sess-1"):
+        turn = ConversationTurn(conversation, 2, resume=resume)
+        _, events = await run_turn(monkeypatch, task, turn, cumulative_result())
+        assert tokens_and_sdk_cost(of_type(events, "result")) == (130, 50, 27, 0.52)
 
 
 # Spec decision 18, turn budget: per turn (decision 13). The CLI counts the turns of each prompt
@@ -274,7 +298,7 @@ async def test_resumed_turn_gets_the_whole_turn_limit_and_its_own_message(
     follow_up = Task(
         text="And in 2024?", type="query", workspace=task.workspace, duckdb=task.duckdb
     )
-    turn = Turn(conversation, 3, resume="sess-1")
+    turn = ConversationTurn(conversation, 3, resume="sess-1")
     options, _ = await run_turn(monkeypatch, follow_up, turn, result(), prompts=prompts)
     assert options.max_turns == limit
     [prompt] = prompts
@@ -289,14 +313,14 @@ CONVERSATION = "conv-20261117T000000Z-abcd1234"
 
 def cli_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *extra: str, task_type: str = "query"
-) -> tuple[int | str | None, list[Turn | None]]:
+) -> tuple[int | str | None, list[ConversationTurn | None]]:
     """`data-agent run` in-process with `agent.run` replaced: its exit code, and the turn each
     run was given. `{conv}` in `extra` is the conversation's directory."""
     conversation, task = make_conversation(tmp_path)
     assert task.duckdb is not None
-    seen: list[Turn | None] = []
+    seen: list[ConversationTurn | None] = []
 
-    async def fake_run(*_: Any, turn: Turn | None = None, **__: Any) -> Outcome:
+    async def fake_run(*_: Any, turn: ConversationTurn | None = None, **__: Any) -> Outcome:
         seen.append(turn)
         return Outcome("", True, False, [], tmp_path / "events.jsonl")
 

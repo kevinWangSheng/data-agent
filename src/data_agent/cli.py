@@ -13,7 +13,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from data_agent.agent import ConfigError, Task, Turn, run
+from data_agent.agent import ConfigError, ConversationTurn, Task, run
 from data_agent.context_tools import Dictionary
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_server
@@ -94,7 +94,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     run_cmd.add_argument("--turn", type=int, help="the turn's number, from 1 (needs --chat)")
     run_cmd.add_argument(
-        "--resume", metavar="SESSION_ID", help="the previous turn's session to go on with"
+        "--resume",
+        metavar="SESSION_ID",
+        help="the previous turn's session to go on with (needs --chat)",
     )
 
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
@@ -167,7 +169,9 @@ def main(argv: list[str] | None = None) -> None:
     sys.exit(EXIT_OK if outcome.finished else EXIT_UNFINISHED)
 
 
-def conversation_turn(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Turn | None:
+def conversation_turn(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> ConversationTurn | None:
     """The conversation turn `--chat` asks for, None for a single run. A conversation only
     queries (spec decision 3): the verifiers, which check dbt work, never run in one."""
     if not args.chat:
@@ -183,7 +187,7 @@ def conversation_turn(parser: argparse.ArgumentParser, args: argparse.Namespace)
         parser.error(f"conversation directory not found: {args.conversation_dir}")
     if args.turn is None or args.turn < 1:
         parser.error("--chat needs --turn, a number from 1")
-    return Turn(args.conversation_dir, args.turn, args.resume)
+    return ConversationTurn(args.conversation_dir, args.turn, args.resume)
 
 
 def serve_web(

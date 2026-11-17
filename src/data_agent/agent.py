@@ -1,6 +1,6 @@
 """One `data-agent run`: one prompt on a Claude Agent SDK `ClaudeSDKClient` (ADR-0001 and its
 Update 2026-11-17), recorded as an event file. A run is a single task, or a turn of a conversation
-(`Turn`) that resumes the previous turn's session.
+(`ConversationTurn`) that resumes the previous turn's session.
 
 The model is whatever `DATA_AGENT_*` names; those values go only to the SDK's subprocess, mapped to
 the `ANTHROPIC_*` variables it reads, so the user's own Claude Code setup is untouched.
@@ -684,7 +684,7 @@ class Task:
 
 
 @dataclass(frozen=True)
-class Turn:
+class ConversationTurn:
     """A turn of a conversation (`data-agent run --chat`, .scratch/chat-ui/spec.md decisions
     14-18). `directory` is the conversation's directory, named by its id; the SDK keeps the
     session's record in its `claude-config/`, the conversation's own `CLAUDE_CONFIG_DIR`, never the
@@ -987,7 +987,7 @@ def build_options(
     deadline: float | None = None,
     turn_budget: TurnBudget | None = None,
     guarded: set[str] | None = None,
-    turn: Turn | None = None,
+    turn: ConversationTurn | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the command and workspace guards deny (`guard_recorder`). With `spend` (the
@@ -1004,9 +1004,9 @@ def build_options(
     layers; `turn_budget` holds the run's limit and is the one the caller feeds every SDK message
     (`TurnBudget.observe`), so a caller that streams the session passes its own. Without one the
     limit is the run config's, and nothing feeds the budget, so it reminds no one. A conversation
-    `turn` resumes its previous session (`Turn.resume`) and keeps the session's record in the
-    conversation's `CLAUDE_CONFIG_DIR`; without one (a single run, every evaluation) the options
-    set neither."""
+    `turn` resumes its previous session (`ConversationTurn.resume`) and keeps the session's record
+    in the conversation's `CLAUDE_CONFIG_DIR`; without one (a single run, every evaluation) the
+    options set neither."""
     if task.type == "dbt":
         max_turns, budget = config.max_turns["dbt"], None
     else:
@@ -1196,8 +1196,8 @@ def record_message(
             model=message.data.get("model"),
             tools=message.data.get("tools"),
             mcp_servers=message.data.get("mcp_servers"),
-            # A conversation's next turn resumes this session (`Turn.resume`).
-            session_id=message.data.get("session_id"),
+            # A conversation's next turn resumes this session (`ConversationTurn.resume`).
+            session_id=message_session(message),
         )
     elif isinstance(message, AssistantMessage):
         if message.error:
@@ -1365,21 +1365,24 @@ def restored_cost(config_dir: Path, session_id: str) -> SessionCost | None:
     return found
 
 
-def this_turn(message: ResultMessage | None, restored: SessionCost | None) -> ResultMessage | None:
+def minus_restored(message: ResultMessage, restored: SessionCost) -> ResultMessage | None:
     """The result of a resumed turn with the spend it restored (`restored_cost`) taken out of its
-    totals, so its result event counts this turn alone (spec decisions 13, 18)."""
-    if message is None or restored is None:
-        return message
+    totals, so its result event counts this turn alone (spec decisions 13, 18). None when the
+    result holds less than the restored state: then the CLI did not restore it, and the result
+    is this turn's as given."""
+    cost = (message.total_cost_usd or 0.0) - restored.total_cost_usd
+    short = cost < 0
     model_usage: dict[str, ModelUsage] = {}
     for model, fields in (message.model_usage or {}).items():
         before = restored.model_usage.get(model, {})
         own = {key: int(fields.get(key) or 0) - before.get(key, 0) for key in MODEL_USAGE_TOKENS}
+        short = short or any(count < 0 for count in own.values())
         model_usage[model] = cast(ModelUsage, {**fields, **own})
-    return dataclasses.replace(
-        message,
-        model_usage=model_usage if message.model_usage else message.model_usage,
-        total_cost_usd=(message.total_cost_usd or 0.0) - restored.total_cost_usd,
-    )
+    if short:
+        return None
+    if not message.model_usage:
+        return dataclasses.replace(message, total_cost_usd=cost)
+    return dataclasses.replace(message, model_usage=model_usage, total_cost_usd=cost)
 
 
 def ended_by_sdk(message: ResultMessage | None, model: str, spend: Spend | None) -> dict[str, Any]:
@@ -1432,12 +1435,13 @@ async def run(
     events_dir: Path,
     env: Mapping[str, str],
     deadline: float | None = None,
-    turn: Turn | None = None,
+    turn: ConversationTurn | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
     with `terminal_reason: "deadline"`; the outcome is an unfinished agent. `turn` makes the run a
-    turn of a conversation (`Turn`): its `task` event names the conversation and the turn."""
+    turn of a conversation (`ConversationTurn`): its `task` event names the conversation and the
+    turn."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -1585,9 +1589,21 @@ async def run(
             # The agent's final message, the run's answer. The agent names no query it rests on
             # (no prompt asks it to), so the query is left empty rather than guessed.
             log.emit("answer", text=answer, sql_tool_use_id=None)
+        turn_result = final
+        if final is not None and restored is not None:
+            turn_result = minus_restored(final, restored)
+            if turn_result is None:
+                log.emit(
+                    "error",
+                    source="spend",
+                    error="the resumed session's result holds less than the cost state it "
+                    f"restores ({restored.total_cost_usd} USD): the CLI did not restore it, so "
+                    "the result is kept as given",
+                )
+                turn_result, restored = final, None
         log.emit(
             "result",
-            **(stopped or ended_by_sdk(this_turn(final, restored), settings.model, spend)),
+            **(stopped or ended_by_sdk(turn_result, settings.model, spend)),
             session_id=session_id,
             # The earlier turns' spend the CLI restored on resuming the session (`restored_cost`);
             # the counts above leave it out.
