@@ -1096,20 +1096,27 @@ def clarification_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
     CLI call the model no more and end the turn with a `success` result, `terminal_reason:
     "hook_stopped"` and an empty `result`, so the turn has no answer (probed, CLI 2.1.301). A
     call the tool refused goes to PostToolUseFailure instead: the agent reads the error and goes
-    on."""
+    on (probed too). A turn asks once: when one response holds several calls, which the CLI may
+    run together (the tool is read-only), only the first to finish is recorded."""
+    asked: list[str] = []
 
     async def ask(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
+        stop: HookJSONOutput = {"continue_": False, "stopReason": "the agent asked the user"}
+        if asked:
+            return stop
         fields: dict[str, Any] = dict(hook_input)
         arguments: dict[str, Any] = fields.get("tool_input") or {}
+        call = str(fields.get("tool_use_id", tool_use_id))
+        asked.append(call)
         emit(
             "clarification",
-            tool_use_id=fields.get("tool_use_id", tool_use_id),
+            tool_use_id=call,
             question=arguments.get("question"),
             options=arguments.get("options"),
         )
-        return {"continue_": False, "stopReason": "the agent asked the user a question"}
+        return stop
 
     return {"PostToolUse": [HookMatcher(matcher=CLARIFICATION_TOOL, hooks=[ask])]}
 

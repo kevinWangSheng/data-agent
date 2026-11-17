@@ -147,22 +147,24 @@ def init(session_id: str) -> SystemMessage:
     )
 
 
-def asks(tool_use_id: str, arguments: dict[str, Any]) -> AssistantMessage:
+def asks(calls: list[str], arguments: dict[str, Any]) -> AssistantMessage:
+    """One response holding a clarification call per id in `calls`."""
     return AssistantMessage(
-        content=[ToolUseBlock(id=tool_use_id, name=CLARIFICATION_TOOL, input=arguments)],
+        content=[ToolUseBlock(id=call, name=CLARIFICATION_TOOL, input=arguments) for call in calls],
         model="m",
         message_id="msg_1",
     )
 
 
-def answered(tool_use_id: str, is_error: bool = False) -> UserMessage:
+def answered(calls: list[str], is_error: bool = False) -> UserMessage:
     return UserMessage(
-        content=[ToolResultBlock(tool_use_id=tool_use_id, content="sent", is_error=is_error)]
+        content=[
+            ToolResultBlock(tool_use_id=call, content="sent", is_error=is_error) for call in calls
+        ]
     )
 
 
-def hook_stopped() -> ResultMessage:
-    """The result the CLI sends when a hook stopped the turn (probed, CLI 2.1.301)."""
+def result(text: str, **fields: Any) -> ResultMessage:
     return ResultMessage(
         subtype="success",
         duration_ms=1,
@@ -170,12 +172,15 @@ def hook_stopped() -> ResultMessage:
         is_error=False,
         num_turns=2,
         session_id="sess-1",
-        stop_reason="tool_use",
         usage={"input_tokens": 3, "output_tokens": 7},
         total_cost_usd=0.01,
-        result="",
-        terminal_reason="hook_stopped",
+        result=text,
+        **fields,
     )
+
+
+# The result the CLI sends when a hook stopped the turn (probed, CLI 2.1.301).
+HOOK_STOPPED = result("", stop_reason="tool_use", terminal_reason="hook_stopped")
 
 
 async def post_tool_use(
@@ -209,32 +214,24 @@ async def run_turn(
     turn: ConversationTurn | None,
     arguments: dict[str, Any],
     event: str = "PostToolUse",
+    calls: tuple[str, ...] = ("toolu_1",),
 ) -> tuple[agent.Outcome, list[dict[str, Any]], list[dict[str, Any]]]:
-    """`agent.run` on a session in which the agent calls the clarification tool; the CLI calls
-    the hooks after the call and, if one stopped the turn, ends it there. The outcome, the
-    events, and the hooks' outputs."""
+    """`agent.run` on a session in which one response of the agent calls the clarification tool
+    once per id in `calls`; the CLI calls the hooks after each call and, if one stopped the
+    turn, ends it there. The outcome, the events, and the hooks' outputs."""
     outputs: list[dict[str, Any]] = []
 
     async def fake_query(*, prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
         yield init("sess-1")
-        yield asks("toolu_1", arguments)
-        outputs.extend(await post_tool_use(options, event, "toolu_1", arguments))
-        yield answered("toolu_1", is_error=event == "PostToolUseFailure")
+        yield asks(list(calls), arguments)
+        for call in calls:
+            outputs.extend(await post_tool_use(options, event, call, arguments))
+        yield answered(list(calls), is_error=event == "PostToolUseFailure")
         if any(output.get("continue_") is False for output in outputs):
-            yield hook_stopped()
+            yield HOOK_STOPPED
             return
         # Not stopped: the agent goes on and answers.
-        yield ResultMessage(
-            subtype="success",
-            duration_ms=1,
-            duration_api_ms=1,
-            is_error=False,
-            num_turns=2,
-            session_id="sess-1",
-            usage={"input_tokens": 3, "output_tokens": 7},
-            total_cost_usd=0.01,
-            result="Revenue was 42.",
-        )
+        yield result("Revenue was 42.")
 
     monkeypatch.setattr(agent, "query", fake_query)
     outcome = await agent.run(
@@ -286,6 +283,18 @@ async def test_a_refused_call_neither_asks_nor_ends_the_turn(
     assert not of_type(events, "clarification")
     assert [e["text"] for e in of_type(events, "answer")] == ["Revenue was 42."]
     assert outcome.finished
+
+
+async def test_a_turn_asks_once_when_one_response_calls_the_tool_twice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    conversation, task = make_conversation(tmp_path)
+    arguments = {"question": QUESTION, "options": OPTIONS}
+    _, events, _ = await run_turn(
+        monkeypatch, task, ConversationTurn(conversation, 1), arguments, calls=("t1", "t2")
+    )
+    assert [e["tool_use_id"] for e in of_type(events, "clarification")] == ["t1"]
+    assert not of_type(events, "answer")
 
 
 def test_only_a_conversation_turn_carries_the_stop_hook(tmp_path: Path) -> None:
