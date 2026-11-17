@@ -603,3 +603,86 @@ async def test_a_resumed_turn_of_two_steps_counts_its_own_spend_once(
         turn_result["num_turns"],
         turn_result["restored_sdk_cost_usd"],
     ) == (60, 10, 11, 0.05, 2, 0.5)
+
+
+async def test_a_session_ending_inside_the_steered_step_is_no_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The CLI may end its stream (exit 0) inside the step a message was taken in for: the
+    earlier step's answer is not the turn's, so the run has none."""
+    outcome, _, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        answer("all the customers"),
+        AwaitSteers(1),
+        result("all the customers"),
+        Echo(0),
+    )
+    assert not outcome.finished
+    assert not of_type(events, "answer")
+    assert [(e["source"], e["error"]) for e in of_type(events, "error")] == [
+        ("sdk", "the session ended before the step reading a steering message did")
+    ]
+    assert len(of_type(events, "steer_delivered")) == 1
+
+
+MAX_TURNS = load_config("full").max_turns["query"]
+
+
+async def test_the_steps_of_a_turn_keep_to_its_turn_limit_together(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A step after the first gets the CLI's whole turn limit afresh: the run stops it once
+    the steps together pass the turn's limit, as the CLI would have (spec decision 13)."""
+    outcome, client, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        answer("all the customers"),
+        AwaitSteers(1),
+        result("all the customers", num_turns=MAX_TURNS - 1),
+        init(),
+        Echo(0),
+        tool_call("q1"),
+        tool_result("q1"),
+        tool_call("q2"),
+        tool_result("q2"),
+        answer("never read"),
+        result("never read", num_turns=3),
+    )
+    assert not outcome.finished
+    # Stopped once q1's answer took the turn past its limit, as the CLI stops a step.
+    assert client.disconnected
+    assert "q2" not in [e.get("tool_use_id") for e in of_type(events, "tool_start")]
+    assert not of_type(events, "answer")
+    [turn_result] = of_type(events, "result")
+    assert (turn_result["subtype"], turn_result["terminal_reason"], turn_result["num_turns"]) == (
+        "error_max_turns",
+        "max_turns",
+        MAX_TURNS + 1,
+    )
+
+
+async def test_a_message_after_the_last_turn_is_left_unread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A step that used the turn's last turn ends it: a message still waiting gets no step."""
+    outcome, _, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        answer("all the customers"),
+        AwaitSteers(1),
+        result("all the customers", num_turns=MAX_TURNS),
+        Echo(0),
+        result("never read"),
+    )
+    assert outcome.finished and outcome.answer == "all the customers"
+    assert not of_type(events, "steer_delivered")
+    assert [e["error"] for e in of_type(events, "error")] == [
+        f"message {STEER['id']!r} was not read: the turn ended"
+    ]
