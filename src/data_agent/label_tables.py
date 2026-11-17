@@ -8,8 +8,10 @@ them pass the gateway's read-only check, and the database has no access to files
 """
 
 import csv
+import itertools
 import os
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,17 +40,19 @@ def quoted(name: str) -> str:
 
 
 class LabelTables:
-    def __init__(self, workspace: Path | None) -> None:
+    """`numbers` gives the tables their numbers; the label tables of a server's several databases
+    (each database's own, ticket 89) share one, so no two of them have the same name or file."""
+
+    def __init__(self, workspace: Path | None, numbers: Iterator[int] | None = None) -> None:
         self.workspace = workspace
         self._con = duckdb.connect(":memory:", config={"enable_external_access": False})
         self._lock = threading.Lock()
-        self._count = 0
+        self._numbers = numbers if numbers is not None else itertools.count(1)
 
     def add(self, columns: list[str], rows: list[tuple[Any, ...]]) -> tuple[str, Path | None]:
         """Store a label table; returns its name and its file (None without a workspace)."""
         with self._lock:
-            self._count += 1
-            name = f"labels_{self._count}"
+            name = f"labels_{next(self._numbers)}"
             types = [column_type([row[i] for row in rows]) for i in range(len(columns))]
             # Text columns take any value as its text (dates, decimals, ...).
             cells = [
