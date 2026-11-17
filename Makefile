@@ -30,6 +30,7 @@ fmt:
 test-integration: web/node_modules
 	set -a && . $(HOME)/.config/data-agent/env && set +a && uv run pytest -q -m integration
 	pnpm --dir web build:local
+	pnpm --dir web exec tsc -p e2e/tsconfig.json
 	set -a && . $(HOME)/.config/data-agent/env && set +a && pnpm --dir web exec playwright test
 
 # The browser the Playwright main flow drives (downloads it once).

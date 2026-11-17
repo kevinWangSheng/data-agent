@@ -49,7 +49,9 @@ unchanged; the routes below are added to it.
      running -> 202 `{"kind": "steer", "run_id": <the running turn>, "id": <message id>}`, the
      message written to that run's stdin and added to its turn's `steers`, no new turn. 409 while a
      run of another conversation or of the run form is going (one run at a time, across both);
-     4xx for a single run (no follow-up) and for an empty text.
+     4xx for a single run (no follow-up) and for an empty text. A conversation is `running` from
+     the moment its turn starts until that turn's process has exited (a turn writes its
+     `result` shortly before it exits); a message is a new turn exactly when it is not running.
    - `POST /api/conversations/{id}/cancel` -> 200 with the row, the running turn stopped as
      `POST /api/runs/{id}/cancel` stops a run (status `cancelled`); 4xx when nothing is running.
      The next message starts a new turn.
@@ -90,11 +92,17 @@ from seam_support import FIXTURES
 from data_agent.web.app import DataSource, create_app
 from data_agent.web.sources import load_data_sources
 
-TICKET_93 = pytest.mark.xfail(strict=True, reason="ticket 93: the chat backend is not built yet")
+# Only an assertion counts as the expected failure: a fixture that cannot start fails outright.
+TICKET_93 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 93: the chat backend is not built yet"
+)
 
 CHAT_FIXTURES = FIXTURES / "chat"
 FAKE_CHAT_RUN = CHAT_FIXTURES / "fake_chat_run.py"
 QUERY_SHOP = FIXTURES / "web" / "real" / "query-shop" / "events.jsonl"
+NEW_FIELDS = FIXTURES / "web" / "new-fields" / "events.jsonl"
+# A run from the run form.
+FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders", "config": "full"}
 
 PG_ENV = "DA_TEST_WAREHOUSE_URL"
 # A connection string the server holds in its environment; no byte of it may leave the server.
@@ -155,7 +163,8 @@ def chat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Chat]:
     try:
         with TestClient(create_app(runs_dir, sources, start_run)) as client:
             # The app is up and its run API answers: whatever fails below is the chat API's.
-            assert client.get("/api/runs").status_code == 200
+            if client.get("/api/runs").status_code != 200:
+                raise RuntimeError("the app does not answer GET /api/runs")
             yield Chat(client, runs_dir, gates, sources, started)
     finally:
         # Only the fake runs this test started, by their own process handles.
@@ -242,10 +251,16 @@ def turn_status(chat: Chat, conversation: str, turn: int) -> str:
 
 
 def finish(chat: Chat, conversation: str, run_id: str, turn: int) -> None:
-    """Lets the turn's fake run finish and waits until the backend sees it ended."""
+    """Lets the turn's fake run finish and waits until the backend has it ended: its process has
+    exited, so the conversation is no longer running (a message now starts a new turn)."""
     wait_until(lambda: has_event(chat, run_id, "status"))
     chat.release(run_id)
-    wait_until(lambda: turn_status(chat, conversation, turn) == "success")
+    wait_until(
+        lambda: (
+            turn_status(chat, conversation, turn) == "success"
+            and not row(chat, conversation)["running"]
+        )
+    )
 
 
 def conversation_dir(chat: Chat, conversation: str) -> Path:
@@ -396,13 +411,12 @@ def test_one_run_at_a_time_across_conversations_and_the_run_form(chat: Chat) -> 
     wait_until(lambda: has_event(chat, run_a, "status"))
 
     assert send(chat, b, "How many customers are there?").status_code == 409
-    form = {"task": "Count orders", "task_type": "query", "data_source": "orders", "config": "full"}
-    assert chat.client.post("/api/runs", json=form).status_code == 409
+    assert chat.client.post("/api/runs", json=FORM).status_code == 409
     assert len(chat.started) == 1
     assert row(chat, b)["turns"] == []
 
     finish(chat, a, run_a, 1)
-    response = chat.client.post("/api/runs", json=form)
+    response = chat.client.post("/api/runs", json=FORM)
     assert response.status_code == 201, response.text
     form_run = response.json()["id"]
     wait_until(lambda: has_event(chat, form_run, "status"))
@@ -421,8 +435,8 @@ def test_one_run_at_a_time_across_conversations_and_the_run_form(chat: Chat) -> 
 @TICKET_93
 def test_single_runs_list_as_one_turn_conversations_without_follow_up(chat: Chat) -> None:
     write_run(chat.runs_dir, "20261115T143153Z-old", read_events(QUERY_SHOP))
-    form = {"task": "Count orders", "task_type": "query", "data_source": "orders", "config": "full"}
-    response = chat.client.post("/api/runs", json=form)
+    write_run(chat.runs_dir, "20261115T090000Z-dbt", read_events(NEW_FIELDS))
+    response = chat.client.post("/api/runs", json=FORM)
     assert response.status_code == 201, response.text
     form_run = response.json()["id"]
     wait_until(lambda: has_event(chat, form_run, "status"))
@@ -435,7 +449,7 @@ def test_single_runs_list_as_one_turn_conversations_without_follow_up(chat: Chat
 
     listed = rows(chat)
     # The conversation's turn is a run too, but it lists inside its conversation only.
-    assert set(listed) == {"20261115T143153Z-old", form_run, conversation}
+    assert set(listed) == {"20261115T143153Z-old", "20261115T090000Z-dbt", form_run, conversation}
     old = listed["20261115T143153Z-old"]
     assert (old["single_run"], old["running"]) == (True, False)
     assert old["turns"] == [
@@ -447,13 +461,18 @@ def test_single_runs_list_as_one_turn_conversations_without_follow_up(chat: Chat
             "status": "success",
         }
     ]
+    dbt = listed["20261115T090000Z-dbt"]
+    assert (dbt["single_run"], [t["message"] for t in dbt["turns"]]) == (
+        True,
+        ["Build the orders mart from raw.orders."],
+    )
     assert listed[form_run]["single_run"] is True
     assert [(t["run_id"], t["message"]) for t in listed[form_run]["turns"]] == [
         (form_run, "Count orders")
     ]
     assert row(chat, form_run) == listed[form_run]
 
-    for single in ("20261115T143153Z-old", form_run):
+    for single in ("20261115T143153Z-old", "20261115T090000Z-dbt", form_run):
         assert 400 <= send(chat, single, "And in 2024?").status_code < 500
     assert len(chat.started) == 2
     assert chat.client.get("/api/conversations/no-such-conversation").status_code == 404

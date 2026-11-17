@@ -39,8 +39,11 @@ from seam_support import DATA_AGENT, FIXTURES
 
 pytestmark = pytest.mark.integration
 
+# Only an assertion counts as the expected failure: a server that cannot start fails outright.
 TICKET_93 = pytest.mark.xfail(
-    strict=True, reason="ticket 93: the chat backend (after 89-92) is not built yet"
+    strict=True,
+    raises=AssertionError,
+    reason="ticket 93: the chat backend (after 89-92) is not built yet",
 )
 # Each scenario three times; all three must pass.
 THREE_TIMES = pytest.mark.parametrize("attempt", [1, 2, 3])
@@ -65,9 +68,8 @@ REFUNDED_2024 = 6
 
 # b and f: revenue changes with whether refunded orders count.
 REVENUE_QUESTION = "What was the total revenue from orders placed in 2024?"
-GROSS_2024 = Decimal(
-    "2121.75"
-)  # SELECT sum(amount) FROM sales.orders WHERE year(order_date) = 2024
+# SELECT sum(amount) FROM sales.orders WHERE year(order_date) = 2024
+GROSS_2024 = Decimal("2121.75")
 # SELECT sum(amount) FROM sales.orders WHERE year(order_date) = 2024 AND status <> 'refunded'
 NET_2024 = Decimal("1474.50")
 # b: nothing in it changes with a reading of the data.
@@ -139,11 +141,13 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def wait_until(check: Callable[[], bool], timeout: float, what: str) -> None:
+def wait_until(
+    check: Callable[[], bool], timeout: float, what: str, error: type[Exception] = AssertionError
+) -> None:
     deadline = time.monotonic() + timeout
     while not check():
         if time.monotonic() > deadline:
-            raise AssertionError(f"timed out waiting for {what}")
+            raise error(f"timed out waiting for {what}")
         time.sleep(0.5)
 
 
@@ -166,13 +170,14 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     try:
 
         def answers() -> bool:
-            assert process.poll() is None, "data-agent web exited"
+            if process.poll() is not None:
+                raise RuntimeError("data-agent web exited")
             with contextlib.suppress(OSError):
                 return up.call("GET", "/api/runs")[0] == 200
             return False
 
         # Alive and answering: whatever fails later is the chat's, not the server's start.
-        wait_until(answers, START_TIMEOUT, "data-agent web to answer")
+        wait_until(answers, START_TIMEOUT, "data-agent web to answer", RuntimeError)
         yield up
     finally:
         process.send_signal(signal.SIGTERM)
@@ -213,7 +218,12 @@ def turn_status(server: Server, conversation: str, run_id: str) -> str:
 def wait_turn(server: Server, conversation: str, run_id: str) -> str:
     """Waits for the turn to end; returns how it ended."""
     wait_until(
-        lambda: turn_status(server, conversation, run_id) != "running",
+        # Ended once its process has exited: the conversation is no longer running, so the next
+        # message starts a new turn.
+        lambda: (
+            turn_status(server, conversation, run_id) != "running"
+            and not row(server, conversation)["running"]
+        ),
         TURN_TIMEOUT,
         f"turn {run_id} to end",
     )
@@ -266,11 +276,12 @@ def numbers_in(text: str) -> list[Decimal]:
     return [Decimal(n.replace(",", "")) for n in NUMBER.findall(text)]
 
 
-def states(text: str, value: Decimal | int) -> bool:
+def mentions(text: str, value: Decimal | int) -> bool:
+    """Whether the text gives this number (to the cent)."""
     return any(abs(n - Decimal(value)) <= Decimal("0.01") for n in numbers_in(text))
 
 
-def states_per_region(text: str, expected: dict[str, int]) -> bool:
+def mentions_per_region(text: str, expected: dict[str, int]) -> bool:
     """Each region's count is the first number after the region's name, before the line or the
     next region's name ends it ("North: 13", "| North | 13 |", "North 13, South 10"), at some
     mention of the region."""
@@ -306,9 +317,9 @@ def choose(options: list[str]) -> tuple[str, Decimal]:
 def test_a_follow_up_resumes_the_session(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
     first = answered(server, conversation, REFUNDED_QUESTION)
-    assert states(answer_of(first), REFUNDED), answer_of(first)
+    assert mentions(answer_of(first), REFUNDED), answer_of(first)
     second = answered(server, conversation, FOLLOW_UP_QUESTION)
-    assert states(answer_of(second), REFUNDED_2024), answer_of(second)
+    assert mentions(answer_of(second), REFUNDED_2024), answer_of(second)
 
     session = session_of(first)
     assert session_of(second) == session
@@ -344,7 +355,7 @@ def test_b_an_ambiguous_question_is_clarified_and_answered_as_chosen(
     option, expected = choose(options)
     second = answered(server, conversation, option)
     assert not of_type(second, "clarification")
-    assert states(answer_of(second), expected), (option, answer_of(second))
+    assert mentions(answer_of(second), expected), (option, answer_of(second))
     [turn_1, turn_2] = row(server, conversation)["turns"]
     assert turn_2["message"] == option and turn_1["message"] == REVENUE_QUESTION
 
@@ -355,7 +366,7 @@ def test_b_a_plain_question_is_answered_without_clarification(server: Server, at
     conversation = new_conversation(server)
     run = answered(server, conversation, PLAIN_QUESTION)
     assert not of_type(run, "clarification")
-    assert states(answer_of(run), LARGEST_ORDER), answer_of(run)
+    assert mentions(answer_of(run), LARGEST_ORDER), answer_of(run)
 
 
 # --- c: steering ---------------------------------------------------------------------------
@@ -396,7 +407,7 @@ def test_d_after_a_cancelled_turn_the_next_one_is_answered(server: Server, attem
     assert turn_status(server, conversation, cancelled) == "cancelled"
 
     run = answered(server, conversation, CUSTOMERS_QUESTION)
-    assert states(answer_of(run), CUSTOMERS), answer_of(run)
+    assert mentions(answer_of(run), CUSTOMERS), answer_of(run)
     assert [t["status"] for t in row(server, conversation)["turns"]] == ["cancelled", "success"]
 
 
@@ -430,7 +441,7 @@ def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
     assert not of_type(run, "clarification")
     assert not [e for e in of_type(run, "tool_start") if "clarification" in str(e["tool"])]
     answer = proc.stdout
-    assert states(answer, GROSS_2024) or states(answer, NET_2024), answer
+    assert mentions(answer, GROSS_2024) or mentions(answer, NET_2024), answer
     # The assumption: how refunded orders were treated.
     assert "refund" in answer.lower(), answer
 
@@ -443,7 +454,7 @@ def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
 def test_g_a_question_across_both_databases_queries_each(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
     run = answered(server, conversation, REGION_ORDERS_QUESTION)
-    assert states_per_region(answer_of(run), REGION_ORDERS), answer_of(run)
+    assert mentions_per_region(answer_of(run), REGION_ORDERS), answer_of(run)
     queried = [e.get("database") for e in of_type(run, "sql")]
     assert {"orders", "customers"} <= set(queried), queried
     assert set(queried) <= {"orders", "customers"}, queried
@@ -454,6 +465,6 @@ def test_g_a_question_across_both_databases_queries_each(server: Server, attempt
 def test_g_a_question_on_one_database_queries_only_it(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
     run = answered(server, conversation, REGION_CUSTOMERS_QUESTION)
-    assert states_per_region(answer_of(run), REGION_CUSTOMERS), answer_of(run)
+    assert mentions_per_region(answer_of(run), REGION_CUSTOMERS), answer_of(run)
     queried = [e.get("database") for e in of_type(run, "sql")]
     assert queried and set(queried) == {"customers"}, queried
