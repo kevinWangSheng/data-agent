@@ -33,3 +33,9 @@ status: proposed
 - 插话：agent 改用 `ClaudeSDKClient`，运行中在同一个客户端上再调 `query()` 送入用户消息，照 SignalPilot（`claude_agent.py:355-408`）。
 - 评测和跑榜的入口不变，仍是一次任务一次运行，关闭澄清和插话。换调用方式按 ADR-0008 Update 2026-11-04 验证（单元测试加单题真实运行），评测行为不能变。
 - 写工单前先实测：CLI 2.1.301 能否在新进程里 `resume` 原会话。不成立就改用 nao 的做法（每轮重放历史），回来更新本节。
+
+### 实现时发现的事实（工单 90，SDK 0.2.168 / CLI 2.1.301）
+
+- 所有运行（单次运行、Harbor、DAB、对话的每一轮）都走同一个 `agent.query()`，底下换成 `ClaudeSDKClient`：连上、发一条提示、读到这一轮的 `ResultMessage` 为止，然后断开。原来的一次性 `query()` 在结果之后还会读到 CLI 报"idle"为止；后台任务关着时一条提示只出一个结果（探针已验证），所以推断两种读法得到的消息相同（由主会话的单题真实运行核对）。断开时 SDK 先关 stdin、等 CLI 写完会话记录（最多 5 秒）再终止它。
+- 续接后的花费：CLI 在会话记录里写 `cost-state` 条目（后写的为准），`resume` 时把它恢复成会话的起点，所以续接那一轮 `ResultMessage` 的 `total_cost_usd` 和 `modelUsage` 是从第一轮起的累计；CLI 自己的 `--max-budget-usd` 检查会减掉恢复的部分（读自 CLI 2.1.301 的程序包，未用真实运行核对）。所以每轮的 `result` 事件减掉开跑前从会话记录读到的那份，只记本轮；减掉的数记成 `restored_sdk_cost_usd`。
+- 设了 `CLAUDE_CONFIG_DIR` 后，`setting_sources=["user"]` 读的是对话自己目录里的设置（一开始是空的），不再读用户 `~/.claude` 里的；评测和单次运行不设它，照旧。

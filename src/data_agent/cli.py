@@ -13,7 +13,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from data_agent.agent import ConfigError, Task, run
+from data_agent.agent import ConfigError, Task, Turn, run
 from data_agent.context_tools import Dictionary
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_server
@@ -82,6 +82,20 @@ def main(argv: list[str] | None = None) -> None:
         type=float,
         help="the trial's time limit, counted from now; the run stops itself before it",
     )
+    # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
+    # and single runs never set these (spec decision 19).
+    run_cmd.add_argument(
+        "--chat", action="store_true", help="run as a turn of a conversation (query tasks only)"
+    )
+    run_cmd.add_argument(
+        "--conversation-dir",
+        type=Path,
+        help="the conversation's directory; its claude-config/ keeps the session (needs --chat)",
+    )
+    run_cmd.add_argument("--turn", type=int, help="the turn's number, from 1 (needs --chat)")
+    run_cmd.add_argument(
+        "--resume", metavar="SESSION_ID", help="the previous turn's session to go on with"
+    )
 
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
     web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
@@ -130,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
         if not args.task_file.is_file():
             run_cmd.error(f"task file not found: {args.task_file}")
         text = args.task_file.read_text()
+    turn = conversation_turn(run_cmd, args)
     task = Task(
         text=text,
         type=args.type,
@@ -140,7 +155,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     try:
         deadline = None if args.agent_timeout_sec is None else started + args.agent_timeout_sec
-        outcome = asyncio.run(run(task, config, args.events_dir, os.environ, deadline))
+        outcome = asyncio.run(run(task, config, args.events_dir, os.environ, deadline, turn=turn))
     except ConfigError as exc:
         run_cmd.error(str(exc))
     print(outcome.answer)
@@ -150,6 +165,25 @@ def main(argv: list[str] | None = None) -> None:
     if outcome.infra_error:
         sys.exit(EXIT_ERROR)
     sys.exit(EXIT_OK if outcome.finished else EXIT_UNFINISHED)
+
+
+def conversation_turn(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Turn | None:
+    """The conversation turn `--chat` asks for, None for a single run. A conversation only
+    queries (spec decision 3): the verifiers, which check dbt work, never run in one."""
+    if not args.chat:
+        for name in ("conversation_dir", "turn", "resume"):
+            if getattr(args, name) is not None:
+                parser.error(f"--{name.replace('_', '-')} needs --chat")
+        return None
+    if args.type != "query":
+        parser.error("--chat runs --type query only")
+    if args.conversation_dir is None:
+        parser.error("--chat needs --conversation-dir")
+    if not args.conversation_dir.is_dir():
+        parser.error(f"conversation directory not found: {args.conversation_dir}")
+    if args.turn is None or args.turn < 1:
+        parser.error("--chat needs --turn, a number from 1")
+    return Turn(args.conversation_dir, args.turn, args.resume)
 
 
 def serve_web(

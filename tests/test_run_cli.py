@@ -110,7 +110,7 @@ def test_data_source_name_is_the_file_name_or_the_name_given(
     make_db(tmp_path / "x.duckdb")
     seen: list[Task] = []
 
-    async def fake_run(task: Task, *_: Any) -> Outcome:
+    async def fake_run(task: Task, *_: Any, **__: Any) -> Outcome:
         seen.append(task)
         return Outcome("", True, False, [], tmp_path / "events.jsonl")
 
