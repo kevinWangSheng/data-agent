@@ -1,6 +1,6 @@
 # 89 — agent 自己选库：多数据源
 
-Status: in-review
+Status: done
 Blocked by: 88
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-17
@@ -53,7 +53,7 @@ Branch: worktree-89-multi-source
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #101)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -205,3 +205,7 @@ The background job that waited for `make check` hit its time limit and was stopp
   - Both turns' `result` carry the same `session_id`. Turn 2 has `restored_sdk_cost_usd` 0.077142 and its own `cost_usd` $0.0003.
 - One source (README quickstart, no-verifiers): "Gold tier has the highest total amount of completed orders: 710.00.", exit 0.
 - (The first attempt at the chat part failed because the main session's script did not create the workspace dir. That was a script error, not a code one; rerun above.)
+
+### Main session, 2026-11-17: merged
+
+- PR #101: CI `check` green; Codex GitHub app reacted 👍 with no comments. Squash-merged (73f8409).

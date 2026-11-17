@@ -167,3 +167,5 @@ Scenario b in `test_chat_e2e.py` stays `xfail` until ticket 93 adds the chat bac
 3. Plain question: "order_id: 1034", 0 clarifications.
 4. Scenario f: "3 passed, 21 deselected".
 5. Ambiguous question on two sources (`--data-sources`): four `sql` events on `orders`, then a clarification: "Orders in 2024 total 2,121.75 across 18 orders, of which 6 are refunded (647.25). Which should count as revenue?", with options "Only completed orders (1,474.50)" / "All orders placed in 2024 including refunded (2,121.75)".
+
+- Note (main session): the return note for the rebase was never written to this ticket. The main session's command chain stopped when `git pull` failed on 92's claim edit. The rebase was done from the dispatch prompt alone, which said the same thing.
