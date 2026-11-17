@@ -72,6 +72,9 @@ REVENUE_QUESTION = "What was the total revenue from orders placed in 2024?"
 GROSS_2024 = Decimal("2121.75")
 # SELECT sum(amount) FROM sales.orders WHERE year(order_date) = 2024 AND status <> 'refunded'
 NET_2024 = Decimal("1474.50")
+# f: the answer says how it treated refunded orders, by naming refunds, order statuses ("all
+# order statuses included") or the other status value ("only completed orders").
+STATED_REFUND_TREATMENT = re.compile(r"refund|\bstatus(?:es)?\b|\bcompleted\b", re.I)
 # b: nothing in it changes with a reading of the data.
 PLAIN_QUESTION = "What is the order_id of the order with the largest amount?"
 LARGEST_ORDER = 1034  # SELECT order_id FROM sales.orders ORDER BY amount DESC LIMIT 1
@@ -297,8 +300,6 @@ def mentions_per_region(text: str, expected: dict[str, int]) -> bool:
 
 NET_WORDS = re.compile(r"\bnet\b|exclud|without|minus|subtract|deduct|less refund", re.I)
 GROSS_WORDS = re.compile(r"\bgross\b|includ|all orders|regardless", re.I)
-# f: the answer says how it treated refunded orders.
-STATED_REFUND_TREATMENT = re.compile(r"refund|\bstatus(?:es)?\b", re.I)
 
 
 def choose(options: list[str]) -> tuple[str, Decimal]:
@@ -444,8 +445,7 @@ def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
     assert not [e for e in of_type(run, "tool_start") if "clarification" in str(e["tool"])]
     answer = proc.stdout
     assert mentions(answer, GROSS_2024) or mentions(answer, NET_2024), answer
-    # The assumption: how refunded orders were treated, named as refunds or as order statuses
-    # ("all order statuses included").
+    # The assumption: how refunded orders were treated.
     assert STATED_REFUND_TREATMENT.search(answer), answer
 
 
