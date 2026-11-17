@@ -256,7 +256,7 @@ export default function App() {
       ) : place.page === 'chat' && live ? (
         <ChatPage live={live} id={place.id} chatHref={chatHref} runHref={runHref} onGo={go} />
       ) : place.page === 'history' ? (
-        <HistoryPage source={source} empty="No featured runs." runUrl={runHref} onOpen={(runId) => go(runHref(runId))} />
+        <HistoryPage source={source} runUrl={runHref} onOpen={(runId) => go(runHref(runId))} />
       ) : run && route && id !== null ? (
         <RunPage
           key={`${onFirstScreen ? 'first' : 'run'}:${id}`}

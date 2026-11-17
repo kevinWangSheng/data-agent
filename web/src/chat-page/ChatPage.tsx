@@ -2,7 +2,7 @@
 // conversation on the right. `<base>chats/<id>` opens one (./route.ts); the base address opens none.
 
 import { MessageSquarePlus } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { ConversationRow, LiveSource } from '../data/source'
 import { errorText } from '../format'
@@ -31,17 +31,29 @@ export function ChatPage({
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
 
+  /** The latest read; an earlier one answering late is dropped, as is any after unmount. */
+  const latest = useRef(0)
   const reload = useCallback(() => {
+    const read = ++latest.current
     live
       .conversations()
       .then((r) => {
+        if (read !== latest.current) return
         setRows(r)
         setListError(null)
       })
-      .catch((e: unknown) => setListError(errorText(e)))
+      .catch((e: unknown) => read === latest.current && setListError(errorText(e)))
   }, [live])
 
-  useEffect(reload, [reload, id])
+  useEffect(() => {
+    reload()
+  }, [reload, id])
+  useEffect(
+    () => () => {
+      latest.current = -1
+    },
+    [],
+  )
 
   const anyRunning = rows?.some((r) => r.running) ?? false
   useEffect(() => {

@@ -8,7 +8,7 @@ import { describe, expect, test } from 'vitest'
 
 import { parseEventLines } from '../data/source'
 import { buildConversationView, type ConversationIndex, type TurnRun } from '../chat-view/model'
-import { answerable, turnLayout } from './layout'
+import { answerable, conversationTitle, turnLayout } from './layout'
 
 const CHAT = join(import.meta.dirname, '../../../tests/fixtures/chat/conversation')
 const index = JSON.parse(readFileSync(join(CHAT, 'conversation.json'), 'utf8')) as ConversationIndex
@@ -57,6 +57,14 @@ describe('turnLayout', () => {
     const layout = turnLayout(viewOf(1, 3).turns[0])
     expect(layout.groups).toEqual([])
     expect(layout.before.map((n) => [n.kind, n.seq])).toEqual([['thinking', 3]])
+  })
+})
+
+describe('conversationTitle', () => {
+  test('the first message; a single run without one, its id; an empty conversation, a placeholder', () => {
+    expect(conversationTitle('c1', false, 'How many orders?')).toBe('How many orders?')
+    expect(conversationTitle('r1', true, null)).toBe('r1')
+    expect(conversationTitle('c1', false, undefined)).toBe('New conversation')
   })
 })
 

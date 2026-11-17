@@ -37,7 +37,8 @@ export function useConversation(live: LiveSource, id: string): LiveConversation 
   /** Turns whose events are loaded or being loaded, and the stop functions of the followed ones. */
   const loaded = useRef(new Set<string>())
   const followers = useRef(new Map<string, () => void>())
-  const current = useRef(id)
+  /** The id this hook is showing; null once unmounted, so late answers are dropped. */
+  const current = useRef<string | null>(id)
 
   const refresh = useCallback(async () => {
     try {
@@ -59,6 +60,7 @@ export function useConversation(live: LiveSource, id: string): LiveConversation 
     const followed = followers.current
     const seen = loaded.current
     return () => {
+      current.current = null
       followed.forEach((stop) => stop())
       followed.clear()
       seen.clear()

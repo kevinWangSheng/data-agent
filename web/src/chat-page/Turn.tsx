@@ -123,7 +123,12 @@ function GroupBlock({ group, live, databases }: { group: Group; live: boolean; d
   return (
     <div className="flex flex-col gap-1.5">
       {group.dispatch ? (
-        <VerifierCard dispatch={group.dispatch} steps={group.steps} databases={databases} />
+        <>
+          <VerifierCard dispatch={group.dispatch} steps={group.steps} databases={databases} />
+          {group.notes.map((n) => (
+            <Note key={n.seq} note={n} />
+          ))}
+        </>
       ) : (
         <>
           <button type="button" onClick={() => setOpen(!shown)} aria-expanded={shown} className="flex items-center gap-1.5 text-left text-[12.5px] text-ink-2 hover:text-ink">

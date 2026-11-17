@@ -64,8 +64,13 @@ export function turnLayout(turn: TurnView): TurnLayout {
 }
 
 /** Whether turn `i`'s clarification options can be clicked: the conversation's last turn, one that
- *  takes follow-ups, and no turn running (`busy`: the backend's `running`, true until the turn's
- *  process exited, when a message would go into the turn instead of starting the next one). */
-export function answerable(view: ConversationView, i: number, busy: boolean): boolean {
-  return view.canFollowUp && !busy && i === view.turns.length - 1 && view.turns[i].clarification !== null
+ *  takes follow-ups, and no turn running (`running`: the backend's, true until the turn's process
+ *  exited, when a message would go into the turn instead of starting the next one). */
+export function answerable(view: ConversationView, i: number, running: boolean): boolean {
+  return view.canFollowUp && !running && i === view.turns.length - 1 && view.turns[i].clarification !== null
+}
+
+/** What a conversation is called: its first message; a single run without one, its id. */
+export function conversationTitle(id: string, singleRun: boolean, firstMessage: string | null | undefined): string {
+  return firstMessage ?? (singleRun ? id : 'New conversation')
 }

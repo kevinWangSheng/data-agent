@@ -1,6 +1,6 @@
-// The history list (spec "历史列表"): one row a run, newest start first; a row opens the run page.
-// Locally it lists every run; online, the featured runs (the dev trials open from the evaluation
-// page).
+// The online history list (spec "历史列表"): one row a featured run, newest start first; a row
+// opens the run page (the dev trials open from the evaluation page). Locally the conversation list
+// takes its place (./ConversationList.tsx).
 
 import { useEffect, useState } from 'react'
 
@@ -12,13 +12,10 @@ const dash = <span className="text-ink-3">—</span>
 
 export function HistoryPage({
   source,
-  empty,
   runUrl,
   onOpen,
 }: {
   source: Pick<DataSource, 'history'>
-  /** What to say when there is no run. */
-  empty: string
   runUrl: (id: string) => string
   onOpen: (id: string) => void
 }) {
@@ -45,7 +42,7 @@ export function HistoryPage({
         </div>
         {error && <div className="banner banner-fail m-3">Could not list the runs: {error}</div>}
         {rows === null && !error && <div className="sec text-ink-3">Loading runs…</div>}
-        {rows !== null && rows.length === 0 && <div className="sec text-ink-3">{empty}</div>}
+        {rows !== null && rows.length === 0 && <div className="sec text-ink-3">No featured runs.</div>}
         {rows !== null && rows.length > 0 && (
           <div className="overflow-x-auto">
             <table className="runs-tbl" aria-label="Runs">

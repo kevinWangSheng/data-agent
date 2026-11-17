@@ -7,7 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 
 import type { LiveSource } from '../data/source'
 import { errorText, fmtCost } from '../format'
-import { answerable } from './layout'
+import { answerable, conversationTitle } from './layout'
 import { Turn } from './Turn'
 import { useConversation } from './useConversation'
 
@@ -25,7 +25,7 @@ export function Conversation({
   id: string
   runHref: (runId: string) => string
   onGo: (href: string) => void
-  /** Something changed that the conversation list shows (a message, a cancel, a turn ending). */
+  /** A turn started or ended: the conversation list shows that. */
   onActivity: () => void
 }) {
   const { row, view, error, refresh, setRow } = useConversation(live, id)
@@ -43,9 +43,12 @@ export function Conversation({
     if (followUp) input.current?.focus()
   }, [followUp])
 
-  // The list shows each conversation's state: tell it when a turn ends.
+  // The list shows each conversation's state: tell it when a turn starts or ends.
+  const wasRunning = useRef<boolean | null>(null)
   useEffect(() => {
-    if (row && !running) onActivity()
+    if (row === null) return
+    if (wasRunning.current !== null && wasRunning.current !== running) onActivity()
+    wasRunning.current = running
   }, [row, running, onActivity])
 
   const size = view?.turns.reduce((n, t) => n + t.run.steps.length + t.run.narration.length + t.steers.length + 1, 0) ?? 0
@@ -62,7 +65,6 @@ export function Conversation({
       if (fromBox) setDraft('')
       stick.current = true
       await refresh()
-      onActivity()
     } catch (e: unknown) {
       setActionError(errorText(e))
     } finally {
@@ -75,7 +77,6 @@ export function Conversation({
     setActionError(null)
     try {
       setRow(await live.cancelTurn(id))
-      onActivity()
     } catch (e: unknown) {
       setActionError(errorText(e))
     } finally {
@@ -97,7 +98,7 @@ export function Conversation({
   if (!view) {
     return <div className="p-8 text-ink-3">{error ? <div className="banner banner-fail">Could not load the conversation: {error}</div> : `Loading ${id}…`}</div>
   }
-  const title = view.turns[0]?.message ?? (view.singleRun ? id : 'New conversation')
+  const title = conversationTitle(id, view.singleRun, view.turns[0]?.message)
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line bg-panel px-4 py-2">

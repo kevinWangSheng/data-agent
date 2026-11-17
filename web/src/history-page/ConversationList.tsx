@@ -5,6 +5,7 @@
 import { MessageSquarePlus } from 'lucide-react'
 
 import type { ConversationRow } from '../data/source'
+import { conversationTitle } from '../chat-page/layout'
 import { fmtStart } from '../format'
 import { StatusChip } from '../run-page/ui'
 import { Link } from '../site/Link'
@@ -47,7 +48,7 @@ export function ConversationList({
         {rows !== null && rows.length === 0 && <div className="px-3 py-2 text-[12px] text-ink-3">No conversations yet.</div>}
         {rows?.map((row) => {
           const last = row.turns.at(-1)
-          const title = row.turns[0]?.message ?? (row.single_run ? row.id : 'New conversation')
+          const title = conversationTitle(row.id, row.single_run, row.turns[0]?.message)
           return (
             <Link
               key={row.id}
