@@ -46,6 +46,8 @@ function Clipped({ children, height, label }: { children: ReactNode; height: num
   )
 }
 
+const INFERRED_TITLE = 'The agent did not name the query; this is its last successful query before the answer.'
+
 const OUTCOME_TONE = { success: 'text-ok', failure: 'text-fail', running: 'text-ink-2', cancelled: 'text-ink-2' } as const
 const OUTCOME_BG = { success: 'bg-[var(--ok-bg)]', failure: 'bg-[var(--fail-bg)]', running: '', cancelled: '' } as const
 const OUTCOME_TEXT = { success: 'Success', failure: 'Failure', running: 'Running', cancelled: 'Cancelled' } as const
@@ -68,6 +70,9 @@ export function Side({
 }) {
   const { summary, answer } = view
   const status = replaying ? 'running' : summary.status
+  // An inferred query is not the agent's own citation: the label says how it was found.
+  const queryLabel = (id: string, inferred: true | undefined, prefix: string) =>
+    inferred ? `last query before the answer · #${numbers.get(id)}` : `${prefix} #${numbers.get(id)}`
   const answerTarget = answer ? (answer.sqlStep ?? (view.narration.some((n) => n.seq === answer.seq) ? narrationId(answer.seq) : null)) : null
   const issues = view.steps.filter(isIssue).length
   const checks = [...new Map(view.dispatches.flatMap((d) => d.checks.map((c) => [c.check, c.name] as const))).entries()].sort(
@@ -122,8 +127,8 @@ export function Side({
         title={summary.taskType === 'dbt' ? 'Final report' : 'Answer'}
         right={
           answerTarget !== null ? (
-            <button type="button" className="link" onClick={() => onSelect(answerTarget)}>
-              {answer?.sqlStep ? `from query #${numbers.get(answer.sqlStep)}` : 'in the trace'}
+            <button type="button" className="link" title={answer?.sqlInferred ? INFERRED_TITLE : undefined} onClick={() => onSelect(answerTarget)}>
+              {answer?.sqlStep ? queryLabel(answer.sqlStep, answer.sqlInferred, 'from query') : 'in the trace'}
             </button>
           ) : undefined
         }
@@ -141,8 +146,8 @@ export function Side({
         <Block
           title="Result table"
           right={
-            <button type="button" className="link" onClick={() => onSelect(answer.sqlStep!)}>
-              query #{numbers.get(answer.sqlStep)}
+            <button type="button" className="link" title={answer.sqlInferred ? INFERRED_TITLE : undefined} onClick={() => onSelect(answer.sqlStep!)}>
+              {queryLabel(answer.sqlStep, answer.sqlInferred, 'query')}
             </button>
           }
         >

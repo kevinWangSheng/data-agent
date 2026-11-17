@@ -377,3 +377,70 @@ describe('status from the local backend', () => {
     expect(buildRunView(started, { cancelled: true, failed: true }).summary.status).toBe('cancelled')
   })
 })
+
+// --- The query the answer rests on (ticket 87) ----------------------------------------------
+
+describe('the query the answer rests on', () => {
+  const ts = '2026-11-15T09:00:00+00:00'
+  const call = (seq: number, tool: string, id: string, content: string, isError = false): RunEvent[] => [
+    { seq, type: 'tool_start', ts, tool: `mcp__data__${tool}`, tool_use_id: id, input: {} },
+    { seq: seq + 1, type: 'tool_end', ts, tool: `mcp__data__${tool}`, tool_use_id: id, content, is_error: isError },
+  ]
+  const answer = (seq: number, sqlToolUseId: string | null): RunEvent => ({
+    seq,
+    type: 'answer',
+    ts,
+    text: 'Gold leads.',
+    sql_tool_use_id: sqlToolUseId,
+  })
+  const task: RunEvent = { seq: 0, type: 'task', ts, task: 'Which tier leads?', task_type: 'query' }
+  const tierTable = { columns: ['tier', 'n'], rows: [['Gold', '3']] }
+  // q0 and q1 succeed, q2 fails, then the answer; q3 runs after it.
+  const run = (marked: RunEvent): RunEvent[] => [
+    task,
+    ...call(1, 'list_tables', 'l', 'orders'),
+    ...call(3, 'query_database', 'q0', 'n\n-\n7\n(1 rows)'),
+    ...call(5, 'query_database', 'q1', 'tier | n\n-----\nGold | 3\n(1 rows)'),
+    ...call(7, 'query_database', 'q2', 'syntax error', true),
+    marked,
+    ...call(10, 'query_database', 'q3', 'n\n-\n9\n(1 rows)'),
+  ]
+
+  test('the query the answer event names: used, not inferred', () => {
+    const view = buildRunView(run(answer(9, 'q0')))
+    expect(view.answer).toMatchObject({ sqlStep: 'q0', table: { columns: ['n'], rows: [['7']] } })
+    expect(view.answer?.sqlInferred).toBeUndefined()
+  })
+
+  test('no query named: the last successful query before the answer, inferred', () => {
+    const view = buildRunView(run(answer(9, null)))
+    expect(view.answer).toMatchObject({ seq: 9, text: 'Gold leads.', sqlStep: 'q1', table: tierTable, sqlInferred: true })
+    expect(view.keyMoments.find((m) => m.kind === 'answer')?.step).toBe('q1')
+    // The answer phase starts at the same query.
+    expect(view.phases.map((p) => [p.kind, p.steps])).toEqual([
+      ['orient', ['l']],
+      ['explore', ['q0']],
+      ['answer', ['q1', 'q2', 'q3']],
+    ])
+  })
+
+  test('no query named and no successful query before the answer: no query, no table', () => {
+    const events: RunEvent[] = [
+      task,
+      ...call(1, 'query_database', 'q2', 'syntax error', true),
+      answer(3, null),
+      ...call(4, 'query_database', 'q3', 'n\n-\n9\n(1 rows)'),
+    ]
+    const view = buildRunView(events)
+    expect(view.answer).toMatchObject({ sqlStep: null, table: null })
+    expect(view.answer?.sqlInferred).toBeUndefined()
+  })
+
+  test('old file without an answer event: the last text, its query inferred as before', () => {
+    const events: RunEvent[] = [
+      ...run({ seq: 9, type: 'text', ts, text: 'Gold leads.' }),
+      { seq: 12, type: 'result', ts, subtype: 'success', is_error: false },
+    ]
+    expect(buildRunView(events).answer).toMatchObject({ seq: 9, sqlStep: 'q1', table: tierTable, sqlInferred: true })
+  })
+})

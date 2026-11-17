@@ -143,6 +143,11 @@ export type FinalAnswer = {
   sqlStep: string | null
   /** That query's result table. */
   table: ResultTable | null
+  /** Set when the answer names no query and `sqlStep` is the last successful query of the main agent
+   *  before it (a new file's `answer` event with `sql_tool_use_id` null, or an old file without one);
+   *  absent when the agent named the query or there is none. Absent rather than false, so a named
+   *  answer keeps the exact shape the acceptance tests compare with `toEqual`. */
+  sqlInferred?: true
 }
 
 /** One `thinking` or `text` event of the main agent (the verifiers' are not in the event file). */
@@ -524,36 +529,28 @@ function summarize(
   }
 }
 
-/** The marked answer (the `answer` event); in an old file the last text of a finished run, resting on the last
- *  successful query of the main agent before it. */
+/** The marked answer (the `answer` event); in an old file the last text of a finished run. It rests on
+ *  the query the `answer` event names; when it names none (or there is no `answer` event), on the last
+ *  successful query of the main agent before it, marked as inferred. */
 function finalAnswer(
   steps: Step[],
   stepById: Map<string, Step>,
   markedAnswer: RunEvent | undefined,
   lastText: RunEvent | undefined,
 ): FinalAnswer | null {
-  if (markedAnswer) {
-    const sqlStep = asString(markedAnswer.sql_tool_use_id)
-    return {
-      text: String(markedAnswer.text ?? ''),
-      seq: markedAnswer.seq,
-      sqlStep,
-      table: (sqlStep !== null ? stepById.get(sqlStep)?.table : null) ?? null,
-    }
-  }
-  if (!lastText) return null
+  const answer = markedAnswer ?? lastText
+  if (!answer) return null
+  const text = String(answer.text ?? '')
+  const named = markedAnswer ? asString(markedAnswer.sql_tool_use_id) : null
+  if (named !== null) return { text, seq: answer.seq, sqlStep: named, table: stepById.get(named)?.table ?? null }
   let backing: Step | null = null
   for (const step of steps) {
-    if (step.seq > lastText.seq) break
+    if (step.seq > answer.seq) break
     const ok = QUERY_TOOLS.has(step.tool) && step.result !== null && !step.isError
     if (ok && step.dispatch === null) backing = step
   }
-  return {
-    text: String(lastText.text ?? ''),
-    seq: lastText.seq,
-    sqlStep: backing?.id ?? null,
-    table: backing?.table ?? null,
-  }
+  if (!backing) return { text, seq: answer.seq, sqlStep: null, table: null }
+  return { text, seq: answer.seq, sqlStep: backing.id, table: backing.table, sqlInferred: true }
 }
 
 /**
