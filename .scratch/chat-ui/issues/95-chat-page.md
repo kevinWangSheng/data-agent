@@ -1,6 +1,6 @@
 # 95 — 对话页面（A「对话流」）
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 94（93 只挡合并：人 2026-11-17 定提前开工，见 Comments）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17

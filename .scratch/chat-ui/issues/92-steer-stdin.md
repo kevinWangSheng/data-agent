@@ -1,10 +1,10 @@
 # 92 — 运行中插话：stdin 通道和送达事件
 
-Status: ready-for-agent
+Status: ready-for-human
 Blocked by: 90
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (opus) 2026-11-17
+Branch: worktree-92-steer-stdin
 
 ## Goal
 
@@ -54,3 +54,75 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+### Attempt 1 (ticket agent, branch `worktree-92-steer-stdin`, commits c5419c7, bbc7dec), final reply as given
+
+工单 92 的实现做完了：`make check` 通过，两道审查都跑了。但 Codex 和 Spec 审查都指出一个结束时的竞态，它落在本工单的停止条件里，所以新状态是 `Status: ready-for-human`，不是 `in-review`。分支 `worktree-92-steer-stdin`，两个提交：`c5419c7`（实现）、`bbc7dec`（审查修复）；没有 push。
+
+**卡住的那件事：** 模型已经走完最后一步、但我们还没读到 `ResultMessage` 时写进的插话，会照样记下 `steer_delivered`，随后客户端在第一个 `ResultMessage` 就断开，模型没读到它。Codex 用假客户端复现了这个顺序。
+- CLI 对这样一条消息是并进本轮、开第二个 `ResultMessage`、还是丢掉，没有验证过。
+- 2026-11-17 探针得出"只出一个 `ResultMessage`"时用的 `receive_response()` 读到第一个 result 就停，所以有第二个它也看不到。这是推断，没有验证。
+- SP 的做法是每条插话计一个待处理数、结束后等一个宽限期再继续读下一个 result。如果插话在一轮中途送进只出一个 result，照搬这个做法会把这一轮挂到截止时间。
+- 我跑不了真模型，所以没有凭猜测改代码。
+
+**我推荐下一步：** 主会话先跑下面第 2 条的探针，再按结果定：照 SP 做（`replay-user-messages` 回显加 uuid 对账、计数、宽限期），还是接受成已知限制。定下来之后把工单退回给我，我在原分支上接着做。
+
+### 实现了什么
+- 只有 `--chat` 时，`data-agent run` 才从 stdin 按行读 `{"id","text"}`。读的是文件描述符 0：一个守护线程直接 `os.read`，所以 stdin 一直开着进程也能退出，这一点有子进程测试。
+- 每条消息在活着的 `ClaudeSDKClient` 上调一次 `query(text)`，返回后写 `steer_delivered`（`id`、`text`），事件的 `seq` 就是它送进时的位置。
+- 不开对话模式时根本不建这个读取器，评测路径不变。
+- 只改了 `agent.py`、`cli.py`，新增 `tests/test_steer_stdin.py`（12 个测试，用假客户端）；`events.py` 不用改。
+
+### 要写进工单的 `## Comments`
+- **边界怎么处理：**
+  - 坏行（不是 JSON、不是对象、`id` 或 `text` 不是非空字符串）：写一个 `error` 事件，`source="steer"`，内容是 `stdin line N skipped: <原因>`，然后跳过；空行直接忽略。
+  - stdin 关闭：只是不再插话，这一轮照常跑完。
+  - 收到本轮 `ResultMessage` 之后才到的行：不送出，也不写事件。
+  - 某条送不进去（CLI 已经退出）：写 `error`，内容是 `stdin line N not sent: …`，之后不再插话。
+  - 跑到截止时间时客户端照样断开：这是自审时发现的问题，已修，有测试。
+  - 取消仍按信号杀进程，之后自然不再读 stdin。
+- **给工单 93 的已知限制：** 子进程写出 `result` 到退出之间，后端还把对话算成运行中，会对新消息回 202，但子进程已经不读了，这条消息既没送达，也不会开新一轮。
+- **`make check`：** ruff 全过、`315 files already formatted`、basedpyright `0 errors`、pytest `2341 passed, 1 skipped, 63 deselected, 8 xfailed`、vitest `241 passed`，退出码 0。`test_chat_eval_unchanged.py` 2 个都过。另外，开工前的基线里 `test_eval_report.py::test_dev_report_has_process_metrics_per_task` 失败过一次，单独重跑通过，后两次完整的 `make check` 也都通过，看着是负载下偶发，和本工单无关。
+- **审查：**
+  - `da-review main`：只有一条 P2，就是上面那个竞态，没修，原因见上。
+  - `eng:code-review` Standards 那边，修了三条：测试复用 `run_steered`、断言改成 `len(...) == 1`、去掉多余的类型注解引号。
+  - Standards 那边没修的：
+    - 把 stdin 读取挪进单独模块：新模块不在 Authority 允许的范围里。
+    - `query` 按 `steering` 分支调用：10 个现有测试替换 `query` 时用的签名就是 `(*, prompt, options)`，单次运行的调用要保持原样。
+    - 解析结果用 `str` 表示原因：这个大小下问题不大。
+  - Spec 那边：
+    - 竞态：同上。
+    - 插话没带 uuid：要和对账方案一起定，只发 uuid、不开回显，什么也换不来，而且 CLI 怎么校验 uuid 也没验证过。
+    - `error` 事件不在合约里：两个视图模型都不处理 `error` 类型的事件，只留在原始事件文件里。
+- **真实运行：** 待主会话跑，命令见下面。
+
+### 主会话要跑的命令
+1. 验收要的真实运行（在 worktree 根目录）：
+```bash
+set -a; . ~/.config/data-agent/env; set +a
+R=runs/steer-92-$(date +%H%M%S); mkdir -p "$R"
+uv run python tests/fixtures/chat/build_sources.py "$R/db"
+C="$R/conv-20261117T000000Z-steer092"; mkdir -p "$C/workspace"; mkfifo "$R/stdin"
+uv run data-agent run --task "List every customer_id in the orders data with its number of orders, from most to fewest." \
+  --type query --config full --duckdb "$R/db/orders.duckdb" --events-dir "$R/events" \
+  --workspace "$C/workspace" --chat --conversation-dir "$C" --turn 1 \
+  < "$R/stdin" > "$R/answer.txt" 2> "$R/stderr.txt" & pid=$!
+exec 3> "$R/stdin"
+until grep -qs '"type": "tool_start"' "$R"/events/*.jsonl; do sleep 0.5; done
+printf '%s\n' '{"id": "6f1c2a9e-0b7d-4f3e-9a51-2d8c7e4b1a60", "text": "只要前 3 名"}' >&3
+wait $pid; echo "exit=$?"; exec 3>&-
+grep -E '"type": "(steer_delivered|answer|result)"' "$R"/events/*.jsonl; cat "$R/answer.txt"
+```
+   期望：只有一个 `steer_delivered`、只有一个 `result`，答案只列 C01、C02、C03。
+2. 竞态探针：用原始的 `ClaudeSDKClient`，问一个不用工具、要写长段文字的问题；在第一个 `AssistantMessage` 开始出来之后再调 `query("末尾加上单词 BANANA")`；然后用 `receive_messages()`（不是 `receive_response()`）读 60 秒。记下：
+   - 出了几个 `ResultMessage`，各自的 `num_turns`；
+   - 答案里有没有 BANANA；
+   - 加上 `extra_args={"replay-user-messages": None}` 时，回显出现的时机。
+
+### `## Ledger`
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: —
+
+工单文件里我只在认领时改了 `Status`、`Claimed by`、`Branch` 这三行，上面的 Comments 和 Ledger 请主会话抄进工单。
