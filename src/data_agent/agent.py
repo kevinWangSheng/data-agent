@@ -590,11 +590,15 @@ class Spend:
             return fields
         return fields | tools | {"cost_usd": fields["cost_usd"] + tools["tool_cost_usd"]}
 
+    def passed(self) -> bool:
+        """Whether spend is over the budget, the cap being on."""
+        return not self.transcript_failed and self.cost_usd() > self.budget
+
     def check(self) -> bool:
         """Whether the run is to stop now: the cap may be checked and spend is over it."""
-        if self.transcript_failed or self.running or not self.between_calls:
+        if self.running or not self.between_calls:
             return False
-        self.stopped = self.cost_usd() > self.budget
+        self.stopped = self.passed()
         return self.stopped
 
     def unmetered(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -667,6 +671,7 @@ async def query(
     options: ClaudeAgentOptions,
     steering: AsyncGenerator[str] | None = None,
     emit: Emit | None = None,
+    spend: Spend | None = None,
 ) -> AsyncGenerator[Any]:
     """One turn on a `ClaudeSDKClient` (spec decision 15, ADR-0001 Update 2026-11-17): connect,
     send `prompt`, and yield the session's messages up to and including the turn's
@@ -677,7 +682,8 @@ async def query(
 
     `steering`, the stdin lines of a `--chat` run, is sent into the running turn
     (`SteeredTurn`, to `emit`) from when `prompt` is sent until the turn ends; a line still
-    unsent then is never sent."""
+    unsent then is never sent. `spend` is the run's price-table cap, which the caller applies
+    (`capped`) and a step's end keeps to too."""
     if steering is not None:
         # The CLI echoes each user message, with its uuid, when the model takes it in.
         options = dataclasses.replace(
@@ -697,7 +703,7 @@ async def query(
                         return
             return
         assert emit is not None, "steering writes its events through emit"
-        steered = SteeredTurn(client, emit, options.max_turns)
+        steered = SteeredTurn(client, emit, options.max_turns, spend)
         await client.query(user_message(prompt, steered.prompt_id))
         steering_task = asyncio.create_task(steered.steer(steering))
         ended = over_limit = False
@@ -754,12 +760,16 @@ class SteeredTurn:
     it is when the run stops the turn itself.
 
     Each step gets the CLI's whole turn limit afresh, so the limit of the turn (`max_turns`,
-    spec decision 13) is kept here over the steps after the first (`count_turns`)."""
+    spec decision 13) is kept here over the steps after the first (`count_turns`). A step's end
+    is a point between two model calls, where the price-table cap (`spend`) applies too."""
 
-    def __init__(self, client: ClaudeSDKClient, emit: Emit, max_turns: int | None) -> None:
+    def __init__(
+        self, client: ClaudeSDKClient, emit: Emit, max_turns: int | None, spend: Spend | None
+    ) -> None:
         self.client = client
         self.emit = emit
         self.max_turns = max_turns
+        self.spend = spend
         self.prompt_id = str(uuid.uuid4())
         self.waiting: dict[str, str] = {}  # sent and not yet echoed: id -> text
         self.sent: set[str] = set()
@@ -828,11 +838,14 @@ class SteeredTurn:
         """End the step `result` ends, and say whether the turn ends with it. It goes on while a
         message waits for its echo, unless the step failed, a hook stopped it (the agent asked
         the user, `clarification_hooks`: a step reading the message would answer past the
-        question), or the turn has no turn left for another step."""
+        question), or the turn has no turn or budget left for another step. Out of budget, the
+        step's answer is kept, as `Spend` keeps a final answer that passes the cap."""
         self.results.append(result)
         self.step_turns, self.open_calls = 1, {}
         stopped = result.terminal_reason == "hook_stopped"
         if result.is_error or result.subtype != "success" or stopped or not self.waiting:
+            return True
+        if self.spend is not None and self.spend.passed():
             return True
         return self.max_turns is not None and self.turns_used() >= self.max_turns
 
@@ -2083,7 +2096,11 @@ async def run(
                             query(prompt=prompt, options=options)
                             if steering is None
                             else query(
-                                prompt=prompt, options=options, steering=steering, emit=log.emit
+                                prompt=prompt,
+                                options=options,
+                                steering=steering,
+                                emit=log.emit,
+                                spend=spend,
                             )
                         )
                         async with aclosing(capped(stream, spend)) as messages:

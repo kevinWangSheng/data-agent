@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
+    StreamEvent,
     SystemMessage,
     TextBlock,
     ToolResultBlock,
@@ -788,3 +789,57 @@ async def test_a_clarification_ends_the_turn_with_a_message_unread(
     ]
     [turn_result] = of_type(events, "result")
     assert (turn_result["subtype"], turn_result["terminal_reason"]) == ("success", "hook_stopped")
+
+
+def call_start(call_id: str, input_tokens: int) -> StreamEvent:
+    """A main-thread model call starting (a partial message, which the spend cap prices)."""
+    usage = {"input_tokens": input_tokens}
+    event = {"type": "message_start", "message": {"id": call_id, "usage": usage}}
+    return StreamEvent(uuid=f"{call_id}-start", session_id="sess-1", event=event)
+
+
+def call_end(call_id: str) -> StreamEvent:
+    """A main-thread model call ending as an answer, with no tool call."""
+    event = {
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn"},
+        "usage": {"output_tokens": 10},
+    }
+    return StreamEvent(uuid=f"{call_id}-end", session_id="sess-1", event=event)
+
+
+# Input tokens that cost more than the full config's budget at the default model's price.
+OVER_BUDGET = int(load_config("full").max_budget_usd / 0.3 * 1_000_000) + 1_000_000
+
+
+async def test_a_step_that_passes_the_spend_cap_ends_the_turn_with_a_message_unread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The spend cap is checked between two model calls, and an answer that passes it is kept.
+    A step's end with a message waiting is such a point: the next step is one more call. So a
+    step whose answer passed the cap ends the turn with that answer, as one that used the
+    turn's last turn does, and the message is left unread."""
+    outcome, client, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        call_start("first", OVER_BUDGET),
+        answer("all the customers"),
+        call_end("first"),
+        AwaitSteers(1),
+        result("all the customers", num_turns=1),
+        init(),
+        Echo(0),
+        call_start("second", 10),
+        answer("never read"),
+        call_end("second"),
+        result("never read", num_turns=1),
+    )
+    assert outcome.finished and outcome.answer == "all the customers"
+    assert client.disconnected
+    assert not of_type(events, "steer_delivered")
+    assert [(e["source"], e["error"]) for e in of_type(events, "error")] == [
+        ("steer", f"message {STEER['id']!r} was not read: the turn ended")
+    ]
+    assert len(of_type(events, "result")) == 1
