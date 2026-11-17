@@ -22,8 +22,6 @@ import { describe, expect, test } from 'vitest'
 import { buildRunView, type RunEvent, type RunNotes } from '../../run-view/model'
 import { buildConversationView, type ConversationIndex, type TurnRun } from '../model'
 
-const TICKET_94 = test.fails
-
 const FIXTURES = join(import.meta.dirname, '../../../../tests/fixtures')
 const CHAT = join(FIXTURES, 'chat/conversation')
 const WEB = join(FIXTURES, 'web/real')
@@ -86,7 +84,7 @@ function singleRun(runId: string, message: string | null): ConversationIndex {
 // --- Turns -------------------------------------------------------------------------------------
 
 describe('turns', () => {
-  TICKET_94('come in the index order, with the messages that started them', () => {
+  test('come in the index order, with the messages that started them', () => {
     const view = buildConversationView(index, runs)
     expect(view.id).toBe('20261117T100000Z-c0ffee')
     expect(view.turns.map((t) => [t.turn, t.runId])).toEqual([
@@ -102,7 +100,7 @@ describe('turns', () => {
     expect(view.running).toBe(false)
   })
 
-  TICKET_94("each turn's cards are the run view model of its events", () => {
+  test("each turn's cards are the run view model of its events", () => {
     const view = buildConversationView(index, runs)
     for (const turn of view.turns) {
       const { events, notes } = runs[turn.runId]
@@ -112,7 +110,7 @@ describe('turns', () => {
     expect(view.turns[2].run.steps.map((s) => s.id)).toEqual(['t3-q1', 't3-q2'])
   })
 
-  TICKET_94('a cancelled turn shows as cancelled, and the conversation goes on after it', () => {
+  test('a cancelled turn shows as cancelled, and the conversation goes on after it', () => {
     const view = buildConversationView(index, runs)
     expect(view.turns.map((t) => t.status)).toEqual(['success', 'success', 'success', 'cancelled', 'success'])
     expect(view.turns[3].run.answer).toBeNull()
@@ -124,7 +122,7 @@ describe('turns', () => {
 // --- Clarification -----------------------------------------------------------------------------
 
 describe('clarification', () => {
-  TICKET_94('the question and its options end the turn; the clicked option is the next message', () => {
+  test('the question and its options end the turn; the clicked option is the next message', () => {
     const view = buildConversationView(index, runs)
     const [first, second] = view.turns
     expect(first.clarification).toEqual({
@@ -141,7 +139,7 @@ describe('clarification', () => {
     expect(view.turns.slice(2).map((t) => t.answersClarification)).toEqual([false, false, false])
   })
 
-  TICKET_94('a reply that is not one of the options chooses none', () => {
+  test('a reply that is not one of the options chooses none', () => {
     const typed: ConversationIndex = {
       ...index,
       turns: index.turns.map((t) => (t.turn === 2 ? { ...t, message: 'Use the net figure.' } : t)),
@@ -151,7 +149,7 @@ describe('clarification', () => {
     expect(view.turns[1].answersClarification).toBe(false)
   })
 
-  TICKET_94('a clarification still waiting for its reply has no choice yet', () => {
+  test('a clarification still waiting for its reply has no choice yet', () => {
     const view = buildConversationView(firstTurns(1), { [T1]: runs[T1] })
     expect(view.turns[0].clarification?.options).toHaveLength(2)
     expect(view.turns[0].clarification?.chosen).toBeNull()
@@ -162,7 +160,7 @@ describe('clarification', () => {
 // --- Steering ----------------------------------------------------------------------------------
 
 describe('steers', () => {
-  TICKET_94('a delivered steer shows after the step that started before it', () => {
+  test('a delivered steer shows after the step that started before it', () => {
     const view = buildConversationView(index, runs)
     expect(view.turns[2].steers).toEqual([
       {
@@ -176,7 +174,7 @@ describe('steers', () => {
     for (const turn of [0, 1, 3, 4]) expect(view.turns[turn].steers).toEqual([])
   })
 
-  TICKET_94('a steer sent but not delivered yet has no mark and no place', () => {
+  test('a steer sent but not delivered yet has no mark and no place', () => {
     const live = upTo(runs[T3], seqOf(runs[T3], 'steer_delivered') - 1)
     const view = buildConversationView(firstTurns(3), { [T1]: runs[T1], [T2]: runs[T2], [T3]: live })
     expect(view.turns[2].steers).toEqual([
@@ -184,7 +182,7 @@ describe('steers', () => {
     ])
   })
 
-  TICKET_94('a delivered steer the index does not list yet still shows', () => {
+  test('a delivered steer the index does not list yet still shows', () => {
     const lagging: ConversationIndex = {
       ...index,
       turns: index.turns.map((t) => ({ ...t, steers: [] })),
@@ -199,7 +197,7 @@ describe('steers', () => {
 // --- Cost and databases --------------------------------------------------------------------------
 
 describe('cost', () => {
-  TICKET_94("the conversation's cost is the sum of its turns' cost_usd", () => {
+  test("the conversation's cost is the sum of its turns' cost_usd", () => {
     const view = buildConversationView(index, runs)
     expect(view.costUsd).toBeCloseTo(0.004 + 0.006 + 0.01 + 0.003, 10)
     const known = view.turns.map((t) => t.run.summary.costUsd).filter((c): c is number => c !== null)
@@ -207,14 +205,14 @@ describe('cost', () => {
     expect(view.costUsd).toBeCloseTo(known.reduce((a, b) => a + b, 0), 10)
   })
 
-  TICKET_94('no cost before any turn has finished', () => {
+  test('no cost before any turn has finished', () => {
     const live = upTo(runs[T1], 4)
     expect(buildConversationView(firstTurns(1), { [T1]: live }).costUsd).toBeNull()
   })
 })
 
 describe('databases', () => {
-  TICKET_94('each query names the database it ran on', () => {
+  test('each query names the database it ran on', () => {
     const view = buildConversationView(index, runs)
     expect(view.turns.map((t) => t.queries)).toEqual([
       [],
@@ -232,7 +230,7 @@ describe('databases', () => {
 // --- Single runs and old files -------------------------------------------------------------------
 
 describe('single runs', () => {
-  TICKET_94('a query run from before the chat fields replays as a one-turn conversation', () => {
+  test('a query run from before the chat fields replays as a one-turn conversation', () => {
     const run = webRun(QUERY_SHOP, false)
     const view = buildConversationView(singleRun('20261115T143153Z-old', null), { '20261115T143153Z-old': run })
     expect(view.singleRun).toBe(true)
@@ -250,7 +248,7 @@ describe('single runs', () => {
     expect(view.costUsd).toBeCloseTo(0.006241872, 12)
   })
 
-  TICKET_94('a dbt run is a one-turn conversation that cannot be followed up', () => {
+  test('a dbt run is a one-turn conversation that cannot be followed up', () => {
     const run = webRun(CART, true)
     const view = buildConversationView(singleRun(CART, null), { [CART]: run })
     expect(view.canFollowUp).toBe(false)
@@ -267,7 +265,7 @@ describe('single runs', () => {
 // --- A running turn ----------------------------------------------------------------------------
 
 describe('prefix', () => {
-  TICKET_94('a turn still running shows what it has done so far', () => {
+  test('a turn still running shows what it has done so far', () => {
     const cut = seqOf(runs[T3], 'steer_delivered') - 1
     const live = upTo(runs[T3], cut)
     const view = buildConversationView(firstTurns(3), { [T1]: runs[T1], [T2]: runs[T2], [T3]: live })
@@ -280,7 +278,7 @@ describe('prefix', () => {
     expect(view.costUsd).toBeCloseTo(0.004 + 0.006, 10)
   })
 
-  TICKET_94('a turn whose event file is not written yet shows its message and nothing else', () => {
+  test('a turn whose event file is not written yet shows its message and nothing else', () => {
     const view = buildConversationView(firstTurns(3), { [T1]: runs[T1], [T2]: runs[T2] })
     expect(view.running).toBe(true)
     const turn = view.turns[2]

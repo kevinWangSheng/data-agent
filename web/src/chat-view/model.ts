@@ -4,7 +4,7 @@
 // is ticket 94's. The index and the event fields are the backend contract in
 // tests/acceptance/test_chat_api.py's docstring.
 
-import type { RunEvent, RunNotes, RunStatus, RunView } from '../run-view/model'
+import { asString, buildRunView, type RunEvent, type RunNotes, type RunStatus, type RunView } from '../run-view/model'
 
 /** A message sent while a turn was running, as the index lists it. */
 export type IndexSteer = { id: string; text: string }
@@ -101,7 +101,92 @@ export function buildConversationView(
   index: ConversationIndex,
   runs: Readonly<Record<string, TurnRun>>,
 ): ConversationView {
-  void index
-  void runs
-  throw new Error('buildConversationView is not implemented yet (ticket 94)')
+  const singleRun = index.single_run === true
+  const turns: TurnView[] = []
+  index.turns.forEach((t, i) => {
+    const { events, notes } = runs[t.run_id] ?? NO_RUN
+    const run = buildRunView(events, notes)
+    turns.push({
+      turn: t.turn,
+      runId: t.run_id,
+      message: t.message ?? (singleRun ? run.summary.task : null),
+      // The previous turn's clarification chose this turn's message exactly when it is an option.
+      answersClarification: (turns[i - 1]?.clarification?.chosen ?? null) !== null,
+      run,
+      status: run.summary.status,
+      clarification: withChoice(clarificationOf(events), index.turns[i + 1]?.message ?? null),
+      steers: steersOf(t.steers, events),
+      queries: queriesOf(run, events),
+    })
+  })
+  const costs = turns.map((t) => t.run.summary.costUsd).filter((c) => c !== null)
+  return {
+    id: index.id,
+    singleRun,
+    canFollowUp: !singleRun,
+    running: turns.some((t) => t.status === 'running'),
+    turns,
+    costUsd: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
+  }
+}
+
+const NO_RUN: TurnRun = { events: [] }
+
+/** A clarification as its event gives it, before the next turn tells what was chosen. */
+type AskedClarification = Omit<Clarification, 'chosen'>
+
+/** The turn's `clarification` event (the last one, should a file hold more), without its choice. */
+function clarificationOf(events: readonly RunEvent[]): AskedClarification | null {
+  const e = events.findLast((ev) => ev.type === 'clarification')
+  if (!e) return null
+  return {
+    seq: e.seq,
+    toolUseId: asString(e.tool_use_id),
+    question: String(e.question ?? ''),
+    options: Array.isArray(e.options) ? e.options.map(String) : [],
+  }
+}
+
+/** The question, with the next turn's message as its choice when that message is one of the options. */
+function withChoice(asked: AskedClarification | null, next: string | null): Clarification | null {
+  if (!asked) return null
+  return { ...asked, chosen: next !== null && asked.options.includes(next) ? next : null }
+}
+
+/**
+ * The index's steers in the order sent, each marked delivered once the run wrote its
+ * `steer_delivered` event (matched by id), then the delivered ones the index does not list yet.
+ * A delivered steer shows after the main agent's last step started before the delivery.
+ */
+function steersOf(sent: readonly IndexSteer[], events: readonly RunEvent[]): Steer[] {
+  const delivered = new Map<string, Steer>()
+  let lastStep: string | null = null
+  for (const e of events) {
+    // The main agent's calls have no parent, as the run view tells them (buildRunView).
+    if (e.type === 'tool_start' && asString(e.parent) === null) lastStep = String(e.tool_use_id)
+    if (e.type !== 'steer_delivered') continue
+    const id = String(e.id)
+    if (!delivered.has(id)) {
+      delivered.set(id, { id, text: String(e.text ?? ''), delivered: true, seq: e.seq, afterStep: lastStep })
+    }
+  }
+  const listed = new Set(sent.map((s) => s.id))
+  return [
+    ...sent.map(({ id, text }) => ({ ...(delivered.get(id) ?? UNDELIVERED), id, text })),
+    ...[...delivered.values()].filter((s) => !listed.has(s.id)),
+  ]
+}
+
+const UNDELIVERED = { delivered: false, seq: null, afterStep: null } as const
+
+/** The database of each step that has an `sql` event, in step order; the last `sql` event of a
+ *  step wins, as it does for the step's statement in the run view. */
+function queriesOf(run: RunView, events: readonly RunEvent[]): QueryDatabase[] {
+  const database = new Map<string, string | null>()
+  for (const e of events) {
+    if (e.type === 'sql') database.set(String(e.tool_use_id), asString(e.database))
+  }
+  return run.steps.flatMap((step) =>
+    database.has(step.id) ? [{ step: step.id, database: database.get(step.id) ?? null }] : [],
+  )
 }
