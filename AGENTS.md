@@ -47,6 +47,8 @@ runs/             运行产出，不进 git
 6. 在最终回复里给出要写进工单的 `## Comments`（第 3 步的命令与输出、审查结果与不修的理由）、`## Ledger` 和新 `Status:`（通常 `in-review`）；主会话抄进工单。push 和合并由主会话做（GitHub PR，squash），在 CI 绿、第 7 步处理完之后。
 7. 合并前（主会话做）：PR 的 CI 绿后，读 Codex GitHub app 在 PR 上的意见（每次 push 自动审查；新提交没出审查时评论 `@codex review`），逐条对照代码核实。属实的写成"退回：原因"交回原工单，不属实的在工单 Comments 写理由。每个 PR 最多退回 2 轮；之后的新意见记成已知限制，属于后续工单的写进那个工单的验收标准。
 
+前端工单（改动只在 `web/`，如对话页面、在线回放）不用 Codex（人 2026-11-17 定：GPT 前端能力弱）：第 5 步不跑 `da-review`，只跑 `eng:code-review`；第 7 步不等 Codex GitHub app，主会话派一个上下文干净的 Opus 5.5 子 agent（只读）审 PR 的 diff，结果照第 7 步处理。
+
 停下交回时：最终回复写明 `Status: ready-for-human` 和 Comment（试了什么、哪里失败、分支名），由主会话抄进工单。被退回时（Comments 里有"退回：原因"，Status 回到 `ready-for-agent`）在原分支上接着修。工单格式见 `docs/agents/ticket-template.md`。
 
 ## 硬规矩
