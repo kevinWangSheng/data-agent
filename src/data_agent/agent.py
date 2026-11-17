@@ -61,6 +61,7 @@ from data_agent.gateway import (
     PostgresGateway,
 )
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
+from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
 from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
@@ -93,6 +94,9 @@ BUILD_COMMIT = Path(__file__).resolve().parent / "BUILD_COMMIT"
 # The MCP server's name in the SDK session; its tools appear as mcp__data__<tool>.
 MCP_SERVER = "data"
 QUERY_TOOL = f"mcp__{MCP_SERVER}__query_database"
+# Served only to a conversation turn (spec decision 8); calling it ends the turn
+# (`clarification_hooks`).
+CLARIFICATION_TOOL = f"mcp__{MCP_SERVER}__clarification"
 # Query tasks only read: the data tools plus reading the workspace. No Bash, Write or Edit, so the
 # read-only gateway is the only way to the data; the workspace guard keeps the file tools in it.
 QUERY_BUILTIN_TOOLS: list[str] = list(GUARDED_TOOLS)
@@ -138,6 +142,20 @@ SKILLS_PROMPT = """
 Follow these skills.
 
 {skills}
+"""
+
+# Appended to a conversation turn's system prompt only (spec decision 8, after nao's system prompt,
+# `apps/backend/src/components/ai/system-prompt.tsx`): single runs and evaluations have no
+# clarification tool, and their prompts stay as they were (decision 19).
+CLARIFICATION_PROMPT = """
+This is a conversation with the user, and you may ask them a question. When the question can be \
+read in ways that give different results (which rows count, how a measure is defined, which \
+period) and neither the conversation nor the data settles which one is meant, call \
+`clarification` with one short question and 2 to 5 options instead of answering. That ends your \
+turn; the option the user picks comes as the next message. Look at the data first when it can \
+tell you whether the readings differ. Ask only then: when every reading gives the same result, or \
+the conversation already says which one is meant, answer and state the reading you chose among \
+your assumptions. Never ask a question in plain text.
 """
 
 # The final-answer rule of query tasks, shared with the DAB runner's task prompt (ticket 68):
@@ -937,7 +955,8 @@ def database_line(task: Task) -> str:
     return f"one of {', '.join(named)}"
 
 
-def system_prompt(task: Task, config: RunConfig) -> str:
+def system_prompt(task: Task, config: RunConfig, chat: bool = False) -> str:
+    """`chat`: a conversation turn, which may ask the user (`CLARIFICATION_PROMPT`)."""
     base = DBT_SYSTEM_PROMPT if task.type == "dbt" else SYSTEM_PROMPT
     names = injected_skills(task.type, config, task.dialects)
     prompt = base.format(server=MCP_SERVER)
@@ -947,6 +966,8 @@ def system_prompt(task: Task, config: RunConfig) -> str:
         prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
     if uses_verifiers(task.type, config):
         prompt += VERIFIERS_PROMPT
+    if chat:
+        prompt += CLARIFICATION_PROMPT
     return prompt
 
 
@@ -1065,6 +1086,40 @@ class TurnBudget:
             "PostToolUse": [HookMatcher(hooks=[remind])],
             "PostToolUseFailure": [HookMatcher(hooks=[remind])],
         }
+
+
+def clarification_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
+    """PostToolUse on the clarification tool (a conversation turn's only): a call that went
+    through, the tool having checked its question and options, is recorded as the
+    `clarification` event and ends the turn, as nao's `hasToolCall('clarification')` stop
+    condition does (`apps/backend/src/agents/stop-conditions.ts`). `continue: false` makes the
+    CLI call the model no more and end the turn with a `success` result, `terminal_reason:
+    "hook_stopped"` and an empty `result`, so the turn has no answer (probed, CLI 2.1.301). A
+    call the tool refused goes to PostToolUseFailure instead: the agent reads the error and goes
+    on (probed too). A turn asks once: when one response holds several calls, which the CLI may
+    run together (the tool is read-only), only the first to finish is recorded."""
+    asked = False
+
+    async def ask(
+        hook_input: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        nonlocal asked
+        stop: HookJSONOutput = {"continue_": False, "stopReason": "the agent asked the user"}
+        if asked:
+            return stop
+        asked = True
+        fields: dict[str, Any] = dict(hook_input)
+        arguments: dict[str, Any] = fields.get("tool_input") or {}
+        call = str(fields.get("tool_use_id", tool_use_id))
+        emit(
+            "clarification",
+            tool_use_id=call,
+            question=arguments.get("question"),
+            options=arguments.get("options"),
+        )
+        return stop
+
+    return {"PostToolUse": [HookMatcher(matcher=CLARIFICATION_TOOL, hooks=[ask])]}
 
 
 def guard_recorder(guard: HookCallback, guarded: set[str] | None) -> HookCallback:
@@ -1190,7 +1245,12 @@ def build_options(
     if spend is not None:
         for event, matchers in spend.hooks(emit).items():
             all_hooks.setdefault(event, []).extend(matchers)
-    server_env = dict(database_env or {})
+    if turn is not None:
+        for event, matchers in clarification_hooks(emit).items():
+            all_hooks.setdefault(event, []).extend(matchers)
+    # The clarification tool's switch, set either way: a value the shell exported never reaches
+    # a single run or an evaluation.
+    server_env = dict(database_env or {}) | {CHAT_ENV: "" if turn is None else "1"}
     if snapshot is not None:
         server_env[SNAPSHOT_ENV] = str(snapshot)
     if spend is not None and spend.ledger is not None:
@@ -1202,7 +1262,7 @@ def build_options(
         model=settings.model,
         env=settings.sdk_env() | server_env | session_env,
         resume=None if turn is None else turn.resume,
-        system_prompt=system_prompt(task, config),
+        system_prompt=system_prompt(task, config, chat=turn is not None),
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
@@ -1586,7 +1646,7 @@ async def run(
         if (
             variable in PRINTABLE_VARIABLES
             or variable in settings.sdk_env()
-            or variable in (*settings.tool_env(), LEDGER_ENV)
+            or variable in (*settings.tool_env(), LEDGER_ENV, CHAT_ENV)
             or variable.startswith(("BASH_", "CLAUDE_"))
         ):
             raise ConfigError(

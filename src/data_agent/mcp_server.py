@@ -51,7 +51,7 @@ from data_agent.gateway import (
 )
 from data_agent.label_tables import LABELS_DIR, LabelTables
 from data_agent.run_config import RunConfig
-from data_agent.tool_annotations import READ_ONLY, database_tools
+from data_agent.tool_annotations import CHAT_ENV, READ_ONLY, database_tools
 from data_agent.verifier_tools import register_verifier_tools
 
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
@@ -68,6 +68,31 @@ WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
 GROUP BY t.table_schema, t.table_name, t.table_type
 ORDER BY t.table_schema, t.table_name
 """
+
+
+MIN_OPTIONS = 2
+MAX_OPTIONS = 5
+CLARIFICATION_SENT = (
+    "The question and its options are shown to the user. This turn ends here; the option they "
+    "pick, or their own reply, comes as the next message."
+)
+
+
+def check_clarification(question: str, options: list[str]) -> None:
+    """A question to show the user and 2-5 distinct, non-blank options to pick from (nao's
+    `clarification` input, `apps/shared/src/tools/clarification.ts`, options required here)."""
+    if not question.strip():
+        raise ToolError("question must not be blank")
+    if not MIN_OPTIONS <= len(options) <= MAX_OPTIONS:
+        raise ToolError(
+            f"give {MIN_OPTIONS} to {MAX_OPTIONS} options, got {len(options)}; when the question "
+            "has no short set of answers, answer instead and state your assumption"
+        )
+    if any(not option.strip() for option in options):
+        raise ToolError("options must not be blank")
+    # The picked option comes back as the next message, so two equal options cannot be told apart.
+    if len({option.strip() for option in options}) < len(options):
+        raise ToolError("options must differ from each other")
 
 
 def tool_error(exc: QueryBlocked | QueryFailed) -> ToolError:
@@ -241,7 +266,9 @@ def data_server(
 ) -> tuple[MCPServer, dict[str, Database]]:
     """The base tools and, when `config` turns that layer on, the context tools, over `gateways`
     by name (`database_tools`); a database `dictionaries` has no dictionary for gets one built
-    now. The label tables of all the databases share one numbering."""
+    now. The label tables of all the databases share one numbering. The clarification tool is
+    served in conversation mode only (spec decision 8), which `data-agent run --chat` switches
+    on through the environment (`CHAT_ENV`)."""
     server = MCPServer("data-agent")
     numbers = itertools.count(1)
     databases = {
@@ -249,6 +276,8 @@ def data_server(
         for name, gateway in gateways.items()
     }
     register_base_tools(server, databases, workspace)
+    if os.environ.get(CHAT_ENV) == "1":
+        register_clarification_tool(server)
     if config.context:
         contexts: dict[str, ContextDatabase] = {}
         for name, db in databases.items():
@@ -258,6 +287,23 @@ def data_server(
             contexts[name] = ContextDatabase(db.run, db.catalog, db.gateway.dialect, dictionary)
         register_context_tools(server, contexts)
     return server, databases
+
+
+def register_clarification_tool(server: MCPServer) -> None:
+    # Asking reads nothing and writes nothing; the turn's end is the run's PostToolUse hook. One
+    # tool for the whole conversation, so no `database` argument with several databases.
+    @server.tool(name="clarification", annotations=READ_ONLY)
+    def clarification_tool(question: str, options: list[str]) -> str:
+        """Ask the user one short question, with 2 to 5 distinct options to pick from.
+
+        Ask only when the question can be read in ways that give different results and
+        neither the conversation nor the data settles which one is meant. Otherwise answer,
+        and state the reading you chose among your assumptions. Calling this tool ends your
+        turn: call no other tool in the same response and write nothing after it. The option
+        the user picks, or their own reply, comes as the next message.
+        """
+        check_clarification(question, options)
+        return CLARIFICATION_SENT
 
 
 def register_base_tools(

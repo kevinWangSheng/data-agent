@@ -18,6 +18,7 @@ from data_agent import agent
 from data_agent.agent import DBT_SKILLS, QUERY_SKILLS, SKILLS_DIR, ConfigError, Task
 from data_agent.gateway import PostgresGateway, QueryBlocked, QueryFailed
 from data_agent.run_config import load_config
+from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV
 
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
@@ -169,7 +170,9 @@ async def test_run_hands_the_database_variable_from_its_env_to_the_sdk(
     settings = agent.ModelSettings.from_env({"DATA_AGENT_API_KEY": "sk-test"})
     # The tool servers' model settings and spend ledger go the same way (ticket 70).
     tools = {*settings.tool_env(), LEDGER_ENV}
-    assert set(options.env) == {*settings.sdk_env(), *tools, "DA_TEST_URL"}
+    # The clarification tool's switch, blank outside a conversation turn (ticket 91).
+    assert options.env[CHAT_ENV] == ""
+    assert set(options.env) == {*settings.sdk_env(), *tools, CHAT_ENV, "DA_TEST_URL"}
 
 
 async def test_run_without_the_database_variable_in_its_env_is_a_config_error(
@@ -197,6 +200,8 @@ async def test_run_without_the_database_variable_in_its_env_is_a_config_error(
         # The tool servers' model settings and spend ledger (ticket 70).
         "DATA_AGENT_MODEL",
         "DATA_AGENT_SPEND_DIR",
+        # The clarification tool's switch (ticket 91).
+        "DATA_AGENT_CHAT",
     ],
 )
 async def test_run_rejects_a_database_variable_the_agent_could_print_or_that_configures_the_cli(
