@@ -1,6 +1,6 @@
 # 88 — 对话界面：验收测试（真模型端到端、浏览器、三组不调模型的）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5)
@@ -81,7 +81,7 @@ spec "Testing Decisions" 列的验收测试全部写好：真模型端到端 a�
 - Attempts: 3
 - Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned twice (round 1: f keyword check; round 2: Markdown around 'completed'); in review
+- Outcome: returned twice (round 1: f keyword check; round 2: Markdown around 'completed'); accepted at human review, merged PR #97
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -303,3 +303,4 @@ The backend contracts (items 1, 2, 4, 5, 6) are in the docstring of `tests/accep
 - https://github.com/kevinWangSheng/data-agent/pull/97 , CI `check` green.
 - Codex GitHub app (after `@codex review`) on a099ac2: "Didn't find any major issues."
 - Merge waits for the human review of the tests and contracts (spec: 工单 88 人审过才合并).
+- 2026-11-17 human review: merge as-is. Decided: the eval-unchanged snapshot pins tool names and input schemas only (not descriptions); a message sent before the turn's process exits is a steer; chat turns use the `full` config. Squash-merged PR #97.
