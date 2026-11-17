@@ -1,6 +1,6 @@
 # 92 — 运行中插话：stdin 通道和送达事件
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 90
 Spec: ../spec.md
 Claimed by: claude-code (opus) 2026-11-17
@@ -239,3 +239,7 @@ grep -E '"type": "(steer_delivered|text|tool_start|answer|result|error)"' "$R"/e
   - The answer ends with "BANANA".
   - The model made a tool call first, so the steer was read inside the same step. This run did not take the "after the last step" path. That path is covered by the earlier raw-client probe and by `test_a_message_sent_after_the_last_step_is_read_before_the_turn_ends`.
 - Merge: after 91 (PR #102). 92 then rebases onto main and the main session reruns A.
+
+### Main session, 2026-11-17: rebase onto main
+
+退回：不是审查问题。91（PR #102，澄清）已合入 main，本分支很可能在 `src/data_agent/agent.py`、`cli.py` 冲突。rebase 到最新 `origin/main`，解决冲突并保留两边的行为：91 的 `clarification` 工具、PostToolUse 钩子（`continue: false` 结束本轮）、`DATA_AGENT_CHAT`；89 的多数据源；本工单的 stdin 插话和回显对账。要特别处理两者的交界：澄清结束本轮时，还在等回显的插话按本工单"这一轮结束"的规则记 `error`（未读），不能一直等；补一个测试。`test_chat_eval_unchanged.py` 必须通过。解决后 `make check`、`da-review main`；最终回复给出新的提交和主会话要重跑的命令（运行中插话 A 即可）。
