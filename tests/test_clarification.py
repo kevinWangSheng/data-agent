@@ -34,6 +34,7 @@ from mcp.client.stdio import stdio_client
 from data_agent import agent
 from data_agent.agent import CLARIFICATION_TOOL, ConversationTurn, ModelSettings, Task
 from data_agent.run_config import load_config
+from data_agent.web.sources import DataSource
 
 ENV = {"DATA_AGENT_API_KEY": "sk-test-secret"}
 SETTINGS = ModelSettings.from_env(ENV)
@@ -94,6 +95,25 @@ async def test_a_conversation_turn_serves_the_clarification_tool(tmp_path: Path)
     assert f"mcp__{agent.MCP_SERVER}__clarification" == CLARIFICATION_TOOL
 
 
+async def test_a_conversation_turn_on_several_sources_serves_one_clarification_tool(
+    tmp_path: Path,
+) -> None:
+    # The question is about the conversation, not one database: no `database` argument.
+    conversation, single = make_conversation(tmp_path)
+    assert single.duckdb is not None
+    sources = (DataSource("a", duckdb=single.duckdb), DataSource("b", duckdb=single.duckdb))
+    task = Task(text=single.text, type="query", workspace=single.workspace, sources=sources)
+    options = options_of(task, ConversationTurn(conversation, 1))
+    async with served(options) as session:
+        listed = {tool.name: tool for tool in (await session.list_tools()).tools}
+        assert "database" in listed["query_database"].input_schema["properties"]
+        assert set(listed["clarification"].input_schema["properties"]) == {"question", "options"}
+        result = await session.call_tool(
+            "clarification", {"question": QUESTION, "options": OPTIONS}
+        )
+        assert not result.is_error, result
+
+
 async def test_a_single_run_has_no_clarification_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -102,7 +122,7 @@ async def test_a_single_run_has_no_clarification_tool(
     monkeypatch.setenv(agent.CHAT_ENV, "1")
     options = options_of(task, None)
     assert "clarification" not in await tool_names(options)
-    assert "clarification" not in agent.system_prompt("query", load_config("full")).lower()
+    assert "clarification" not in agent.system_prompt(task, load_config("full")).lower()
 
 
 async def test_the_tool_takes_a_question_and_two_to_five_options(tmp_path: Path) -> None:
