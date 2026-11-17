@@ -329,9 +329,14 @@ def serve_web(
         parser.error(str(exc))
 
     def start_run(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
-        # Its own session, so cancelling can stop the run with the tools it started.
+        # Its own session, so cancelling can stop the run with the tools it started. A stdin pipe
+        # of its own: a conversation's turn is steered through it (data_agent.web.conversations),
+        # and no run reads the server's.
         return subprocess.Popen(
-            [sys.executable, "-m", "data_agent", "run", *args], cwd=cwd, start_new_session=True
+            [sys.executable, "-m", "data_agent", "run", *args],
+            cwd=cwd,
+            start_new_session=True,
+            stdin=subprocess.PIPE,
         )
 
     try:
