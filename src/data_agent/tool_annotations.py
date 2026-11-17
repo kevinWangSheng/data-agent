@@ -1,6 +1,7 @@
-"""How the MCP tools are declared to the client: their annotations, and the `database` argument a
+"""How the MCP tools are declared to the client: their annotations, the `database` argument a
 server with several databases adds to each query and context tool (ticket 89, after nao's
-`execute_sql` `database_id`, required when several databases are configured)."""
+`execute_sql` `database_id`, required when several databases are configured), and the switch for
+the one tool a run's server lists only in conversation mode (ticket 91)."""
 
 import inspect
 from collections.abc import Callable, Mapping
@@ -66,3 +67,11 @@ def database_tools[D](
         return register
 
     return tool
+
+
+# Conversation mode (`data-agent run --chat`) switches the clarification tool on. The run gives the
+# server this variable through the SDK subprocess's environment, as it gives the snapshot and the
+# spend ledger, and sets it to "" in every other run, so a value inherited from the shell never
+# reaches an evaluation (spec decision 19). Here, not in mcp_server, so the agent can import it
+# without importing the server (which imports the agent through classify).
+CHAT_ENV = "DATA_AGENT_CHAT"
