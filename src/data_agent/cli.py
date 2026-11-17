@@ -13,7 +13,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from data_agent.agent import ConfigError, ConversationTurn, Task, run, source_gateway
+from data_agent.agent import ConfigError, ConversationTurn, Task, run, source_gateway, stdin_lines
 from data_agent.context_tools import Dictionary
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_multi_server, build_server
@@ -24,6 +24,8 @@ EXIT_OK, EXIT_UNFINISHED, EXIT_ERROR = 0, 1, 2
 # `data-agent web` listens here only; no option changes it (spec "后端接口", user story 35).
 WEB_HOST = "127.0.0.1"
 WEB_PORT = 8765
+# The process's stdin, read as a descriptor: `sys.stdin` may be replaced, by pytest for one.
+STDIN_FD = 0
 
 
 def add_database(parser: argparse.ArgumentParser, server: bool) -> None:
@@ -187,7 +189,9 @@ def main(argv: list[str] | None = None) -> None:
     # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
     # and single runs never set these (spec decision 19).
     run_cmd.add_argument(
-        "--chat", action="store_true", help="run as a turn of a conversation (query tasks only)"
+        "--chat",
+        action="store_true",
+        help="run as a turn of a conversation (query tasks only), steered by JSON lines on stdin",
     )
     run_cmd.add_argument(
         "--conversation-dir",
@@ -269,7 +273,12 @@ def main(argv: list[str] | None = None) -> None:
         )
     try:
         deadline = None if args.agent_timeout_sec is None else started + args.agent_timeout_sec
-        outcome = asyncio.run(run(task, config, args.events_dir, os.environ, deadline, turn=turn))
+        # A turn of a conversation is steered through stdin (contract item 6); a single run never
+        # reads it. A cancelled run is stopped by signal, so its stdin is read no more.
+        steering = None if turn is None else stdin_lines(STDIN_FD)
+        outcome = asyncio.run(
+            run(task, config, args.events_dir, os.environ, deadline, turn=turn, steering=steering)
+        )
     except ConfigError as exc:
         run_cmd.error(str(exc))
     print(outcome.answer)
