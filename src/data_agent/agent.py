@@ -729,7 +729,7 @@ async def steer(client: ClaudeSDKClient, lines: AsyncGenerator[str], emit: Emit)
             emit("steer_delivered", id=message.id, text=message.text)
 
 
-async def stop_steering(task: "asyncio.Task[None] | None") -> None:
+async def stop_steering(task: asyncio.Task[None] | None) -> None:
     """Cancel steering and wait for it to end."""
     if task is None:
         return

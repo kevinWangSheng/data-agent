@@ -135,13 +135,22 @@ async def run_steered(
     tmp_path: Path,
     steering: AsyncGenerator[str],
     *script: Any,
+    client: type[FakeClient] = FakeClient,
+    deadline: float | None = None,
 ) -> tuple[Outcome, FakeClient, list[dict[str, Any]]]:
-    monkeypatch.setattr(FakeClient, "script", script)
-    monkeypatch.setattr(agent, "ClaudeSDKClient", FakeClient)
+    """`agent.run` as a turn steered by `steering`, on a `client` session that plays `script`."""
+    monkeypatch.setattr(client, "script", script)
+    monkeypatch.setattr(agent, "ClaudeSDKClient", client)
     task, turn = make_turn(tmp_path)
     async with asyncio.timeout(10):
         outcome = await agent.run(
-            task, load_config("full"), tmp_path / "events", ENV, turn=turn, steering=steering
+            task,
+            load_config("full"),
+            tmp_path / "events",
+            ENV,
+            deadline,
+            turn=turn,
+            steering=steering,
         )
     assert FakeClient.last is not None
     events = [json.loads(line) for line in outcome.events_path.read_text().splitlines()]
@@ -221,7 +230,7 @@ async def test_stdin_closed_from_the_start_leaves_the_turn_as_it_is(
         monkeypatch, tmp_path, lines_of([]), init(), tool_call("q1"), tool_result("q1"), result()
     )
     assert outcome.finished
-    assert client.prompts == client.prompts[:1]
+    assert len(client.prompts) == 1
     assert not of_type(events, "steer_delivered") and not of_type(events, "error")
 
 
@@ -357,18 +366,20 @@ async def test_a_message_the_session_cannot_take_is_an_error_event(
         yield json.dumps({**STEER, "id": "m2"}) + "\n"
         await asyncio.Event().wait()
 
-    script = (init(), tool_call("q1"), AwaitSteers(1), tool_result("q1"), result())
-    monkeypatch.setattr(GoneClient, "script", script)
-    monkeypatch.setattr(agent, "ClaudeSDKClient", GoneClient)
-    task, turn = make_turn(tmp_path)
-    async with asyncio.timeout(10):
-        outcome = await agent.run(
-            task, load_config("full"), tmp_path / "e", ENV, turn=turn, steering=two_then_open()
-        )
-    events = [json.loads(line) for line in outcome.events_path.read_text().splitlines()]
+    outcome, client, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        two_then_open(),
+        init(),
+        tool_call("q1"),
+        AwaitSteers(1),
+        tool_result("q1"),
+        result(),
+        client=GoneClient,
+    )
     assert outcome.finished
     assert not of_type(events, "steer_delivered")
-    assert FakeClient.last is not None and len(FakeClient.last.prompts) == 2
+    assert len(client.prompts) == 2
     # Steering stops at the first message not sent: line 2 is never tried.
     assert [(e["source"], e["error"]) for e in of_type(events, "error")] == [
         ("steer", "stdin line 1 not sent: the CLI has gone")
@@ -383,20 +394,15 @@ async def test_a_run_stopped_at_its_deadline_while_steering_still_disconnects(
         yield ""
 
     # The session hangs on a steer that never comes; the deadline stops the run first.
-    monkeypatch.setattr(FakeClient, "script", (init(), tool_call("q1"), AwaitSteers(1)))
-    monkeypatch.setattr(agent, "ClaudeSDKClient", FakeClient)
-    task, turn = make_turn(tmp_path)
     deadline = time.monotonic() + agent.DEADLINE_MARGIN_S + 0.3
-    async with asyncio.timeout(10):
-        outcome = await agent.run(
-            task,
-            load_config("full"),
-            tmp_path / "e",
-            ENV,
-            deadline,
-            turn=turn,
-            steering=open_stdin(),
-        )
-    events = [json.loads(line) for line in outcome.events_path.read_text().splitlines()]
+    _, client, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        open_stdin(),
+        init(),
+        tool_call("q1"),
+        AwaitSteers(1),
+        deadline=deadline,
+    )
     assert events[-1]["terminal_reason"] == "deadline"
-    assert FakeClient.last is not None and FakeClient.last.disconnected
+    assert client.disconnected
