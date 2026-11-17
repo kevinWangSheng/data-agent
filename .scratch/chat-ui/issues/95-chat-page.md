@@ -1,6 +1,6 @@
 # 95 — 对话页面（A「对话流」）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 94（93 只挡合并：人 2026-11-17 定提前开工，见 Comments）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -169,3 +169,14 @@ Each returned finding, what changed, and its test. The new test is shown failing
 **For the main session after 93 merges (unchanged from attempt 1):**
 1. `pnpm --dir web build:local`, then `make test-integration` (or `pnpm --dir web exec playwright test`) for the Playwright main flow.
 2. Following the `run` skill, start the local app and walk one conversation with a follow-up, a clarification, a steer and a cancel, then send the human the screenshots.
+
+### Main session, 2026-11-17: clean-context Opus 5.5 re-review of 9a18408, 71655d2
+
+- Ran `pnpm --dir web test` (275 passed) and typecheck (exit 0).
+- Items 1–4: fixed. Checked against the real sequences: the settling state ends, Cancel stays reachable, timers stop on navigation, and a read that never answers blocks nothing.
+- Item 5: partly fixed.
+- Two notes go elsewhere, not to this ticket:
+  - **Backoff delaying a new turn:** this only matters if the backend returns 404 for a new turn's events. It is written into ticket 93's Acceptance: events return 200 right away.
+  - **The short window after a result is written but before it reaches the page over SSE:** a message sent then is still a steer. The frontend cannot close this window. Known limitation: the steer then shows NOT DELIVERED, so it is not lost silently.
+
+退回（第 2 轮，本 PR 最后一轮）：P3 `web/src/chat-page/Conversation.tsx:157-175`：375px 宽、有一轮在运行时，输入框和 Cancel、"Send to the running turn" 挤在同一行，输入框只剩约 83px（审查者在 headless Chromium 里用构建出的 CSS 量过：输入框 83px、Cancel 73px、Send 171px），占位文字被截断。改：900px 以下把按钮放到输入框下面单独一行（或用短标签），宽屏不变。用 375px 运行中状态的截图证明。只改这一处；`make check`，`eng:code-review` 只看新提交（前端工单，不跑 `da-review`）；最终回复照工作流程第 6 步。

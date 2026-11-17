@@ -32,6 +32,7 @@ Branch: —
 - [ ] 真模型端到端 a–d、g 每个 3 次都过（主会话跑）；失败时读轨迹判定是实现问题还是模型偶发，写进 Comments
 - [ ] 服务退出时不留下它启动的子进程（沿用工单 85 的测试）
 - [ ] 评测配置不变一组（`tests/acceptance/test_chat_eval_unchanged.py`）一直通过
+- [ ] 新一轮开始后（发消息返回 201 时），`GET /api/runs/<run_id>/events` 立刻返回 200 和空列表或已有事件，不返回 404（照 `launcher.py:88` 先建运行目录；来源：工单 95 的 Opus 复审，页面对读失败按退避重试，404 会让新一轮晚出现）
 - [ ] `make check` 通过
 
 ## Evidence required
