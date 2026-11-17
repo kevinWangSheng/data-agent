@@ -1,6 +1,6 @@
 # 92 — 运行中插话：stdin 通道和送达事件
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 90
 Spec: ../spec.md
 Claimed by: claude-code (opus) 2026-11-17
