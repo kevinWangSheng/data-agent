@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from data_agent.web.launcher import (
     WORKSPACE,
@@ -182,10 +182,21 @@ class Conversations:
         return all(turn["run_id"] != run_id for index in self.indexes() for turn in index["turns"])
 
     def index(self, conversation: str) -> dict[str, Any] | None:
+        """The conversation's index; None when there is no such conversation, ValueError when the
+        file does not parse or lacks what a row needs."""
         if not is_plain_name(conversation):
             return None
         path = self.root / conversation / INDEX
-        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        if not path.is_file():
+            return None
+        index = json.loads(path.read_text(encoding="utf-8"))
+        if not (
+            isinstance(index, dict)
+            and {"id", "created_at", "turns"} <= index.keys()
+            and isinstance(index["turns"], list)
+        ):
+            raise ValueError(f"{path}: not a conversation index")
+        return cast(dict[str, Any], index)
 
     def indexes(self) -> list[dict[str, Any]]:
         """Every conversation's index. One that does not parse is left out (and the log says
