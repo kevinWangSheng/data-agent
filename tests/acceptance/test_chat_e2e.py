@@ -73,8 +73,11 @@ GROSS_2024 = Decimal("2121.75")
 # SELECT sum(amount) FROM sales.orders WHERE year(order_date) = 2024 AND status <> 'refunded'
 NET_2024 = Decimal("1474.50")
 # f: the answer says how it treated refunded orders, by naming refunds, order statuses ("all
-# order statuses included") or the other status value ("only completed orders").
-STATED_REFUND_TREATMENT = re.compile(r"refund|\bstatus(?:es)?\b|\bcompleted\b", re.I)
+# order statuses included") or orders by the other status value ("only completed orders", "orders
+# marked completed"), not "completed" alone ("the analysis is completed").
+STATED_REFUND_TREATMENT = re.compile(
+    r"refund|\bstatus(?:es)?\b|\bcompleted orders?\b|\borders?\b[^.\n]{0,30}\bcompleted\b", re.I
+)
 # b: nothing in it changes with a reading of the data.
 PLAIN_QUESTION = "What is the order_id of the order with the largest amount?"
 LARGEST_ORDER = 1034  # SELECT order_id FROM sales.orders ORDER BY amount DESC LIMIT 1
