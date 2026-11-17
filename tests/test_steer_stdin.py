@@ -686,3 +686,23 @@ async def test_a_message_after_the_last_turn_is_left_unread(
     assert [e["error"] for e in of_type(events, "error")] == [
         f"message {STEER['id']!r} was not read: the turn ended"
     ]
+
+
+async def test_a_message_unread_when_the_deadline_stops_the_turn_is_an_error_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    deadline = time.monotonic() + agent.DEADLINE_MARGIN_S + 0.3
+    _, client, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        tool_call("q1"),
+        AwaitSteers(2),  # a steer that never comes: the session hangs until the deadline
+        deadline=deadline,
+    )
+    assert events[-1]["terminal_reason"] == "deadline"
+    assert client.disconnected
+    assert [e["error"] for e in of_type(events, "error")] == [
+        f"message {STEER['id']!r} was not read: the turn ended"
+    ]

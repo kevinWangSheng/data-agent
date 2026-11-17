@@ -684,6 +684,7 @@ async def query(
             options, extra_args={**options.extra_args, "replay-user-messages": None}
         )
     client = ClaudeSDKClient(options)
+    steered: SteeredTurn | None = None
     steering_task: asyncio.Task[None] | None = None
     try:
         await client.connect()
@@ -703,15 +704,14 @@ async def query(
         async with aclosing(cast(AsyncGenerator[Any], client.receive_messages())) as messages:
             async for message in messages:
                 if isinstance(message, ResultMessage):
-                    if ended := steered.step_ended(message):
+                    if ended := steered.end_step(message):
                         break
                     continue
-                if not steered.hides(message):
+                if not steered.absorb(message):
                     yield message
-                if over_limit := steered.over_limit(message):
+                if over_limit := steered.count_turns(message):
                     break
         await stop_steering(steering_task)
-        steered.close()
         if over_limit:
             raise TurnLimitPassed(steered.max_turns or 0)
         if ended:
@@ -726,6 +726,8 @@ async def query(
             # disconnect.
             await stop_steering(steering_task)
         finally:
+            if steered is not None:
+                steered.close()
             await client.disconnect()
 
 
@@ -748,10 +750,11 @@ class SteeredTurn:
     has not taken in by the end of a step is not lost: the CLI takes it in as the next step, which
     ends with a result of its own (probes of 2026-11-17, ticket 92). So the turn ends at the
     first result with no message waiting for its echo; an error result ends it anyway, and a
-    message still waiting is then an `error` event.
+    message still waiting is then an `error` event, as it is when the run stops the turn
+    itself.
 
     Each step gets the CLI's whole turn limit afresh, so the limit of the turn (`max_turns`,
-    spec decision 13) is kept here over the steps after the first (`over_limit`)."""
+    spec decision 13) is kept here over the steps after the first (`count_turns`)."""
 
     def __init__(self, client: ClaudeSDKClient, emit: Emit, max_turns: int | None) -> None:
         self.client = client
@@ -773,6 +776,10 @@ class SteeredTurn:
         it has seen), is an `error` event and is skipped; a blank line is ignored. stdin closing
         ends steering, not the turn. A message the session cannot take (its CLI gone) is an
         `error` event and ends steering; the turn's own stream reports the session's failure."""
+
+        def skip(number: int, reason: str) -> None:
+            self.emit("error", source="steer", error=f"stdin line {number} skipped: {reason}")
+
         number = 0
         async with aclosing(lines) as stdin:
             async for line in stdin:
@@ -780,12 +787,11 @@ class SteeredTurn:
                 if not line.strip():
                     continue
                 message = steer_message(line)
-                if not isinstance(message, str) and message.id in self.sent:
-                    message = f"id {message.id!r} already sent"
                 if isinstance(message, str):
-                    self.emit(
-                        "error", source="steer", error=f"stdin line {number} skipped: {message}"
-                    )
+                    skip(number, message)
+                    continue
+                if message.id in self.sent:
+                    skip(number, f"id {message.id!r} already sent")
                     continue
                 # Counted before it is sent, so a result that comes meanwhile waits for it.
                 self.sent.add(message.id)
@@ -797,10 +803,11 @@ class SteeredTurn:
                     self.emit("error", source="steer", error=f"stdin line {number} not sent: {exc}")
                     return
 
-    def hides(self, message: Any) -> bool:
-        """Whether `message` belongs to the steering rather than to the turn: an echo (of the
-        prompt, or of a steering message, which emits `steer_delivered` with its `id` and
-        `text`) or the init message of a step after the first, in the same session."""
+    def absorb(self, message: Any) -> bool:
+        """Take in `message` if it belongs to the steering rather than to the turn, and say
+        whether it did: an echo (of the prompt, or of a steering message, which emits
+        `steer_delivered` with its `id` and `text`) or the init message of a step after the
+        first, in the same session."""
         if isinstance(message, UserMessage) and message.parent_tool_use_id is None:
             if message.uuid == self.prompt_id:
                 return True
@@ -813,22 +820,23 @@ class SteeredTurn:
             return seen
         return False
 
-    def used(self) -> int:
+    def turns_used(self) -> int:
         """The turns of the steps ended so far, as the CLI counted each."""
         return sum(result.num_turns for result in self.results)
 
-    def step_ended(self, result: ResultMessage) -> bool:
-        """Record the step `result` ends; whether the turn ends with it. It goes on while a
+    def end_step(self, result: ResultMessage) -> bool:
+        """End the step `result` ends, and say whether the turn ends with it. It goes on while a
         message waits for its echo, unless the step failed or the turn has no turn left for
         another step."""
         self.results.append(result)
         self.step_turns, self.open_calls = 1, {}
         if result.is_error or result.subtype != "success" or not self.waiting:
             return True
-        return self.max_turns is not None and self.used() >= self.max_turns
+        return self.max_turns is not None and self.turns_used() >= self.max_turns
 
-    def over_limit(self, message: Any) -> bool:
-        """Whether, with `message`, a step after the first has taken the turn past `max_turns`.
+    def count_turns(self, message: Any) -> bool:
+        """Count the turn `message` may end, and say whether a step after the first has taken
+        the turn past `max_turns` with it.
         The CLI counts a step's turns from 1, one more once a response's tool calls are all
         answered, and ends the step when that count would pass its limit (`TurnBudget`); the
         steps together are held to that here."""
@@ -847,19 +855,20 @@ class SteeredTurn:
                 response = self.open_calls.pop(block.tool_use_id, None)
                 if response is not None and response not in self.open_calls.values():
                     self.step_turns += 1
-        over = self.max_turns is not None and self.used() + self.step_turns > self.max_turns
+        over = self.max_turns is not None and self.turns_used() + self.step_turns > self.max_turns
         return bool(self.results) and over
 
     def close(self) -> None:
         """Emit an `error` event for each message sent and never taken in."""
-        for id_ in self.waiting:
+        waiting, self.waiting = self.waiting, {}
+        for id_ in waiting:
             self.emit(
                 "error", source="steer", error=f"message {id_!r} was not read: the turn ended"
             )
 
 
 class TurnLimitPassed(Exception):
-    """A steered turn's steps together passed its turn limit (`SteeredTurn.over_limit`); the
+    """A steered turn's steps together passed its turn limit (`SteeredTurn.count_turns`); the
     run stopped them."""
 
     def __init__(self, max_turns: int) -> None:
@@ -1900,37 +1909,34 @@ def deadline_fields(spend: Spend | None, open_calls: Mapping[str, str]) -> dict[
     a verifier still running is not counted. Without a priced model nothing was counted."""
     open_tool_calls = [{"tool_use_id": i, "tool": name} for i, name in open_calls.items()]
     error = "the run stopped itself at the trial deadline"
-    if spend is None:
-        return {
-            **result_fields(None, ""),
-            "subtype": "error_deadline",
-            "terminal_reason": "deadline",
-            "cost_basis": "none",
-            "sdk_cost_usd": None,
-            "open_tool_calls": open_tool_calls,
-            "errors": [f"{error}; the model has no price, so its spend was not counted"],
-        }
-    return spend.stopped_fields("error_deadline", "deadline", error) | {
+    return stopped_by_harness(spend, "error_deadline", "deadline", error) | {
         "open_tool_calls": open_tool_calls
     }
 
 
 def turn_limit_fields(spend: Spend | None, passed: TurnLimitPassed) -> dict[str, Any]:
     """The result event of a steered turn stopped at its turn limit (`TurnLimitPassed`), its
-    `num_turns` as the CLI reports a limit passed (limit + 1). Spend as at the deadline
-    (`deadline_fields`)."""
-    error, turns = str(passed), passed.max_turns + 1
+    `num_turns` as the CLI reports a limit passed (limit + 1)."""
+    fields = stopped_by_harness(spend, "error_max_turns", "max_turns", str(passed))
+    return fields | {"num_turns": passed.max_turns + 1}
+
+
+def stopped_by_harness(
+    spend: Spend | None, subtype: str, terminal_reason: str, error: str
+) -> dict[str, Any]:
+    """The result event of a run the harness stopped itself; the SDK never sent its own. Spend
+    is the price-table cap's count (`Spend.stopped_fields`); without a priced model nothing was
+    counted."""
     if spend is None:
         return {
             **result_fields(None, ""),
-            "subtype": "error_max_turns",
-            "num_turns": turns,
-            "terminal_reason": "max_turns",
+            "subtype": subtype,
+            "terminal_reason": terminal_reason,
             "cost_basis": "none",
             "sdk_cost_usd": None,
             "errors": [f"{error}; the model has no price, so its spend was not counted"],
         }
-    return spend.stopped_fields("error_max_turns", "max_turns", error) | {"num_turns": turns}
+    return spend.stopped_fields(subtype, terminal_reason, error)
 
 
 async def run(
