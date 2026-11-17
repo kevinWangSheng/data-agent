@@ -251,7 +251,9 @@ def test_the_cli_turns_the_agent_timeout_into_a_monotonic_deadline(
 ) -> None:
     seen: dict[str, Any] = {}
 
-    async def fake_run(task: Task, config: Any, events_dir: Path, env: Any, deadline: Any) -> Any:
+    async def fake_run(
+        task: Task, config: Any, events_dir: Path, env: Any, deadline: Any, **_: Any
+    ) -> Any:
         seen["deadline"] = deadline
         return Outcome("", True, False, [], events_dir / "e.jsonl")
 

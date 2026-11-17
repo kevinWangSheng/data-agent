@@ -682,14 +682,23 @@ async def test_closing_the_query_ends_the_sdk_session_before_it_returns(
     closed: list[bool] = []
 
     class FakeClient:
-        async def process_query(self, **_: Any) -> AsyncIterator[Any]:
-            try:
-                yield result()
-                yield result()
-            finally:
-                closed.append(True)
+        def __init__(self, options: ClaudeAgentOptions) -> None:
+            pass
 
-    monkeypatch.setattr(agent, "InternalClient", FakeClient)
+        async def connect(self) -> None:
+            pass
+
+        async def query(self, prompt: str) -> None:
+            pass
+
+        async def receive_response(self) -> AsyncIterator[Any]:
+            yield StreamEvent(uuid="u", session_id="s", event={}, parent_tool_use_id=None)
+            yield result()
+
+        async def disconnect(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(agent, "ClaudeSDKClient", FakeClient)
     stream = agent.query(prompt="q", options=ClaudeAgentOptions())
     async for _ in stream:
         break
