@@ -1,0 +1,67 @@
+# The online site at https://kevinwangsheng.github.io/data-agent/: a static build of web/ with the
+# data of `evals export`, published to GitHub Pages whenever main changes.
+#
+# The data is not in git. It is the asset SITE_ASSET of the release SITE_RELEASE: the export
+# directory packed with `tar -czf site-data.tar.gz -C <export dir> .`. Without it the build fails
+# and nothing is published. After replacing the asset, run this workflow by hand to republish.
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One publish at a time; a newer push waits rather than cancelling one halfway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  SITE_RELEASE: site-data
+  SITE_ASSET: site-data.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6.1.1
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm --dir web install --frozen-lockfile
+      # A public release asset: no token. --fail stops the build when the release or asset is missing.
+      - name: Download the site data
+        run: |
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/$SITE_ASSET" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$SITE_RELEASE/$SITE_ASSET"
+          mkdir "$RUNNER_TEMP/site"
+          tar -xzf "$RUNNER_TEMP/$SITE_ASSET" -C "$RUNNER_TEMP/site"
+      # web/site-data.ts copies the export into dist/data and fails when it has no featured run.
+      - run: pnpm --dir web build --base /data-agent/
+        env:
+          SITE_DATA: ${{ runner.temp }}/site
+      - uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5.0.1
