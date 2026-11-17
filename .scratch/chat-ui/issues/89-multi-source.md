@@ -195,3 +195,13 @@ Status: in-review
 - Outcome: —
 
 The background job that waited for `make check` hit its time limit and was stopped. Nothing is lost: `make check` itself had already finished with exit code 0 (2359 passed, 8 xfailed; web 241 passed; full log in `runs/89-make-check.log`). The watcher most likely never ended because its `pgrep -f 'make check'` check matched its own command line. The ticket text in my previous reply stands as written.
+
+### Main session, 2026-11-17: real run after the rebase (at 321faf2)
+
+- Two sources, single run: "North: 13 orders; South: 10 orders; East: 8 orders; West: 6 orders", exit 0. `sql` events: orders, customers, orders.
+- Two sources as a conversation (`--chat --data-sources`):
+  - Turn 1: "North: 13, South: 10, East: 8, West: 6", exit 0. Its `task` event has `data_source: null, conversation: c1, turn: 1`, and its `sql` events name customers, orders, orders, orders.
+  - Turn 2 (`--resume`), "Which region has the fewest?": "West: 6", exit 0, answered from the session history with no query.
+  - Both turns' `result` carry the same `session_id`. Turn 2 has `restored_sdk_cost_usd` 0.077142 and its own `cost_usd` $0.0003.
+- One source (README quickstart, no-verifiers): "Gold tier has the highest total amount of completed orders: 710.00.", exit 0.
+- (The first attempt at the chat part failed because the main session's script did not create the workspace dir. That was a script error, not a code one; rerun above.)
