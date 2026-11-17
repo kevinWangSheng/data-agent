@@ -1,10 +1,10 @@
 # 90 — 多轮续接：ClaudeSDKClient、resume、对话目录
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 88
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (ticket agent, 2026-11-17)
+Branch: worktree-90-multi-turn-resume
 
 ## Goal
 
@@ -50,10 +50,106 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+### Attempt 1 (ticket agent, branch `worktree-90-multi-turn-resume`), final reply as given
+
+Ticket 90 is implemented and committed on `worktree-90-multi-turn-resume` (`29315c4`, then review fixes in `823d171`), and both reviews passed. The two-turn real run hasn't been done yet: ticket agents can't load the model env, so that falls to you, with the commands below. Until it runs, one cost mechanism (point 3) rests only on reading the CLI's code.
+
+**What changed** (`src/data_agent/agent.py`, `cli.py`)
+- **Client:** every run now goes through `agent.query()`, which uses a `ClaudeSDKClient`: connect, send the prompt, read up to that turn's result, disconnect. That covers single runs, Harbor, DAB and chat turns.
+- **New arguments:** `data-agent run --chat --conversation-dir DIR --turn N [--resume SID]`, as in contract item 5. They build a `ConversationTurn`, which sets:
+  - `CLAUDE_CONFIG_DIR` = `DIR/claude-config` (created if it is missing);
+  - `resume=SID`;
+  - the `task` event's `conversation` and `turn` fields.
+
+  Without `--chat`, none of these is set.
+- **Session id:** `status` and `result` now carry `session_id` in every run.
+- **Spend:** reading the bundled CLI 2.1.301 shows that on resume it restores the session's last `cost-state` entry. A resumed turn's `total_cost_usd` and `modelUsage` would then include all earlier turns, and the chat view would double-count. Each turn's result now subtracts what was restored, and records it as `restored_sdk_cost_usd`. If the result is smaller than the restored amount, the result is kept as is and an `error` event with `source: "spend"` is written; costs never go negative.
+
+**Spec decision 18, owner of each piece of state**
+
+| State | Owner | Test |
+|---|---|---|
+| Turn budget | per turn | `test_resumed_turn_gets_the_whole_turn_limit_and_its_own_message` |
+| Spend and the spend cap | per turn | `test_resumed_turn_counts_only_its_own_spend`, `test_first_turn_and_single_run_spend_is_the_result_as_given`, `test_result_below_the_restored_state_is_kept_and_reported` |
+| Verifier dispatch count and Stop state | never inside a conversation: `--chat` refuses `--type dbt` | `test_cli_rejects_a_turn_out_of_place` (the dbt case) |
+
+Spec decision 16 needs no code: for query turns, the only path the model ever sees is the workspace, and it is the same in every turn. The dictionary and spend-ledger temp dirs reach the tool servers only through their environment.
+
+## Comments (to copy into the ticket)
+
+- **`make check`** (`823d171`):
+  - ruff "All checks passed!", "314 files already formatted"; basedpyright "0 errors, 0 warnings, 0 notes".
+  - pytest "2330 passed, 1 skipped, 63 deselected, 8 xfailed"; vitest "Tests 225 passed | 16 expected fail (241)".
+  - Baseline before the change: 2309 passed.
+  - One earlier run hit a full disk (`OSError: could not create numbered dir`, 778 MiB free). The 23 affected files passed on rerun (458 passed), and the full check above came after.
+- **Acceptance group:** `tests/acceptance/test_chat_eval_unchanged.py` passes (2 passed). No acceptance test was touched.
+- **Existing test fakes adapted:** these fakes now accept the new keyword or the client API; their assertions are unchanged.
+  - `tests/test_agent_outcomes.py:685-701` fakes `ClaudeSDKClient` instead of `InternalClient`.
+  - `tests/test_run_cli.py:113` and `tests/test_trial_deadline.py:254` accept `turn=`.
+- **`da-review main`:** "No actionable regressions". `da-review 29315c4`, run on the fix commit: same result.
+- **eng:code-review, fixed in `823d171`:**
+  - the guard against negative spend;
+  - `Turn` renamed to `ConversationTurn`, because it sat next to `TurnBudget` with a different meaning;
+  - `this_turn` renamed to `minus_restored`, and its plain-`if` cleanup;
+  - `record_message` reuses `message_session`;
+  - the `--resume` help text names `--chat`;
+  - a test that a session id cannot reach another record.
+- **eng:code-review, not fixed, with reasons:**
+  - Moving the session-record code into its own module: a new file is outside Authority.
+  - The repeated `turn is None` branches: each site does something different, so methods would only move the conditional.
+  - Escaping `--resume` in the glob: a record entry is used only when its `sessionId` equals the id exactly; `test_a_session_id_is_not_a_path` pins this.
+- **Needs the real run to confirm** (from reading the CLI, not from a run; recorded in ADR-0001 under Update 2026-11-17):
+  - the CLI restores the cost state on resume;
+  - it counts `max_turns` from 1 again for each prompt;
+  - stopping at the first result reads the same messages as the old one-shot `query()`.
+
+**Real run for the main session** (in this worktree, model env loaded):
+
+```bash
+D=runs/t90-real; C=$D/conversations/conv-t90; mkdir -p $C/workspace $D/single-ws
+uv run python tests/fixtures/chat/build_sources.py $D/db
+uv run data-agent run --chat --conversation-dir $C --turn 1 --type query --config full \
+  --duckdb $D/db/orders.duckdb --workspace $C/workspace --events-dir $D/turn1 \
+  --task "How many orders were refunded?"
+SID=$(jq -r 'select(.type=="status").session_id' $D/turn1/run-*.jsonl); echo $SID
+uv run data-agent run --chat --conversation-dir $C --turn 2 --resume "$SID" --type query --config full \
+  --duckdb $D/db/orders.duckdb --workspace $C/workspace --events-dir $D/turn2 \
+  --task "How many of those were placed in 2024?"
+jq -c 'select(.type=="status" or .type=="result" or .type=="error") | {type,session_id,num_turns,sdk_cost_usd,cost_usd,restored_sdk_cost_usd,source}' $D/turn*/run-*.jsonl
+ls $C/claude-config/projects/*/$SID.jsonl; ls ~/.claude/projects/*/$SID.jsonl 2>&1
+uv run data-agent run --type query --config full --duckdb $D/db/orders.duckdb \
+  --workspace $D/single-ws --events-dir $D/single --task "How many orders were refunded?"
+```
+
+What a pass looks like:
+- Answers: 11, then 6 (ticket 88's fixture).
+- Both turns have the same `session_id`.
+- The session record is under `$C/claude-config`, and the `~/.claude` lookup finds nothing.
+- Turn 2's `restored_sdk_cost_usd` is close to turn 1's `sdk_cost_usd`, with no spend `error` event.
+- Turn 2's `num_turns` is small, not cumulative.
+- The single run answers 11, exits 0, and its `task` event has no `conversation` or `turn`.
+
+## Ledger
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: —
+
+`Status: in-review`
+
+### Main session, 2026-11-17: real run (commands as in the reply above, at 823d171)
+
+- Turn 1: "refunded_orders: 11", exit 0. Turn 2 (`--resume 19dc799a-…`): "refunded_orders_2024: 6", exit 0; its assumption says "those" means the refunded orders from the previous answer.
+- Both turns: the same `session_id`. `task` events carry `conversation: conv-t90`, `turn: 1` / `2`.
+- The session record is at `<conv>/claude-config/projects/<workspace>/19dc799a-….jsonl`. `~/.claude/projects/*/19dc799a-….jsonl`: no such file.
+- Spend: turn 1 `sdk_cost_usd` 0.053602; turn 2 `restored_sdk_cost_usd` 0.053602 and `sdk_cost_usd` 0.028444 (its own); no `error` event. `num_turns` 4 and 4 (not cumulative). This confirms the three points that rested on reading the CLI.
+- Single run: "11 orders were refunded.", exit 0; `task` has no `conversation` / `turn`; `result` has a `session_id`.
+- Model cost (`cost_usd`): $0.0026 + $0.0009 + $0.0034.

@@ -1,10 +1,10 @@
 # 89 — agent 自己选库：多数据源
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 88
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-17
+Branch: worktree-89-multi-source
 
 ## Goal
 
@@ -50,10 +50,79 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+### Attempt 1 (ticket agent, branch `worktree-89-multi-source`), final reply as given
+
+Ticket 89 is implemented and committed on `worktree-89-multi-source` in two commits (`f413b94` and fix round `448c2cc`). The real-model run still has to be done by you, because a ticket agent can't load the model environment; the commands are below. I have not pushed anything.
+
+`data-agent run --data-sources FILE` now gives the agent every source in the file. It reads the same TOML that `data-agent web --data-sources` reads, and cannot be combined with `--duckdb` / `--postgres-env`. With two or more sources:
+- **Tools:** each query and context tool requires a `database` name. An unknown name is an error that lists the valid names.
+- **Per database:** the table catalog cache, value dictionary and label tables are separate for each database. Label tables share one numbering so their files don't clash.
+- **Prompt:** the system prompt lists the databases by name and kind.
+- **Events:** every `sql` event records its `database`.
+
+With one source the tool definitions are unchanged, and `test_chat_eval_unchanged.py` passes.
+
+---
+
+**To copy into the ticket**
+
+Status: in-review
+
+## Comments
+- **Checks:** `make check` passed twice. After the first commit: 2335 passed, 1 skipped, 8 xfailed; ruff, format and basedpyright clean; web 225 passed. After the fix round: 2336 passed, 8 xfailed. The baseline before any change was 2309 passed, 8 xfailed. The 27 new tests are in `tests/test_multi_source.py` (server over stdio) and `tests/test_multi_source_run.py` (`agent.run` with a scripted SDK stream, plus the CLI). They cover all three unit-test acceptance items: every tool reaches the database it names, an unknown name is an error listing the names, each query event names its database, a one-source event keeps its old fields plus `database`, and no connection string appears in the server arguments, the prompts or the events.
+- **Real run (main session):** run from the repo root with the model environment loaded:
+  ```bash
+  uv run python tests/fixtures/chat/build_sources.py runs/89-sources
+  mkdir -p runs/89-ws runs/89-events
+  uv run data-agent run --type query --config full --workspace runs/89-ws \
+    --events-dir runs/89-events/g --data-sources runs/89-sources/sources.toml \
+    --task "How many orders were placed by customers of each region?"
+  # expected: North 13, South 10, East 8, West 6. Database per query event:
+  grep '"type": "sql"' runs/89-events/g/*.jsonl
+  uv run python -c "import duckdb; duckdb.connect('runs/shop.duckdb').execute(open('tests/fixtures/shop.sql').read())"
+  uv run data-agent run --type query --config no-verifiers --duckdb runs/shop.duckdb \
+    --workspace runs/89-ws --events-dir runs/89-events/single \
+    --task "Which customer tier has the highest total amount of completed orders, and how much is it?"
+  # README quickstart: Gold, 710.00
+  ```
+- **Decisions:**
+  - A file with one source runs exactly like `--duckdb` / `--postgres-env`, under the source's name.
+  - dbt with several sources is refused, since dbt is not part of the chat (spec 3).
+  - With several sources the `task` event has `data_source: null`, as `fake_chat_run.py` writes.
+  - The several-source server has no verifier tools; they check dbt runs, which have one database.
+  - With several sources, the internal MCP server takes `--source NAME KIND LOCATION` and `--source-dictionary NAME FILE`. These carry DuckDB paths and Postgres variable names, never URLs.
+  - Skills are unchanged. The guidance for several databases lives only in the system-prompt block, so single-database and evaluation prompts stay as they were.
+- **Review, `da-review main`:** no actionable findings, both before and after the fixes.
+- **Review, `eng:code-review main`, fixed in `448c2cc`:**
+  - An `sql` event recorded whatever database name the model passed, even an unknown one; it now records only a real source name.
+  - `build_server` and `build_multi_server` duplicated each other; both now use one `data_server`.
+  - `Task.dialect` repeated `source_kind`; it is removed.
+  - The `database()` factory is renamed `open_database`.
+- **Review findings not fixed, with reasons:**
+  - *Authority scope in `agent.py`:* every change there carries the source list into the options, the prompts or the events. The acceptance items need the event fields and the per-source URL checks and masking. The `database` field on the `dictionary` event tells the per-source builds apart. Mixed DuckDB/Postgres runs need both dialect Skills.
+  - *`database_tools` rewrites `__signature__`:* that is the only way to keep single-source definitions identical without writing every tool twice. `tool_annotations.py` is in the ticket's Authority.
+  - *`DataSource` is imported from `data_agent.web.sources` rather than moved:* moving it would need a re-export shim, because the ticket-88 tests import from `web.sources`.
+  - *`Task` holds two forms (one database, or `sources`):* `evals/` builds `Task(duckdb=...)` and must not change.
+  - *`add_database(server: bool)` takes a flag:* the alternative is argparse's private group type.
+  - *The source kind is re-checked from argv:* the internal command checks its own input.
+  - *The run page reader is not tested over the new event field (TS, `web/src/`):* that code is outside Authority, and the change only adds a field.
+
+## Ledger
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: —
+
+### Main session, 2026-11-17: real run (commands as in the reply above, at 448c2cc)
+
+- Two sources, "How many orders were placed by customers of each region?": "East: 8 orders; North: 13 orders; South: 10 orders; West: 6 orders.", exit 0 (expected North 13, South 10, East 8, West 6). `sql` events: `customers` (`SELECT customer_id, region FROM crm.customers`), `orders` (counts per customer), `orders` (combines the two results with an inline VALUES list; no cross-database join). `cost_usd` $0.0044, 6 turns.
+- One source (`--duckdb runs/shop.duckdb`, no-verifiers, README quickstart): "Gold has the highest total amount of completed orders: 710.00.", exit 0, $0.0046.
+- Merge: conflicts with ticket 90 in `src/data_agent/agent.py` and `src/data_agent/cli.py` (`git merge-tree`). 90 merges first; 89 then rebases onto main.
