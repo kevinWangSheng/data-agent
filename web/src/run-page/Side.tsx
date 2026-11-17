@@ -71,8 +71,8 @@ export function Side({
   const { summary, answer } = view
   const status = replaying ? 'running' : summary.status
   // An inferred query is not the agent's own citation: the label says how it was found.
-  const queryLabel = (id: string, inferred: true | undefined, named: string) =>
-    inferred ? `last query before the answer · #${numbers.get(id)}` : `${named} #${numbers.get(id)}`
+  const queryLabel = (id: string, inferred: true | undefined, prefix: string) =>
+    inferred ? `last query before the answer · #${numbers.get(id)}` : `${prefix} #${numbers.get(id)}`
   const answerTarget = answer ? (answer.sqlStep ?? (view.narration.some((n) => n.seq === answer.seq) ? narrationId(answer.seq) : null)) : null
   const issues = view.steps.filter(isIssue).length
   const checks = [...new Map(view.dispatches.flatMap((d) => d.checks.map((c) => [c.check, c.name] as const))).entries()].sort(

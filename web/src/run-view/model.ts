@@ -145,7 +145,8 @@ export type FinalAnswer = {
   table: ResultTable | null
   /** Set when the answer names no query and `sqlStep` is the last successful query of the main agent
    *  before it (a new file's `answer` event with `sql_tool_use_id` null, or an old file without one);
-   *  absent when the agent named the query or there is none. */
+   *  absent when the agent named the query or there is none. Absent rather than false, so a named
+   *  answer keeps the exact shape the acceptance tests compare with `toEqual`. */
   sqlInferred?: true
 }
 
