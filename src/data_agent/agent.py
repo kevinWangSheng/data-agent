@@ -1098,18 +1098,19 @@ def clarification_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
     call the tool refused goes to PostToolUseFailure instead: the agent reads the error and goes
     on (probed too). A turn asks once: when one response holds several calls, which the CLI may
     run together (the tool is read-only), only the first to finish is recorded."""
-    asked: list[str] = []
+    asked = False
 
     async def ask(
         hook_input: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
+        nonlocal asked
         stop: HookJSONOutput = {"continue_": False, "stopReason": "the agent asked the user"}
         if asked:
             return stop
+        asked = True
         fields: dict[str, Any] = dict(hook_input)
         arguments: dict[str, Any] = fields.get("tool_input") or {}
         call = str(fields.get("tool_use_id", tool_use_id))
-        asked.append(call)
         emit(
             "clarification",
             tool_use_id=call,

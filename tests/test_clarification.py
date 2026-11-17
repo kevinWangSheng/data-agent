@@ -261,8 +261,8 @@ async def test_asking_writes_a_clarification_event_and_ends_the_turn_as_a_succes
     # Not an error, not a cancellation: a success with no answer.
     assert not of_type(events, "answer")
     assert not of_type(events, "error")
-    [result] = of_type(events, "result")
-    assert (result["subtype"], result["is_error"]) == ("success", False)
+    [ended] = of_type(events, "result")
+    assert (ended["subtype"], ended["is_error"]) == ("success", False)
     assert outcome.finished and not outcome.infra_error
     assert outcome.answer == ""
     after = [e for e in events if e["seq"] > clarification["seq"]]
