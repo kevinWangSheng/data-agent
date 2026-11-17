@@ -1,6 +1,6 @@
 # 87 — 答案没点名查询时，结果表取答案之前最后一条成功的查询（标明是推断）
 
-Status: in-review
+Status: done
 Blocked by: 79（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16 (filled in by the main session)
@@ -52,7 +52,7 @@ Branch: worktree-87-answer-table-fallback
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: in-review
+- Outcome: accepted (PR #95; CI green, Codex no findings on e119f1b)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -64,3 +64,4 @@ Branch: worktree-87-answer-table-fallback
   - 测试：220 → 224 passed（4 个新单元测试：点名 → 用它、没有 sqlInferred；null → q1、有表、sqlInferred true、阶段 orient/explore/answer[q1..]；之前无成功查询 → sqlStep、table 为 null；旧文件照旧、sqlInferred true）。验收测试未改、全过。make check exit 0：pytest 2307 passed, 1 skipped；web 224 passed。
   - 真实事件文件（79 的真实运行）：sqlStep = 最后一条 `query_database`（9 条里第 9 条），sqlInferred true，表 4 行 × 3 列，首行 Gold | 13 | 710.00；阶段 orient 1、explore 8、answer 1。截图（worktree 的 `.playwright-mcp/t87-run-page-answer.png`，主会话看过）：答案和结果表头都写 "last query before the answer · #10"，表 4 行。
   - da-review（Codex）：无问题。eng:code-review：Standards 无硬违规，修注释和参数名；不修两处按钮重复、三处构造对象。Spec 记一条：dbt 运行的新 `answer` 事件也是 null，"Final report" 会显示自查阶段最后一条查询的表并标为推断——spec 那条没限定查数运行，旧文件本来也这样，不改。
+- 2026-11-16 主会话：PR #95 CI 绿，Codex GitHub app 对 e119f1b 无意见，squash 合并。
