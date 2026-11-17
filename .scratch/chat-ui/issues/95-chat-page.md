@@ -1,6 +1,6 @@
 # 95 — 对话页面（A「对话流」）
 
-Status: in-progress
+Status: in-review
 Blocked by: 94（93 只挡合并：人 2026-11-17 定提前开工，见 Comments）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -48,8 +48,8 @@ Branch: worktree-95-chat-page
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1
+- Attempts: 2
+- Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
@@ -124,3 +124,48 @@ The reviewer ran `pnpm --dir web test` (260 passed) and `typecheck` (exit 0). It
 4. P3 `web/src/chat-page/useConversation.ts:43-51`：`refresh` 没有防旧响应后到（`ChatPage.tsx:35-46` 有），取消后马上发送时旧响应可能把行改回空闲、停止轮询，新一轮不出现。照 `ChatPage` 的写法加序号保护。
 5. P3 `web/src/chat-page/ChatPage.tsx:78`：`grid-cols-[260px_minmax(0,1fr)]` 窄屏没有退路，375px 下对话栏约 115px 不可用。照运行页 `RunPage.tsx:285` 的 `max-[900px]` 写法。
 每条配一个修复前会失败的测试（能在 vitest 里测的测；纯布局的 5 用截图证明，375px 宽）。修完 `make check`，`eng:code-review main` 只看新提交（前端工单，不跑 `da-review`）；最终回复照工作流程第 6 步。
+
+### Attempt 2 (ticket agent, branch `worktree-95-chat-page`, commits 9a18408, 71655d2): return round 1
+
+Each returned finding, what changed, and its test. The new test is shown failing before the fix.
+1. **Message sent while the finished turn's process is still exiting:**
+   - **Change:** a new pure function `composer(view, running)` in `chat-page/layout.ts` returns `none`, `turn`, `steer` or `settling`. While the backend says `running` but the last turn has written its result, the mode is `settling`. In that mode Send and Enter are disabled and the hint reads "Waiting for this turn to wrap up; you can send once it has." Cancel still shows while the backend says running, so a process that hangs after its result can still be stopped.
+   - **Test:** `layout.test.ts › composer`, red before the fix.
+2. **Steer left at "SENDING" on a turn that ended:**
+   - **Change:** a new `steerState(steer, status)` returns `delivered`, `sending` or `undelivered`. On a turn that is no longer running, an undelivered steer now shows "NOT DELIVERED".
+   - **Test:** `layout.test.ts › steerState`, red before the fix.
+   - **Seen on the page:** shown on the stand-in backend after a steer followed straight away by a cancel.
+3. **Failed event read never retried while the conversation is idle:**
+   - **Change:** the hook's loading logic moved, unchanged, into a non-React `chat-page/feed.ts` (`openFeed`); `useConversation` now only wraps it. A failed read of a turn's events is now retried on a timer, even while idle: after 1s, then doubling, up to 30s.
+   - **Tests:** `feed.test.ts` ("read again while the conversation is idle"; "less and less often, up to a ceiling"), red against the moved code before the fix.
+4. **Late row read undoing a newer row:**
+   - **Change:** row reads are numbered in the order they are asked for, and a row the cancel returns counts as the newest. A read is shown only if it is newer than the last row shown.
+   - **Tests:** `feed.test.ts` ("a row read that answers after a newer one is dropped…"; "a row the backend answered a cancel with outranks a read that was already out"), red before the fix.
+5. **Narrow screen:**
+   - **Change:** below 900px (the run page's breakpoint) the list sits above the conversation, at most a third of the screen height.
+   - **Evidence:** screenshots at 375px in this worktree, `runs/stand-in-95/narrow-375-before.png` and `narrow-375-after.png`. Before, the conversation column was about 115px wide; after, it uses the full width.
+
+**Checks**
+- **After commit 9a18408:** `make check` exit 0 (pytest 2330 passed, 1 skipped, 63 deselected, 8 xfailed; web 17 files, 273 tests); `pnpm --dir web build` exit 0.
+- **After commit 71655d2:** `make check` exit 0 (pytest 2330 passed, same counts; web 17 files, 275 tests); build exit 0.
+- **Logs:** `runs/r1-95/make-check-2.log` and `runs/r1-95/build-2.log` in this worktree.
+
+**Review (`eng:code-review c34b3f2`, new commits only; frontend ticket, so no `da-review`)**
+- **Spec axis:** all five return items are covered and nothing blocks. Findings 1 and 2 count as partial: only the pure functions are tested, not how the page uses them, because the repo has no DOM test setup.
+- **Fixed in 71655d2, each with a test that failed first:**
+  - **Stalled poll:** a row read that never answered stopped the poll for good. I had made the poll skip a tick while a read was out; now a newer read is shown even if an older one never answers.
+  - **Box took steers during settling:** `composer` checked whether *any* turn was running. An earlier turn whose events could not be read yet looks running, which brought back finding 1. It now checks only the last turn.
+  - **Stale error after cancel:** the row a cancel returns did not clear an earlier "could not read" error. It does now.
+  - **Smaller fixes:** clearer names (`lastRow`, `takeRow`); the message box's three per-mode texts gathered into one table; `FEED_TIMING` is no longer exported.
+- **Not fixed, with reasons:**
+  - **A turn whose events file never appears is retried every 30s for as long as the page is open.** That costs one request per 30s per broken turn. Stopping the retries would bring back the silent blank turn that finding 3 is about. The return note allowed retry instead of an error.
+  - **A steer shows SENDING for as long as its turn's events cannot be read.** The case where events exist but end without a result is handled only partly. This uses the view model's own status: the no-events case clears once the retry reads them. A run that dies with neither a result nor a failure note is a backend status question, outside this ticket.
+  - **The turn's status is passed down to each steer note:** three props; `steerState` itself is pure and tested.
+  - **How the page uses `composer` and `steerState` is untested:** no DOM test setup, as in attempt 1.
+  - **The settling mode has no browser screenshot:** the window is too short to catch on the stand-in; the `composer` test covers it.
+
+**Note on the stand-in backend:** its cancel route crashed when it ran before the turn's file existed. That is the throwaway stand-in in `runs/stand-in-95/`, not this ticket's code. I stopped the two stand-in servers I had started.
+
+**For the main session after 93 merges (unchanged from attempt 1):**
+1. `pnpm --dir web build:local`, then `make test-integration` (or `pnpm --dir web exec playwright test`) for the Playwright main flow.
+2. Following the `run` skill, start the local app and walk one conversation with a follow-up, a clarification, a steer and a cancel, then send the human the screenshots.
