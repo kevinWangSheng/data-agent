@@ -34,6 +34,7 @@ from mcp.client.stdio import stdio_client
 from data_agent import agent
 from data_agent.agent import CLARIFICATION_TOOL, ConversationTurn, ModelSettings, Task
 from data_agent.run_config import load_config
+from data_agent.tool_annotations import CHAT_ENV
 from data_agent.web.sources import DataSource
 
 ENV = {"DATA_AGENT_API_KEY": "sk-test-secret"}
@@ -119,7 +120,7 @@ async def test_a_single_run_has_no_clarification_tool(
 ) -> None:
     _, task = make_conversation(tmp_path)
     # Not even when the shell it runs from has conversation mode switched on.
-    monkeypatch.setenv(agent.CHAT_ENV, "1")
+    monkeypatch.setenv(CHAT_ENV, "1")
     options = options_of(task, None)
     assert "clarification" not in await tool_names(options)
     assert "clarification" not in agent.system_prompt(task, load_config("full")).lower()

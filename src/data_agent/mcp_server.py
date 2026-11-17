@@ -234,8 +234,7 @@ def build_server(
     bounds the files a tool may read (map_columns). `dictionary` is the prebuilt value
     dictionary the context layer searches (`data-agent run` builds it before the agent starts);
     a server with that layer on and no dictionary builds one now, before it serves. With one
-    database the tools take no `database` argument (`database_tools`). The clarification tool
-    is served in conversation mode only (`data_server`)."""
+    database the tools take no `database` argument (`database_tools`)."""
     dictionaries = {"": dictionary} if dictionary is not None else {}
     server, databases = data_server({"": gateway}, config, workspace, dictionaries)
     if config.verifiers and verifier_tools:
