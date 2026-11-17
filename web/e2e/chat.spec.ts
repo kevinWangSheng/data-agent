@@ -20,8 +20,6 @@
 
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
-const TICKET_95 = test.fail
-
 const TURN_TIMEOUT = 15 * 60_000
 
 const REVENUE_QUESTION = 'What was the total revenue from orders placed in 2024?'
@@ -102,7 +100,7 @@ test('the server serves the built UI', async ({ page }) => {
   expect(response?.status()).toBe(200)
 })
 
-TICKET_95('send, see the cards live, pick a clarification option, follow up', async ({ page }) => {
+test('send, see the cards live, pick a clarification option, follow up', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('new-conversation').click()
   const input = page.getByTestId('chat-input')
