@@ -1,10 +1,10 @@
 # 82 — 发布到 GitHub Pages
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 74（done）, 79（done）, 81（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (ticket agent, 2026-11-16)
+Branch: worktree-82-web-pages-deploy
 
 ## Goal
 
@@ -49,11 +49,18 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: in-review; merge waits for the release and Pages
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
 - 2026-11-16 主会话：依赖都已合入。构建的做法（工单 81、79 定）：`SITE_DATA=<导出目录> pnpm --dir web build --base /data-agent/`（`web/site-data.ts` 从导出生成 `home.json`、把导出复制进 `dist/data`，不含 `index.json`；导出没有精选运行时 build 直接失败）。在线版的地址有 `/data-agent/`（第一屏）、`/data-agent/runs`（历史列表，工单 79）、`/data-agent/runs/<id>`、`/data-agent/eval`，直接打开都要靠 404 回退页。流程从 release 下载数据包后解压成导出目录再设 `SITE_DATA`。本地验证可以用工单 81 worktree 里的导出 `/Users/shenghuikevin/dev/AI/data-agent/.claude/worktrees/81-web-eval-page-and-first-screen/runs/81-site`（只读，不复制进仓库）。工单 87（答案旁的结果表）同时在做，改的是 `web/src/run-view/`、`web/src/run-page/`，本工单不碰这两处。
+- 2026-11-16 工单 agent（603d9c1）：
+  - `.github/workflows/pages.yml`：push 到 main 和手动触发；公开 HTTPS 下载数据、不用 token，`curl --fail` 缺数据就停；解压到 `$RUNNER_TEMP/site`，`SITE_DATA=… pnpm --dir web build --base /data-agent/`，upload-pages-artifact@v5.0.0 → deploy-pages@v5.0.1；只有 deploy job 有 pages/id-token 写权限；没有密钥和服务器地址。固定值：release 标签 `site-data`、附件 `site-data.tar.gz`，打包 `tar -czf site-data.tar.gz -C <导出目录> .`。
+  - `web/spa-fallback.ts`：只在静态构建里把 `index.html` 复制成 `404.html`；测试 `web/spa-fallback.test.ts`（真的在 `/data-agent/` 下 vite build，404.html 和 index.html 一样，资源带基础路径）。README 第 10 行加在线版链接。
+  - 本地：81 的导出构建 419 ms，`dist/404.html` 和 index.html 逐字节相同，资源在 `/data-agent/assets/`，`dist/data` 273 条运行；模仿 Pages 的本地服务（有文件给文件，否则 404.html + 404）：`/data-agent/` 200，`/data-agent/runs`、`/data-agent/runs/dbt-cart-abandonment`、`/data-agent/eval` 都是 404 + 应用，`data/home.json` 200；无头浏览器四个页面都正常（第一屏回放带分数、dbt 运行页、3 条精选列表、评测页），控制台只有文档本身预期的 404。缺 release 时 `curl --fail …` exit 56。
+  - make check：ruff、basedpyright 0 errors；pytest 2307 passed / 1 skipped；vitest 221 passed；pre-commit 通过。
+  - da-review（Codex）：无意见。eng:code-review：Spec 0、Standards 0 违规。不修：Pages 构建不在 PR 上跑（建议后续在 check.yml 加 `pnpm --dir web build`）；根目录测试和 tsconfig 文件列表手写（原来就这样）；vite 插件没有单独测试（本地构建和浏览器覆盖）；pnpm/node 设置和 check.yml 重复两份；测试临时目录不删（同 site-data.test.ts）。
+  - 合并前提：合并会触发 Pages 流程；release `site-data` 和 Pages 没准备好时第一次会在下载那步失败、不发布。主会话先做对外操作再合并。
