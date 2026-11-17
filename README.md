@@ -7,6 +7,9 @@ for it, and returns an answer with its assumptions stated.
 It is a command-line agent built on the Claude Agent SDK, and it runs on any model behind an
 Anthropic-compatible endpoint. Everything below was measured with `deepseek-flash`.
 
+**Online version: <https://kevinwangsheng.github.io/data-agent/>**. It replays real runs step by
+step and shows the evaluation results. It is read-only and cannot start a run.
+
 ## Results
 
 | Benchmark | Score | Runs | API cost | Submission |
