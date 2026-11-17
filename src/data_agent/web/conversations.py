@@ -15,7 +15,6 @@ Every operation holds the launcher's lock, so a row, a new turn and a steer agre
 going.
 """
 
-import contextlib
 import json
 import logging
 import os
@@ -157,11 +156,8 @@ class Conversations:
         message = {"id": str(uuid.uuid4()), "text": text}
         turn["steers"].append(message)
         write_index(self.root / index["id"], index)
-        stdin = live.process.stdin
-        if stdin is not None:
-            with contextlib.suppress(OSError):
-                stdin.write((json.dumps(message) + "\n").encode())
-                stdin.flush()
+        if live.stdin is not None:
+            live.stdin.send((json.dumps(message) + "\n").encode())
         return {"kind": "steer", "run_id": live.run_id, "id": message["id"]}
 
     def resume(self, index: dict[str, Any]) -> str | None:

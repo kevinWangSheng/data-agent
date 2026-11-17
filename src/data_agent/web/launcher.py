@@ -15,6 +15,7 @@ event stream read.
 
 import contextlib
 import os
+import queue
 import secrets
 import shutil
 import signal
@@ -25,7 +26,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from data_agent.run_config import CONFIG_NAMES
 from data_agent.web.runs import RunsDir
@@ -52,6 +53,38 @@ class Refused(Exception):
         self.detail = detail
 
 
+class StdinWriter:
+    """A run's stdin, written from a thread of its own. A conversation's turn reads its stdin only
+    once its session has started, so steers sent before then wait in the pipe; a write that has
+    to wait for room never holds up the caller, who holds the launcher's lock. Lines after a
+    failed write (the run has exited) are dropped."""
+
+    def __init__(self, stdin: IO[bytes]) -> None:
+        self.stdin = stdin
+        self.lines: queue.SimpleQueue[bytes | None] = queue.SimpleQueue()
+        threading.Thread(target=self.write, name="run-stdin", daemon=True).start()
+
+    def send(self, line: bytes) -> None:
+        self.lines.put(line)
+
+    def close(self) -> None:
+        """Closes the stdin once the lines sent before are written (or dropped)."""
+        self.lines.put(None)
+
+    def write(self) -> None:
+        broken = False
+        while (line := self.lines.get()) is not None:
+            if broken:
+                continue
+            try:
+                self.stdin.write(line)
+                self.stdin.flush()
+            except OSError:
+                broken = True
+        with contextlib.suppress(OSError):
+            self.stdin.close()
+
+
 @dataclass
 class Running:
     run_id: str
@@ -59,6 +92,8 @@ class Running:
     # Whether the run leads its own process group, which is then signalled as a whole.
     group: bool
     record: dict[str, Any]
+    # Its stdin, through which a conversation's turn is steered; None when it has no pipe.
+    stdin: StdinWriter | None = None
     # The conversation the run is a turn of (data_agent.web.conversations); None for a form run.
     conversation: str | None = None
     cancelling: bool = False
@@ -155,7 +190,10 @@ class Launcher:
         except Exception:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
-        running = Running(run_id, process, leads_its_group(process), record, conversation)
+        stdin = StdinWriter(process.stdin) if process.stdin is not None else None
+        running = Running(
+            run_id, process, leads_its_group(process), record, stdin, conversation=conversation
+        )
         self.current = running
         threading.Thread(target=self.watch, args=(running,), daemon=True).start()
         return running
@@ -233,10 +271,8 @@ class Launcher:
         if not self.runs.has_result(running.run_id):
             status = "cancelled" if running.cancelling else "failure"
             self.runs.write_record(running.run_id, {**running.record, "status": status})
-        # A conversation's turn was steered through it (data_agent.web.conversations).
-        if running.process.stdin is not None:
-            with contextlib.suppress(OSError):
-                running.process.stdin.close()
+        if running.stdin is not None:
+            running.stdin.close()
         running.done = True
 
     def stop(self, running: Running) -> None:
