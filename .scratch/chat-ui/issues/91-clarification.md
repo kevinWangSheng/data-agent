@@ -140,3 +140,30 @@ Scenario b in `test_chat_e2e.py` stays `xfail` until ticket 93 adds the chat bac
 - Plain question as a chat turn: "order_id: 1034", 0 clarification events.
 - Scenario f: `pytest tests/acceptance/test_chat_e2e.py -m integration -k test_f -q` gives "3 passed, 21 deselected".
 - Merge: after 89 (conflicts expected in `agent.py`); 91 rebases onto main first.
+
+### Attempt 2 (ticket agent, branch `worktree-91-clarification`): rebase onto main after 89
+
+- 照指示 git fetch 后 rebase 到 origin/main（先 1548da6，main 期间只多了工单文件的提交 8d96f26，又 rebase 一次）；保留原 3 个提交，冲突逐个解决，没推倒重来。注：工单里没找到 "Main session, 2026-11-17: rebase onto main" 下的"退回"那段，按派工指令做。
+- 冲突与解决（agent.py、mcp_server.py、tool_annotations.py）：
+  - mcp_server：89 把 build_server 拆成 data_server / build_multi_server / register_base_tools。澄清工具改由新函数 register_clarification_tool(server) 注册，在 data_server 里按 CHAT_ENV 调用，所以单源、多源的对话轮都有它；整个对话只有一个工具，没有 `database` 参数。
+  - agent.py：system_prompt 跟 89 改成 system_prompt(task, config, chat=False)；build_options 传 chat=turn is not None；evals/dab.py 的调用不传 chat，行为不变。89 把 Postgres 变量检查改成按变量循环，CHAT_ENV 照旧列进保留名。
+  - tool_annotations：模块说明合并两边，89 的 database_tools 和本工单的 CHAT_ENV 都保留。
+  - tests/test_clarification.py：system_prompt 的调用改为传 Task；新增 test_a_conversation_turn_on_several_sources_serves_one_clarification_tool（两个源的对话轮：query_database 带 database，clarification 只有 question/options，调用成功）。
+- make check（最后一次，ec03a1a）：ruff All checks passed、317 files already formatted、basedpyright 0 errors，pytest 2375 passed / 1 skipped / 63 deselected / 8 xfailed，web 241 tests passed，make exit=0。
+- 审查（rebase 后一轮）：
+  - da-review main：No actionable defects。
+  - eng:code-review main：Standards 无硬违规，Spec 无缺失、无错误实现。修了两条（ec03a1a）：「只在对话模式提供澄清工具」那句原先在 build_server、data_server 两处 docstring 里都写了，删掉 build_server 那句；测试改从 tool_annotations 导入 CHAT_ENV。
+  - 不修及理由：
+    - data_server 从 os.environ 读 CHAT_ENV：照 SNAPSHOT_ENV 的先例（verifier_tools）；cli.py 不在 Authority 内。
+    - build_options 里三处 turn is None 判断：上轮已判轻微，不改。
+    - 两个 id 都缺时 str(...) 得到 "None"：和 TurnBudget.hooks 写法一致；SDK 总会给 tool_use_id。
+    - Spec 提到的范围外行为（拒绝空问题、空或重复选项；一轮只记第一次提问；改了 tests/test_postgres.py）：第 1 次尝试已记录理由。
+- 真实运行：rebase 动了代码，需主会话在本分支 checkout 重跑（命令见最终回复），命令和输出抄到这里。
+
+### Main session, 2026-11-17: real run after the rebase (at ec03a1a)
+
+1. Ambiguous question, one source, chat turn: exit 0, no `answer` event. Clarification: "2024 orders include 6 with status "refunded". Which revenue should I total?", with options "All 2024 orders regardless of status" / "Only completed 2024 orders (exclude refunded)". The CLI's stderr had one line, "Unknown child process pid 43775, will report returncode 255", from asyncio's child watcher; the run still exited 0 and its events are complete. Recorded, not chased.
+2. Turn 2 (`--resume`, option 1): "Total revenue: 2121.75", exit 0.
+3. Plain question: "order_id: 1034", 0 clarifications.
+4. Scenario f: "3 passed, 21 deselected".
+5. Ambiguous question on two sources (`--data-sources`): four `sql` events on `orders`, then a clarification: "Orders in 2024 total 2,121.75 across 18 orders, of which 6 are refunded (647.25). Which should count as revenue?", with options "Only completed orders (1,474.50)" / "All orders placed in 2024 including refunded (2,121.75)".
