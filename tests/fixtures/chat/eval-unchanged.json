@@ -1,0 +1,568 @@
+{
+  "dab-query": {
+    "allowed_tools": [
+      "Read",
+      "Glob",
+      "Grep",
+      "mcp__data"
+    ],
+    "disallowed_tools": [
+      "WebSearch",
+      "WebFetch"
+    ],
+    "mcp_servers": [
+      "data"
+    ],
+    "mcp_tools": {
+      "data": [
+        {
+          "name": "classify_text",
+          "parameters": {
+            "properties": {
+              "categories": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Categories",
+                "type": "array"
+              },
+              "db_name": {
+                "title": "Db Name",
+                "type": "string"
+              },
+              "instructions": {
+                "default": "",
+                "title": "Instructions",
+                "type": "string"
+              },
+              "key_column": {
+                "title": "Key Column",
+                "type": "string"
+              },
+              "sql": {
+                "title": "Sql",
+                "type": "string"
+              },
+              "text_column": {
+                "title": "Text Column",
+                "type": "string"
+              }
+            },
+            "required": [
+              "db_name",
+              "sql",
+              "key_column",
+              "text_column",
+              "categories"
+            ],
+            "title": "classify_textArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "describe_table",
+          "parameters": {
+            "properties": {
+              "db_name": {
+                "title": "Db Name",
+                "type": "string"
+              },
+              "table": {
+                "title": "Table",
+                "type": "string"
+              }
+            },
+            "required": [
+              "db_name",
+              "table"
+            ],
+            "title": "describe_tableArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "execute_python",
+          "parameters": {
+            "properties": {
+              "code": {
+                "description": "FAKE-DAB code argument.",
+                "title": "Code",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code"
+            ],
+            "title": "execute_pythonArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "explain_query",
+          "parameters": {
+            "properties": {
+              "db_name": {
+                "title": "Db Name",
+                "type": "string"
+              },
+              "sql": {
+                "title": "Sql",
+                "type": "string"
+              }
+            },
+            "required": [
+              "db_name",
+              "sql"
+            ],
+            "title": "explain_queryArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "list_tables",
+          "parameters": {
+            "properties": {
+              "db_name": {
+                "title": "Db Name",
+                "type": "string"
+              }
+            },
+            "required": [
+              "db_name"
+            ],
+            "title": "list_tablesArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "query_database",
+          "parameters": {
+            "properties": {
+              "db_name": {
+                "description": "FAKE-DAB db_name argument.",
+                "title": "Db Name",
+                "type": "string"
+              },
+              "sql": {
+                "description": "FAKE-DAB query argument.",
+                "title": "Sql",
+                "type": "string"
+              }
+            },
+            "required": [
+              "db_name",
+              "sql"
+            ],
+            "title": "query_databaseArguments",
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "permission_mode": "dontAsk",
+    "setting_sources": [
+      "user"
+    ],
+    "strict_mcp_config": true,
+    "tools": [
+      "Read",
+      "Glob",
+      "Grep"
+    ]
+  },
+  "harbor-dbt": {
+    "allowed_tools": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Write",
+      "Edit",
+      "Bash",
+      "Agent",
+      "mcp__data"
+    ],
+    "disallowed_tools": [
+      "WebSearch",
+      "WebFetch"
+    ],
+    "mcp_servers": [
+      "data"
+    ],
+    "mcp_tools": {
+      "data": [
+        {
+          "name": "audit_model_sources",
+          "parameters": {
+            "properties": {
+              "model_name": {
+                "title": "Model Name",
+                "type": "string"
+              },
+              "sample_nulls": {
+                "default": true,
+                "title": "Sample Nulls",
+                "type": "boolean"
+              },
+              "source_tables": {
+                "title": "Source Tables",
+                "type": "string"
+              }
+            },
+            "required": [
+              "model_name",
+              "source_tables"
+            ],
+            "title": "audit_model_sourcesArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "check_model_schema",
+          "parameters": {
+            "properties": {
+              "model_name": {
+                "title": "Model Name",
+                "type": "string"
+              },
+              "yml_columns": {
+                "title": "Yml Columns",
+                "type": "string"
+              }
+            },
+            "required": [
+              "model_name",
+              "yml_columns"
+            ],
+            "title": "check_model_schemaArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "classify_text",
+          "parameters": {
+            "properties": {
+              "categories": {
+                "items": {
+                  "type": "string"
+                },
+                "title": "Categories",
+                "type": "array"
+              },
+              "instructions": {
+                "default": "",
+                "title": "Instructions",
+                "type": "string"
+              },
+              "key_column": {
+                "title": "Key Column",
+                "type": "string"
+              },
+              "sql": {
+                "title": "Sql",
+                "type": "string"
+              },
+              "text_column": {
+                "title": "Text Column",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sql",
+              "key_column",
+              "text_column",
+              "categories"
+            ],
+            "title": "classify_textArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "compare_by_key",
+          "parameters": {
+            "properties": {
+              "key_columns": {
+                "title": "Key Columns",
+                "type": "string"
+              },
+              "model": {
+                "title": "Model",
+                "type": "string"
+              },
+              "reference_sql": {
+                "title": "Reference Sql",
+                "type": "string"
+              }
+            },
+            "required": [
+              "model",
+              "key_columns",
+              "reference_sql"
+            ],
+            "title": "compare_by_keyArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "contract_check",
+          "parameters": {
+            "properties": {
+              "models": {
+                "title": "Models",
+                "type": "string"
+              },
+              "task_columns": {
+                "default": "",
+                "title": "Task Columns",
+                "type": "string"
+              }
+            },
+            "required": [
+              "models"
+            ],
+            "title": "contract_checkArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "describe_table",
+          "parameters": {
+            "properties": {
+              "table": {
+                "title": "Table",
+                "type": "string"
+              }
+            },
+            "required": [
+              "table"
+            ],
+            "title": "describe_tableArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "dictionary_search",
+          "parameters": {
+            "properties": {
+              "keyword": {
+                "title": "Keyword",
+                "type": "string"
+              }
+            },
+            "required": [
+              "keyword"
+            ],
+            "title": "dictionary_searchArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "discover",
+          "parameters": {
+            "properties": {
+              "limit": {
+                "default": 10,
+                "title": "Limit",
+                "type": "integer"
+              },
+              "query": {
+                "title": "Query",
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "title": "discoverArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "explain_query",
+          "parameters": {
+            "properties": {
+              "sql": {
+                "title": "Sql",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sql"
+            ],
+            "title": "explain_queryArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "grain_facts",
+          "parameters": {
+            "properties": {
+              "key_columns": {
+                "title": "Key Columns",
+                "type": "string"
+              },
+              "model": {
+                "title": "Model",
+                "type": "string"
+              }
+            },
+            "required": [
+              "model",
+              "key_columns"
+            ],
+            "title": "grain_factsArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "hydrate",
+          "parameters": {
+            "properties": {
+              "ref": {
+                "title": "Ref",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "title": "hydrateArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "list_tables",
+          "parameters": {
+            "properties": {
+              "columns": {
+                "default": true,
+                "title": "Columns",
+                "type": "boolean"
+              },
+              "max_tables": {
+                "default": 200,
+                "title": "Max Tables",
+                "type": "integer"
+              },
+              "name_contains": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Name Contains"
+              },
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Schema"
+              }
+            },
+            "title": "list_tablesArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "map_columns",
+          "parameters": {
+            "properties": {
+              "exclude": {
+                "default": "",
+                "title": "Exclude",
+                "type": "string"
+              },
+              "model_name": {
+                "title": "Model Name",
+                "type": "string"
+              },
+              "project_dir": {
+                "title": "Project Dir",
+                "type": "string"
+              }
+            },
+            "required": [
+              "model_name",
+              "project_dir"
+            ],
+            "title": "map_columnsArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "model_diff",
+          "parameters": {
+            "properties": {},
+            "title": "model_diffArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "query_database",
+          "parameters": {
+            "properties": {
+              "row_limit": {
+                "default": 1000,
+                "title": "Row Limit",
+                "type": "integer"
+              },
+              "sql": {
+                "title": "Sql",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sql"
+            ],
+            "title": "query_databaseArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "query_labels",
+          "parameters": {
+            "properties": {
+              "row_limit": {
+                "default": 1000,
+                "title": "Row Limit",
+                "type": "integer"
+              },
+              "sql": {
+                "title": "Sql",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sql"
+            ],
+            "title": "query_labelsArguments",
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "permission_mode": "dontAsk",
+    "setting_sources": [
+      "user"
+    ],
+    "strict_mcp_config": true,
+    "tools": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Write",
+      "Edit",
+      "Bash",
+      "Agent"
+    ]
+  }
+}

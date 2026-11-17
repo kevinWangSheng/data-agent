@@ -1,4 +1,4 @@
-.PHONY: check fmt test web-install
+.PHONY: check fmt test web-install test-integration playwright-install
 
 # Fast checks: no network, no model calls. Run after every change; must pass before commit.
 check: web/node_modules
@@ -25,5 +25,13 @@ fmt:
 	uv run ruff format .
 
 # Integration tests call a real model; the DATA_AGENT_* variables come from ~/.config/data-agent/env (plan §6).
-test-integration:
+# After pytest, the chat page's Playwright main flow, on the UI built into the package; it needs
+# the browser from `make playwright-install`.
+test-integration: web/node_modules
 	set -a && . $(HOME)/.config/data-agent/env && set +a && uv run pytest -q -m integration
+	pnpm --dir web build:local
+	set -a && . $(HOME)/.config/data-agent/env && set +a && pnpm --dir web exec playwright test
+
+# The browser the Playwright main flow drives (downloads it once).
+playwright-install: web/node_modules
+	pnpm --dir web exec playwright install chromium

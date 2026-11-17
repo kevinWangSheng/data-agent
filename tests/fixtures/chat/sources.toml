@@ -1,0 +1,11 @@
+# The chat backend's data sources in the end-to-end tests (ticket 88): `data-agent web
+# --data-sources` reads this file. build_sources.py copies it next to the two DuckDB files it
+# builds from orders.sql and customers.sql; the paths count from the file's directory.
+
+[sources.orders]
+kind = "duckdb"
+path = "orders.duckdb"
+
+[sources.customers]
+kind = "duckdb"
+path = "customers.duckdb"
