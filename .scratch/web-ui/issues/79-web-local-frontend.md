@@ -1,6 +1,6 @@
 # 79 — 本地版前端：提交、实时过程、取消、历史列表
 
-Status: in-progress
+Status: done
 Blocked by: 76（done）, 78（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16
@@ -52,10 +52,10 @@ Branch: worktree-79-web-local-frontend
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: returned ×1 (PR #92); round-1 fix in review
+- Attempts: 3
+- Review rounds: 3
+- Model spend: $0.0080 (main session's real run)
+- Outcome: accepted after 1 return (PR #92 → superseded by #94 after rebasing on 81; CI green, Codex no findings on 390cb7f)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -83,3 +83,13 @@ Branch: worktree-79-web-local-frontend
   - 本轮没做"在线版历史列表"那条验收（是本轮开始后才加的），等 81 合入后 rebase 时做。
 - 2026-11-16 主会话：PR #92 对 af03aa4 CI 绿；Codex 再次报同一条"回到历史列表后旧错误还显示"，理由同前不属实（`App.tsx:57`），已在 PR 上回复。本 PR 没有属实的新意见；等 81 合入后 rebase 并做在线版历史列表。
 - **2026-11-16 主会话：81 已合入（PR #93）。本轮任务**：在原分支 rebase 到 origin/main，解决和 81 在 `App.tsx`、`RunPage.tsx`、`source.ts` 等处的冲突（81 的第一屏、精选切换、评测页、`home.json`、`site-data.ts` 都要保留）；做验收里"静态构建里历史列表页列出精选运行"那条；重跑 `make check`、本地版无头浏览器走一遍（提交、实时、取消、历史列表）、静态构建（`SITE_DATA`）的第一屏和历史列表，和两道审查。这不算退回，是计划内的合并后续。
+- 2026-11-16 工单 agent（Claude Code, Opus 5.5），rebase 到 81（6e3deaf…390cb7f）：
+  - rebase 冲突在 `App.tsx`、`RunPage.tsx`、`source.ts`、`vite.config.ts`；81 的第一屏（自动回放、停在基础地址）、精选切换、按需加载的评测页、`HomeStrip`、`NewRunUnavailable`、`home.json`、`site-data.ts` 都保留；`vite.config.ts` 只在在线版加载 `siteData()`。
+  - 在线版历史列表：`DataSource.history()` 取代 `live.history`；本地返回后端的行，在线从精选运行的 notes 和事件用 `rowOf` 拼行、按开始时间倒序；`<base>runs`；`HistoryPage` 移到 `web/src/history-page/`。相关测试先红后绿。
+  - make check（390cb7f）：exit 0；pytest 2307 passed、1 skipped；vitest 220 passed。
+  - 静态构建（81 的导出）+ preview：第一屏自动回放 `query-shop` 带两个分数；`/data-agent/runs` 三条精选按开始时间倒序（query no-verifiers SUCCESS 17 s $0.006；dbt full SUCCESS 13m 12s $0.158；dbt full FAILURE 50m 08s $0.611），点行进运行页，直接打开 `/runs` 正常，不请求 `index.json`，控制台 0 错误 0 警告。本地（假子进程）：提交、实时、刷新后 `events?after=9` 续读无重复、取消后一次 `events?after=11` 无重连循环、历史列表新运行在最前。截图 `runs/79-e2e/shots/20–24*.png`。
+  - da-review：无意见。eng:code-review：无阻塞、81 的东西没丢；390cb7f 修 `useRun` 一个受保护的 `update`、`home.json` 错误用 `errorText`、`RunRow` 注释。不修：`listRuns` 不再被 App 调用（76 的接口、81 的测试在用）；拆 `source.ts`、统一 build mode（重构，超出本轮）；`home.json` 失败时历史页两条错误条（都属实）；在线列表每次重读三条精选的事件（只有三条，导出保证文件在）。
+  - 依赖工单 82：GitHub Pages 上直接打开 `/data-agent/runs` 要 404 回退页。
+- 2026-11-16 主会话：rebase 后的分支要 force-push 才能更新 #92，AGENTS.md 不允许；改推到新分支 `worktree-79-web-local-frontend-r2` 开 PR #94，#92 关闭注明被取代。#94 CI 绿，Codex 对 390cb7f 无意见，squash 合并。
+- 2026-11-16 主会话真实运行（调真模型）：在 worktree 里 `pnpm --dir web build:local`，`uv run data-agent web --runs-dir runs/t79-real/web --port 18779 --data-sources runs/t79-real/sources.toml`；无头浏览器打开 `/` 是空的历史列表 → New run 填查数任务、config 选 no-verifiers → Start run 跳到 `/runs/20261116T163248Z-8ea724`，显示 RUNNING 和 Cancel run；不刷新自动变成 SUCCESS：30 s、$0.008、11 turns、10 次调用、9 条 SQL，答案 "Gold: 710.00"，大纲里思考和文本夹在步骤之间；控制台 0 条。服务 SIGTERM 确切 PID 后正常退出。
+  - **发现**：答案旁没有结果表。agent 的 `answer.sql_tool_use_id` 总是 null（`agent.py:1451`，工单 74"不要猜"），spec 的"依据的查询取它之前最后一条成功的查询"只用于没有 `answer` 事件的旧文件，所以所有新的查数运行都不显示结果表。不是本工单的问题；人 2026-11-16 定：视图模型对 null 也用同一条退路并在页面标明，开工单 87。
