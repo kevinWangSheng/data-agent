@@ -1,6 +1,6 @@
 # 92 — 运行中插话：stdin 通道和送达事件
 
-Status: ready-for-human
+Status: ready-for-agent
 Blocked by: 90
 Spec: ../spec.md
 Claimed by: claude-code (opus) 2026-11-17
@@ -126,3 +126,20 @@ grep -E '"type": "(steer_delivered|answer|result)"' "$R"/events/*.jsonl; cat "$R
 - Outcome: —
 
 工单文件里我只在认领时改了 `Status`、`Claimed by`、`Branch` 这三行，上面的 Comments 和 Ledger 请主会话抄进工单。
+
+### Main session, 2026-11-17: real run and race probe
+
+- Acceptance run (attempt 1 commands, at bbc7dec): exit 0. One `steer_delivered` (seq 11, id `6f1c2a9e-…`, "Only the top 3, please."), one `result` (seq 29, 6 turns, $0.0031). Answer: "C01 9, C02 7, C03 6".
+- Race probe (raw `ClaudeSDKClient`, CLI 2.1.301, DeepSeek; script outside the repo; no tools; read with `receive_messages()` for 60 s; steer "Also end your reply with the single word BANANA." sent right after the first `AssistantMessage`):
+  - Without replay: Assistant (0 chars), steer sent at 2.1 s, then Assistant 1651 chars without BANANA. First `Result` at 4.4 s: num_turns 1, no BANANA. Then Assistant 1659 chars with BANANA, and a **second `Result`** at 6.6 s: num_turns 1, BANANA in result.
+  - With `extra_args={"replay-user-messages": None}`: the prompt echo came at 1.0 s and the steer was sent at 1.0 s. First `Result` at 3.5 s, no BANANA. The **steer's echo came at 7.0 s, after the first result**. A second `Result` at 8.1 s had BANANA.
+  - Conclusion: a steer the model has not taken in by the end of a step is not dropped by the CLI. It runs as the next step and gets its own `ResultMessage`. Stopping at the first result is what loses it. The echo shows when the CLI hands the steer to the model.
+
+退回（主会话定，依据 spec 第 9 条"照 SP"和上面的探针）：照 SP 用回显对账。
+- 打开 `replay-user-messages`，每条插话带 uuid（stdin 行的 `id`）。
+- 读消息时，只有在所有已送出插话的回显都到了，并且之后又来了一个 `ResultMessage`，才算这一轮结束。不加宽限期：上面的回显顺序可以确定，不靠等待。
+- `steer_delivered` 改在收到这条插话的回显时写，事件的 `id` 不变（契约第 6 项）。那时 agent 确实读到了，界面上的"已送达 agent"才属实。
+- 一轮出了多个 `ResultMessage` 时，`result` 事件的花费、轮数、`session_id` 要按整轮算对：取最后一个，或累加，按 SDK 的字段语义定，写测试；同时对照 90 的 `restored_sdk_cost_usd`。
+- 先用假客户端复现"最后一步后才送进"的顺序，写一个修复前会失败的测试。
+- 截止时间和取消的行为不变。
+- 修完后照第 3 步写出主会话要重跑的命令：验收运行，加一条在最后一步后送入的插话的真跑。
