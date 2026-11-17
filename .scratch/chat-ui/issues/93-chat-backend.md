@@ -123,3 +123,17 @@ I've built the chat backend for ticket 93 on `worktree-93-chat-backend` (3 commi
   a–d and g must each pass all 3 times. A failure needs its trajectory read to decide whether it's this backend, tickets 89–92, or model noise.
 
 I claimed the ticket in the main checkout (`in-progress`, Claimed by, Branch). The smoke-run leftovers are in `/tmp/da93/` and safe to delete.
+
+### Main session, 2026-11-17: real-model end-to-end (`uv run pytest -m integration tests/acceptance/test_chat_e2e.py -v`, at 9090b7e)
+
+- Run 1: "1 failed, 23 passed in 215.31s". The failure was c[3].
+  - The answer was "C01: 9 orders; C02: 7 orders; C03: 6 orders". Its assumptions said "C03's 6 is followed by C04's 5, so no tie at the cutoff". The check `C04 not in answer` caught the assumption line.
+  - Ticket 92's real run wrote the same kind of line ("next is C04 with 5"), so this check would keep failing on wording.
+  - The human decided (2026-11-17) to narrow the check to the listed result, the part before "Assumptions". Commit 7d0eda7 on this branch is the only change to ticket 88's test. Checked by hand on five answer shapes: plain, C04 listed, bold "**Assumptions:**", a "### Assumptions" heading, and C04 with no assumptions part.
+- Run 2 (with 7d0eda7; `-k test_c` also matched the module name, so all 24 ran): "1 failed, 23 passed in 252.50s". c passed 3/3. The failure was b-ambiguous[1]: the agent did not ask.
+  - In its trajectory it saw the ambiguity ("include refunded? … The difference matters"). It decided "Revenue usually excludes refunded orders", answered 1474.50, and stated that assumption.
+  - The chat prompt (`agent.py` `CLARIFICATION_PROMPT`) already asks for a question in this case and is more specific than nao's (`system-prompt.tsx:151`).
+  - Across today's real runs of this question the agent asked 8 times out of 9: 93 run 1 3/3, run 2 2/3, ticket 91's three runs 3/3.
+  - Judged model variance, not an implementation fault.
+- b-ambiguous rerun 3×: "3 passed in 51.57s".
+- Every scenario has a 3/3 run: a, d, f, g in run 1; c in run 2 after the narrowed check; b in the rerun.
