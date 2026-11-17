@@ -1,10 +1,10 @@
 # 95 — 对话页面（A「对话流」）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 94（93 只挡合并：人 2026-11-17 定提前开工，见 Comments）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (Opus 5.5), 2026-11-17
+Branch: worktree-95-chat-page
 
 ## Goal
 
@@ -48,8 +48,8 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
@@ -61,3 +61,54 @@ Branch: —
 - The human decided (2026-11-17) to start 95 before 93 (chat backend) merges; 94 is done. Build the page against the ticket-88 route contract (`tests/acceptance/test_chat_api.py` docstring) and the merged view model. Develop and test against a stand-in backend you run locally (for example `tests/fixtures/chat/fake_chat_run.py` through the existing `create_app`, or vitest mocks); don't add anything under `src/`.
 - Remove the `TICKET_95` marker as the ticket says. The Playwright main flow can only go green with a real backend, so the main session runs it after 93 merges; merge waits for that.
 - This is a frontend ticket: per `AGENTS.md` (after workflow step 7), step 5 runs only `eng:code-review main`, not `da-review`.
+
+### Attempt 1 (ticket agent, branch `worktree-95-chat-page`, commits 07c73a6, c34b3f2), final reply as given
+
+I built the chat page for ticket 95 and committed it on `worktree-95-chat-page`. The Playwright main flow is not proven yet: it needs the real backend from ticket 93, so the main session has to run it after 93 merges. Against a local stand-in backend that follows the ticket-88 contract, the unchanged browser test passes.
+
+**Proposed status:** `Status: in-review`
+
+**What's in it** (two commits, 07c73a6 and c34b3f2; nothing under `src/`, `NewRun.tsx` unchanged):
+- **Main page:** the local build now opens on the chat page. The conversation list is on the left; single runs, dbt included, appear there as one-turn conversations with no message box. `chats/<id>` opens a conversation, and `runs/<id>` is still the three-pane run page.
+- **Turns:** steps show as cards grouped by phase. The phase that is running is open, and the others fold.
+- **Cards:**
+  - every query card names the database it ran on;
+  - SQL is highlighted, with its result table;
+  - verifier cards show PASS/FAIL and each check;
+  - rejected calls are marked;
+  - thinking is folded by default.
+- **Clarification:** the options send the next message and can only be clicked once the backend says no turn is running.
+- **Running turn:** messages sent while a turn runs go into it and show "SENDING", then "DELIVERED TO THE AGENT". Cancel is there too.
+- **Cost and full view:** the header shows the conversation's total cost, and each turn links to its full run view.
+- **Browser test:** the `TICKET_95` marker is removed from `web/e2e/chat.spec.ts`, and nothing else in that file changed.
+- **Tests:** new vitest tests cover the conversation client (`source.test.ts`), the address (`route.test.ts`) and the turn layout (`layout.test.ts`, run against the ticket-88 fixtures).
+
+**For the ticket's `## Comments`:**
+- **Baseline before changes:** `pnpm --dir web test` 241 passed; `make check` passed.
+- **After the fixes:**
+  - `make check` exit 0: pytest 2330 passed, 1 skipped, 63 deselected, 8 xfailed; web 16 files, 260 tests passed.
+  - `pnpm --dir web build` exit 0.
+- **Browser flow against the stand-in:** `web/e2e/chat.spec.ts`, unchanged, run with a temporary config pointing at the stand-in on port 8795. Both tests passed ("serves the built UI" 0.6s; "send, see the cards live, pick a clarification option, follow up" 31.3s), before and after the review fixes. The stand-in is the real `create_app` plus the ticket-88 conversation routes and a scripted turn process. It is throwaway and not committed: it lives in `runs/stand-in-95/` in this worktree, which git ignores.
+- **Manual pass in a headless browser:** I tried a steer, a cancel, a clarification, a single run from the New run form, and the full run view link. Screenshots are in `runs/stand-in-95/` in this worktree: `steer-running.png`, `after-answer.png`, `cancelled.png`, `clarification.png`, `single-run.png`, `full-view.png`.
+- **Review (`eng:code-review main`):** frontend ticket, so no `da-review`. One round of fixes, all in c34b3f2:
+  - a live stream left open after leaving a conversation;
+  - narration filed under a verify phase was not shown;
+  - the list and the header computed the title two different ways;
+  - the clarification check named the backend's running flag `busy`;
+  - a slow conversation-list read could overwrite a newer one;
+  - redundant list reloads;
+  - `HistoryPage` (now online-only) had a stale comment and a prop that was always the same.
+- **Review findings not fixed, with reasons:**
+  - **Groups fold once a turn ends:** this is layout A as chosen. The human judges styles from screenshots.
+  - **No tests for the live hook or the components:** the repo has no DOM test setup, and adding one is a dependency change. The browser main flow covers this path.
+  - **Rejection-banner colour logic copied from the run page:** sharing it means refactoring run-page code, which is outside this ticket.
+  - **The answer's text is matched by content, not position:** the fixtures show the `answer` event repeating the `text` event just before it, so matching by position would show the answer twice.
+  - **A dbt single run shows in the chat page without its diff:** its Full run view link covers that.
+
+**For the ticket's `## Ledger`:** Attempts: 1; Review rounds: 1; Model spend: $0.
+
+**For the main session after 93 merges:**
+1. `pnpm --dir web build:local`, then `make test-integration` (or `pnpm --dir web exec playwright test`) for the Playwright main flow.
+2. Following the `run` skill, start the local app and walk one conversation with a follow-up, a clarification, a steer and a cancel, then send the human screenshots.
+
+The real backend may start a turn before that turn's events can be read; the page simply tries again on the next poll. There is an untracked `.playwright-mcp/` folder at the worktree root left by the browser tool; it is not committed.
