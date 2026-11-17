@@ -1,6 +1,6 @@
 # 92 — 运行中插话：stdin 通道和送达事件
 
-Status: in-progress
+Status: in-review
 Blocked by: 90
 Spec: ../spec.md
 Claimed by: claude-code (opus) 2026-11-17
@@ -143,3 +143,99 @@ grep -E '"type": "(steer_delivered|answer|result)"' "$R"/events/*.jsonl; cat "$R
 - 先用假客户端复现"最后一步后才送进"的顺序，写一个修复前会失败的测试。
 - 截止时间和取消的行为不变。
 - 修完后照第 3 步写出主会话要重跑的命令：验收运行，加一条在最后一步后送入的插话的真跑。
+
+### Attempt 2（工单 agent，分支 `worktree-92-steer-stdin`，提交 099301e、27f4787、3354fa4）
+
+**怎么修的：**
+- 插话以 stream-json user 消息送进，uuid 就是 stdin 行的 `id`；对话模式下打开 `replay-user-messages`。
+- 收到这条插话的回显时才写 `steer_delivered`，`id` 不变，`seq` 就是模型读到它的位置。
+- 收到一个 `ResultMessage` 时，如果没有插话还在等回显，这一轮就结束；否则接着读。不加宽限期。
+- 后面几步各自的 `init` 和提示词回显都不往下传，所以一轮只有一个 `status`、一个 `result`。
+
+**CLI 行为的取证（bundled CLI 2.1.301 对着本地假的 Messages API，不花钱、不碰密钥，脚本在仓库外）：**
+- 回显带的是客户端给的 uuid，非 UUID 格式的字符串也原样带回。
+- 最后一步之后才送进的插话，CLI 会把它当下一步跑，并给出自己的 `ResultMessage`；这和主会话的探针一致。
+- 两条一起送进的插话会并成一步，但每条各有一个回显。
+- **uuid 重复的消息被 CLI 丢掉，不回显。** 所以重复 `id` 的行现在会被拒：写 `error`，内容是 `stdin line N skipped: id '…' already sent`。不拒的话，这一轮会一直等一个不会来的回显。
+- 各字段在多个 result 之间的语义：
+
+| 字段 | 语义 | 合并时 |
+|---|---|---|
+| `total_cost_usd`、`model_usage`、`duration_api_ms` | 进程内累计（例：100→200 tokens，0.00045→0.0009） | 取最后一个 |
+| `num_turns`、`usage`、`duration_ms` | 每步各算各的 | 累加 |
+| `session_id` | 不变 | 取最后一个 |
+
+- 和 90 的 `restored_sdk_cost_usd` 对照过：`minus_restored` 作用在合并后的结果上，因为最后一个 result 本来就是会话累计数；有测试。
+
+**修复前会失败的测试：** `test_a_message_sent_after_the_last_step_is_read_before_the_turn_ends`。在 bbc7dec 上跑，它拿到的答案是第一步的 "all the customers"。
+
+**其他边界：**
+- 坏行、空行、stdin 关闭、送不进去：处理和 attempt 1 一样。
+- 一轮结束后才到的行：不送出，也不写事件。
+- 某一步出错（`is_error` 或 subtype 不是 `success`）：这一轮照样结束。还在等回显的插话各写一个 `error`，内容是 `message '…' was not read: the turn ended`。截止时间或花费上限把这一轮停掉时，也这样写。
+- 截止时间和取消的行为不变，相关测试照常通过。
+
+**审查：**
+- `da-review main` 两条 P2，都修了：
+  1. 插话开出的新一步会拿到 CLI 一份全新的轮数上限，违反 spec 第 13 条。现在各步加起来仍受这一轮的上限约束，规则照 CLI 自己的计法：每个带工具调用的回复，其工具都答完后加一。超了就停，`result` 写 `error_max_turns`、`terminal_reason: "max_turns"`、`num_turns` 为上限加 1，做法和截止时间一样。最后一轮已经用掉时，还在等的插话不再开新一步，记成未读。
+  2. 回显到了、但那一步还没出 result，流就正常结束了：以前会把上一步的旧答案当成功；现在写 `error`（source `sdk`），这一次运行算未完成。
+- `eng:code-review` Standards（只有需要判断的项，没有硬违规），修了三条：
+  - 会改状态的方法按做的事改名：`absorb`、`end_step`、`count_turns`、`turns_used`。
+  - 截止时间和轮数上限两处重复的 result 字段，合进 `stopped_by_harness`。
+  - `steer()` 里不再中途把消息变量换成跳过原因的字符串。
+- Standards 没修的：
+  - `agent.py` 太长：Authority 不允许新建模块。
+  - `over_limit` 和 `track_open_calls` 结构相似：两者过滤条件和存的值都不同，合并会把截止时间的未答调用清单和轮数计数绑在一起。
+  - `steering` 和 `emit` 总是一起传：10 个现有测试替换 `query` 时用的签名是 `(*, prompt, options)`，attempt 1 已说明。
+  - 解析结果用 `str` 表示原因：attempt 1 已说明。
+  - `steered.max_turns or 0`：只是为了类型检查。
+- `eng:code-review` Spec（没有阻塞项），修了一条：截止时间或花费上限停掉时，未读的插话以前不写事件，现在也写 `error`，有测试，修复前失败。
+- Spec 没修的，记成已知限制：
+  - CLI 如果因为重复 id 以外的原因丢了插话、不回显，而对话运行没有截止时间，这一轮读完 result 后会一直挂着，只能靠取消。spec 说不加宽限期。另一种情况也没验证：恢复的会话里，id 和会话历史里的 uuid 撞上。
+  - 第二步起，`TurnBudget` 不再提醒剩几轮。它碰到"没有工具调用的回复后面还有回复"就停止提醒（`_lost`），不会给错数。上限本身由 `count_turns` 执行。
+  - 模型没有价格时，轮数上限停下的 `sdk_cost_usd` 为 `None`，和截止时间一样。默认模型 `deepseek-flash` 有价格，所以走的是按价格表计费的分支。
+- 修复共两轮，没超过上限。
+
+**`make check`（3354fa4）：** ruff 全过；`315 files already formatted`；basedpyright `0 errors`；pytest `2349 passed, 1 skipped, 63 deselected, 8 xfailed`；vitest `241 passed`；退出码 0。`test_chat_eval_unchanged.py` 2 个都过。`tests/test_steer_stdin.py` 共 19 个。
+
+**不花钱的端到端：** 真跑了 `data-agent run --chat` 加 bundled CLI，对着本地假的 API。插话在唯一一步跑到一半时写进去。结果：退出码 0；只有一个 `steer_delivered`（seq 5，在两段回复之间）；`answer` 来自第二步（"reply 20 to 3 messages"）；只有一个 `result`，`num_turns: 2`。这不能代替真实模型运行。
+
+**已知限制（给工单 93，同 attempt 1）：** 子进程写出 `result` 到退出之间，后端仍把对话算成运行中，这时送来的消息既不会被送达，也不会开新一轮。
+
+### 主会话要跑的命令（在 worktree 根目录）
+
+1. 验收运行：命令和期望都同 attempt 1 的第 1 条（第一次 `tool_start` 后写"只要前 3 名"）。另外确认答案只有 C01–C03，并且 `steer_delivered` 在某个 `tool_end` 之后。
+2. 最后一步之后才送入的插话：问一个不用工具的问题，在 `status` 出现后马上写插话，这时模型的唯一一步正在跑。
+```bash
+set -a; . ~/.config/data-agent/env; set +a
+R=runs/steer-92b-$(date +%H%M%S); mkdir -p "$R"
+uv run python tests/fixtures/chat/build_sources.py "$R/db"
+C="$R/conv-20261117T000000Z-steer92b"; mkdir -p "$C/workspace"; mkfifo "$R/stdin"
+uv run data-agent run --task "In one or two sentences, and without querying the data, say what an order is." \
+  --type query --config full --duckdb "$R/db/orders.duckdb" --events-dir "$R/events" \
+  --workspace "$C/workspace" --chat --conversation-dir "$C" --turn 1 \
+  < "$R/stdin" > "$R/answer.txt" 2> "$R/stderr.txt" & pid=$!
+exec 3> "$R/stdin"
+until grep -qs '"type": "status"' "$R"/events/*.jsonl; do sleep 0.2; done
+printf '%s\n' '{"id": "0b9e4c1d-7a2f-4e8b-9c3d-5f6a7b8c9d0e", "text": "Also end your reply with the single word BANANA."}' >&3
+wait $pid; echo "exit=$?"; exec 3>&-
+grep -E '"type": "(steer_delivered|text|tool_start|answer|result|error)"' "$R"/events/*.jsonl | cut -c1-300; cat "$R/answer.txt"
+```
+   期望：
+   - 退出码 0。
+   - 只有一个 `steer_delivered`，在第一个 `text` 之后。
+   - 只有一个 `result`，`num_turns` ≥ 2，花费等于最后一个 result 的累计数。
+   - 答案以 BANANA 结尾。
+
+   如果模型还是调了工具，并且在同一步里读到了插话（只出一个 result，`num_turns` 照常），那这次没走到"最后一步之后"那条路径，换个更短的问题重跑。
+
+### Main session, 2026-11-17: real run (at 3354fa4)
+
+- A, mid-turn steer ("Only the top 3, please." written after the first `tool_start`): exit 0.
+  - Events: two tool calls end (seq 9, 11), then `steer_delivered` (seq 12), more queries, and one `result` (seq 27, num_turns 5, $0.0028).
+  - Answer: "C01: 9 orders, C02: 7 orders, C03: 6 orders".
+- B, steer written as soon as `status` appeared, on a question that needs no query: exit 0.
+  - Events: one tool call (seq 5–7), then `steer_delivered` (seq 8), then text, and one `result` (seq 12, num_turns 2).
+  - The answer ends with "BANANA".
+  - The model made a tool call first, so the steer was read inside the same step. This run did not take the "after the last step" path. That path is covered by the earlier raw-client probe and by `test_a_message_sent_after_the_last_step_is_read_before_the_turn_ends`.
+- Merge: after 91 (PR #102). 92 then rebases onto main and the main session reruns A.
