@@ -24,3 +24,12 @@ status: proposed
 - 风险：Anthropic 官方不支持非 Claude 模型。DeepSeek 文档写明忽略服务端 `mcp_servers` 参数；本项目的 MCP server 由 SDK 在本地运行、以普通工具定义发给模型，推断不受影响，但**未确认**，由工单 01 验证。Skill 与子 agent 由 SDK 在本地处理，同样待 01 实测。
 - 不选 pi：它支持多家模型，但 MCP 2026-10-01 才进核心，子 agent 要自己写扩展，也没有任何对标 data agent 用它，违背"照上游抄"。
 - DAB 的 `common_scaffold` 本身就是 OpenAI 兼容接口，跑 DAB 不受影响。
+
+## Update 2026-11-17：本地对话改用 ClaudeSDKClient，评测仍是单次运行
+
+本地版要做对话界面（`.scratch/chat-ui/spec.md`），需要多轮追问和运行中插话，一次性的 `query()` 两样都做不到。
+
+- 多轮：用 SDK 的 `resume` 续接会话，照 SignalPilot（`notebook-server/signalpilot/_server/ai/claude_agent_options.py:269-273`）。每段对话一个 `CLAUDE_CONFIG_DIR`，不写进用户的 `~/.claude`。
+- 插话：agent 改用 `ClaudeSDKClient`，运行中在同一个客户端上再调 `query()` 送入用户消息，照 SignalPilot（`claude_agent.py:355-408`）。
+- 评测和跑榜的入口不变，仍是一次任务一次运行，关闭澄清和插话。换调用方式按 ADR-0008 Update 2026-11-04 验证（单元测试加单题真实运行），评测行为不能变。
+- 写工单前先实测：CLI 2.1.301 能否在新进程里 `resume` 原会话。不成立就改用 nao 的做法（每轮重放历史），回来更新本节。
