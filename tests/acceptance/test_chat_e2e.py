@@ -387,8 +387,11 @@ def test_c_a_message_sent_while_the_agent_works_is_followed(server: Server, atte
     answer = answer_of(run)
     for customer, name in TOP_3.items():
         assert customer in answer or name in answer, (customer, answer)
+    # Only the listed result counts: the assumptions may name the first customer left out, to
+    # show there is no tie at the cut (human decision 2026-11-17, ticket 93).
+    listed = re.split(r"(?im)^[\s*_#>]*assumptions?\b", answer, maxsplit=1)[0]
     for customer, name in REST.items():
-        assert customer not in answer and name not in answer, (customer, answer)
+        assert customer not in listed and name not in listed, (customer, answer)
 
 
 # --- d: cancel, then go on -----------------------------------------------------------------
