@@ -1,6 +1,6 @@
 # 90 — 多轮续接：ClaudeSDKClient、resume、对话目录
 
-Status: in-review
+Status: done
 Blocked by: 88
 Spec: ../spec.md
 Claimed by: claude (ticket agent, 2026-11-17)
@@ -53,7 +53,7 @@ Branch: worktree-90-multi-turn-resume
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #99)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -153,3 +153,7 @@ What a pass looks like:
 - Spend: turn 1 `sdk_cost_usd` 0.053602; turn 2 `restored_sdk_cost_usd` 0.053602 and `sdk_cost_usd` 0.028444 (its own); no `error` event. `num_turns` 4 and 4 (not cumulative). This confirms the three points that rested on reading the CLI.
 - Single run: "11 orders were refunded.", exit 0; `task` has no `conversation` / `turn`; `result` has a `session_id`.
 - Model cost (`cost_usd`): $0.0026 + $0.0009 + $0.0034.
+
+### Main session, 2026-11-17: merged
+
+- PR #99: CI `check` green; Codex GitHub app reacted 👍 with no comments. Squash-merged.

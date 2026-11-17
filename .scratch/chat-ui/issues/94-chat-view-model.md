@@ -1,6 +1,6 @@
 # 94 — 对话视图模型
 
-Status: in-review
+Status: done
 Blocked by: 88
 Spec: ../spec.md
 Claimed by: claude (opus-5-5)
@@ -49,7 +49,7 @@ Branch: worktree-94-chat-view-model
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #98)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -113,3 +113,7 @@ Status: in-review
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
 ```
+
+### Main session, 2026-11-17: merged
+
+- PR #98: CI `check` green; Codex GitHub app reacted 👍 with no comments. Squash-merged.

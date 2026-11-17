@@ -1,6 +1,6 @@
 # 89 — agent 自己选库：多数据源
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 88
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-17
@@ -126,3 +126,7 @@ Status: in-review
 - Two sources, "How many orders were placed by customers of each region?": "East: 8 orders; North: 13 orders; South: 10 orders; West: 6 orders.", exit 0 (expected North 13, South 10, East 8, West 6). `sql` events: `customers` (`SELECT customer_id, region FROM crm.customers`), `orders` (counts per customer), `orders` (combines the two results with an inline VALUES list; no cross-database join). `cost_usd` $0.0044, 6 turns.
 - One source (`--duckdb runs/shop.duckdb`, no-verifiers, README quickstart): "Gold has the highest total amount of completed orders: 710.00.", exit 0, $0.0046.
 - Merge: conflicts with ticket 90 in `src/data_agent/agent.py` and `src/data_agent/cli.py` (`git merge-tree`). 90 merges first; 89 then rebases onto main.
+
+### Main session, 2026-11-17: rebase onto main
+
+退回：不是审查问题。工单 90（PR #99）已合入 main，和本分支在 `src/data_agent/agent.py`、`src/data_agent/cli.py` 冲突。把本分支 rebase 到最新 `origin/main` 上解决冲突，保留两边的行为：90 的 `ClaudeSDKClient`、`--chat` / `--conversation-dir` / `--turn` / `--resume`、`session_id` 和 `restored_sdk_cost_usd`；本工单的 `--data-sources`、`database` 参数和事件字段。`--chat` 加 `--data-sources` 要能一起用（对话 turn 的参数见 ticket 88 契约第 5 项）。解决后 `make check`，`da-review main` 看 rebase 后的整个 diff；最终回复给出新的提交和主会话要重跑的真跑命令。
