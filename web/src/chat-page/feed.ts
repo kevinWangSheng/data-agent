@@ -1,6 +1,6 @@
 // A conversation kept live, outside React so it can be tested: its row read from the backend (again
 // every `pollMs` while a turn runs, so new turns, steers and the end of the turn's process show up;
-// a read answering after a newer one is dropped), each turn's events read once (again after
+// a read answering after a newer one was shown is dropped), each turn's events read once (again after
 // `retryMs` when that fails), and a running turn followed over SSE (the run page's `follow`).
 // A message's kind (new turn or steer) is the backend's to decide.
 
@@ -26,7 +26,7 @@ export type FeedTiming = {
 
 export const RETRY_CEILING_MS = 30_000
 
-export const FEED_TIMING: FeedTiming = { pollMs: 1000, retryMs: 1000 }
+const FEED_TIMING: FeedTiming = { pollMs: 1000, retryMs: 1000 }
 
 export type Feed = {
   /** Reads the row again now (after a message). */
@@ -46,35 +46,32 @@ export function openFeed(live: LiveSource, id: string, on: FeedHandlers, timing:
   /** Failed reads in a row, by turn. */
   const failures = new Map<string, number>()
   let poll: ReturnType<typeof setInterval> | null = null
-  /** The latest row taken; a read is newer only when it started after it (`latest` counts them). */
-  let last: ConversationRow | null = null
-  let latest = 0
-  let reading = 0
+  /** The latest row shown. */
+  let lastRow: ConversationRow | null = null
+  /** Rows are numbered in the order they were asked for (a cancel's when it answered); one is shown
+   *  only when numbered after the last shown, so a read answering late cannot undo a newer row, and
+   *  a read that never answers holds nothing up. */
+  let asked = 0
+  let shown = 0
 
   const refresh = async () => {
-    const read = ++latest
-    reading++
+    const n = ++asked
     try {
       const next = await live.conversation(id)
-      if (stopped || read !== latest) return
+      if (stopped || n < shown) return
+      shown = n
       apply(next)
-      on.error(null)
     } catch (e: unknown) {
-      if (!stopped && read === latest) on.error(errorText(e))
-    } finally {
-      reading--
+      if (!stopped && n > shown) on.error(errorText(e))
     }
   }
 
   const apply = (row: ConversationRow) => {
-    last = row
+    lastRow = row
+    on.error(null)
     on.row(row)
     for (const turn of row.turns) load(turn)
-    if (row.running && poll === null) poll = setInterval(() => {
-        // A read still out would be outranked by this one; with a backend slower than the poll,
-        // none would ever be shown.
-        if (reading === 0) void refresh()
-      }, timing.pollMs)
+    if (row.running && poll === null) poll = setInterval(() => void refresh(), timing.pollMs)
     else if (!row.running && poll !== null) {
       clearInterval(poll)
       poll = null
@@ -104,7 +101,7 @@ export function openFeed(live: LiveSource, id: string, on: FeedHandlers, timing:
         const retry = setTimeout(() => {
           retries.delete(retry)
           loaded.delete(runId)
-          load(last?.turns.find((t) => t.run_id === runId) ?? turn)
+          load(lastRow?.turns.find((t) => t.run_id === runId) ?? turn)
         }, Math.min(timing.retryMs * 2 ** (failed - 1), RETRY_CEILING_MS))
         retries.add(retry)
       })
@@ -115,7 +112,7 @@ export function openFeed(live: LiveSource, id: string, on: FeedHandlers, timing:
     refresh,
     take: (row) => {
       if (stopped) return
-      latest++
+      shown = ++asked
       apply(row)
     },
     stop: () => {

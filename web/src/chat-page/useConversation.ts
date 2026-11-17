@@ -21,8 +21,8 @@ export type LiveConversation = {
   error: string | null
   /** Reads the row again now (after a message). */
   refresh: () => Promise<void>
-  /** Takes a row the backend answered with (a cancel's). */
-  setRow: (row: ConversationRow) => void
+  /** Takes a row the backend answered with (a cancel's): it outranks reads still out. */
+  takeRow: (row: ConversationRow) => void
 }
 
 export function useConversation(live: LiveSource, id: string): LiveConversation {
@@ -50,7 +50,7 @@ export function useConversation(live: LiveSource, id: string): LiveConversation 
   const refresh = useCallback(async () => {
     await feed.current?.refresh()
   }, [])
-  const take = useCallback((next: ConversationRow) => feed.current?.take(next), [])
+  const takeRow = useCallback((next: ConversationRow) => feed.current?.take(next), [])
 
   const view = useMemo(() => {
     if (!row) return null
@@ -59,5 +59,5 @@ export function useConversation(live: LiveSource, id: string): LiveConversation 
     return buildConversationView(row, runs)
   }, [row, events])
 
-  return { row, view, error, refresh, setRow: take }
+  return { row, view, error, refresh, takeRow }
 }

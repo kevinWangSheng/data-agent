@@ -94,6 +94,13 @@ describe('composer', () => {
     expect(composer(viewOf(1), true)).toBe('settling')
   })
 
+  test("an earlier turn whose events could not be read yet does not make the box take steers", () => {
+    // Without its events an earlier turn looks running; only the last turn can be.
+    const first = index.turns[0].run_id
+    const view = buildConversationView({ ...index, turns: index.turns.slice(0, 3) }, { ...runs, [first]: { events: [] } })
+    expect(composer(view, true)).toBe('settling')
+  })
+
   test('a single run takes no message', () => {
     expect(composer({ ...viewOf(1), singleRun: true, canFollowUp: false }, false)).toBe('none')
   })

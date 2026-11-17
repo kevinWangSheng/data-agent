@@ -108,18 +108,31 @@ describe('openFeed', () => {
     feed.stop()
   })
 
-  test('a backend slower than the poll still has its rows shown: no poll read while one is out', async () => {
+  test('a backend slower than the poll still has its rows shown, and one read that never answers stops nothing', async () => {
     const { live, rowReads } = standIn()
     const { feed, seen } = feedOf(live)
     rowReads[0].resolve(row(true, turn(1, 'running')))
     await flush()
 
+    // Read 1 never answers; the poll goes on, and read 2 is shown although read 1 started first.
     await vi.advanceTimersByTimeAsync(TIMING.pollMs)
     await vi.advanceTimersByTimeAsync(TIMING.pollMs)
-    expect(rowReads.length).toBe(2)
-    rowReads[1].resolve(row(false, turn(1, 'success')))
+    expect(rowReads.length).toBe(3)
+    rowReads[2].resolve(row(false, turn(1, 'success')))
     await flush()
     expect(seen.rows.at(-1)?.running).toBe(false)
+    feed.stop()
+  })
+
+  test("a row the backend answered a cancel with clears an earlier read's error", async () => {
+    const { live, rowReads } = standIn()
+    const { feed, seen } = feedOf(live)
+    rowReads[0].reject(new Error('502 Bad Gateway'))
+    await flush()
+    expect(seen.errors.at(-1)).toBe('502 Bad Gateway')
+
+    feed.take(row(false, turn(1, 'cancelled')))
+    expect(seen.errors.at(-1)).toBeNull()
     feed.stop()
   })
 

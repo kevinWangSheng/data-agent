@@ -84,7 +84,8 @@ export type Composer = 'none' | 'turn' | 'steer' | 'settling'
 export function composer(view: ConversationView, running: boolean): Composer {
   if (!view.canFollowUp) return 'none'
   if (!running) return 'turn'
-  return view.running ? 'steer' : 'settling'
+  // Only the last turn can run; an earlier one without its events yet would look running.
+  return view.turns.at(-1)?.status === 'running' ? 'steer' : 'settling'
 }
 
 /** Where a steer stands: read by the agent; on its way while its turn runs; or never delivered,
