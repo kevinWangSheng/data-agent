@@ -1,6 +1,6 @@
 # 95 — 对话页面（A「对话流」）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 94（93 只挡合并：人 2026-11-17 定提前开工，见 Comments）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -112,3 +112,15 @@ I built the chat page for ticket 95 and committed it on `worktree-95-chat-page`.
 2. Following the `run` skill, start the local app and walk one conversation with a follow-up, a clarification, a steer and a cancel, then send the human screenshots.
 
 The real backend may start a turn before that turn's events can be read; the page simply tries again on the next poll. There is an untracked `.playwright-mcp/` folder at the worktree root left by the browser tool; it is not committed.
+
+### Main session, 2026-11-17: clean-context Opus 5.5 review of PR #100 (frontend rule, AGENTS.md)
+
+The reviewer ran `pnpm --dir web test` (260 passed) and `typecheck` (exit 0). It checked theme tokens in light, system-dark and forced-dark: all defined. Routing, unmount cleanup and the clarification guard hold. It agreed with every not-fixed reason in attempt 1. The main session checked each finding below against the code; all hold.
+
+退回（第 1 轮）：
+1. P2 `web/src/chat-page/Conversation.tsx:87-90`：`submit` 只看 `followUp && !busy`。这一轮已写出 `result`、进程还没退出时（`row.running` 为真、视图里这一轮已结束），追问会被后端当插话（202）送进已结束的会话，消息丢失，界面一直 "SENDING"。改：这段时间发送框和澄清选项一样等空闲（发送按钮禁用并说明"等这一轮收尾"），不改契约。
+2. P3 `web/src/chat-page/Turn.tsx:252-260`：没送达的插话在已取消或已结束的轮上仍显示 "SENDING"。轮不在运行时改成"未送达"。
+3. P3 `web/src/chat-page/useConversation.ts:84`：读某轮事件失败后只从 `loaded` 删掉，注释说"下一行再试"，但空闲对话不再拉行，这一轮永远空着且没有报错。改：空闲时也会重试（如失败后定时重拉），或显示错误和重试入口。
+4. P3 `web/src/chat-page/useConversation.ts:43-51`：`refresh` 没有防旧响应后到（`ChatPage.tsx:35-46` 有），取消后马上发送时旧响应可能把行改回空闲、停止轮询，新一轮不出现。照 `ChatPage` 的写法加序号保护。
+5. P3 `web/src/chat-page/ChatPage.tsx:78`：`grid-cols-[260px_minmax(0,1fr)]` 窄屏没有退路，375px 下对话栏约 115px 不可用。照运行页 `RunPage.tsx:285` 的 `max-[900px]` 写法。
+每条配一个修复前会失败的测试（能在 vitest 里测的测；纯布局的 5 用截图证明，375px 宽）。修完 `make check`，`eng:code-review main` 只看新提交（前端工单，不跑 `da-review`）；最终回复照工作流程第 6 步。
