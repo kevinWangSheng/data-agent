@@ -8,7 +8,7 @@ import { describe, expect, test } from 'vitest'
 
 import { parseEventLines } from '../data/source'
 import { buildConversationView, type ConversationIndex, type TurnRun } from '../chat-view/model'
-import { answerable, conversationTitle, turnLayout } from './layout'
+import { answerable, composer, conversationTitle, steerState, turnLayout } from './layout'
 
 const CHAT = join(import.meta.dirname, '../../../tests/fixtures/chat/conversation')
 const index = JSON.parse(readFileSync(join(CHAT, 'conversation.json'), 'utf8')) as ConversationIndex
@@ -77,5 +77,43 @@ describe('answerable', () => {
 
   test('a single run takes no answer', () => {
     expect(answerable({ ...viewOf(1), singleRun: true, canFollowUp: false }, 0, false)).toBe(false)
+  })
+})
+
+describe('composer', () => {
+  test('idle: a message starts the next turn', () => {
+    expect(composer(viewOf(1), false)).toBe('turn')
+  })
+
+  test('a turn still running: a message goes into it', () => {
+    expect(composer(viewOf(3, 6), true)).toBe('steer')
+  })
+
+  test("the turn wrote its result but its process has not exited: nothing is sent until it does", () => {
+    // The backend would take the message as a steer for a session that already ended.
+    expect(composer(viewOf(1), true)).toBe('settling')
+  })
+
+  test('a single run takes no message', () => {
+    expect(composer({ ...viewOf(1), singleRun: true, canFollowUp: false }, false)).toBe('none')
+  })
+})
+
+describe('steerState', () => {
+  const sent = viewOf(3, 6).turns[2].steers[0]
+  const delivered = viewOf(5).turns[2].steers[0]
+
+  test('sent while the turn runs: on its way', () => {
+    expect(steerState(sent, 'running')).toBe('sending')
+  })
+
+  test('the turn ended (cancelled, failed or done) before the agent read it: not delivered', () => {
+    expect(steerState(sent, 'cancelled')).toBe('undelivered')
+    expect(steerState(sent, 'failure')).toBe('undelivered')
+    expect(steerState(sent, 'success')).toBe('undelivered')
+  })
+
+  test('delivered stays delivered', () => {
+    expect(steerState(delivered, 'success')).toBe('delivered')
   })
 })

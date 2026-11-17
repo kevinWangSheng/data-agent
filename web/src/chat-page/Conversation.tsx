@@ -7,7 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 
 import type { LiveSource } from '../data/source'
 import { errorText, fmtCost } from '../format'
-import { answerable, conversationTitle } from './layout'
+import { answerable, composer, conversationTitle } from './layout'
 import { Turn } from './Turn'
 import { useConversation } from './useConversation'
 
@@ -38,6 +38,8 @@ export function Conversation({
 
   const running = row?.running ?? false
   const followUp = view?.canFollowUp ?? false
+  const mode = view ? composer(view, running) : 'none'
+  const canSend = mode === 'turn' || mode === 'steer'
 
   useEffect(() => {
     if (followUp) input.current?.focus()
@@ -86,7 +88,7 @@ export function Conversation({
 
   const submit = () => {
     const text = draft.trim()
-    if (text && !busy && followUp) void post(text, true)
+    if (text && !busy && canSend) void post(text, true)
   }
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -147,7 +149,7 @@ export function Conversation({
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={onKey}
                 rows={2}
-                placeholder={running ? 'Add something for the running turn…' : 'Ask a question about your data…'}
+                placeholder={mode === 'steer' ? 'Add something for the running turn…' : 'Ask a question about your data…'}
                 aria-label="Message"
                 className="min-h-[44px] flex-1 resize-none rounded-md border border-line-2 bg-panel-2 px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-3"
               />
@@ -156,12 +158,16 @@ export function Conversation({
                   <Square className="h-3 w-3" /> Cancel
                 </button>
               )}
-              <button type="button" data-testid="chat-send" className="btn btn-primary h-9" onClick={submit} disabled={busy || !draft.trim()}>
-                <Send className="h-3.5 w-3.5" /> {running ? 'Send to the running turn' : 'Send'}
+              <button type="button" data-testid="chat-send" className="btn btn-primary h-9" onClick={submit} disabled={busy || !canSend || !draft.trim()}>
+                <Send className="h-3.5 w-3.5" /> {mode === 'steer' ? 'Send to the running turn' : 'Send'}
               </button>
             </div>
             <div className="mx-auto mt-1 max-w-3xl text-[10.5px] text-ink-3">
-              {running ? 'A message sent now goes into the running turn; the agent reads it at its next step.' : 'Enter sends, Shift+Enter starts a new line.'}
+              {mode === 'steer'
+                ? 'A message sent now goes into the running turn; the agent reads it at its next step.'
+                : mode === 'settling'
+                  ? 'Waiting for this turn to wrap up; you can send once it has.'
+                  : 'Enter sends, Shift+Enter starts a new line.'}
             </div>
             {actionError && (
               <div className="banner banner-fail mx-auto mt-2 max-w-3xl text-[12px]" role="alert">

@@ -3,7 +3,7 @@
 // the steers delivered after one of its steps; then the answer. Pure, so the page only renders.
 
 import type { ConversationView, Steer, TurnView } from '../chat-view/model'
-import type { Narration, Phase, Step, VerifierDispatch } from '../run-view/model'
+import type { Narration, Phase, RunStatus, Step, VerifierDispatch } from '../run-view/model'
 
 export type Group = {
   phase: Phase
@@ -73,4 +73,23 @@ export function answerable(view: ConversationView, i: number, running: boolean):
 /** What a conversation is called: its first message; a single run without one, its id. */
 export function conversationTitle(id: string, singleRun: boolean, firstMessage: string | null | undefined): string {
   return firstMessage ?? (singleRun ? id : 'New conversation')
+}
+
+/** What the message box does now: nothing (a single run); start the next turn (idle); go into the
+ *  running turn (`steer`); or wait (`settling`): the last turn has ended in its events but the
+ *  backend's `running` still holds until its process exits, and a message sent then would be taken
+ *  as a steer for a session that already ended. */
+export type Composer = 'none' | 'turn' | 'steer' | 'settling'
+
+export function composer(view: ConversationView, running: boolean): Composer {
+  if (!view.canFollowUp) return 'none'
+  if (!running) return 'turn'
+  return view.running ? 'steer' : 'settling'
+}
+
+/** Where a steer stands: read by the agent; on its way while its turn runs; or never delivered,
+ *  its turn having ended (cancelled, failed or answered) before the agent's next step. */
+export function steerState(steer: Steer, status: RunStatus): 'delivered' | 'sending' | 'undelivered' {
+  if (steer.delivered) return 'delivered'
+  return status === 'running' ? 'sending' : 'undelivered'
 }

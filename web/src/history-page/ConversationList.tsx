@@ -29,7 +29,7 @@ export function ConversationList({
   onGo: (href: string) => void
 }) {
   return (
-    <nav className="flex min-h-0 flex-col border-r border-line bg-panel-2" aria-label="Conversations">
+    <nav className="flex min-h-0 flex-col border-r border-line bg-panel-2 max-[900px]:max-h-[33vh] max-[900px]:border-r-0 max-[900px]:border-b" aria-label="Conversations">
       <div className="p-2">
         <button
           type="button"

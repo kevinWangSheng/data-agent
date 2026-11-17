@@ -5,18 +5,18 @@
 // Test ids are the browser test's contract (web/e2e/chat.spec.ts): `turn`, `turn-message`,
 // `step-card`, `clarification` (its buttons are the options only), `answer`.
 
-import { Check, ChevronDown, ChevronRight, Clock, MessageSquareReply } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Clock, MessageSquareReply, X } from 'lucide-react'
 import { useState } from 'react'
 
 import type { Clarification, Steer, TurnView } from '../chat-view/model'
 import { ChatCode } from '../code/chat-code'
 import { Md } from '../code/markdown'
 import { fmtCost, fmtDur } from '../format'
-import type { Narration, RunView, Step, VerifierDispatch } from '../run-view/model'
+import type { Narration, RunStatus, RunView, Step, VerifierDispatch } from '../run-view/model'
 import { shortTool } from '../run-page/tools'
 import { Caret, DataTable, errorLine, inputLine, phaseLabel, Pre, StatusChip, StepChip, StepTag, VerdictChip } from '../run-page/ui'
 import { Link } from '../site/Link'
-import { turnLayout, type Group } from './layout'
+import { steerState, turnLayout, type Group } from './layout'
 
 export type TurnProps = {
   turn: TurnView
@@ -43,13 +43,13 @@ export function Turn({ turn, answerable, onPick, runHref, onGo }: TurnProps) {
         <Note key={n.seq} note={n} />
       ))}
       {layout.earlySteers.map((s) => (
-        <SteerNote key={s.id} steer={s} />
+        <SteerNote key={s.id} steer={s} status={turn.status} />
       ))}
       {layout.groups.map((g, i) => (
-        <GroupBlock key={`${g.phase.kind}-${g.phase.dispatch}-${i}`} group={g} live={running && i === layout.groups.length - 1} databases={databases} />
+        <GroupBlock key={`${g.phase.kind}-${g.phase.dispatch}-${i}`} group={g} live={running && i === layout.groups.length - 1} databases={databases} status={turn.status} />
       ))}
       {layout.pending.map((s) => (
-        <SteerNote key={s.id} steer={s} />
+        <SteerNote key={s.id} steer={s} status={turn.status} />
       ))}
       {running && <Working view={turn.run} />}
       {turn.clarification && <ClarificationCard clarification={turn.clarification} active={answerable} onPick={onPick} />}
@@ -115,7 +115,7 @@ function Working({ view }: { view: RunView }) {
   )
 }
 
-function GroupBlock({ group, live, databases }: { group: Group; live: boolean; databases: Map<string, string | null> }) {
+function GroupBlock({ group, live, databases, status }: { group: Group; live: boolean; databases: Map<string, string | null>; status: RunStatus }) {
   const [open, setOpen] = useState<boolean | null>(null)
   const shown = open ?? live
   const duration = group.steps.reduce((ms, s) => ms + (s.durationMs ?? 0), 0)
@@ -153,7 +153,7 @@ function GroupBlock({ group, live, databases }: { group: Group; live: boolean; d
         </>
       )}
       {group.steers.map((s) => (
-        <SteerNote key={s.id} steer={s} />
+        <SteerNote key={s.id} steer={s} status={status} />
       ))}
     </div>
   )
@@ -241,7 +241,8 @@ function VerifierCard({ dispatch, steps, databases }: { dispatch: VerifierDispat
   )
 }
 
-function SteerNote({ steer }: { steer: Steer }) {
+function SteerNote({ steer, status }: { steer: Steer; status: RunStatus }) {
+  const state = steerState(steer, status)
   return (
     <div className="flex items-start gap-2 rounded-md border border-dashed border-line-2 bg-panel px-2.5 py-1.5 text-[12.5px]">
       <MessageSquareReply className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
@@ -249,13 +250,17 @@ function SteerNote({ steer }: { steer: Steer }) {
         <span className="text-ink-3">You, while it ran: </span>
         {steer.text}
       </div>
-      {steer.delivered ? (
+      {state === 'delivered' ? (
         <span className="chip chip-ok" title="The message went into the running session; the agent reads it at its next step">
           <Check className="h-3 w-3" /> DELIVERED TO THE AGENT
         </span>
-      ) : (
+      ) : state === 'sending' ? (
         <span className="chip chip-na">
           <Clock className="h-3 w-3" /> SENDING
+        </span>
+      ) : (
+        <span className="chip chip-deny" title="The turn ended before the agent read this message">
+          <X className="h-3 w-3" /> NOT DELIVERED
         </span>
       )}
     </div>

@@ -74,8 +74,9 @@ export function ChatPage({
     }
   }
 
+  // Narrow screens (the run page's 900 px break): the list above, at most a third of the height.
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)]">
+    <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
       <ConversationList rows={rows} error={listError} selected={id} starting={starting} onNew={() => void start()} href={chatHref} onGo={onGo} />
       <main className="flex min-h-0 flex-col">
         {startError && (
