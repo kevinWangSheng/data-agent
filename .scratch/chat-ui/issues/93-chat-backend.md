@@ -1,10 +1,10 @@
 # 93 — 对话后端：存储、接口、子进程编排
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 89, 90, 91, 92
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (Opus 5.5), 2026-11-17
+Branch: worktree-93-chat-backend
 
 ## Goal
 
@@ -52,8 +52,8 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
@@ -71,3 +71,55 @@ Branch: —
   - stdin `{"id","text"}` lines. `steer_delivered` is written when the CLI echoes the line. A steer still unread when the turn ends gets an `error` event, and lines after the turn's result are never sent (92).
 - Ticket 95's page (PR #100, not merged) is built against the ticket-88 contract. It waits for idle in the window after the last turn's `result` and before the process exits, and shows NOT DELIVERED for unread steers. Do not change the contract.
 - Known limitation from 92/95: a message sent after the child writes `result` but before it exits still gets 202 (steer) and is not delivered. The page shows it as NOT DELIVERED.
+
+### Attempt 1 (ticket agent, branch `worktree-93-chat-backend`, commits 9f703c7, 784648d, 9090b7e), final reply as given
+
+I've built the chat backend for ticket 93 on `worktree-93-chat-backend` (3 commits, not pushed). `make check` passes and all 8 backend API acceptance tests pass. The real-model end-to-end runs (a–d, g, 3 times each) are still to do: I can't load the model environment, so the main session has to run them before merging.
+
+**What it does now**
+- **Conversations:** create, list, show, send a message, cancel. Each conversation lives in `<runs-dir>/conversations/<id>/`, the layout ticket 88's contract specifies.
+- **A message to an idle conversation** starts a new turn: one `data-agent run` with every configured data source and, from turn 2, the previous turn's session id. The data sources go in a file holding names, kinds, paths and variable names only, never connection strings.
+- **A message while a turn runs** is written into that turn's stdin as a steer; no new turn starts.
+- **One run at a time** counts the run form and all conversations together; anything else gets 409.
+- **Old command-line and form runs** show up in the conversation list as one-turn conversations that refuse follow-ups.
+- **The bug the real run needed:** `data-agent web` now gives every run its own stdin pipe. Before, a turn inherited the server's stdin and steering could not work.
+
+**Evidence**
+- `make check`: `2412 passed, 1 skipped, 63 deselected`; ruff and basedpyright clean. Baseline was 2397 passed plus 8 xfailed.
+- `tests/acceptance/test_chat_api.py`: `8 passed`. In it and `test_chat_e2e.py` the only changes are deleting the `TICKET_93` markers and their definitions.
+- `test_chat_eval_unchanged.py` passes, and the ticket-85 shutdown tests still pass (4 passed).
+- New tests:
+  - a turn's events read as 200 with an empty list right after the 201;
+  - a turn is steered through a real stdin pipe and leaves no processes after the server gets SIGTERM;
+  - steers can't block cancel or shutdown;
+  - a broken index doesn't break the list;
+  - the data-source file round-trips names that need escaping.
+- **Real run with no model** (`data-agent web` on the fixture data, then create a conversation and send a message):
+  - The message got `{"kind":"turn","turn":1,"run_id":"20261117T231011Z-db1100"}` with HTTP 201.
+  - The real `data-agent run` accepted every argument, then stopped with `data-agent run: error: DATA_AGENT_API_KEY is not set`, so no model call was made.
+  - That turn's events read `{"events":[]}` with HTTP 200, and the turn shows `failure`.
+
+**Reviews (fixes: 1 round each)**
+- **`da-review` (Codex), 1 finding, fixed:** writing a steer to stdin happened while holding the launcher's lock, which a turn not yet reading stdin could block. That stalled cancel and shutdown; the new test reproduced the hang first. Each run now has its own writer thread.
+- **`eng:code-review`, 1 finding fixed:** a `conversation.json` missing required fields broke the whole conversation list; it is now skipped. I also shared the duplicated test setup.
+- **Not fixed, with reasons:**
+  - An index write failing after the turn has started leaves that turn unrecorded. This is the same failure mode as the existing run-record write and unlikely on a local directory.
+  - A steer to a run without a stdin pipe is recorded but dropped. The real server always gives a pipe, so only fake test runners hit this.
+  - The conversation list holds the launcher's lock while it reads files. This is deliberate, so a row, a new turn and a steer agree on what is running.
+  - A missing data source returns 400 even while another run is going (the contract asks for 409). This keeps the run form's existing check order.
+  - The rest were naming and smell judgement calls.
+- **Known limitation, unchanged:** a message sent after a turn writes `result` but before its process exits still gets 202 and is never delivered.
+
+**For the main session to copy into the ticket**
+- `Status: in-review`
+- Ledger: Attempts 1 · Review rounds 2 · Model spend $0 · Outcome —
+- Comments: the evidence and review results above.
+- Then run the integration tests:
+  ```bash
+  make test-integration
+  # or only the chat scenarios:
+  set -a && . ~/.config/data-agent/env && set +a && uv run pytest -q -m integration tests/acceptance/test_chat_e2e.py
+  ```
+  a–d and g must each pass all 3 times. A failure needs its trajectory read to decide whether it's this backend, tickets 89–92, or model noise.
+
+I claimed the ticket in the main checkout (`in-progress`, Claimed by, Branch). The smoke-run leftovers are in `/tmp/da93/` and safe to delete.
