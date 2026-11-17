@@ -1,6 +1,7 @@
 """One `data-agent run`: one prompt on a Claude Agent SDK `ClaudeSDKClient` (ADR-0001 and its
 Update 2026-11-17), recorded as an event file. A run is a single task, or a turn of a conversation
-(`ConversationTurn`) that resumes the previous turn's session.
+(`ConversationTurn`) that resumes the previous turn's session and takes the messages sent while it
+runs (stdin steering, `query`).
 
 The model is whatever `DATA_AGENT_*` names; those values go only to the SDK's subprocess, mapped to
 the `ANTHROPIC_*` variables it reads, so the user's own Claude Code setup is untouched.
@@ -10,11 +11,13 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Container, Iterator, Mapping, Sequence
@@ -658,24 +661,148 @@ def spend_cap(model: str, budget: float) -> Spend | None:
     return None if price is None else Spend(price, budget)
 
 
-async def query(*, prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[Any]:
+async def query(
+    *,
+    prompt: str,
+    options: ClaudeAgentOptions,
+    steering: AsyncGenerator[str] | None = None,
+    emit: Emit | None = None,
+) -> AsyncGenerator[Any]:
     """One turn on a `ClaudeSDKClient` (spec decision 15, ADR-0001 Update 2026-11-17): connect,
     send `prompt`, and yield the session's messages up to and including the turn's
     ResultMessage. With background tasks off (`sdk_env`) a prompt gets exactly one result.
     Closing the stream, or its end, disconnects the client, which ends the CLI subprocess before
     `aclose` returns (the SDK's own `query` left that to the event loop's async-generator
-    finalizer, later)."""
+    finalizer, later).
+
+    `steering`, the stdin lines of a `--chat` run, is sent into the running turn by `steer`
+    (to `emit`) from when `prompt` is sent until the turn's ResultMessage arrives; a line still
+    unsent then is never sent."""
     client = ClaudeSDKClient(options)
+    steering_task: asyncio.Task[None] | None = None
     try:
         await client.connect()
         await client.query(prompt)
+        if steering is not None:
+            assert emit is not None, "steering writes its events through emit"
+            steering_task = asyncio.create_task(steer(client, steering, emit))
         async with aclosing(cast(AsyncGenerator[Any], client.receive_response())) as messages:
             async for message in messages:
-                yield message
                 if isinstance(message, ResultMessage):
+                    await stop_steering(steering_task)
+                    yield message
                     return
+                yield message
     finally:
-        await client.disconnect()
+        try:
+            # Re-raises a cancellation of this run (its deadline), which must not skip the
+            # disconnect.
+            await stop_steering(steering_task)
+        finally:
+            await client.disconnect()
+
+
+async def steer(client: ClaudeSDKClient, lines: AsyncGenerator[str], emit: Emit) -> None:
+    """Send each steering message among `lines` (`steer_message`) into the running turn as one
+    more `query()` on its client, as SignalPilot does (claude_agent.py:355-408), and then emit
+    `steer_delivered` with its `id` and `text`: the event's place in the file is where it went in.
+    The CLI queues the message and the model reads it at its next step, in the same turn (probe of
+    2026-11-17, .scratch/chat-ui/spec.md). A line that is no message is an `error` event and is
+    skipped; a blank line is ignored. stdin closing ends steering, not the turn. A message the
+    session cannot take (its CLI gone) is an `error` event and ends steering; the turn's own
+    stream reports the session's failure."""
+    number = 0
+    async with aclosing(lines) as stdin:
+        async for line in stdin:
+            number += 1
+            if not line.strip():
+                continue
+            message = steer_message(line)
+            if isinstance(message, str):
+                emit("error", source="steer", error=f"stdin line {number} skipped: {message}")
+                continue
+            try:
+                await client.query(message.text)
+            except Exception as exc:
+                emit("error", source="steer", error=f"stdin line {number} not sent: {exc}")
+                return
+            emit("steer_delivered", id=message.id, text=message.text)
+
+
+async def stop_steering(task: "asyncio.Task[None] | None") -> None:
+    """Cancel steering and wait for it to end."""
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        # Re-raised only when this task is being cancelled too, not for steering's own end.
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+
+
+async def stdin_lines(fd: int) -> AsyncGenerator[str]:
+    """The lines read from file descriptor `fd` (a `--chat` run's stdin), each with its newline,
+    and the unterminated rest once `fd` closes. Nothing is read before the first line is asked
+    for. A daemon thread reads the descriptor itself (`os.read`, not `sys.stdin`, whose buffer
+    lock a thread blocked in a read keeps at interpreter shutdown), so a run whose stdin stays
+    open still ends; bytes that are not UTF-8 are replaced."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def put(line: str | None) -> bool:
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, line)
+        except RuntimeError:  # the event loop is closed: the run has ended
+            return False
+        return True
+
+    def read() -> None:
+        pending = b""
+        try:
+            while chunk := os.read(fd, 65536):
+                pending += chunk
+                while (end := pending.find(b"\n")) >= 0:
+                    if not put(pending[: end + 1].decode(errors="replace")):
+                        return
+                    pending = pending[end + 1 :]
+        except OSError:
+            pass
+        if pending:
+            put(pending.decode(errors="replace"))
+        put(None)
+
+    threading.Thread(target=read, name="steering-stdin", daemon=True).start()
+    while (line := await queue.get()) is not None:
+        yield line
+
+
+@dataclass(frozen=True)
+class SteerMessage:
+    """A message sent while a turn runs: `id` is the chat backend's message id, `text` its text."""
+
+    id: str
+    text: str
+
+
+def steer_message(line: str) -> SteerMessage | str:
+    """The steering message one stdin line holds (`{"id": str, "text": str}`, contract item 6 of
+    tests/acceptance/test_chat_api.py), else why the line is none. Other keys are ignored."""
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return "not JSON"
+    if not isinstance(value, dict):
+        return "not a JSON object"
+    fields = cast(dict[str, Any], value)
+    id_, text = fields.get("id"), fields.get("text")
+    if not isinstance(id_, str) or not id_:
+        return 'no "id" string'
+    if not isinstance(text, str) or not text.strip():
+        return 'no "text" string'
+    return SteerMessage(id_, text)
 
 
 async def capped(messages: AsyncGenerator[Any], spend: Spend | None) -> AsyncGenerator[Any]:
@@ -1629,12 +1756,13 @@ async def run(
     env: Mapping[str, str],
     deadline: float | None = None,
     turn: ConversationTurn | None = None,
+    steering: AsyncGenerator[str] | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
     with `terminal_reason: "deadline"`; the outcome is an unfinished agent. `turn` makes the run a
     turn of a conversation (`ConversationTurn`): its `task` event names the conversation and the
-    turn."""
+    turn. `steering`, a `--chat` run's stdin lines, is sent into the running turn (`query`)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -1758,7 +1886,13 @@ async def run(
             try:
                 async with timer:
                     try:
-                        stream = query(prompt=prompt, options=options)
+                        stream = (
+                            query(prompt=prompt, options=options)
+                            if steering is None
+                            else query(
+                                prompt=prompt, options=options, steering=steering, emit=log.emit
+                            )
+                        )
                         async with aclosing(capped(stream, spend)) as messages:
                             async for message in messages:
                                 session_id = message_session(message) or session_id
