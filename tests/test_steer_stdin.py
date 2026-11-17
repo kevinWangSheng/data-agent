@@ -1,8 +1,9 @@
 """Steering a running turn (ticket 92, .scratch/chat-ui/spec.md decision 9): a `--chat` run reads
 stdin one JSON message per line (`{"id", "text"}`, tests/acceptance/test_chat_api.py contract item
-6), sends each into the live `ClaudeSDKClient` as one more `query()`, as SignalPilot does
-(claude_agent.py:355-408), and then writes a `steer_delivered` event; its `seq` is where in the
-run it went in. The CLI session is a scripted fake client, so no model is called.
+6) and sends each into the live `ClaudeSDKClient` as one more `query()`, its id as the uuid, as
+SignalPilot does (claude_agent.py:355-408). The CLI echoes the message when the model takes it in
+(`replay-user-messages`), and the run then writes a `steer_delivered` event; its `seq` is where the
+model read it. The CLI session is a scripted fake client, so no model is called.
 """
 
 import asyncio
@@ -11,7 +12,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ResultMessage,
     SystemMessage,
+    TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -49,14 +51,26 @@ class Ended:
     """In a script: marks that the turn's result has been sent (`FakeClient.ended`)."""
 
 
+@dataclass(frozen=True)
+class Echo:
+    """In a script: the CLI's echo (`replay-user-messages`) of steering message `index` (0 the
+    first), sent when the model takes it in; it waits until that message has been queried."""
+
+    index: int
+
+
 class FakeClient:
-    """A CLI session that plays `script` and keeps every prompt it was sent."""
+    """A CLI session that plays `script` and keeps every prompt it was sent, with its uuid. Like
+    the SDK's, `receive_response` ends at the first ResultMessage and `receive_messages` does
+    not."""
 
     script: tuple[Any, ...] = ()
     last: "FakeClient | None" = None
 
     def __init__(self, options: ClaudeAgentOptions) -> None:
+        self.options = options
         self.prompts: list[str] = []
+        self.uuids: list[str | None] = []
         self.ended = asyncio.Event()
         self.disconnected = False
         FakeClient.last = self
@@ -64,19 +78,39 @@ class FakeClient:
     async def connect(self) -> None:
         pass
 
-    async def query(self, prompt: str) -> None:
-        self.prompts.append(prompt)
+    async def query(self, prompt: str | AsyncIterable[dict[str, Any]]) -> None:
+        if isinstance(prompt, str):
+            self.prompts.append(prompt)
+            self.uuids.append(None)
+            return
+        async for message in prompt:
+            self.prompts.append(message["message"]["content"])
+            self.uuids.append(message.get("uuid"))
 
-    async def receive_response(self) -> AsyncIterator[Any]:
+    async def wait_for_steers(self, count: int) -> None:
+        async with asyncio.timeout(5):
+            while len(self.prompts) < 1 + count:
+                await asyncio.sleep(0.001)
+
+    async def receive_messages(self) -> AsyncIterator[Any]:
         for item in self.script:
             if isinstance(item, AwaitSteers):
-                async with asyncio.timeout(5):
-                    while len(self.prompts) < 1 + item.count:
-                        await asyncio.sleep(0.001)
+                await self.wait_for_steers(item.count)
             elif isinstance(item, Ended):
                 self.ended.set()
+            elif isinstance(item, Echo):
+                await self.wait_for_steers(item.index + 1)
+                yield UserMessage(
+                    content=self.prompts[1 + item.index], uuid=self.uuids[1 + item.index]
+                )
             else:
                 yield item
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        async for message in self.receive_messages():
+            yield message
+            if isinstance(message, ResultMessage):
+                return
 
     async def disconnect(self) -> None:
         self.disconnected = True
@@ -100,28 +134,45 @@ def tool_result(call_id: str) -> UserMessage:
     return UserMessage(content=[ToolResultBlock(tool_use_id=call_id, content="1")])
 
 
-def result() -> ResultMessage:
+def result(
+    text: str = "the top 3",
+    *,
+    num_turns: int = 2,
+    cost: float = 0.01,
+    output: int = 7,
+    subtype: str = "success",
+    model_usage: dict[str, Any] | None = None,
+) -> ResultMessage:
     return ResultMessage(
-        subtype="success",
+        subtype=subtype,
         duration_ms=1,
         duration_api_ms=1,
-        is_error=False,
-        num_turns=2,
+        is_error=subtype != "success",
+        model_usage=model_usage,
+        num_turns=num_turns,
         session_id="sess-1",
-        usage={"input_tokens": 3, "output_tokens": 7},
-        total_cost_usd=0.01,
-        result="the top 3",
+        usage={"input_tokens": 3, "output_tokens": output},
+        total_cost_usd=cost,
+        result=text,
     )
 
 
-def make_turn(tmp_path: Path) -> tuple[Task, ConversationTurn]:
-    conversation = tmp_path / "conv-20261117T000000Z-abcd1234"
+def answer(text: str) -> AssistantMessage:
+    return AssistantMessage(content=[TextBlock(text=text)], model="m")
+
+
+CONVERSATION = "conv-20261117T000000Z-abcd1234"
+
+
+def make_turn(tmp_path: Path, resume: str | None = None) -> tuple[Task, ConversationTurn]:
+    """Turn 1 of a conversation, or with `resume` turn 2, resuming that session."""
+    conversation = tmp_path / CONVERSATION
     workspace = conversation / "workspace"
     workspace.mkdir(parents=True)
     db = tmp_path / "x.duckdb"
     duckdb.connect(str(db)).close()
     task = Task(text="rank the customers", type="query", workspace=workspace, duckdb=db)
-    return task, ConversationTurn(conversation, 1)
+    return task, ConversationTurn(conversation, 1 if resume is None else 2, resume=resume)
 
 
 async def lines_of(lines: Iterable[str]) -> AsyncGenerator[str]:
@@ -137,11 +188,12 @@ async def run_steered(
     *script: Any,
     client: type[FakeClient] = FakeClient,
     deadline: float | None = None,
+    resume: str | None = None,
 ) -> tuple[Outcome, FakeClient, list[dict[str, Any]]]:
     """`agent.run` as a turn steered by `steering`, on a `client` session that plays `script`."""
     monkeypatch.setattr(client, "script", script)
     monkeypatch.setattr(agent, "ClaudeSDKClient", client)
-    task, turn = make_turn(tmp_path)
+    task, turn = make_turn(tmp_path, resume)
     async with asyncio.timeout(10):
         outcome = await agent.run(
             task,
@@ -177,16 +229,20 @@ async def test_a_stdin_message_is_one_query_and_one_event_where_it_went_in(
         tool_call("q1"),
         AwaitSteers(1),
         tool_result("q1"),
+        Echo(0),
         tool_call("q2"),
         tool_result("q2"),
         result(),
     )
     assert outcome.finished
     assert client.prompts[1:] == [STEER["text"]]
+    # The message goes in as one stream-json user message, its id the uuid the CLI echoes.
+    assert client.uuids[1:] == [STEER["id"]]
+    assert client.options.extra_args == {"replay-user-messages": None}
     [delivered] = of_type(events, "steer_delivered")
     assert (delivered["id"], delivered["text"]) == (STEER["id"], STEER["text"])
-    # Sent while the first query was running: after its start, before its end.
-    assert seq_of(events, "tool_start", "q1") < delivered["seq"] < seq_of(events, "tool_end", "q1")
+    # Sent while the first query ran, taken in by the model after it: where the echo came.
+    assert seq_of(events, "tool_end", "q1") < delivered["seq"] < seq_of(events, "tool_start", "q2")
     assert len(of_type(events, "result")) == 1
 
 
@@ -203,11 +259,12 @@ async def test_a_line_that_is_no_message_is_skipped_with_an_error_event(
     outcome, client, events = await run_steered(
         monkeypatch,
         tmp_path,
-        lines_of([*bad, "\n", json.dumps(STEER) + "\n"]),
+        lines_of([*bad, "\n", json.dumps(STEER) + "\n", json.dumps(STEER) + "\n"]),
         init(),
         tool_call("q1"),
         AwaitSteers(1),
         tool_result("q1"),
+        Echo(0),
         result(),
     )
     assert outcome.finished
@@ -216,11 +273,13 @@ async def test_a_line_that_is_no_message_is_skipped_with_an_error_event(
         (STEER["id"], STEER["text"])
     ]
     errors = of_type(events, "error")
-    assert [e["source"] for e in errors] == ["steer"] * len(bad)
-    # Numbered by stdin line; the blank line 6 is ignored without an event.
+    assert [e["source"] for e in errors] == ["steer"] * (len(bad) + 1)
+    # Numbered by stdin line; the blank line 6 is ignored without an event. Line 8 repeats the
+    # id of line 7, which the CLI would drop unechoed.
     assert [e["error"].split(" skipped")[0] for e in errors] == [
-        f"stdin line {n}" for n in range(1, 6)
+        f"stdin line {n}" for n in (1, 2, 3, 4, 5, 8)
     ]
+    assert errors[-1]["error"] == f"stdin line 8 skipped: id {STEER['id']!r} already sent"
 
 
 async def test_stdin_closed_from_the_start_leaves_the_turn_as_it_is(
@@ -356,7 +415,7 @@ async def test_a_message_the_session_cannot_take_is_an_error_event(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     class GoneClient(FakeClient):
-        async def query(self, prompt: str) -> None:
+        async def query(self, prompt: str | AsyncIterable[dict[str, Any]]) -> None:
             await super().query(prompt)  # counts the attempt
             if len(self.prompts) > 1:
                 raise ConnectionError("the CLI has gone")
@@ -406,3 +465,141 @@ async def test_a_run_stopped_at_its_deadline_while_steering_still_disconnects(
     )
     assert events[-1]["terminal_reason"] == "deadline"
     assert client.disconnected
+
+
+async def test_a_message_sent_after_the_last_step_is_read_before_the_turn_ends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A message sent once the model has taken its last step comes too late for that step: the
+    CLI ends it with a result, then takes the message in (its echo) as the next step, with a
+    result of its own (probes of 2026-11-17). The turn ends at that second result: its answer,
+    one `steer_delivered` where the model read the message, and one `result` for both steps.
+    The CLI's cost and model usage count the whole process, its turns and usage each step."""
+    outcome, client, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        tool_call("q1"),
+        tool_result("q1"),
+        answer("all the customers"),
+        AwaitSteers(1),
+        result("all the customers", num_turns=2, cost=0.01, output=7),
+        init(),
+        Echo(0),
+        answer("the top 3"),
+        result("the top 3", num_turns=1, cost=0.03, output=5),
+    )
+    assert outcome.finished and outcome.answer == "the top 3"
+    assert client.uuids[1:] == [STEER["id"]]
+    [delivered] = of_type(events, "steer_delivered")
+    assert (delivered["id"], delivered["text"]) == (STEER["id"], STEER["text"])
+    texts = [e for e in of_type(events, "text")]
+    assert texts[0]["seq"] < delivered["seq"] < texts[1]["seq"]
+    [final] = of_type(events, "answer")
+    assert final["text"] == "the top 3"
+    [turn_result] = of_type(events, "result")
+    assert (turn_result["num_turns"], turn_result["sdk_cost_usd"]) == (3, 0.03)
+    assert turn_result["output_tokens"] == 12
+    assert len(of_type(events, "status")) == 1
+
+
+async def test_two_messages_sent_together_end_the_turn_once_both_are_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two messages sent after the last step: the CLI echoes the first after the step's result
+    and the second when it takes both in as one step (probe of 2026-11-17)."""
+    second = {"id": "m2", "text": "And their totals."}
+    outcome, _, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n", json.dumps(second) + "\n"]),
+        init(),
+        answer("all the customers"),
+        AwaitSteers(2),
+        result("all the customers"),
+        Echo(0),
+        init(),
+        Echo(1),
+        answer("the top 3 with totals"),
+        result("the top 3 with totals"),
+    )
+    assert outcome.answer == "the top 3 with totals"
+    assert [e["id"] for e in of_type(events, "steer_delivered")] == [STEER["id"], "m2"]
+    assert len(of_type(events, "result")) == 1
+
+
+async def test_an_error_result_ends_the_turn_with_a_message_unread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A step that fails (here its turn limit) ends the turn even with a message waiting for
+    its echo: no `steer_delivered`, an `error` event saying it was not read."""
+    outcome, _, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        tool_call("q1"),
+        AwaitSteers(1),
+        result("", subtype="error_max_turns"),
+        Echo(0),
+        result("never read"),
+    )
+    assert not outcome.finished
+    assert not of_type(events, "steer_delivered")
+    assert [(e["source"], e["error"]) for e in of_type(events, "error")] == [
+        ("steer", f"message {STEER['id']!r} was not read: the turn ended")
+    ]
+    [turn_result] = of_type(events, "result")
+    assert turn_result["subtype"] == "error_max_turns"
+
+
+def model_usage(uncached: int, cached: int, output: int, cost: float) -> dict[str, Any]:
+    return {
+        "m": {
+            "inputTokens": uncached,
+            "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": cached,
+            "outputTokens": output,
+            "costUSD": cost,
+        }
+    }
+
+
+async def test_a_resumed_turn_of_two_steps_counts_its_own_spend_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Each step's result holds the CLI's totals so far, the restored earlier turns among them
+    (ticket 90, `restored_sdk_cost_usd`): the turn's result is the last one less what was
+    restored, not a sum of the two."""
+    record = tmp_path / CONVERSATION / "claude-config" / "projects" / "-cwd" / "sess-1.jsonl"
+    record.parent.mkdir(parents=True)
+    restored = {
+        "type": "cost-state",
+        "sessionId": "sess-1",
+        "totalCostUSD": 0.5,
+        "modelUsage": model_usage(100, 40, 20, 0.5),
+    }
+    record.write_text(json.dumps(restored) + "\n")
+    _, _, events = await run_steered(
+        monkeypatch,
+        tmp_path,
+        lines_of([json.dumps(STEER) + "\n"]),
+        init(),
+        answer("all the customers"),
+        AwaitSteers(1),
+        result("all", num_turns=1, cost=0.52, model_usage=model_usage(130, 50, 27, 0.52)),
+        init(),
+        Echo(0),
+        result("top 3", num_turns=1, cost=0.55, model_usage=model_usage(160, 50, 31, 0.55)),
+        resume="sess-1",
+    )
+    [turn_result] = of_type(events, "result")
+    assert (
+        turn_result["uncached_input_tokens"],
+        turn_result["cached_input_tokens"],
+        turn_result["output_tokens"],
+        round(turn_result["sdk_cost_usd"], 6),
+        turn_result["num_turns"],
+        turn_result["restored_sdk_cost_usd"],
+    ) == (60, 10, 11, 0.05, 2, 0.5)

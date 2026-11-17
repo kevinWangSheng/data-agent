@@ -675,24 +675,43 @@ async def query(
     `aclose` returns (the SDK's own `query` left that to the event loop's async-generator
     finalizer, later).
 
-    `steering`, the stdin lines of a `--chat` run, is sent into the running turn by `steer`
-    (to `emit`) from when `prompt` is sent until the turn's ResultMessage arrives; a line still
+    `steering`, the stdin lines of a `--chat` run, is sent into the running turn
+    (`SteeredTurn`, to `emit`) from when `prompt` is sent until the turn ends; a line still
     unsent then is never sent."""
+    if steering is not None:
+        # The CLI echoes each user message, with its uuid, when the model takes it in.
+        options = dataclasses.replace(
+            options, extra_args={**options.extra_args, "replay-user-messages": None}
+        )
     client = ClaudeSDKClient(options)
     steering_task: asyncio.Task[None] | None = None
     try:
         await client.connect()
-        await client.query(prompt)
-        if steering is not None:
-            assert emit is not None, "steering writes its events through emit"
-            steering_task = asyncio.create_task(steer(client, steering, emit))
-        async with aclosing(cast(AsyncGenerator[Any], client.receive_response())) as messages:
+        if steering is None:
+            await client.query(prompt)
+            async with aclosing(cast(AsyncGenerator[Any], client.receive_response())) as messages:
+                async for message in messages:
+                    yield message
+                    if isinstance(message, ResultMessage):
+                        return
+            return
+        assert emit is not None, "steering writes its events through emit"
+        steered = SteeredTurn(client, emit)
+        await client.query(user_message(prompt, steered.prompt_id))
+        steering_task = asyncio.create_task(steered.steer(steering))
+        async with aclosing(cast(AsyncGenerator[Any], client.receive_messages())) as messages:
             async for message in messages:
                 if isinstance(message, ResultMessage):
-                    await stop_steering(steering_task)
+                    steered.results.append(message)
+                    if not steered.ends_at(message):
+                        continue
+                    break
+                if not steered.hides(message):
                     yield message
-                    return
-                yield message
+        if steered.results:
+            await stop_steering(steering_task)
+            steered.close()
+            yield steered_result(steered.results)
     finally:
         try:
             # Re-raises a cancellation of this run (its deadline), which must not skip the
@@ -702,31 +721,120 @@ async def query(
             await client.disconnect()
 
 
-async def steer(client: ClaudeSDKClient, lines: AsyncGenerator[str], emit: Emit) -> None:
-    """Send each steering message among `lines` (`steer_message`) into the running turn as one
-    more `query()` on its client, as SignalPilot does (claude_agent.py:355-408), and then emit
-    `steer_delivered` with its `id` and `text`: the event's place in the file is where it went in.
-    The CLI queues the message and the model reads it at its next step, in the same turn (probe of
-    2026-11-17, .scratch/chat-ui/spec.md). A line that is no message is an `error` event and is
-    skipped; a blank line is ignored. stdin closing ends steering, not the turn. A message the
-    session cannot take (its CLI gone) is an `error` event and ends steering; the turn's own
-    stream reports the session's failure."""
-    number = 0
-    async with aclosing(lines) as stdin:
-        async for line in stdin:
-            number += 1
-            if not line.strip():
-                continue
-            message = steer_message(line)
-            if isinstance(message, str):
-                emit("error", source="steer", error=f"stdin line {number} skipped: {message}")
-                continue
-            try:
-                await client.query(message.text)
-            except Exception as exc:
-                emit("error", source="steer", error=f"stdin line {number} not sent: {exc}")
-                return
-            emit("steer_delivered", id=message.id, text=message.text)
+async def user_message(text: str, id_: str) -> AsyncGenerator[dict[str, Any]]:
+    """`text` as the stream-json user message the CLI echoes with `id_` as its uuid
+    (SignalPilot's `_steering_prompt`, claude_agent.py:357-370)."""
+    yield {
+        "type": "user",
+        "uuid": id_,
+        "message": {"role": "user", "content": text},
+        "parent_tool_use_id": None,
+    }
+
+
+class SteeredTurn:
+    """A turn steered through stdin, reconciled by the CLI's echoes as SignalPilot does
+    (claude_agent.py:355-408, claude_agent_events.py:157-163 and 326-339). Each steering message
+    goes in as one more `query()` with its `id` as the uuid; the CLI echoes it, that uuid kept,
+    when the model takes it in, and only then is `steer_delivered` emitted. A message the model
+    has not taken in by the end of a step is not lost: the CLI takes it in as the next step, which
+    ends with a result of its own (probes of 2026-11-17, ticket 92). So the turn ends at the
+    first result with no message waiting for its echo; an error result ends it anyway, and a
+    message still waiting is then an `error` event."""
+
+    def __init__(self, client: ClaudeSDKClient, emit: Emit) -> None:
+        self.client = client
+        self.emit = emit
+        self.prompt_id = str(uuid.uuid4())
+        self.waiting: dict[str, str] = {}  # sent and not yet echoed: id -> text
+        self.sent: set[str] = set()
+        self.results: list[ResultMessage] = []
+        self.started = False
+
+    async def steer(self, lines: AsyncGenerator[str]) -> None:
+        """Send each steering message among `lines` (`steer_message`). A line that is no
+        message, or repeats the id of one already sent (the CLI drops a user message whose uuid
+        it has seen), is an `error` event and is skipped; a blank line is ignored. stdin closing
+        ends steering, not the turn. A message the session cannot take (its CLI gone) is an
+        `error` event and ends steering; the turn's own stream reports the session's failure."""
+        number = 0
+        async with aclosing(lines) as stdin:
+            async for line in stdin:
+                number += 1
+                if not line.strip():
+                    continue
+                message = steer_message(line)
+                if not isinstance(message, str) and message.id in self.sent:
+                    message = f"id {message.id!r} already sent"
+                if isinstance(message, str):
+                    self.emit(
+                        "error", source="steer", error=f"stdin line {number} skipped: {message}"
+                    )
+                    continue
+                # Counted before it is sent, so a result that comes meanwhile waits for it.
+                self.sent.add(message.id)
+                self.waiting[message.id] = message.text
+                try:
+                    await self.client.query(user_message(message.text, message.id))
+                except Exception as exc:
+                    del self.waiting[message.id]
+                    self.emit("error", source="steer", error=f"stdin line {number} not sent: {exc}")
+                    return
+
+    def hides(self, message: Any) -> bool:
+        """Whether `message` belongs to the steering rather than to the turn: an echo (of the
+        prompt, or of a steering message, which emits `steer_delivered` with its `id` and
+        `text`) or the init message of a step after the first, in the same session."""
+        if isinstance(message, UserMessage) and message.parent_tool_use_id is None:
+            if message.uuid == self.prompt_id:
+                return True
+            if message.uuid is not None and message.uuid in self.waiting:
+                text = self.waiting.pop(message.uuid)
+                self.emit("steer_delivered", id=message.uuid, text=text)
+                return True
+        if isinstance(message, SystemMessage) and message.subtype == "init":
+            seen, self.started = self.started, True
+            return seen
+        return False
+
+    def ends_at(self, result: ResultMessage) -> bool:
+        """Whether the turn ends at `result`."""
+        return not self.waiting or result.is_error or result.subtype != "success"
+
+    def close(self) -> None:
+        """Emit an `error` event for each message sent and never taken in."""
+        for id_ in self.waiting:
+            self.emit(
+                "error", source="steer", error=f"message {id_!r} was not read: the turn ended"
+            )
+
+
+# What a result of the CLI counts, per step of a steered turn (probes of 2026-11-17 against the
+# bundled CLI 2.1.301): the step alone for these; the whole process so far for `total_cost_usd`,
+# `model_usage` and `duration_api_ms`.
+STEP_USAGE_TOKENS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+
+
+def steered_result(results: Sequence[ResultMessage]) -> ResultMessage:
+    """The result of a turn whose steps each ended with one of `results`: the last, with the
+    counts each step makes alone (`num_turns`, `duration_ms`, `usage` tokens) summed."""
+    last = results[-1]
+    if len(results) == 1:
+        return last
+    usage = dict(last.usage or {})
+    for key in STEP_USAGE_TOKENS:
+        usage[key] = sum(int((result.usage or {}).get(key) or 0) for result in results)
+    return dataclasses.replace(
+        last,
+        num_turns=sum(result.num_turns for result in results),
+        duration_ms=sum(result.duration_ms for result in results),
+        usage=usage,
+    )
 
 
 async def stop_steering(task: asyncio.Task[None] | None) -> None:
