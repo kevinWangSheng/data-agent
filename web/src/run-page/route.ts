@@ -1,5 +1,6 @@
-// The run page's address: `<base>runs/<id>?step=<id>&filter=<filter>`. The base is the build's base
-// path (`/` locally, `/data-agent/` online), so links work under a sub-path.
+// The run page's address: `<base>runs/<id>?step=<id>&filter=<filter>`; `<base>runs` is the history
+// list. The base is the build's base path (`/` locally, `/data-agent/` online), so links work under
+// a sub-path.
 
 export type Filter = 'all' | 'sql' | 'issues' | 'verifier'
 
@@ -34,4 +35,14 @@ export function routeUrl(route: Route, base: string): string {
   if (route.filter !== 'all') query.set('filter', route.filter)
   const qs = query.toString()
   return `${root}runs/${encodeURIComponent(route.id)}${qs ? `?${qs}` : ''}`
+}
+
+/** The history list's address. Locally the base address shows it too. */
+export function historyUrl(base: string): string {
+  return `${base.endsWith('/') ? base : `${base}/`}runs`
+}
+
+export function isHistoryPath(pathname: string, base: string): boolean {
+  const at = historyUrl(base)
+  return pathname === at || pathname === `${at}/`
 }

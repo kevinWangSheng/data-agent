@@ -360,3 +360,20 @@ describe('unknown times', () => {
     expect(view.summary.durationMs).toBe(0)
   })
 })
+
+describe('status from the local backend', () => {
+  const started: RunEvent[] = [version({}), { seq: 1, type: 'status', ts: '2026-11-15T09:00:01+00:00', state: 'started' }]
+  const result: RunEvent = { seq: 2, type: 'result', ts: '2026-11-15T09:00:02+00:00', subtype: 'success', is_error: false }
+
+  test('a run whose process exited without a result event failed', () => {
+    expect(buildRunView(started, { failed: true }).summary.status).toBe('failure')
+  })
+
+  test('the result event wins over the exit', () => {
+    expect(buildRunView([...started, result], { failed: true }).summary.status).toBe('success')
+  })
+
+  test('cancelled wins over the exit', () => {
+    expect(buildRunView(started, { cancelled: true, failed: true }).summary.status).toBe('cancelled')
+  })
+})

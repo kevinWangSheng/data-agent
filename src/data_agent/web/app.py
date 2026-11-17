@@ -13,7 +13,13 @@ from typing import Annotated, Any
 import anyio
 from anyio import to_thread
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel
 
 from data_agent.run_config import CONFIG_NAMES
@@ -22,6 +28,15 @@ from data_agent.web.runs import RunsDir
 
 # Re-exported: the acceptance tests (ticket 73) import DataSource from this module.
 from data_agent.web.sources import DataSource as DataSource
+
+# The built web UI: a wheel carries it (hatch_build.py); a checkout gets it from
+# `pnpm --dir web build:local`.
+UI_DIR = Path(__file__).parent / "static"
+NOT_BUILT = (
+    "The web UI is not built into this install. In a checkout, build it with "
+    "`pnpm --dir web install && pnpm --dir web build:local`; a wheel built where pnpm is on PATH "
+    "carries it. The API under /api works without it.\n"
+)
 
 # How often a stream looks for new events, and how long it stays silent before a keepalive.
 POLL_SECONDS = 0.25
@@ -35,10 +50,16 @@ class Submit(BaseModel):
     config: str
 
 
-def create_app(runs_dir: Path, data_sources: Sequence[DataSource], start_run: StartRun) -> FastAPI:
+def create_app(
+    runs_dir: Path,
+    data_sources: Sequence[DataSource],
+    start_run: StartRun,
+    ui_dir: Path = UI_DIR,
+) -> FastAPI:
     """The app serving the runs under `runs_dir` (one subdirectory per run, named by run id, holding
-    its event file) and starting new runs through `start_run`. ValueError when a dbt run could not
-    copy a source's project into its own working directory (`check_layout`)."""
+    its event file), starting new runs through `start_run`, and serving the built web UI from
+    `ui_dir`. ValueError when a dbt run could not copy a source's project into its own working
+    directory (`check_layout`)."""
     runs = RunsDir(runs_dir)
     launcher = Launcher(runs, data_sources, start_run)
 
@@ -102,7 +123,31 @@ def create_app(runs_dir: Path, data_sources: Sequence[DataSource], start_run: St
         except Refused as exc:
             raise HTTPException(exc.status, exc.detail) from exc
 
+    serve_ui(app, ui_dir)
     return app
+
+
+def serve_ui(app: FastAPI, ui_dir: Path) -> None:
+    """The UI's bundle under `/assets/`, and its page at every other address outside `/api/`: the
+    app routes in the browser, so a reload of `/runs/<id>` gets the page too. Registered after the
+    API, so it never shadows an API route."""
+    root = ui_dir.resolve()
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def page(path: str) -> Response:
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(404, "Not Found")
+        if path.startswith("assets/"):
+            file = (root / path).resolve()
+            if file.is_relative_to(root) and file.is_file():
+                # Vite names each bundle file by its content hash.
+                return FileResponse(file, headers={"Cache-Control": "max-age=31536000, immutable"})
+            raise HTTPException(404, "Not Found")
+        index = root / "index.html"
+        if not index.is_file():
+            return PlainTextResponse(NOT_BUILT, status_code=503)
+        # Revalidated each time, so a new install's page names its new bundle.
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 async def stream(runs: RunsDir, run_id: str, cursor: int, request: Request) -> AsyncIterator[str]:

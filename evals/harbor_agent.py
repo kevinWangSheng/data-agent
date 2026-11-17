@@ -28,6 +28,7 @@ Run from the repo root, with the `DATA_AGENT_*` variables in the environment:
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -151,7 +152,12 @@ def build_artifacts() -> tuple[Path, Path]:
         if _built is None:
             out = Path(tempfile.mkdtemp(prefix="data-agent-harbor-"))
             uv = ["uv", "--directory", str(REPO_ROOT)]
-            subprocess.run([*uv, "build", "--wheel", "--out-dir", str(out)], check=True)
+            # Without the web UI (hatch_build.py): no pnpm and no frontend build here.
+            subprocess.run(
+                [*uv, "build", "--wheel", "--out-dir", str(out)],
+                env=os.environ | {"DATA_AGENT_WHEEL_UI": "0"},
+                check=True,
+            )
             requirements = out / "requirements.txt"
             subprocess.run(
                 [

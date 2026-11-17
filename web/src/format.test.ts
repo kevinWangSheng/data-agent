@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 
-import { fmtClock, fmtCost, fmtDur, fmtTokens } from './format'
+import { fmtClock, fmtCost, fmtDur, fmtStart, fmtTokens } from './format'
 
 test('fmtClock', () => {
   expect(fmtClock(0)).toBe('0:00')
@@ -24,4 +24,10 @@ test('fmtTokens and fmtCost', () => {
   expect(fmtTokens(9_920_000)).toBe('9.92M')
   expect(fmtCost(0.0061)).toBe('$0.006')
   expect(fmtCost(12.5)).toBe('$12.50')
+})
+
+test('fmtStart: local date and minute, the same in every browser language', () => {
+  expect(fmtStart(new Date(2026, 10, 16, 5, 9, 30).toISOString())).toBe('2026-11-16 05:09')
+  expect(fmtStart('not a time')).toBe('not a time')
+  expect(fmtStart(null)).toBe('—')
 })

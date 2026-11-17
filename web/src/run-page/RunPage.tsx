@@ -1,7 +1,7 @@
 // The run page (spec "运行页"): three panes over one run, read only through the run view model. A
 // replay feeds the model the events up to the replay clock; "show all" feeds it every event.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import type { RunData } from '../data/source'
 import { fmtCost, fmtDur } from '../format'
@@ -31,9 +31,22 @@ const FILTER_LABELS: [Filter, string][] = [
 /**
  * `autoplay` (the online site's first screen): the replay starts at once, skipping idle gaps, at
  * the speed that plays it in about 25 seconds, and stops with everything shown. Otherwise the run
- * opens with everything shown.
+ * opens with everything shown. `actions`: controls the data source adds to the run's bar, e.g. the
+ * local backend's cancel.
  */
-export function RunPage({ run, route, navigate, autoplay = false }: { run: RunData; route: Route; navigate: Navigate; autoplay?: boolean }) {
+export function RunPage({
+  run,
+  route,
+  navigate,
+  autoplay = false,
+  actions,
+}: {
+  run: RunData
+  route: Route
+  navigate: Navigate
+  autoplay?: boolean
+  actions?: ReactNode
+}) {
   const { events, notes } = run
   const [reading, setReading] = useState<number | null>(autoplay ? 0 : null)
   const [playing, setPlaying] = useState(autoplay)
@@ -245,6 +258,7 @@ export function RunPage({ run, route, navigate, autoplay = false }: { run: RunDa
           {fmtDur(full.summary.durationMs)}
           {full.summary.costUsd !== null && ` · ${fmtCost(full.summary.costUsd)}`}
         </span>
+        {actions}
         <div className="flex-1" />
         <div className="max-[900px]:hidden">
           <ReplayControls
