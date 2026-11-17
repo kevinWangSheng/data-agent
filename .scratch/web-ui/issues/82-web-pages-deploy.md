@@ -1,7 +1,7 @@
 # 82 — 发布到 GitHub Pages
 
 Status: ready-for-agent
-Blocked by: 74, 81
+Blocked by: 74（done）, 79（done）, 81（done）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -56,3 +56,4 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+- 2026-11-16 主会话：依赖都已合入。构建的做法（工单 81、79 定）：`SITE_DATA=<导出目录> pnpm --dir web build --base /data-agent/`（`web/site-data.ts` 从导出生成 `home.json`、把导出复制进 `dist/data`，不含 `index.json`；导出没有精选运行时 build 直接失败）。在线版的地址有 `/data-agent/`（第一屏）、`/data-agent/runs`（历史列表，工单 79）、`/data-agent/runs/<id>`、`/data-agent/eval`，直接打开都要靠 404 回退页。流程从 release 下载数据包后解压成导出目录再设 `SITE_DATA`。本地验证可以用工单 81 worktree 里的导出 `/Users/shenghuikevin/dev/AI/data-agent/.claude/worktrees/81-web-eval-page-and-first-screen/runs/81-site`（只读，不复制进仓库）。工单 87（答案旁的结果表）同时在做，改的是 `web/src/run-view/`、`web/src/run-page/`，本工单不碰这两处。
