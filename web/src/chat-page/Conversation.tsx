@@ -153,7 +153,8 @@ export function Conversation({
           <div className="mx-auto max-w-3xl text-[12px] text-ink-3">This run was started on its own (command line or the run form), so it takes no follow-up. Start a new conversation to ask more.</div>
         ) : (
           <>
-            <div className="mx-auto flex max-w-3xl items-end gap-2">
+            {/* Below 900px the buttons get their own row under the box, so the box keeps the width. */}
+            <div className="mx-auto flex max-w-3xl items-end gap-2 max-[900px]:flex-col max-[900px]:items-stretch">
               <textarea
                 ref={input}
                 data-testid="chat-input"
@@ -165,14 +166,16 @@ export function Conversation({
                 aria-label="Message"
                 className="min-h-[44px] flex-1 resize-none rounded-md border border-line-2 bg-panel-2 px-2.5 py-1.5 text-[13px] text-ink placeholder:text-ink-3"
               />
-              {running && (
-                <button type="button" className="btn h-9" onClick={() => void cancel()} disabled={busy}>
-                  <Square className="h-3 w-3" /> Cancel
+              <div className="flex shrink-0 gap-2 max-[900px]:justify-end">
+                {running && (
+                  <button type="button" className="btn h-9" onClick={() => void cancel()} disabled={busy}>
+                    <Square className="h-3 w-3" /> Cancel
+                  </button>
+                )}
+                <button type="button" data-testid="chat-send" className="btn btn-primary h-9" onClick={submit} disabled={busy || !canSend || !draft.trim()}>
+                  <Send className="h-3.5 w-3.5" /> {box.send}
                 </button>
-              )}
-              <button type="button" data-testid="chat-send" className="btn btn-primary h-9" onClick={submit} disabled={busy || !canSend || !draft.trim()}>
-                <Send className="h-3.5 w-3.5" /> {box.send}
-              </button>
+              </div>
             </div>
             <div className="mx-auto mt-1 max-w-3xl text-[10.5px] text-ink-3">
               {box.hint}
