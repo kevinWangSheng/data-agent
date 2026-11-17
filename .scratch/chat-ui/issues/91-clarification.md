@@ -132,3 +132,11 @@ uv run pytest tests/acceptance/test_chat_e2e.py -m integration -k test_f -q
 ```
 
 Scenario b in `test_chat_e2e.py` stays `xfail` until ticket 93 adds the chat backend; this ticket doesn't flip it.
+
+### Main session, 2026-11-17: real run (attempt 1 commands, at 3baf99b)
+
+- Ambiguous question as a chat turn: exit 0, no `answer` event. The `clarification` event: "Orders have a status of completed or refunded. Which orders should count toward 2024 revenue?", with options "All orders placed in 2024, including refunded (total 2121.75)" / "Only completed orders placed in 2024, excluding refunded (total 1474.50)". `result` subtype `success`, session `dbcbe5e2-…`.
+- Turn 2 (`--resume`, option 1 sent as the message): "Total revenue: 2121.75", exit 0.
+- Plain question as a chat turn: "order_id: 1034", 0 clarification events.
+- Scenario f: `pytest tests/acceptance/test_chat_e2e.py -m integration -k test_f -q` gives "3 passed, 21 deselected".
+- Merge: after 89 (conflicts expected in `agent.py`); 91 rebases onto main first.
