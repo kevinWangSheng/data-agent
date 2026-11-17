@@ -1,10 +1,10 @@
 # 88 — 对话界面：验收测试（真模型端到端、浏览器、三组不调模型的）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (opus-5-5)
+Branch: worktree-88-chat-acceptance-tests
 
 ## Goal
 
@@ -78,10 +78,222 @@ spec "Testing Decisions" 列的验收测试全部写好：真模型端到端 a�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 3
+- Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: returned twice (round 1: f keyword check; round 2: Markdown around 'completed'); in review
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+### Attempt 1 (ticket agent, branch `worktree-88-chat-acceptance-tests`, commits 38c259f, 5284b6e, 7676c2b)
+
+- **What was built**
+  - `tests/acceptance/`:
+    - `test_chat_api.py`: 8 tests, all `TICKET_93`.
+    - `test_chat_eval_unchanged.py`: 2 tests, passing now.
+    - `test_chat_e2e.py`: scenarios a, b (ambiguous / plain), c, d, f, g (two databases / one database), 3 runs each, 24 cases. f has no marker; everything else is `TICKET_93`.
+  - `web/src/chat-view/`: `model.ts` holds the types and a stub; `acceptance/chat-view.test.ts` has 16 `TICKET_94` (`test.fails`) tests.
+  - `web/e2e/chat.spec.ts`: one unmarked test ("the server serves the built UI") and the main flow, marked `TICKET_95` (`test.fail`).
+  - Other changes: `web/playwright.config.ts`, `web/e2e/tsconfig.json`, `@playwright/test@1.65.1` (the lockfile change is Playwright packages only), and Makefile targets: `test-integration` now builds the UI, type-checks the e2e files and runs Playwright; new `playwright-install` target.
+  - `tests/fixtures/chat/`:
+    - `orders.sql` / `customers.sql`; the DuckDB files are built at test time by `build_sources.py`.
+    - `sources.toml` (data-source config).
+    - `fake_chat_run.py` (fake single-turn subprocess).
+    - `conversation/`: hand-written 5-turn fixture.
+    - `eval-unchanged.json`: snapshot taken from main.
+  - `src/` is unchanged: `create_app` needed no new parameter.
+- **Commands run and their output**
+  - `make check`:
+    - ruff: "All checks passed!" and "313 files already formatted".
+    - basedpyright: 0 errors.
+    - pytest: "2309 passed, 1 skipped, 63 deselected, 8 xfailed".
+    - web typecheck passed; vitest: "Tests 225 passed | 16 expected fail (241)".
+  - `uv run pytest tests/acceptance/test_chat_api.py tests/acceptance/test_chat_eval_unchanged.py -v`: the 8 API tests XFAIL and the 2 eval tests PASSED.
+  - `pnpm --dir web test`: the 16 chat-view tests are expected fails (turns / clarification / steers / cost / databases / single runs / prefix).
+  - Test lists: `pytest tests/acceptance/test_chat_e2e.py --collect-only -m integration` gives 24 cases; `playwright test --list` gives 2 tests. `make check` runs neither (24 integration cases deselected).
+- **Real failure reason per group, with markers lifted**
+  - API: `--runxfail` gives `AssertionError: {"detail":"Method Not Allowed"} / assert 405 == 201`.
+  - E2E (a–d, g): I started a real `data-agent web`. The fixture first checks that the process is alive and `/api/runs` returns 200; the failure is then `405 == 201` on `POST /api/conversations`.
+  - View model: `Error: buildConversationView is not implemented yet (ticket 94)`.
+  - Playwright, with Chromium installed and the UI built: "the server serves the built UI" passes. The main flow fails with `locator.click: Timeout 60000ms … waiting for getByTestId('new-conversation')`.
+  - Setup failures can no longer hide as expected failures: the xfail markers accept only `AssertionError`, and the fixtures raise `RuntimeError` when the server does not come up.
+- **Reference implementations and reverse checks** (written temporarily, not committed; `src/` restored and `git status src/` clean)
+  - View model: 16/16 pass on the reference. Each mutant fails:
+    - cards built without the run notes: 4 fail;
+    - clicked option not recorded: 1 fails;
+    - steer placed after the wrong step: 2 fail.
+  - API: 8/8 pass on the reference, re-checked after the review-round-2 contract change. Each mutant fails:
+    - turn 2 gets no session id: 2 fail;
+    - only the first data source is passed: 1 fails;
+    - a message while running is refused instead of steered: 2 fail.
+  - Eval unchanged. Each source mutant fails:
+    - `query_database` gains a `database` parameter with one source: the Harbor test fails;
+    - `allowed_tools` gains the clarification tool: both fail;
+    - `sdk_env` sets `CLAUDE_CONFIG_DIR`: both fail.
+- **Scrub**: `python -m evals scrub tests/fixtures/chat` gives "changed 0 file(s) …; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0". gitleaks passed in pre-commit.
+- **Fixture answers and the SQL that gives each** (all recomputed with DuckDB):
+
+  | Scenario | Answer | SQL |
+  |---|---|---|
+  | a, turn 1 | 11 | `SELECT count(*) FROM sales.orders WHERE status='refunded'` |
+  | a, turn 2 | 6 | `… AND year(order_date)=2024` |
+  | b / f, gross | 2121.75 | `SELECT sum(amount) FROM sales.orders WHERE year(order_date)=2024` |
+  | b / f, net | 1474.50 | `… AND status<>'refunded'` |
+  | b, plain question | 1034 | `SELECT order_id FROM sales.orders ORDER BY amount DESC LIMIT 1` |
+  | c | top 3: C01 9, C02 7, C03 6 (C04–C08 must not appear) | `SELECT customer_id, count(*) n FROM sales.orders GROUP BY 1 ORDER BY n DESC` |
+  | d | 14 | `SELECT count(*) FROM crm.customers` |
+  | g, both databases | North 13, South 10, East 8, West 6 | orders `JOIN` customers `USING (customer_id)`, `GROUP BY region` (the agent queries each database and combines) |
+  | g, one database | North 3, South 2, East 4, West 5 | `SELECT region, count(*) FROM crm.customers GROUP BY 1` |
+  | Playwright follow-up | 12 net / 18 gross | 2024 order count |
+
+- **Review round 1 (da-review / Codex), both fixed** (`5284b6e`)
+  - The region check accepted swapped counts. Each region's count must now be the first number after its own name.
+  - The live-card check used a missing answer as proof the turn was running. It now compares when the card appeared with the turn's `result` timestamp.
+- **Review round 2 (eng:code-review)**
+  - Fixed (`7676c2b`):
+    - A turn now counts as running until its process exits; the contract says so and the tests wait for it.
+    - Setup failures are no longer counted as expected failures (see the failure-reason section).
+    - Added a dbt single run on the API side.
+    - The Playwright files are type-checked inside `test-integration`.
+    - Small cleanups: a shared `FORM` constant, `states` renamed to `mentions`, a misplaced SQL comment moved.
+  - Not fixed, with reasons:
+    - The answer constants are repeated in Python and TypeScript. They are two languages with no shared runtime; comments point to the fixture.
+    - `make_dab` and a few helpers are copied. Their natural home, `seam_support.py`, is an existing acceptance file outside Authority (ticket 73 kept copies for the same reason).
+    - `make check` does not type-check `e2e/`. That would need a `package.json` script or `make check` change, both outside Authority.
+    - The single-number check (`mentions`) matches any occurrence of the number, as seam A does.
+    - `surface()` is explained by its docstring.
+
+### Contracts for human review (from attempt 1)
+
+The backend contracts (items 1, 2, 4, 5, 6) are in the docstring of `tests/acceptance/test_chat_api.py`; the view-model types (item 3) are in `web/src/chat-view/model.ts`.
+
+1. **Conversation directory**: `<runs_dir>/conversations/<id>/` holds:
+   - `conversation.json`: `{id, created_at, turns:[{turn, run_id, message, steers:[{id,text}]}]}`;
+   - `workspace/`, shared by all turns;
+   - `claude-config/`, used as `CLAUDE_CONFIG_DIR`.
+   Each turn is an ordinary run in `<runs_dir>/<run_id>/`, so the existing run list, events, SSE and run page all work on it.
+2. **New event fields** (old files have none of them):
+   - `task` gets `conversation` and `turn`.
+   - `status` (started) and `result` get `session_id`.
+   - `clarification`: `{tool_use_id, question, options (2–5)}`. The tool is `mcp__data__clarification`. A turn that ends with it writes no `answer` event, and its `result` is a success.
+   - `steer_delivered`: `{id, text}`.
+   - `sql` gets `database`, also when there is only one source.
+   - The query and context tools get a `database` parameter only when there are several sources.
+3. **View model**: `buildConversationView(index: ConversationIndex, runs: Record<run_id, {events, notes?}>): ConversationView`.
+   - Per turn: `run` is exactly `buildRunView(events, notes)`, plus `status`, `message`, `answersClarification`, `clarification{question, options, chosen}`, `steers{delivered, seq, afterStep}` and `queries{step, database}`.
+   - For the whole conversation: `singleRun`, `canFollowUp`, `running`, `costUsd`.
+4. **Routes**:
+   - `GET /api/conversations` and `GET /api/conversations/{id}`. A row is `{id, single_run, created_at, running, turns:[…, status]}`; a single run, dbt included, is a one-turn row.
+   - `POST /api/conversations {}` returns 201.
+   - `POST …/messages {text}`:
+     - when the conversation is idle: 201 `{kind:"turn", turn, run_id}`;
+     - when it is running: 202 `{kind:"steer", run_id, id}`;
+     - 409 when another conversation or the run form is running;
+     - 4xx for a single run or an empty text.
+   - `POST …/cancel`.
+   - `running` stays true until the turn's process exits.
+5. **`data-agent run` arguments for a turn**: `--type query --config full --data-sources FILE --chat --conversation-dir DIR --turn N [--resume SID]`.
+   - `--data-sources` uses the same TOML as `data-agent web`, and is exclusive with `--duckdb` / `--postgres-env`.
+   - The session id comes from the `status` event of the latest earlier turn; a cancelled turn counts.
+6. **stdin**: one JSON object per line, `{"id": uuid, "text"}`. `steer_delivered` repeats the `id`.
+
+## Points for the human to decide at review
+
+1. The eval snapshot pins tool names and input schemas only, not tool descriptions, because the ticket text only asks for the tools and their parameters. The spec also says "工具定义不变" (tool definitions unchanged); pinning descriptions too would be stricter.
+2. Today `session_id` is only written in the `turn_budget` event (`agent.py:907`). Ticket 90 has to add it to `status`.
+3. Product consequence of contract item 4: a message sent before the turn's process exits becomes a steer. The page needs to wait for `running` to turn false before the next send (the Playwright flow does).
+4. The Playwright contract with the page is a set of `data-testid`s (`new-conversation`, `chat-input`, `chat-send`, `turn`, `turn-message`, `step-card`, `clarification`, `answer`), listed in the header of `chat.spec.ts`. Playwright output goes to `runs/playwright`, which git ignores.
+5. Chat turns always use the `full` config. The DAB eval snapshot uses `no-context`, the config the DAB tests use.
+6. Scenario f's question is new to this ticket ("What was the total revenue from orders placed in 2024?"). The sample the main session ran 3 times on 2026-11-17 was not available to me, so f needs a fresh real run.
+
+### Main session, 2026-11-17: real run of scenario f
+
+- Command (in the 88 worktree at 7676c2b): `uv run pytest tests/acceptance/test_chat_e2e.py -m integration -k test_f -v` with the model env loaded.
+- Result: 2 passed, 1 failed ([1]). Log: main-session scratchpad `t88-f.log`.
+- The failing run answered `$2,121.75` (the gross figure, which the test accepts), with no clarification, and wrote this assumption: "revenue is the sum of `amount` for every order whose `order_date` falls in 2024, with all order statuses included; no other tables or adjustments were applied." The answer states how refunded orders were treated without using the word "refund", and `assert "refund" in answer.lower()` (`tests/acceptance/test_chat_e2e.py:446`) rejected it.
+
+退回：场景 f 的"写出假设"只认 "refund" 这个词，模型用 "all order statuses included" 也写清了退款的口径，被误判失败；spec 要求 3 次都过，这个检查会让守门测试随措辞偶发变红。改成按外部行为判断答案说明了退款或订单状态的口径（例如认 refund/refunded 或 status/statuses，或者答案是净额时不要求另写），不要放宽到任何文字都能过；改完由主会话再真跑 f 三次。其余部分不变。
+
+### Attempt 2 (ticket agent, round-1 return fix, branch `worktree-88-chat-acceptance-tests`, commits 7d09452, af8bff8, 16252b2)
+
+- **What changed** (only scenario f's assumption check, `tests/acceptance/test_chat_e2e.py`):
+  - `assert "refund" in answer.lower()` is replaced by `STATED_REFUND_TREATMENT` (defined next to `GROSS_2024` / `NET_2024`, `test_chat_e2e.py:75-80`). It accepts an answer that names:
+    - refunds (`refund`);
+    - order statuses (`\bstatus(es)?\b`, e.g. "all order statuses included");
+    - orders by the other status value (`completed orders`, or `orders … completed` within 30 characters in the same sentence).
+  - "completed" on its own does not count ("The analysis is completed").
+  - No net-figure exemption: spec line 101 asks every answer to state its assumption, and the return listed the exemption only as an example ("例如"). A net answer must name the refund treatment too.
+- **Predicate check** (local, no model calls), against the final regex:
+  - Accepted: the rejected real answer from the main-session run ("…with all order statuses included…"), "excluding refunded orders", "Revenue from completed orders…", "I counted only orders marked completed", "regardless of order status".
+  - Rejected: "Total revenue in 2024 was $2,121.75.", "$1,474.50 net revenue.", "…summing amount over orders placed in 2024.", "The analysis is completed. Total revenue…", "Query completed. Revenue from orders placed in 2024: …".
+  - The old check rejected the real answer (`"refund" in …` → False).
+- **make check** (after the last commit, 16252b2):
+  - ruff: "All checks passed!" and "313 files already formatted".
+  - basedpyright: "0 errors, 0 warnings, 0 notes".
+  - pytest: "2309 passed, 1 skipped, 63 deselected, 8 xfailed".
+  - vitest: "Tests 225 passed | 16 expected fail (241)".
+- **Collection**: `uv run pytest tests/acceptance/test_chat_e2e.py --collect-only -m integration -k test_f` lists f[1], f[2], f[3] (3/24).
+- **Real run**: not run. Ticket agents cannot load the model env. For the main session, in the 88 worktree, with the model env loaded:
+  - `uv run pytest tests/acceptance/test_chat_e2e.py -m integration -k test_f -v`
+  - then the whole `make test-integration` before merge.
+- **Reviews**
+  - da-review on 7d09452: no findings.
+  - eng:code-review on 7d09452:
+    - Spec: a net answer worded as "completed orders" failed. Fixed in af8bff8 (adds `completed`).
+    - Standards (judgement calls):
+      - The comment was repeated at the constant and the assertion. Fixed: one comment, at the constant.
+      - The constant sat beside `choose()`'s word lists. Fixed: moved next to the revenue answers.
+      - Bare `status` is loose (e.g. a schema description "…amount, status"). Not fixed: the return explicitly allowed status/statuses.
+  - da-review on af8bff8: bare `completed` accepted "The analysis is completed." Fixed in 16252b2 (`completed` only next to orders).
+  - da-review on 16252b2 (P2, confirmed locally, **not fixed**): Markdown between the words fails, e.g. "only **completed** orders" or "only `completed` orders". This keeps a wording-dependent failure in the three-run gate. Not fixed because the 2-round fix limit was reached. Suggested one-line fix: allow `[*_`\s]*` between `completed` and `orders` (and in the `orders … completed` branch).
+
+### Main session, 2026-11-17: round 2 return
+
+退回：Codex 在 16252b2 上的 P2 属实（主会话读了 `test_chat_e2e.py:78-80`）：`\bcompleted orders?\b` 不允许两个词之间有 Markdown，“only **completed** orders”、“only `` completed `` orders”（completed 带反引号）会被误判，仍是随措辞变红。改法：匹配前去掉答案里的星号、下划线和反引号，并给这两句各补一条本地谓词检查。只改这一处。这是本 PR 最后一轮退回。
+
+### Attempt 3 (ticket agent, round-2 return fix, branch `worktree-88-chat-acceptance-tests`, commit a099ac2)
+
+- **What changed** (only scenario f's check, `tests/acceptance/test_chat_e2e.py:75-83` and `:454`):
+  - New `MARKDOWN_MARKS = re.compile(r"[*_`]")`. The assertion now strips these marks from the answer before matching: `STATED_REFUND_TREATMENT.search(MARKDOWN_MARKS.sub("", answer))`.
+  - In `STATED_REFUND_TREATMENT`, the space in `completed orders?` became `\s+`. Without it, "only `` completed `` orders" still fails, because stripping the backticks leaves two spaces between the words.
+  - The comment at the constant says the Markdown marks are stripped first.
+- **Local predicate check** (no model calls; a script outside the repo imports the module's constants and applies the same strip as the assertion):
+  - Before the fix (at 16252b2), 4 sentences that should pass were rejected:
+    - "counting only **completed** orders"
+    - "counting only `completed` orders"
+    - "counting only `` completed `` orders"
+    - "from _completed_ orders"
+  - After the fix, all 10 sentences that should pass are accepted:
+    - the 4 above;
+    - the main session's real answer ("…with all order statuses included…");
+    - "excluding refunded orders";
+    - "Revenue from completed orders";
+    - "only orders marked completed";
+    - "regardless of order status";
+    - "only **orders** marked `completed`".
+  - After the fix, all 5 sentences that should fail are still rejected:
+    - "Total revenue in 2024 was $2,121.75."
+    - "$1,474.50 net revenue."
+    - "…summing `amount` over orders placed in 2024."
+    - "The analysis is **completed**. …"
+    - "Query `completed`. Revenue from orders placed in 2024: …"
+- **make check** (after a099ac2):
+  - ruff: "All checks passed!", "313 files already formatted".
+  - basedpyright: "0 errors, 0 warnings, 0 notes".
+  - pytest: "2309 passed, 1 skipped, 63 deselected, 8 xfailed".
+  - vitest: "Tests 225 passed | 16 expected fail (241)".
+- **Collection:** `uv run pytest tests/acceptance/test_chat_e2e.py --collect-only -m integration -k test_f -q` lists f[1], f[2] and f[3] (3/24).
+- **Real run:** not run, because ticket agents cannot load the model env. For the main session, in the 88 worktree with the model env loaded:
+  - `uv run pytest tests/acceptance/test_chat_e2e.py -m integration -k test_f -v`
+  - then the whole `make test-integration` before merge.
+- **Reviews:**
+  - `da-review 16252b2` (only the new commit): no findings. Codex ran 9 checks of its own on the pattern ("only **completed** orders", "only `` completed `` orders", "only _completed_ orders", "completed\norders", "orders marked **completed**", plus negative cases), and all passed.
+  - eng:code-review: not run this round, because the return asked for da-review on the new commit only.
+
+### Main session, 2026-11-17: real runs at a099ac2
+
+- Scenario f, 3 runs: `uv run pytest tests/acceptance/test_chat_e2e.py -m integration -k test_f -v` → "3 passed, 21 deselected in 42.94s".
+- `make playwright-install && make test-integration` (pytest half): "1 failed, 10 passed, 2318 deselected, 21 xfailed, 31 errors". All 32 non-passes are existing Postgres tests (`test_postgres.py`, `test_db_facts.py`, seam B `[postgres]`, `test_verifier_v2_tools.py`, `test_eval_jaffle.py::test_reset_drops_only_case_schemas`) failing with `KeyError: 'DATA_AGENT_TEST_POSTGRES_URL'`: this machine has no local test Postgres configured. None is a chat test. The chat e2e a–d, g are the 21 xfailed; f passed.
+- Because pytest failed, make stopped before the Playwright half; ran it by hand (`pnpm --dir web build:local`, `tsc -p e2e/tsconfig.json`, `playwright test`): "2 passed (1.1m)": the served-UI test passed, the main flow failed as expected (`test.fail`, ticket 95).
+- Model spend for these runs: not read from event files (f runs write to pytest tmp dirs); small (6 single-turn query runs on a 2-table fixture).
