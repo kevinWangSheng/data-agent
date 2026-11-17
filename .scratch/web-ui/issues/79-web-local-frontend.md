@@ -1,6 +1,6 @@
 # 79 — 本地版前端：提交、实时过程、取消、历史列表
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 76（done）, 78（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-16
