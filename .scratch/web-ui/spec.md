@@ -142,6 +142,7 @@
 - 没有 `task` 事件：任务等信息读运行说明；都没有就显示"未记录"。
 - 检查没有名字：显示编号。
 - 没有最终答案标记：取最后一段文本；依据的查询取它之前最后一条成功的查询。
+- `answer` 事件的 `sql_tool_use_id` 为 null（新文件里总是这样：agent 不点名依据的查询，`agent.py:1451`）：同样取答案之前最后一条成功的查询，但标成推断的，页面写明"答案之前的最后一条查询"，不当成 agent 自己的引用（2026-11-16 人定，工单 87）。
 - 没有 `rejected_by`（新旧文件都适用，2026-11-15 定）：按结果里的文字和工具分辨——结果含 `Query blocked by the read-only gateway:` 记 `gateway`；`PreToolUse:<tool> hook error` 落在守卫注册的工具上（Bash、Read、Glob、Grep、Write、Edit，`agent.py:994-1005`）记 `guard`；落在其他工具上（验证者自己的 `deny_dispatch` 在 Agent、`deny_query` 在 MCP 查询工具）记 `unknown`，只标"被拒绝"；其他都不算被拒绝。按工具不按守卫的提示文字分，因为那段文字改过多次（工单 41、53）。验证者的 hook 是流程规则，不是安全机制，事件里不另记种类。
 - 旧文件没有 `answer` 事件时，"最后一段文本"只在有 `result` 事件之后才算最终答案，免得运行中把最新的叙述当成答案。
 - 旧文件的 `verifier_dispatch` 配给最近一次还没配上的 Agent 调用（事件顺序是 Agent 开始 → `verifier_dispatch` → `verifier_start`）。
