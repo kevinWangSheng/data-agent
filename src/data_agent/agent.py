@@ -732,10 +732,6 @@ class Task:
         return (only,)
 
     @property
-    def dialect(self) -> Literal["duckdb", "postgres"]:
-        return "postgres" if self.postgres_env else "duckdb"
-
-    @property
     def dialects(self) -> tuple[Literal["duckdb", "postgres"], ...]:
         """The data sources' dialects, each once, in the order of the sources."""
         return tuple(dict.fromkeys(source_kind(source) for source in self.databases))
@@ -934,9 +930,10 @@ def database_list(task: Task) -> str:
 
 def database_line(task: Task) -> str:
     """The task prompt's `Database:` value: the database's kind, or each source with its own."""
+    kinds = [DATABASE_NAMES[source_kind(source)] for source in task.databases]
     if not task.several:
-        return DATABASE_NAMES[task.dialect]
-    named = (f"{s.name} ({DATABASE_NAMES[source_kind(s)]})" for s in task.databases)
+        return kinds[0]
+    named = (f"{source.name} ({kind})" for source, kind in zip(task.databases, kinds, strict=True))
     return f"one of {', '.join(named)}"
 
 
@@ -1312,12 +1309,13 @@ def record_message(
     message: Any,
     tools: dict[str, str],
     guarded: Container[str] = (),
-    database: str | None = None,
+    sources: Sequence[str] = (),
 ) -> None:
     """Translate one SDK message into events. `tools` maps tool_use ids to tool names; `guarded`
-    holds the ids of the calls a guard denied (`guard_recorder`). A `sql` event names the data
-    source the query ran on: `database`, the run's one source, or, when None (several sources),
-    the query's own `database` argument; without either it names none."""
+    holds the ids of the calls a guard denied (`guard_recorder`). `sources` names the run's data
+    sources, and a `sql` event names the one its query ran on: a run's only source, or with
+    several the query's `database` argument when it is one of them (the server refuses any
+    other). A caller that names no sources gets no `database` field."""
     if isinstance(message, SystemMessage) and message.subtype == "init":
         log.emit(
             "status",
@@ -1346,12 +1344,12 @@ def record_message(
                     input=block.input,
                 )
                 if block.name == QUERY_TOOL:
-                    queried = database or block.input.get("database")
+                    queried = sources[0] if len(sources) == 1 else block.input.get("database")
                     log.emit(
                         "sql",
                         tool_use_id=block.id,
                         sql=block.input.get("sql"),
-                        **({"database": queried} if queried is not None else {}),
+                        **({"database": queried} if queried in sources else {}),
                     )
     elif isinstance(message, UserMessage) and isinstance(message.content, list):
         for block in message.content:
@@ -1647,6 +1645,7 @@ async def run(
             data_source=data_source,
             **conversation,
         )
+        source_names = tuple(source.name for source in task.databases)
         budget = None if task.type == "dbt" else TurnBudget(config.max_turns[task.type])
         prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
             server=MCP_SERVER,
@@ -1708,7 +1707,7 @@ async def run(
                                 else:
                                     if budget is not None:
                                         budget.observe(message)
-                                    record_message(log, message, tools, guarded, data_source)
+                                    record_message(log, message, tools, guarded, source_names)
                                     track_open_calls(message, open_calls)
                     except Exception as exc:
                         # A failed run ends with a ResultMessage and then a ResultError, whose

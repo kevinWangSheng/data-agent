@@ -167,6 +167,20 @@ async def test_each_query_event_names_its_database(
     assert task["data_source"] is None
 
 
+async def test_a_query_on_no_known_database_names_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, two_duckdb: Task
+) -> None:
+    """The server refuses such a call, so it ran on no database."""
+    calls = asks(
+        (agent.QUERY_TOOL, {"database": "warehouse", "sql": "SELECT 1"}),
+        (agent.QUERY_TOOL, {"sql": "SELECT 2"}),
+    )
+    _, _, events = await run_task(monkeypatch, tmp_path, two_duckdb, calls)
+    sql = [e for e in events if e["type"] == "sql"]
+    assert [e["sql"] for e in sql] == ["SELECT 1", "SELECT 2"]
+    assert not [e for e in sql if "database" in e]
+
+
 async def test_a_one_source_query_event_keeps_its_fields_and_names_the_source(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

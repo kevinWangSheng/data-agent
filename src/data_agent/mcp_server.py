@@ -191,7 +191,7 @@ class Database:
         return run_query(self.gateway, sql, row_limit)
 
 
-def database(gateway: Gateway, labels: LabelTables) -> Database:
+def open_database(gateway: Gateway, labels: LabelTables) -> Database:
     catalog = CatalogCache(partial(run_query, gateway), gateway.catalog_key).get
     return Database(gateway, catalog, labels)
 
@@ -210,15 +210,10 @@ def build_server(
     dictionary the context layer searches (`data-agent run` builds it before the agent starts);
     a server with that layer on and no dictionary builds one now, before it serves. With one
     database the tools take no `database` argument (`database_tools`)."""
-    server = MCPServer("data-agent")
-    db = database(gateway, LabelTables(workspace))
-    register_base_tools(server, {"": db}, workspace)
-    if config.context:
-        if dictionary is None:
-            dictionary = build_interruptible(DictionaryBuild(gateway))
-        context = ContextDatabase(db.run, db.catalog, gateway.dialect, dictionary)
-        register_context_tools(server, {"": context})
+    dictionaries = {"": dictionary} if dictionary is not None else {}
+    server, databases = data_server({"": gateway}, config, workspace, dictionaries)
     if config.verifiers and verifier_tools:
+        db = databases[""]
         register_verifier_tools(server, db.run, db.catalog, workspace, gateway.dialect)
     return server
 
@@ -234,26 +229,35 @@ def build_multi_server(
     database has its own catalog, facts, dictionary and label tables. As `build_server`
     otherwise, with a dictionary built now for a database `dictionaries` has none for. No
     verifier tools: they check dbt runs, which have one database."""
+    server, _ = data_server(gateways, config, workspace, dictionaries or {})
+    return server
+
+
+def data_server(
+    gateways: Mapping[str, Gateway],
+    config: RunConfig,
+    workspace: Path | None,
+    dictionaries: Mapping[str, Dictionary],
+) -> tuple[MCPServer, dict[str, Database]]:
+    """The base tools and, when `config` turns that layer on, the context tools, over `gateways`
+    by name (`database_tools`); a database `dictionaries` has no dictionary for gets one built
+    now. The label tables of all the databases share one numbering."""
     server = MCPServer("data-agent")
     numbers = itertools.count(1)
     databases = {
-        name: database(gateway, LabelTables(workspace, numbers))
+        name: open_database(gateway, LabelTables(workspace, numbers))
         for name, gateway in gateways.items()
     }
     register_base_tools(server, databases, workspace)
     if config.context:
-        given = dictionaries or {}
-        contexts = {
-            name: ContextDatabase(
-                db.run,
-                db.catalog,
-                db.gateway.dialect,
-                given.get(name) or build_interruptible(DictionaryBuild(db.gateway)),
-            )
-            for name, db in databases.items()
-        }
+        contexts: dict[str, ContextDatabase] = {}
+        for name, db in databases.items():
+            dictionary = dictionaries.get(name)
+            if dictionary is None:
+                dictionary = build_interruptible(DictionaryBuild(db.gateway))
+            contexts[name] = ContextDatabase(db.run, db.catalog, db.gateway.dialect, dictionary)
         register_context_tools(server, contexts)
-    return server
+    return server, databases
 
 
 def register_base_tools(
