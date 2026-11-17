@@ -17,8 +17,8 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncGenerator, Container, Iterator, Mapping
-from contextlib import aclosing, contextmanager, nullcontext
+from collections.abc import AsyncGenerator, Container, Iterator, Mapping, Sequence
+from contextlib import ExitStack, aclosing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -71,6 +71,7 @@ from data_agent.verifiers import (
     verifier_agents,
     verifier_hooks,
 )
+from data_agent.web.sources import DataSource
 from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -113,6 +114,24 @@ running SQL, then reply with the answer.
 All database access goes through the `{server}` MCP tools, which are read-only. Work only from \
 what the tools show you; do not guess table names, column names or values.
 """
+
+# Added only when the run has several data sources (ticket 89), after nao's
+# `ConfiguredDatabasesBlock` (two databases or more): their names and kinds, never where they are.
+DATABASES_HEADING = "## Databases"
+DATABASES_PROMPT = (
+    """
+"""
+    + DATABASES_HEADING
+    + """
+
+This run has several databases. Every `{server}` tool that reads data takes a `database` argument, \
+which must be one of these names:
+{databases}
+Pick the database from these names and what the tools show you of each. One query runs on one \
+database: SQL cannot join tables of two databases. When a question needs data from more than one, \
+query each database on its own and combine the results.
+"""
+)
 
 # Appended only when the run config turns the Skill layer on.
 SKILLS_PROMPT = """
@@ -233,22 +252,40 @@ def taken_snapshot(workspace: Path) -> Iterator[Path]:
 
 
 @contextmanager
-def prebuilt_dictionary(gateway: Gateway, workspace: Path, emit: Emit) -> Iterator[Path]:
+def prebuilt_dictionary(
+    gateway: Gateway, workspace: Path, emit: Emit, database: str | None = None
+) -> Iterator[Path]:
     """The value dictionary (ticket 42), built before the agent starts and written as JSON
     outside the workspace for the MCP server to read; its coverage is recorded as the
-    `dictionary` event. The build counts toward the run's time, not the agent's first tool
-    call; a signal during it cancels the build and ends the run."""
+    `dictionary` event, which names the `database` of a run with several. The build counts
+    toward the run's time, not the agent's first tool call; a signal during it cancels the
+    build and ends the run."""
     with run_directory(workspace, "data-agent-dictionary-") as directory:
         dictionary = build_interruptible(DictionaryBuild(gateway))
         coverage = dictionary.coverage
         emit(
             "dictionary",
+            **({"database": database} if database is not None else {}),
             **{k: v for k, v in asdict(coverage).items() if k != "not_profiled"},
             tables_not_profiled=len(coverage.not_profiled),
         )
         path = directory / "dictionary.json"
         dictionary.save(path)
         yield path
+
+
+@contextmanager
+def prebuilt_dictionaries(
+    sources: Sequence[DataSource], workspace: Path, env: Mapping[str, str], emit: Emit
+) -> Iterator[dict[str, Path]]:
+    """`prebuilt_dictionary` for each of several data sources, in order: the files by name."""
+    with ExitStack() as stack:
+        yield {
+            source.name: stack.enter_context(
+                prebuilt_dictionary(source_gateway(source, env), workspace, emit, source.name)
+            )
+            for source in sources
+        }
 
 
 @dataclass(frozen=True)
@@ -640,11 +677,34 @@ class ConfigError(Exception):
     """The run cannot start: a missing setting or input. Nothing has been recorded."""
 
 
+def source_kind(source: DataSource) -> Literal["duckdb", "postgres"]:
+    return "postgres" if source.postgres_env else "duckdb"
+
+
+def source_location(source: DataSource) -> str:
+    """The DuckDB file's absolute path, or the Postgres variable's name."""
+    if source.postgres_env:
+        return source.postgres_env
+    assert source.duckdb is not None, "a data source names a DuckDB file or a Postgres variable"
+    return str(source.duckdb.resolve())
+
+
+def source_gateway(source: DataSource, env: Mapping[str, str]) -> Gateway:
+    """A gateway to `source`; a Postgres source's URL is read from `env` under its variable."""
+    if source.postgres_env:
+        return PostgresGateway(env[source.postgres_env])
+    assert source.duckdb is not None, "a data source names a DuckDB file or a Postgres variable"
+    return DuckDBGateway(source.duckdb)
+
+
 @dataclass(frozen=True)
 class Task:
     """The database is a DuckDB file, or a Postgres URL held in the variable `postgres_env`
     names: the run passes the name on, so the URL reaches no argv or MCP config. `data_source` is
-    the name the `task` event gives the data source, when the caller has one of its own."""
+    the name the `task` event gives the data source, when the caller has one of its own.
+
+    A query run may instead have `sources`, two or more data sources by name (ticket 89): the
+    agent sees them all and each query names the one it runs on."""
 
     text: str
     type: Literal["dbt", "query"]
@@ -652,10 +712,38 @@ class Task:
     duckdb: Path | None = None
     postgres_env: str | None = None
     data_source: str | None = None
+    sources: tuple[DataSource, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.sources and (len(self.sources) < 2 or self.duckdb or self.postgres_env):
+            raise ValueError("`sources` holds two or more data sources, in place of the one")
+
+    @property
+    def several(self) -> bool:
+        """Whether the run has several data sources, so each tool call names one."""
+        return bool(self.sources)
+
+    @property
+    def databases(self) -> tuple[DataSource, ...]:
+        """Every data source of the run, by name; a run with one has it alone."""
+        if self.sources:
+            return self.sources
+        only = DataSource(self.data_source_name, duckdb=self.duckdb, postgres_env=self.postgres_env)
+        return (only,)
 
     @property
     def dialect(self) -> Literal["duckdb", "postgres"]:
         return "postgres" if self.postgres_env else "duckdb"
+
+    @property
+    def dialects(self) -> tuple[Literal["duckdb", "postgres"], ...]:
+        """The data sources' dialects, each once, in the order of the sources."""
+        return tuple(dict.fromkeys(source_kind(source) for source in self.databases))
+
+    @property
+    def postgres_envs(self) -> tuple[str, ...]:
+        """The variables holding the run's Postgres URLs."""
+        return tuple(s.postgres_env for s in self.databases if s.postgres_env)
 
     @property
     def data_source_name(self) -> str:
@@ -669,6 +757,14 @@ class Task:
         return self.duckdb.name
 
     def database_args(self) -> tuple[str, ...]:
+        """The MCP server's arguments naming the data sources: names, kinds, the DuckDB files and
+        the Postgres variables, never a URL."""
+        if self.sources:
+            return tuple(
+                arg
+                for source in self.sources
+                for arg in ("--source", source.name, source_kind(source), source_location(source))
+            )
         if self.postgres_env:
             return ("--postgres-env", self.postgres_env)
         assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
@@ -677,10 +773,8 @@ class Task:
     def gateway(self, env: Mapping[str, str]) -> Gateway:
         """The harness's own gateway to the data source (the dictionary build); the MCP server
         opens its own."""
-        if self.postgres_env:
-            return PostgresGateway(env[self.postgres_env])
-        assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
-        return DuckDBGateway(self.duckdb)
+        [only] = self.databases
+        return source_gateway(only, env)
 
 
 @dataclass(frozen=True)
@@ -816,23 +910,45 @@ def dbt_scripts(config: RunConfig) -> tuple[Path, ...]:
     return tuple(config.skills_dir / "dbt-workflow" / name for name in DBT_SCRIPTS)
 
 
-def skill_names(task_type: str, dialect: str) -> tuple[str, ...]:
+def skill_names(task_type: str, dialects: Sequence[str]) -> tuple[str, ...]:
+    """The task type's Skills, DuckDB's dialect Skill swapped for those of `dialects`."""
     names = DBT_SKILLS if task_type == "dbt" else QUERY_SKILLS
-    return tuple(DIALECT_SKILLS[dialect] if name == "duckdb-sql" else name for name in names)
+    return tuple(
+        skill
+        for name in names
+        for skill in ([DIALECT_SKILLS[d] for d in dialects] if name == "duckdb-sql" else [name])
+    )
 
 
-def injected_skills(task_type: str, config: RunConfig, dialect: str) -> tuple[str, ...]:
+def injected_skills(task_type: str, config: RunConfig, dialects: Sequence[str]) -> tuple[str, ...]:
     """The Skills the main agent's system prompt holds, in order; none when the layer is off."""
-    return skill_names(task_type, dialect) if config.skill else ()
+    return skill_names(task_type, dialects) if config.skill else ()
 
 
-def system_prompt(task_type: str, config: RunConfig, dialect: str = "duckdb") -> str:
-    base = DBT_SYSTEM_PROMPT if task_type == "dbt" else SYSTEM_PROMPT
-    names = injected_skills(task_type, config, dialect)
+def database_list(task: Task) -> str:
+    """The data sources by name and kind, one `- name (Kind)` line each."""
+    return "".join(
+        f"- {source.name} ({DATABASE_NAMES[source_kind(source)]})\n" for source in task.databases
+    )
+
+
+def database_line(task: Task) -> str:
+    """The task prompt's `Database:` value: the database's kind, or each source with its own."""
+    if not task.several:
+        return DATABASE_NAMES[task.dialect]
+    named = (f"{s.name} ({DATABASE_NAMES[source_kind(s)]})" for s in task.databases)
+    return f"one of {', '.join(named)}"
+
+
+def system_prompt(task: Task, config: RunConfig) -> str:
+    base = DBT_SYSTEM_PROMPT if task.type == "dbt" else SYSTEM_PROMPT
+    names = injected_skills(task.type, config, task.dialects)
     prompt = base.format(server=MCP_SERVER)
+    if task.several:
+        prompt += DATABASES_PROMPT.format(server=MCP_SERVER, databases=database_list(task))
     if names:
         prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
-    if uses_verifiers(task_type, config):
+    if uses_verifiers(task.type, config):
         prompt += VERIFIERS_PROMPT
     return prompt
 
@@ -983,6 +1099,7 @@ def build_options(
     database_env: Mapping[str, str] | None = None,
     task_file: Path | None = None,
     dictionary: Path | None = None,
+    dictionaries: Mapping[str, Path] | None = None,
     snapshot: Path | None = None,
     deadline: float | None = None,
     turn_budget: TurnBudget | None = None,
@@ -996,7 +1113,8 @@ def build_options(
     variable: it reaches the MCP server through the SDK subprocess's environment. `task_file`
     (`saved_task`, verifier runs only) is named in the verifiers' prompts and may be Read.
     `dictionary` (`prebuilt_dictionary`, context runs only) is the value dictionary file the
-    MCP server serves dictionary_search from. `snapshot` (`taken_snapshot`, verifier runs only)
+    MCP server serves dictionary_search from; a run with several data sources gives them as
+    `dictionaries`, by source name. `snapshot` (`taken_snapshot`, verifier runs only)
     is the directory the v2 tools compare the workspace against; it reaches the MCP server the
     way the Postgres URL does, through the SDK subprocess's environment. `deadline` (monotonic
     seconds, ticket 54) is when the trial ends: the v2 hooks stop dispatching verifiers once too
@@ -1022,6 +1140,11 @@ def build_options(
             *(() if uses_verifiers(task.type, config) else ("--no-verifier-tools",)),
             *("--workspace", str(task.workspace.resolve())),
             *(("--dictionary", str(dictionary)) if dictionary else ()),
+            *(
+                arg
+                for name, path in (dictionaries or {}).items()
+                for arg in ("--source-dictionary", name, str(path))
+            ),
         ],
     }
     if task.type == "dbt":
@@ -1036,7 +1159,7 @@ def build_options(
     guard = guard_recorder(
         workspace_guard(
             task.workspace,
-            protected=(task.duckdb,) if task.duckdb else (),
+            protected=tuple(source.duckdb for source in task.databases if source.duckdb),
             readable=(task_file,) if task_file else (),
         ),
         guarded,
@@ -1082,7 +1205,7 @@ def build_options(
         model=settings.model,
         env=settings.sdk_env() | server_env | session_env,
         resume=None if turn is None else turn.resume,
-        system_prompt=system_prompt(task.type, config, task.dialect),
+        system_prompt=system_prompt(task, config),
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
@@ -1185,10 +1308,16 @@ def rejected_by(
 
 
 def record_message(
-    log: EventLog, message: Any, tools: dict[str, str], guarded: Container[str] = ()
+    log: EventLog,
+    message: Any,
+    tools: dict[str, str],
+    guarded: Container[str] = (),
+    database: str | None = None,
 ) -> None:
     """Translate one SDK message into events. `tools` maps tool_use ids to tool names; `guarded`
-    holds the ids of the calls a guard denied (`guard_recorder`)."""
+    holds the ids of the calls a guard denied (`guard_recorder`). A `sql` event names the data
+    source the query ran on: `database`, the run's one source, or, when None (several sources),
+    the query's own `database` argument; without either it names none."""
     if isinstance(message, SystemMessage) and message.subtype == "init":
         log.emit(
             "status",
@@ -1217,7 +1346,13 @@ def record_message(
                     input=block.input,
                 )
                 if block.name == QUERY_TOOL:
-                    log.emit("sql", tool_use_id=block.id, sql=block.input.get("sql"))
+                    queried = database or block.input.get("database")
+                    log.emit(
+                        "sql",
+                        tool_use_id=block.id,
+                        sql=block.input.get("sql"),
+                        **({"database": queried} if queried is not None else {}),
+                    )
     elif isinstance(message, UserMessage) and isinstance(message.content, list):
         for block in message.content:
             if isinstance(block, ToolResultBlock):
@@ -1446,24 +1581,24 @@ async def run(
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
     database_env: dict[str, str] = {}
-    if task.postgres_env:
+    for variable in task.postgres_envs:
         # The URL variable goes into the SDK env on top of `sdk_env()`: a printable name would
         # let `echo $VAR` show the URL to the model; a name the SDK env sets, or any BASH_/CLAUDE_
         # one, would override the CLI settings the harness relies on.
         if (
-            task.postgres_env in PRINTABLE_VARIABLES
-            or task.postgres_env in settings.sdk_env()
-            or task.postgres_env in (*settings.tool_env(), LEDGER_ENV)
-            or task.postgres_env.startswith(("BASH_", "CLAUDE_"))
+            variable in PRINTABLE_VARIABLES
+            or variable in settings.sdk_env()
+            or variable in (*settings.tool_env(), LEDGER_ENV)
+            or variable.startswith(("BASH_", "CLAUDE_"))
         ):
             raise ConfigError(
-                f"{task.postgres_env} cannot hold the Postgres URL: the agent may print it, or "
+                f"{variable} cannot hold the Postgres URL: the agent may print it, or "
                 "it configures the Claude Code CLI; use another --postgres-env name"
             )
-        if not env.get(task.postgres_env):
-            raise ConfigError(f"{task.postgres_env} (the Postgres URL) is not set")
-        # Only this variable: the server would otherwise read the parent's, or none.
-        database_env[task.postgres_env] = env[task.postgres_env]
+        if not env.get(variable):
+            raise ConfigError(f"{variable} (the Postgres URL) is not set")
+        # Only these variables: the server would otherwise read the parent's, or none.
+        database_env[variable] = env[variable]
     if turn is not None:
         turn.config_dir.mkdir(exist_ok=True)
     # Read before the CLI resumes the session and appends to its record.
@@ -1477,9 +1612,9 @@ async def run(
     spend = spend_cap(settings.model, config.max_budget_usd)
     secrets = known_secrets(env)
     names: list[str] = []
-    if task.postgres_env:
-        secrets += url_secrets(env[task.postgres_env])
-        names = url_names(env[task.postgres_env])
+    for variable in task.postgres_envs:
+        secrets += url_secrets(env[variable])
+        names += url_names(env[variable])
     verified = uses_verifiers(task.type, config)
     saving = saved_task(task.text, task.workspace) if verified else nullcontext()
     snapshotting = taken_snapshot(task.workspace) if verified else nullcontext()
@@ -1493,7 +1628,7 @@ async def run(
             "version",
             git_commit=git_commit(),
             skill_version=skill_version(config.skills_dir) if config.skill else "none",
-            skills=list(injected_skills(task.type, config, task.dialect)),
+            skills=list(injected_skills(task.type, config, task.dialects)),
             config=config.name,
             layers=config.layers(),
             model=settings.model,
@@ -1503,18 +1638,20 @@ async def run(
         conversation = (
             {} if turn is None else {"conversation": turn.conversation, "turn": turn.number}
         )
+        # With several sources the run has no one data source; each `sql` event names its own.
+        data_source = None if task.several else task.data_source_name
         log.emit(
             "task",
             task=task.text,
             task_type=task.type,
-            data_source=task.data_source_name,
+            data_source=data_source,
             **conversation,
         )
         budget = None if task.type == "dbt" else TurnBudget(config.max_turns[task.type])
         prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
             server=MCP_SERVER,
             turn_limit=TURN_LIMIT.format(max_turns=budget.max_turns) if budget else "",
-            database=DATABASE_NAMES[task.dialect],
+            database=database_line(task),
             workspace=task.workspace.resolve(),
             task=task.text,
             scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
@@ -1524,10 +1661,15 @@ async def run(
         guarded: set[str] = set()
         building = (
             prebuilt_dictionary(task.gateway(env), task.workspace, log.emit)
-            if config.context
+            if config.context and not task.several
             else nullcontext()
         )
-        with building as dictionary:
+        building_each = (
+            prebuilt_dictionaries(task.sources, task.workspace, env, log.emit)
+            if config.context and task.several
+            else nullcontext()
+        )
+        with building as dictionary, building_each as dictionaries:
             options = build_options(
                 task,
                 config,
@@ -1538,6 +1680,7 @@ async def run(
                 database_env=database_env,
                 task_file=task_file,
                 dictionary=dictionary,
+                dictionaries=dictionaries,
                 snapshot=snapshot,
                 deadline=deadline,
                 turn_budget=budget,
@@ -1565,7 +1708,7 @@ async def run(
                                 else:
                                     if budget is not None:
                                         budget.observe(message)
-                                    record_message(log, message, tools, guarded)
+                                    record_message(log, message, tools, guarded, data_source)
                                     track_open_calls(message, open_calls)
                     except Exception as exc:
                         # A failed run ends with a ResultMessage and then a ResultError, whose
