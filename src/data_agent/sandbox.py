@@ -39,22 +39,15 @@ SKILLS_MOUNT = "/skills"
 # Limits on each container, after a data-eng-bench task's 2 cores (plan §5); memory is a cap.
 CPUS = "2"
 MEMORY = "4g"
-# The container's `timeout` sends TERM at the limit and KILL this many seconds later. It exits
-# 124 for a command TERM stopped, 137 (128 + SIGKILL) for one it had to kill. Either is a timeout
-# only once the limit has passed: a command can exit 124 itself, and the OOM killer gives 137.
+# A command runs under sandbox_supervisor.py (as `python -I -c`, in the container or here): at
+# its limit, every process it started gets TERM, and KILL this many seconds later, whatever
+# process group it is in. The supervisor then exits 124, which is a timeout only once the limit
+# has passed: a command can exit 124 itself.
+SUPERVISOR = (Path(__file__).parent / "sandbox_supervisor.py").read_text()
 KILL_GRACE_S = 5
 TIMEOUT_EXIT = 124
-KILLED_EXIT = 137
-# How a docker command runs: `timeout` in the background (it leads a process group of its own),
-# and once it ends on a timeout, whatever is left of that group is killed. `timeout` itself
-# stops waiting when the shell dies, so a child that ignored TERM would live on in the container.
-# $1 is the command.
-SUPERVISOR = (
-    'timeout -k {grace} {limit} bash -c "$1" & t=$!; wait $t; code=$?; '
-    "if [ $code -eq {timeout_exit} ] || [ $code -eq {killed_exit} ]; then "
-    "kill -KILL -- -$t 2>/dev/null; fi; exit $code"
-)
-# How long the docker client itself may take past a command's limit before it is killed too.
+# How long the docker client, or the supervisor here, may take past a command's limit before it
+# is killed too; the supervisor itself needs up to twice KILL_GRACE_S.
 CLIENT_MARGIN_S = 30
 # Any other docker call (start, list, remove).
 DOCKER_TIMEOUT_S = 120
@@ -124,11 +117,10 @@ def run_process(
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Execution:
-    """Run `argv` to its end or for `timeout` seconds, until its output closes too. Past that its
-    whole process group is killed and the output it wrote so far comes back with `timed_out`. A
-    process that left the group may hold the output open: the reading then stops KILL_GRACE_S
-    after the kill."""
-    deadline = time.monotonic() + timeout
+    """Run `argv` to its end or for `timeout` seconds; past that its whole process group is killed
+    and the output it wrote so far comes back with `timed_out`. The output is read until it
+    closes, for KILL_GRACE_S at most once the process has ended: a process it left running may
+    hold the output open (and `docker exec`, too, returns once its process ends)."""
     proc = subprocess.Popen(
         list(argv),
         cwd=cwd,
@@ -142,17 +134,14 @@ def run_process(
     captures = (Capture(proc.stdout), Capture(proc.stderr))
     try:
         proc.wait(timeout=timeout)
-        for capture in captures:
-            capture.thread.join(max(0.0, deadline - time.monotonic()))
-        timed_out = any(capture.thread.is_alive() for capture in captures)
+        timed_out = False
     except subprocess.TimeoutExpired:
         timed_out = True
-    if timed_out:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
-        for capture in captures:
-            capture.thread.join(KILL_GRACE_S)
+    for capture in captures:
+        capture.thread.join(KILL_GRACE_S)
     out, err = captures
     done = Execution(
         None if timed_out else proc.returncode,
@@ -161,10 +150,23 @@ def run_process(
         timed_out,
         (out.dropped, err.dropped),
     )
-    # A reader still blocked (on a process outside the group) holds its own descriptor.
+    # A reader still blocked (on a process the command left running) holds its own descriptor.
     if not any(capture.thread.is_alive() for capture in captures):
         proc.stdout.close()
         proc.stderr.close()
+    return done
+
+
+def supervised(command: str, timeout: float) -> list[str]:
+    """The arguments of a Python interpreter that runs `command` under sandbox_supervisor.py."""
+    return ["-I", "-c", SUPERVISOR, f"{timeout:g}", f"{KILL_GRACE_S:g}", command]
+
+
+def judged(done: Execution, started: float, timeout: float) -> Execution:
+    """A supervised command's outcome: the supervisor's 124 past the limit is a timeout."""
+    stopped = done.exit_code == TIMEOUT_EXIT and time.monotonic() - started >= timeout
+    if done.timed_out or stopped:
+        return done._replace(exit_code=None, timed_out=True)
     return done
 
 
@@ -188,8 +190,11 @@ class LocalSandbox:
         return str(self.skills_dir)
 
     def execute(self, command: str, timeout: float) -> Execution:
-        argv = ["bash", "-c", command]
-        return run_process(argv, timeout, cwd=self.workspace, env=local_env(os.environ))
+        argv = [sys.executable, *supervised(command, timeout)]
+        env = local_env(os.environ)
+        started = time.monotonic()
+        done = run_process(argv, timeout + CLIENT_MARGIN_S, cwd=self.workspace, env=env)
+        return judged(done, started, timeout)
 
 
 def run_docker(args: Sequence[str], timeout: float = DOCKER_TIMEOUT_S) -> Execution:
@@ -258,19 +263,12 @@ class DockerSandbox:
         with self.lock:
             if self.container is None:
                 self.container = self.start()
-        supervisor = SUPERVISOR.format(
-            grace=KILL_GRACE_S,
-            limit=f"{timeout:g}",
-            timeout_exit=TIMEOUT_EXIT,
-            killed_exit=KILLED_EXIT,
-        )
-        argv = ["exec", "-w", WORKDIR, self.container, "bash", "-c", supervisor, "sandbox", command]
+        # Killing the docker client would leave the command running in the container, so the
+        # supervisor runs in the container.
+        argv = ["exec", "-w", WORKDIR, self.container, "python3", *supervised(command, timeout)]
         started = time.monotonic()
-        done = run_docker(argv, timeout + KILL_GRACE_S + CLIENT_MARGIN_S)
-        stopped = done.exit_code in (TIMEOUT_EXIT, KILLED_EXIT)
-        if done.timed_out or (stopped and time.monotonic() - started >= timeout):
-            return done._replace(exit_code=None, timed_out=True)
-        return done
+        done = run_docker(argv, timeout + CLIENT_MARGIN_S)
+        return judged(done, started, timeout)
 
 
 class Sandbox(Protocol):
@@ -569,6 +567,7 @@ ids (query_database gives each successful result one) in `data_files`: each is w
 `{DATA_DIR}/<id>.csv` (a header row, every row the query returned, NULL as an empty field) \
 before the command runs.
 
-The command is killed after `timeout_seconds` (default {DEFAULT_TIMEOUT_S}, at most \
-{MAX_TIMEOUT_S}). Past {OUTPUT_CHARS:,} characters of output in all, the reply shows the start \
-of stdout and the end of stderr, and names the files under `{LOGS_DIR}/` that hold all of it."""
+The command, and every process it started (in the background too), is killed after \
+`timeout_seconds` (default {DEFAULT_TIMEOUT_S}, at most {MAX_TIMEOUT_S}). Past \
+{OUTPUT_CHARS:,} characters of output in all, the reply shows the start of stdout and the end of \
+stderr, and names the files under `{LOGS_DIR}/` that hold all of it."""

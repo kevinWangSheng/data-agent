@@ -3,6 +3,8 @@ docker backend is checked by the docker commands it issues, against a stand-in f
 (`FakeDocker`). Real Docker is in tests/test_sandbox_docker.py (integration)."""
 
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -11,11 +13,15 @@ from fake_docker import FakeDocker, container_of, install
 
 from data_agent.sandbox import (
     KEEP_BYTES,
+    KILL_GRACE_S,
     RUN_LABEL,
+    SUPERVISOR,
+    TIMEOUT_EXIT,
     DockerSandbox,
     Execution,
     LocalSandbox,
     skill_text,
+    supervised,
 )
 
 SKILLS = Path("/opt/skills")
@@ -56,6 +62,32 @@ def test_a_timeout_returns_though_a_process_outside_the_group_keeps_the_output_o
     done = LocalSandbox(tmp_path, SKILLS).execute(command, timeout=1)
     assert time.monotonic() - started < 15
     assert done.timed_out
+
+
+def living(pid: int) -> bool:
+    """Whether `pid` runs (a zombie has ended)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    return stat[stat.rfind(")") + 2] != "Z"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs /proc and a child subreaper (Linux)")
+def test_processes_that_left_the_commands_process_group_are_killed_at_the_timeout(
+    tmp_path: Path,
+) -> None:
+    """Codex PR review, round 1 return: the kill reached only the command's process group."""
+    started = (
+        "import os, subprocess; "
+        "p = subprocess.Popen(['sleep', '601'], start_new_session=True); "
+        "open('popen.pid', 'w').write(str(p.pid))"
+    )
+    command = f'setsid sleep 600 & echo $! > setsid.pid; python3 -c "{started}"; sleep 60'
+    done = LocalSandbox(tmp_path, SKILLS).execute(command, timeout=2)
+    assert done.timed_out
+    for name in ("setsid.pid", "popen.pid"):
+        assert not living(int((tmp_path / name).read_text())), name
 
 
 def test_output_kept_in_memory_is_bounded_per_stream(tmp_path: Path) -> None:
@@ -146,13 +178,13 @@ def test_docker_timeout_kills_the_command_inside_the_container(
     tmp_path: Path, docker: FakeDocker
 ) -> None:
     # Killing the docker client would leave the command running in the container, so the
-    # container's own `timeout` runs it; 124 is its exit code for a command it stopped.
+    # supervisor runs it there; 124 is its exit code for a command it stopped.
     docker.replies.append(Execution(124, "partial\n", "", False))
     docker.exec_seconds = 1.1
     done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("sleep 999", timeout=1)
     [exec_] = docker.verb("exec")
-    assert exec_[exec_.index("-w") + 3 : exec_.index("-w") + 5] == ["bash", "-c"]
-    assert "timeout -k 5 1 bash -c" in exec_[-3] and exec_[-1] == "sleep 999"
+    after_container = exec_[exec_.index("-w") + 3 :]
+    assert after_container == ["python3", "-I", "-c", SUPERVISOR, "1", "5", "sleep 999"]
     assert (done.timed_out, done.exit_code, done.stdout) == (True, None, "partial\n")
 
 
@@ -163,15 +195,25 @@ def test_a_commands_own_exit_code_124_is_no_timeout(tmp_path: Path, docker: Fake
     assert (done.timed_out, done.exit_code) == (False, 124)
 
 
-def test_docker_timeout_that_escalates_to_kill_is_a_timeout(
-    tmp_path: Path, docker: FakeDocker
-) -> None:
+def supervise(command: str, limit: float, cwd: Path) -> tuple[int, float]:
+    """sandbox_supervisor.py run here as the backends run it: its exit code and seconds taken."""
+    started = time.monotonic()
+    done = subprocess.run(
+        [sys.executable, *supervised(command, limit)], cwd=cwd, timeout=60, check=False
+    )
+    return done.returncode, time.monotonic() - started
+
+
+def test_supervisor_passes_the_commands_exit_code_and_signal(tmp_path: Path) -> None:
+    assert supervise("exit 3", 30, tmp_path)[0] == 3
+    assert supervise("kill -9 $$", 30, tmp_path)[0] == 137
+
+
+def test_supervisor_kills_a_command_that_ignores_term_and_exits_124(tmp_path: Path) -> None:
     # Codex review, round 1: a command that ignores TERM is killed after the grace period, and
-    # `timeout` then exits 137, not 124.
-    docker.replies.append(Execution(137, "", "", False))
-    docker.exec_seconds = 1.2
-    done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("trap '' TERM; sleep 999", timeout=1)
-    assert done.timed_out
+    # that too is a timeout.
+    code, seconds = supervise("trap '' TERM; sleep 999 & wait; sleep 999", 1, tmp_path)
+    assert code == TIMEOUT_EXIT and seconds < 1 + 2 * KILL_GRACE_S + 2
 
 
 def test_a_kill_before_the_limit_is_an_exit_code(tmp_path: Path, docker: FakeDocker) -> None:

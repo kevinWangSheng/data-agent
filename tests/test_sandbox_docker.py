@@ -189,3 +189,35 @@ def test_the_runs_container_is_removed(root: Path, sandboxes: list[DockerSandbox
     assert labelled(f"{RUN_LABEL}={sandbox.run_id}")
     remove_run_containers(sandbox.run_id)
     assert labelled(f"{RUN_LABEL}={sandbox.run_id}") == []
+
+
+# Started in a session of its own two ways: `setsid`, and Python's start_new_session.
+ESCAPED = (
+    "setsid sleep 600 & "
+    'python3 -c \'import subprocess; subprocess.Popen(["sleep", "601"], '
+    "start_new_session=True)'; "
+    "sleep 60"
+)
+
+
+def test_processes_that_left_the_commands_process_group_are_killed_at_the_timeout(
+    root: Path, sandboxes: list[DockerSandbox]
+) -> None:
+    """Codex PR review, round 1 return: the kill reached only `timeout`'s process group, so a
+    process in a session of its own lived on in the container the run keeps using."""
+    sandbox = make(sandboxes, root)
+    done = run(sandbox, ESCAPED, timeout=2)
+    assert done.timed_out
+    left = running(sandbox)
+    assert "sleep 600" not in left.stdout and "sleep 601" not in left.stdout, left.stdout
+
+
+def test_a_process_an_earlier_call_left_running_outlives_a_later_timeout(
+    root: Path, sandboxes: list[DockerSandbox]
+) -> None:
+    """Processes stay between calls (the tool says so); a timeout ends only its command's."""
+    sandbox = make(sandboxes, root)
+    assert run(sandbox, "setsid sleep 602 >/dev/null 2>&1 &").exit_code == 0
+    assert run(sandbox, "sleep 60", timeout=2).timed_out
+    left = running(sandbox)
+    assert "sleep 602" in left.stdout, left.stdout
