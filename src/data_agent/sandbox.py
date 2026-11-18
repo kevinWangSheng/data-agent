@@ -92,18 +92,20 @@ KEEP_BYTES = 10_000_000
 
 
 class Capture:
-    """Reads a pipe to its end in a thread of its own, keeping its first KEEP_BYTES."""
+    """Reads a pipe to its end in a thread of its own, keeping its first KEEP_BYTES. The thread
+    owns the pipe and closes it at the end: a reader `run_process` stopped waiting for (a process
+    the command left running holds the pipe open) keeps its descriptor until then, so the number
+    is not handed to the next command's pipe while the reader may still read it."""
 
     def __init__(self, pipe: IO[bytes]) -> None:
         self.kept = bytearray()
         self.dropped = 0
-        self.thread = threading.Thread(target=self.read, args=(pipe.fileno(),), daemon=True)
+        self.thread = threading.Thread(target=self.read, args=(pipe,), daemon=True)
         self.thread.start()
 
-    def read(self, fd: int) -> None:
-        # A pipe closed under a blocked read (`run_process` gave up on it) ends the reading.
-        with contextlib.suppress(OSError):
-            while chunk := os.read(fd, 65536):
+    def read(self, pipe: IO[bytes]) -> None:
+        with pipe, contextlib.suppress(OSError):
+            while chunk := os.read(pipe.fileno(), 65536):
                 room = KEEP_BYTES - len(self.kept)
                 self.kept += chunk[:room]
                 self.dropped += max(0, len(chunk) - room)
@@ -147,18 +149,13 @@ def run_process(
     for capture in captures:
         capture.thread.join(max(0.0, ended + KILL_GRACE_S - time.monotonic()))
     out, err = captures
-    done = Execution(
+    return Execution(
         None if timed_out else proc.returncode,
         out.text(),
         err.text(),
         timed_out,
         (out.dropped, err.dropped),
     )
-    # A reader still blocked (on a process the command left running) holds its own descriptor.
-    if not any(capture.thread.is_alive() for capture in captures):
-        proc.stdout.close()
-        proc.stderr.close()
-    return done
 
 
 def supervised(command: str, timeout: float) -> list[str]:

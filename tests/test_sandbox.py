@@ -75,6 +75,20 @@ def test_a_command_that_ends_in_time_returns_though_its_background_process_holds
     assert (done.exit_code, done.timed_out, done.stdout) == (2, False, "hi\n")
 
 
+def test_a_reader_left_on_a_background_process_takes_no_output_of_the_next_command(
+    tmp_path: Path,
+) -> None:
+    """Codex PR review, round 2 return: the reader still waiting on the first command's output
+    lost its pipe once `run_process` returned, and read the next command's pipe under the same
+    descriptor number once the background process wrote again."""
+    sandbox = LocalSandbox(tmp_path, SKILLS)
+    first = sandbox.execute("(sleep 6; echo late) & echo first", timeout=60)
+    assert (first.exit_code, first.stdout) == (0, "first\n")
+    # Printing from before the background `echo late` until after it.
+    done = sandbox.execute("for i in $(seq 100); do echo $i; sleep 0.03; done", timeout=60)
+    assert done.stdout.split() == [str(i) for i in range(1, 101)]
+
+
 def living(pid: int) -> bool:
     """Whether `pid` runs (a zombie has ended)."""
     try:
