@@ -92,11 +92,6 @@ from seam_support import FIXTURES
 from data_agent.web.app import DataSource, create_app
 from data_agent.web.sources import load_data_sources
 
-# Only an assertion counts as the expected failure: a fixture that cannot start fails outright.
-TICKET_93 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 93: the chat backend is not built yet"
-)
-
 CHAT_FIXTURES = FIXTURES / "chat"
 FAKE_CHAT_RUN = CHAT_FIXTURES / "fake_chat_run.py"
 QUERY_SHOP = FIXTURES / "web" / "real" / "query-shop" / "events.jsonl"
@@ -275,7 +270,6 @@ def assert_no_connection_string(text: str) -> None:
 # --- Creating a conversation ---------------------------------------------------------------
 
 
-@TICKET_93
 def test_a_new_conversation_takes_no_task_type_or_data_source(chat: Chat) -> None:
     conversation = new_conversation(chat)
     listed = rows(chat)[conversation]
@@ -297,7 +291,6 @@ def test_a_new_conversation_takes_no_task_type_or_data_source(chat: Chat) -> Non
 # --- What a turn's run gets ----------------------------------------------------------------
 
 
-@TICKET_93
 def test_a_turn_gets_every_data_source_by_name_and_kind(chat: Chat) -> None:
     conversation = new_conversation(chat)
     start_turn(chat, conversation, "How many orders are there?")
@@ -316,7 +309,6 @@ def test_a_turn_gets_every_data_source_by_name_and_kind(chat: Chat) -> None:
     assert_no_connection_string(json.dumps(run.args))
 
 
-@TICKET_93
 def test_from_the_second_turn_the_run_resumes_the_session_in_the_same_conversation(
     chat: Chat,
 ) -> None:
@@ -351,7 +343,6 @@ def test_from_the_second_turn_the_run_resumes_the_session_in_the_same_conversati
 # --- Steering a running turn ---------------------------------------------------------------
 
 
-@TICKET_93
 def test_a_message_while_a_turn_runs_goes_into_that_run(chat: Chat) -> None:
     conversation = new_conversation(chat)
     run_id = start_turn(chat, conversation, "List every customer by number of orders.")
@@ -380,7 +371,6 @@ def test_a_message_while_a_turn_runs_goes_into_that_run(chat: Chat) -> None:
 # --- Cancelling ----------------------------------------------------------------------------
 
 
-@TICKET_93
 def test_after_a_cancel_the_next_message_starts_a_new_turn(chat: Chat) -> None:
     conversation = new_conversation(chat)
     first = start_turn(chat, conversation, "List every customer by number of orders.")
@@ -404,7 +394,6 @@ def test_after_a_cancel_the_next_message_starts_a_new_turn(chat: Chat) -> None:
 # --- One run at a time ---------------------------------------------------------------------
 
 
-@TICKET_93
 def test_one_run_at_a_time_across_conversations_and_the_run_form(chat: Chat) -> None:
     a, b = new_conversation(chat), new_conversation(chat)
     run_a = start_turn(chat, a, "How many orders are there?")
@@ -432,7 +421,6 @@ def test_one_run_at_a_time_across_conversations_and_the_run_form(chat: Chat) -> 
 # --- Single runs ---------------------------------------------------------------------------
 
 
-@TICKET_93
 def test_single_runs_list_as_one_turn_conversations_without_follow_up(chat: Chat) -> None:
     write_run(chat.runs_dir, "20261115T143153Z-old", read_events(QUERY_SHOP))
     write_run(chat.runs_dir, "20261115T090000Z-dbt", read_events(NEW_FIELDS))
@@ -481,7 +469,6 @@ def test_single_runs_list_as_one_turn_conversations_without_follow_up(chat: Chat
 # --- No connection strings -----------------------------------------------------------------
 
 
-@TICKET_93
 def test_chat_output_holds_no_connection_string(chat: Chat) -> None:
     conversation = new_conversation(chat)
     response = send(chat, conversation, "How many rows does the warehouse have?")

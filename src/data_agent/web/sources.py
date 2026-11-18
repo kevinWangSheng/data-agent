@@ -21,6 +21,7 @@ dbt project do not contain each other (`check_layout`): each dbt run works on it
 project, the DuckDB file included, and leaves the original alone.
 """
 
+import json
 import os
 import re
 import tomllib
@@ -51,7 +52,7 @@ def load_data_sources(path: Path) -> list[DataSource]:
     if not path.is_file():
         raise ValueError(f"data-source file not found: {path}")
     try:
-        data = tomllib.loads(path.read_text())
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"{path} is not valid TOML: {exc}") from exc
     other = set(data) - {"sources"}
@@ -63,6 +64,28 @@ def load_data_sources(path: Path) -> list[DataSource]:
     # Absolute: runs start in their own working directory.
     base = path.resolve().parent
     return [parse_source(name, entry, base) for name, entry in sources.items()]
+
+
+def dump_data_sources(sources: Sequence[DataSource]) -> str:
+    """The sources as `load_data_sources` reads them, with absolute DuckDB paths: name, kind and
+    the file or the variable's name, never a connection string; `dbt_project` is left out."""
+    lines: list[str] = []
+    for source in sources:
+        lines.append(f"[sources.{toml_string(source.name)}]")
+        if source.duckdb is not None:
+            lines += ['kind = "duckdb"', f"path = {toml_string(str(source.duckdb.resolve()))}"]
+        else:
+            assert source.postgres_env is not None
+            lines += ['kind = "postgres"', f"env = {toml_string(source.postgres_env)}"]
+        lines.append("")
+    return "\n".join(lines)
+
+
+def toml_string(value: str) -> str:
+    """A TOML basic string. A JSON string with its non-ASCII characters left as they are is one
+    (`\\"`, `\\\\`, `\\n`, `\\u00XX` mean the same in both), once DEL, which TOML does not allow
+    unescaped, is escaped too."""
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def parse_source(name: str, entry: Any, base: Path) -> DataSource:

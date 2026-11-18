@@ -13,7 +13,9 @@ it) or "failure" in its `web-run.json` record (data_agent.web.runs), which the r
 event stream read.
 """
 
+import contextlib
 import os
+import queue
 import secrets
 import shutil
 import signal
@@ -24,7 +26,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from data_agent.run_config import CONFIG_NAMES
 from data_agent.web.runs import RunsDir
@@ -51,6 +53,38 @@ class Refused(Exception):
         self.detail = detail
 
 
+class StdinWriter:
+    """A run's stdin, written from a thread of its own. A conversation's turn reads its stdin only
+    once its session has started, so steers sent before then wait in the pipe; a write that has
+    to wait for room never holds up the caller, who holds the launcher's lock. Lines after a
+    failed write (the run has exited) are dropped."""
+
+    def __init__(self, stdin: IO[bytes]) -> None:
+        self.stdin = stdin
+        self.lines: queue.SimpleQueue[bytes | None] = queue.SimpleQueue()
+        threading.Thread(target=self.write, name="run-stdin", daemon=True).start()
+
+    def send(self, line: bytes) -> None:
+        self.lines.put(line)
+
+    def close(self) -> None:
+        """Closes the stdin once the lines sent before are written (or dropped)."""
+        self.lines.put(None)
+
+    def write(self) -> None:
+        broken = False
+        while (line := self.lines.get()) is not None:
+            if broken:
+                continue
+            try:
+                self.stdin.write(line)
+                self.stdin.flush()
+            except OSError:
+                broken = True
+        with contextlib.suppress(OSError):
+            self.stdin.close()
+
+
 @dataclass
 class Running:
     run_id: str
@@ -58,9 +92,17 @@ class Running:
     # Whether the run leads its own process group, which is then signalled as a whole.
     group: bool
     record: dict[str, Any]
+    # Its stdin, through which a conversation's turn is steered; None when it has no pipe.
+    stdin: StdinWriter | None = None
+    # The conversation the run is a turn of (data_agent.web.conversations); None for a form run.
+    conversation: str | None = None
     cancelling: bool = False
     # Set once the server has seen the run exit and cleaned up after it (`finish`).
     done: bool = False
+
+
+Prepare = Callable[[Path], tuple[list[str], Path]]
+"""Fills a new run's directory (given) and returns the run's arguments and working directory."""
 
 
 class Launcher:
@@ -70,63 +112,94 @@ class Launcher:
         self.sources = {source.name: source for source in sources}
         self.start_run = start_run
         self.current: Running | None = None
+        # Held while a run is started, stopped or looked at, by conversations too
+        # (data_agent.web.conversations): one run at a time across the run form and every
+        # conversation.
         self.lock = threading.Lock()
 
     def submit(self, task: str, task_type: str, source_name: str, config: str) -> str:
         """Checks the request, prepares the run's directories and starts it; returns its id."""
         source = self.check(task, task_type, source_name, config)
-        with self.lock:
-            current = self.current
-            if current is not None and not current.done:
-                if current.process.poll() is None:
-                    raise Refused(409, f"run {current.run_id} is still going; one run at a time")
-                self.finish(current)
-            started_at = datetime.now(UTC)
-            run_id = new_run_id(started_at)
-            run_dir = self.runs.path / run_id
+
+        def prepare(run_dir: Path) -> tuple[list[str], Path]:
             workspace = run_dir / WORKSPACE
-            run_dir.mkdir()
-            record: dict[str, Any] = {
-                "id": run_id,
-                "task": task,
-                "task_type": task_type,
-                "config": config,
-                "status": "running",
-                "started_at": started_at.isoformat(),
-                "duration_ms": None,
-                "cost_usd": None,
-            }
-            try:
-                database = prepare_workspace(workspace, source, task_type, self.runs.path)
-                args = [
-                    f"--task={task}",
-                    "--type",
-                    task_type,
-                    "--config",
-                    config,
-                    "--events-dir",
-                    str(run_dir),
-                    "--workspace",
-                    str(workspace),
-                    *database,
-                    "--data-source-name",
-                    source.name,
-                ]
-                self.runs.write_record(run_id, record)
-                process = self.start_run(args, workspace)
-            except Exception:
-                shutil.rmtree(run_dir, ignore_errors=True)
-                raise
-            running = Running(run_id, process, leads_its_group(process), record)
-            self.current = running
-            threading.Thread(target=self.watch, args=(running,), daemon=True).start()
-            return run_id
+            database = prepare_workspace(workspace, source, task_type, self.runs.path)
+            args = [
+                f"--task={task}",
+                "--type",
+                task_type,
+                "--config",
+                config,
+                "--events-dir",
+                str(run_dir),
+                "--workspace",
+                str(workspace),
+                *database,
+                "--data-source-name",
+                source.name,
+            ]
+            return args, workspace
+
+        with self.lock:
+            return self.launch(task, task_type, config, prepare).run_id
+
+    def active(self) -> Running | None:
+        """The run whose process is still going; a run seen to have exited is finished first.
+        Called with the lock held."""
+        current = self.current
+        if current is None or current.done:
+            return None
+        if current.process.poll() is None:
+            return current
+        self.finish(current)
+        return None
+
+    def launch(
+        self,
+        task: str,
+        task_type: str,
+        config: str,
+        prepare: Prepare,
+        conversation: str | None = None,
+    ) -> Running:
+        """Starts a run, refused with 409 while another is going. Its directory is made first, so
+        its events read as an empty list from the moment it is started; `prepare` fills it, then
+        the run is recorded and its process started. Nothing is left of a run that fails to start.
+        Called with the lock held."""
+        current = self.active()
+        if current is not None:
+            raise Refused(409, f"run {current.run_id} is still going; one run at a time")
+        started_at = datetime.now(UTC)
+        run_id = new_run_id(started_at)
+        run_dir = self.runs.path / run_id
+        run_dir.mkdir()
+        record: dict[str, Any] = {
+            "id": run_id,
+            "task": task,
+            "task_type": task_type,
+            "config": config,
+            "status": "running",
+            "started_at": started_at.isoformat(),
+            "duration_ms": None,
+            "cost_usd": None,
+        }
+        try:
+            args, cwd = prepare(run_dir)
+            self.runs.write_record(run_id, record)
+            process = self.start_run(args, cwd)
+        except Exception:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise
+        stdin = StdinWriter(process.stdin) if process.stdin is not None else None
+        running = Running(
+            run_id, process, leads_its_group(process), record, stdin, conversation=conversation
+        )
+        self.current = running
+        threading.Thread(target=self.watch, args=(running,), daemon=True).start()
+        return running
 
     def check(self, task: str, task_type: str, source_name: str, config: str) -> DataSource:
-        if not self.sources:
-            raise Refused(
-                400, "no data source is configured; start the server with --data-sources FILE"
-            )
+        self.check_configured()
         source = self.sources.get(source_name)
         if source is None:
             raise Refused(
@@ -143,29 +216,32 @@ class Launcher:
             raise Refused(400, "the task is empty")
         if task_type == "dbt" and source.dbt_project is None:
             raise Refused(400, f"data source {source.name!r} has no dbt_project for a dbt task")
-        if source.duckdb is not None and not source.duckdb.is_file():
-            raise Refused(400, f"data source {source.name!r}: DuckDB file not found")
-        if source.postgres_env is not None and not os.environ.get(source.postgres_env):
-            raise Refused(
-                400,
-                f"data source {source.name!r}: environment variable {source.postgres_env} "
-                "is not set on the server",
-            )
+        check_source(source)
         return source
+
+    def check_configured(self) -> None:
+        if not self.sources:
+            raise Refused(
+                400, "no data source is configured; start the server with --data-sources FILE"
+            )
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         """Stops the run if it is the one this server started and it is still going; returns its
         row as it ended (a run that wrote its `result` just before the signal keeps that)."""
         with self.lock:
-            current = self.current
-            if current is None or current.run_id != run_id or current.process.poll() is not None:
-                raise Refused(409, f"run {run_id} is not a run this server is running")
-            current.cancelling = True
-            self.stop(current)
-            self.finish(current)
-            summary = self.runs.summary(run_id)
-            assert summary is not None, "the run's record is written at submit"
-            return summary
+            return self.cancel_locked(run_id)
+
+    def cancel_locked(self, run_id: str) -> dict[str, Any]:
+        """`cancel`, called with the lock held."""
+        current = self.current
+        if current is None or current.run_id != run_id or current.process.poll() is not None:
+            raise Refused(409, f"run {run_id} is not a run this server is running")
+        current.cancelling = True
+        self.stop(current)
+        self.finish(current)
+        summary = self.runs.summary(run_id)
+        assert summary is not None, "the run's record is written at submit"
+        return summary
 
     def shutdown(self) -> None:
         """Stops the run if it is still going, and whatever it left running, so the server leaves
@@ -195,6 +271,8 @@ class Launcher:
         if not self.runs.has_result(running.run_id):
             status = "cancelled" if running.cancelling else "failure"
             self.runs.write_record(running.run_id, {**running.record, "status": status})
+        if running.stdin is not None:
+            running.stdin.close()
         running.done = True
 
     def stop(self, running: Running) -> None:
@@ -208,6 +286,19 @@ class Launcher:
         if not wait_stopped(process, group, deadline):
             signal_run(process, group, signal.SIGKILL)
             wait_stopped(process, group, time.monotonic() + STOP_GRACE_SECONDS)
+
+
+def check_source(source: DataSource) -> None:
+    """Refused when a run on this server could not reach the source: its DuckDB file is missing,
+    or its Postgres variable is not set."""
+    if source.duckdb is not None and not source.duckdb.is_file():
+        raise Refused(400, f"data source {source.name!r}: DuckDB file not found")
+    if source.postgres_env is not None and not os.environ.get(source.postgres_env):
+        raise Refused(
+            400,
+            f"data source {source.name!r}: environment variable {source.postgres_env} "
+            "is not set on the server",
+        )
 
 
 def leads_its_group(process: "subprocess.Popen[bytes]") -> bool:

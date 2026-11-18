@@ -23,6 +23,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 
 from data_agent.run_config import CONFIG_NAMES
+from data_agent.web.conversations import Conversations
 from data_agent.web.launcher import TASK_TYPES, Launcher, Refused, StartRun
 from data_agent.web.runs import RunsDir
 
@@ -50,6 +51,14 @@ class Submit(BaseModel):
     config: str
 
 
+class NewConversation(BaseModel):
+    """Empty: a conversation is not made for a task type or a data source."""
+
+
+class Message(BaseModel):
+    text: str
+
+
 def create_app(
     runs_dir: Path,
     data_sources: Sequence[DataSource],
@@ -62,6 +71,7 @@ def create_app(
     directory (`check_layout`)."""
     runs = RunsDir(runs_dir)
     launcher = Launcher(runs, data_sources, start_run)
+    conversations = Conversations(runs, launcher, data_sources)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -120,6 +130,40 @@ def create_app(
         """Stops the run; answers with its row as it ended."""
         try:
             return await to_thread.run_sync(launcher.cancel, run_id)
+        except Refused as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+
+    @app.get("/api/conversations")
+    async def list_conversations() -> list[dict[str, Any]]:
+        """Every conversation, and every run in none as a conversation of one turn."""
+        return await to_thread.run_sync(conversations.rows)
+
+    @app.get("/api/conversations/{conversation}")
+    async def conversation_row(conversation: str) -> dict[str, Any]:
+        row = await to_thread.run_sync(conversations.row, conversation)
+        if row is None:
+            raise HTTPException(404, f"no conversation {conversation}")
+        return row
+
+    @app.post("/api/conversations", status_code=201)
+    async def new_conversation(_: NewConversation) -> dict[str, str]:
+        """Takes no task type and no data source: a turn gets every configured source."""
+        return {"id": await to_thread.run_sync(conversations.create)}
+
+    @app.post("/api/conversations/{conversation}/messages")
+    async def send(conversation: str, body: Message) -> JSONResponse:
+        """A new turn (201) when none is running, else a steer into the running one (202)."""
+        try:
+            sent = await to_thread.run_sync(conversations.send, conversation, body.text)
+        except Refused as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+        return JSONResponse(sent, status_code=201 if sent["kind"] == "turn" else 202)
+
+    @app.post("/api/conversations/{conversation}/cancel")
+    async def cancel_turn(conversation: str) -> dict[str, Any]:
+        """Stops the running turn; answers with the conversation's row."""
+        try:
+            return await to_thread.run_sync(conversations.cancel, conversation)
         except Refused as exc:
             raise HTTPException(exc.status, exc.detail) from exc
 

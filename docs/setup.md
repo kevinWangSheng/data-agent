@@ -102,6 +102,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 启动时校验：`kind` 只能是 `duckdb` 或 `postgres`；`duckdb` 要 `path`，`postgres` 要 `env`（必须是变量名，像连接串的拒绝）；`dbt_project` 给了就要存在；未知的表和键都拒绝；配了 `dbt_project` 的 DuckDB 数据源，库文件的路径必须写在 `dbt_project` 里面（按写的路径算，不跟符号链接：项目里的链接或链接目录下的文件都算在里面）；`--runs-dir` 和任何一个 `dbt_project` 互相包含（含相同）时拒绝启动，否则复制项目时会把工作目录复制进自己。提交时再查 DuckDB 文件存在、环境变量已设置。
 - 每条运行 `<runs-dir>/<id>/` 放事件文件，`<runs-dir>/<id>/workspace/` 是工作目录：查数运行是空目录，DuckDB 原地只读；dbt 运行复制 `dbt_project`（不含 `target/`、`logs/`；符号链接复制成它指向的内容），DuckDB 文件一起复制，留在原相对位置（`profiles.yml` 用相对路径才会指向副本）。复制会跟进目录链接，所以项目里有指向 `--runs-dir`（或它的上级、下级）的目录链接时，这次提交返回 400，不复制。
 - 同时只跑一条，再提交返回 409。取消只对本服务启动、还在跑的那条有效：按记录的进程号发 SIGTERM（运行在自己的进程组里，连同它起的工具进程），10 秒不退再 SIGKILL；返回运行结束时的概况。服务给自己启动的运行写 `<id>/web-run.json`（提交时的概况）；进程退出时组里剩下的进程一并停掉，没写 `result` 事件的记成"已取消"（本服务停的）或"失败"。服务正常退出时同样停掉在跑的那条。已知限制：服务被强杀时没机会记，那条运行一直显示运行中。
+- 对话（工单 93，接口见 `tests/acceptance/test_chat_api.py` 开头的契约）：新建对话不选类型和数据源，每一轮把 `--data-sources` 里的全部数据源交给 agent（写成 `<runs-dir>/<run_id>/data-sources.toml`，只有名字、种类、DuckDB 路径或环境变量名）。对话目录是 `<runs-dir>/conversations/<id>/`：`conversation.json` 索引、各轮共用的 `workspace/`、会话存档 `claude-config/`（不进 `~/.claude`）。一条消息一轮、一个运行目录，运行列表、读事件、三栏运行页照常能看；第二轮起接着上一轮的 session。某轮在跑时再发的消息写进那个子进程的 stdin（插话），不开新一轮；"同时只跑一条"对表单和所有对话一起算，取消、服务退出时停进程的办法同上。命令行和表单跑的单次运行在对话列表里显示成只有一轮、不能追问的对话。已知限制：子进程写完 `result`、还没退出时发的消息仍算插话（返回 202），送不到。
 
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。
 
