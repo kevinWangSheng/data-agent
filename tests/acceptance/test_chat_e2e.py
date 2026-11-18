@@ -385,11 +385,12 @@ def test_c_a_message_sent_while_the_agent_works_is_followed(server: Server, atte
     assert [(e["id"], e["text"]) for e in delivered] == [(steer["id"], STEER)]
     assert len(row(server, conversation)["turns"]) == 1
     answer = answer_of(run)
-    for customer, name in TOP_3.items():
-        assert customer in answer or name in answer, (customer, answer)
-    # Only the listed result counts: the assumptions may name the first customer left out, to
-    # show there is no tie at the cut (human decision 2026-11-17, ticket 93).
+    # Only the listed result, which comes before the assumptions, counts: the assumptions may name
+    # the first customer left out, to show there is no tie at the cut (human decision 2026-11-17,
+    # ticket 93).
     listed = re.split(r"(?im)^[\s*_#>]*assumptions?\b", answer, maxsplit=1)[0]
+    for customer, name in TOP_3.items():
+        assert customer in listed or name in listed, (customer, answer)
     for customer, name in REST.items():
         assert customer not in listed and name not in listed, (customer, answer)
 
