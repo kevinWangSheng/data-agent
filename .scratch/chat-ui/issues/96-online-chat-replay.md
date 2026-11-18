@@ -1,6 +1,6 @@
 # 96 — 在线版：录好的对话回放
 
-Status: in-review
+Status: done
 Blocked by: 95
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -50,7 +50,7 @@ Branch: worktree-96-online-chat-replay
 - Attempts: 3
 - Review rounds: 3
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #105) after two returns
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -244,3 +244,12 @@ The branch is done and ready for your review: the exporter can now export a reco
   - **Not fixed, with reasons:**
     - *The two new tests have the same shape.* They cover two separate inputs (a featured run and a conversation turn), and the reviewer also advised against a shared helper.
     - *Spec, low severity: Python's `json.loads` accepts `NaN` and `Infinity`, but the site's `JSON.parse` rejects them.* The event writer uses `json.dumps` with the default `allow_nan=True` (`src/data_agent/events.py:94`). But its fields come from SDK blocks (JSON tool input, tool result content) and SDK cost numbers, and I found no path that produces NaN. Rejecting those constants would also change `read_events`: a `result` line holding NaN would make a turn count as not ended, and the export would refuse it. Recorded as a known limit (unconfirmed in practice).
+
+### Main session, 2026-11-17: merged
+
+- PR #105: CI `check` green. Codex reviewed 99e8bbf and had no new findings. Squash-merged.
+- Known limits:
+  - Returning from "Full run view" restarts the replay.
+  - The export parser accepts NaN and Infinity, which the site's `JSON.parse` rejects. No path that produces them was found.
+  - The site's top nav is cut off at 375px; this predates the ticket (79–82).
+- Publishing the re-exported site data waits for the human.
