@@ -1,6 +1,6 @@
 # 96 — 在线版：录好的对话回放
 
-Status: in-progress
+Status: in-review
 Blocked by: 95
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -47,8 +47,8 @@ Branch: worktree-96-online-chat-replay
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
@@ -70,3 +70,70 @@ Branch: worktree-96-online-chat-replay
   - `20261118T020652Z-278a98`: two clarifications in three turns, because the follow-up said "product types", which matches a `PRODUCT_TYPE` column as well as categories.
   - The first take, also `…278a98`, stopped after turn 1.
 - Exporting to the site and updating the `site-data` release is an outward publish: it needs the human's go-ahead.
+
+### Attempt 1 (ticket agent, branch `worktree-96-online-chat-replay`, commits efdb5c6, e7ec481), final reply as given
+
+The branch is done and ready for your review: the exporter can now export a recorded conversation, and the online site replays it at `chats/<id>` with no way to send a message. Two commits on `worktree-96-online-chat-replay` (`efdb5c6`, `e7ec481`). `make check` passes and `pnpm --dir web build` succeeds. The real recording on the retail database is still yours to do; the commands are in the last section.
+
+**What changed**
+- **Export:** `python -m evals export --conversation <runs dir>/conversations/<id>` writes the conversation's index into `index.json` and each turn as an ordinary run in `runs/<run_id>/`. Everything goes through the existing scrub. The conversation's workspace and the SDK session record are not exported.
+- **What the export refuses:**
+  - a conversation whose `notes.json` lacks a title, or lacks `local_data: true` or a dev-set `task_id` (the featured-run rule). Holdout refusals print only a count.
+  - a turn that hasn't ended (no `result` event, and not cancelled or failed by the server's record).
+  - a turn whose run is missing.
+  - a turn run id the scrub would change.
+- **Site:**
+  - `chats/<id>` opens the conversation and starts playing on the run page's replay clock and controls, taking about a minute.
+  - The header gets a link to each recorded conversation.
+  - "Full run view" opens each turn's three-pane page.
+  - There's no message box, and the clarification options are disabled.
+- **Shared code:** the transcript is split out of `Conversation.tsx` so the live and online pages share it. The run page's replay loop moved into `run-page/useReplay.ts`, used by both pages.
+- `web/site-data.ts` is unchanged: `homeData` copies `conversations` from `index.json` into `home.json`. Exports without conversations keep the old layout.
+
+**Status: in-review**
+
+**Comments (for the ticket):**
+- Baseline before starting: `make check` green (pytest 2412 passed, vitest 275 passed).
+- Real run on the fixture conversation (5 turns: clarification, steer, cancelled turn), laid out as `data-agent web` stores it under `runs/96/demo`:
+  - `uv run python -m evals export --manifest evals/manifest.json --out runs/96/demo/site --run runs/96/demo/featured/query-shop --conversation runs/96/demo/runs/conversations/20261117T100000Z-c0ffee` printed `scrub: changed 0 file(s) of 14 …` and `export: 6 run(s), 1 conversation(s) -> runs/96/demo/site`.
+  - Re-running `python -m evals scrub runs/96/demo/site` printed `changed 0 file(s) of 14; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0`.
+- Browser check: built with `SITE_DATA=… pnpm --dir web build`, served with `vite preview`, opened in headless Playwright:
+  - The page autoplays: 1 turn at 0:05, 3 turns at 0:35 of 1:13, with 0 textareas.
+  - "Show all" displays all 5 turns, including the delivered steer and the cancelled turn. "Full run view" opens the three-pane page.
+  - The first screen still autoplays.
+  - These screenshots are of the fixture conversation, not the demo recording: `runs/96/replay-midway.png`, `runs/96/replay-all-shown.png`.
+- New tests:
+  - `tests/test_eval_export_conversation.py` (10): index and every turn's events exported, scrubbing, holdout refused by count, missing provenance refused, unfinished turn refused, failed turn marked, missing run refused, repeated id refused, leaky run id refused.
+  - `web/src/chat-page/replay.test.ts` (9).
+  - `web/src/site/RecordedConversation.test.ts` (5): opens and replays; no textarea, no send button, options disabled.
+  - Additions to the `homeData` and `speedsWith` tests.
+- Final `make check`: exit 0, pytest 2422 passed / 1 skipped, vitest 291 passed, ruff and basedpyright clean.
+- Review: `da-review` was not run (frontend ticket). `eng:code-review main` ran once and both rounds of fixes fit in one pass:
+  - **Spec:** no findings. Authority is respected: `tests/fixtures/chat/`, `tests/acceptance/`, `web/e2e/`, `web/src/chat-view/` and `src/data_agent/` are untouched.
+  - **Standards:** no hard violations. Fixed:
+    - the copied replay loop, now `useReplay`;
+    - `check_conversations` duplicating `check_featured`;
+    - the no-op clarification props, now optional;
+    - a wrong `turn_notes` docstring.
+  - **Not fixed:**
+    - The title ternary in `App.tsx` follows the pattern already there, so changing it would be an unrelated refactor.
+    - The status strings are shared between Python and TypeScript, and the risk is low.
+  - **Known limit (reviewer note):** `local_data: true` relies on your word that the questions aren't benchmark tasks, the same trust featured runs get (ticket 80).
+
+**Ledger:** Attempts: 1 · Review rounds: 1 · Model spend: $0 · Outcome: —
+
+**Commands for the main session** (in order):
+1. Pull the retail database: `git -C ~/dev/AI/data-agent-refs/data-eng-bench lfs pull`.
+2. Record on it with `data-agent web --runs-dir <R> --data-sources <toml for the retail db>`. Use questions you wrote yourself, covering a follow-up, a clarification and a steer.
+3. Write `<R>/conversations/<id>/notes.json` containing `{"title": "…", "local_data": true}`.
+4. Export: `uv run python -m evals export --manifest evals/manifest.json --out runs/site --run <featured runs…> --job <dev jobs…> --board <board.json> --dab <dab_score.json> --conversation <R>/conversations/<id>`. Keep the featured, job and leaderboard inputs from the current site so it loses nothing.
+5. Check the scrub: `uv run python -m evals scrub runs/site` should report 0 changes.
+6. Preview: `SITE_DATA=$PWD/runs/site pnpm --dir web build && pnpm --dir web preview`, open `/chats/<id>` and take the screenshot.
+7. After your confirmation: `tar -czf site-data.tar.gz -C runs/site .`, upload it as the `site-data` release asset, then run the `pages` workflow.
+
+### Main session, 2026-11-17: export with the demo conversation (at e7ec481)
+
+- `notes.json` written for the demo conversation: `{"title": "Refund costs by return reason", "local_data": true}`.
+- `bash runs/site-publish-2/export.sh` (ticket 82's inputs plus `--conversation runs/demo-chat/web/conversations/20261118T020857Z-6cd60d`) printed "scrub: changed 0 file(s) of 552; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0" and "export: 275 run(s), 1 conversation(s)". A re-scrub also reported 0 changes.
+- `grep -rlE "sd710|/Volumes/|claude-config|shenghuikevin|/Users/"` over the export: no hits. The `index.json` `conversations` holds the 2 turns and the steer.
+- The output is in `runs/site-publish-2/site` and is not in git. Nothing is published: building the tarball and replacing the `site-data` release asset waits for the human.
