@@ -1,10 +1,10 @@
 # 96 — 在线版：录好的对话回放
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 95
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (Opus 5.5), 2026-11-17
+Branch: worktree-96-online-chat-replay
 
 ## Goal
 
@@ -54,3 +54,19 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+### Main session, 2026-11-17: demo conversation recorded
+
+- The DB is data-eng-bench `base-image/database/retail.duckdb` (Apache-2.0), sha256 `bd2bb1b3…c2ec2d`, 488,910,848 bytes.
+  - It was fetched with `git lfs smudge` onto the external volume, at `/Volumes/sd710/data-agent/retail.duckdb`. The clone's local `lfs.storage` is `/Volumes/sd710/data-agent/lfs`.
+  - `git-lfs` was installed by the human.
+- The questions were written for the demo and avoid the four retail leaderboard task topics (channel revenue, market ROI, cart recovery, trust risk). The human asked for a plain agent Q&A, not a script built around clarification options.
+- Recorded through the real `data-agent web` (port 8799, `--runs-dir runs/demo-chat/web`, one source `retail`), all over HTTP, with the real model (DeepSeek).
+- **The conversation to export: `runs/demo-chat/web/conversations/20261118T020857Z-6cd60d`.**
+  - Turn 1: "Which return reasons cost us the most in refunds?" After the first tool call the user steered "Only processed returns, please.", delivered at seq 20. The agent took "processed" as status exactly `PROCESSED`, stated that assumption, and answered: Not As Described $1,562.01 (18.4%), then Gift Return $1,083.29 and Color Different $1,040.75, out of $8,509.86. 12 turns, $0.0111.
+  - Turn 2: "For Damaged in Shipping, which product categories have the most returned units?" It kept the previous reading ("as in the previous answer"). Dresses 2 and Electronics 2 are tied, then Skincare 1 and Women's Pants & Skirts 1. 5 units could not be attributed, because their order lines are missing. 22 turns, $0.0153.
+  - Main-session SQL check: the top 3 reasons and the $8,509.86 total match; the category units match, including the 5 unattributed units.
+- Two earlier takes in the same runs dir are not to be exported:
+  - `20261118T020652Z-278a98`: two clarifications in three turns, because the follow-up said "product types", which matches a `PRODUCT_TYPE` column as well as categories.
+  - The first take, also `…278a98`, stopped after turn 1.
+- Exporting to the site and updating the `site-data` release is an outward publish: it needs the human's go-ahead.
