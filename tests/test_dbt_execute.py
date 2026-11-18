@@ -123,6 +123,29 @@ def test_the_postgres_profile_decodes_the_url_as_libpq_does() -> None:
     assert (output["dbname"], output["host"]) == ("warehouse dev", "/var/run/Pg")
 
 
+def test_the_postgres_profile_keeps_the_urls_tls_settings() -> None:
+    url = (
+        "postgresql://h/db?sslmode=verify-full"
+        "&sslrootcert=/ca.pem&sslcert=/c.pem&sslkey=/k.pem&connect_timeout=7"
+    )
+    output = postgres_output(url, "da_run_r1")
+    keys = ("sslrootcert", "sslcert", "sslkey", "connect_timeout")
+    assert {key: output[key] for key in keys} == {
+        "sslrootcert": "/ca.pem",
+        "sslcert": "/c.pem",
+        "sslkey": "/k.pem",
+        "connect_timeout": 7,
+    }
+
+
+@pytest.mark.parametrize(
+    "url", ["postgresql://h1,h2:5433/db", "postgresql://h:notaport/db", "postgresql://h/db?bogus=1"]
+)
+def test_a_postgres_url_the_profile_cannot_hold_is_a_tool_error(url: str) -> None:
+    with pytest.raises(DbtExecuteError):
+        postgres_output(url, "da_run_r1")
+
+
 def test_the_postgres_profile_holds_the_connection_and_the_run_schema() -> None:
     profile = scratch_profile("shop", "da_run_r1", None, PG_URL)
     assert profile == {

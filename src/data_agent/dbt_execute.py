@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NamedTuple
 
+import psycopg
 from psycopg.conninfo import conninfo_to_dict
 
 from data_agent.sandbox import KILL_GRACE_S, Capture, Execution, local_env
@@ -53,6 +54,9 @@ RUN_RESULTS = Path("target") / "run_results.json"
 MAX_FAILURES = 10
 # The threads of a generated profile's output, which `threads` overrides per command.
 PROFILE_THREADS = 4
+POSTGRES_PORT = 5432
+# libpq keys a dbt-postgres output also has, carried over as given.
+TLS_FILES = ("sslrootcert", "sslcert", "sslkey")
 
 
 class DbtExecuteError(Exception):
@@ -124,12 +128,20 @@ def workspace_project(workspace: Path) -> Path:
 def postgres_output(url: str, schema: str) -> dict[str, object]:
     """A dbt-postgres output for the connection string (SignalPilot `_emit_postgres`). The
     string is parsed by libpq, as the read-only gateway's connection parses it, so both decode
-    it the same way (percent-encoded parts, a socket directory as host)."""
-    params = conninfo_to_dict(url)
-    return {
+    it the same way; the TLS files and the connect timeout carry over too. A string dbt-postgres
+    cannot hold (several hosts, a bad port, an unknown key) is refused."""
+    try:
+        params = conninfo_to_dict(url)
+    except psycopg.ProgrammingError as exc:
+        raise DbtExecuteError(f"the Postgres connection string does not parse: {exc}") from exc
+    host = str(params.get("host") or "")
+    port = str(params.get("port") or POSTGRES_PORT)
+    if "," in host or not port.isdigit():
+        raise DbtExecuteError("the Postgres connection string must name one host and one port")
+    output: dict[str, object] = {
         "type": "postgres",
-        "host": str(params.get("host") or ""),
-        "port": int(params.get("port") or 5432),
+        "host": host,
+        "port": int(port),
         "user": str(params.get("user") or ""),
         "password": str(params.get("password") or ""),
         "dbname": str(params.get("dbname") or ""),
@@ -137,6 +149,10 @@ def postgres_output(url: str, schema: str) -> dict[str, object]:
         "threads": PROFILE_THREADS,
         "sslmode": str(params.get("sslmode") or "prefer"),
     }
+    output.update({key: str(params[key]) for key in TLS_FILES if params.get(key)})
+    if params.get("connect_timeout"):
+        output["connect_timeout"] = int(str(params["connect_timeout"]))
+    return output
 
 
 def scratch_profile(
