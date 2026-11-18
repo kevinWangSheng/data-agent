@@ -32,7 +32,8 @@ default timeout. Step 7 says not to switch `--vars` between dbt calls (each swit
 Ticket 100 (ADR-0010): the two scripts run in `sandbox_exec` and dbt reaches the database
 through `dbt_execute`, in place of Bash (allowed-tools names those two); Step 7 selects the
 upstream models with `+` when dbt writes to a schema of the run's own; the validate script gets a
-`sandbox_exec` timeout past its own 300 s. -->
+`sandbox_exec` timeout past its own 300 s; Step 7 passes `project_dir` when the workspace holds
+several dbt projects. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -231,6 +232,10 @@ When `dbt_execute`'s description says dbt writes to a schema of this run's own, 
 schema starts empty: no upstream model is materialized in it, and nothing pre-existing
 can be destroyed there. Select each model with its upstream models from the start
 (`select: +<model1> +<model2>`), or use `command: build`.
+
+When the workspace holds more than one dbt project, pass `project_dir` (the project's
+directory, relative to the workspace) on every `dbt_execute` call, naming the project
+you edited. Never move or rename a `dbt_project.yml` to make dbt pick a project.
 
 If `dbt run` fails on ANY model - including package models in
 `dbt_packages/` - load the dbt-debugging skill and fix the error.

@@ -23,13 +23,15 @@ TASK_TEXT = 'Build `fct_orders`:\n  - "net" = gross - refunds \nKeep cancelled o
 # the layer can be compared to it. Its dbt-command sentence follows ticket 49 (`cd`, no
 # profiles.yml edit), ticket 55 (a lone `echo $DB_TYPE`, file tools instead of `ls`/`cat`) and
 # ticket 66 (an existing profiles.yml stays; one may be created when the task asks). Ticket 100
-# moved dbt to dbt_execute and every other command to sandbox_exec (ADR-0010).
+# moved dbt to dbt_execute and every other command to sandbox_exec (ADR-0010), and names
+# dbt_execute's `project_dir` (its return round 1).
 DBT_PROMPT_BEFORE = """\
 Task type: dbt
 Database: {database}. dbt writes to it only through the `dbt_execute` tool; you read it only \
 through the `{server}` MCP tools.
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
-Run dbt against the database with `dbt_execute`, which finds the project in the workspace. Run \
+Run dbt against the database with `dbt_execute`, which finds the project in the workspace (name \
+it with `project_dir` when the workspace holds several). Run \
 every other command (Python, scripts, `dbt parse`, `dbt ls`, `dbt deps`) with `sandbox_exec`, \
 which starts in the workspace. Do not edit an existing `profiles.yml`; create one when the task \
 asks for it. When the task asks you to print `DB_TYPE`, run `echo $DB_TYPE` as a sandbox_exec \

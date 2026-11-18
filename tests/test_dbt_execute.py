@@ -413,6 +413,58 @@ def test_a_workspace_without_a_dbt_project_is_an_error(
         executor.execute("run", env=env)
 
 
+def two_projects(tmp_path: Path) -> Path:
+    """Two dbt projects side by side, as a benchmark task ships one per warehouse."""
+    workspace = workspace_with_project(tmp_path, "dbt_models_duckdb")
+    shutil.copytree(DBT_SHOP, workspace / "dbt_models_other")
+    return workspace
+
+
+def test_several_projects_at_one_level_need_project_dir(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
+) -> None:
+    """Ticket 100 return round 1: with two projects side by side and no way to name one, the
+    agent moved a project's dbt_project.yml away to run dbt."""
+    env, _ = fake_dbt
+    executor = DbtExecutor(two_projects(tmp_path), "task", duckdb=tmp_path / "a.duckdb")
+    with pytest.raises(DbtExecuteError) as refused:
+        executor.execute("run", env=env)
+    message = str(refused.value)
+    assert "project_dir" in message
+    assert "dbt_models_duckdb" in message and "dbt_models_other" in message
+
+
+@pytest.mark.parametrize("given", ["dbt_models_other", "./dbt_models_other/", "absolute"])
+def test_project_dir_picks_the_project_dbt_runs_on(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path], given: str
+) -> None:
+    env, record = fake_dbt
+    workspace = two_projects(tmp_path)
+    chosen = workspace / "dbt_models_other"
+    project_dir = str(chosen) if given == "absolute" else given
+    executor = DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb")
+    assert "exit_code: 0" in executor.execute("run", project_dir=project_dir, env=env)
+    argv = json.loads(record.read_text())["argv"]
+    assert Path(argv[argv.index("--project-dir") + 1]) == chosen.resolve()
+
+
+@pytest.mark.parametrize("given", ["../outside", "outside_link", "absolute", "dbt_models_none"])
+def test_a_project_dir_outside_the_workspace_or_without_a_project_is_refused(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path], given: str
+) -> None:
+    env, record = fake_dbt
+    workspace = two_projects(tmp_path)
+    outside = workspace.parent / "outside"
+    shutil.copytree(DBT_SHOP, outside)
+    (workspace / "outside_link").symlink_to(outside)
+    (workspace / "dbt_models_none").mkdir()
+    project_dir = str(outside) if given == "absolute" else given
+    executor = DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb")
+    with pytest.raises(DbtExecuteError, match="project_dir"):
+        executor.execute("run", project_dir=project_dir, env=env)
+    assert not record.exists()
+
+
 def test_dbt_stays_in_the_servers_process_group(
     tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
 ) -> None:

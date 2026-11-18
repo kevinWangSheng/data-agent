@@ -358,9 +358,10 @@ def register_dbt_tool(server: MCPServer, executor: DbtExecutor) -> None:
         exclude: str = "",
         full_refresh: bool = False,
         threads: int | None = None,
+        project_dir: str = "",
     ) -> str:
         try:
-            return executor.execute(command, select, exclude, full_refresh, threads)
+            return executor.execute(command, select, exclude, full_refresh, threads, project_dir)
         except DbtExecuteError as exc:
             raise ToolError(str(exc)) from exc
 

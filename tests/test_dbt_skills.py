@@ -618,6 +618,7 @@ def test_dbt_prompt_teaches_no_project_dir_flags() -> None:
         server=MCP_SERVER,
         database="DuckDB",
         workspace="/w",
+        sandbox_paths="",
         task="t",
         task_file_note="",
     )
@@ -635,6 +636,7 @@ def test_dbt_prompt_keeps_an_existing_profile_and_allows_creating_one_the_task_a
         server=MCP_SERVER,
         database="DuckDB",
         workspace="/w",
+        sandbox_paths="",
         task="t",
         task_file_note="",
     )

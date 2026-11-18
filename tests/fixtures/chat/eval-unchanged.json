@@ -365,6 +365,11 @@
                 "title": "Full Refresh",
                 "type": "boolean"
               },
+              "project_dir": {
+                "default": "",
+                "title": "Project Dir",
+                "type": "string"
+              },
               "select": {
                 "default": "",
                 "title": "Select",

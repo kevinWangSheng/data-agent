@@ -95,6 +95,27 @@ def _is_credential_path(path: Path) -> bool:
     return any(is_credential(part) for part in path.parts)
 
 
+def credential_files(workspace: Path) -> list[Path]:
+    """The credential files in `workspace`, relative to it, by this guard's rule: a credential
+    name, anything in a credential-named directory (listed as the directory), or a link to one.
+    The guard stops only the file tools; the docker sandbox mounts the whole workspace, so a docker
+    run refuses a workspace holding any (ADR-0010: the sandbox holds no credentials)."""
+    found: list[Path] = []
+    for root, directories, files in os.walk(workspace):
+        here = Path(root)
+        for name in sorted(directories):
+            entry = here / name
+            if is_credential(name) or (entry.is_symlink() and is_credential(entry.resolve().name)):
+                found.append(entry.relative_to(workspace))
+        # Not into a credential directory (listed already), nor through a link (os.walk's own rule).
+        directories[:] = [name for name in directories if not is_credential(name)]
+        for name in sorted(files):
+            entry = here / name
+            if is_credential(name) or (entry.is_symlink() and is_credential(entry.resolve().name)):
+                found.append(entry.relative_to(workspace))
+    return found
+
+
 def _expand_braces(pattern: str) -> list[str]:
     """`*.{sql,yml}` as the globs it stands for (one level, as Grep's `glob` is written)."""
     start, end = pattern.find("{"), pattern.find("}")

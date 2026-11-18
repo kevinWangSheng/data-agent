@@ -877,6 +877,14 @@ async def test_the_prompt_states_the_turn_limit_in_force(
     assert seen[0]["options"].max_turns == 75
 
 
+async def test_the_prompt_says_where_the_workspace_is_in_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # Ticket 100 return round 1: DAB's sandbox_exec is the docker backend, workspace at /workspace.
+    [seen] = await run_dab(monkeypatch, dab_root, tmp_path / "out", runs=1)
+    assert "In `sandbox_exec` the workspace is at `/workspace`" in seen["prompt"]
+
+
 async def test_the_turn_budget_follows_the_session(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:

@@ -185,3 +185,38 @@ def test_a_docker_run_refuses_a_duckdb_file_inside_its_workspace(
     assert exited.value.code == 2
     assert "inside the workspace" in capsys.readouterr().err
     assert not (tmp_path / "events").exists()
+
+
+@pytest.mark.parametrize("name", [".env", "config/.pgpass", "keys/deploy.pem", "linked"])
+def test_a_docker_run_refuses_a_credential_file_inside_its_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+) -> None:
+    """Ticket 100 return round 1 (Codex P1): the container mounts the whole workspace, and the
+    workspace guard stops only the file tools, so a shell in sandbox_exec could read a project's
+    `.env` (ADR-0010: the sandbox holds no credentials). A link to one counts too."""
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    if name == "linked":
+        secret = tmp_path / ".env"
+        secret.write_text("PASSWORD=x\n")
+        shown = "settings"
+        (workspace / shown).symlink_to(secret)
+    else:
+        shown = name
+        (workspace / name).parent.mkdir(parents=True, exist_ok=True)
+        (workspace / name).write_text("PASSWORD=x\n")
+    args = [
+        *("run", "--task", "q", "--type", "query", "--workspace", str(workspace)),
+        *("--duckdb", str(make_db(tmp_path / "shop.duckdb")), "--config", "full"),
+        *("--events-dir", str(tmp_path / "events")),
+    ]
+    with pytest.raises(SystemExit) as exited:
+        cli.main(args)
+    assert exited.value.code == 2
+    err = capsys.readouterr().err
+    assert "credential" in err and shown in err
+    assert not (tmp_path / "events").exists()

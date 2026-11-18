@@ -55,7 +55,7 @@ async def test_dbt_execute_adds_one_tool_and_changes_no_other(config: str, tmp_p
     assert set(after) - set(before) == {"dbt_execute"}
     assert {name: tool for name, tool in after.items() if name != "dbt_execute"} == before
     schema = after["dbt_execute"]["input_schema"]["properties"]
-    assert set(schema) == {"command", "select", "exclude", "full_refresh", "threads"}
+    assert set(schema) == {"command", "select", "exclude", "full_refresh", "threads", "project_dir"}
     assert "da_run_r1" in after["dbt_execute"]["description"]
 
 

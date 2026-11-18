@@ -48,6 +48,7 @@ from claude_agent_sdk.types import McpStdioServerConfig
 
 from data_agent.agent import (
     ANSWER_RULE,
+    DOCKER_PATHS_RULE,
     MCP_SERVER,
     SANDBOX_RULE,
     SKILLS_PROMPT,
@@ -94,7 +95,9 @@ Task type: query
 Databases, reachable only through the `{server}` MCP tools (pass the name as `db_name`):
 {databases}
 Workspace (your working directory): {workspace}
-{turn_limit}
+"""
+    + DOCKER_PATHS_RULE
+    + """{turn_limit}
 """
     + SANDBOX_RULE
     + """

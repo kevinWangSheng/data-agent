@@ -74,9 +74,11 @@ LOCAL_ENV = (
 )
 # What a local command also keeps: the variables a Harbor task's image and its tasks use (a task
 # asks to print DB_TYPE; dbt and the task's profile read DBT_* and DUCKDB_PATH; VIRTUAL_ENV is
-# the image's Python). None of them holds a credential.
+# the image's Python). None of them holds a credential, except dbt's DBT_ENV_SECRET_*: dbt keeps
+# secrets there (a profile's password), so they stay out; dbt_execute's own environment has them.
 LOCAL_TASK_ENV = ("DB_TYPE", "DUCKDB_PATH", "VIRTUAL_ENV")
 LOCAL_TASK_PREFIXES = ("DBT_",)
+LOCAL_SECRET_PREFIXES = ("DBT_ENV_SECRET_",)
 
 
 class SandboxError(Exception):
@@ -188,6 +190,8 @@ def local_env(env: Mapping[str, str]) -> dict[str, str]:
 
 def reaches_local_commands(name: str) -> bool:
     """Whether a local sandbox command keeps the variable `name` (`local_command_env`)."""
+    if name.startswith(LOCAL_SECRET_PREFIXES):
+        return False
     return name in LOCAL_ENV or name in LOCAL_TASK_ENV or name.startswith(LOCAL_TASK_PREFIXES)
 
 

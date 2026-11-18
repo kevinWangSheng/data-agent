@@ -161,6 +161,19 @@ def test_local_backend_keeps_the_task_containers_own_variables(
     assert "marker" not in done.stdout
 
 
+def test_local_backend_keeps_dbts_secret_variables_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket 100 return round 1 (Codex P1): DBT_ENV_SECRET_* is where dbt keeps secrets (the
+    jaffle profile's Postgres password); a sandbox command could print them or reach the database
+    past dbt_execute. dbt_execute's own environment still gets them."""
+    monkeypatch.setenv("DBT_TARGET", "dev")
+    monkeypatch.setenv("DBT_ENV_SECRET_DA_JAFFLE_PASSWORD", "pw-marker")
+    done = LocalSandbox(tmp_path, SKILLS).execute("env", timeout=30)
+    assert done.exit_code == 0 and "DBT_TARGET=dev" in done.stdout.splitlines()
+    assert "marker" not in done.stdout and "DBT_ENV_SECRET" not in done.stdout
+
+
 @pytest.fixture
 def docker(monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
     return install(monkeypatch)

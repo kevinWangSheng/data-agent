@@ -115,9 +115,19 @@ def dbt_argv(
     return argv
 
 
-def workspace_project(workspace: Path) -> Path:
-    """The dbt project in the workspace: the one nearest its top (packages, build output and
-    hidden directories are not looked in). Several at the same depth are an error."""
+def workspace_project(workspace: Path, project_dir: str = "") -> Path:
+    """The dbt project in the workspace. `project_dir` (relative to the workspace, or absolute)
+    names it, and must be inside the workspace with symlinks followed; without it, the one
+    nearest the workspace's top (packages, build output and hidden directories are not looked
+    in). Several at the same depth then are an error naming them."""
+    root = workspace.resolve()
+    if project_dir:
+        project = (workspace / project_dir).resolve()
+        if not project.is_relative_to(root):
+            raise DbtExecuteError(f"project_dir {project_dir!r} is outside the workspace")
+        if not (project / PROJECT_FILE).is_file():
+            raise DbtExecuteError(f"project_dir {project_dir!r} has no {PROJECT_FILE}")
+        return project
     found = dbt_projects(workspace)
     if not found:
         raise DbtExecuteError(f"no {PROJECT_FILE} in the workspace")
@@ -125,9 +135,12 @@ def workspace_project(workspace: Path) -> Path:
     nearest = [path for path in found if len(path.parts) == depth]
     if len(nearest) > 1:
         names = ", ".join(str(path.relative_to(workspace)) for path in nearest)
-        raise DbtExecuteError(f"the workspace has several dbt projects at one level: {names}")
+        raise DbtExecuteError(
+            f"the workspace has several dbt projects at one level: {names}; pass project_dir "
+            "(one of them, relative to the workspace)"
+        )
     [project] = nearest
-    if not project.resolve().is_relative_to(workspace.resolve()):
+    if not project.resolve().is_relative_to(root):
         raise DbtExecuteError("the dbt project is outside the workspace")
     return project
 
@@ -240,11 +253,12 @@ class DbtExecutor:
         return scratch_schema(self.run_id)
 
     def command_line(
-        self, argv: list[str], env: Mapping[str, str]
+        self, argv: list[str], env: Mapping[str, str], project_dir: str = ""
     ) -> tuple[list[str], Path, dict[str, str]]:
-        """The full argv, the directory dbt runs in (the project, so that relative paths in a
-        task's profile resolve from it) and dbt's environment. `scratch` writes its profile."""
-        project = workspace_project(self.workspace)
+        """The full argv, the directory dbt runs in (the project, `workspace_project`, so that
+        relative paths in a task's profile resolve from it) and dbt's environment. `scratch`
+        writes its profile."""
+        project = workspace_project(self.workspace, project_dir)
         argv = [*argv, "--project-dir", str(project.resolve())]
         dbt_env = local_env(env)
         if self.target == "scratch":
@@ -289,12 +303,13 @@ class DbtExecutor:
         exclude: str = "",
         full_refresh: bool = False,
         threads: int | None = None,
+        project_dir: str = "",
         env: Mapping[str, str] | None = None,
     ) -> str:
         """Run the command and reply as SignalPilot does, `target_schema` first for `scratch`."""
         argv = dbt_argv(command, select, exclude, full_refresh, threads)
         env = os.environ if env is None else env
-        dbt_command, project, dbt_env = self.command_line(argv, env)
+        dbt_command, project, dbt_env = self.command_line(argv, env, project_dir)
         executable = shutil.which("dbt", path=env.get("PATH"))
         if executable is None:
             raise DbtExecuteError("dbt is not on PATH")
@@ -410,6 +425,8 @@ outside the workspace and the sandbox. {where}
 
 `command` is one of: {", ".join(ALLOWED_COMMANDS)}. `select` and `exclude` take dbt node \
 selector syntax (no flags); `full_refresh` rebuilds incremental models; `threads` is 1 to \
-{MAX_THREADS}. Other dbt commands (parse, ls, deps, debug) run in sandbox_exec with a stub \
-profile. The output shows its last {MAX_OUTPUT_CHARS:,} characters, then the node statuses from \
-run_results.json. A command is killed after {TIMEOUT_S} seconds."""
+{MAX_THREADS}. `project_dir` names the dbt project, as a path relative to the workspace; leave \
+it empty when the workspace has one project, and pass it when there are several. Other dbt \
+commands (parse, ls, deps, debug) run in sandbox_exec with a stub profile. The output shows its \
+last {MAX_OUTPUT_CHARS:,} characters, then the node statuses from run_results.json. A command is \
+killed after {TIMEOUT_S} seconds."""
