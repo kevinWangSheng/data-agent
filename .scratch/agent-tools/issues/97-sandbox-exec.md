@@ -1,9 +1,9 @@
 # 97 — `sandbox_exec`：在隔离环境里执行任意命令
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
-Claimed by: Claude Code (Opus 5.5), 2026-11-17
+Claimed by: Claude Code (Opus 5.5), 2026-11-18（退回第 2 轮）
 Branch: worktree-97-sandbox-exec
 
 ## Goal
@@ -62,10 +62,10 @@ Branch: worktree-97-sandbox-exec
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
+- Attempts: 3（退回第 2 轮）
+- Review rounds: 4
 - Model spend: $0.005 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: implemented (`3151650`, `ca6af3d`, `868fd03`), real-model run done; PR #107 waiting for CI and the Codex PR review
+- Outcome: merged (PR #107 → 1a4ad9f)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -127,4 +127,67 @@ Branch: worktree-97-sandbox-exec
   - exit 0。工具调用：`list_tables`×1、`query_database`×5、`sandbox_exec`×1。`sandbox_exec` 的输入是 `data_files=["query_5"]`，命令用 pandas 读 `data/query_5.csv`，算均值和中位数。
   - 答案："均值：178.27083333333334；中位数：150.75"。直接用只读方式查 `customer_orders.total_amount` 得到 12 行，均值 178.27、中位数 150.75，两者一致。
   - 运行结束后 `docker ps -a --filter label=data-agent.sandbox.run` 为空。$0.005（price_table）。
-- 2026-11-17：PR #107。
+- 2026-11-17：PR #107。CI 两个 check 都 pass。主会话把 origin/main（98，8b1bc19）merge 进本分支，解决 `agent.py`、`cli.py` 的冲突（`sandbox`、`network` 两个参数都保留，docstring 合并），`make check` exit 0（pytest 2493 passed、1 skipped；web 295 passed），提交 d3cd5a5 并 push。**接着修之前先 `git pull`**。
+- 2026-11-17 **退回（第 1 轮，Codex GitHub app P2，审 868fd03，主会话对照代码核实属实）：超时后脱离进程组的子进程杀不掉。** `sandbox.py:52-56` 的 `SUPERVISOR` 在超时后只做 `kill -KILL -- -$t`，杀的是 `timeout` 那个进程组。命令里用 `setsid ... &` 或 Python 的 `Popen(..., start_new_session=True)` 起的子进程，在另一个会话和进程组里，不受影响（Codex 本地执行确认：supervisor 以 124 退出，子进程还活着）。docker 后端的容器在同一次运行里复用，这个进程会在之后的调用里继续占资源、改 workspace 文件，工具却报告"已杀掉"。
+  - 要做的：超时后让这个容器里不再有本次命令留下的进程，不管它们属于哪个进程组。可选做法（由你定）：
+    - 超时后在容器里以同一 uid 执行 `kill -KILL -1`（杀掉该 uid 能发信号的所有进程，PID 1 和自己除外）。`sandbox_exec` 没有 readOnlyHint，同一轮里的调用是串行的，不会误杀并发调用；装过的包也能保留。
+    - 或者超时后删掉容器，下次调用重建（会丢掉装过的包，工具说明要写明）。
+  - local 后端（Harbor）有同样的问题，一并处理，或者写明为什么不处理。
+  - 测试：补一个测试，用 `setsid sleep 600 &` 这类命令，在旧代码下失败、修复后通过（单元测试或真实 Docker 的集成测试都可以，集成测试的 workspace 放在 `$HOME` 下）。
+- 2026-11-18（工单会话，退回第 1 轮，主会话抄录）：提交 `d46c3cb`、`825b6c2`，已 push。
+  - 做法：用一个只依赖标准库的 Python supervisor（新文件 `src/data_agent/sandbox_supervisor.py`）代替 bash 的 `timeout` 包装。docker 后端在容器里用 `python3 -I -c` 执行它，local 后端用 `sys.executable`。
+    - Linux 上它把自己设成 child subreaper（`prctl(PR_SET_CHILD_SUBREAPER)`），所以 `setsid`、`start_new_session` 起的进程在父进程退出后会挂回它名下。
+    - 到时限时，它对 `/proc` 里自己的所有子孙进程先发 TERM，过 `KILL_GRACE_S` 再发 KILL，一直发到一个不剩，然后以 124 退出。
+    - `-I` 防止 workspace 里的文件（比如 `signal.py`）顶替 supervisor 自己的 import。
+  - 退回里给的两个做法为什么不用：
+    - `kill -KILL -1`：会杀掉之前的调用有意留着的后台进程。容器加了 `--init`，`sleep infinity` 和命令是同一个 uid，会被一起杀掉，容器随之停止。在 Harbor 里 local 后端和 agent 是同一个用户，会把 agent 自己也杀掉。
+    - 超时后删容器：会丢掉装过的包。
+  - local 后端：Linux（Harbor）上用同一个 supervisor 修好。macOS 没有 `/proc` 和 subreaper，退回到只杀命令的进程组。macOS 只用于开发，记为已知限制。
+  - 行为变化：命令已按时退出、但后台进程还占着 stdout 时，`run_process` 在 `KILL_GRACE_S` 内返回命令的退出码，和 `docker exec` 的行为一致（已实测）。以前会一直等到时限，报超时，再杀掉那个后台进程。新增了一个测试覆盖这一点。
+  - 真实 Docker 运行（`execute_tool`，colima）：
+    - 第 1 次调用 `setsid sleep 702 &`：exit 0。
+    - 第 2 次调用起了 `setsid sleep 600` 和 `start_new_session` 的 `sleep 601`，时限 2 s：报超时。
+    - 第 3 次调用看 `/proc`：只剩 `docker-init`、`sleep infinity` 和 `sleep 702`。
+  - 新测试：
+    - 集成测试 `test_processes_that_left_the_commands_process_group_are_killed_at_the_timeout`：旧代码下 `sleep 600`、`sleep 601` 还活着。
+    - local 后端的测试只在 Linux 上跑：CI（ubuntu）会跑，macOS 上跳过。工单会话用 `runs/linux-pytest.sh` 在 `python:3.12-slim` 容器里跑过，旧代码下以 `living(114)` 失败。
+    - 另加几条行为测试：之前调用留下的后台进程能撑过之后的超时；退出码原样传出；被信号杀掉时报 128+n；忽略 TERM 的命令会挨 KILL；按时退出的命令不等后台进程。
+  - 检查：
+    - `make check` exit 0：pytest 2495 passed、2 skipped，web 295 passed。
+    - 集成测试 12 passed。
+    - Linux 容器里 `tests/test_sandbox.py`、`tests/test_sandbox_tool.py` 39 passed，没有跳过。
+  - 审查：
+    - da-review 没有意见。
+    - eng:code-review 修了这几条：工具说明的措辞；等输出用一个共同截止时间；`TIMEOUT_EXIT` 只在一处定义；改名并拆开两段循环；supervisor 改用 `start_new_session`，不再需要 Python 3.11。
+    - eng:code-review 不修的几条：
+      - `/proc` 解析在测试里重复：每个测试单独可读。
+      - `CLIENT_MARGIN_S` 一个值管两处：注释已写明。
+      - supervisor 自己卡住时，兜底只能杀到 supervisor：记进了 docstring。
+  - 已知限制（新增）：
+    - macOS 的 local 后端只杀进程组。
+    - local 后端里，按时返回但后台进程还占着输出时，会留下两个读线程，直到那个进程结束。
+    - **给 100**：DAB 的 `python-data:3.12` 镜像里 Python 的版本未确认（refs 里没有 DAB 的 Dockerfile），换 DAB 沙箱时要核对 supervisor 能不能在里面跑。
+  - 主会话判断：改动只涉及超时处理，之前那次真实模型运行仍然有效，不重跑。
+- 2026-11-18 PR #107：CI 两个 check 都 pass（825b6c2）。
+- 2026-11-18 **退回（第 2 轮，也是这个 PR 的最后一轮；Codex GitHub app P2，审 825b6c2，主会话对照代码核实属实）：local 后端里，读线程比 `run_process` 活得久，管道 fd 却被提前关掉并复用。**
+  - 问题：`Capture` 只记 fd 号（`sandbox.py:100`）。`run_process` 返回前关掉 `proc.stdout`（`:159`），这时读线程可能还阻塞在 `os.read(fd)` 上（`:106`）。Linux 上关 fd 不会唤醒阻塞的读，fd 号会被下一次 `Popen` 的管道复用。后台进程再写一次，旧线程就醒过来，读走新命令的输出。
+  - Codex 的复现：先跑 `(sleep 6; echo late) & echo first`，下一条命令打印 100 行，只收到 50 行。这是上一轮新加的"按时返回、不等后台进程"带出来的。
+  - 要做的：读线程还活着时，不能让它的 fd 被关掉或复用。做法由你定，例如：
+    - 管道对象交给读线程，读到 EOF 时由读线程自己关；`run_process` 不关还在读的管道，接受 fd 一直占到后台进程结束；
+    - 或者在交还 fd 之前，用确定的办法先停掉读线程。
+  - 测试：照 Codex 的场景补一个测试，旧代码下失败、修复后通过。只在 Linux 上能复现的话，照上一轮在 Linux 容器里跑一遍，写明结果。
+  - 第二轮修完还不过，按 Stop conditions 交回人。
+- 2026-11-18（工单会话，退回第 2 轮，主会话抄录）：提交 `190424e`、`8a422b0`、`9b9e8ab`，已 push。
+  - 根因：`Capture` 只把 fd 号交给读线程。`run_process` 返回后，`Popen` 和它的管道对象被回收，fd 随之关闭，读线程却还阻塞在上面。下一次 `Popen` 拿到同一个 fd 号，旧线程醒来就读走新命令的输出。
+  - 修法（`190424e`）：管道对象交给读线程，读到 EOF 时由它自己关；`run_process` 不再关任何管道。fd 会一直占到后台进程结束，这在第 1 轮记过的已知限制之内。
+  - 测试 `test_a_reader_left_on_a_background_process_takes_no_output_of_the_next_command`，用的是 Codex 的场景：
+    - Linux 容器（`python:3.12-slim`，`runs/linux-pytest.sh`）：旧代码下失败，缺 35 行（`runs/97-r2-linux-red.txt`）；修复后 `tests/test_sandbox.py`、`tests/test_sandbox_tool.py` 41 passed，没有跳过。
+    - macOS 上关 fd 会结束阻塞的读，所以旧代码也能通过，docstring 写明了；回归由 CI（ubuntu）兜住。
+  - da-review 第 1 轮一条，已修（`8a422b0`）：命令自己在时限前以 124 退出、后台进程又占着 stdout 时，会被误判成超时，因为耗时是读完输出才量的。现在 `run_process` 记录进程本身的运行时长 `Execution.ran_seconds`，`timeout_past_limit` 按它判断。新测试在旧代码下失败。
+  - da-review 第 2 轮：没有意见。
+  - eng:code-review：
+    - 已修（`9b9e8ab`）：变量改名为 `ran_seconds`；测试的 docstring 写明只在 Linux 上失败。
+    - 不修：docker 后端上，进程结束后，只要后台进程还占着输出流，`docker exec` 还会再停留约 2 s（审查者实测 2.08 s）。这期间命令自己的 124 仍会被判成超时。窗口原来是 5 s。要彻底解决，得给 supervisor 另开一条通道（例如在 stderr 里加标记），会带来剥离和 `KEEP_BYTES` 截断的边界情况；而触发它要同时满足三个条件：命令自己以 124 退出、留下往输出写的后台进程、结束时离时限不到 2 s。范围太窄，记为已知限制。2 s 的来源没有对照 moby 源码确认（未确认）。
+  - `make check` exit 0：pytest 2497 passed、2 skipped，web 295 passed。集成测试 12 passed。
+  - 已知限制（新增）：docker 后端上，命令自己以 124 退出、后台进程占着输出、离时限不到约 2 s 时，会被报成超时。
+- 2026-11-18 PR #107：CI 两个 check 都 pass（9b9e8ab）；Codex GitHub app（审 9b9e8ab）："Didn't find any major issues"。squash 合入 main，1a4ad9f。
