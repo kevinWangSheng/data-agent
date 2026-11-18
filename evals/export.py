@@ -25,7 +25,10 @@ Output (the layout fixed by ticket 73's tests, plus the evaluation page's summar
 
     DIR/index.json              {"runs": [notes, ...], "conversations": [conversation, ...]}:
                                 featured runs, then trials by name; then the conversations
-    DIR/runs/<id>/events.jsonl  the run's events (each turn of a conversation is a run too)
+    DIR/runs/<id>/events.jsonl  the run's events (each turn of a conversation is a run too): its
+                                event file's lines that parse as events, unchanged; a line
+                                cut off by a killed run is dropped, and the export says how
+                                many lines it dropped from which run (`copy_events`)
     DIR/runs/<id>/meta.json     the same notes as in the index; a turn's, `turn_notes`
     DIR/eval.json               the evaluation page's summary (`build`)
 
@@ -188,22 +191,44 @@ def exportable(manifest_path: Path) -> set[str]:
     return task_list(manifest, "dev", manifest_path) - held_out
 
 
-def read_events(path: Path) -> list[dict[str, Any]]:
-    """The events of a file, lines that do not parse aside (a run killed mid-line)."""
+def event_lines(path: Path) -> tuple[list[str], list[dict[str, Any]], int]:
+    """A file's lines that are events, as written and parsed, and how many other non-blank lines
+    were set aside: a run killed mid-line ends with half a line, which is not an event."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise Refused(f"cannot read the event file {path}: {exc}") from exc
+    lines: list[str] = []
     events: list[dict[str, Any]] = []
+    dropped = 0
     # Not splitlines(): it also splits at U+2028 and the like inside a string (evals.attribute).
     for line in text.split("\n"):
+        if not line.strip():
+            continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            continue
+            event = None
         if isinstance(event, dict):
+            lines.append(line)
             events.append(event)
-    return events
+        else:
+            dropped += 1
+    return lines, events, dropped
+
+
+def read_events(path: Path) -> list[dict[str, Any]]:
+    """The events of a file, lines that are not events aside (`event_lines`)."""
+    return event_lines(path)[1]
+
+
+def copy_events(source: Path, target: Path) -> int:
+    """Write only `source`'s event lines, unchanged, to `target`; the number of lines dropped. The
+    site parses every line (web/src/data/source.ts `parseEventLines`), so one half line would keep
+    the run, or a whole conversation, from opening."""
+    lines, _, dropped = event_lines(source)
+    target.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    return dropped
 
 
 def task_event(path: Path) -> dict[str, Any] | None:
@@ -572,8 +597,9 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
 
 
-def build(args: argparse.Namespace, stage: Path) -> int:
-    """Write the export into `stage`; the number of runs."""
+def build(args: argparse.Namespace, stage: Path) -> tuple[int, dict[str, int]]:
+    """Write the export into `stage`; the number of runs, and how many event lines were dropped
+    from each run that lost any (`copy_events`)."""
     dev = exportable(args.manifest)
     given = check_featured(args.runs, dev)
     given_conversations = check_featured(args.conversations, dev, "conversation")
@@ -592,10 +618,12 @@ def build(args: argparse.Namespace, stage: Path) -> int:
     if len(set(ids)) < len(ids):
         raise Refused(f"{len(ids) - len(set(ids))} run id(s) repeat; each run needs its own id")
     check_ids(ids, args)
+    dropped: dict[str, int] = {}
     for notes, events in runs + turns:
         run_dir = stage / "runs" / notes["id"]
         run_dir.mkdir(parents=True)
-        shutil.copyfile(events, run_dir / "events.jsonl")
+        if lost := copy_events(events, run_dir / "events.jsonl"):
+            dropped[notes["id"]] = lost
         write_json(run_dir / "meta.json", notes)
     index: dict[str, Any] = {"runs": [notes for notes, _ in runs]}
     if conversations:
@@ -607,7 +635,7 @@ def build(args: argparse.Namespace, stage: Path) -> int:
         "dab": dab_summary(args.dab) if args.dab else None,
     }
     write_json(stage / "eval.json", evaluation)
-    return len(runs) + len(turns)
+    return len(runs) + len(turns), dropped
 
 
 def run(args: argparse.Namespace) -> int:
@@ -619,7 +647,7 @@ def run(args: argparse.Namespace) -> int:
     stage = Path(tempfile.mkdtemp(prefix=f".{out.name}.export-", dir=out.parent))
     try:
         try:
-            n = build(args, stage)
+            n, dropped = build(args, stage)
         except (Refused, OSError) as exc:
             print(f"export: {exc}", file=sys.stderr)
             return 2
@@ -636,5 +664,8 @@ def run(args: argparse.Namespace) -> int:
     finally:
         if stage.exists():
             shutil.rmtree(stage)
+    for run_id, lost in dropped.items():
+        # The id is checked by `check_ids` and published as the run's directory anyway.
+        print(f"export: {run_id}: dropped {lost} event line(s) that do not parse")
     print(f"export: {n} run(s), {len(args.conversations)} conversation(s) -> {out}")
     return 0

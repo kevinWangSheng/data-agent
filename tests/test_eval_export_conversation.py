@@ -151,6 +151,32 @@ def test_the_conversation_is_scrubbed(tmp_path: Path) -> None:
     assert {p: p.read_bytes() for p in out.rglob("*") if p.is_file()} == before
 
 
+def test_a_turn_cut_off_mid_line_is_exported_without_the_half_line(tmp_path: Path) -> None:
+    """A cancel kills the run mid-write: the export writes only the lines that parse, so the site
+    (`parseEventLines` runs JSON.parse on every line) can open the conversation, and says how many
+    lines it dropped."""
+    conversation = lay_out(tmp_path)
+    run_file = tmp_path / "runs" / CANCELLED / f"run-{CANCELLED}.jsonl"
+    whole = run_file.read_text()
+    run_file.write_text(whole + '{"seq": 99, "type": "text", "te')
+
+    out = tmp_path / "site"
+    proc = export(
+        "--manifest",
+        str(manifest(tmp_path, ["a"])),
+        "--out",
+        str(out),
+        "--conversation",
+        str(conversation),
+    )
+    assert proc.returncode == 0, proc.stderr
+    lines = (out / "runs" / CANCELLED / "events.jsonl").read_text().split("\n")
+    assert lines[-1] == ""  # each line ends with a newline
+    source = read_events(CHAT / CANCELLED / "events.jsonl")
+    assert [json.loads(line) for line in lines[:-1]] == source
+    assert f"{CANCELLED}: dropped 1 event line(s)" in proc.stdout
+
+
 def refused(tmp_path: Path, conversation: Path, dev: list[str], holdout: list[str]) -> str:
     out = tmp_path / "site"
     proc = export(
