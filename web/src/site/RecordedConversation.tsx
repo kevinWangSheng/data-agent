@@ -78,7 +78,7 @@ export function RecordedConversation({ recording, autoplay = true, runHref, onGo
       bar={
         <>
           {replaying && <span className="chip chip-info">REPLAY</span>}
-          <ReplayControls {...controls} narrowLayout />
+          <ReplayControls {...controls} collapseOnNarrow />
         </>
       }
       footer={

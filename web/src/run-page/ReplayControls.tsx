@@ -5,7 +5,7 @@
 // test id is `replay-controls`; the exit button became "Show all" (spec: replay controls have show
 // all), and the position slider sits at the end while everything is shown; added the "skip idle"
 // toggle; the time label is a clock (m:ss) and reads "all shown" when the whole run is shown; with
-// `narrowLayout`, a narrow screen keeps only play, the clock and Show all, and the bar wraps.
+// `collapseOnNarrow`, a narrow screen keeps only play, the clock and Show all, and the bar wraps.
 import { ListChecks, Pause, Play, RotateCcw } from 'lucide-react'
 
 import { fmtClock, fmtDur } from '../format'
@@ -29,7 +29,7 @@ export function ReplayControls({
   onScrub,
   onSkipIdleChange,
   onShowAll,
-  narrowLayout = false,
+  collapseOnNarrow = false,
 }: {
   elapsed: number
   totalMs: number
@@ -45,10 +45,10 @@ export function ReplayControls({
   onSkipIdleChange: (skip: boolean) => void
   onShowAll: () => void
   /** Fit a narrow screen (the online site's recorded conversation); the run page hides the bar there. */
-  narrowLayout?: boolean
+  collapseOnNarrow?: boolean
 }) {
   return (
-    <div className={'flex items-center gap-2' + (narrowLayout ? ' flex-wrap' : '')} data-testid="replay-controls">
+    <div className={'flex items-center gap-2' + (collapseOnNarrow ? ' flex-wrap' : '')} data-testid="replay-controls">
       <button
         type="button"
         aria-label={playing ? 'Pause replay' : 'Play replay'}
@@ -59,10 +59,10 @@ export function ReplayControls({
         {playing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
         {playing ? 'Pause' : showingAll ? 'Replay' : 'Resume'}
       </button>
-      {/* Its children lay out as the bar's own; under 640px wide with narrowLayout they are hidden,
-          leaving play, the clock and Show all. (.btn and .seg set their display outside the
-          utility layer, so the wrapper hides them.) */}
-      <div className={narrowLayout ? 'contents max-sm:hidden' : 'contents'}>
+      {/* Its children lay out as the bar's own; with collapseOnNarrow, under 640px wide they are
+          hidden, leaving play, the clock and Show all. (.btn and .seg set their display outside
+          the utility layer, so the wrapper hides them.) */}
+      <div className={collapseOnNarrow ? 'contents max-sm:hidden' : 'contents'}>
         <button type="button" aria-label="Restart replay" onClick={onRestart} className="btn" title="Restart from the first event">
           <RotateCcw className="h-3 w-3" />
         </button>
