@@ -7,12 +7,16 @@
 // with everything shown; `runs` is the history list of the featured runs; `eval` is the evaluation
 // page.
 //
-// Local pages: the base address (and `runs`) is the history list of every run, the bar has New
-// run, and a running run follows its events live and can be cancelled.
+// Local pages: the base address (and `runs`) is the chat page, its conversation list on the left
+// (every run started on its own shows there as a one-turn conversation); `chats/<id>` opens a
+// conversation; `runs/<id>` is a run's three-pane page (each answer's full view). The bar keeps New
+// run (dbt tasks and single runs), and a running run follows its events live and can be cancelled.
 
 import { Monitor, Moon, Plus, Sun } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 
+import { ChatPage } from './chat-page/ChatPage'
+import { chatId, chatUrl } from './chat-page/route'
 import { firstScreenRun, type Home } from './data/home'
 import { isLive, localSource, notesOf, staticSource, type DataSource, type LiveSource, type RunData } from './data/source'
 import { evalUrl, isEvalPath, readTrialFilter, type TrialFilter } from './eval-page/trials'
@@ -36,17 +40,21 @@ const site = import.meta.env.VITE_DATA_SOURCE === 'local' ? null : staticSource(
 const source: DataSource = site ?? localSource(`${BASE}api/`)
 const live = source.live
 
-type Place = { page: 'eval'; filter: TrialFilter } | { page: 'history' } | { page: 'run'; route: Route }
+type Place = { page: 'eval'; filter: TrialFilter } | { page: 'history' } | { page: 'chat'; id: string | null } | { page: 'run'; route: Route }
 
 const currentPlace = (): Place => {
   const { pathname, search } = window.location
   if (site && isEvalPath(pathname, BASE)) return { page: 'eval', filter: readTrialFilter(search) }
+  const chat = live ? chatId(pathname, BASE) : null
+  if (chat !== null) return { page: 'chat', id: chat }
   const route = readRoute(pathname, search, BASE)
-  if (isHistoryPath(pathname, BASE) || (live && route.id === null)) return { page: 'history' }
+  if (live && (isHistoryPath(pathname, BASE) || route.id === null)) return { page: 'chat', id: null }
+  if (isHistoryPath(pathname, BASE)) return { page: 'history' }
   return { page: 'run', route }
 }
 
 const runHref = (id: string) => routeUrl({ id, step: null, filter: 'all' }, BASE)
+const chatHref = (id: string) => chatUrl(id, BASE)
 const historyHref = live ? BASE : historyUrl(BASE)
 
 type Loaded = { id: string; run?: RunData; error?: string }
@@ -153,7 +161,7 @@ export default function App() {
 
   useEffect(() => {
     if (place.page === 'eval') return
-    const title = place.page === 'history' ? 'Runs' : onFirstScreen ? null : run?.notes.title
+    const title = place.page === 'history' ? 'Runs' : place.page === 'chat' ? 'Conversations' : onFirstScreen ? null : run?.notes.title
     document.title = title ? `${title} · data-agent` : 'data-agent'
   }, [place.page, onFirstScreen, run])
 
@@ -183,11 +191,15 @@ export default function App() {
   return (
     <div className="h-full flex flex-col">
       <header className="relative flex items-center gap-x-4 gap-y-1.5 px-4 min-h-11 py-1.5 border-b border-line bg-panel shrink-0 flex-wrap">
-        <Link href={BASE} onGo={go} className="mono font-semibold text-[13px] tracking-tight hover:underline" title={live ? 'All runs' : 'First screen'}>
+        <Link href={BASE} onGo={go} className="mono font-semibold text-[13px] tracking-tight hover:underline" title={live ? 'Conversations' : 'First screen'}>
           data-agent
         </Link>
-        <Link href={historyHref} onGo={go} className={`text-[12.5px] hover:underline ${place.page === 'history' ? 'font-semibold text-ink' : 'text-ink-2'}`}>
-          Runs
+        <Link
+          href={historyHref}
+          onGo={go}
+          className={`text-[12.5px] hover:underline ${place.page === 'history' || place.page === 'chat' ? 'font-semibold text-ink' : 'text-ink-2'}`}
+        >
+          {live ? 'Conversations' : 'Runs'}
         </Link>
         {featured.length > 0 && (
           <nav className="seg max-w-full overflow-x-auto" aria-label="Featured runs">
@@ -241,13 +253,10 @@ export default function App() {
         <Suspense fallback={<div className="p-8 text-ink-3">Loading the evaluation page…</div>}>
           <EvalPage source={site} filter={place.filter} onFilter={setFilter} runHref={runHref} onGo={go} />
         </Suspense>
+      ) : place.page === 'chat' && live ? (
+        <ChatPage live={live} id={place.id} chatHref={chatHref} runHref={runHref} onGo={go} />
       ) : place.page === 'history' ? (
-        <HistoryPage
-          source={source}
-          empty={live ? 'No runs yet. Start one with New run.' : 'No featured runs.'}
-          runUrl={runHref}
-          onOpen={(runId) => go(runHref(runId))}
-        />
+        <HistoryPage source={source} runUrl={runHref} onOpen={(runId) => go(runHref(runId))} />
       ) : run && route && id !== null ? (
         <RunPage
           key={`${onFirstScreen ? 'first' : 'run'}:${id}`}

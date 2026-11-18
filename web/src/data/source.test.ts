@@ -1,7 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { RunEvent } from '../run-view/model'
-import { isLive, localSource, newestFirst, notesOf, parseEventLines, staticSource, type EventStream, type RunRow } from './source'
+import {
+  isLive,
+  localSource,
+  newestFirst,
+  notesOf,
+  parseEventLines,
+  staticSource,
+  turnNotes,
+  type ConversationRow,
+  type EventStream,
+  type RunRow,
+} from './source'
 
 const home = { runs: [{ id: 'r1', title: 'One', featured: true }], data_eng_bench: null, dab: null }
 const evaluation = { dev: { reference: 'full', configs: [], contributions: [], trials: [] }, data_eng_bench: null, dab: null }
@@ -277,6 +288,72 @@ describe('localSource', () => {
   test('a refused cancel fails with the reason', async () => {
     const { fetchFn } = fakeBackend({ 'POST /api/runs/r1/cancel': [409, { detail: 'run r1 is not a run this server is running' }] })
     await expect(localSource('/api/', fetchFn, openStream).live!.cancel('r1')).rejects.toThrow('not a run this server is running')
+  })
+})
+
+describe('localSource: conversations', () => {
+  const conversation = (fields: Partial<ConversationRow> = {}): ConversationRow => ({
+    id: 'c1',
+    single_run: false,
+    created_at: '2026-11-17T10:00:00+00:00',
+    running: false,
+    turns: [{ turn: 1, run_id: 'r1', message: 'How many orders?', steers: [], status: 'success' }],
+    ...fields,
+  })
+  const live = (fetchFn: typeof fetch) => localSource('/api/', fetchFn, openStream).live!
+
+  test('lists the conversations as the backend orders them', async () => {
+    const rows = [conversation({ id: 'new' }), conversation({ id: 'old' })]
+    const { fetchFn } = fakeBackend({ 'GET /api/conversations': [200, rows] })
+    expect(await live(fetchFn).conversations()).toEqual(rows)
+  })
+
+  test('reads one conversation, its id escaped', async () => {
+    const { fetchFn } = fakeBackend({ 'GET /api/conversations/a%20b': [200, conversation({ id: 'a b' })] })
+    expect((await live(fetchFn).conversation('a b')).id).toBe('a b')
+  })
+
+  test('starts a conversation with an empty body: no task type, no data source', async () => {
+    const { fetchFn, calls } = fakeBackend({ 'POST /api/conversations': [201, { id: 'c2' }] })
+    expect(await live(fetchFn).startConversation()).toBe('c2')
+    expect(calls).toEqual([{ url: '/api/conversations', method: 'POST', body: {} }])
+  })
+
+  test('a message to an idle conversation answers the new turn', async () => {
+    const { fetchFn, calls } = fakeBackend({ 'POST /api/conversations/c1/messages': [201, { kind: 'turn', turn: 2, run_id: 'r2' }] })
+    expect(await live(fetchFn).send('c1', 'And in 2024?')).toEqual({ kind: 'turn', turn: 2, run_id: 'r2' })
+    expect(calls).toEqual([{ url: '/api/conversations/c1/messages', method: 'POST', body: { text: 'And in 2024?' } }])
+  })
+
+  test('a message to a running conversation answers the steer', async () => {
+    const { fetchFn } = fakeBackend({ 'POST /api/conversations/c1/messages': [202, { kind: 'steer', run_id: 'r1', id: 'm1' }] })
+    expect(await live(fetchFn).send('c1', 'Only the top 3')).toEqual({ kind: 'steer', run_id: 'r1', id: 'm1' })
+  })
+
+  test('a refused message fails with the reason', async () => {
+    const { fetchFn } = fakeBackend({ 'POST /api/conversations/c1/messages': [409, { detail: 'another run is going' }] })
+    await expect(live(fetchFn).send('c1', 'x')).rejects.toThrow('another run is going')
+  })
+
+  test('cancel posts to the conversation and answers its row', async () => {
+    const cancelled = conversation({ turns: [{ turn: 1, run_id: 'r1', message: 'x', steers: [], status: 'cancelled' }] })
+    const { fetchFn, calls } = fakeBackend({ 'POST /api/conversations/c1/cancel': [200, cancelled] })
+    expect(await live(fetchFn).cancelTurn('c1')).toEqual(cancelled)
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(['POST /api/conversations/c1/cancel'])
+  })
+
+  test("reads a turn's events without the run list", async () => {
+    const { fetchFn, calls } = fakeBackend({ 'GET /api/runs/r1/events': [200, { events: [ev(0, 'version'), ev(1)] }] })
+    expect((await live(fetchFn).events('r1')).map((e) => e.seq)).toEqual([0, 1])
+    expect(calls.map((c) => c.url)).toEqual(['/api/runs/r1/events'])
+  })
+})
+
+describe('turnNotes', () => {
+  test("a turn's status as run notes: cancelled and failed are what the events cannot say", () => {
+    expect(turnNotes({ run_id: 'r1', message: 'x', status: 'cancelled' })).toEqual({ id: 'r1', task: 'x', cancelled: true, failed: false })
+    expect(turnNotes({ run_id: 'r1', message: null, status: 'failure' })).toEqual({ id: 'r1', task: null, cancelled: false, failed: true })
+    expect(turnNotes({ run_id: 'r1', message: 'x', status: 'running' })).toEqual({ id: 'r1', task: 'x', cancelled: false, failed: false })
   })
 })
 

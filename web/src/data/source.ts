@@ -7,9 +7,11 @@
 //   is not read: it holds every dev trial, and the online history list shows only the featured
 //   runs (spec "历史列表"). Read only.
 // - local (`data-agent web`): the backend's API (src/data_agent/web/app.py). It also offers the
-//   live operations: the run list with each run's status, the form's options, submit, cancel, and
-//   following a running run over SSE.
+//   live operations: the run list with each run's status, the form's options, submit, cancel,
+//   following a running run over SSE, and the conversations (the chat routes whose contract is
+//   tests/acceptance/test_chat_api.py's docstring).
 
+import type { IndexTurn } from '../chat-view/model'
 import { buildRunView, type RunEvent, type RunNotes, type RunStatus, type TaskType } from '../run-view/model'
 import type { Evaluation } from './evaluation'
 import type { Home } from './home'
@@ -35,6 +37,22 @@ export type RunOptions = { data_sources: string[]; task_types: TaskType[]; confi
 
 export type Submission = { task: string; task_type: TaskType; data_source: string; config: string }
 
+/** A turn of a conversation row: the index's turn plus its run's status as `/api/runs` gives it. */
+export type ConversationTurn = IndexTurn & { status: RunStatus }
+
+/** A row of `GET /api/conversations`: a conversation, or a run started on its own (`single_run`,
+ *  one turn, no follow-up). `running` holds from a turn's start until its process exited. */
+export type ConversationRow = {
+  id: string
+  single_run: boolean
+  created_at: string | null
+  running: boolean
+  turns: ConversationTurn[]
+}
+
+/** What a message did: started a turn (the conversation was idle) or went into the running one. */
+export type Sent = { kind: 'turn'; turn: number; run_id: string } | { kind: 'steer'; run_id: string; id: string }
+
 /** What `follow` hands over: new events in order, and the notes once the backend says the run ended. */
 export type FollowHandlers = { events(batch: RunEvent[]): void; notes(notes: RunNotes): void }
 
@@ -46,6 +64,17 @@ export interface LiveSource {
   cancel(id: string): Promise<RunRow>
   /** Streams the run's events after `after` (a `seq`) until the run ends; returns a stop function. */
   follow(id: string, after: number, on: FollowHandlers): () => void
+  /** A run's events so far. */
+  events(id: string): Promise<RunEvent[]>
+  /** Every conversation and single run, newest first. */
+  conversations(): Promise<ConversationRow[]>
+  conversation(id: string): Promise<ConversationRow>
+  /** Starts an empty conversation; answers its id. */
+  startConversation(): Promise<string>
+  /** Sends a user message: a new turn when the conversation is idle, else into the running turn. */
+  send(id: string, text: string): Promise<Sent>
+  /** Stops the conversation's running turn; answers its row. */
+  cancelTurn(id: string): Promise<ConversationRow>
 }
 
 export interface DataSource {
@@ -137,6 +166,11 @@ export function notesOf(row: RunRow): RunNotes {
   return { id: row.id, task: row.task, task_type: row.task_type, cancelled: row.status === 'cancelled', failed: row.status === 'failure' }
 }
 
+/** The run notes of a conversation turn, from its status in the row (as `notesOf` does for a run). */
+export function turnNotes(turn: Pick<ConversationTurn, 'run_id' | 'message' | 'status'>): RunNotes {
+  return { id: turn.run_id, task: turn.message, cancelled: turn.status === 'cancelled', failed: turn.status === 'failure' }
+}
+
 /** Whether the run may still write events: no `result` event yet, and the backend has not said it ended. */
 export function isLive(run: RunData): boolean {
   return !run.notes.cancelled && !run.notes.failed && !run.events.some((e) => e.type === 'result')
@@ -193,6 +227,7 @@ export function localSource(
     send<T>(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
   const rows = () => send<RunRow[]>('runs')
   const runPath = (id: string) => `runs/${encodeURIComponent(id)}`
+  const conversationPath = (id: string) => `conversations/${encodeURIComponent(id)}`
 
   const follow = (id: string, after: number, on: FollowHandlers) => {
     let last = after
@@ -285,6 +320,12 @@ export function localSource(
       submit: async (submission) => (await post<{ id: string }>('runs', submission)).id,
       cancel: (id) => post<RunRow>(`${runPath(id)}/cancel`),
       follow,
+      events: async (id) => (await send<{ events: RunEvent[] }>(`${runPath(id)}/events`)).events,
+      conversations: () => send<ConversationRow[]>('conversations'),
+      conversation: (id) => send<ConversationRow>(conversationPath(id)),
+      startConversation: async () => (await post<{ id: string }>('conversations', {})).id,
+      send: (id, text) => post<Sent>(`${conversationPath(id)}/messages`, { text }),
+      cancelTurn: (id) => post<ConversationRow>(`${conversationPath(id)}/cancel`),
     },
   }
 }
