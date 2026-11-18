@@ -266,6 +266,22 @@ def test_a_featured_run_without_a_task_event_takes_its_task_from_its_notes(
     assert {k: notes[k] for k in given} == given
 
 
+def test_a_featured_run_cut_off_mid_line_is_exported_without_the_half_line(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "cut"
+    run.mkdir()
+    whole = NEW_FIELDS.read_text()
+    (run / "run-1.jsonl").write_text(whole + '{"seq": 99, "ty')
+    (run / "notes.json").write_text(json.dumps(LOCAL_NOTES))
+    out = tmp_path / "site"
+    proc = export("--manifest", str(manifest(tmp_path, [])), "--out", str(out), "--run", str(run))
+    assert proc.returncode == 0, proc.stderr
+    written = (out / "runs" / "cut" / "events.jsonl").read_text()
+    assert written == whole
+    assert "cut: dropped 1 event line(s)" in proc.stdout
+
+
 def test_a_featured_runs_task_event_wins_over_its_notes(tmp_path: Path) -> None:
     run = tmp_path / "new"
     run.mkdir()

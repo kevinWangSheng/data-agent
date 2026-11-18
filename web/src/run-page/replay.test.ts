@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'vitest'
 
-import { autoplaySpeed, IDLE_CAP_MS, replayClock, revealedAt } from './replay'
+import { autoplaySpeed, IDLE_CAP_MS, replayClock, revealedAt, SPEEDS, speedsWith, togglesPlay } from './replay'
+
+describe('speedsWith', () => {
+  test('the fixed speeds, with the autoplay speed in order when it is not one of them', () => {
+    expect(speedsWith(null)).toEqual(SPEEDS)
+    expect(speedsWith(10)).toEqual(SPEEDS)
+    expect(speedsWith(1.2)).toEqual([1, 1.2, 10, 50, 200, 1000])
+  })
+})
 
 describe('autoplaySpeed', () => {
   test('plays a run in about the target time', () => {
@@ -57,5 +65,33 @@ describe('revealedAt', () => {
 
   test('an empty run reveals nothing', () => {
     expect(revealedAt([], 0)).toBe(0)
+  })
+})
+
+describe('togglesPlay', () => {
+  const key = (k: string, tagName = 'BODY', mods: Partial<Record<'metaKey' | 'ctrlKey' | 'altKey', boolean>> = {}) => ({
+    key: k,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    ...mods,
+    target: { tagName } as unknown as EventTarget,
+  })
+
+  test('space on the page plays or pauses', () => {
+    expect(togglesPlay(key(' '))).toBe(true)
+    expect(togglesPlay(key(' ', 'DIV'))).toBe(true)
+  })
+
+  test('other keys and space with a modifier do not', () => {
+    expect(togglesPlay(key('Enter'))).toBe(false)
+    expect(togglesPlay(key('k'))).toBe(false)
+    expect(togglesPlay(key(' ', 'BODY', { metaKey: true }))).toBe(false)
+    expect(togglesPlay(key(' ', 'BODY', { ctrlKey: true }))).toBe(false)
+    expect(togglesPlay(key(' ', 'BODY', { altKey: true }))).toBe(false)
+  })
+
+  test('space in an input control, or on a button, link or summary (which it presses), is left alone', () => {
+    for (const tag of ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'SUMMARY', 'A']) expect(togglesPlay(key(' ', tag))).toBe(false)
   })
 })

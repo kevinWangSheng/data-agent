@@ -3,7 +3,8 @@
 //
 // - static (the published site): the export command's layout: per run `runs/<id>/events.jsonl`
 //   and `runs/<id>/meta.json`, and the evaluation page's `eval.json`; plus `home.json`, which the
-//   site build makes from the export for the first screen (./home.ts). The export's `index.json`
+//   site build makes from the export for the first screen (./home.ts), which also lists the
+//   recorded conversations, each turn of them a run in `runs/<id>/`. The export's `index.json`
 //   is not read: it holds every dev trial, and the online history list shows only the featured
 //   runs (spec "历史列表"). Read only.
 // - local (`data-agent web`): the backend's API (src/data_agent/web/app.py). It also offers the
@@ -11,10 +12,10 @@
 //   following a running run over SSE, and the conversations (the chat routes whose contract is
 //   tests/acceptance/test_chat_api.py's docstring).
 
-import type { IndexTurn } from '../chat-view/model'
+import type { IndexTurn, TurnRun } from '../chat-view/model'
 import { buildRunView, type RunEvent, type RunNotes, type RunStatus, type TaskType } from '../run-view/model'
 import type { Evaluation } from './evaluation'
-import type { Home } from './home'
+import type { Home, RecordedConversation } from './home'
 
 export type RunData = { notes: RunNotes; events: RunEvent[] }
 
@@ -88,11 +89,17 @@ export interface DataSource {
   live?: LiveSource
 }
 
-/** What only the online site has: the first screen's summary and the evaluation page's data. */
+/** A recorded conversation with each turn's run, as the online site replays it. */
+export type Recording = { conversation: RecordedConversation; runs: Record<string, TurnRun> }
+
+/** What only the online site has: the first screen's summary, the evaluation page's data and the
+ *  recorded conversations. */
 export interface SiteSource {
   home(): Promise<Home>
   /** null when the data has no `eval.json` (the development fixtures). */
   evaluation(): Promise<Evaluation | null>
+  /** A recorded conversation of `home.json` and its turns' runs; fails for an id it does not list. */
+  recording(id: string): Promise<Recording>
 }
 
 export function parseEventLines(text: string): RunEvent[] {
@@ -139,6 +146,12 @@ export function staticSource(root: string, fetchFn: typeof fetch = fetch): DataS
       if (response.status === 404) return null
       if (!response.ok) throw new Error(`${root}eval.json: ${response.status} ${response.statusText}`)
       return (await response.json()) as Evaluation
+    },
+    async recording(id) {
+      const conversation = (await readHome()).conversations?.find((c) => c.id === id)
+      if (!conversation) throw new Error(`no recorded conversation ${id}`)
+      const runs = await Promise.all(conversation.turns.map(async (t) => [t.run_id, await loadRun(t.run_id)] as const))
+      return { conversation, runs: Object.fromEntries(runs) }
     },
     loadRun,
   }

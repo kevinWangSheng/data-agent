@@ -2,6 +2,7 @@
 
     uv run python -m evals export --manifest evals/manifest.json --out runs/site \\
         --run runs/featured/<id> ... --job runs/u1-gate/jobs/full ... \\
+        [--conversation <runs dir>/conversations/<id> ...] \\
         [--board board.json] [--dab dab_score.json] [--tasks-dir TASKS] [--hostname H ...]
 
 Inputs:
@@ -10,15 +11,31 @@ Inputs:
   leaves it) and `notes.json` with the maintainer's `title`, `failure_reason` and maybe `grade`
   (and `task`, `task_type`, `data_source` for an event file without a `task` event).
 - `--job JOB_DIR`: a Harbor job of the dev set; every trial in it is exported.
+- `--conversation DIR`: a recorded conversation (ticket 96) as `data-agent web` keeps it
+  (data_agent.web.conversations): `DIR/conversation.json`, its index, and each turn's run in
+  `DIR/../../<run_id>/`, beside the conversations' directory; plus the maintainer's
+  `DIR/notes.json` with a `title` and where the questions came from, as for a featured run. Only
+  the index and each turn's event file are read: the conversation's workspace and the SDK's
+  session record are not exported. Every turn must have ended, with its `result` event or as
+  cancelled or failed by the server's record (`web-run.json`).
 - `--board FILE`: `evals board`'s `board.json`; `--dab FILE`: `evals dab-score`'s JSON report. Only
   their aggregates are copied.
 
 Output (the layout fixed by ticket 73's tests, plus the evaluation page's summary):
 
-    DIR/index.json              {"runs": [notes, ...]}: featured runs, then trials by name
-    DIR/runs/<id>/events.jsonl  the run's events
-    DIR/runs/<id>/meta.json     the same notes as in the index
+    DIR/index.json              {"runs": [notes, ...], "conversations": [conversation, ...]}:
+                                featured runs, then trials by name; then the conversations
+    DIR/runs/<id>/events.jsonl  the run's events (each turn of a conversation is a run too): its
+                                event file's lines that parse as events, unchanged; a line
+                                cut off by a killed run is dropped, and the export says how
+                                many lines it dropped from which run (`copy_events`)
+    DIR/runs/<id>/meta.json     the same notes as in the index; a turn's, `turn_notes`
     DIR/eval.json               the evaluation page's summary (`build`)
+
+A conversation in the index is its `id`, `title` (from its notes.json), `created_at` and `turns`
+as its `conversation.json` lists them (`turn`, `run_id`, `message`, `steers`;
+web/src/chat-view/model.ts, `ConversationIndex`). Its turns are not in `runs`: the site shows
+them only in the conversation. Without `--conversation` the index has no `conversations`.
 
 The notes of a run are `id`, `title`, `task`, `task_type`, `data_source`, `grade`
 (`{"passed", "detail"}` or null), `failure_reason` and `featured` (web/src/run-view/model.ts,
@@ -39,7 +56,9 @@ says where it came from: `task_id`, checked as a trial's task is, or `local_data
 on genuinely local data (`featured_allowed`). One with neither, or with notes.json unreadable, is
 refused, and so is the whole export; that error gives a count too, not a run id or directory,
 which is often named after its task; a featured run refused later, as malformed, is named by its
-position among the `--run`s. These two fields are input only, not in the notes.
+position among the `--run`s. These two fields are input only, not in the notes. A conversation's
+notes.json is checked the same way (`local_data: true` for questions written by hand rather than
+taken from a benchmark task), and its turns' run ids are checked as run ids are.
 
 Exit 0 with the export; 2 on anything refused.
 """
@@ -60,6 +79,11 @@ from evals.compare import paired_bootstrap
 from evals.harbor import Trial, by_task, last_event_file, load_trials, version_header
 from evals.metrics import is_success
 from evals.report import REPO_MANIFEST, summary
+
+# What `data-agent web` writes (data_agent.web.conversations, data_agent.web.runs): a
+# conversation's index, and the server's record of a run it started, with the run's `status`.
+CONVERSATION_INDEX = "conversation.json"
+RUN_RECORD = "web-run.json"
 
 # What a config's row of the evaluation page keeps of `evals.report.summary`.
 CONFIG_KEYS = (
@@ -112,6 +136,14 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.add_argument(
         "--job", type=Path, action="append", default=[], help="a dev Harbor job (repeatable)"
     )
+    parser.add_argument(
+        "--conversation",
+        dest="conversations",
+        type=Path,
+        action="append",
+        default=[],
+        help="a recorded conversation's directory, with notes.json (repeatable)",
+    )
     parser.add_argument("--board", type=Path, help="`evals board`'s board.json: aggregates only")
     parser.add_argument("--dab", type=Path, help="`evals dab-score`'s JSON report: aggregates only")
     parser.add_argument(
@@ -159,22 +191,45 @@ def exportable(manifest_path: Path) -> set[str]:
     return task_list(manifest, "dev", manifest_path) - held_out
 
 
-def read_events(path: Path) -> list[dict[str, Any]]:
-    """The events of a file, lines that do not parse aside (a run killed mid-line)."""
+def parse_event_file(path: Path) -> tuple[list[str], list[dict[str, Any]], int]:
+    """A file's lines that are events, as written and parsed, and how many other non-blank lines
+    were set aside: a run killed mid-line ends with half a line, which is not an event."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise Refused(f"cannot read the event file {path}: {exc}") from exc
+    lines: list[str] = []
     events: list[dict[str, Any]] = []
+    dropped = 0
     # Not splitlines(): it also splits at U+2028 and the like inside a string (evals.attribute).
     for line in text.split("\n"):
+        if not line.strip():
+            continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            continue
+            event = None
         if isinstance(event, dict):
+            lines.append(line)
             events.append(event)
+        else:
+            dropped += 1
+    return lines, events, dropped
+
+
+def read_events(path: Path) -> list[dict[str, Any]]:
+    """The events of a file, lines that are not events aside (`parse_event_file`)."""
+    _, events, _ = parse_event_file(path)
     return events
+
+
+def copy_events(source: Path, target: Path) -> int:
+    """Write only `source`'s event lines, unchanged, to `target`; the number of lines dropped. The
+    site parses every line (web/src/data/source.ts `parseEventLines`), so one half line would keep
+    the run, or a whole conversation, from opening."""
+    lines, _, dropped = parse_event_file(source)
+    target.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    return dropped
 
 
 def task_event(path: Path) -> dict[str, Any] | None:
@@ -200,15 +255,17 @@ def given_notes(run_dir: Path) -> Any:
         return None
 
 
-def check_featured(run_dirs: list[Path], dev: set[str]) -> list[dict[str, Any]]:
-    """Each featured run's notes.json, read once; refused, with a count only, when any is not
-    let through (`featured_allowed`): a run's id and directory are often its task's name, so
-    neither is printed (ADR-0004)."""
+def check_featured(
+    run_dirs: list[Path], dev: set[str], what: str = "featured run"
+) -> list[dict[str, Any]]:
+    """Each featured run's (or conversation's, `what`) notes.json, read once; refused, with a
+    count only, when any is not let through (`featured_allowed`): a run's id and directory are
+    often its task's name, so neither is printed (ADR-0004)."""
     given = [given_notes(r) for r in run_dirs]
     refused = sum(1 for g in given if not featured_allowed(g, dev))
     if refused:
         raise Refused(
-            f"{refused} featured run(s) refused: each needs a readable notes.json with a "
+            f"{refused} {what}(s) refused: each needs a readable notes.json with a "
             "`task_id` of the dev set or `local_data: true`; holdout and unlisted tasks are not "
             "exported (ADR-0004)"
         )
@@ -252,6 +309,92 @@ def featured_run(
         "featured": True,
     }
     return notes, files[0]
+
+
+def is_turn(turn: Any) -> bool:
+    """A turn as `conversation.json` lists it, its run id a plain directory name."""
+    if not isinstance(turn, dict):
+        return False
+    run_id = turn.get("run_id")
+    message = turn.get("message")
+    return (
+        isinstance(turn.get("turn"), int)
+        and isinstance(run_id, str)
+        and Path(run_id).name == run_id
+        and not run_id.startswith(".")
+        and (message is None or isinstance(message, str))
+        and isinstance(turn.get("steers"), list)
+    )
+
+
+def turn_notes(turn: dict[str, Any], events: Path, which: str) -> dict[str, Any]:
+    """A turn's run notes: a run's fields from its `task` event, titled by the turn's message, and
+    `cancelled` or `failed` as the server's record says of a run that wrote no `result` event (the
+    two flags web/src/data/source.ts `turnNotes` derives locally from the run's status). A turn
+    that has not ended is refused: the site would show it running for ever."""
+    try:
+        found = read_events(events)
+    except Refused:
+        raise Refused(f"{which}: its event file cannot be read, or is not UTF-8") from None
+    status = None
+    if not (found and found[-1].get("type") == "result"):
+        record = events.parent / RUN_RECORD
+        try:
+            given = json.loads(record.read_text()) if record.is_file() else None
+        except (OSError, ValueError):
+            given = None
+        status = given.get("status") if isinstance(given, dict) else None
+        if status not in ("cancelled", "failure"):
+            raise Refused(f"{which} has not ended: no `result` event, and not cancelled or failed")
+    task = next((e for e in found if e.get("type") == "task"), {})
+    return {
+        "id": turn["run_id"],
+        "title": turn["message"] if turn["message"] is not None else task.get("task"),
+        "task": task.get("task"),
+        "task_type": task.get("task_type"),
+        "data_source": task.get("data_source"),
+        "grade": None,
+        "failure_reason": None,
+        "featured": False,
+        "cancelled": status == "cancelled",
+        "failed": status == "failure",
+    }
+
+
+def conversation(
+    directory: Path, given: dict[str, Any], position: int
+) -> tuple[dict[str, Any], list[tuple[dict[str, Any], Path]]]:
+    """A conversation whose notes.json `given` `check_featured` let through: its index entry,
+    and each turn's notes and event file. An error names it by its `position` among the
+    `--conversation`s, and a turn by its number."""
+    which = f"the conversation given as --conversation #{position}"
+    if not isinstance(given.get("title"), str):
+        raise Refused(f"{which}: its notes.json gives no title")
+    index = read_json(directory / CONVERSATION_INDEX, f"{which}: its index")
+    turns = index.get("turns") if isinstance(index, dict) else None
+    if (
+        not isinstance(index, dict)
+        or not isinstance(index.get("id"), str)
+        or not isinstance(turns, list)
+        or not all(is_turn(t) for t in turns)
+    ):
+        raise Refused(f"{which}: its {CONVERSATION_INDEX} is not a conversation's index")
+    runs_dir = directory.parent.parent
+    runs: list[tuple[dict[str, Any], Path]] = []
+    for turn in turns:
+        turn_which = f"{which}, turn {turn['turn']}"
+        run_dir = runs_dir / turn["run_id"]
+        files = sorted(run_dir.glob("*.jsonl")) if run_dir.is_dir() else []
+        if len(files) != 1:
+            raise Refused(f"{turn_which} must have its run, with one event file (*.jsonl)")
+        runs.append((turn_notes(turn, files[0], turn_which), files[0]))
+    entry = {
+        "id": index["id"],
+        "title": given["title"],
+        "created_at": index.get("created_at"),
+        "turns": [{k: t[k] for k in ("turn", "run_id", "message", "steers")} for t in turns],
+    }
+    return entry, runs
 
 
 def instruction(tasks_dir: Path | None, task: str) -> str:
@@ -455,32 +598,45 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
 
 
-def build(args: argparse.Namespace, stage: Path) -> int:
-    """Write the export into `stage`; the number of runs."""
+def build(args: argparse.Namespace, stage: Path) -> tuple[int, dict[str, int]]:
+    """Write the export into `stage`; the number of runs, and how many event lines were dropped
+    from each run that lost any (`copy_events`)."""
     dev = exportable(args.manifest)
     given = check_featured(args.runs, dev)
+    given_conversations = check_featured(args.conversations, dev, "conversation")
     trials = load_dev_trials(args.job, dev)
     runs: list[tuple[dict[str, Any], Path]] = [
         featured_run(r, g, i) for i, (r, g) in enumerate(zip(args.runs, given, strict=True), 1)
     ]
     runs += [(trial_notes(t, events, args.tasks_dir), events) for t, events, _ in trials]
-    ids = [notes["id"] for notes, _ in runs]
+    conversations: list[dict[str, Any]] = []
+    turns: list[tuple[dict[str, Any], Path]] = []
+    for i, (c, g) in enumerate(zip(args.conversations, given_conversations, strict=True), 1):
+        entry, turn_runs = conversation(c, g, i)
+        conversations.append(entry)
+        turns += turn_runs
+    ids = [notes["id"] for notes, _ in runs + turns]
     if len(set(ids)) < len(ids):
         raise Refused(f"{len(ids) - len(set(ids))} run id(s) repeat; each run needs its own id")
     check_ids(ids, args)
-    for notes, events in runs:
+    dropped_by_run: dict[str, int] = {}
+    for notes, events in runs + turns:
         run_dir = stage / "runs" / notes["id"]
         run_dir.mkdir(parents=True)
-        shutil.copyfile(events, run_dir / "events.jsonl")
+        if lost := copy_events(events, run_dir / "events.jsonl"):
+            dropped_by_run[notes["id"]] = lost
         write_json(run_dir / "meta.json", notes)
-    write_json(stage / "index.json", {"runs": [notes for notes, _ in runs]})
+    index: dict[str, Any] = {"runs": [notes for notes, _ in runs]}
+    if conversations:
+        index["conversations"] = conversations
+    write_json(stage / "index.json", index)
     evaluation = {
         "dev": dev_summary([(t, config) for t, _, config in trials]),
         "data_eng_bench": board_summary(args.board) if args.board else None,
         "dab": dab_summary(args.dab) if args.dab else None,
     }
     write_json(stage / "eval.json", evaluation)
-    return len(runs)
+    return len(runs) + len(turns), dropped_by_run
 
 
 def run(args: argparse.Namespace) -> int:
@@ -492,7 +648,7 @@ def run(args: argparse.Namespace) -> int:
     stage = Path(tempfile.mkdtemp(prefix=f".{out.name}.export-", dir=out.parent))
     try:
         try:
-            n = build(args, stage)
+            n, dropped_by_run = build(args, stage)
         except (Refused, OSError) as exc:
             print(f"export: {exc}", file=sys.stderr)
             return 2
@@ -509,5 +665,8 @@ def run(args: argparse.Namespace) -> int:
     finally:
         if stage.exists():
             shutil.rmtree(stage)
-    print(f"export: {n} run(s) -> {out}")
+    for run_id, lost in dropped_by_run.items():
+        # The id is checked by `check_ids` and published as the run's directory anyway.
+        print(f"export: {run_id}: dropped {lost} event line(s) that do not parse")
+    print(f"export: {n} run(s), {len(args.conversations)} conversation(s) -> {out}")
     return 0

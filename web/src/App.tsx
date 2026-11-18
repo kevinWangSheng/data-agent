@@ -5,7 +5,7 @@
 // Online pages: the base address is the first screen, which replays the short query run with the
 // benchmark scores above it and stays at the base address while it plays; `runs/<id>` opens a run
 // with everything shown; `runs` is the history list of the featured runs; `eval` is the evaluation
-// page.
+// page; `chats/<id>` replays a recorded conversation, read only (src/site/RecordedConversation.tsx).
 //
 // Local pages: the base address (and `runs`) is the chat page, its conversation list on the left
 // (every run started on its own shows there as a one-turn conversation); `chats/<id>` opens a
@@ -29,6 +29,7 @@ import { historyUrl, isHistoryPath, readRoute, routeUrl, type Route } from './ru
 import { HomeStrip } from './site/HomeStrip'
 import { Link } from './site/Link'
 import { NewRunUnavailable } from './site/NewRunUnavailable'
+import { RecordedConversationPage } from './site/RecordedConversation'
 import { useTheme } from './theme'
 
 // The evaluation page and its chart library load only when it is opened, not on the first screen.
@@ -40,13 +41,18 @@ const site = import.meta.env.VITE_DATA_SOURCE === 'local' ? null : staticSource(
 const source: DataSource = site ?? localSource(`${BASE}api/`)
 const live = source.live
 
-type Place = { page: 'eval'; filter: TrialFilter } | { page: 'history' } | { page: 'chat'; id: string | null } | { page: 'run'; route: Route }
+type Place =
+  | { page: 'eval'; filter: TrialFilter }
+  | { page: 'history' }
+  | { page: 'chat'; id: string | null }
+  | { page: 'recording'; id: string }
+  | { page: 'run'; route: Route }
 
 const currentPlace = (): Place => {
   const { pathname, search } = window.location
   if (site && isEvalPath(pathname, BASE)) return { page: 'eval', filter: readTrialFilter(search) }
-  const chat = live ? chatId(pathname, BASE) : null
-  if (chat !== null) return { page: 'chat', id: chat }
+  const chat = chatId(pathname, BASE)
+  if (chat !== null) return live ? { page: 'chat', id: chat } : { page: 'recording', id: chat }
   const route = readRoute(pathname, search, BASE)
   if (live && (isHistoryPath(pathname, BASE) || route.id === null)) return { page: 'chat', id: null }
   if (isHistoryPath(pathname, BASE)) return { page: 'history' }
@@ -152,6 +158,7 @@ export default function App() {
   }, [])
 
   const featured = home?.runs ?? []
+  const recorded = home?.conversations ?? []
   const route = place.page === 'run' ? place.route : null
   // Online the base address is the first screen (locally it is the history list).
   const onFirstScreen = route !== null && route.id === null
@@ -161,9 +168,18 @@ export default function App() {
 
   useEffect(() => {
     if (place.page === 'eval') return
-    const title = place.page === 'history' ? 'Runs' : place.page === 'chat' ? 'Conversations' : onFirstScreen ? null : run?.notes.title
+    const title =
+      place.page === 'history'
+        ? 'Runs'
+        : place.page === 'chat'
+          ? 'Conversations'
+          : place.page === 'recording'
+            ? home?.conversations?.find((c) => c.id === place.id)?.title
+            : onFirstScreen
+              ? null
+              : run?.notes.title
     document.title = title ? `${title} · data-agent` : 'data-agent'
-  }, [place.page, onFirstScreen, run])
+  }, [place, home, onFirstScreen, run])
 
   // A run page's own changes (selected step, filter) replace the address. The first screen keeps
   // the base address: its route has no id, and routeUrl gives the base for that.
@@ -218,6 +234,19 @@ export default function App() {
             ))}
           </nav>
         )}
+        {recorded.length > 0 && (
+          <nav className="seg max-w-full overflow-x-auto" aria-label="Recorded conversations">
+            {recorded.map((c) => {
+              const here = place.page === 'recording' && place.id === c.id
+              return (
+                <button type="button" key={c.id} className={here ? 'on' : ''} aria-current={here ? 'page' : undefined} onClick={() => go(chatHref(c.id))} title={c.turns[0]?.message ?? undefined}>
+                  <span className="mono text-[10px] opacity-80 mr-1">chat</span>
+                  {c.title}
+                </button>
+              )
+            })}
+          </nav>
+        )}
         {site && (
           <Link href={evalHref} onGo={go} className={`text-[12.5px] hover:underline ${place.page === 'eval' ? 'font-semibold text-ink' : 'text-ink-2'}`}>
             Evaluation
@@ -255,6 +284,8 @@ export default function App() {
         </Suspense>
       ) : place.page === 'chat' && live ? (
         <ChatPage live={live} id={place.id} chatHref={chatHref} runHref={runHref} onGo={go} />
+      ) : place.page === 'recording' && site ? (
+        <RecordedConversationPage site={site} id={place.id} runHref={runHref} onGo={go} />
       ) : place.page === 'history' ? (
         <HistoryPage source={source} runUrl={runHref} onOpen={(runId) => go(runHref(runId))} />
       ) : run && route && id !== null ? (

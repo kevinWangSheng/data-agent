@@ -39,6 +39,12 @@ describe('homeData', () => {
   test('without an evaluation summary, no scores', () => {
     expect(homeData({ runs: [] }, null)).toEqual({ runs: [], data_eng_bench: null, dab: null })
   })
+
+  test("keeps the recorded conversations' indexes whole", () => {
+    const conversation = { id: 'c', title: 'Demo', created_at: null, turns: [{ turn: 1, run_id: 'r1', message: 'How many?', steers: [] }] }
+    expect(homeData({ runs: [], conversations: [conversation] }, null).conversations).toEqual([conversation])
+    expect(homeData({ runs: [], conversations: [] }, null)).not.toHaveProperty('conversations')
+  })
 })
 
 describe('firstScreenRun', () => {
