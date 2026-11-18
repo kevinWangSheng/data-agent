@@ -51,7 +51,15 @@ from data_agent.gateway import (
 )
 from data_agent.label_tables import LABELS_DIR, LabelTables
 from data_agent.run_config import RunConfig
-from data_agent.tool_annotations import CHAT_ENV, READ_ONLY, database_tools
+from data_agent.sandbox import (
+    DEFAULT_TIMEOUT_S,
+    QueryResults,
+    Sandbox,
+    SandboxError,
+    execute_tool,
+    tool_description,
+)
+from data_agent.tool_annotations import CHAT_ENV, READ_ONLY, SANDBOX, database_tools
 from data_agent.verifier_tools import register_verifier_tools
 
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
@@ -227,6 +235,7 @@ def build_server(
     workspace: Path | None = None,
     verifier_tools: bool = True,
     dictionary: Dictionary | None = None,
+    sandbox: Sandbox | None = None,
 ) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
     `config` turns that layer on, so a run with it off cannot see them; `verifier_tools=False`
@@ -234,9 +243,10 @@ def build_server(
     bounds the files a tool may read (map_columns). `dictionary` is the prebuilt value
     dictionary the context layer searches (`data-agent run` builds it before the agent starts);
     a server with that layer on and no dictionary builds one now, before it serves. With one
-    database the tools take no `database` argument (`database_tools`)."""
+    database the tools take no `database` argument (`database_tools`). With `sandbox` the server
+    also serves sandbox_exec (`register_sandbox_tool`); without it the tools are as before."""
     dictionaries = {"": dictionary} if dictionary is not None else {}
-    server, databases = data_server({"": gateway}, config, workspace, dictionaries)
+    server, databases = data_server({"": gateway}, config, workspace, dictionaries, sandbox)
     if config.verifiers and verifier_tools:
         db = databases[""]
         register_verifier_tools(server, db.run, db.catalog, workspace, gateway.dialect)
@@ -248,13 +258,14 @@ def build_multi_server(
     config: RunConfig,
     workspace: Path | None = None,
     dictionaries: Mapping[str, Dictionary] | None = None,
+    sandbox: Sandbox | None = None,
 ) -> MCPServer:
     """A server over several databases by name (ticket 89): every query and context tool takes
     a required `database` argument, one of the names, and works on that database alone; each
     database has its own catalog, facts, dictionary and label tables. As `build_server`
     otherwise, with a dictionary built now for a database `dictionaries` has none for. No
     verifier tools: they check dbt runs, which have one database."""
-    server, _ = data_server(gateways, config, workspace, dictionaries or {})
+    server, _ = data_server(gateways, config, workspace, dictionaries or {}, sandbox)
     return server
 
 
@@ -263,19 +274,21 @@ def data_server(
     config: RunConfig,
     workspace: Path | None,
     dictionaries: Mapping[str, Dictionary],
+    sandbox: Sandbox | None,
 ) -> tuple[MCPServer, dict[str, Database]]:
     """The base tools and, when `config` turns that layer on, the context tools, over `gateways`
     by name (`database_tools`); a database `dictionaries` has no dictionary for gets one built
     now. The label tables of all the databases share one numbering. The clarification tool is
     served in conversation mode only (spec decision 8), which `data-agent run --chat` switches
-    on through the environment (`CHAT_ENV`)."""
+    on through the environment (`CHAT_ENV`). With `sandbox`, sandbox_exec too."""
     server = MCPServer("data-agent")
     numbers = itertools.count(1)
     databases = {
         name: open_database(gateway, LabelTables(workspace, numbers))
         for name, gateway in gateways.items()
     }
-    register_base_tools(server, databases, workspace)
+    results = None if sandbox is None else register_sandbox_tool(server, sandbox)
+    register_base_tools(server, databases, workspace, results)
     if os.environ.get(CHAT_ENV) == "1":
         register_clarification_tool(server)
     if config.context:
@@ -306,10 +319,35 @@ def register_clarification_tool(server: MCPServer) -> None:
         return CLARIFICATION_SENT
 
 
+def register_sandbox_tool(server: MCPServer, sandbox: Sandbox) -> QueryResults:
+    """sandbox_exec (ticket 97, after SignalPilot's `sandbox_exec` and nao's
+    `execute_sandboxed_code` `data_files`). One tool for the run, so no `database` argument.
+    Returns the store of query results its `data_files` reads, which query_database fills."""
+    results = QueryResults()
+
+    @server.tool(name="sandbox_exec", annotations=SANDBOX, description=tool_description(sandbox))
+    def sandbox_exec(
+        command: str,
+        timeout_seconds: int = DEFAULT_TIMEOUT_S,
+        data_files: list[str] | None = None,
+    ) -> str:
+        try:
+            return execute_tool(sandbox, results, command, timeout_seconds, data_files or [])
+        except SandboxError as exc:
+            raise ToolError(str(exc)) from exc
+
+    return results
+
+
 def register_base_tools(
-    server: MCPServer, databases: Mapping[str, Database], workspace: Path | None
+    server: MCPServer,
+    databases: Mapping[str, Database],
+    workspace: Path | None,
+    results: QueryResults | None = None,
 ) -> None:
-    """The tools every config serves, over `databases` by name (`database_tools`)."""
+    """The tools every config serves, over `databases` by name (`database_tools`). With
+    `results` (a run with a sandbox) each successful query_database result is kept there and its
+    text ends with the result's id, for sandbox_exec's `data_files`."""
     tool = database_tools(server, databases)
 
     @tool(annotations=READ_ONLY)
@@ -322,13 +360,16 @@ def register_base_tools(
         """
         gateway = db.gateway
         try:
-            return format_rows(gateway.query(sql, row_limit))
+            result = gateway.query(sql, row_limit)
         except QueryTimedOut as exc:
             explain = partial(run_explain, gateway, row_limit=row_limit)
             failure = timeout_report(str(exc), sql, gateway.dialect, explain, db.run)
             raise ToolError(failure) from exc
         except (QueryBlocked, QueryFailed) as exc:
             raise tool_error(exc) from exc
+        if results is None:
+            return format_rows(result)
+        return f"{format_rows(result)}\n{results.note(results.add(result))}"
 
     @tool(annotations=READ_ONLY)
     def list_tables(

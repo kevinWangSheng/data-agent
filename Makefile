@@ -1,4 +1,4 @@
-.PHONY: check fmt test web-install test-integration playwright-install
+.PHONY: check fmt test web-install test-integration playwright-install sandbox-image
 
 # Fast checks: no network, no model calls. Run after every change; must pass before commit.
 check: web/node_modules
@@ -32,6 +32,10 @@ test-integration: web/node_modules
 	pnpm --dir web build:local
 	pnpm --dir web exec tsc -p e2e/tsconfig.json
 	set -a && . $(HOME)/.config/data-agent/env && set +a && pnpm --dir web exec playwright test
+
+# The image of sandbox_exec's docker backend (`data-agent run --sandbox docker`, ticket 97).
+sandbox-image:
+	docker build -t data-agent-sandbox sandbox-image
 
 # The browser the Playwright main flow drives (downloads it once).
 playwright-install: web/node_modules
