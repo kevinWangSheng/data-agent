@@ -111,8 +111,10 @@ DBT_BUILTIN_TOOLS: list[str] = [*GUARDED_TOOLS, *WRITE_TOOLS, "Bash"]
 # Environment variables Bash may print (`echo $VAR`, `printenv VAR`): the benchmark tasks ask the
 # agent to print DB_TYPE first; no task asks for another.
 PRINTABLE_VARIABLES = ("DB_TYPE",)
-# Denied outright as well as left out of the tools: benchmark solutions are public, and the official
-# data-eng-bench configs turn web lookup off the same way (`disallowed_tools: WebSearch,WebFetch`).
+# Loaded only with the run-level `network` switch (`data-agent run --network`, ticket 98), which the
+# product's entries pass and no evaluation does. Without it they are denied outright as well as left
+# out of the tools: benchmark solutions are public, and the official data-eng-bench configs turn web
+# lookup off the same way (`disallowed_tools: WebSearch,WebFetch`).
 WEB_TOOLS: list[str] = ["WebSearch", "WebFetch"]
 
 SYSTEM_PROMPT = """\
@@ -1482,6 +1484,7 @@ def build_options(
     guarded: set[str] | None = None,
     turn: ConversationTurn | None = None,
     sandbox: SandboxRun | None = None,
+    network: bool = False,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the command and workspace guards deny (`guard_recorder`). With `spend` (the
@@ -1502,7 +1505,9 @@ def build_options(
     `turn` resumes its previous session (`ConversationTurn.resume`) and keeps the session's record
     in the conversation's `CLAUDE_CONFIG_DIR`; without one (a single run, every evaluation) the
     options set neither. With `sandbox` the MCP server also serves sandbox_exec (ticket 97) on
-    that backend, for that run id; without it the server's tools are what they were before."""
+    that backend, for that run id; without it the server's tools are what they were before.
+    `network` (ticket 98) loads WebSearch and WebFetch; without it, as on every evaluation, they
+    are denied."""
     if task.type == "dbt":
         max_turns, budget = config.max_turns["dbt"], None
     else:
@@ -1564,6 +1569,9 @@ def build_options(
             )
             for event, matchers in v2_hooks.items():
                 all_hooks.setdefault(event, []).extend(matchers)
+    # The run-level switch (ticket 98): the web tools are loaded, or denied outright.
+    web, denied = (WEB_TOOLS, []) if network else ([], WEB_TOOLS)
+    tools = [*tools, *web]
     for event, matchers in tool_timing_hooks(emit).items():
         all_hooks.setdefault(event, []).extend(matchers)
     if budget is not None:
@@ -1593,7 +1601,7 @@ def build_options(
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
-        disallowed_tools=WEB_TOOLS,
+        disallowed_tools=denied,
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
         hooks=all_hooks,
@@ -1973,6 +1981,7 @@ async def run(
     turn: ConversationTurn | None = None,
     steering: AsyncGenerator[str] | None = None,
     sandbox: Backend | None = None,
+    network: bool = False,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
@@ -1981,7 +1990,8 @@ async def run(
     turn. `steering`, a `--chat` run's stdin lines, is sent into the running turn (`query`).
     `sandbox` gives the agent sandbox_exec on that backend (`SandboxRun.of_run` gives the run its
     id). With `docker` the run removes its container when it ends, and the
-    containers of killed runs before it starts (`docker_lifecycle`)."""
+    containers of killed runs before it starts (`docker_lifecycle`). `network` gives the agent
+    the web tools (`build_options`)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -2100,6 +2110,7 @@ async def run(
                 guarded=guarded,
                 turn=turn,
                 sandbox=sandbox_run,
+                network=network,
             )
             open_calls: dict[str, str] = {}
             session_id: str | None = None

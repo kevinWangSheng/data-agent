@@ -93,10 +93,11 @@ class Conversations:
                 return single_row(summary, live)
             return None
 
-    def send(self, conversation: str, text: str) -> dict[str, Any]:
+    def send(self, conversation: str, text: str, network: bool = True) -> dict[str, Any]:
         """A message: a new turn when the conversation has none running, else a steer into the
         running one. Refused (409) while a run of another conversation or of the run form is
-        going."""
+        going. A new turn has the web tools (`data-agent run --network`, ticket 98) unless
+        `network` is off; a steer goes into the turn as it was started."""
         if not text.strip():
             raise Refused(400, "the message is empty")
         with self.launcher.lock:
@@ -104,7 +105,7 @@ class Conversations:
             live = self.launcher.active()
             if live is not None and live.conversation == conversation:
                 return self.steer(index, live, text)
-            return self.start_turn(index, text)
+            return self.start_turn(index, text, network)
 
     def cancel(self, conversation: str) -> dict[str, Any]:
         """Stops the conversation's running turn (as the run form's cancel stops a run); returns
@@ -117,7 +118,7 @@ class Conversations:
             self.launcher.cancel_locked(live.run_id)
             return self.conversation_row(index, self.launcher.active())
 
-    def start_turn(self, index: dict[str, Any], text: str) -> dict[str, Any]:
+    def start_turn(self, index: dict[str, Any], text: str, network: bool) -> dict[str, Any]:
         self.launcher.check_configured()
         for source in self.sources:
             check_source(source)
@@ -136,6 +137,7 @@ class Conversations:
                 *("--events-dir", str(run_dir), "--workspace", str(workspace)),
                 *("--data-sources", str(sources_file)),
                 *("--chat", "--conversation-dir", str(directory), "--turn", str(number)),
+                *(("--network",) if network else ()),
             ]
             if resume is not None:
                 args += ["--resume", resume]

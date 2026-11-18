@@ -219,6 +219,13 @@ def main(argv: list[str] | None = None) -> None:
         type=float,
         help="the trial's time limit, counted from now; the run stops itself before it",
     )
+    # A run-level switch, not a config layer: the configs are shared by the product and the
+    # evaluations (ticket 98). Off unless given, so leaving it out only takes tools away.
+    run_cmd.add_argument(
+        "--network",
+        action="store_true",
+        help="give the agent WebSearch and WebFetch (never on an evaluation run)",
+    )
     # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
     # and single runs never set these (spec decision 19).
     run_cmd.add_argument(
@@ -321,6 +328,7 @@ def main(argv: list[str] | None = None) -> None:
                 turn=turn,
                 steering=steering,
                 sandbox=args.sandbox,
+                network=args.network,
             )
         )
     except ConfigError as exc:
