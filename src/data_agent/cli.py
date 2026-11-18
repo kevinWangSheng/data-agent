@@ -186,6 +186,13 @@ def main(argv: list[str] | None = None) -> None:
         type=float,
         help="the trial's time limit, counted from now; the run stops itself before it",
     )
+    # A run-level switch, not a config layer: the configs are shared by the product and the
+    # evaluations (ticket 98). Off unless given, so leaving it out only takes tools away.
+    run_cmd.add_argument(
+        "--network",
+        action="store_true",
+        help="give the agent WebSearch and WebFetch (never on an evaluation run)",
+    )
     # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
     # and single runs never set these (spec decision 19).
     run_cmd.add_argument(
@@ -277,7 +284,16 @@ def main(argv: list[str] | None = None) -> None:
         # reads it. A cancelled run is stopped by signal, so its stdin is read no more.
         steering = None if turn is None else stdin_lines(STDIN_FD)
         outcome = asyncio.run(
-            run(task, config, args.events_dir, os.environ, deadline, turn=turn, steering=steering)
+            run(
+                task,
+                config,
+                args.events_dir,
+                os.environ,
+                deadline,
+                turn=turn,
+                steering=steering,
+                network=args.network,
+            )
         )
     except ConfigError as exc:
         run_cmd.error(str(exc))

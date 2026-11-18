@@ -117,8 +117,11 @@ class Launcher:
         # conversation.
         self.lock = threading.Lock()
 
-    def submit(self, task: str, task_type: str, source_name: str, config: str) -> str:
-        """Checks the request, prepares the run's directories and starts it; returns its id."""
+    def submit(
+        self, task: str, task_type: str, source_name: str, config: str, network: bool = True
+    ) -> str:
+        """Checks the request, prepares the run's directories and starts it; returns its id. The
+        run has the web tools (`data-agent run --network`, ticket 98) unless `network` is off."""
         source = self.check(task, task_type, source_name, config)
 
         def prepare(run_dir: Path) -> tuple[list[str], Path]:
@@ -137,6 +140,7 @@ class Launcher:
                 *database,
                 "--data-source-name",
                 source.name,
+                *(("--network",) if network else ()),
             ]
             return args, workspace
 
