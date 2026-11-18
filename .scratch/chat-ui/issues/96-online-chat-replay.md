@@ -1,6 +1,6 @@
 # 96 — 在线版：录好的对话回放
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 95
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -137,3 +137,20 @@ The branch is done and ready for your review: the exporter can now export a reco
 - `bash runs/site-publish-2/export.sh` (ticket 82's inputs plus `--conversation runs/demo-chat/web/conversations/20261118T020857Z-6cd60d`) printed "scrub: changed 0 file(s) of 552; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0" and "export: 275 run(s), 1 conversation(s)". A re-scrub also reported 0 changes.
 - `grep -rlE "sd710|/Volumes/|claude-config|shenghuikevin|/Users/"` over the export: no hits. The `index.json` `conversations` holds the 2 turns and the steer.
 - The output is in `runs/site-publish-2/site` and is not in git. Nothing is published: building the tarball and replacing the `site-data` release asset waits for the human.
+
+### Main session, 2026-11-17: reviews of PR #105
+
+- CI `check` green. The Codex GitHub app reacted 👍 with no comments.
+- A clean-context Opus 5.5 review of the frontend found no regressions:
+  - Run page replay: checked line for line against the old loop (speeds, auto speed, rAF tick and cleanup, restart, scrub, skip idle, Show all, Space, first-screen autoplay).
+  - Live chat page: no regressions found.
+  - Replay of the real export: turn order, steer shown once delivered, disabled options, growing cost, end state.
+  - Routing on Pages: correct.
+  The main session checked each finding below against the code.
+
+退回（第 1 轮）：
+1. P2 `web/src/site/RecordedConversation.tsx:57`，经 `web/src/chat-page/Transcript.tsx:56-66`：回放控制条是一整行、不折行（播放、重来、6 个速度、跳过空闲、128px 滑块、88px 时间、Show all，约 700–750px），放进了 Transcript 的标题栏；运行页在 900px 以下藏起这条（`RunPage.tsx:204` `max-[900px]:hidden`）。375px 手机上页面会横向滚动，Show all 和滑块在屏幕外。改：窄屏下给出可用的控制（例如只留播放、Show all，其余藏起，或者控制条自己折行），页面不能横向滚动；用 375px 截图证明。
+2. P3 回放页按空格不起作用：播放按钮提示写着 "Play or pause (space)"，只有 `RunPage.tsx:173` 有 keydown；`useReplay` 已经返回 `togglePlay`，`RecordedConversation` 没用。照运行页加上（焦点在输入控件里时不拦），配测试。
+3. P3 `web/src/chat-page/Turn.tsx:62`：被取消的轮在在线版也写 "Cancelled. The next message starts a new turn."，在线版没有输入框。只读模式下只写 "Cancelled."，配测试。
+- 记成已知限制，不修：从某轮的 "Full run view" 返回时，回放从 0:00 重新开始，进度和 Show all 状态丢失。要修得把回放状态提到页面之外，改动面大，收益小。
+修完 `make check`，`eng:code-review` 只看新提交（前端为主，不跑 `da-review`）；最终回复照工作流程第 6 步。
