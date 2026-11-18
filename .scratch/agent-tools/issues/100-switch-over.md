@@ -24,6 +24,16 @@ Branch: —
 - Skill 写法不能针对任何榜单题目（ADR-0005）。
 - 已知限制写进 ADR-0010 Consequences 已有的那条：跑 data-eng-bench 时 `local` 后端能直接写题目的 DuckDB 文件。
 - `.scratch/web-ui/spec.md:146` 里"守卫拒绝"的分类会变，只记进 Comments 交给工单 101，本工单不改 `web/`。
+- 97–99 交给本工单的事（主会话 2026-11-18 汇总，细节见各工单 Comments）：
+  - **网页 dbt 运行在 main 上是坏的，本工单要修好**：99 已经让网页 dbt 运行的 workspace 里不放 `profiles.yml` 和库文件，但 `launcher.py` 还没带 `--sandbox docker --dbt-target scratch`。人 2026-11-18 接受这段时间坏着，由本工单接上。
+  - local 后端（Harbor）的命令环境是白名单（`sandbox.py` 的 `LOCAL_ENV`），可能缺题目要的变量（`DB_TYPE`、`VIRTUAL_ENV`、`DBT_PROFILES_DIR`）。在 Harbor 单题真实运行里核对，缺的就补上。
+  - DAB 的 `python-data:3.12` 镜像里 Python 是什么版本未确认，换成同一个沙箱模块时要确认 `sandbox_supervisor.py` 能在里面跑（它只用标准库，用 `start_new_session`，不需要 3.11）。
+  - 在临时 schema 里只选一个模型（`run --select m`）会因为上游模型不在里面而失败（99 的真实运行两次都是先失败，改用 `+m` 才成功）。Skill 和工具说明要写明：用 `+<model>` 或 `build` 把上游一起建出来。写法照通用规则，不针对任何题目（ADR-0005）。
+  - `dbt_execute` 在 `task` 模式只放行 `DBT_*`、Postgres 变量和 profile 里 `env_var()` 点名的变量。模型或 `dbt_project.yml` 里用 `env_var()` 读的其他变量，以及 `PGPASSWORD`、AWS 这类凭据，到不了 dbt。跑分时遇到真实题目需要哪个，就把它加进白名单，并写进 Comments。
+  - `src/data_agent/web/sources.py` 的 `check_layout` 还写着"库文件必须在项目里"，现在网页运行会把库文件移出去，这条要删掉或改写措辞（99 没改）。
+  - `evals/configs/data-eng-bench-duckdb.data-agent.yaml:43` 的注释说 Web 工具在"每次 data-agent run"都关，对产品已经不成立，按规则与文档一节改写（98 记下的）。
+  - 运行编号的格式是 `<events-dir 名>-<8 位 hex>`（97），临时 schema 是 `da_run_<编号，转小写，非 [a-z0-9_] 的字符换成 _>`（99），scratch profile 固定叫 `da_run`，命令行用 `--profile da_run` 指定。
+  - 本机 colima 只挂 `$HOME`，真实 Docker 的测试把 workspace 放在 `$HOME` 下（见 97 Context）。
 
 ## Acceptance
 
