@@ -362,6 +362,14 @@
   - **73 要人审过才合并**：把它定的视图模型类型、后端入口签名、测试清单整理给人看。74 做完后主会话真跑一次 README 快速上手的查数运行核对新字段，再走审查和 PR。
   - 82 里由主会话做的对外操作：重跑或重选 3 条精选运行、跑导出、把数据包传到 release、在仓库设置里开启 Pages。
   - 三个样板的预览服务都已停。76 要对照样板 B 时在 `runs/web-prototypes/b/` 下 `pnpm preview`（端口 5182）。
+- 2026-11-17（对齐会话）：agent 工具补全（plan §10 第 25 项）的 6 点由人逐条确认，写成 ADR-0010、spec `.scratch/agent-tools/spec.md` 和工单 97–101。**下一会话（编排）从这里开始：派 97、98。**
+  - 起因：查数任务不能跑代码，dbt 任务的 Bash 只能跑 dbt，任何运行都不能联网。查过上游，没有一家把 Bash 限成只跑 dbt（命令守卫是工单 04 自己加的）。人要求照上游做，不要拿旧规则去套。
+  - 定下的：shell 和代码走 `sandbox_exec`（产品用 Docker，Harbor 用 local）；沙箱里没有凭据和库文件；写只走 `dbt_execute`（照 SignalPilot），产品里写到临时 schema `da_run_<run id>`，用完保留不清理（照 SignalPilot）；`--network` 是运行级选项，网页后端默认开，评测入口都不开；去掉内置 Bash 和 `command_guard.py`。
+  - 已实测：WebSearch、WebFetch 走 DeepSeek 端点（`deepseek-flash`）都能用（spec "`network` 开关"一节）。
+  - 依赖：97、98 可以并行，也可以和对话界面的工单并行；99 等 97；100 等 97–99（AGENTS.md、CODING_STANDARDS.md、CONTEXT.md 的规则在 100 改，跑分验收也在 100）；101 是前端，等 100。
+  - 本机 Docker 是 colima，现在是停着的；97、99 的集成测试前要先 `colima start`。
+  - 无上下文的 Opus 子 agent 冷读过 spec 和工单，报了 11 条，主会话对照代码核实后都改进了 spec 和工单：对话入口 `conversations.py`、DAB 走进程内 `build_options`、运行编号和由运行进程删容器、Skill 目录挂载、`--dbt-target`、网页 dbt 运行的库文件移出 workspace、`NOTICE`、联网开关放进 101。
+  - 工单 100 要重新生成 `tests/fixtures/chat/eval-unchanged.json`，这个快照按规矩不能改；预计改 60–100 行（共 568 行）。人 2026-11-17 批准覆盖（照快照测试的通行做法，旧版本在 git 历史里），差异在 PR 里由人审。
 
 ## 0. 一句话
 
