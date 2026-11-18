@@ -40,6 +40,8 @@ from data_agent.db_facts import (
     rows_label,
     timeout_report,
 )
+from data_agent.dbt_execute import DbtExecuteError, DbtExecutor
+from data_agent.dbt_execute import tool_description as dbt_tool_description
 from data_agent.gateway import (
     BLOCKED_PREFIX,
     MAX_ROWS,
@@ -236,6 +238,7 @@ def build_server(
     verifier_tools: bool = True,
     dictionary: Dictionary | None = None,
     sandbox: Sandbox | None = None,
+    dbt: DbtExecutor | None = None,
 ) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
     `config` turns that layer on, so a run with it off cannot see them; `verifier_tools=False`
@@ -244,12 +247,15 @@ def build_server(
     dictionary the context layer searches (`data-agent run` builds it before the agent starts);
     a server with that layer on and no dictionary builds one now, before it serves. With one
     database the tools take no `database` argument (`database_tools`). With `sandbox` the server
-    also serves sandbox_exec (`register_sandbox_tool`); without it the tools are as before."""
+    also serves sandbox_exec (`register_sandbox_tool`); without it the tools are as before. With
+    `dbt` (a dbt run with a sandbox) it serves dbt_execute too (`register_dbt_tool`)."""
     dictionaries = {"": dictionary} if dictionary is not None else {}
     server, databases = data_server({"": gateway}, config, workspace, dictionaries, sandbox)
     if config.verifiers and verifier_tools:
         db = databases[""]
         register_verifier_tools(server, db.run, db.catalog, workspace, gateway.dialect)
+    if dbt is not None:
+        register_dbt_tool(server, dbt)
     return server
 
 
@@ -337,6 +343,26 @@ def register_sandbox_tool(server: MCPServer, sandbox: Sandbox) -> QueryResults:
             raise ToolError(str(exc)) from exc
 
     return results
+
+
+def register_dbt_tool(server: MCPServer, executor: DbtExecutor) -> None:
+    """dbt_execute (ticket 99, after SignalPilot's `dbt_execute`): the run's one way to run dbt
+    against the database. It writes, so its calls run one at a time (`SANDBOX`)."""
+
+    @server.tool(
+        name="dbt_execute", annotations=SANDBOX, description=dbt_tool_description(executor)
+    )
+    def dbt_execute(
+        command: str,
+        select: str = "",
+        exclude: str = "",
+        full_refresh: bool = False,
+        threads: int | None = None,
+    ) -> str:
+        try:
+            return executor.execute(command, select, exclude, full_refresh, threads)
+        except DbtExecuteError as exc:
+            raise ToolError(str(exc)) from exc
 
 
 def register_base_tools(

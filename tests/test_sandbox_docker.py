@@ -13,8 +13,10 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
+import duckdb
 import pytest
 
+from data_agent.dbt_execute import DbtExecutor, DbtRun
 from data_agent.gateway import QueryResult
 from data_agent.run_config import REPO_ROOT, skills_path
 from data_agent.sandbox import (
@@ -27,6 +29,8 @@ from data_agent.sandbox import (
     labelled,
     remove_run_containers,
 )
+from data_agent.web.launcher import prepare_workspace
+from data_agent.web.sources import DataSource
 
 pytestmark = pytest.mark.integration
 
@@ -221,3 +225,56 @@ def test_a_process_an_earlier_call_left_running_outlives_a_later_timeout(
     assert run(sandbox, "sleep 60", timeout=2).timed_out
     left = running(sandbox)
     assert "sleep 602" in left.stdout, left.stdout
+
+
+def test_a_web_dbt_runs_database_and_profiles_are_out_of_the_sandboxs_reach(
+    root: Path, sandboxes: list[DockerSandbox]
+) -> None:
+    """Ticket 99: the web UI's dbt run keeps its DuckDB file and the profile dbt_execute writes
+    outside the workspace, the sandbox's one mount; dbt_execute still runs, from the host."""
+    marker = f"secretdb{uuid.uuid4().hex[:8]}"
+    project = root / "source" / "dbt_shop"
+    shutil.copytree(REPO_ROOT / "tests" / "fixtures" / "dbt_shop", project)
+    (project / "profiles.yml").write_text(
+        f"shop:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n"
+        f"      path: {marker}.duckdb\n"
+    )
+    con = duckdb.connect(str(project / f"{marker}.duckdb"))
+    try:
+        con.execute((REPO_ROOT / "tests" / "fixtures" / "shop.sql").read_text())
+    finally:
+        con.close()
+    run_dir = root / "runs" / "20261118T000000Z-abc123"
+    run_dir.mkdir(parents=True)
+    workspace = run_dir / "workspace"
+    source = DataSource("shop", duckdb=project / f"{marker}.duckdb", dbt_project=project)
+    args = prepare_workspace(workspace, source, "dbt", root / "runs")
+    dbt_run = DbtRun.of_run("scratch", run_dir)
+    assert dbt_run.profiles_dir is not None
+    db = Path(args[args.index("--duckdb") + 1])
+    executor = DbtExecutor(workspace, "scratch", "r1", dbt_run.profiles_dir, duckdb=db)
+    reply = executor.execute("run", env=os.environ)
+    assert "exit_code: 0" in reply, reply
+    assert (dbt_run.profiles_dir / "profiles.yml").is_file()
+
+    sandbox = DockerSandbox(workspace, skills_path("skills"), f"test-{uuid.uuid4().hex[:8]}")
+    sandboxes.append(sandbox)
+    # dbt's logs and run_results in the workspace name the profiles directory (dbt's argv), and
+    # the compiled SQL the database's catalog name (the file's stem); the file, its path and the
+    # profile are not there.
+    done = run(
+        sandbox,
+        f"find / -xdev \\( -name '{marker}*' -o -name '*.duckdb*' -o -name profiles.yml \\) "
+        f"-not -path '/proc/*' 2>/dev/null; grep -rlF {db.resolve()} / --exclude-dir=proc "
+        "--exclude-dir=sys 2>/dev/null; ls ../db ../profiles 2>&1; echo end",
+    )
+    lines = set(done.stdout.split("\n"))
+    # The stub profile (stub_profile.py) is the only profile there; it names no database file.
+    assert lines - {"", "end"} == {
+        "/tmp/stub-profiles/profiles.yml",
+        "ls: cannot access '../db': No such file or directory",
+        "ls: cannot access '../profiles': No such file or directory",
+    }, done.stdout
+    # The project still parses there with the stub profile.
+    parsed = run(sandbox, "dbt parse")
+    assert parsed.exit_code == 0, parsed.stdout + parsed.stderr

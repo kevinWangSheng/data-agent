@@ -55,6 +55,7 @@ from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 from data_agent import verifier_v2
 from data_agent.command_guard import command_guard
 from data_agent.context_tools import DictionaryBuild, build_interruptible
+from data_agent.dbt_execute import DbtExecuteError, DbtRun, Target, check_outside
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
 from data_agent.gateway import (
     BLOCKED_PREFIX,
@@ -1485,6 +1486,7 @@ def build_options(
     turn: ConversationTurn | None = None,
     sandbox: SandboxRun | None = None,
     network: bool = False,
+    dbt: DbtRun | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the command and workspace guards deny (`guard_recorder`). With `spend` (the
@@ -1505,7 +1507,8 @@ def build_options(
     `turn` resumes its previous session (`ConversationTurn.resume`) and keeps the session's record
     in the conversation's `CLAUDE_CONFIG_DIR`; without one (a single run, every evaluation) the
     options set neither. With `sandbox` the MCP server also serves sandbox_exec (ticket 97) on
-    that backend, for that run id; without it the server's tools are what they were before.
+    that backend, for that run id; without it the server's tools are what they were before. `dbt`
+    (a dbt run with a sandbox, ticket 99) has the server serve dbt_execute on that target.
     `network` (ticket 98) loads WebSearch and WebFetch; without it, as on every evaluation, they
     are denied."""
     if task.type == "dbt":
@@ -1529,6 +1532,7 @@ def build_options(
                 for arg in ("--source-dictionary", name, str(path))
             ),
             *(sandbox.server_args() if sandbox else ()),
+            *(dbt.server_args() if dbt else ()),
         ],
     }
     if task.type == "dbt":
@@ -1982,6 +1986,7 @@ async def run(
     steering: AsyncGenerator[str] | None = None,
     sandbox: Backend | None = None,
     network: bool = False,
+    dbt_target: Target = "task",
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
@@ -1991,7 +1996,9 @@ async def run(
     `sandbox` gives the agent sandbox_exec on that backend (`SandboxRun.of_run` gives the run its
     id). With `docker` the run removes its container when it ends, and the
     containers of killed runs before it starts (`docker_lifecycle`). `network` gives the agent
-    the web tools (`build_options`)."""
+    the web tools (`build_options`). A dbt run with `sandbox` also gets dbt_execute, writing to
+    `dbt_target` (`DbtRun.of_run`: `scratch` keeps its profile in `<events_dir>/profiles/`,
+    which must be outside the workspace)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -2032,6 +2039,17 @@ async def run(
         names += url_names(env[variable])
     verified = uses_verifiers(task.type, config)
     sandbox_run = None if sandbox is None else SandboxRun.of_run(sandbox, events_dir)
+    dbt_run = (
+        DbtRun.of_run(dbt_target, events_dir)
+        if sandbox_run is not None and task.type == "dbt"
+        else None
+    )
+    if dbt_run is not None and dbt_run.profiles_dir is not None:
+        # Before the session: a server that refused its arguments would leave a run without tools.
+        try:
+            check_outside(dbt_run.profiles_dir, task.workspace)
+        except DbtExecuteError as exc:
+            raise ConfigError(f"--dbt-target scratch: {exc}") from exc
     containers = (
         docker_lifecycle(sandbox_run.run_id)
         if sandbox_run is not None and sandbox_run.backend == "docker"
@@ -2111,6 +2129,7 @@ async def run(
                 turn=turn,
                 sandbox=sandbox_run,
                 network=network,
+                dbt=dbt_run,
             )
             open_calls: dict[str, str] = {}
             session_id: str | None = None
