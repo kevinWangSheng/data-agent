@@ -132,8 +132,9 @@ def postgres_output(url: str, schema: str) -> dict[str, object]:
     cannot hold (several hosts, a bad port, an unknown key) is refused."""
     try:
         params = conninfo_to_dict(url)
-    except psycopg.ProgrammingError as exc:
-        raise DbtExecuteError(f"the Postgres connection string does not parse: {exc}") from exc
+    except psycopg.ProgrammingError:
+        # libpq's message can quote the password; neither it nor the cause goes to the agent.
+        raise DbtExecuteError("the Postgres connection string does not parse") from None
     host = str(params.get("host") or "")
     port = str(params.get("port") or POSTGRES_PORT)
     if "," in host or not port.isdigit():

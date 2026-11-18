@@ -146,6 +146,13 @@ def test_a_postgres_url_the_profile_cannot_hold_is_a_tool_error(url: str) -> Non
         postgres_output(url, "da_run_r1")
 
 
+def test_a_postgres_parse_error_does_not_carry_the_password() -> None:
+    with pytest.raises(DbtExecuteError) as caught:
+        postgres_output("postgresql://agent:fake%ZZsecret@h/db", "da_run_r1")
+    assert "secret" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
 def test_the_postgres_profile_holds_the_connection_and_the_run_schema() -> None:
     profile = scratch_profile("shop", "da_run_r1", None, PG_URL)
     assert profile == {
@@ -311,11 +318,13 @@ def test_dbt_past_its_limit_is_killed_and_its_output_returned(
     tmp_path: Path, fake_dbt: tuple[dict[str, str], Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env, _ = fake_dbt
-    monkeypatch.setattr(dbt_execute, "TIMEOUT_S", 1)
+    # Long enough for the stand-in's interpreter to start and print on a loaded machine (1 s was
+    # not), far short of its 60 s sleep.
+    monkeypatch.setattr(dbt_execute, "TIMEOUT_S", 5)
     workspace = workspace_with_project(tmp_path)
     executor = DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb")
     started = time.monotonic()
-    with pytest.raises(DbtExecuteError, match=r"timed out after 1 seconds(.|\n)*fake dbt ran"):
+    with pytest.raises(DbtExecuteError, match=r"timed out after 5 seconds(.|\n)*fake dbt ran"):
         executor.execute("seed", env=env)
     assert time.monotonic() - started < 30
 
