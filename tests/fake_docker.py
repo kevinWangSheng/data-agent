@@ -1,6 +1,5 @@
 """A stand-in for the docker CLI as `data_agent.sandbox.run_docker` reaches it (ticket 97)."""
 
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -13,11 +12,9 @@ from data_agent.sandbox import OWNER_LABEL, Execution
 @dataclass
 class FakeDocker:
     """The docker CLI as `run_docker` reaches it: `run` adds a container, `exec` answers from
-    `replies` (or a plain success) after `exec_seconds`, `ps --filter label=...` lists, `rm -f`
-    removes."""
+    `replies` (or a plain success), `ps --filter label=...` lists, `rm -f` removes."""
 
     replies: list[Execution] = field(default_factory=list)
-    exec_seconds: float = 0
     containers: dict[str, dict[str, str]] = field(default_factory=dict)
     calls: list[list[str]] = field(default_factory=list)
 
@@ -33,7 +30,6 @@ class FakeDocker:
         if verb == "exec":
             if container_of(args) not in self.containers:
                 return Execution(1, "", "Error response from daemon: No such container\n", False)
-            time.sleep(self.exec_seconds)
             return self.replies.pop(0) if self.replies else Execution(0, "ok\n", "", False)
         if verb == "ps":
             wanted = args[args.index("--filter") + 1].removeprefix("label=")

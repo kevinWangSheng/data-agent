@@ -84,6 +84,8 @@ class Execution(NamedTuple):
     timed_out: bool
     # The bytes of stdout and stderr past KEEP_BYTES, read and dropped.
     dropped: tuple[int, int] = (0, 0)
+    # How long the process ran, to its end: its output may be read for longer.
+    seconds: float = 0.0
 
 
 # What the host keeps of each stream of a command, at most: past it the output is read and
@@ -135,6 +137,7 @@ def run_process(
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
+    began = time.monotonic()
     assert proc.stdout is not None and proc.stderr is not None
     captures = (Capture(proc.stdout), Capture(proc.stderr))
     try:
@@ -155,6 +158,7 @@ def run_process(
         err.text(),
         timed_out,
         (out.dropped, err.dropped),
+        ended - began,
     )
 
 
@@ -163,9 +167,10 @@ def supervised(command: str, timeout: float) -> list[str]:
     return ["-I", "-c", SUPERVISOR, f"{timeout:g}", f"{KILL_GRACE_S:g}", command]
 
 
-def timeout_past_limit(done: Execution, started: float, timeout: float) -> Execution:
-    """A supervised command's outcome: the supervisor's 124 past the limit is a timeout."""
-    stopped = done.exit_code == TIMEOUT_EXIT and time.monotonic() - started >= timeout
+def timeout_past_limit(done: Execution, timeout: float) -> Execution:
+    """A supervised command's outcome: the supervisor's 124 past the limit is a timeout. The limit
+    is checked against the time the supervisor ran, not the time its output was read."""
+    stopped = done.exit_code == TIMEOUT_EXIT and done.seconds >= timeout
     if done.timed_out or stopped:
         return done._replace(exit_code=None, timed_out=True)
     return done
@@ -193,9 +198,8 @@ class LocalSandbox:
     def execute(self, command: str, timeout: float) -> Execution:
         argv = [sys.executable, *supervised(command, timeout)]
         env = local_env(os.environ)
-        started = time.monotonic()
         done = run_process(argv, timeout + CLIENT_MARGIN_S, cwd=self.workspace, env=env)
-        return timeout_past_limit(done, started, timeout)
+        return timeout_past_limit(done, timeout)
 
 
 def run_docker(args: Sequence[str], timeout: float = DOCKER_TIMEOUT_S) -> Execution:
@@ -267,9 +271,8 @@ class DockerSandbox:
         # Killing the docker client would leave the command running in the container, so the
         # supervisor runs in the container.
         argv = ["exec", "-w", WORKDIR, self.container, "python3", *supervised(command, timeout)]
-        started = time.monotonic()
         done = run_docker(argv, timeout + CLIENT_MARGIN_S)
-        return timeout_past_limit(done, started, timeout)
+        return timeout_past_limit(done, timeout)
 
 
 class Sandbox(Protocol):

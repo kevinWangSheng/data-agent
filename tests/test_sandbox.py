@@ -204,8 +204,7 @@ def test_docker_timeout_kills_the_command_inside_the_container(
 ) -> None:
     # Killing the docker client would leave the command running in the container, so the
     # supervisor runs it there; 124 is its exit code for a command it stopped.
-    docker.replies.append(Execution(124, "partial\n", "", False))
-    docker.exec_seconds = 1.1
+    docker.replies.append(Execution(124, "partial\n", "", False, seconds=1.1))
     done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("sleep 999", timeout=1)
     [exec_] = docker.verb("exec")
     after_container = exec_[exec_.index("-w") + 3 :]
@@ -218,6 +217,15 @@ def test_a_commands_own_exit_code_124_is_no_timeout(tmp_path: Path, docker: Fake
     docker.replies.append(Execution(124, "", "", False))
     done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("timeout 1 sleep 5", timeout=30)
     assert (done.timed_out, done.exit_code) == (False, 124)
+
+
+def test_a_commands_own_124_in_time_is_no_timeout_though_its_output_is_read_past_the_limit(
+    tmp_path: Path,
+) -> None:
+    """da-review, round 2 return: the limit was checked once the output was read, which a
+    background process holding it kept open past the limit."""
+    done = LocalSandbox(tmp_path, SKILLS).execute("sleep 3 & echo ended; exit 124", timeout=1)
+    assert (done.timed_out, done.exit_code, done.stdout) == (False, 124, "ended\n")
 
 
 def run_supervisor(command: str, limit: float, cwd: Path) -> tuple[int, float]:
