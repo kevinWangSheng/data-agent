@@ -9,7 +9,8 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, test } from 'vitest'
 
-import type { ConversationIndex } from '../chat-view/model'
+import { Transcript } from '../chat-page/Transcript'
+import { buildConversationView, type ConversationIndex } from '../chat-view/model'
 import { homeData } from '../data/home'
 import { staticSource, type Recording } from '../data/source'
 import type { RunNotes } from '../run-view/model'
@@ -92,5 +93,16 @@ describe('RecordedConversation', () => {
     expect(options.length).toBeGreaterThan(0)
     for (const option of options) expect(option).toContain('disabled')
     expect(whole).toContain('replay of a recorded conversation')
+  })
+
+  test('the cancelled turn reads "Cancelled." with no word of a next message, which the site cannot send', async () => {
+    const recording = await site.recording(index.id)
+    const html = render(recording, false)
+    expect(html).toContain('Cancelled.</div>')
+    expect(html).not.toContain('next message')
+    // The live chat page, with its message box, still says what the next message does.
+    const view = buildConversationView(recording.conversation, recording.runs)
+    const live = renderToStaticMarkup(createElement(Transcript, { view, title: TITLE, stick: { current: true }, runHref: (id: string) => id, onGo: () => {}, footer: null }))
+    expect(live).toContain('Cancelled. The next message starts a new turn.')
   })
 })

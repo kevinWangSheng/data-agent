@@ -20,6 +20,8 @@ import { steerState, turnLayout, type Group } from './layout'
 
 export type TurnProps = {
   turn: TurnView
+  /** No message can be sent after it (the online site). */
+  readOnly?: boolean
   /** Whether its clarification options can be clicked now. */
   answerable: boolean
   onPick: (option: string) => void
@@ -28,7 +30,7 @@ export type TurnProps = {
   onGo: (href: string) => void
 }
 
-export function Turn({ turn, answerable, onPick, runHref, onGo }: TurnProps) {
+export function Turn({ turn, readOnly = false, answerable, onPick, runHref, onGo }: TurnProps) {
   const layout = turnLayout(turn)
   const running = turn.status === 'running'
   const databases = new Map(turn.queries.map((q) => [q.step, q.database]))
@@ -59,7 +61,7 @@ export function Turn({ turn, answerable, onPick, runHref, onGo }: TurnProps) {
           {turn.run.answer.table && <DataTable table={turn.run.answer.table} max={50} />}
         </div>
       )}
-      {turn.status === 'cancelled' && <div className="text-[12.5px] text-ink-3">Cancelled. The next message starts a new turn.</div>}
+      {turn.status === 'cancelled' && <div className="text-[12.5px] text-ink-3">{readOnly ? 'Cancelled.' : 'Cancelled. The next message starts a new turn.'}</div>}
       {turn.status === 'failure' && (
         <div className="banner banner-fail text-[12px]">
           The run ended with an error.{' '}

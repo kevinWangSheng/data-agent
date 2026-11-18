@@ -53,3 +53,14 @@ export function revealedAt(clock: readonly number[], t: number): number {
   }
   return Math.min(clock.length, Math.max(1, lo))
 }
+
+/**
+ * Whether a key press plays or pauses the replay: space, without a modifier, unless it lands in an
+ * input control (where it types) or on a button, link or summary (which it presses), as on the run
+ * page (./RunPage.tsx).
+ */
+export function togglesPlay(e: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'target'>): boolean {
+  if (e.key !== ' ' || e.metaKey || e.ctrlKey || e.altKey) return false
+  const tag = (e.target as HTMLElement | null)?.tagName ?? ''
+  return !['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'SUMMARY', 'A'].includes(tag)
+}

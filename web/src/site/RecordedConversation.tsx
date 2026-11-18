@@ -2,7 +2,8 @@
 // (../chat-page/Transcript.tsx) replayed on the run page's replay clock and controls, read only. It
 // opens playing, skipping idle gaps, at the speed that plays it in about a minute, and stops with
 // everything shown. There is no message box, and the agent's clarification options cannot be
-// clicked: the site has no agent to send to (`chats/<id>`, src/App.tsx).
+// clicked: the site has no agent to send to (`chats/<id>`, src/App.tsx). Space plays or pauses, as on
+// the run page; on a narrow screen the controls keep play, the clock and Show all.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -11,6 +12,7 @@ import { Transcript } from '../chat-page/Transcript'
 import { buildConversationView } from '../chat-view/model'
 import type { Recording, SiteSource } from '../data/source'
 import { errorText } from '../format'
+import { togglesPlay } from '../run-page/replay'
 import { ReplayControls } from '../run-page/ReplayControls'
 import { useReplay } from '../run-page/useReplay'
 
@@ -45,11 +47,20 @@ export function RecordedConversation({ recording, autoplay = true, runHref, onGo
   const times = useMemo(() => recordingTimes(recording), [recording])
   const stick = useRef(true)
   // Playing (again) scrolls to the latest.
-  const { revealed, replaying, controls } = useReplay(times, autoplay, {
+  const { revealed, replaying, togglePlay, controls } = useReplay(times, autoplay, {
     targetMs: CONVERSATION_AUTOPLAY_MS,
     onPlay: () => {
       stick.current = true
     },
+  })
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!togglesPlay(e)) return
+      e.preventDefault()
+      togglePlay()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   })
   const view = useMemo(() => {
     const frame = recordingAt(recording, revealed)
@@ -61,12 +72,13 @@ export function RecordedConversation({ recording, autoplay = true, runHref, onGo
       view={view}
       title={recording.conversation.title}
       stick={stick}
+      readOnly
       runHref={runHref}
       onGo={onGo}
       bar={
         <>
           {replaying && <span className="chip chip-info">REPLAY</span>}
-          <ReplayControls {...controls} />
+          <ReplayControls {...controls} narrowLayout />
         </>
       }
       footer={
