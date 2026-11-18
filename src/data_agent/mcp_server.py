@@ -287,10 +287,7 @@ def data_server(
         name: open_database(gateway, LabelTables(workspace, numbers))
         for name, gateway in gateways.items()
     }
-    results = None
-    if sandbox is not None:
-        results = QueryResults()
-        register_sandbox_tool(server, sandbox, results)
+    results = None if sandbox is None else register_sandbox_tool(server, sandbox)
     register_base_tools(server, databases, workspace, results)
     if os.environ.get(CHAT_ENV) == "1":
         register_clarification_tool(server)
@@ -322,9 +319,11 @@ def register_clarification_tool(server: MCPServer) -> None:
         return CLARIFICATION_SENT
 
 
-def register_sandbox_tool(server: MCPServer, sandbox: Sandbox, results: QueryResults) -> None:
+def register_sandbox_tool(server: MCPServer, sandbox: Sandbox) -> QueryResults:
     """sandbox_exec (ticket 97, after SignalPilot's `sandbox_exec` and nao's
-    `execute_sandboxed_code` `data_files`). One tool for the run, so no `database` argument."""
+    `execute_sandboxed_code` `data_files`). One tool for the run, so no `database` argument.
+    Returns the store of query results its `data_files` reads, which query_database fills."""
+    results = QueryResults()
 
     @server.tool(name="sandbox_exec", annotations=SANDBOX, description=tool_description(sandbox))
     def sandbox_exec(
@@ -336,6 +335,8 @@ def register_sandbox_tool(server: MCPServer, sandbox: Sandbox, results: QueryRes
             return execute_tool(sandbox, results, command, timeout_seconds, data_files or [])
         except SandboxError as exc:
             raise ToolError(str(exc)) from exc
+
+    return results
 
 
 def register_base_tools(

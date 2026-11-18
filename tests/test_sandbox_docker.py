@@ -76,6 +76,14 @@ def run(sandbox: DockerSandbox, command: str, timeout: float = 300) -> Execution
     return sandbox.execute(command, timeout)
 
 
+def running(sandbox: DockerSandbox) -> Execution:
+    """The command line of every process in the container, one per line. From /proc: the image
+    has no `ps`."""
+    listing = run(sandbox, 'for f in /proc/[0-9]*/cmdline; do tr "\\0" " " < "$f"; echo; done')
+    assert listing.exit_code == 0 and "bash" in listing.stdout, listing
+    return listing
+
+
 # Reinstalled, so pip has to download it even though the image has it already.
 INSTALL = (
     "pip install --no-cache-dir --disable-pip-version-check --timeout 20 --retries 0 "
@@ -136,7 +144,7 @@ def test_timeout_stops_the_command_in_the_container(
     sandbox = make(sandboxes, root)
     done = run(sandbox, "echo started; sleep 60", timeout=2)
     assert done.timed_out and done.stdout == "started\n"
-    left = run(sandbox, "ps -eo args")
+    left = running(sandbox)
     assert "sleep 60" not in left.stdout
 
 
@@ -146,6 +154,19 @@ def test_a_command_that_ignores_term_is_killed_and_times_out(
     sandbox = make(sandboxes, root)
     done = run(sandbox, "trap '' TERM; echo started; sleep 60", timeout=2)
     assert done.timed_out and done.stdout == "started\n"
+
+
+def test_a_child_that_ignores_term_is_killed_with_the_command(
+    root: Path, sandboxes: list[DockerSandbox]
+) -> None:
+    """Codex review, round 2: `timeout` stops waiting once the shell dies; the child it leaves
+    must not live on in the container."""
+    sandbox = make(sandboxes, root)
+    child = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    done = run(sandbox, f'python3 -c "{child}" & wait', timeout=2)
+    assert done.timed_out
+    left = running(sandbox)
+    assert "time.sleep(60)" not in left.stdout, left.stdout
 
 
 def test_data_files_go_into_a_data_directory_the_sandbox_made(

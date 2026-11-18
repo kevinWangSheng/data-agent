@@ -1979,8 +1979,8 @@ async def run(
     with `terminal_reason: "deadline"`; the outcome is an unfinished agent. `turn` makes the run a
     turn of a conversation (`ConversationTurn`): its `task` event names the conversation and the
     turn. `steering`, a `--chat` run's stdin lines, is sent into the running turn (`query`).
-    `sandbox` gives the agent sandbox_exec on that backend; the run's id is the events
-    directory's name. With `docker` the run removes its container when it ends, and the
+    `sandbox` gives the agent sandbox_exec on that backend (`SandboxRun.of_run` gives the run its
+    id). With `docker` the run removes its container when it ends, and the
     containers of killed runs before it starts (`docker_lifecycle`)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
@@ -2021,7 +2021,7 @@ async def run(
         secrets += url_secrets(env[variable])
         names += url_names(env[variable])
     verified = uses_verifiers(task.type, config)
-    sandbox_run = None if sandbox is None else SandboxRun(sandbox, events_dir.resolve().name)
+    sandbox_run = None if sandbox is None else SandboxRun.of_run(sandbox, events_dir)
     containers = (
         docker_lifecycle(sandbox_run.run_id)
         if sandbox_run is not None and sandbox_run.backend == "docker"

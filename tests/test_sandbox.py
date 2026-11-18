@@ -139,7 +139,7 @@ def test_two_calls_of_a_run_share_one_container(tmp_path: Path, docker: FakeDock
     [name] = docker.containers
     first, second = docker.verb("exec")
     assert container_of(first) == container_of(second) == name
-    assert second[-3:] == ["bash", "-c", "python -c 'import x'"]
+    assert second[-1] == "python -c 'import x'"
 
 
 def test_docker_timeout_kills_the_command_inside_the_container(
@@ -148,11 +148,19 @@ def test_docker_timeout_kills_the_command_inside_the_container(
     # Killing the docker client would leave the command running in the container, so the
     # container's own `timeout` runs it; 124 is its exit code for a command it stopped.
     docker.replies.append(Execution(124, "partial\n", "", False))
-    done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("sleep 999", timeout=7)
+    docker.exec_seconds = 1.1
+    done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("sleep 999", timeout=1)
     [exec_] = docker.verb("exec")
-    start = exec_.index("timeout")
-    assert exec_[start:] == ["timeout", "-k", "5", "7", "bash", "-c", "sleep 999"]
+    assert exec_[exec_.index("-w") + 3 : exec_.index("-w") + 5] == ["bash", "-c"]
+    assert "timeout -k 5 1 bash -c" in exec_[-3] and exec_[-1] == "sleep 999"
     assert (done.timed_out, done.exit_code, done.stdout) == (True, None, "partial\n")
+
+
+def test_a_commands_own_exit_code_124_is_no_timeout(tmp_path: Path, docker: FakeDocker) -> None:
+    # Review round 2: `timeout 1 x` inside the command, or a tool that exits 124 itself.
+    docker.replies.append(Execution(124, "", "", False))
+    done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("timeout 1 sleep 5", timeout=30)
+    assert (done.timed_out, done.exit_code) == (False, 124)
 
 
 def test_docker_timeout_that_escalates_to_kill_is_a_timeout(

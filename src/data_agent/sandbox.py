@@ -40,11 +40,20 @@ SKILLS_MOUNT = "/skills"
 CPUS = "2"
 MEMORY = "4g"
 # The container's `timeout` sends TERM at the limit and KILL this many seconds later. It exits
-# 124 for a command TERM stopped, 137 (128 + SIGKILL) for one it had to kill; 137 is a timeout
-# only once the limit has passed (the kernel's OOM killer also gives 137).
+# 124 for a command TERM stopped, 137 (128 + SIGKILL) for one it had to kill. Either is a timeout
+# only once the limit has passed: a command can exit 124 itself, and the OOM killer gives 137.
 KILL_GRACE_S = 5
 TIMEOUT_EXIT = 124
 KILLED_EXIT = 137
+# How a docker command runs: `timeout` in the background (it leads a process group of its own),
+# and once it ends on a timeout, whatever is left of that group is killed. `timeout` itself
+# stops waiting when the shell dies, so a child that ignored TERM would live on in the container.
+# $1 is the command.
+SUPERVISOR = (
+    'timeout -k {grace} {limit} bash -c "$1" & t=$!; wait $t; code=$?; '
+    "if [ $code -eq {timeout_exit} ] || [ $code -eq {killed_exit} ]; then "
+    "kill -KILL -- -$t 2>/dev/null; fi; exit $code"
+)
 # How long the docker client itself may take past a command's limit before it is killed too.
 CLIENT_MARGIN_S = 30
 # Any other docker call (start, list, remove).
@@ -249,15 +258,17 @@ class DockerSandbox:
         with self.lock:
             if self.container is None:
                 self.container = self.start()
-        limit = f"{timeout:g}"
-        argv = [
-            *("exec", "-w", WORKDIR, self.container),
-            *("timeout", "-k", str(KILL_GRACE_S), limit, "bash", "-c", command),
-        ]
+        supervisor = SUPERVISOR.format(
+            grace=KILL_GRACE_S,
+            limit=f"{timeout:g}",
+            timeout_exit=TIMEOUT_EXIT,
+            killed_exit=KILLED_EXIT,
+        )
+        argv = ["exec", "-w", WORKDIR, self.container, "bash", "-c", supervisor, "sandbox", command]
         started = time.monotonic()
         done = run_docker(argv, timeout + KILL_GRACE_S + CLIENT_MARGIN_S)
-        killed = done.exit_code == KILLED_EXIT and time.monotonic() - started >= timeout
-        if done.timed_out or done.exit_code == TIMEOUT_EXIT or killed:
+        stopped = done.exit_code in (TIMEOUT_EXIT, KILLED_EXIT)
+        if done.timed_out or (stopped and time.monotonic() - started >= timeout):
             return done._replace(exit_code=None, timed_out=True)
         return done
 
@@ -281,11 +292,17 @@ def skill_text(sandbox: Sandbox, name: str, text: str) -> str:
 
 
 class SandboxRun(NamedTuple):
-    """A run's `--sandbox` choice and its id (the `--events-dir` directory's name), as the run
-    passes them to its MCP server."""
+    """A run's `--sandbox` choice and its id, as the run passes them to its MCP server."""
 
     backend: Backend
     run_id: str
+
+    @classmethod
+    def of_run(cls, backend: Backend, events_dir: Path) -> "SandboxRun":
+        """The id is the `--events-dir` directory's name, which names the run (the web UI's run
+        id), and a part of its own: runs in other worktrees may use the same name at once, and
+        each removes only its own container."""
+        return cls(backend, f"{events_dir.resolve().name}-{uuid.uuid4().hex[:8]}")
 
     def server_args(self) -> tuple[str, ...]:
         return ("--sandbox", self.backend, "--run-id", self.run_id)
@@ -348,7 +365,7 @@ def remove_orphaned_containers() -> None:
     remove([name for name, owner in labelled(OWNER_LABEL) if not alive(owner)])
 
 
-def report(step: str, clean: Callable[[], None]) -> None:
+def clean_up(step: str, clean: Callable[[], None]) -> None:
     """A failed clean-up is reported, never a failed run (as `evals/dab.py` removes its
     containers)."""
     try:
@@ -362,11 +379,11 @@ def docker_lifecycle(run_id: str) -> Iterator[None]:
     """Around a run with the docker backend: first remove the containers left by killed runs,
     and at the end the run's own. The run process does it, not the MCP server, which the SDK
     kills when the session ends."""
-    report("removing the containers of killed runs", remove_orphaned_containers)
+    clean_up("removing the containers of killed runs", remove_orphaned_containers)
     try:
         yield
     finally:
-        report("removing the run's container", lambda: remove_run_containers(run_id))
+        clean_up("removing the run's container", lambda: remove_run_containers(run_id))
 
 
 # sandbox_exec's limits: SignalPilot's default command timeout, and its execution and dbt limit

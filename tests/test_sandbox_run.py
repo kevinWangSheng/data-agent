@@ -3,6 +3,7 @@ run's id, and the run process, not the server, removes the run's container. The 
 is scripted and docker is `FakeDocker`, so no model and no Docker."""
 
 import os
+import re
 import subprocess
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -14,6 +15,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from fake_docker import FakeDocker, install
 
 from data_agent import agent
+from data_agent import sandbox as sandbox_module
 from data_agent.agent import Task
 from data_agent.run_config import load_config
 from data_agent.sandbox import OWNER_LABEL, RUN_LABEL, Backend, DockerSandbox
@@ -87,13 +89,27 @@ async def test_the_run_removes_its_container_after_its_server_is_gone(
     assert docker.containers == {}
 
 
-async def test_the_server_gets_the_backend_and_the_events_directorys_name_as_run_id(
+async def test_the_server_gets_the_backend_and_a_run_id_from_the_events_directorys_name(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
 ) -> None:
     seen: list[list[str]] = []
     await run_with(monkeypatch, tmp_path, lambda o: seen.append(server_args(o)), "docker")
     [args] = seen
-    assert (flag(args, "--sandbox"), flag(args, "--run-id")) == ("docker", "run-7")
+    assert flag(args, "--sandbox") == "docker"
+    assert re.fullmatch(r"run-7-[0-9a-f]{8}", flag(args, "--run-id"))
+
+
+async def test_runs_whose_events_directories_share_a_name_keep_their_own_containers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
+) -> None:
+    """Review round 2: another live run with `.../run-7` as its events directory (in another
+    worktree, say) keeps its container when this one ends."""
+    other = "data-agent-sandbox-run-7-0000aaaa"
+    docker.containers = {other: {RUN_LABEL: "run-7-0000aaaa", OWNER_LABEL: "1"}}
+    monkeypatch.setattr(sandbox_module, "alive", lambda pid: True)
+    await run_with(monkeypatch, tmp_path, start_container_as_the_server, "docker")
+    assert len(docker.verb("run")) == 1
+    assert set(docker.containers) == {other}
 
 
 def dead_pid() -> int:
