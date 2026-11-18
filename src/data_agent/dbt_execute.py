@@ -395,7 +395,9 @@ def tool_description(executor: DbtExecutor) -> str:
         where = (
             f"The profile's schema is this run's own, `{executor.schema}`: models materialize "
             f"there (a model with a custom schema in `{executor.schema}_<custom>`), not in the "
-            "project's production schemas, and sources are read where they are. Write nothing "
+            "project's production schemas, and sources are read where they are. The schema "
+            "starts empty, so a model whose upstream models are not built in it yet fails: "
+            "select it with its upstream models (`+<model>`) or run `build`. Write nothing "
             "that names another schema (a snapshot's target_schema, a hook, a schema macro): "
             "dbt would write it there."
         )

@@ -75,12 +75,20 @@ _Avoid_: 轮数上限、ask 预算
 ### 数据访问
 
 **Read-only gateway（只读网关）**:
-所有对数据库的 SQL 先解析为 AST，DDL/DML 与危险函数一律拦截；agent 从不直接改数据。
+查数工具的 SQL 先解析为 AST，DDL/DML 与危险函数一律拦截，再用只读连接执行。它是查数工具，不是安全边界：边界是沙箱拿不到写库凭据（ADR-0010）。
 _Avoid_: 写门、审批门、写模式
 
 **dbt write（dbt 写入）**:
-agent 唯一的"写"方式：修改 dbt 项目文件后由 `dbt run` 物化；验证只读地核结果。
+agent 唯一的"写"方式：修改 dbt 项目文件后经 `dbt_execute` 物化（产品里写到每次运行的临时 schema）；验证只读地核结果。
 _Avoid_: CRUD、DML
+
+**Sandbox（沙箱）**:
+`sandbox_exec` 执行 shell 和代码的隔离环境，每次运行一个：产品里是 Docker 容器（只挂 workspace，`--network` 开时联网），跑 data-eng-bench 时是 Harbor 的任务容器本身（`local` 后端）。没有数据库凭据，也看不到库文件；查询结果通过 `data_files` 写成 `data/<id>.csv` 传入。
+_Avoid_: Bash、命令守卫、VM
+
+**dbt_execute**:
+连库执行 dbt 的唯一入口：参数结构化（run、test、build、seed、snapshot、compile、`docs generate`），不经过 shell，只有它拿得到 profile。`--dbt-target scratch` 写到 `da_run_<运行编号>` 临时 schema，`task` 照题目自带的 profile 写。
+_Avoid_: dbt run 命令、Bash 里的 dbt
 
 ### 上下文
 

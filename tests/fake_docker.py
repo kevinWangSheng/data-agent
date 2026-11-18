@@ -56,7 +56,9 @@ def container_of(exec_args: list[str]) -> str:
 
 
 def install(monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
-    """Every docker call of the test goes to the returned stand-in."""
+    """Every docker call of the test goes to the returned stand-in, and the docker CLI counts as
+    installed (`docker_on_path`)."""
     fake = FakeDocker()
     monkeypatch.setattr(sandbox_module, "run_docker", fake)
+    monkeypatch.setattr(sandbox_module, "docker_on_path", lambda: True)
     return fake

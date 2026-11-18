@@ -135,6 +135,32 @@ def test_local_backend_keeps_credentials_out_of_the_command_environment(
     assert done.exit_code == 0 and "marker" not in done.stdout and "PATH=" in done.stdout
 
 
+def test_local_backend_keeps_the_task_containers_own_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket 100: a Harbor task asks to print DB_TYPE, and its dbt reads DBT_* (DBT_TARGET is the
+    adapter's) and DUCKDB_PATH; the image's venv is VIRTUAL_ENV. None holds a credential."""
+    for name, value in {
+        "DB_TYPE": "duckdb",
+        "DBT_TARGET": "dev",
+        "DBT_PROFILES_DIR": "/app",
+        "DUCKDB_PATH": "/app/db.duckdb",
+        "VIRTUAL_ENV": "/opt/venv",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-key-marker")
+    done = LocalSandbox(tmp_path, SKILLS).execute("env", timeout=30)
+    lines = set(done.stdout.splitlines())
+    assert {
+        "DB_TYPE=duckdb",
+        "DBT_TARGET=dev",
+        "DBT_PROFILES_DIR=/app",
+        "DUCKDB_PATH=/app/db.duckdb",
+        "VIRTUAL_ENV=/opt/venv",
+    } <= lines
+    assert "marker" not in done.stdout
+
+
 @pytest.fixture
 def docker(monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
     return install(monkeypatch)

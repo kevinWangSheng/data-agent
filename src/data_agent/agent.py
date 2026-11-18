@@ -52,8 +52,8 @@ from claude_agent_sdk import (
 from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
+from data_agent import sandbox as sandboxes
 from data_agent import verifier_v2
-from data_agent.command_guard import command_guard
 from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.dbt_execute import DbtExecuteError, DbtRun, Target, check_outside
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
@@ -65,7 +65,13 @@ from data_agent.gateway import (
     PostgresGateway,
 )
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
-from data_agent.sandbox import Backend, SandboxRun, docker_lifecycle
+from data_agent.sandbox import (
+    SKILLS_MOUNT,
+    Backend,
+    SandboxRun,
+    docker_lifecycle,
+    reaches_local_commands,
+)
 from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
 from data_agent.verifier_tools import SNAPSHOT_ENV
@@ -78,7 +84,7 @@ from data_agent.verifiers import (
     verifier_hooks,
 )
 from data_agent.web.sources import DataSource
-from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
+from data_agent.workspace_guard import FILE_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_MODEL = "deepseek-flash"
@@ -91,8 +97,6 @@ DBT_SKILLS = ("dbt-workflow", "dbt-write", "dbt-debugging", "duckdb-sql")
 # The lists above name DuckDB's dialect Skill; a run on another database swaps in its own.
 DIALECT_SKILLS = {"duckdb": "duckdb-sql", "postgres": "postgres-sql"}
 DATABASE_NAMES = {"duckdb": "DuckDB", "postgres": "PostgreSQL"}
-# The scripts dbt-workflow runs; its text names them through ${CLAUDE_SKILL_DIR}.
-DBT_SCRIPTS = ("scan_project.py", "validate_project.py")
 # Written into a wheel at build time (hatch_build.py); absent in a source checkout.
 BUILD_COMMIT = Path(__file__).resolve().parent / "BUILD_COMMIT"
 
@@ -102,16 +106,12 @@ QUERY_TOOL = f"mcp__{MCP_SERVER}__query_database"
 # Served only to a conversation turn (spec decision 8); calling it ends the turn
 # (`clarification_hooks`).
 CLARIFICATION_TOOL = f"mcp__{MCP_SERVER}__clarification"
-# Query tasks only read: the data tools plus reading the workspace. No Bash, Write or Edit, so the
-# read-only gateway is the only way to the data; the workspace guard keeps the file tools in it.
-QUERY_BUILTIN_TOOLS: list[str] = list(GUARDED_TOOLS)
-# dbt tasks also edit the project and run dbt (CONTEXT: dbt write). The workspace guard keeps Write
-# and Edit in the workspace and off the database file; the command guard lets Bash run only dbt and
-# the dbt-workflow scripts, so reads still go through the gateway.
-DBT_BUILTIN_TOOLS: list[str] = [*GUARDED_TOOLS, *WRITE_TOOLS, "Bash"]
-# Environment variables Bash may print (`echo $VAR`, `printenv VAR`): the benchmark tasks ask the
-# agent to print DB_TYPE first; no task asks for another.
-PRINTABLE_VARIABLES = ("DB_TYPE",)
+# Every run's built-in tools (ADR-0010): the file tools, kept in the workspace and off credential
+# files by the workspace guard. Shell commands and code go to the MCP server's sandbox_exec, and
+# dbt reaches the database only through its dbt_execute.
+BUILTIN_TOOLS: list[str] = list(FILE_TOOLS)
+# Never loaded, and denied outright: the shell runs in the sandbox, not on the agent's machine.
+DENIED_TOOLS: list[str] = ["Bash"]
 # Loaded only with the run-level `network` switch (`data-agent run --network`, ticket 98), which the
 # product's entries pass and no evaluation does. Without it they are denied outright as well as left
 # out of the tools: benchmark solutions are public, and the official data-eng-bench configs turn web
@@ -177,13 +177,21 @@ shorten them or add an ellipsis. After the answer, state your assumptions in sho
 tables, no alternative answers or alternative methods.
 """
 
+# The query prompts' line on code (ticket 100), shared with the DAB runner's task prompt.
+SANDBOX_RULE = """\
+When query results need computing, combining or plotting, do it in `sandbox_exec` and pass it the \
+results with `data_files`.
+"""
+
 QUERY_PROMPT = (
     """\
 Task type: query
 Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
 {turn_limit}
-
+"""
+    + SANDBOX_RULE
+    + """
 <task>
 {task}
 </task>
@@ -204,20 +212,21 @@ You are a data agent. You build and fix the models of a user's dbt project, mate
 `dbt run`, and check the results.
 
 All database access goes through the `{server}` MCP tools, which are read-only. The only way to \
-change data is to edit the dbt project and run dbt. Work only from what the tools and the project \
-files show you; do not guess table names, column names or values.
+change data is to edit the dbt project and run dbt with the `dbt_execute` tool. Work only from \
+what the tools and the project files show you; do not guess table names, column names or values.
 """
 
 DBT_PROMPT = """\
 Task type: dbt
-Database: {database}. dbt writes to it through the project's profile; you read it only through the \
-`{server}` MCP tools.
+Database: {database}. dbt writes to it only through the `dbt_execute` tool; you read it only \
+through the `{server}` MCP tools.
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
-Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
-`cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
-directory. Do not edit an existing `profiles.yml`; create one when the task asks for it. When the \
-task asks you to print `DB_TYPE`, run `echo $DB_TYPE` as a Bash call of its own. List, read and \
-search files with the Glob, Read and Grep tools, not `ls` or `cat`.
+Run dbt against the database with `dbt_execute`, which finds the project in the workspace. Run \
+every other command (Python, scripts, `dbt parse`, `dbt ls`, `dbt deps`) with `sandbox_exec`, \
+which starts in the workspace. Do not edit an existing `profiles.yml`; create one when the task \
+asks for it. When the task asks you to print `DB_TYPE`, run `echo $DB_TYPE` as a sandbox_exec \
+call of its own. List, read and search files with the Glob, Read and Grep tools, and change them \
+with Write and Edit, not with shell commands.
 
 <task>
 {task}
@@ -231,8 +240,8 @@ then the assumptions you made.
 # Added to DBT_PROMPT only when the verifier layer is on (ticket 32); otherwise the prompt is the
 # same as before, so runs without the layer stay comparable with earlier ones.
 TASK_FILE_NOTE = """
-The task above is also saved, read-only, at {path}. Open it with the Read tool (Glob and Bash \
-cannot reach it), and re-read it there whenever you need its exact wording, for example after \
+The task above is also saved, read-only, at {path}. Open it with the Read tool (Glob cannot \
+reach it), and re-read it there whenever you need its exact wording, for example after \
 your context is compacted.
 """
 
@@ -1194,14 +1203,6 @@ class ModelSettings:
             # Subagents (the verifiers) run in the foreground. Launched in the background, they
             # end the main turn before their reports are in and split the run into several results.
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-            # Bash waits longer than validate_project.py's 300-second cap on dbt parse (which is
-            # a full re-parse whenever the target changes), so the CLI never moves a running dbt
-            # to the background, where it would keep the database lock.
-            "BASH_DEFAULT_TIMEOUT_MS": "360000",
-            "BASH_MAX_TIMEOUT_MS": "600000",
-            # Every Bash call starts in the workspace: a `cd dir && dbt ...` does not carry into
-            # the next call, so the command guard can resolve paths from the workspace root.
-            "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1",
         }
 
 
@@ -1232,23 +1233,17 @@ def git_commit() -> str:
     return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else "unknown"
 
 
-def load_skills(names: tuple[str, ...], skills_dir: Path) -> str:
+def load_skills(names: tuple[str, ...], skills_dir: Path, root: str | None = None) -> str:
     """Skills go into the system prompt, so the workflow is loaded before the first turn instead
     of depending on the model choosing to call a Skill tool. `${CLAUDE_SKILL_DIR}` becomes the
-    Skill's own directory, as the Skill tool would set it."""
+    Skill's own directory, as the Skill tool would set it: under `root` when sandbox commands see
+    the Skill directory there (the docker backend's mount), else its real path."""
     return "\n\n".join(
         (skills_dir / name / "SKILL.md")
         .read_text()
-        .replace("${CLAUDE_SKILL_DIR}", str(skills_dir / name))
+        .replace("${CLAUDE_SKILL_DIR}", f"{root}/{name}" if root else str(skills_dir / name))
         for name in names
     )
-
-
-def dbt_scripts(config: RunConfig) -> tuple[Path, ...]:
-    """The dbt-workflow scripts Bash may run: part of the Skill layer, so none when it is off."""
-    if not config.skill:
-        return ()
-    return tuple(config.skills_dir / "dbt-workflow" / name for name in DBT_SCRIPTS)
 
 
 def skill_names(task_type: str, dialects: Sequence[str]) -> tuple[str, ...]:
@@ -1282,15 +1277,18 @@ def database_line(task: Task) -> str:
     return f"one of {', '.join(named)}"
 
 
-def system_prompt(task: Task, config: RunConfig, chat: bool = False) -> str:
-    """`chat`: a conversation turn, which may ask the user (`CLARIFICATION_PROMPT`)."""
+def system_prompt(
+    task: Task, config: RunConfig, chat: bool = False, skills_root: str | None = None
+) -> str:
+    """`chat`: a conversation turn, which may ask the user (`CLARIFICATION_PROMPT`).
+    `skills_root`: where sandbox commands see the Skill directory (`load_skills`)."""
     base = DBT_SYSTEM_PROMPT if task.type == "dbt" else SYSTEM_PROMPT
     names = injected_skills(task.type, config, task.dialects)
     prompt = base.format(server=MCP_SERVER)
     if task.several:
         prompt += DATABASES_PROMPT.format(server=MCP_SERVER, databases=database_list(task))
     if names:
-        prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
+        prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir, skills_root))
     if uses_verifiers(task.type, config):
         prompt += VERIFIERS_PROMPT
     if chat:
@@ -1489,7 +1487,7 @@ def build_options(
     dbt: DbtRun | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
-    ids of the calls the command and workspace guards deny (`guard_recorder`). With `spend` (the
+    ids of the calls the workspace guard denies (`guard_recorder`). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
     its own cap becomes the backstop (`sdk_budget_usd`). `database_env` holds the Postgres
     variable: it reaches the MCP server through the SDK subprocess's environment. `task_file`
@@ -1510,7 +1508,8 @@ def build_options(
     that backend, for that run id; without it the server's tools are what they were before. `dbt`
     (a dbt run with a sandbox, ticket 99) has the server serve dbt_execute on that target.
     `network` (ticket 98) loads WebSearch and WebFetch; without it, as on every evaluation, they
-    are denied."""
+    are denied. Bash is denied on every run (ADR-0010). With the docker backend the Skills name
+    their scripts as the container sees them (`SKILLS_MOUNT`)."""
     if task.type == "dbt":
         max_turns, budget = config.max_turns["dbt"], None
     else:
@@ -1535,24 +1534,11 @@ def build_options(
             *(dbt.server_args() if dbt else ()),
         ],
     }
-    if task.type == "dbt":
-        tools = DBT_BUILTIN_TOOLS
-        file_tools = (*GUARDED_TOOLS, *WRITE_TOOLS)
-        bash_guard = guard_recorder(
-            command_guard(task.workspace, dbt_scripts(config), PRINTABLE_VARIABLES), guarded
-        )
-        hooks = [HookMatcher(matcher="Bash", hooks=[bash_guard])]
-    else:
-        tools, file_tools, hooks = QUERY_BUILTIN_TOOLS, GUARDED_TOOLS, []
+    tools = BUILTIN_TOOLS
     guard = guard_recorder(
-        workspace_guard(
-            task.workspace,
-            protected=tuple(source.duckdb for source in task.databases if source.duckdb),
-            readable=(task_file,) if task_file else (),
-        ),
-        guarded,
+        workspace_guard(task.workspace, readable=(task_file,) if task_file else ()), guarded
     )
-    hooks.append(HookMatcher(matcher="|".join(file_tools), hooks=[guard]))
+    hooks = [HookMatcher(matcher="|".join(FILE_TOOLS), hooks=[guard])]
     all_hooks: dict[HookEvent, list[HookMatcher]] = {"PreToolUse": hooks}
     agents = None
     if uses_verifiers(task.type, config):
@@ -1574,7 +1560,7 @@ def build_options(
             for event, matchers in v2_hooks.items():
                 all_hooks.setdefault(event, []).extend(matchers)
     # The run-level switch (ticket 98): the web tools are loaded, or denied outright.
-    web, denied = (WEB_TOOLS, []) if network else ([], WEB_TOOLS)
+    web, denied = (WEB_TOOLS, DENIED_TOOLS) if network else ([], [*DENIED_TOOLS, *WEB_TOOLS])
     tools = [*tools, *web]
     for event, matchers in tool_timing_hooks(emit).items():
         all_hooks.setdefault(event, []).extend(matchers)
@@ -1601,7 +1587,12 @@ def build_options(
         model=settings.model,
         env=settings.sdk_env() | server_env | session_env,
         resume=None if turn is None else turn.resume,
-        system_prompt=system_prompt(task, config, chat=turn is not None),
+        system_prompt=system_prompt(
+            task,
+            config,
+            chat=turn is not None,
+            skills_root=SKILLS_MOUNT if sandbox and sandbox.backend == "docker" else None,
+        ),
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
@@ -1628,7 +1619,7 @@ def build_options(
 
 # The fixed start of the gateway's error for a statement cut off at its timeout
 # (`gateway.QueryTimedOut`; a test pins the two together). Only this run's MCP tools reach the
-# gateway, so only their errors or responses are read for it: a Bash grep, a Read of gateway.py or
+# gateway, so only their errors or responses are read for it: a shell grep, a Read of gateway.py or
 # an Agent report quoting the error is no timeout of its own.
 TIMEOUT_TEXT = "Query timed out after"
 GATEWAY_TOOLS = f"mcp__{MCP_SERVER}__"
@@ -1994,21 +1985,26 @@ async def run(
     turn of a conversation (`ConversationTurn`): its `task` event names the conversation and the
     turn. `steering`, a `--chat` run's stdin lines, is sent into the running turn (`query`).
     `sandbox` gives the agent sandbox_exec on that backend (`SandboxRun.of_run` gives the run its
-    id). With `docker` the run removes its container when it ends, and the
-    containers of killed runs before it starts (`docker_lifecycle`). `network` gives the agent
-    the web tools (`build_options`). A dbt run with `sandbox` also gets dbt_execute, writing to
-    `dbt_target` (`DbtRun.of_run`: `scratch` keeps its profile in `<events_dir>/profiles/`,
-    which must be outside the workspace)."""
+    id); `docker` needs the docker CLI. With `docker` the run removes its container when it ends,
+    and the containers of killed runs before it starts (`docker_lifecycle`). `network` gives the
+    agent the web tools (`build_options`) and the docker sandbox the network. A dbt run with
+    `sandbox` also gets dbt_execute, writing to `dbt_target` (`DbtRun.of_run`: `scratch` keeps
+    its profile in `<events_dir>/profiles/`, which must be outside the workspace)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
+    # Looked up on the module, so a test can stand in for the docker CLI (tests/fake_docker.py).
+    if sandbox == "docker" and not sandboxes.docker_on_path():
+        raise ConfigError(
+            "docker is not on PATH; the docker sandbox (the default --sandbox) needs Docker"
+        )
     settings = ModelSettings.from_env(env)
     database_env: dict[str, str] = {}
     for variable in task.postgres_envs:
-        # The URL variable goes into the SDK env on top of `sdk_env()`: a printable name would
-        # let `echo $VAR` show the URL to the model; a name the SDK env sets, or any BASH_/CLAUDE_
-        # one, would override the CLI settings the harness relies on.
+        # The URL variable goes into the SDK env on top of `sdk_env()`: a name a local sandbox
+        # command keeps would let `echo $VAR` show the URL to the model; a name the SDK env sets,
+        # or any BASH_/CLAUDE_ one, would override the CLI settings the harness relies on.
         if (
-            variable in PRINTABLE_VARIABLES
+            reaches_local_commands(variable)
             or variable in settings.sdk_env()
             or variable in (*settings.tool_env(), LEDGER_ENV, CHAT_ENV)
             or variable.startswith(("BASH_", "CLAUDE_"))
@@ -2038,7 +2034,7 @@ async def run(
         secrets += url_secrets(env[variable])
         names += url_names(env[variable])
     verified = uses_verifiers(task.type, config)
-    sandbox_run = None if sandbox is None else SandboxRun.of_run(sandbox, events_dir)
+    sandbox_run = None if sandbox is None else SandboxRun.of_run(sandbox, events_dir, network)
     dbt_run = (
         DbtRun.of_run(dbt_target, events_dir)
         if sandbox_run is not None and task.type == "dbt"
@@ -2095,7 +2091,6 @@ async def run(
             database=database_line(task),
             workspace=task.workspace.resolve(),
             task=task.text,
-            scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
             task_file_note=TASK_FILE_NOTE.format(path=task_file) if task_file else "",
         )
         tools: dict[str, str] = {}

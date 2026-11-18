@@ -1,15 +1,17 @@
 """MCP server (stdio) around DAB's own tools, for the DAB runner (ADR-0005).
 
-DAB's `QueryDBTool`, `ListDBTool` and `ExecTool` are imported from a local DAB clone (no DAB code
-is in this repo) and served as `query_database` and `list_tables` (our tool names, so the agent and
-its Skills see the same tools as on any other database) and `execute_python`. Their descriptions
-are DAB's, read from its tool specs at start-up.
+DAB's `QueryDBTool` and `ListDBTool` are imported from a local DAB clone (no DAB code is in this
+repo) and served as `query_database` and `list_tables` (our tool names, so the agent and its Skills
+see the same tools as on any other database). Their descriptions are DAB's, read from its tool specs
+at start-up.
 
-As in DAB's own agent, every successful result is kept as a variable (`var_1`, `var_2`, ...) that
-`execute_python` code can use, so rows from several databases can be combined outside them. A
-result too long to show is saved as JSON under the workspace's `file_storage/`, its variable holds
-that path, and the agent sees a preview. `execute_python` runs in DAB's Docker image
-(`python-data:3.12`, built from DAB's Dockerfile) with the workspace as its working directory.
+Code runs in our own `sandbox_exec` (`data_agent.sandbox`, ticket 100), as on every other run, in
+place of DAB's `ExecTool`: the docker backend, without the network, on DAB's image
+(`python-data:3.12`, built from DAB's Dockerfile), with the workspace as its working directory.
+Every successful query_database and classify_text result gets a result id, as query_database's
+results do on any other run, so `data_files` gives the command the rows of several databases as
+CSV files to combine outside them. A result too long to show is cut, and `data_files` gives it
+whole.
 
 Every SQL statement passes the read-only gateway's AST check and row cap before it reaches DAB's
 tool (CODING_STANDARDS "Never bypass the read-only gateway"). MongoDB queries are DAB's JSON `find`
@@ -51,7 +53,10 @@ from data_agent import classify
 from data_agent.db_facts import RunQuery, describe, plan_text, row_estimates, timeout_report
 from data_agent.engine import inject_limit, validate_sql
 from data_agent.gateway import MAX_ROWS, TIMEOUT_SECONDS, QueryResult
-from evals.dab import scaffold
+from data_agent.mcp_server import register_sandbox_tool
+from data_agent.run_config import skills_path
+from data_agent.sandbox import DockerSandbox, QueryResults, Sandbox
+from evals.dab import EXEC_IMAGE, scaffold
 
 # DAB db_type -> sqlglot dialect. MongoDB is the one type that is not SQL; any other type is
 # refused, since the gateway could not check it.
@@ -72,16 +77,9 @@ LIST_TABLES = {
 }
 # The types whose catalogs `data_agent.db_facts` reads, with the schema DAB's tables are in.
 FACT_SCHEMAS = {"duckdb": "main", "postgres": "public"}
-# Tool results longer than this are saved to a file and previewed, as in DAB's own agent (its
-# PREVIEW_LENGTH); failures longer than this are cut.
+# Tool results and failures longer than this are cut, as DAB's own agent previews a result (its
+# PREVIEW_LENGTH); a result's id gives sandbox_exec all of it.
 RESULT_CHARS = 10_000
-STORAGE_DIR = "file_storage"  # under the workspace, as DAB's agent names it
-PRINT_NOTE = (
-    "Earlier tool results are variables named as their result says (`var_1`, ...); a result "
-    "saved to a file is that file's path, relative to the working directory. End the code by "
-    "printing {marker} followed by the result as JSON, e.g. print({marker!r} + json.dumps(x)); "
-    "the JSON after the last {marker} becomes this tool's result."
-)
 
 
 # DAB's query module for each database type. Every call opens a new connection through the name the
@@ -222,8 +220,7 @@ def as_result(rows: list[dict[str, Any]]) -> QueryResult:
 
 
 def finite(value: Any) -> Any:
-    """`value` with NaN and infinities as None. DAB's exec tool writes each variable's repr into
-    the code, where `nan` or `inf` is an undefined name."""
+    """`value` with NaN and infinities as None, which JSON has no word for."""
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, dict):
@@ -233,64 +230,53 @@ def finite(value: Any) -> Any:
     return value
 
 
-class Results:
-    """Successful tool results by variable name, for `execute_python`.
+def cell(value: Any) -> Any:
+    """A value as one CSV field: a nested document or list as its JSON."""
+    if isinstance(value, dict | list):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return value
 
-    Tools run in worker threads; the lock serializes calls, which DAB's tools expect (its exec
-    tool drives one container from one event loop).
+
+def as_table(value: Any) -> QueryResult:
+    """A DAB result as rows for `data_files`: a list of rows (dicts, possibly of different fields,
+    as MongoDB documents are) as their columns; any other list as one `value` column; anything
+    else as one row."""
+    if isinstance(value, list) and all(isinstance(row, dict) for row in value):
+        table = records(value)
+        return QueryResult(table.columns, [tuple(cell(v) for v in row) for row in table.rows])
+    items = value if isinstance(value, list) else [value]
+    return QueryResult(["value"], [(cell(item),) for item in items])
+
+
+class Results:
+    """DAB's outcomes as replies, the kept ones under a result id in `data` (sandbox_exec's
+    `data_files`).
+
+    Tools run in worker threads; the lock serializes calls, which DAB's tools expect.
     """
 
-    def __init__(self, workspace: Path) -> None:
-        self.storage = workspace / STORAGE_DIR
-        self.variables: dict[str, Any] = {}
+    def __init__(self, data: QueryResults) -> None:
+        self.data = data
         self.lock = threading.Lock()
 
-    def reply(self, outcome: dict[str, Any]) -> str:
+    def reply(self, outcome: dict[str, Any], keep: bool = False) -> str:
         """DAB's `{"success", "result"}` as tool output: a failure becomes a tool error, a result
-        is kept under the next variable name."""
+        its JSON, cut past RESULT_CHARS. A `keep` result also gets an id (`keep`)."""
         if not outcome["success"]:
-            error = str(outcome["result"])
-            if len(error) > RESULT_CHARS:
-                error = f"{error[:RESULT_CHARS]}\n... (cut at {RESULT_CHARS} characters)"
-            raise ToolError(error)
-        name, text, path = self.keep(outcome["result"])
-        if path is None:
-            return f"Result `{name}`:\n{text}"
-        return (
-            f"Result `{name}` is {len(text)} characters, saved in `{path}` (the value of "
-            f"`{name}`); its first {RESULT_CHARS} characters:\n{text[:RESULT_CHARS]}"
-        )
+            raise ToolError(cut(str(outcome["result"])))
+        value = finite(outcome["result"])
+        text = cut(json.dumps(value, ensure_ascii=False, default=str))
+        return f"{text}\n{self.keep(value)}" if keep else text
 
-    def keep(self, value: Any) -> tuple[str, str, str | None]:
-        """Keep `value` under the next variable name; returns the name, the value as JSON, and
-        the path (relative to the workspace) of the file it was saved in when too long to hold."""
-        text = json.dumps(finite(value), ensure_ascii=False, default=str)
-        name = f"var_{len(self.variables) + 1}"
-        if len(text) <= RESULT_CHARS:
-            # Through JSON, so the value is plain data whatever types the database returned.
-            self.variables[name] = json.loads(text)
-            return name, text, None
-        self.save(f"{name}.json", text)
-        path = f"{STORAGE_DIR}/{name}.json"
-        self.variables[name] = path
-        return name, text, path
+    def keep(self, value: Any) -> str:
+        """Keep `value` under the next result id; returns the line that names it."""
+        return self.data.note(self.data.add(as_table(value)))
 
-    def save(self, file_name: str, text: str) -> None:
-        """Write a new file in the storage directory. execute_python code can change the workspace
-        (it runs as root on it), so neither the directory nor the file may be an existing link or
-        file: the write never leaves the workspace or overwrites anything."""
-        try:
-            self.storage.mkdir(exist_ok=True)
-            directory = os.open(self.storage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-                fd = os.open(file_name, flags, 0o644, dir_fd=directory)
-            finally:
-                os.close(directory)
-        except OSError as exc:
-            raise ToolError(f"Could not save the result in {STORAGE_DIR}/: {exc}") from exc
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+
+def cut(text: str) -> str:
+    if len(text) <= RESULT_CHARS:
+        return text
+    return f"{text[:RESULT_CHARS]}\n... ({len(text):,} characters, cut at {RESULT_CHARS:,})"
 
 
 def table_entry(name: str, kind: str, estimate: int | None) -> dict[str, Any]:
@@ -303,22 +289,17 @@ def table_entry(name: str, kind: str, estimate: int | None) -> dict[str, Any]:
 
 
 def build_server(
-    query_tool: Any,
-    list_tool: Any,
-    exec_tool: Any,
-    marker: str,
-    workspace: Path,
-    timeout: QueryTimeout,
+    query_tool: Any, list_tool: Any, sandbox: Sandbox, timeout: QueryTimeout
 ) -> MCPServer:
+    """DAB's tools and ours over DAB's databases; code runs in `sandbox` (`main` gives the docker
+    backend, offline)."""
     query_spec = query_tool.get_spec()["function"]
     list_spec = list_tool.get_spec()["function"]
-    exec_spec = exec_tool.get_spec()["function"]
     query_args = query_spec["parameters"]["properties"]
     list_args = list_spec["parameters"]["properties"]
-    exec_args = exec_spec["parameters"]["properties"]
     db_types = {name: client["db_type"] for name, client in query_tool.db_clients.items()}
-    results = Results(workspace)
     server = MCPServer("dab")
+    results = Results(register_sandbox_tool(server, sandbox))
 
     def checkable(db_name: str) -> str | None:
         """`db_name`'s type, None if DAB does not know it; a type the gateway cannot check is
@@ -384,7 +365,7 @@ def build_server(
                     sql_explain(db_name, dialect),
                     sql_run(db_name, dialect),
                 )
-            return results.reply(outcome)
+            return results.reply(outcome, keep=True)
 
     @server.tool(name="list_tables", description=list_spec["description"])
     def list_tables(
@@ -447,7 +428,7 @@ def build_server(
         description=classify.description(
             source="`sql` is one query on database `db_name`, run like query_database (SQL "
             "passes the read-only gateway; a MongoDB query is its JSON request).",
-            stored="a variable for execute_python, as query results are (one dict per row).",
+            stored="a result id for sandbox_exec's data_files, as query results are.",
             env=os.environ,
         ),
     )
@@ -474,21 +455,10 @@ def build_server(
                     raise ToolError(str(outcome["result"]))
                 rows = records(outcome["result"])
         labeled = classify.classify(rows, key_column, text_column, allowed, instructions, setup)
-        table = [dict(zip(labeled.columns, row, strict=True)) for row in labeled.rows]
         with results.lock:
-            name, _, path = results.keep(table)
-        stored = f"variable `{name}`" + (f" (saved in `{path}`, its value)" if path else "")
+            table = QueryResult(labeled.columns, labeled.rows)
+            stored = results.data.note(results.data.add(table))
         return classify.report(labeled, stored)
-
-    exec_description = f"{exec_spec['description']}\n\n{PRINT_NOTE.format(marker=marker)}"
-
-    @server.tool(name="execute_python", description=exec_description)
-    def execute_python(
-        code: Annotated[str, Field(description=exec_args["code"].get("description"))],
-    ) -> str:
-        with results.lock:
-            env = dict(results.variables)
-            return results.reply(exec_tool.exec({"code": code, "env": env}))
 
     return server
 
@@ -498,10 +468,20 @@ def main() -> None:
     parser.add_argument("--dab-root", type=Path, required=True)
     parser.add_argument("--db-config", type=Path, required=True)
     parser.add_argument("--log", type=Path, required=True, help="DAB's tool log (JSONL)")
-    parser.add_argument("--workspace", type=Path, required=True, help="execute_python's directory")
+    parser.add_argument("--workspace", type=Path, required=True, help="sandbox_exec's directory")
     parser.add_argument(
         "--query-timeout", type=float, default=TIMEOUT_SECONDS, help="seconds a query may run"
     )
+    parser.add_argument(
+        "--run-id", required=True, help="the run's id, which names its sandbox container"
+    )
+    parser.add_argument(
+        "--skills-dir",
+        type=Path,
+        default=skills_path("skills"),
+        help="the Skill directory the sandbox mounts read-only",
+    )
+    parser.add_argument("--image", default=EXEC_IMAGE, help="the sandbox container's image")
     args = parser.parse_args()
     tools = scaffold(args.dab_root)
     timeout = QueryTimeout(args.query_timeout)
@@ -517,17 +497,12 @@ def main() -> None:
     list_tool = tools.list_tool(
         log_path=args.log, name="list_db", db_config_path=config, check_load=False
     )
-    # Starts DAB's container now: without Docker the server fails to start, an infra error.
-    exec_tool = tools.exec_tool(
-        log_path=str(args.log), name="execute_python", work_dir=args.workspace.resolve()
+    # Never the network: an evaluation stays offline (ADR-0010). The container starts on the
+    # first command, and the runner removes it (`evals.dab.run_once`, `docker_lifecycle`).
+    sandbox = DockerSandbox(
+        args.workspace, args.skills_dir.resolve(), args.run_id, network=False, image=args.image
     )
-    try:
-        server = build_server(
-            query_tool, list_tool, exec_tool, tools.result_marker, args.workspace, timeout
-        )
-        server.run("stdio")
-    finally:
-        exec_tool.clean_up()
+    build_server(query_tool, list_tool, sandbox, timeout).run("stdio")
 
 
 if __name__ == "__main__":

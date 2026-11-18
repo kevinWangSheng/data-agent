@@ -22,17 +22,19 @@ TASK_TEXT = 'Build `fct_orders`:\n  - "net" = gross - refunds \nKeep cancelled o
 # DBT_PROMPT without the verifier layer's task-file note (ticket 32), kept here so runs without
 # the layer can be compared to it. Its dbt-command sentence follows ticket 49 (`cd`, no
 # profiles.yml edit), ticket 55 (a lone `echo $DB_TYPE`, file tools instead of `ls`/`cat`) and
-# ticket 66 (an existing profiles.yml stays; one may be created when the task asks).
+# ticket 66 (an existing profiles.yml stays; one may be created when the task asks). Ticket 100
+# moved dbt to dbt_execute and every other command to sandbox_exec (ADR-0010).
 DBT_PROMPT_BEFORE = """\
 Task type: dbt
-Database: {database}. dbt writes to it through the project's profile; you read it only through the \
-`{server}` MCP tools.
+Database: {database}. dbt writes to it only through the `dbt_execute` tool; you read it only \
+through the `{server}` MCP tools.
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
-Bash runs only dbt commands{scripts}. When the project is in a subdirectory, run them as \
-`cd <project_dir> && dbt ...` so that relative paths in the profile resolve from the project \
-directory. Do not edit an existing `profiles.yml`; create one when the task asks for it. When the \
-task asks you to print `DB_TYPE`, run `echo $DB_TYPE` as a Bash call of its own. List, read and \
-search files with the Glob, Read and Grep tools, not `ls` or `cat`.
+Run dbt against the database with `dbt_execute`, which finds the project in the workspace. Run \
+every other command (Python, scripts, `dbt parse`, `dbt ls`, `dbt deps`) with `sandbox_exec`, \
+which starts in the workspace. Do not edit an existing `profiles.yml`; create one when the task \
+asks for it. When the task asks you to print `DB_TYPE`, run `echo $DB_TYPE` as a sandbox_exec \
+call of its own. List, read and search files with the Glob, Read and Grep tools, and change them \
+with Write and Edit, not with shell commands.
 
 <task>
 {task}
@@ -43,13 +45,16 @@ then the assumptions you made.
 """
 
 # Its last paragraph is the final-answer rule of ticket 68.
-# Ticket 69 added the turn-limit line (both configs here run with the query limit of 50).
+# Ticket 69 added the turn-limit line (both configs here run with the query limit of 50), ticket
+# 100 the line on sandbox_exec.
 QUERY_PROMPT_BEFORE = """\
 Task type: query
 Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
 Turn limit: 50. Each response of yours that calls a tool uses one turn; once all 50 are used, the \
 run ends with no answer. A response with no tool calls is your final answer.
+When query results need computing, combining or plotting, do it in `sandbox_exec` and pass it the \
+results with `data_files`.
 
 <task>
 {task}
@@ -159,13 +164,11 @@ async def test_runs_without_the_verifier_layer_keep_the_prompt_and_write_no_file
     # The dictionary file of a context run (ticket 42) is the only other file a run writes there.
     assert [name for name in seen["temp_files"] if "task" in name] == []
     before = DBT_PROMPT_BEFORE if task_type == "dbt" else QUERY_PROMPT_BEFORE
-    run_config = load_config(config)
     expected = before.format(
         server=agent.MCP_SERVER,
         database="DuckDB",
         workspace=seen["workspace"].resolve(),
         task=TASK_TEXT,
-        scripts=" and the dbt-workflow scripts" if agent.dbt_scripts(run_config) else "",
     )
     assert seen["prompt"] == expected
     assert "task.md" not in str(seen["options"].system_prompt)
@@ -203,10 +206,13 @@ def test_a_workspace_inside_the_temp_dir_still_gets_a_task_file_outside_it(
 
 # Ticket 55: in t47-screen every trial began with denials: `echo $DB_TYPE` joined to other
 # commands, `ls`/`cat` for files, and Glob or `cat` on the task file, which only Read may open.
+# Ticket 100: the shell is sandbox_exec and dbt runs through dbt_execute.
 def test_the_dbt_prompt_teaches_a_lone_echo_and_the_file_tools() -> None:
     text = " ".join(agent.DBT_PROMPT.split())
-    assert "`echo $DB_TYPE` as a Bash call of its own" in text
-    assert "Glob, Read and Grep tools, not `ls` or `cat`" in text
+    assert "`echo $DB_TYPE` as a sandbox_exec call of its own" in text
+    assert "with the Glob, Read and Grep tools, and change them with Write and Edit" in text
+    assert "Run dbt against the database with `dbt_execute`" in text
+    assert "Bash" not in text
 
 
 def test_the_task_file_note_says_to_open_it_with_read() -> None:

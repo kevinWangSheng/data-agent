@@ -13,6 +13,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 
 from data_agent import cli
+from data_agent import sandbox as sandbox_module
 from data_agent.agent import Outcome
 
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
@@ -58,7 +59,68 @@ def test_run_passes_the_backend_to_the_run(
         cli.main([*args, "--sandbox", backend])
     with pytest.raises(SystemExit):
         cli.main(args)
-    assert seen == [backend, None]
+    # Ticket 100: without the option, the docker backend.
+    assert seen == [backend, "docker"]
+
+
+def test_run_without_docker_fails_with_exit_code_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ticket 100: as a dbt run without dbt on PATH, before any session starts."""
+    monkeypatch.setattr(sandbox_module, "docker_on_path", lambda: False)
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test")
+    args = [
+        *("run", "--task", "q", "--type", "query", "--workspace", str(tmp_path)),
+        *("--duckdb", str(make_db(tmp_path / "x.duckdb")), "--config", "full"),
+        *("--events-dir", str(tmp_path / "events")),
+    ]
+    with pytest.raises(SystemExit) as exited:
+        cli.main(args)
+    assert exited.value.code == 2
+    assert "docker is not on PATH" in capsys.readouterr().err
+    assert not (tmp_path / "events").exists()
+
+
+def fake_docker_cli(directory: Path) -> Path:
+    """A `docker` on PATH that records its arguments and fails, as one without a daemon does."""
+    directory.mkdir()
+    calls = directory / "calls.txt"
+    script = directory / "docker"
+    script.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> {calls}\nexit 1\n')
+    script.chmod(0o755)
+    return calls
+
+
+@pytest.mark.parametrize(("flags", "online"), [((), False), (("--network",), True)])
+async def test_the_server_starts_its_container_offline_unless_given_network(
+    tmp_path: Path, flags: tuple[str, ...], online: bool
+) -> None:
+    """Ticket 100: `--network` reaches the docker backend; without it `--network none`."""
+    calls = fake_docker_cli(tmp_path / "bin")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = StdioServerParameters(
+        command=str(DATA_AGENT),
+        args=[
+            *("mcp-server", "--config", "full", "--duckdb", str(make_db(tmp_path / "x.duckdb"))),
+            *("--workspace", str(workspace), "--sandbox", "docker", "--run-id", "r-1", *flags),
+        ],
+        env={**os.environ, "PATH": f"{calls.parent}{os.pathsep}{os.environ['PATH']}"},
+    )
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        result = await session.call_tool("sandbox_exec", {"command": "true"})
+    assert result.is_error
+    run = calls.read_text().splitlines()
+    assert run[0] == "run"
+    assert ("--network" in run) is not online
+    if not online:
+        assert run[run.index("--network") + 1] == "none"
+
+
+def test_server_network_goes_with_a_sandbox(tmp_path: Path) -> None:
+    proc = serve(tmp_path, "--workspace", str(tmp_path), "--network")
+    assert proc.returncode == 2 and "--network goes with --sandbox" in proc.stderr
 
 
 def serve(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:

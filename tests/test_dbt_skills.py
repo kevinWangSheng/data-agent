@@ -19,10 +19,9 @@ from data_agent.agent import (
     MCP_SERVER,
     SKILLS_DIR,
     TASK_FILE_NOTE,
-    dbt_scripts,
     load_skills,
 )
-from data_agent.run_config import load_config
+from data_agent.sandbox import SKILLS_MOUNT
 from data_agent.verifiers import AGENTS_DIR, VERIFIERS_PROMPT
 
 DBT_SHOP = Path(__file__).parent / "fixtures" / "dbt_shop"
@@ -110,14 +109,49 @@ def test_dbt_skills_load_in_workflow_order() -> None:
         assert (SKILLS_DIR / name / "SKILL.md").is_file(), name
 
 
+SCRIPTS = ("scan_project.py", "validate_project.py")
+
+
 def test_loaded_skills_point_at_the_real_scripts() -> None:
+    """Without the docker backend's mount (the local backend runs on this machine)."""
     text = load_skills(DBT_SKILLS, SKILLS_DIR)
     assert "${CLAUDE_SKILL_DIR}" not in text
-    scripts = dbt_scripts(load_config("full"))
-    assert len(scripts) == 2
-    for script in scripts:
+    for name in SCRIPTS:
+        script = SKILLS_DIR / "dbt-workflow" / name
         assert script.is_file()
         assert f'python3 "{script}"' in text
+
+
+@pytest.mark.parametrize("backend", ["docker", "local"])
+def test_a_runs_skills_name_the_scripts_where_its_sandbox_sees_them(
+    tmp_path: Path, backend: str
+) -> None:
+    """Ticket 100: under the docker backend's mount, else at their real path."""
+    from data_agent import agent
+    from data_agent.run_config import load_config
+    from data_agent.sandbox import SandboxRun
+
+    task = agent.Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
+    settings = agent.ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
+    options = agent.build_options(
+        task,
+        load_config("full"),
+        settings,
+        [],
+        lambda *_, **__: None,
+        sandbox=SandboxRun(backend, "r-1"),  # type: ignore[arg-type]
+    )
+    root = SKILLS_MOUNT if backend == "docker" else str(SKILLS_DIR)
+    assert f'python3 "{root}/dbt-workflow/scan_project.py"' in str(options.system_prompt)
+
+
+def test_with_the_docker_mount_the_skills_point_at_the_scripts_there() -> None:
+    """Ticket 100: the docker backend mounts the Skill directory at SKILLS_MOUNT."""
+    text = load_skills(DBT_SKILLS, SKILLS_DIR, SKILLS_MOUNT)
+    assert "${CLAUDE_SKILL_DIR}" not in text
+    assert str(SKILLS_DIR) not in text
+    for name in SCRIPTS:
+        assert f'python3 "{SKILLS_MOUNT}/dbt-workflow/{name}"' in text
 
 
 def body(name: str) -> str:
@@ -135,8 +169,9 @@ def test_dbt_skills_name_no_signalpilot_only_tools(name: str) -> None:
 
 @pytest.mark.parametrize("name", [n for n in DBT_SKILLS if n != "duckdb-sql"])
 def test_dbt_skills_say_nothing_about_how_results_are_graded(name: str) -> None:
-    """ADR-0005: no benchmark, evaluator or sandbox conventions."""
-    text = body(name).lower()
+    """ADR-0005: no benchmark, evaluator or sandbox conventions. `sandbox_exec`, the agent's own
+    tool on every run (ticket 100), is no grader's convention."""
+    text = body(name).lower().replace("sandbox_exec", "")
     for term in ("benchmark", "evaluat", "equality test", "tolerance", "sandbox", "result.csv"):
         assert term not in text, (name, term)
 
@@ -575,19 +610,19 @@ def test_scan_names_the_step_1_sections_the_summary_had_to_cut(tmp_path: Path) -
 
 # Ticket 49: in accept-2, 97 of 180 trials edited `profiles.yml` because the prompt taught
 # `--project-dir`/`--profiles-dir` (whose relative paths then resolve from the workspace, not the
-# project). The guard allows `cd <dir> && dbt ...` inside the workspace, which needs neither.
-def test_dbt_prompt_teaches_cd_into_the_project_not_project_dir_flags() -> None:
+# project). Since ticket 100 dbt_execute finds the project and runs dbt in it, so the prompt
+# teaches neither flags nor `cd`.
+def test_dbt_prompt_teaches_no_project_dir_flags() -> None:
     text = DBT_PROMPT.format(
         server=MCP_SERVER,
         database="DuckDB",
         workspace="/w",
         task="t",
-        scripts="",
         task_file_note="",
     )
     assert "--project-dir" not in text
     assert "--profiles-dir" not in text
-    assert "`cd <project_dir> && dbt ...`" in text
+    assert "`dbt_execute`, which finds the project in the workspace" in " ".join(text.split())
     assert "profiles.yml" in text and "do not edit" in text.lower()
 
 
@@ -600,7 +635,6 @@ def test_dbt_prompt_keeps_an_existing_profile_and_allows_creating_one_the_task_a
         database="DuckDB",
         workspace="/w",
         task="t",
-        scripts="",
         task_file_note="",
     )
     assert "Do not edit `profiles.yml`." not in text

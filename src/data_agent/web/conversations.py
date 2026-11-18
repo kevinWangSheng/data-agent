@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from data_agent.web.launcher import (
+    SANDBOX,
     WORKSPACE,
     Launcher,
     Refused,
@@ -96,8 +97,9 @@ class Conversations:
     def send(self, conversation: str, text: str, network: bool = True) -> dict[str, Any]:
         """A message: a new turn when the conversation has none running, else a steer into the
         running one. Refused (409) while a run of another conversation or of the run form is
-        going. A new turn has the web tools (`data-agent run --network`, ticket 98) unless
-        `network` is off; a steer goes into the turn as it was started."""
+        going. A new turn runs its commands in a container (`--sandbox docker`, ticket 100) and has
+        the web tools and the container's network (`--network`, ticket 98) unless `network` is
+        off; a steer goes into the turn as it was started."""
         if not text.strip():
             raise Refused(400, "the message is empty")
         with self.launcher.lock:
@@ -137,6 +139,7 @@ class Conversations:
                 *("--events-dir", str(run_dir), "--workspace", str(workspace)),
                 *("--data-sources", str(sources_file)),
                 *("--chat", "--conversation-dir", str(directory), "--turn", str(number)),
+                *("--sandbox", SANDBOX),
                 *(("--network",) if network else ()),
             ]
             if resume is not None:

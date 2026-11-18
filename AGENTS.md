@@ -55,7 +55,8 @@ runs/             运行产出，不进 git
 
 - **MUST**：改文件前先读；只改工单 `Authority` 允许的范围。
 - **MUST**：新行为配测试；bug 修复配一个修复前会失败的测试。
-- **MUST**：所有对数据源的 SQL 走只读网关；唯一的写方式是改 dbt 项目后 `dbt run`。
+- **MUST**：沙箱和 agent 拿不到写库凭据；对数据源的写只走 `dbt_execute`（产品里写到每次运行的临时 schema）（ADR-0010）。
+- **MUST**：跑榜和评测的入口一律不开 `--network`。
 - **MUST**：从上游复制的文件保留原版权头，并登记到 `NOTICE`（MIT 和 Apache-2.0 都要求保留版权与许可声明；上游自带 `NOTICE` 的，如 data-eng-bench，相关内容一并带上）。
 - **MUST NOT**：从没有许可证的仓库（DataAgentBench）或 nao 里标 `@license Enterprise` 的文件复制代码，只能参考思路。
 - **MUST NOT**：改 spec 约定的验收测试来让它变绿；觉得验收测试错了就停下交回。唯一例外：本工单让某个验收测试转绿时，删掉它的 `xfail` 标记，以及因此变得没用的 import 或标记定义（如 `import pytest`、`TICKET_NN = pytest.mark.xfail(...)`）；断言、夹具、输入和行为一字不改。

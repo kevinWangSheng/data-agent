@@ -34,10 +34,14 @@ from typing import IO, Any
 
 from data_agent.dbt_execute import PROFILES_FILE
 from data_agent.run_config import CONFIG_NAMES
+from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap
 
 TASK_TYPES = ("query", "dbt")
+# The only sandbox backend the web backend gives a run: `local` would run the agent's commands on
+# this machine (ADR-0010).
+SANDBOX: Backend = "docker"
 # How long a run being stopped has to exit after SIGTERM before it gets SIGKILL.
 STOP_GRACE_SECONDS = 10.0
 WORKSPACE = "workspace"
@@ -131,7 +135,8 @@ class Launcher:
         self, task: str, task_type: str, source_name: str, config: str, network: bool = True
     ) -> str:
         """Checks the request, prepares the run's directories and starts it; returns its id. The
-        run has the web tools (`data-agent run --network`, ticket 98) unless `network` is off."""
+        run has the web tools and a sandbox with the network (`data-agent run --network`, tickets
+        98 and 100) unless `network` is off."""
         source = self.check(task, task_type, source_name, config)
 
         def prepare(run_dir: Path) -> tuple[list[str], Path]:
@@ -150,6 +155,10 @@ class Launcher:
                 *database,
                 "--data-source-name",
                 source.name,
+                # The web backend runs only in a container (spec "`sandbox_exec`"), and its dbt
+                # writes only to a schema of the run's own.
+                *("--sandbox", SANDBOX),
+                *(("--dbt-target", "scratch") if task_type == "dbt" else ()),
                 *(("--network",) if network else ()),
             ]
             return args, workspace

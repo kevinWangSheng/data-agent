@@ -33,13 +33,16 @@ below.
 
 ## Quickstart
 
-You need Python 3.12, [uv](https://docs.astral.sh/uv/), and an API key for a model served over the
-Anthropic API format. The default endpoint is DeepSeek's.
+You need Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, and an API key for a model served
+over the Anthropic API format. The default endpoint is DeepSeek's. The agent runs its shell commands
+and code in a Docker container of each run's own (`--sandbox docker`, the default), built once with
+`make sandbox-image`; without Docker a run stops with exit code 2.
 
 ```bash
 git clone https://github.com/kevinWangSheng/data-agent && cd data-agent
 uv sync
 export DATA_AGENT_API_KEY=...        # optional: DATA_AGENT_BASE_URL, DATA_AGENT_MODEL
+make sandbox-image                   # the container image sandbox_exec runs in
 
 # Build the small sample database (a shop with deliberately dirty keys and enum values).
 uv run python -c "import duckdb; duckdb.connect('shop.duckdb').execute(open('tests/fixtures/shop.sql').read())"
@@ -64,7 +67,8 @@ Assumptions:
 For your own data, replace `--duckdb FILE` with `--postgres-env VAR`, where `VAR` is the name of an
 environment variable holding a Postgres URL. For dbt work, use `--type dbt` and point `--workspace`
 at the dbt project. `events/` gets one JSONL file per run with every tool call, SQL statement, token
-count and cost.
+count and cost. `data-agent run` stays offline unless given `--network`, which gives the agent
+WebSearch, WebFetch and a container that can reach the network.
 
 ### Web UI
 
@@ -93,6 +97,12 @@ project. Without `--data-sources` the page still lists and replays runs, but can
 started with `data-agent run --events-dir runs-web/<name>` appear in the list too. One run goes at a
 time.
 
+Runs started from the page are online by default: the agent gets WebSearch and WebFetch, and its
+container can reach the network (to `pip install` a package, say). Data it has queried can then
+leave the machine through its code or a web request. Runs from the page always use the Docker
+sandbox, and a dbt run writes only to a schema of its own (`da_run_<run id>`), never the project's
+production schemas.
+
 ## How it works
 
 ![Architecture: a task goes to the main agent; Skills, context tools and a verifier are switchable layers; the database is reached only through data tools and a read-only gateway; the dbt project is the only write path; every run writes an event log](docs/assets/architecture.svg)
@@ -117,13 +127,19 @@ each can be turned off and measured:
 Under the layers, in every config (DataAgentBench runs swap the data tools for the benchmark's
 own):
 
-- **Read-only gateway.** Every SQL statement is parsed first; DDL, DML and dangerous functions are
-  rejected. The only way the agent changes data is by editing the dbt project and running `dbt`.
+- **Read-only gateway.** Every SQL statement of the data tools is parsed first; DDL, DML and
+  dangerous functions are rejected, and the connection itself is read-only.
+- **Sandbox and dbt_execute.** Shell commands and code run through `sandbox_exec` in an isolated
+  environment with no database credentials and no database file: a Docker container per run, or the
+  benchmark's own task container. Query results reach it as CSV files. The only way the agent
+  changes data is by editing the dbt project and running it with `dbt_execute`, the one tool that
+  holds the connection profile (ADR-0010).
 - **Base tools.** `list_tables`, `describe_table`, `query_database` and `explain_query`; for
   questions that need rows labelled by meaning, `classify_text` labels them with a model call and
   `query_labels` queries the result. Outputs are capped and say what was left out.
-- **Guards and budgets.** Query runs have no shell. In dbt runs, Bash may only run `dbt` and the
-  workflow's scripts. File tools are confined to the workspace. Each run has a turn limit, a dollar
+- **Guards and budgets.** There is no Bash on the agent's machine. File tools are confined to the
+  workspace and kept off credential files. Benchmark and evaluation runs never get the network.
+  Each run has a turn limit, a dollar
   budget and an optional deadline; in query runs the agent sees its turn limit and is reminded as it
   runs low. The budget is counted from a price table that currently lists two DeepSeek models.
 - **Event log.** One append-only JSONL file per run is the single record. Scores, costs, failure

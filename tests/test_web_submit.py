@@ -137,6 +137,10 @@ def test_a_query_run_gets_an_empty_workspace_and_reads_the_duckdb_file_in_place(
     assert flag(args, "--workspace") == str(cwd)
     assert flag(args, "--duckdb") == str(shop)
     assert flag(args, "--data-source-name") == "shop"
+    # Ticket 100: the web backend's runs use the docker sandbox only; a query run has no
+    # dbt_execute target.
+    assert flag(args, "--sandbox") == "docker"
+    assert "--dbt-target" not in args
 
 
 def test_a_dbt_run_works_on_a_copy_of_the_project_with_the_duckdb_file_outside_it(
@@ -163,6 +167,9 @@ def test_a_dbt_run_works_on_a_copy_of_the_project_with_the_duckdb_file_outside_i
     assert copy.read_bytes() == b"db"
     assert (project / "target" / "x.txt").is_file()  # the original is untouched
     assert (project / "shop.duckdb").is_file()
+    # Ticket 100: in a container, and dbt writes only to the run's own schema.
+    assert flag(args, "--sandbox") == "docker"
+    assert flag(args, "--dbt-target") == "scratch"
 
 
 def test_a_postgres_dbt_run_copies_the_project_and_names_only_the_variable(
@@ -182,6 +189,8 @@ def test_a_postgres_dbt_run_copies_the_project_and_names_only_the_variable(
     assert not (cwd / "profiles.yml").exists()
     assert "--duckdb" not in args
     assert "pa55word" not in " ".join(args)
+    assert flag(args, "--sandbox") == "docker"
+    assert flag(args, "--dbt-target") == "scratch"
 
 
 def test_a_symlink_in_the_project_is_copied_as_its_target(
@@ -233,17 +242,23 @@ def test_a_runs_dir_overlapping_a_dbt_project_is_refused(tmp_path: Path, where: 
         create_app(runs_dir, [source], never_start)
 
 
-def test_a_duckdb_file_outside_its_dbt_project_is_refused(tmp_path: Path) -> None:
-    """dbt finds the file through profiles.yml relative to the project, so a copy of it has to
-    stay at the same place in the workspace, which only a file inside the project can."""
+def test_a_duckdb_file_outside_its_dbt_project_is_copied_beside_the_workspace(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    """Tickets 99-100: a dbt run gets its own copy of the file in `db/` and dbt_execute's own
+    profile, so the file need not be inside the project any more."""
     project = dbt_project(tmp_path, with_db=False)
     shop = tmp_path / "shop.duckdb"
     shop.write_bytes(b"db")
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     source = DataSource(name="shop", duckdb=shop, dbt_project=project)
-    with pytest.raises(ValueError, match=r"shop.*inside.*dbt_project"):
-        create_app(runs_dir, [source], never_start)
+    with TestClient(create_app(runs_dir, [source], recorder)) as client:
+        assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
+    [(args, cwd)] = recorder.calls
+    copy = Path(flag(args, "--duckdb"))
+    assert copy == cwd.parent / "db" / "shop.duckdb"
+    assert copy.read_bytes() == b"db"
 
 
 def test_a_duckdb_link_inside_the_project_counts_as_inside(

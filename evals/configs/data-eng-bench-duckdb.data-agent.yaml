@@ -40,4 +40,6 @@ agents:
     # in local runs, inside Harbor's 360 s setup default.
     kwargs:
       run_config: full
-    # Web search and fetch are off in every data-agent run (data_agent.agent.WEB_TOOLS).
+    # Web search and fetch are off: data-agent loads them only with `data-agent run --network`,
+    # which the adapter never passes (evals/harbor_agent.py, ADR-0010). Its sandbox_exec runs in
+    # the task container itself (`--sandbox local`).

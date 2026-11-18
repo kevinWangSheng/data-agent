@@ -193,14 +193,17 @@ def test_run_passes_the_dbt_target_and_defaults_to_task(
     assert seen == ["scratch", "task"]
 
 
-def test_run_refuses_a_scratch_target_without_a_sandbox(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_a_scratch_target_without_sandbox_runs_on_the_default_docker_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Review round 1: scratch asks for writes confined to the run's schema, which only
-    dbt_execute gives, so it is not silently dropped."""
+    """Review round 1 of ticket 99 refused scratch without a sandbox, which only dbt_execute
+    honours. Since ticket 100 every run has one (`--sandbox docker` by default), so scratch is
+    never dropped."""
+    seen: list[dict[str, Any]] = []
 
-    async def fake_run(*_: Any, **__: Any) -> Outcome:
-        raise AssertionError("no run should start")
+    async def fake_run(*_: Any, **options: Any) -> Outcome:
+        seen.append(options)
+        return Outcome("", True, False, [], tmp_path / "events.jsonl")
 
     monkeypatch.setattr(cli, "run", fake_run)
     with pytest.raises(SystemExit) as exit_info:
@@ -211,8 +214,10 @@ def test_run_refuses_a_scratch_target_without_a_sandbox(
                 *("--events-dir", str(tmp_path / "events"), "--dbt-target", "scratch"),
             ]
         )
-    assert exit_info.value.code == 2
-    assert "--sandbox" in capsys.readouterr().err
+    assert exit_info.value.code == 0
+    [options] = seen
+    assert options["sandbox"] == "docker"
+    assert options["dbt_target"] == "scratch"
 
 
 def serve(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:

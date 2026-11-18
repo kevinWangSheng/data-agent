@@ -29,10 +29,9 @@ async def decide(
     workspace: Path,
     tool: str,
     tool_input: dict[str, Any],
-    protected: tuple[Path, ...] = (),
     readable: tuple[Path, ...] = (),
 ) -> str:
-    output = await hook_output(workspace, tool, tool_input, protected, readable)
+    output = await hook_output(workspace, tool, tool_input, readable)
     return output.get("permissionDecision", "none")
 
 
@@ -40,11 +39,10 @@ async def hook_output(
     workspace: Path,
     tool: str,
     tool_input: dict[str, Any],
-    protected: tuple[Path, ...] = (),
     readable: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     """The guard's `hookSpecificOutput` for one call; empty when it lets the call run."""
-    guard = workspace_guard(workspace, protected, readable)
+    guard = workspace_guard(workspace, readable)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
         "session_id": "s",
@@ -105,13 +103,24 @@ async def test_paths_outside_the_workspace_are_denied(
     assert await decide(workspace, tool, filled) == "deny"
 
 
-def test_query_runs_install_the_guard_for_every_file_tool(tmp_path: Path) -> None:
-    task = Task(text="q", type="query", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
+FILE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit"]
+
+
+@pytest.mark.parametrize("task_type", ["query", "dbt"])
+def test_every_run_has_the_file_tools_and_guards_them_all(tmp_path: Path, task_type: str) -> None:
+    """Ticket 100: every task has the same file tools, Write and Edit included, all guarded; Bash
+    is neither loaded nor allowed, and denied outright."""
+    task = Task(text="q", type=task_type, workspace=tmp_path, duckdb=tmp_path / "x.duckdb")  # type: ignore[arg-type]
     settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
     options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
     matchers = (options.hooks or {}).get("PreToolUse", [])
     guarded = {name for m in matchers if m.matcher for name in m.matcher.split("|")}
-    assert set(agent.QUERY_BUILTIN_TOOLS) <= guarded
+    assert set(FILE_TOOLS) <= guarded
+    tools = options.tools if isinstance(options.tools, list) else []
+    assert tools[:5] == FILE_TOOLS
+    assert "Bash" not in [*tools, *options.allowed_tools]
+    assert "Bash" in options.disallowed_tools
+    assert not [m for m in matchers if m.matcher == "Bash"]
 
 
 @pytest.mark.parametrize(
@@ -123,61 +132,21 @@ def test_query_runs_install_the_guard_for_every_file_tool(tmp_path: Path) -> Non
             {"file_path": "{ws}/models/orders.sql", "old_string": "1", "new_string": "2"},
             "none",
         ),
+        ("Write", {"file_path": "outputs/chart.png", "content": "x"}, "none"),
         ("Write", {"file_path": "../secret.env", "content": "x"}, "deny"),
         ("Write", {"file_path": "{home}/.bashrc", "content": "x"}, "deny"),
         ("Write", {"file_path": "escape/secret.env", "content": "x"}, "deny"),
         ("Edit", {"file_path": "secret_link", "old_string": "x", "new_string": "y"}, "deny"),
-        ("Write", {"file_path": "shop.duckdb", "content": ""}, "deny"),
-        ("Write", {"file_path": "{ws}/shop.duckdb.wal", "content": ""}, "deny"),
-        ("Edit", {"file_path": "shop.duckdb", "old_string": "a", "new_string": "b"}, "deny"),
     ],
 )
-async def test_writes_stay_inside_the_workspace_and_off_the_database(
+async def test_writes_stay_inside_the_workspace(
     workspace: Path, tool: str, tool_input: dict[str, Any], decision: str
 ) -> None:
+    """The guard keeps two rules (ADR-0010): inside the workspace, off credential files. A
+    database file in the workspace is no longer its business: the product keeps it out of the
+    workspace, and a benchmark's local sandbox reaches it anyway (a known limitation)."""
     filled = {k: v.format(ws=workspace, home=Path.home()) for k, v in tool_input.items()}
-    assert await decide(workspace, tool, filled, (workspace / "shop.duckdb",)) == decision
-
-
-def test_dbt_runs_guard_file_writes_and_bash(tmp_path: Path) -> None:
-    task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
-    settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
-    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
-    matchers = (options.hooks or {}).get("PreToolUse", [])
-    guarded = {name for m in matchers if m.matcher for name in m.matcher.split("|")}
-    assert {"Read", "Glob", "Grep", "Write", "Edit", "Bash"} <= guarded
-    assert {"Write", "Edit", "Bash"} <= set(options.tools or [])
-    query = Task(text="q", type="query", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
-    query_tools = (
-        agent.build_options(query, load_config("full"), settings, [], lambda *_, **__: None).tools
-        or []
-    )
-    assert not {"Write", "Edit", "Bash"} & set(query_tools)
-
-
-async def test_dbt_runs_let_bash_print_db_type_and_wait_for_validate(tmp_path: Path) -> None:
-    """The Bash guard gets the harness's variable list, and Bash's default timeout outlasts
-    validate_project.py's 300-second cap, so a slow dbt parse is never cut off mid-run."""
-    task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
-    settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
-    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
-    assert options.env["BASH_DEFAULT_TIMEOUT_MS"] == "360000"
-    assert options.env["BASH_MAX_TIMEOUT_MS"] == "600000"
-    # Else the CLI carries a `cd dir && ...` into the next Bash call, which the guard cannot see.
-    assert options.env["CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"] == "1"
-    matchers = (options.hooks or {}).get("PreToolUse", [])
-    bash_hooks = [hook for m in matchers if m.matcher == "Bash" for hook in m.hooks]
-    assert len(bash_hooks) == 1
-    hook_input: Any = {
-        "hook_event_name": "PreToolUse",
-        "session_id": "s",
-        "transcript_path": "t",
-        "cwd": str(tmp_path),
-        "tool_name": "Bash",
-        "tool_input": {"command": "echo $DB_TYPE"},
-        "tool_use_id": "u",
-    }
-    assert await bash_hooks[0](hook_input, "u", {"signal": None}) == {}
+    assert await decide(workspace, tool, filled) == decision
 
 
 async def test_denial_does_not_write_the_workspace_path(workspace: Path) -> None:

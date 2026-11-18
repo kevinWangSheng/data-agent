@@ -16,7 +16,7 @@ Section 13 asks for the project's percentage scale before defaulting to a 0-1 ra
 0-100). After the first failure attribution: Section 1 keeps column precision; Section 5 measures
 the rows each added filter removes, limits exclusions to the named categories and excludes NULL
 dates from date-bounded metrics; Section 13 covers every share column and self-checks on the same
-scale. -->
+scale. Ticket 100 (ADR-0010): Section 12 runs `dbt deps` in `sandbox_exec`, the agent's shell. -->
 
 # dbt Write Skill
 
@@ -296,7 +296,7 @@ permanent instead of removed.
 All dbt packages are pre-bundled in `dbt_packages/`. Do NOT pip install or git clone -
 the project may have no internet access and external installs will fail.
 If models call macros from a package NOT in `dbt_packages/`, write equivalent raw SQL
-instead. Run `dbt deps` only if the dbt-workflow validate script reports `packages_missing`.
+instead. Run `dbt deps` (in `sandbox_exec`) only if the dbt-workflow validate script reports `packages_missing`.
 
 When `dbt_packages/` contains cross-platform packages (Fivetran, dbt-utils),
 use dbt macros for date arithmetic (`{{ dbt.datediff(...) }}`) instead of

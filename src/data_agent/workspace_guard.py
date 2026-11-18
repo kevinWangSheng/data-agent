@@ -1,12 +1,12 @@
-"""Keep the file tools (Read, Glob, Grep, and Write, Edit in dbt runs) inside the task workspace.
+"""Keep the file tools (Read, Glob, Grep, Write, Edit) inside the task workspace.
 
 The SDK's allow list says which tools may run, not where they may look, so a `PreToolUse` hook
 checks every path argument: resolved against the workspace, with symlinks followed, it must stay
-inside the workspace, or the call is denied. Write and Edit may also not touch a protected file:
-the database, which only `dbt run` may change. Credential files inside the workspace (`.env*`, keys)
+inside the workspace, or the call is denied. Credential files inside the workspace (`.env*`, keys)
 are off limits too: no tool may read or change them, and Grep may not search a directory holding
 one unless its `glob` or `type` filter skips every one of them (dbt packages ship sample dotenv
-files, which would otherwise close the whole project to Grep). Glob still lists them, as it shows
+files, which would otherwise close the whole project to Grep). ADR-0010 keeps the guard to these
+two rules. Glob still lists them, as it shows
 names, not contents.
 
 A few files outside the workspace may be named `readable` (the run's task file, ticket 32): Read
@@ -23,8 +23,7 @@ from pathlib import Path
 
 from claude_agent_sdk import HookCallback, HookContext, HookInput, HookJSONOutput
 
-GUARDED_TOOLS = ("Read", "Glob", "Grep")
-WRITE_TOOLS = ("Write", "Edit")
+FILE_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit")
 GLOB_CHARS = frozenset("*?[{")
 # File names that usually hold secrets: dotenv and direnv files, login and password files, keys.
 CREDENTIAL_NAMES = (
@@ -71,11 +70,6 @@ def _glob_stays_inside(base: Path, pattern: str, workspace: Path) -> bool:
     if ".." in parts[fixed:]:
         return False
     return inside(resolve(base, str(Path(*parts[:fixed]))), workspace)
-
-
-def _protects(protected: Path, path: Path) -> bool:
-    """`protected` itself or a file beside it named after it, such as DuckDB's `.wal`."""
-    return path.parent == protected.parent and path.name.startswith(protected.name)
 
 
 def is_credential(name: str) -> bool:
@@ -225,13 +219,11 @@ def outside_paths(
     tool: str,
     tool_input: dict[str, object],
     workspace: Path,
-    protected: Sequence[Path] = (),
     readable: Sequence[Path] = (),
 ) -> list[str]:
-    """The path arguments of one tool call that reach outside `workspace` (already resolved), that
-    reach a credential file, or that Write or Edit would use to change a `protected` file (already
-    resolved). Read may also open a `readable` file (already resolved); Read and Grep a saved tool
-    result."""
+    """The path arguments of one tool call that reach outside `workspace` (already resolved) or
+    that reach a credential file. Read may also open a `readable` file (already resolved); Read
+    and Grep a saved tool result."""
     bad: list[str] = []
     match tool:
         case "Read":
@@ -246,12 +238,7 @@ def outside_paths(
         case "Write" | "Edit":
             raw = str(tool_input.get("file_path", ""))
             path = resolve(workspace, raw)
-            if (
-                not raw
-                or not inside(path, workspace)
-                or any(_protects(p, path) for p in protected)
-                or _names_credential(workspace, raw)
-            ):
+            if not raw or not inside(path, workspace) or _names_credential(workspace, raw):
                 bad.append(raw)
         case "Glob" | "Grep":
             raw_base = tool_input.get("path")
@@ -327,11 +314,8 @@ def _excluding_retry(
     return retry
 
 
-def workspace_guard(
-    workspace: Path, protected: Sequence[Path] = (), readable: Sequence[Path] = ()
-) -> HookCallback:
+def workspace_guard(workspace: Path, readable: Sequence[Path] = ()) -> HookCallback:
     root = workspace.resolve()
-    kept = [path.resolve() for path in protected]
     readable_paths = [path.resolve() for path in readable]
 
     async def guard(
@@ -339,9 +323,7 @@ def workspace_guard(
     ) -> HookJSONOutput:
         if hook_input["hook_event_name"] != "PreToolUse":
             return {}
-        bad = outside_paths(
-            hook_input["tool_name"], hook_input["tool_input"], root, kept, readable_paths
-        )
+        bad = outside_paths(hook_input["tool_name"], hook_input["tool_input"], root, readable_paths)
         if not bad:
             return {}
         return {
@@ -353,8 +335,7 @@ def workspace_guard(
                 "permissionDecisionReason": (
                     "Only files inside the workspace (the working directory) can be used, not "
                     "credential files such as .env (Grep: search a directory without them, or "
-                    "pass a glob or type that skips them), and only dbt run may change the "
-                    f"database; denied: {', '.join(bad)}"
+                    f"pass a glob or type that skips them); denied: {', '.join(bad)}"
                 ),
             }
         }

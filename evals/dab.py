@@ -8,12 +8,12 @@ own directory:
 
     OUT/<dataset>/query<id>/run<k>/events.jsonl        the trace (our event file)
     OUT/<dataset>/query<id>/run<k>/dab_tool_calls.jsonl DAB's own tool log
-    OUT/<dataset>/query<id>/run<k>/workspace/          the agent's and execute_python's directory
+    OUT/<dataset>/query<id>/run<k>/workspace/          the agent's and sandbox_exec's directory
     OUT/submission.json                                [{dataset, query, run, answer}, ...]
 
-DAB's tools need extra packages, and its `execute_python` needs Docker with DAB's image (built from
-DAB's Dockerfile: `docker build -t python-data:3.12 ../DataAgentBench`; the Docker SDK finds the
-daemon through DOCKER_HOST). Run it as
+DAB's tools need extra packages, and `sandbox_exec` (ticket 100) needs the docker CLI with DAB's
+image (built from DAB's Dockerfile: `docker build -t python-data:3.12 ../DataAgentBench`). Run it
+as
 
     uv run --with-requirements evals/dab-requirements.txt python -m evals dab \
         --dab-root ../DataAgentBench --dataset stockindex --query 1 --config no-context \
@@ -49,6 +49,7 @@ from claude_agent_sdk.types import McpStdioServerConfig
 from data_agent.agent import (
     ANSWER_RULE,
     MCP_SERVER,
+    SANDBOX_RULE,
     SKILLS_PROMPT,
     SYSTEM_PROMPT,
     TURN_LIMIT,
@@ -69,6 +70,7 @@ from data_agent.agent import (
 )
 from data_agent.events import REDACTED, EventLog, known_secrets
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT, RunConfig, load_config
+from data_agent.sandbox import SKILLS_MOUNT, SandboxRun, docker_lifecycle
 from evals import spend
 from evals.walk import walk_files
 
@@ -82,7 +84,7 @@ LARGE_DB_BYTES = 250 * 1024**2
 # Values set only in DAB's own .env file are not seen here: set them in the environment.
 DAB_SECRET_ENV = ("PG_HOST", "PG_PASSWORD", "MONGO_URI", "MYSQL_HOST", "MYSQL_PASSWORD")
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
-EXEC_IMAGE = "python-data:3.12"  # DAB's ExecTool runs code in this image
+EXEC_IMAGE = "python-data:3.12"  # sandbox_exec runs code in DAB's image, as its ExecTool did
 SQL_WORKFLOW = "sql-workflow"
 DIALECT_SKILLS = {"duckdb": "duckdb-sql", "sqlite": "sqlite-sql", "postgres": "postgres-sql"}
 
@@ -93,7 +95,9 @@ Databases, reachable only through the `{server}` MCP tools (pass the name as `db
 {databases}
 Workspace (your working directory): {workspace}
 {turn_limit}
-
+"""
+    + SANDBOX_RULE
+    + """
 <task>
 {question}
 </task>
@@ -121,8 +125,6 @@ class Scaffold:
 
     query_tool: type[Any]
     list_tool: type[Any]
-    exec_tool: type[Any]
-    result_marker: str  # what `execute_python` code prints before its JSON result
     load_db_clients: Any
 
 
@@ -156,8 +158,6 @@ def scaffold(dab_root: Path) -> Scaffold:
     return Scaffold(
         query_tool=_import_from(root, f"{tools}.QueryDBTool").QueryDBTool,
         list_tool=_import_from(root, f"{tools}.ListDBTool").ListDBTool,
-        exec_tool=_import_from(root, f"{tools}.ExecTool").ExecTool,
-        result_marker=_import_from(root, f"{tools}.exec_utils.parse_result").RESULT_MARKER,
         load_db_clients=_import_from(root, f"{tools}.db_utils.db_config").load_db_clients,
     )
 
@@ -251,13 +251,20 @@ def drop_databases(dab_root: Path, dab_query: DabQuery, log: Path, secrets: list
         print(f"dab: could not drop the {dab_query.dataset} databases: {error}", file=sys.stderr)
 
 
-def server_args(dab_root: Path, db_config: Path, log: Path, workspace: Path) -> list[str]:
+def server_args(
+    dab_root: Path, db_config: Path, log: Path, workspace: Path, run_id: str, skills_dir: Path
+) -> list[str]:
+    """The tool server's arguments: its sandbox container is named after `run_id`, mounts
+    `skills_dir` and has no network (`evals.dab_server`)."""
     return [
         *("-m", "evals.dab_server"),
         *("--dab-root", str(dab_root.resolve())),
         *("--db-config", str(db_config.resolve())),
         *("--log", str(log.resolve())),
         *("--workspace", str(workspace.resolve())),
+        *("--run-id", run_id),
+        *("--skills-dir", str(skills_dir.resolve())),
+        *("--image", EXEC_IMAGE),
     ]
 
 
@@ -279,7 +286,8 @@ def skill_names(dab_query: DabQuery, config: RunConfig) -> list[str]:
 def system_prompt(dab_query: DabQuery, config: RunConfig) -> str:
     prompt = SYSTEM_PROMPT.format(server=MCP_SERVER)
     if config.skill:
-        skills = load_skills(tuple(skill_names(dab_query, config)), config.skills_dir)
+        names = tuple(skill_names(dab_query, config))
+        skills = load_skills(names, config.skills_dir, SKILLS_MOUNT)
         prompt += SKILLS_PROMPT.format(skills=skills)
     return prompt
 
@@ -395,10 +403,14 @@ async def run_once(
     # The session's limit and the budget that reminds the agent of it (ticket 69).
     budget = TurnBudget(turns)
     tool_log = directory / "dab_tool_calls.jsonl"
+    # The docker backend, as the product's (the server never turns its network on).
+    sandbox = SandboxRun.of_run("docker", directory)
     server: McpStdioServerConfig = {
         "type": "stdio",
         "command": sys.executable,
-        "args": server_args(dab_root, dab_query.db_config, tool_log, workspace),
+        "args": server_args(
+            dab_root, dab_query.db_config, tool_log, workspace, sandbox.run_id, config.skills_dir
+        ),
         "env": server_env(),
     }
     stderr: list[str] = []
@@ -410,6 +422,9 @@ async def run_once(
     # The same price-table cap as `data-agent run`; the session's turns follow `budget`.
     cap = spend_cap(settings.model, config.max_budget_usd)
     with (
+        # Removes the containers of killed runs first, and this run's at its end: the SDK kills
+        # the tool server when the session ends, before it could.
+        docker_lifecycle(sandbox.run_id),
         tool_ledger(cap, workspace),  # the spend of classify_text's model calls (ticket 70)
         EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log,
     ):
@@ -472,7 +487,6 @@ async def run_once(
             if final is None:
                 log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
         finally:  # also when the run is interrupted
-            remove_exec_containers(workspace)
             drop_databases(dab_root, dab_query, tool_log, secrets_of(env))
             mask_dab_logs(directory, secrets_of(env))
         stopped = cap.result_fields() if cap is not None and cap.stopped else None
@@ -520,34 +534,6 @@ def mask_dab_logs(directory: Path, secrets: list[str]) -> None:
     for path in directory.glob("*.jsonl"):
         if path.name != "events.jsonl":
             path.write_text(mask(path.read_text(), secrets))
-
-
-def remove_exec_containers(workspace: Path, client: Any = None) -> list[str]:
-    """Remove DAB's `execute_python` containers left on `workspace`; returns their names.
-
-    The SDK kills the tool server (SIGINT, SIGTERM, then for good) within about half a second of
-    the session's end, before DAB's clean-up can stop the container (a `docker stop` of up to
-    10 s), so the runner removes it. Without the Docker SDK or daemon no container was started.
-    """
-    if client is None:
-        try:
-            docker = importlib.import_module("docker")  # in evals/dab-requirements.txt
-        except ImportError:
-            return []
-        try:
-            client = docker.from_env()
-        except docker.errors.DockerException:
-            return []
-    removed = []
-    try:  # a failed clean-up is reported, never a failed run
-        for container in client.containers.list(all=True, filters={"ancestor": EXEC_IMAGE}):
-            sources = {m.get("Source") for m in container.attrs.get("Mounts", [])}
-            if str(workspace.resolve()) in sources:
-                container.remove(force=True)
-                removed.append(container.name)
-    except Exception as exc:
-        print(f"dab: could not remove the exec container on {workspace}: {exc}", file=sys.stderr)
-    return removed
 
 
 def mcp_status(servers: Any) -> str:

@@ -2,7 +2,7 @@
 name: dbt-workflow
 description: "Load FIRST before any dbt project work. Covers the full 8-step dbt workflow: project scanning, skill loading, validation, macro discovery, research, technical spec, SQL writing, and verification. Also covers output shape inference, incremental model handling, and what to trust in YML."
 disable-model-invocation: false
-allowed-tools: Bash(dbt *) Bash(python3 *)
+allowed-tools: sandbox_exec dbt_execute
 ---
 
 <!-- Copied from signalpilot-plugin (see NOTICE). Modified for data-agent: tool calls name this
@@ -28,7 +28,11 @@ Step 8 checks column types for every model the task asks for and adds a key-leve
 an independent recomputation, which gates the STOP only without the verifier. Step 8 treats technical_spec.md as the
 main agent's intent only, which the verifier does not need, as it judges against the task text. The Rules forbid
 Reading the JSON dbt writes under target/, and the validate section states this copy's 300 s
-default timeout. Step 7 says not to switch `--vars` between dbt calls (each switch re-parses). -->
+default timeout. Step 7 says not to switch `--vars` between dbt calls (each switch re-parses).
+Ticket 100 (ADR-0010): the two scripts run in `sandbox_exec` and dbt reaches the database
+through `dbt_execute`, in place of Bash (allowed-tools names those two); Step 7 selects the
+upstream models with `+` when dbt writes to a schema of the run's own; the validate script gets a
+`sandbox_exec` timeout past its own 300 s. -->
 
 # dbt Workflow Skill - Full Project Lifecycle
 
@@ -40,6 +44,7 @@ working on a dbt project - it contains rules that affect how you interpret every
 ## Tools
 
 ### scan_project.py - Project scanner (Step 1)
+Run it with `sandbox_exec`:
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scan_project.py" "<project_directory>"
 ```
@@ -50,10 +55,13 @@ report is written to the file named on the last line (`.data-agent/scan/<project
 the summary says `… N more lines in <path>`, Grep that file for the detail you need.
 
 ### validate_project.py - dbt parse validator (Step 3)
+Run it with `sandbox_exec`:
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/validate_project.py" "<project_directory>"
 ```
-Runs `dbt parse` and returns structured errors, warnings, and orphan patches.
+Runs `dbt parse` and returns structured errors, warnings, and orphan patches. Its own limit on
+`dbt parse` is 300 seconds, so give `sandbox_exec` a longer one (`timeout_seconds: 360`) and the
+script reports a slow parse instead of being killed.
 
 ### list_tables and query_database - DB hints (MCP tools, Step 1)
 Call `list_tables` for the tables that exist (materialized models included) and
@@ -85,8 +93,8 @@ new model the task asks for counts as a model to build.
 
 If the task edits existing models (edit, fix, remove a variable, refactor),
 do NOT skip Steps 4-7 even if the scan shows nothing to build. Edit the
-files in Step 7, then run `dbt run --select <edited_model1> <edited_model2>`
-to rebuild them - edited SQL only takes effect after materialization.
+files in Step 7, then run them with `dbt_execute` (`command: run`,
+`select: <edited_model1> <edited_model2>`) to rebuild them - edited SQL only takes effect after materialization.
 
 Even if the task says "create model X" - if X.sql already exists in
 the scan's "EXISTING COMPLETE" list, it is already created. Verify it
@@ -96,7 +104,7 @@ in Step 8, do not recreate it.
 Run BOTH scans IN PARALLEL — a single turn with both tool calls. They are independent
 (one reads the project files, the other queries the database), so do NOT wait for one
 before calling the other:
-1. `python3 "${CLAUDE_SKILL_DIR}/scan_project.py" "<project_directory>"` — filesystem scan.
+1. `sandbox_exec`: `python3 "${CLAUDE_SKILL_DIR}/scan_project.py" "<project_directory>"` — filesystem scan.
 2. `list_tables` — what is materialized, with columns; then `query_database` for the
    database hints (lookup joins, staging-vs-raw gaps, parent-child driving tables).
 
@@ -111,7 +119,7 @@ needs. Record:
 - REQUIRED COLUMNS
 - AVAILABLE MACROS (with definitions)
 
-If the task describes a runtime bug (type mismatch, wrong values, broken output), run `dbt run --select <pre_existing_model> 2>&1 | tail -50` on the affected pre-existing model - `dbt parse` passing does NOT mean the model produces correct output.
+If the task describes a runtime bug (type mismatch, wrong values, broken output), run the affected pre-existing model with `dbt_execute` (`command: run`, `select: <pre_existing_model>`) - `dbt parse` passing does NOT mean the model produces correct output.
 
 ### Step 2 - Read the supporting skills
 The dbt-write skill, the dbt-debugging skill and the SQL skill for your
@@ -122,12 +130,12 @@ Do NOT skip this step. These skills contain rules that apply to
 verification (Step 8), not just writing.
 
 ### Step 3 - Validate and fix stale upstreams
-Run `python3 "${CLAUDE_SKILL_DIR}/validate_project.py" "<project_directory>"`.
+Run `python3 "${CLAUDE_SKILL_DIR}/validate_project.py" "<project_directory>"` with `sandbox_exec`.
 If errors, fix them before proceeding.
 
 MANDATORY: if the Step 1 scan flagged `current_date` or `now()` hazards in
 PRE-EXISTING models, rebuild those models NOW:
-`dbt run --select <flagged_model1> <flagged_model2>`
+`dbt_execute` with `command: run`, `select: <flagged_model1> <flagged_model2>`
 These models contain stale data from a prior run. Without rebuilding, all
 downstream models inherit wrong row counts.
 
@@ -212,18 +220,23 @@ For each model in dependency order:
 Do NOT rewrite pre-existing SQL files from scratch. For bug-fix tasks, EDIT the existing SQL minimally - change only the broken expression (e.g., add a CAST, fix an aggregation function). Keep all existing JOINs, CTEs, column aliases, and WHERE clauses intact. Rewriting from scratch drops logic the original author put there (lookup JOINs, filters, aliases) that you may not notice is missing. After any edit, compare the new SQL with the original predicate by predicate (every WHERE, HAVING and JOIN condition): each stays unchanged unless the task names it for removal or correction. Change a named predicate as the task says and keep every other predicate as it was.
 
 After ALL SQL files are written, build ONLY the models you wrote:
-`dbt run --select <model1> <model2> <model3>` (NO `+` prefix).
+`dbt_execute` with `command: run`, `select: <model1> <model2> <model3>` (NO `+` prefix).
 
 The `+` prefix rebuilds upstream models you did NOT write, destroying
 surrogate key assignments and FK relationships in pre-existing models.
 Try without `+` first. If a model fails because an upstream dependency
 is not yet materialized, THEN add `+` for that specific model only.
 
+When `dbt_execute`'s description says dbt writes to a schema of this run's own, that
+schema starts empty: no upstream model is materialized in it, and nothing pre-existing
+can be destroyed there. Select each model with its upstream models from the start
+(`select: +<model1> +<model2>`), or use `command: build`.
+
 If `dbt run` fails on ANY model - including package models in
 `dbt_packages/` - load the dbt-debugging skill and fix the error.
 Broken upstream models block every downstream model.
 
-Do NOT run a bare `dbt run` - it rebuilds ALL models including pre-existing ones.
+Do NOT call `dbt_execute` with `command: run` and no `select` - it rebuilds ALL models including pre-existing ones.
 
 Do NOT switch `--vars` back and forth between dbt calls: every change of `--vars` makes dbt
 re-parse the whole project, which can take a minute or more. Pick the vars once and keep them.
@@ -370,7 +383,7 @@ vs when to deduplicate.
 
 ## Validate Project (Standalone)
 
-Run: `python3 "${CLAUDE_SKILL_DIR}/validate_project.py" "<project_dir>"`
+Run in `sandbox_exec`: `python3 "${CLAUDE_SKILL_DIR}/validate_project.py" "<project_dir>"`
 
 This runs `dbt parse` and produces a structured report of errors, warnings,
 and orphan patches (yml-defined models with no .sql file). Use this as the

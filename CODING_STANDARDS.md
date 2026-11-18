@@ -21,9 +21,13 @@ enforced by `make check` and pre-commit instead. Each rule must be checkable aga
 - **Skills copied from upstream get the same line-by-line review as our own.** Remove hints tuned to one
   task, knowledge of the scorer or answer format (tolerances, CSV conventions), and tool names our server
   does not expose. Note the changes at the top of the file and in `NOTICE`.
-- **Never bypass the read-only gateway.** All SQL against a data source goes through the gateway's AST
-  check; no direct driver calls from tools, skills, or subagents. The only write path is a dbt project
-  edit followed by `dbt run` (CONTEXT: dbt write).
+- **No write credentials outside `dbt_execute`.** The sandbox and the agent never get a database
+  credential or a database file (ADR-0010): no connection string, profile with connection details or
+  DuckDB file in the workspace or the sandbox's environment. The only write to a data source is
+  `dbt_execute` (in the product, to the run's own scratch schema; CONTEXT: dbt write). Data-source
+  reads from tools go through the read-only gateway; no direct driver calls from tools, skills, or
+  subagents.
+- **Evaluations stay offline.** No benchmark or evaluation entry passes `--network` (ADR-0010).
 - **Holdout stays blind.** No code path prints or stores per-task failure details for the evaluation
   holdout where a coding agent can read them; only aggregate scores (ADR-0004).
 - **Files copied from upstream keep their original copyright header** and are listed in `NOTICE`.

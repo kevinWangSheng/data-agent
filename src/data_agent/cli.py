@@ -29,18 +29,24 @@ WEB_PORT = 8765
 # The process's stdin, read as a descriptor: `sys.stdin` may be replaced, by pytest for one.
 STDIN_FD = 0
 # `--sandbox` (ticket 97, spec "`sandbox_exec`").
+# `run` gives it to every run (ticket 100): without Bash, sandbox_exec is the agent's shell.
 SANDBOX_HELP = (
-    "give the agent sandbox_exec, which runs shell commands in a Docker container of the run's "
-    "own (docker) or directly on this machine (local). Use local only inside an isolated "
-    "container, such as a Harbor task: it runs with this machine's files and network. Without "
-    "this option the agent has no sandbox_exec"
+    "where the agent's sandbox_exec runs shell commands: in a Docker container of the run's own "
+    "(docker, the default; needs Docker) or directly on this machine (local). Use local only "
+    "inside an isolated container, such as a Harbor task: it runs with this machine's files and "
+    "network"
+)
+SERVER_SANDBOX_HELP = (
+    "serve sandbox_exec, which runs shell commands in a Docker container of the run's own "
+    "(docker) or directly on this machine (local). Use local only inside an isolated container, "
+    "such as a Harbor task. Without this option the server has no sandbox_exec"
 )
 
 # `--dbt-target` (ticket 99, spec "`dbt_execute`").
 DBT_TARGET_HELP = (
-    "with --sandbox, on a dbt task: where dbt_execute writes. scratch: a schema of the run's own, "
-    "through a profile generated outside the workspace; task: the project's own profile, as a "
-    "run without dbt_execute writes"
+    "on a dbt task: where dbt_execute writes. scratch: a schema of the run's own, "
+    "through a profile generated outside the workspace; task (the default for run): the "
+    "project's own profile, writing to the database it names"
 )
 
 
@@ -119,6 +125,8 @@ def server_sandbox(
     if args.sandbox is None:
         if args.run_id is not None:
             parser.error("--run-id goes with --sandbox")
+        if args.network:
+            parser.error("--network goes with --sandbox: it turns the sandbox's network on")
         return None
     if args.workspace is None:
         parser.error("--sandbox needs --workspace: the sandbox works in it")
@@ -126,7 +134,7 @@ def server_sandbox(
         return LocalSandbox(args.workspace, config.skills_dir)
     if args.run_id is None:
         parser.error("--sandbox docker needs --run-id, the id its container is named after")
-    return DockerSandbox(args.workspace, config.skills_dir, args.run_id)
+    return DockerSandbox(args.workspace, config.skills_dir, args.run_id, network=args.network)
 
 
 def server_dbt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> DbtExecutor | None:
@@ -233,9 +241,14 @@ def main(argv: list[str] | None = None) -> None:
         metavar=("NAME", "FILE"),
         help="with --source: the value dictionary of the database NAME, as --dictionary",
     )
-    serve.add_argument("--sandbox", choices=BACKENDS, help=SANDBOX_HELP)
+    serve.add_argument("--sandbox", choices=BACKENDS, help=SERVER_SANDBOX_HELP)
     serve.add_argument(
         "--run-id", help="with --sandbox docker: the run's id, which names its container"
+    )
+    serve.add_argument(
+        "--network",
+        action="store_true",
+        help="with --sandbox docker: the container may reach the network (none without it)",
     )
     serve.add_argument("--dbt-target", choices=TARGETS, help=DBT_TARGET_HELP)
     serve.add_argument(
@@ -268,7 +281,8 @@ def main(argv: list[str] | None = None) -> None:
     run_cmd.add_argument(
         "--network",
         action="store_true",
-        help="give the agent WebSearch and WebFetch (never on an evaluation run)",
+        help="give the agent WebSearch and WebFetch, and the docker sandbox the network "
+        "(never on an evaluation run)",
     )
     # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
     # and single runs never set these (spec decision 19).
@@ -288,7 +302,7 @@ def main(argv: list[str] | None = None) -> None:
         metavar="SESSION_ID",
         help="the previous turn's session to go on with (needs --chat)",
     )
-    run_cmd.add_argument("--sandbox", choices=BACKENDS, help=SANDBOX_HELP)
+    run_cmd.add_argument("--sandbox", choices=BACKENDS, default="docker", help=SANDBOX_HELP)
     run_cmd.add_argument("--dbt-target", choices=TARGETS, default="task", help=DBT_TARGET_HELP)
 
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
@@ -338,8 +352,6 @@ def main(argv: list[str] | None = None) -> None:
         ).run("stdio")
         return
 
-    if args.dbt_target == "scratch" and args.sandbox is None:
-        run_cmd.error("--dbt-target scratch goes with --sandbox: dbt_execute comes with it")
     if args.agent_timeout_sec is not None and not args.agent_timeout_sec > 0:
         run_cmd.error(f"--agent-timeout-sec must be positive, got {args.agent_timeout_sec}")
     if not args.workspace.is_dir():

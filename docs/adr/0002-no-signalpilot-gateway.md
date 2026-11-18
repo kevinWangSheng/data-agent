@@ -6,3 +6,5 @@ SignalPilot 的 MCP 工具（62 个）挂在 FastAPI 网关内，即便本地免
 
 - MongoDB（DAB 需要）无论如何要另做；对标物是 DAB `common_scaffold` 的 `query_db/list_db/execute_python`。
 - `verify_model_values` 硬编码 `SHOW TABLES`（DuckDB/MySQL），`audit_model_sources` 用 `COUNT(*) FILTER`；移植到 Postgres 时要改。
+
+见 ADR-0010。

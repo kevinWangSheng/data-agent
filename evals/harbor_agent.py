@@ -90,7 +90,9 @@ MODEL_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_BASE_URL", "DATA_AGENT_MODEL")
 # data-eng-bench builds its image with `dbt ... --target dev` (base-image/Dockerfile:64), and the
 # target is part of dbt's partial-parse key: a dbt call without `--target` re-parsed the whole
 # project on each trial's first call. DBT_TARGET is dbt's environment variable for `--target`;
-# the agent's Bash and validate_project.py inherit it. Set here only, for data-eng-bench (ADR-0005).
+# dbt_execute and the local sandbox's commands (validate_project.py) inherit it, as they keep
+# every DBT_* variable (data_agent.dbt_execute, data_agent.sandbox.LOCAL_TASK_PREFIXES). Set here
+# only, for data-eng-bench (ADR-0005).
 DBT_ENV = {"DBT_TARGET": "dev"}
 # Pinned like the other tools; the container has no uv of its own. install() uploads uv's static
 # Linux build for the container's `uname -m`, fetched here and checked against the release's
@@ -313,6 +315,10 @@ class DataAgent(BaseInstalledAgent):
             f"--workspace {shlex.quote(str(self.WORKSPACE))} "
             '--duckdb "${DUCKDB_PATH:-/app/database/retail.duckdb}" '
             f"--config {shlex.quote(self.options.run_config)} "
+            # The task container is the isolated environment (ADR-0010): sandbox_exec runs in it.
+            # No --network and no --dbt-target: an evaluation stays offline and dbt writes the
+            # task's own database.
+            "--sandbox local "
             f"--events-dir {shlex.quote(str(logs / self.EVENTS_DIR))} "
             f"--agent-timeout-sec {shlex.quote(str(self.options.agent_timeout_sec))} "
             f"--task {shlex.quote(instruction)} "
