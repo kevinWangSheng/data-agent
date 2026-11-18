@@ -342,13 +342,15 @@ jaffle_shop:
       host: "{{ env_var('DBT_ENV_SECRET_DA_JAFFLE_HOST') }}"
       port: "{{ env_var('DA_JAFFLE_PORT') | as_number }}"
       user: "{{ env_var("DA_JAFFLE_USER") }}"
-      dbname: "{{ env_var( 'DA_JAFFLE_DBNAME' , 'jaffle') }}"
+      dbname: "{{ env_var ( 'DA_JAFFLE_DBNAME' , 'jaffle') }}"
       schema: jaffle_case
 """
 JAFFLE_ENV = {"DA_JAFFLE_PORT": "5433", "DA_JAFFLE_USER": "u", "DA_JAFFLE_DBNAME": "jaffle"}
 
 
-@pytest.mark.parametrize("where", ["project", "profiles_dir_env", "home"])
+@pytest.mark.parametrize(
+    "where", ["project", "profiles_dir_env", "relative_profiles_dir_env", "home"]
+)
 def test_task_passes_the_variables_the_tasks_profile_reads(
     tmp_path: Path, fake_dbt: tuple[dict[str, str], Path], where: str
 ) -> None:
@@ -364,6 +366,10 @@ def test_task_passes_the_variables_the_tasks_profile_reads(
     elif where == "profiles_dir_env":
         profiles_dir = tmp_path / "case-profiles"
         env |= {"DBT_PROFILES_DIR": str(profiles_dir)}
+    elif where == "relative_profiles_dir_env":
+        # dbt runs in the project, so it resolves a relative DBT_PROFILES_DIR from there.
+        profiles_dir = project / "conf"
+        env |= {"DBT_PROFILES_DIR": "conf"}
     else:
         home = tmp_path / "home"
         profiles_dir = home / ".dbt"
@@ -375,6 +381,25 @@ def test_task_passes_the_variables_the_tasks_profile_reads(
     assert {name: seen.get(name) for name in JAFFLE_ENV} == JAFFLE_ENV
     assert "DA_UNRELATED" not in seen
     assert "DATA_AGENT_MODEL_KEY" not in seen
+
+
+def test_a_task_profile_cannot_name_the_runs_model_credentials(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
+) -> None:
+    """eng:code-review on e1ee204: the project's profiles.yml is in the workspace, which the
+    agent edits; naming the model key there must not hand it to dbt."""
+    env, record = fake_dbt
+    workspace = workspace_with_project(tmp_path)
+    env = env | {"DATA_AGENT_API_KEY": "sk-tool", "ANTHROPIC_AUTH_TOKEN": "sk-sdk"}
+    names = ["DATA_AGENT_API_KEY", "DATA_AGENT_MODEL_KEY", "ANTHROPIC_AUTH_TOKEN"]
+    names.append("ANTHROPIC_API_KEY")
+    reads = "".join(f"      x{i}: \"{{{{ env_var('{n}') }}}}\"\n" for i, n in enumerate(names))
+    (workspace / "dbt_shop" / "profiles.yml").write_text(
+        f"shop:\n  target: dev\n  outputs:\n    dev:\n{reads}"
+    )
+    DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb").execute("run", env=env)
+    seen = json.loads(record.read_text())["env"]
+    assert [name for name in names if name in seen] == []
 
 
 def test_a_workspace_without_a_dbt_project_is_an_error(
