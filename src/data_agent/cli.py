@@ -150,7 +150,7 @@ def server_dbt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Dbt
         return DbtExecutor(
             args.workspace,
             args.dbt_target,
-            args.run_id or "",
+            args.run_id,
             args.dbt_profiles_dir,
             duckdb=args.duckdb,
             postgres_env=args.postgres_env,
@@ -338,6 +338,8 @@ def main(argv: list[str] | None = None) -> None:
         ).run("stdio")
         return
 
+    if args.dbt_target == "scratch" and args.sandbox is None:
+        run_cmd.error("--dbt-target scratch goes with --sandbox: dbt_execute comes with it")
     if args.agent_timeout_sec is not None and not args.agent_timeout_sec > 0:
         run_cmd.error(f"--agent-timeout-sec must be positive, got {args.agent_timeout_sec}")
     if not args.workspace.is_dir():

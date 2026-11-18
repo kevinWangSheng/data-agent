@@ -187,10 +187,32 @@ def test_run_passes_the_dbt_target_and_defaults_to_task(
         *("--events-dir", str(tmp_path / "events")),
     ]
     with pytest.raises(SystemExit):
-        cli.main([*args, "--dbt-target", "scratch"])
+        cli.main([*args, "--sandbox", "local", "--dbt-target", "scratch"])
     with pytest.raises(SystemExit):
         cli.main(args)
     assert seen == ["scratch", "task"]
+
+
+def test_run_refuses_a_scratch_target_without_a_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Review round 1: scratch asks for writes confined to the run's schema, which only
+    dbt_execute gives, so it is not silently dropped."""
+
+    async def fake_run(*_: Any, **__: Any) -> Outcome:
+        raise AssertionError("no run should start")
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(
+            [
+                *("run", "--task", "q", "--type", "dbt", "--workspace", str(tmp_path)),
+                *("--duckdb", str(make_db(tmp_path / "x.duckdb")), "--config", "full"),
+                *("--events-dir", str(tmp_path / "events"), "--dbt-target", "scratch"),
+            ]
+        )
+    assert exit_info.value.code == 2
+    assert "--sandbox" in capsys.readouterr().err
 
 
 def serve(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:

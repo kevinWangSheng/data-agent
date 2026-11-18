@@ -50,6 +50,8 @@ MAX_SCHEMA_CHARS = 63
 PROFILES_FILE = "profiles.yml"
 RUN_RESULTS = Path("target") / "run_results.json"
 MAX_FAILURES = 10
+# The threads of a generated profile's output, which `threads` overrides per command.
+PROFILE_THREADS = 4
 
 
 class DbtExecuteError(Exception):
@@ -63,7 +65,7 @@ def scratch_schema(run_id: str) -> str:
     name = SCHEMA_PREFIX + re.sub(r"[^a-z0-9_]", "_", run_id.lower())
     if len(name) <= MAX_SCHEMA_CHARS:
         return name
-    tail = name[-9:]
+    tail = name[-8:]
     return name[: MAX_SCHEMA_CHARS - len(tail) - 1] + "_" + tail
 
 
@@ -131,7 +133,7 @@ def postgres_output(url: str, schema: str) -> dict[str, object]:
         "password": unquote(parts.password or ""),
         "dbname": (parts.path or "/").lstrip("/"),
         "schema": schema,
-        "threads": 4,
+        "threads": PROFILE_THREADS,
         "sslmode": query.get("sslmode", "prefer"),
     }
 
@@ -146,12 +148,21 @@ def scratch_profile(
             "type": "duckdb",
             "path": str(duckdb.resolve()),
             "schema": schema,
-            "threads": 4,
+            "threads": PROFILE_THREADS,
         }
     else:
         assert postgres_url is not None, "a dbt run has a DuckDB file or a Postgres URL"
         output = postgres_output(postgres_url, schema)
     return {profile: {"target": SCRATCH_TARGET, "outputs": {SCRATCH_TARGET: output}}}
+
+
+def check_outside(profiles_dir: Path, workspace: Path) -> None:
+    """The scratch profile's directory may not be in the workspace, which the agent and the
+    sandbox reach."""
+    if profiles_dir.resolve().is_relative_to(workspace.resolve()):
+        raise DbtExecuteError(
+            f"the scratch profiles directory ({profiles_dir}) must be outside the workspace"
+        )
 
 
 class DbtRun(NamedTuple):
@@ -186,7 +197,7 @@ class DbtExecutor:
 
     workspace: Path
     target: Target
-    run_id: str = ""
+    run_id: str | None = None
     profiles_dir: Path | None = None
     duckdb: Path | None = None
     postgres_env: str | None = None
@@ -195,15 +206,13 @@ class DbtExecutor:
         if self.target == "scratch":
             if self.profiles_dir is None or not self.run_id:
                 raise DbtExecuteError("the scratch target needs a profiles directory and a run id")
-            if self.profiles_dir.resolve().is_relative_to(self.workspace.resolve()):
-                raise DbtExecuteError(
-                    "the scratch profiles directory must be outside the workspace"
-                )
+            check_outside(self.profiles_dir, self.workspace)
         if (self.duckdb is None) == (self.postgres_env is None):
             raise DbtExecuteError("a dbt run has one DuckDB file or one Postgres variable")
 
     @property
     def schema(self) -> str:
+        assert self.run_id is not None, "only the scratch target has a schema of its own"
         return scratch_schema(self.run_id)
 
     def command_line(
@@ -254,13 +263,13 @@ class DbtExecutor:
         """Run the command and reply as SignalPilot does, `target_schema` first for `scratch`."""
         argv = dbt_argv(command, select, exclude, full_refresh, threads)
         env = os.environ if env is None else env
-        full, project, dbt_env = self.command_line(argv, env)
+        dbt_command, project, dbt_env = self.command_line(argv, env)
         executable = shutil.which("dbt", path=env.get("PATH"))
         if executable is None:
             raise DbtExecuteError("dbt is not on PATH")
-        full[0] = executable
+        dbt_command[0] = executable
         started = time.time()
-        done = run_dbt(full, TIMEOUT_S, project, dbt_env)
+        done = run_dbt(dbt_command, TIMEOUT_S, project, dbt_env)
         output = done.stdout + (f"\n{done.stderr}" if done.stderr else "")
         output = output[-MAX_OUTPUT_CHARS:].strip()
         if done.timed_out:
@@ -331,9 +340,11 @@ def run_results(path: Path, since: float) -> list[str]:
 def tool_description(executor: DbtExecutor) -> str:
     if executor.target == "scratch":
         where = (
-            f"Models materialize into this run's own schema, `{executor.schema}` (a model with a "
-            f"custom schema goes to `{executor.schema}_<custom>`), never the project's "
-            "production schemas; sources are read where they are."
+            f"The profile's schema is this run's own, `{executor.schema}`: models materialize "
+            f"there (a model with a custom schema in `{executor.schema}_<custom>`), not in the "
+            "project's production schemas, and sources are read where they are. Write nothing "
+            "that names another schema (a snapshot's target_schema, a hook, a schema macro): "
+            "dbt would write it there."
         )
     else:
         where = "dbt uses the project's own profile and writes to the database it names."

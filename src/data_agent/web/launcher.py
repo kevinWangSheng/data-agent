@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
+from data_agent.dbt_execute import PROFILES_FILE
 from data_agent.run_config import CONFIG_NAMES
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap
@@ -43,7 +44,6 @@ WORKSPACE = "workspace"
 # A dbt run's copy of the project leaves out the build output and logs of earlier runs, and
 # every dbt profile in it, which holds the connection.
 NOT_COPIED = ("target", "logs")
-PROFILES_FILE = "profiles.yml"
 # Where a dbt run's DuckDB file goes, in the run's directory, outside its workspace.
 DB_DIR = "db"
 # The files DuckDB keeps next to a database file, copied with it.

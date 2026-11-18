@@ -55,7 +55,7 @@ from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 from data_agent import verifier_v2
 from data_agent.command_guard import command_guard
 from data_agent.context_tools import DictionaryBuild, build_interruptible
-from data_agent.dbt_execute import DbtRun, Target
+from data_agent.dbt_execute import DbtExecuteError, DbtRun, Target, check_outside
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
 from data_agent.gateway import (
     BLOCKED_PREFIX,
@@ -2044,12 +2044,12 @@ async def run(
         if sandbox_run is not None and task.type == "dbt"
         else None
     )
-    scratch_profiles = None if dbt_run is None else dbt_run.profiles_dir
-    if scratch_profiles is not None and scratch_profiles.is_relative_to(task.workspace.resolve()):
-        raise ConfigError(
-            "--dbt-target scratch keeps its profile in the events directory, which must be "
-            "outside the workspace"
-        )
+    if dbt_run is not None and dbt_run.profiles_dir is not None:
+        # Before the session: a server that refused its arguments would leave a run without tools.
+        try:
+            check_outside(dbt_run.profiles_dir, task.workspace)
+        except DbtExecuteError as exc:
+            raise ConfigError(f"--dbt-target scratch: {exc}") from exc
     containers = (
         docker_lifecycle(sandbox_run.run_id)
         if sandbox_run is not None and sandbox_run.backend == "docker"

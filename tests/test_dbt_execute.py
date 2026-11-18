@@ -98,6 +98,7 @@ def test_the_scratch_schema_is_the_run_id_as_a_plain_identifier() -> None:
     )
     long = scratch_schema("x" * 80 + "-0f9e8d7c")
     assert len(long) == 63 and long.startswith("da_run_x") and long.endswith("_0f9e8d7c")
+    assert "__" not in long
 
 
 def test_a_scratch_run_writes_its_profile_under_the_events_dir(tmp_path: Path) -> None:
