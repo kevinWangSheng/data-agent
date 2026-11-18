@@ -1,6 +1,6 @@
 # 96 — 在线版：录好的对话回放
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 95
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -47,8 +47,8 @@ Branch: worktree-96-online-chat-replay
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1
+- Attempts: 2
+- Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
@@ -154,3 +154,41 @@ The branch is done and ready for your review: the exporter can now export a reco
 3. P3 `web/src/chat-page/Turn.tsx:62`：被取消的轮在在线版也写 "Cancelled. The next message starts a new turn."，在线版没有输入框。只读模式下只写 "Cancelled."，配测试。
 - 记成已知限制，不修：从某轮的 "Full run view" 返回时，回放从 0:00 重新开始，进度和 Show all 状态丢失。要修得把回放状态提到页面之外，改动面大，收益小。
 修完 `make check`，`eng:code-review` 只看新提交（前端为主，不跑 `da-review`）；最终回复照工作流程第 6 步。
+
+*Return round 1 (ticket agent, commits `081ebae` and `473c4c3`)*
+
+- **Fixes:**
+  1. **Narrow screens:**
+     - `ReplayControls` has a new optional prop `collapseOnNarrow`, which only the recorded conversation passes. Below 640px it hides restart, the speeds, skip idle and the slider, leaving play, the clock and Show all. At wider sizes the bar wraps instead of overflowing.
+     - The four hidden controls sit inside a `display: contents` wrapper. Putting `max-sm:hidden` on them directly would not work, because `index.css` sets `display: inline-flex` on `.btn` and `.seg` outside Tailwind's layers, and that wins.
+     - The run page doesn't pass the prop, so it behaves as before.
+  2. **Space:** a new `togglesPlay` in `run-page/replay.ts` uses the same guard as `RunPage.tsx`: no modifier keys, and not when focus is in an input, select or textarea, or on a button, link or summary. `RecordedConversation` listens for it and calls `togglePlay`.
+  3. **"Cancelled.":** `Transcript` and `Turn` have a new `readOnly` prop. The recorded conversation passes it, so a cancelled turn there reads only "Cancelled." The live chat page keeps the full sentence.
+- **Tests:**
+  - `replay.test.ts` has 3 new tests for `togglesPlay`.
+  - `RecordedConversation.test.ts` has 1 new test: read-only shows "Cancelled." with no mention of a next message, and the live `Transcript` keeps the full sentence.
+  - All 4 failed before the fix (`togglesPlay is not a function`, and the old sentence present). Vitest went from 291 to 295 passed.
+- **Real run:**
+  - Built with `SITE_DATA=/Users/shenghuikevin/dev/AI/data-agent/runs/site-publish-2/site pnpm --dir web build` and served with `vite preview --port 4796`. Opened `/chats/20261118T020857Z-6cd60d` in headless Playwright.
+  - At 375px:
+    - `innerWidth` 375 and `document.documentElement.scrollWidth` 375, so there is no horizontal scroll.
+    - The controls run from 16 to 272px. Only "Pause replay", "0:04 / 0:55" and "Show all events" are visible.
+    - Space switched the button from Pause to Resume and the clock stayed at 0:08 over 1.5 seconds. A second Space switched it back to Pause and the clock went from 0:14 to 0:16.
+    - After Show all, no element extends past 375px and the page has no "next message" text.
+  - At 700px: all 12 controls are visible, the bar wraps to two lines (60px tall), and `scrollWidth` is 700.
+  - Screenshots: `runs/96/replay-375-paused.png` and `runs/96/replay-375-all-shown.png` in this worktree.
+- **`make check`** at `081ebae`: exit 0. Ruff passed, basedpyright 0 errors, pytest 2422 passed / 1 skipped, vitest 295 passed. Log: `runs/96/make-check-r2.log`.
+- **Review:** `da-review` was not run (frontend ticket). `eng:code-review e7ec481` reviewed only the new commit:
+  - **Spec:** all three items are implemented, with no scope creep. The run page and the live chat page behave as before.
+  - **Standards:** no hard violations. The upstream copyright header on `ReplayControls` is kept and its "Modified" list now covers the change.
+  - **Fixed:** the prop was named `narrowLayout`, which didn't say what it does; it is now `collapseOnNarrow` (`473c4c3`).
+  - **Not fixed, with reasons:**
+    - *Both reviewers noted the Space guard now exists twice (`togglesPlay` and the run page's own handler).* The run page's guard covers all its keys (j/k/e/v/1–4/Enter), not just Space. Pointing it at `togglesPlay` would mean restructuring `RunPage`'s handler, which is outside this return's three items. The two copies match today, and the docstring says it follows the run page.
+    - *`readOnly` sits next to `canAnswer`.* They mean different things: whether a clarification option can be picked now, and whether any next message can be sent at all. The live page has turns that can't be answered but still has a message box.
+    - *Repeating the keydown effect shape, and passing `readOnly` through `Transcript`:* both small, and they follow the existing pattern.
+  - **Known gap:**
+    - The Space wiring in `RecordedConversation.tsx` (listener, `preventDefault`, `togglePlay`) has no unit test. Vitest runs in `node` with no DOM library, and the ticket doesn't allow editing `web/e2e/`. Only the `togglesPlay` rule is tested; the wiring was checked in the real browser above.
+    - The 375px screenshot shows the site's top nav cut off on the right ("dbt: c"). The nav was like this before this branch, and the page itself does not scroll sideways (`scrollWidth` 375).
+- **Known limit, as decided by the main session:** returning from "Full run view" restarts the replay from 0:00.
+
+- Main session: the site's top nav is cut off on the right at 375px. That comes from tickets 79–82 and is not in this ticket's scope; it is recorded as a follow-up.
