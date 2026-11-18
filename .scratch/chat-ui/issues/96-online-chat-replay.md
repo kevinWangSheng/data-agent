@@ -1,6 +1,6 @@
 # 96 — 在线版：录好的对话回放
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 95
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -192,3 +192,24 @@ The branch is done and ready for your review: the exporter can now export a reco
 - **Known limit, as decided by the main session:** returning from "Full run view" restarts the replay from 0:00.
 
 - Main session: the site's top nav is cut off on the right at 375px. That comes from tickets 79–82 and is not in this ticket's scope; it is recorded as a follow-up.
+
+### Main session, 2026-11-17: reviews after return round 1 (473c4c3)
+
+- Clean-context Opus 5.5 re-review: all three items fixed, no new findings.
+  - Checked that the `contents` wrapper keeps focus order and roles.
+  - Checked that Space never double-toggles on a focused button.
+  - Checked that the listener is cleaned up, the run page is unchanged, and the live page keeps the full cancelled sentence.
+  - 295 tests pass; typecheck is clean.
+- CI `check` green.
+- Codex P2 `evals/export.py:364`, checked against the code and found real:
+  - The export's `read_events` (`export.py:191`) skips lines that don't parse, but `build()` copies the original event file unchanged.
+  - The site's `parseEventLines` (`web/src/data/source.ts:105-110`) runs `JSON.parse` on every line, and `recording()` loads all turns with `Promise.all`.
+  - So one turn cut off mid-line (a cancel kills the process) makes the whole conversation fail to open online.
+
+退回（第 2 轮，本 PR 最后一轮）：
+- 导出时写出解析得了的事件（逐行重写 `events.jsonl`，扔掉解析不了的行，并在导出的输出里报出扔了几行），不原样复制。
+- 不要拒绝：被取消的轮半行结尾是正常情况。
+- 精选运行也走同一条拷贝路径的话一并处理。
+- 配一个修复前会失败的测试：一轮的事件文件最后一行是半行，导出后每行都能 `json.loads`，事件数等于能解析的行数。
+- 修完 `make check`，`da-review` 只看新提交（这次改的是 Python），`eng:code-review` 只看新提交；最终回复照工作流程第 6 步。
+- 主会话合并后会用 `runs/site-publish-2/export.sh` 重新导出。
