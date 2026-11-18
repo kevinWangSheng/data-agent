@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 PR_SET_CHILD_SUBREAPER = 36
+# sandbox.py reads the exit code from here.
 TIMEOUT_EXIT = 124
 PROC = Path("/proc")
 
@@ -78,25 +79,30 @@ def reap() -> None:
             pass
 
 
-def end(command: subprocess.Popen[bytes], grace: float) -> None:
-    """TERM, then KILL until nothing is left: a process may fork before its KILL, and its children
-    come to this one. A process KILL cannot end (stuck in the kernel) is given up after `grace`."""
+def kill_all(command: subprocess.Popen[bytes], grace: float) -> None:
+    """TERM what the command started, wait up to `grace` for it to end, then KILL until nothing
+    is left: a process may fork before its KILL, and its children come to this one. A process
+    KILL cannot end (stuck in the kernel) is given up after another `grace`."""
     signal_all(command, signal.SIGTERM)
-    for sig, wait in ((0, 0.05), (signal.SIGKILL, 0.01)):
-        deadline = time.monotonic() + grace
-        while signal_all(command, sig) and time.monotonic() < deadline:
-            time.sleep(wait)
-            reap()
+    deadline = time.monotonic() + grace
+    while signal_all(command, 0) and time.monotonic() < deadline:
+        time.sleep(0.05)
+        reap()
+    deadline = time.monotonic() + grace
+    while signal_all(command, signal.SIGKILL) and time.monotonic() < deadline:
+        time.sleep(0.01)
+        reap()
 
 
 def main() -> int:
     limit, grace, command_text = float(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
     become_subreaper()
-    command = subprocess.Popen(["bash", "-c", command_text], process_group=0)
+    # A session of its own (not `process_group`, Python 3.11+): an image may have an older Python.
+    command = subprocess.Popen(["bash", "-c", command_text], start_new_session=True)
     try:
         code = command.wait(limit)
     except subprocess.TimeoutExpired:
-        end(command, grace)
+        kill_all(command, grace)
         return TIMEOUT_EXIT
     return code if code >= 0 else 128 - code
 

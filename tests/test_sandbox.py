@@ -64,6 +64,17 @@ def test_a_timeout_returns_though_a_process_outside_the_group_keeps_the_output_o
     assert done.timed_out
 
 
+def test_a_command_that_ends_in_time_returns_though_its_background_process_holds_the_output(
+    tmp_path: Path,
+) -> None:
+    """As `docker exec` returns once its process ends: the exit code, not a timeout, and the
+    output read until then."""
+    started = time.monotonic()
+    done = LocalSandbox(tmp_path, SKILLS).execute("echo hi; sleep 30 & exit 2", timeout=60)
+    assert time.monotonic() - started < KILL_GRACE_S + 5
+    assert (done.exit_code, done.timed_out, done.stdout) == (2, False, "hi\n")
+
+
 def living(pid: int) -> bool:
     """Whether `pid` runs (a zombie has ended)."""
     try:
@@ -195,7 +206,7 @@ def test_a_commands_own_exit_code_124_is_no_timeout(tmp_path: Path, docker: Fake
     assert (done.timed_out, done.exit_code) == (False, 124)
 
 
-def supervise(command: str, limit: float, cwd: Path) -> tuple[int, float]:
+def run_supervisor(command: str, limit: float, cwd: Path) -> tuple[int, float]:
     """sandbox_supervisor.py run here as the backends run it: its exit code and seconds taken."""
     started = time.monotonic()
     done = subprocess.run(
@@ -205,14 +216,14 @@ def supervise(command: str, limit: float, cwd: Path) -> tuple[int, float]:
 
 
 def test_supervisor_passes_the_commands_exit_code_and_signal(tmp_path: Path) -> None:
-    assert supervise("exit 3", 30, tmp_path)[0] == 3
-    assert supervise("kill -9 $$", 30, tmp_path)[0] == 137
+    assert run_supervisor("exit 3", 30, tmp_path)[0] == 3
+    assert run_supervisor("kill -9 $$", 30, tmp_path)[0] == 137
 
 
 def test_supervisor_kills_a_command_that_ignores_term_and_exits_124(tmp_path: Path) -> None:
     # Codex review, round 1: a command that ignores TERM is killed after the grace period, and
     # that too is a timeout.
-    code, seconds = supervise("trap '' TERM; sleep 999 & wait; sleep 999", 1, tmp_path)
+    code, seconds = run_supervisor("trap '' TERM; sleep 999 & wait; sleep 999", 1, tmp_path)
     assert code == TIMEOUT_EXIT and seconds < 1 + 2 * KILL_GRACE_S + 2
 
 

@@ -25,7 +25,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Literal, NamedTuple, Protocol
 
+from data_agent import sandbox_supervisor
 from data_agent.gateway import QueryResult
+from data_agent.sandbox_supervisor import TIMEOUT_EXIT
 
 type Backend = Literal["docker", "local"]
 BACKENDS: tuple[Backend, ...] = ("docker", "local")
@@ -43,9 +45,8 @@ MEMORY = "4g"
 # its limit, every process it started gets TERM, and KILL this many seconds later, whatever
 # process group it is in. The supervisor then exits 124, which is a timeout only once the limit
 # has passed: a command can exit 124 itself.
-SUPERVISOR = (Path(__file__).parent / "sandbox_supervisor.py").read_text()
+SUPERVISOR = Path(sandbox_supervisor.__file__).read_text()
 KILL_GRACE_S = 5
-TIMEOUT_EXIT = 124
 # How long the docker client, or the supervisor here, may take past a command's limit before it
 # is killed too; the supervisor itself needs up to twice KILL_GRACE_S.
 CLIENT_MARGIN_S = 30
@@ -120,7 +121,9 @@ def run_process(
     """Run `argv` to its end or for `timeout` seconds; past that its whole process group is killed
     and the output it wrote so far comes back with `timed_out`. The output is read until it
     closes, for KILL_GRACE_S at most once the process has ended: a process it left running may
-    hold the output open (and `docker exec`, too, returns once its process ends)."""
+    hold the output open (and `docker exec`, too, returns once its process ends). The kill
+    reaches the process group only: the local backend's supervisor puts the command in a
+    session of its own, so a supervisor that hung would leave the command running."""
     proc = subprocess.Popen(
         list(argv),
         cwd=cwd,
@@ -140,8 +143,9 @@ def run_process(
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
+    ended = time.monotonic()
     for capture in captures:
-        capture.thread.join(KILL_GRACE_S)
+        capture.thread.join(max(0.0, ended + KILL_GRACE_S - time.monotonic()))
     out, err = captures
     done = Execution(
         None if timed_out else proc.returncode,
@@ -162,7 +166,7 @@ def supervised(command: str, timeout: float) -> list[str]:
     return ["-I", "-c", SUPERVISOR, f"{timeout:g}", f"{KILL_GRACE_S:g}", command]
 
 
-def judged(done: Execution, started: float, timeout: float) -> Execution:
+def timeout_past_limit(done: Execution, started: float, timeout: float) -> Execution:
     """A supervised command's outcome: the supervisor's 124 past the limit is a timeout."""
     stopped = done.exit_code == TIMEOUT_EXIT and time.monotonic() - started >= timeout
     if done.timed_out or stopped:
@@ -194,7 +198,7 @@ class LocalSandbox:
         env = local_env(os.environ)
         started = time.monotonic()
         done = run_process(argv, timeout + CLIENT_MARGIN_S, cwd=self.workspace, env=env)
-        return judged(done, started, timeout)
+        return timeout_past_limit(done, started, timeout)
 
 
 def run_docker(args: Sequence[str], timeout: float = DOCKER_TIMEOUT_S) -> Execution:
@@ -268,7 +272,7 @@ class DockerSandbox:
         argv = ["exec", "-w", WORKDIR, self.container, "python3", *supervised(command, timeout)]
         started = time.monotonic()
         done = run_docker(argv, timeout + CLIENT_MARGIN_S)
-        return judged(done, started, timeout)
+        return timeout_past_limit(done, started, timeout)
 
 
 class Sandbox(Protocol):
@@ -567,7 +571,7 @@ ids (query_database gives each successful result one) in `data_files`: each is w
 `{DATA_DIR}/<id>.csv` (a header row, every row the query returned, NULL as an empty field) \
 before the command runs.
 
-The command, and every process it started (in the background too), is killed after \
-`timeout_seconds` (default {DEFAULT_TIMEOUT_S}, at most {MAX_TIMEOUT_S}). Past \
+If the command runs past `timeout_seconds` (default {DEFAULT_TIMEOUT_S}, at most \
+{MAX_TIMEOUT_S}), it and every process it started are killed. Past \
 {OUTPUT_CHARS:,} characters of output in all, the reply shows the start of stdout and the end of \
 stderr, and names the files under `{LOGS_DIR}/` that hold all of it."""
