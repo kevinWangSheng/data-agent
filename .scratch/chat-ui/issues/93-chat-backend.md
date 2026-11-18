@@ -1,6 +1,6 @@
 # 93 — 对话后端：存储、接口、子进程编排
 
-Status: in-review
+Status: done
 Blocked by: 89, 90, 91, 92
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -55,7 +55,7 @@ Branch: worktree-93-chat-backend
 - Attempts: 1
 - Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #104); one human-approved change to ticket 88's scenario c check
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -145,3 +145,7 @@ I claimed the ticket in the main checkout (`in-progress`, Claimed by, Branch). T
   2. An answer that starts with "Assumptions" and then lists all eight customers would pass, because the split leaves an empty result and the top-3 checks searched the whole answer. This is correct. Fixed in 42762ec: the top-3 checks also look only at the listed result, so that answer now fails. The check is stricter than before, and the answer-format rule (ticket 68) already puts the result first.
 - Hand-checked on seven answer shapes, all as intended: plain; C04 listed; assumptions first with all eight; bold "**Assumptions:**"; "### Assumptions"; C04 with no assumptions part; names only.
 - Real-model c after 42762ec: "3 passed in 27.52s".
+
+### Main session, 2026-11-17: merged
+
+- PR #104: CI `check` green. Codex re-reviewed 42762ec and had no new findings. Squash-merged.
