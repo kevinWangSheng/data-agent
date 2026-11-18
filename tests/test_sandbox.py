@@ -80,7 +80,8 @@ def test_a_reader_left_on_a_background_process_takes_no_output_of_the_next_comma
 ) -> None:
     """Codex PR review, round 2 return: the reader still waiting on the first command's output
     lost its pipe once `run_process` returned, and read the next command's pipe under the same
-    descriptor number once the background process wrote again."""
+    descriptor number once the background process wrote again. It fails so only on Linux: on
+    macOS closing the descriptor ends the blocked read."""
     sandbox = LocalSandbox(tmp_path, SKILLS)
     first = sandbox.execute("(sleep 6; echo late) & echo first", timeout=60)
     assert (first.exit_code, first.stdout) == (0, "first\n")
@@ -204,7 +205,7 @@ def test_docker_timeout_kills_the_command_inside_the_container(
 ) -> None:
     # Killing the docker client would leave the command running in the container, so the
     # supervisor runs it there; 124 is its exit code for a command it stopped.
-    docker.replies.append(Execution(124, "partial\n", "", False, seconds=1.1))
+    docker.replies.append(Execution(124, "partial\n", "", False, ran_seconds=1.1))
     done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("sleep 999", timeout=1)
     [exec_] = docker.verb("exec")
     after_container = exec_[exec_.index("-w") + 3 :]

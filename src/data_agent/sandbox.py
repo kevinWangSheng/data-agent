@@ -85,7 +85,7 @@ class Execution(NamedTuple):
     # The bytes of stdout and stderr past KEEP_BYTES, read and dropped.
     dropped: tuple[int, int] = (0, 0)
     # How long the process ran, to its end: its output may be read for longer.
-    seconds: float = 0.0
+    ran_seconds: float = 0.0
 
 
 # What the host keeps of each stream of a command, at most: past it the output is read and
@@ -170,7 +170,7 @@ def supervised(command: str, timeout: float) -> list[str]:
 def timeout_past_limit(done: Execution, timeout: float) -> Execution:
     """A supervised command's outcome: the supervisor's 124 past the limit is a timeout. The limit
     is checked against the time the supervisor ran, not the time its output was read."""
-    stopped = done.exit_code == TIMEOUT_EXIT and done.seconds >= timeout
+    stopped = done.exit_code == TIMEOUT_EXIT and done.ran_seconds >= timeout
     if done.timed_out or stopped:
         return done._replace(exit_code=None, timed_out=True)
     return done
