@@ -24,6 +24,8 @@ dbt 任务带 `--sandbox` 时，agent 多一个 MCP 工具 `dbt_execute`：参�
 - 我们是单机，workspace 本来就在宿主机上，不需要 SignalPilot 的 `sync_from_agent_sandbox`。
 - 现在网页的 dbt 运行把整个项目连同 DuckDB 文件拷进 workspace（`launcher.py:390-402`），`profiles.yml` 里的相对路径靠文件在项目里的位置（`sources.py:144-148`）。移出后由生成的 profile 指向 `<运行目录>/db/` 里的库文件（spec "凭据与只读"一节）。
 - 运行编号用 `--events-dir` 的目录名（和工单 97 一致），临时 schema 叫 `da_run_<运行编号>`。
+  - 注意：97 实际合入的沙箱运行编号是 `<events-dir 目录名>-<8 位 hex>`（`SandboxRun.of_run`，为避免同名的并发运行互删容器，见工单 97 Comments 偏离第 2 条）。
+  - 临时 schema 用不用这个后缀、`-` 等字符怎么变成合法的 schema 名，由你定，在 Comments 写明理由。
 - `--dbt-target` 的 CLI 默认是 `task`（现在的行为，Harbor 不用改）；网页后端传 `scratch` 是工单 100 的接线，本工单只提供选项和 `launcher.py` 的布局。
 - 临时 schema 运行结束后保留（照 SignalPilot，spec Further Notes）。
 - 现有 dbt 运行仍用 Bash 跑 dbt，本工单不动；切换到 `dbt_execute` 是工单 100 的事。
