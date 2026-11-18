@@ -15,7 +15,7 @@ from mcp.types import CallToolResult, TextContent
 from data_agent.gateway import DuckDBGateway
 from data_agent.mcp_server import build_multi_server, build_server
 from data_agent.run_config import CONFIG_NAMES, load_config
-from data_agent.sandbox import LocalSandbox
+from data_agent.sandbox import KEEP_BYTES, LocalSandbox
 
 SKILLS = Path("/opt/skills")
 
@@ -139,6 +139,34 @@ async def test_data_files_never_write_through_a_link_the_sandbox_made(
     error = await call_error(server, "sandbox_exec", {"command": "true", "data_files": ["query_1"]})
     assert "data" in error
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("make", ["mkfifo data/query_1.csv", "mkdir -p data/query_1.csv/x"])
+async def test_data_files_replace_what_the_sandbox_left_at_the_path(
+    server: MCPServer, workspace: Path, make: str
+) -> None:
+    """Codex review, round 1: opening a FIFO there blocked the server; the file is never opened,
+    only replaced by a new one (a directory there is an error)."""
+    await call(server, "query_database", {"sql": "SELECT 1 AS x"})
+    await call(server, "sandbox_exec", {"command": f"mkdir -p data && {make}"})
+    target = workspace / "data" / "query_1.csv"
+    if target.is_dir():
+        error = await call_error(
+            server, "sandbox_exec", {"command": "true", "data_files": ["query_1"]}
+        )
+        assert "query_1.csv" in error
+        return
+    await call(server, "sandbox_exec", {"command": "true", "data_files": ["query_1"]})
+    assert target.is_file() and target.read_text() == "x\n1\n"
+    assert [p.name for p in (workspace / "data").iterdir()] == ["query_1.csv"]
+
+
+async def test_a_stream_past_what_is_kept_says_so(server: MCPServer, workspace: Path) -> None:
+    command = f"head -c {KEEP_BYTES + 1000} /dev/zero | tr '\\0' o"
+    reply = await call(server, "sandbox_exec", {"command": command})
+    [saved] = (workspace / "sandbox_logs").glob("*.stdout.txt")
+    assert saved.stat().st_size == KEEP_BYTES
+    assert f"the first {KEEP_BYTES:,} bytes" in reply and "1,000 more" in reply
 
 
 async def test_reply_holds_exit_code_stdout_and_stderr(server: MCPServer) -> None:

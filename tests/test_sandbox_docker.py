@@ -5,6 +5,7 @@ colima mounts only $HOME into its VM: a directory elsewhere (pytest's tmp_path, 
 /var/folders) is empty in the container, so these workspaces live under ~/.cache.
 """
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -14,12 +15,15 @@ from pathlib import Path
 
 import pytest
 
+from data_agent.gateway import QueryResult
 from data_agent.run_config import REPO_ROOT, skills_path
 from data_agent.sandbox import (
     RUN_LABEL,
     SANDBOX_IMAGE,
     DockerSandbox,
     Execution,
+    QueryResults,
+    execute_tool,
     labelled,
     remove_run_containers,
 )
@@ -134,6 +138,28 @@ def test_timeout_stops_the_command_in_the_container(
     assert done.timed_out and done.stdout == "started\n"
     left = run(sandbox, "ps -eo args")
     assert "sleep 60" not in left.stdout
+
+
+def test_a_command_that_ignores_term_is_killed_and_times_out(
+    root: Path, sandboxes: list[DockerSandbox]
+) -> None:
+    sandbox = make(sandboxes, root)
+    done = run(sandbox, "trap '' TERM; echo started; sleep 60", timeout=2)
+    assert done.timed_out and done.stdout == "started\n"
+
+
+def test_data_files_go_into_a_data_directory_the_sandbox_made(
+    root: Path, sandboxes: list[DockerSandbox]
+) -> None:
+    """Commands run as the host's user, so the host can still write in what they make."""
+    sandbox = make(sandboxes, root)
+    results = QueryResults()
+    result_id = results.add(QueryResult(["x"], [(1,)]))
+    execute_tool(sandbox, results, "mkdir -p data && echo old > data/query_1.csv", 60, [])
+    reply = execute_tool(sandbox, results, "cat data/query_1.csv", 60, [result_id])
+    assert reply == "exit_code: 0\nstdout:\nx\n1\n"
+    owner = (root / "workspace" / "data").stat().st_uid
+    assert owner == os.getuid()
 
 
 def test_the_runs_container_is_removed(root: Path, sandboxes: list[DockerSandbox]) -> None:

@@ -2,13 +2,21 @@
 docker backend is checked by the docker commands it issues, against a stand-in for the docker CLI
 (`FakeDocker`). Real Docker is in tests/test_sandbox_docker.py (integration)."""
 
+import os
 import time
 from pathlib import Path
 
 import pytest
 from fake_docker import FakeDocker, container_of, install
 
-from data_agent.sandbox import RUN_LABEL, DockerSandbox, Execution, LocalSandbox, skill_text
+from data_agent.sandbox import (
+    KEEP_BYTES,
+    RUN_LABEL,
+    DockerSandbox,
+    Execution,
+    LocalSandbox,
+    skill_text,
+)
 
 SKILLS = Path("/opt/skills")
 
@@ -48,6 +56,16 @@ def test_a_timeout_returns_though_a_process_outside_the_group_keeps_the_output_o
     done = LocalSandbox(tmp_path, SKILLS).execute(command, timeout=1)
     assert time.monotonic() - started < 15
     assert done.timed_out
+
+
+def test_output_kept_in_memory_is_bounded_per_stream(tmp_path: Path) -> None:
+    # Codex review, round 1: the host buffered everything a command printed.
+    done = LocalSandbox(tmp_path, SKILLS).execute(
+        f"head -c {KEEP_BYTES + 5_000_000} /dev/zero | tr '\\0' o; echo err >&2", timeout=60
+    )
+    assert (done.exit_code, done.stderr) == (0, "err\n")
+    assert len(done.stdout) == KEEP_BYTES
+    assert done.dropped == (5_000_000, 0)
 
 
 def test_local_backend_keeps_credentials_out_of_the_command_environment(
@@ -135,6 +153,31 @@ def test_docker_timeout_kills_the_command_inside_the_container(
     start = exec_.index("timeout")
     assert exec_[start:] == ["timeout", "-k", "5", "7", "bash", "-c", "sleep 999"]
     assert (done.timed_out, done.exit_code, done.stdout) == (True, None, "partial\n")
+
+
+def test_docker_timeout_that_escalates_to_kill_is_a_timeout(
+    tmp_path: Path, docker: FakeDocker
+) -> None:
+    # Codex review, round 1: a command that ignores TERM is killed after the grace period, and
+    # `timeout` then exits 137, not 124.
+    docker.replies.append(Execution(137, "", "", False))
+    docker.exec_seconds = 1.2
+    done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("trap '' TERM; sleep 999", timeout=1)
+    assert done.timed_out
+
+
+def test_a_kill_before_the_limit_is_an_exit_code(tmp_path: Path, docker: FakeDocker) -> None:
+    docker.replies.append(Execution(137, "", "", False))
+    done = DockerSandbox(tmp_path, SKILLS, "run-1").execute("kill -9 $$", timeout=30)
+    assert (done.timed_out, done.exit_code) == (False, 137)
+
+
+def test_docker_commands_run_as_the_hosts_user(tmp_path: Path, docker: FakeDocker) -> None:
+    # Codex review, round 1: root in the container made root-owned files in the workspace,
+    # which the host could no longer write to (and root could make device nodes there).
+    DockerSandbox(tmp_path, SKILLS, "run-1").execute("true", timeout=30)
+    [run] = docker.verb("run")
+    assert flag_values(run, "--user") == [f"{os.getuid()}:{os.getgid()}"]
 
 
 def test_skill_directory_is_the_mount_in_docker_and_the_real_path_locally(tmp_path: Path) -> None:

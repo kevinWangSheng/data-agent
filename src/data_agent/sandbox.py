@@ -17,12 +17,13 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NamedTuple, Protocol
+from typing import IO, Literal, NamedTuple, Protocol
 
 from data_agent.gateway import QueryResult
 
@@ -38,10 +39,12 @@ SKILLS_MOUNT = "/skills"
 # Limits on each container, after a data-eng-bench task's 2 cores (plan §5); memory is a cap.
 CPUS = "2"
 MEMORY = "4g"
-# The container's `timeout` sends TERM at the limit and KILL this many seconds later; 124 is its
-# exit code for a command it stopped with TERM.
+# The container's `timeout` sends TERM at the limit and KILL this many seconds later. It exits
+# 124 for a command TERM stopped, 137 (128 + SIGKILL) for one it had to kill; 137 is a timeout
+# only once the limit has passed (the kernel's OOM killer also gives 137).
 KILL_GRACE_S = 5
 TIMEOUT_EXIT = 124
+KILLED_EXIT = 137
 # How long the docker client itself may take past a command's limit before it is killed too.
 CLIENT_MARGIN_S = 30
 # Any other docker call (start, list, remove).
@@ -76,6 +79,34 @@ class Execution(NamedTuple):
     stdout: str
     stderr: str
     timed_out: bool
+    # The bytes of stdout and stderr past KEEP_BYTES, read and dropped.
+    dropped: tuple[int, int] = (0, 0)
+
+
+# What the host keeps of each stream of a command, at most: past it the output is read and
+# dropped, so a command that prints without end cannot fill the server's memory.
+KEEP_BYTES = 10_000_000
+
+
+class Capture:
+    """Reads a pipe to its end in a thread of its own, keeping its first KEEP_BYTES."""
+
+    def __init__(self, pipe: IO[bytes]) -> None:
+        self.kept = bytearray()
+        self.dropped = 0
+        self.thread = threading.Thread(target=self.read, args=(pipe.fileno(),), daemon=True)
+        self.thread.start()
+
+    def read(self, fd: int) -> None:
+        # A pipe closed under a blocked read (`run_process` gave up on it) ends the reading.
+        with contextlib.suppress(OSError):
+            while chunk := os.read(fd, 65536):
+                room = KEEP_BYTES - len(self.kept)
+                self.kept += chunk[:room]
+                self.dropped += max(0, len(chunk) - room)
+
+    def text(self) -> str:
+        return bytes(self.kept).decode(errors="replace")
 
 
 def run_process(
@@ -84,9 +115,11 @@ def run_process(
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Execution:
-    """Run `argv` to its end or for `timeout` seconds; past that its whole process group is
-    killed and the output it wrote so far comes back with `timed_out`. A process that left the
-    group may hold the output open: the reading stops KILL_GRACE_S after the kill."""
+    """Run `argv` to its end or for `timeout` seconds, until its output closes too. Past that its
+    whole process group is killed and the output it wrote so far comes back with `timed_out`. A
+    process that left the group may hold the output open: the reading then stops KILL_GRACE_S
+    after the kill."""
+    deadline = time.monotonic() + timeout
     proc = subprocess.Popen(
         list(argv),
         cwd=cwd,
@@ -94,28 +127,36 @@ def run_process(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
         start_new_session=True,
     )
+    assert proc.stdout is not None and proc.stderr is not None
+    captures = (Capture(proc.stdout), Capture(proc.stderr))
     try:
-        out, err = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
+        for capture in captures:
+            capture.thread.join(max(0.0, deadline - time.monotonic()))
+        timed_out = any(capture.thread.is_alive() for capture in captures)
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        try:
-            out, err = proc.communicate(timeout=KILL_GRACE_S)
-        except subprocess.TimeoutExpired as still_open:
-            # What was read so far, as bytes (subprocess decodes only a finished read).
-            out, err = (
-                part.decode(errors="replace") if isinstance(part, bytes) else (part or "")
-                for part in (still_open.stdout, still_open.stderr)
-            )
-            for pipe in (proc.stdout, proc.stderr):
-                if pipe is not None:
-                    pipe.close()
-            proc.wait()
-        return Execution(None, out, err, True)
-    return Execution(proc.returncode, out, err, False)
+        timed_out = True
+    if timed_out:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        for capture in captures:
+            capture.thread.join(KILL_GRACE_S)
+    out, err = captures
+    done = Execution(
+        None if timed_out else proc.returncode,
+        out.text(),
+        err.text(),
+        timed_out,
+        (out.dropped, err.dropped),
+    )
+    # A reader still blocked (on a process outside the group) holds its own descriptor.
+    if not any(capture.thread.is_alive() for capture in captures):
+        proc.stdout.close()
+        proc.stderr.close()
+    return done
 
 
 def local_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -183,6 +224,9 @@ class DockerSandbox:
         argv = [
             *("run", "-d", "--init", "--pull", "never", "--name", name),
             *("--label", f"{RUN_LABEL}={self.run_id}", "--label", f"{OWNER_LABEL}={os.getpid()}"),
+            # As the host's user, so the files it makes in the workspace stay the host's to change
+            # (on a Linux host; Docker Desktop and colima map ownership anyway).
+            *("--user", f"{os.getuid()}:{os.getgid()}"),
             *(() if self.network else ("--network", "none")),
             *("--cpus", CPUS, "--memory", MEMORY),
             *("--mount", f"type=bind,source={self.workspace.resolve()},target={WORKDIR}"),
@@ -210,9 +254,11 @@ class DockerSandbox:
             *("exec", "-w", WORKDIR, self.container),
             *("timeout", "-k", str(KILL_GRACE_S), limit, "bash", "-c", command),
         ]
+        started = time.monotonic()
         done = run_docker(argv, timeout + KILL_GRACE_S + CLIENT_MARGIN_S)
-        if done.timed_out or done.exit_code == TIMEOUT_EXIT:
-            return Execution(None, done.stdout, done.stderr, True)
+        killed = done.exit_code == KILLED_EXIT and time.monotonic() - started >= timeout
+        if done.timed_out or done.exit_code == TIMEOUT_EXIT or killed:
+            return done._replace(exit_code=None, timed_out=True)
         return done
 
 
@@ -376,11 +422,12 @@ def csv_text(result: QueryResult) -> str:
     return out.getvalue()
 
 
-def write_file(workspace: Path, directory: str, name: str, text: str, replace: bool) -> str:
+def write_file(workspace: Path, directory: str, name: str, data: bytes, replace: bool) -> str:
     """Write `directory/name` in the workspace; returns its workspace-relative path. The sandbox
-    can change the workspace, so neither the directory nor the file may be a link: the write never
-    leaves the workspace (as `evals/dab_server.py` saves results). A file that exists already is
-    replaced only when `replace`."""
+    can change the workspace, so the write opens nothing that is there already: the directory
+    may not be a link (as `evals/dab_server.py` saves results), and the file is always a new
+    one, which, when `replace`, then takes the place of whatever has the name (a file, a link, a
+    FIFO), never opened."""
     try:
         root = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
         try:
@@ -390,18 +437,24 @@ def write_file(workspace: Path, directory: str, name: str, text: str, replace: b
         finally:
             os.close(root)
         try:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
-            flags |= os.O_TRUNC if replace else os.O_EXCL
-            fd = os.open(name, flags, 0o644, dir_fd=folder)
+            new = f".{name}.{uuid.uuid4().hex[:8]}" if replace else name
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            fd = os.open(new, flags, 0o644, dir_fd=folder)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            if replace:
+                try:
+                    os.rename(new, name, src_dir_fd=folder, dst_dir_fd=folder)
+                except OSError:
+                    os.unlink(new, dir_fd=folder)
+                    raise
         finally:
             os.close(folder)
     except OSError as exc:
         raise SandboxError(
             f"could not write {directory}/{name} in the workspace ({exc.strerror}); "
-            f"{directory}/ must be a directory, not a link"
+            f"{directory}/ must be a directory, not a link, and {name} not a directory"
         ) from exc
-    with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
     return f"{directory}/{name}"
 
 
@@ -423,15 +476,22 @@ def reply_text(done: Execution, workspace: Path) -> str:
     if len(stdout) + len(stderr) > OUTPUT_CHARS:
         stdout, stderr = clipped(done.stdout, done.stderr, OUTPUT_CHARS)
         stem = uuid.uuid4().hex[:12]
-        for stream, whole, shown, part in (
-            ("stdout", done.stdout, stdout, "first"),
-            ("stderr", done.stderr, stderr, "last"),
+        for stream, whole, shown, part, dropped in (
+            ("stdout", done.stdout, stdout, "first", done.dropped[0]),
+            ("stderr", done.stderr, stderr, "last", done.dropped[1]),
         ):
             if len(shown) < len(whole):
-                path = write_file(workspace, LOGS_DIR, f"{stem}.{stream}.txt", whole, False)
+                saved = whole.encode()
+                path = write_file(workspace, LOGS_DIR, f"{stem}.{stream}.txt", saved, False)
+                kept = (
+                    f"the first {len(saved):,} bytes of it are in {path} ({dropped:,} more "
+                    "were not kept)"
+                    if dropped
+                    else f"all of it is in {path}"
+                )
                 notes.append(
-                    f"{stream} is {len(whole)} characters; the {part} {len(shown)} are shown "
-                    f"above, all of it is in {path}"
+                    f"{stream} is {len(whole):,} characters; the {part} {len(shown):,} are "
+                    f"shown above, {kept}"
                 )
     sections = [] if done.exit_code is None else [f"exit_code: {done.exit_code}"]
     if stdout:
@@ -456,7 +516,8 @@ def execute_tool(
     if not 1 <= timeout_seconds <= MAX_TIMEOUT_S:
         raise SandboxError(f"timeout_seconds must be 1 to {MAX_TIMEOUT_S}, got {timeout_seconds}")
     for result_id, result in results.picked(data_files).items():
-        write_file(sandbox.workspace, DATA_DIR, f"{result_id}.csv", csv_text(result), True)
+        data = csv_text(result).encode()
+        write_file(sandbox.workspace, DATA_DIR, f"{result_id}.csv", data, True)
     done = sandbox.execute(command, timeout_seconds)
     text = reply_text(done, sandbox.workspace)
     if done.timed_out:

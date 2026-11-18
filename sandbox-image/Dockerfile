@@ -13,8 +13,11 @@ RUN pip install --no-cache-dir \
 
 # dbt reads the stub profile from here, never a profile in the workspace. bash writes it before
 # each command (bash_env.sh), so it names the profile of the project the workspace has then.
+# Commands run as the host's user (`docker run --user`), who has no home in the image: /tmp is
+# writable by anyone, and pip installs there (a user install) when site-packages is not.
 ENV DBT_PROFILES_DIR=/tmp/stub-profiles \
-    BASH_ENV=/opt/sandbox/bash_env.sh
+    BASH_ENV=/opt/sandbox/bash_env.sh \
+    HOME=/tmp
 COPY stub_profile.py bash_env.sh /opt/sandbox/
 
 WORKDIR /workspace
