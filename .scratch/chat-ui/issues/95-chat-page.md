@@ -1,6 +1,6 @@
 # 95 — 对话页面（A「对话流」）
 
-Status: in-review
+Status: done
 Blocked by: 94（93 只挡合并：人 2026-11-17 定提前开工，见 Comments）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -51,7 +51,7 @@ Branch: worktree-95-chat-page
 - Attempts: 3
 - Review rounds: 2
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #100) after two returns
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -213,3 +213,14 @@ Each returned finding, what changed, and its test. The new test is shown failing
 - Looked at `runs/95-composer-narrow/after-375.png` in the worktree: running state, box full width, buttons on the row below, placeholder whole.
 - No further Opus review: both return rounds are used, and this commit only changes the composer row's classes. Any later finding goes in as a known limitation.
 - Merge waits for 93: the Playwright main flow against the real backend, then a hands-on pass with screenshots for the human.
+
+### Main session, 2026-11-17: Playwright on the real backend, merged
+
+- After 93 merged, the branch was rebased locally onto main (clean) and checked:
+  - `pnpm --dir web test`: 275 passed;
+  - `build:local`: ok;
+  - `tsc -p e2e/tsconfig.json`: ok;
+  - `playwright test` (real `data-agent web`, real model): "2 passed (41.4s)". The main flow (send, live cards, clarification option, follow-up) took 31.5s.
+  - Chromium had to be reinstalled first (`playwright install chromium`).
+- The human said (2026-11-17) they will verify the page themselves. A started extra repeat run was stopped, and no hands-on screenshots were taken by the main session.
+- PR #100: no force push. `gh pr update-branch` merged main into the branch, and its content equals the locally rebased and tested tree. CI `check` green on the updated branch. Squash-merged.
