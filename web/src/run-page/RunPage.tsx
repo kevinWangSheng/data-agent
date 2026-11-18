@@ -12,12 +12,10 @@ import { ReplayControls } from './ReplayControls'
 import { Side } from './Side'
 import { TimeAxis } from './TimeAxis'
 import { buildRows, defaultExpanded, isIssue, isSql, sectionsOf, type Item } from './outline'
-import { autoplaySpeed, replayClock, revealedAt } from './replay'
+import { autoplaySpeed, replayClock, revealedAt, speedsWith } from './replay'
 import type { Filter, Route } from './route'
 import { timeline } from './timeline'
 import { StatusChip } from './ui'
-
-const SPEEDS = [1, 10, 50, 200, 1000] as const
 
 type Navigate = (patch: Partial<Route>, push?: boolean) => void
 
@@ -55,7 +53,7 @@ export function RunPage({
   const [speed, setSpeed] = useState<number>(autoplay ? autoSpeed : 10)
   const [skipIdle, setSkipIdle] = useState(true)
   const [follow, setFollow] = useState(autoplay)
-  const speeds = useMemo(() => (autoplay && !SPEEDS.some((s) => s === autoSpeed) ? [autoSpeed, ...SPEEDS].sort((a, b) => a - b) : SPEEDS), [autoplay, autoSpeed])
+  const speeds = useMemo(() => speedsWith(autoplay ? autoSpeed : null), [autoplay, autoSpeed])
   const [expanded, setExpanded] = useState<Set<string> | null>(null)
 
   const times = useMemo(() => eventTimes(events), [events])

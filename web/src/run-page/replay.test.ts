@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'vitest'
 
-import { autoplaySpeed, IDLE_CAP_MS, replayClock, revealedAt } from './replay'
+import { autoplaySpeed, IDLE_CAP_MS, replayClock, revealedAt, SPEEDS, speedsWith } from './replay'
+
+describe('speedsWith', () => {
+  test('the fixed speeds, with the autoplay speed in order when it is not one of them', () => {
+    expect(speedsWith(null)).toEqual(SPEEDS)
+    expect(speedsWith(10)).toEqual(SPEEDS)
+    expect(speedsWith(1.2)).toEqual([1, 1.2, 10, 50, 200, 1000])
+  })
+})
 
 describe('autoplaySpeed', () => {
   test('plays a run in about the target time', () => {

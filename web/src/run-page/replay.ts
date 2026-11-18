@@ -4,6 +4,14 @@
 /** Longest pause between two events while idle gaps are skipped. */
 export const IDLE_CAP_MS = 1500
 
+/** The speeds the replay controls offer. */
+export const SPEEDS = [1, 10, 50, 200, 1000] as const
+
+/** The offered speeds, with `autoSpeed` among them when the replay starts at it. */
+export function speedsWith(autoSpeed: number | null): readonly number[] {
+  return autoSpeed !== null && !SPEEDS.some((s) => s === autoSpeed) ? [autoSpeed, ...SPEEDS].sort((a, b) => a - b) : SPEEDS
+}
+
 /**
  * Each event's place on the replay clock, in milliseconds from the first event. An unknown time
  * (null) adds no wait; a time earlier than the one before it adds none either, so the clock never

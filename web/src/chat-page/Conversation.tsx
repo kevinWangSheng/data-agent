@@ -1,18 +1,15 @@
-// One conversation: its header with the cumulative cost (spec decision 7), the turns in one column,
-// and the message box. A message sent while a turn runs goes into that turn (spec decision 9); the
-// backend decides, and the box only says which it will be. A single run takes no follow-up.
+// One live conversation: its transcript (./Transcript.tsx) and the message box. A message sent while
+// a turn runs goes into that turn (spec decision 9); the backend decides, and the box only says which
+// it will be. A single run takes no follow-up.
 
 import { Send, Square } from 'lucide-react'
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 
 import type { LiveSource } from '../data/source'
-import { errorText, fmtCost } from '../format'
+import { errorText } from '../format'
 import { answerable, composer, conversationTitle, type Composer } from './layout'
-import { Turn } from './Turn'
+import { Transcript } from './Transcript'
 import { useConversation } from './useConversation'
-
-/** How close to the bottom (px) still counts as reading the latest, so new content scrolls into view. */
-const STICK_PX = 160
 
 /** The message box's words in each of its modes (a single run has no box). */
 const BOX: Record<Exclude<Composer, 'none'>, { placeholder: string; send: string; hint: string }> = {
@@ -44,7 +41,6 @@ export function Conversation({
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const input = useRef<HTMLTextAreaElement>(null)
-  const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
 
   const running = row?.running ?? false
@@ -64,12 +60,6 @@ export function Conversation({
     if (wasRunning.current !== null && wasRunning.current !== running) onActivity()
     wasRunning.current = running
   }, [row, running, onActivity])
-
-  const size = view?.turns.reduce((n, t) => n + t.run.steps.length + t.run.narration.length + t.steers.length + 1, 0) ?? 0
-  useLayoutEffect(() => {
-    const el = scroller.current
-    if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [size, running])
 
   const post = async (text: string, fromBox: boolean) => {
     setBusy(true)
@@ -112,44 +102,19 @@ export function Conversation({
   if (!view) {
     return <div className="p-8 text-ink-3">{error ? <div className="banner banner-fail">Could not load the conversation: {error}</div> : `Loading ${id}…`}</div>
   }
-  const title = conversationTitle(id, view.singleRun, view.turns[0]?.message)
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line bg-panel px-4 py-2">
-        <h1 className="min-w-0 max-w-[60%] truncate text-[14px] font-semibold" title={title}>
-          {title}
-        </h1>
-        {view.singleRun && <span className="chip chip-na">SINGLE RUN</span>}
-        <div className="flex-1" />
-        <span className="text-[12px] text-ink-2" title="The sum of the turns' costs">
-          Conversation cost <span className="mono font-medium">{view.costUsd === null ? '—' : fmtCost(view.costUsd)}</span>
-        </span>
-      </div>
-      {error && <div className="banner banner-fail mx-4 mt-2 text-[12px]">Lost touch with the backend: {error}</div>}
-      <div
-        ref={scroller}
-        className="min-h-0 flex-1 overflow-auto px-4 pt-5 pb-10"
-        onScroll={(e) => {
-          const el = e.currentTarget
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_PX
-        }}
-      >
-        <div className="mx-auto flex max-w-3xl flex-col gap-6">
-          {view.turns.map((turn, i) => (
-            <Turn
-              key={turn.runId}
-              turn={turn}
-              answerable={!busy && answerable(view, i, running)}
-              onPick={(option) => void post(option, false)}
-              runHref={runHref(turn.runId)}
-              onGo={onGo}
-            />
-          ))}
-          {view.turns.length === 0 && <div className="py-16 text-center text-ink-3">Ask a question about your data. The agent picks the data sources it needs.</div>}
-        </div>
-      </div>
-      <div className="border-t border-line bg-panel px-4 py-3">
-        {view.singleRun ? (
+    <Transcript
+      view={view}
+      title={conversationTitle(id, view.singleRun, view.turns[0]?.message)}
+      stick={stick}
+      canAnswer={(i) => !busy && answerable(view, i, running)}
+      onPick={(option) => void post(option, false)}
+      runHref={runHref}
+      onGo={onGo}
+      notice={error && <div className="banner banner-fail mx-4 mt-2 text-[12px]">Lost touch with the backend: {error}</div>}
+      empty={<div className="py-16 text-center text-ink-3">Ask a question about your data. The agent picks the data sources it needs.</div>}
+      footer={
+        view.singleRun ? (
           <div className="mx-auto max-w-3xl text-[12px] text-ink-3">This run was started on its own (command line or the run form), so it takes no follow-up. Start a new conversation to ask more.</div>
         ) : (
           <>
@@ -177,17 +142,15 @@ export function Conversation({
                 </button>
               </div>
             </div>
-            <div className="mx-auto mt-1 max-w-3xl text-[10.5px] text-ink-3">
-              {box.hint}
-            </div>
+            <div className="mx-auto mt-1 max-w-3xl text-[10.5px] text-ink-3">{box.hint}</div>
             {actionError && (
               <div className="banner banner-fail mx-auto mt-2 max-w-3xl text-[12px]" role="alert">
                 {actionError}
               </div>
             )}
           </>
-        )}
-      </div>
-    </div>
+        )
+      }
+    />
   )
 }
