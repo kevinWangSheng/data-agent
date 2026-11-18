@@ -572,3 +572,26 @@ def test_the_web_command_refuses_a_runs_dir_inside_a_dbt_project(tmp_path: Path)
     done = web_command(runs_dir, sources)
     assert done.returncode != 0
     assert "dbt_project" in done.stderr
+
+
+def test_a_dbt_runs_copy_leaves_credential_files_behind(tmp_path: Path, recorder: Recorder) -> None:
+    """Review round 1 (Codex P1): sandbox_exec reads any file in the workspace, so the copy
+    carries no credential file, nor a link whose target is one."""
+    project = dbt_project(tmp_path, with_db=True)
+    (project / ".env").write_text("PGPASSWORD=x")
+    (project / "keys").mkdir()
+    (project / "keys" / "server.pem").write_text("-----BEGIN-----")
+    secret = tmp_path / ".pgpass"
+    secret.write_text("host:5432:*:u:pw")
+    (project / "models" / "linked.sql").symlink_to(secret)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    source = DataSource(name="shop", duckdb=project / "shop.duckdb", dbt_project=project)
+    with TestClient(create_app(runs_dir, [source], recorder)) as client:
+        assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
+    [(_, cwd)] = recorder.calls
+    assert (cwd / "models" / "a.sql").is_file()
+    assert not (cwd / ".env").exists()
+    assert not (cwd / "keys" / "server.pem").exists()
+    assert not (cwd / "models" / "linked.sql").exists()
+    assert (project / ".env").is_file()  # the original is untouched

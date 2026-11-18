@@ -99,9 +99,12 @@ def test_the_cli_switch_reaches_the_sessions_tools(
 ) -> None:
     db = tmp_path / "x.duckdb"
     duckdb.connect(str(db)).close()
+    # Outside the database's directory: a docker run refuses a database in its workspace.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     argv = [
         "run",
-        *("--type", "query", "--workspace", str(tmp_path), "--duckdb", str(db)),
+        *("--type", "query", "--workspace", str(workspace), "--duckdb", str(db)),
         *("--config", "no-context", "--events-dir", str(tmp_path / "events")),
         *("--task", "How many tables are there?", *flags),
     ]

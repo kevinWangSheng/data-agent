@@ -4,7 +4,8 @@ One run at a time. Each run gets `<runs_dir>/<id>/` for its event file and
 `<runs_dir>/<id>/workspace/` as its working directory: empty for a query run, a copy of the data
 source's dbt project for a dbt run. The copy leaves out `target/` and `logs/`, and what holds the
 database or its connection (ticket 99, spec "凭据与只读"): the DuckDB file goes to
-`<runs_dir>/<id>/db/` instead, and the project's `profiles.yml` stays behind. The run's dbt reaches
+`<runs_dir>/<id>/db/` instead, and the project's `profiles.yml` and its credential files (`.env*`,
+keys, or links to them; ticket 100) stay behind. The run's dbt reaches
 the database through dbt_execute, whose `scratch` profile the run writes to
 `<runs_dir>/<id>/profiles/` (`data_agent.dbt_execute.DbtRun`); the sandbox mounts only the
 workspace, so it sees neither. A query run reads the DuckDB file in place through the read-only
@@ -37,6 +38,7 @@ from data_agent.run_config import CONFIG_NAMES
 from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap
+from data_agent.workspace_guard import is_credential
 
 TASK_TYPES = ("query", "dbt")
 # The only sandbox backend the web backend gives a run: `local` would run the agent's commands on
@@ -403,13 +405,24 @@ def prepare_workspace(
     def is_database(entry: Path) -> bool:
         return entry.is_file() and any(os.path.samefile(entry, f) for f in database_files)
 
+    def is_credential_file(entry: Path) -> bool:
+        """A credential file by its name, or a link to one (the copy follows links): sandbox_exec
+        reads any file in the workspace (ADR-0010)."""
+        return is_credential(entry.name) or (
+            entry.is_symlink() and is_credential(entry.resolve().name)
+        )
+
     def ignore(directory: str, names: list[str]) -> list[str]:
         skipped: list[str] = list(NOT_COPIED) if Path(directory) == project else []
         skipped += [
             name
             for name in names
             if name not in skipped
-            and (name == PROFILES_FILE or is_database(Path(directory) / name))
+            and (
+                name == PROFILES_FILE
+                or is_database(Path(directory) / name)
+                or is_credential_file(Path(directory) / name)
+            )
         ]
         for name in set(names) - set(skipped):
             entry = Path(directory) / name

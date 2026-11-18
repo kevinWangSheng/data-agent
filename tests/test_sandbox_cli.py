@@ -159,3 +159,29 @@ async def test_server_with_the_local_backend_serves_sandbox_exec(tmp_path: Path)
     [content] = result.content
     assert isinstance(content, TextContent)
     assert content.text == f"exit_code: 0\nstdout:\n{workspace.resolve()}\n"
+
+
+@pytest.mark.parametrize("how", ["file", "link"])
+def test_a_docker_run_refuses_a_duckdb_file_inside_its_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], how: str
+) -> None:
+    """Review round 1 (Codex P1): the container mounts the workspace writable, so a database
+    file in it would be the agent's to change (ADR-0010: the sandbox sees no database file). A
+    link in the workspace to the file is refused too: Write and Edit follow it."""
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    if how == "file":
+        db = make_db(workspace / "shop.duckdb")
+    else:
+        db = workspace / "shop.duckdb"
+        db.symlink_to(make_db(tmp_path / "shop.duckdb"))
+    args = [
+        *("run", "--task", "q", "--type", "query", "--workspace", str(workspace)),
+        *("--duckdb", str(db), "--config", "full", "--events-dir", str(tmp_path / "events")),
+    ]
+    with pytest.raises(SystemExit) as exited:
+        cli.main(args)
+    assert exited.value.code == 2
+    assert "inside the workspace" in capsys.readouterr().err
+    assert not (tmp_path / "events").exists()

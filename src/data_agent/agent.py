@@ -1967,6 +1967,25 @@ def stopped_by_harness(
     return spend.stopped_fields(subtype, terminal_reason, error)
 
 
+def check_databases_outside(task: Task) -> None:
+    """ConfigError when a DuckDB file of the task, as given or once links are followed, is inside
+    the workspace: the docker sandbox mounts the workspace writable, and ADR-0010 keeps database
+    files out of the sandbox's reach. (The local backend runs inside a benchmark's own container,
+    where the task's database is in the project: a known limitation.)"""
+    root = task.workspace.resolve()
+    for source in task.databases:
+        if source.duckdb is None:
+            continue
+        given = Path(os.path.abspath(source.duckdb))
+        for path in (given, source.duckdb.resolve()):
+            if path == root or root in path.parents:
+                raise ConfigError(
+                    f"the DuckDB file {source.duckdb} is inside the workspace, which the docker "
+                    "sandbox mounts writable; keep it outside the workspace (--sandbox local is "
+                    "only for a run inside an isolated container)"
+                )
+
+
 async def run(
     task: Task,
     config: RunConfig,
@@ -1993,11 +2012,13 @@ async def run(
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     # Looked up on the module, so a test can stand in for the docker CLI (tests/fake_docker.py).
+    settings = ModelSettings.from_env(env)
     if sandbox == "docker" and not sandboxes.docker_on_path():
         raise ConfigError(
             "docker is not on PATH; the docker sandbox (the default --sandbox) needs Docker"
         )
-    settings = ModelSettings.from_env(env)
+    if sandbox == "docker":
+        check_databases_outside(task)
     database_env: dict[str, str] = {}
     for variable in task.postgres_envs:
         # The URL variable goes into the SDK env on top of `sdk_env()`: a name a local sandbox
