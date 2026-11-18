@@ -19,7 +19,7 @@ import fnmatch
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -42,10 +42,12 @@ CREDENTIAL_NAMES = (
     "id_ecdsa*",
     "id_ed25519*",
 )
-# A dbt profile is a credential file when it writes a secret in (`holds_literal_secret`): the keys
-# dbt's adapters keep passwords, tokens and private keys under.
-# A key is secret-named when it is `pass` or its name (lower case) holds one of these, so
-# `db_password`, `s3_secret_access_key` (dbt-duckdb's settings) and `aws_session_token` count.
+# A dbt profile is a credential file when it writes a secret in (`holds_literal_secret`). A key is
+# secret-named when it is one of `PROFILE_SECRET_NAMES` or its name (lower case) holds one of
+# `PROFILE_SECRET_PARTS`, so `db_password`, `s3_secret_access_key` (dbt-duckdb's settings) and
+# `aws_session_token` count; unless it ends in `PROFILE_REFERENCE_SUFFIXES`, a path or address
+# to the secret (`private_key_path`, `token_uri`).
+PROFILE_SECRET_NAMES = frozenset({"pass", "keyfile_json"})
 PROFILE_SECRET_PARTS = (
     "password",
     "passphrase",
@@ -53,9 +55,9 @@ PROFILE_SECRET_PARTS = (
     "token",
     "private_key",
     "api_key",
-    "keyfile",
     "credential",
 )
+PROFILE_REFERENCE_SUFFIXES = ("_path", "_file", "_uri", "_url")
 # `env_var('NAME')` with no default (filters may follow): the value comes from the environment.
 ENV_VAR_ONLY = re.compile(r"""^\{\{\s*env_var\(\s*(['"])[^'"]*\1\s*\)(?:\s*\|\s*\w+)*\s*\}\}$""")
 # The file-name patterns ripgrep's `--type` stands for (`rg --type-list`, ripgrep 14), for the
@@ -126,48 +128,52 @@ def credential_files(workspace: Path) -> list[Path]:
     found: list[Path] = []
     for root, directories, files in os.walk(workspace):
         here = Path(root)
-        found += [here / name for name in sorted(directories) if _credential_entry(here / name)]
+        found += [
+            here / name for name in directories if named_or_linked(here / name, is_credential)
+        ]
         # Not into a credential directory (listed already), nor through a link (os.walk's own rule).
         directories[:] = [name for name in directories if not is_credential(name)]
         for name in sorted(files):
             entry = here / name
-            if _credential_entry(entry) or (is_profile(entry) and holds_literal_secret(entry)):
+            if named_or_linked(entry, is_credential) or (
+                named_or_linked(entry, is_profile_name) and holds_literal_secret(entry)
+            ):
                 found.append(entry)
     # Sorted: os.walk follows the file system's listing order, which differs between systems.
     return sorted(entry.relative_to(workspace) for entry in found)
 
 
-def is_profile(entry: Path) -> bool:
-    """A dbt profile by its name, or a link to one under any name."""
-    return entry.name == PROFILES_FILE or (
-        entry.is_symlink() and entry.resolve().name == PROFILES_FILE
-    )
+def is_profile_name(name: str) -> bool:
+    return name == PROFILES_FILE
 
 
-def _credential_entry(entry: Path) -> bool:
-    """A credential by its name, or a link to one."""
-    return is_credential(entry.name) or (entry.is_symlink() and is_credential(entry.resolve().name))
+def named_or_linked(entry: Path, named: Callable[[str], bool]) -> bool:
+    """`entry`'s name passes `named`, or it is a link whose target's does (under any name of its
+    own). `os.path.realpath`, unlike `Path.resolve`, does not raise on a link loop."""
+    return named(entry.name) or (entry.is_symlink() and named(Path(os.path.realpath(entry)).name))
 
 
 def holds_literal_secret(profile: Path) -> bool:
     """A dbt profile with a secret written into it: a secret-named key (`_secret_named`, at any
     depth, also inside a list) whose value is not empty and not only `env_var('NAME')` (a
-    default given to env_var is written in); a mapping under such a key is checked key by key.
-    The file is parsed (as JSON, else as the YAML subset `yaml_lite` reads), so quoting and flow
-    style hide no key. A stub profile, or one that reads its secrets from the environment, holds
-    none. A profile that cannot be read or parsed counts as holding one."""
+    default given to env_var is written in); a mapping under such a key is checked key by key,
+    a list under it by its items. The file is parsed (as JSON, else as the YAML subset
+    `yaml_lite` reads), so quoting and flow style hide no key. A stub profile, or one that reads
+    its secrets from the environment, holds none. A profile that cannot be read or parsed (also:
+    nested past the recursion limit) counts as holding one; so does one using anchors or tags,
+    which `yaml_lite` does not read."""
     try:
         text = profile.read_text(errors="replace")
     except OSError:
         return True
     try:
-        document = json.loads(text)
-    except ValueError:
         try:
+            document = json.loads(text)
+        except ValueError:
             document = yaml_lite.load(text)
-        except yaml_lite.YamlLiteError:
-            return True
-    return _holds_secret(document)
+        return _holds_secret(document)
+    except (yaml_lite.YamlLiteError, RecursionError):
+        return True
 
 
 def _holds_secret(node: object) -> bool:
@@ -177,8 +183,15 @@ def _holds_secret(node: object) -> bool:
     if not isinstance(node, dict):
         return False
     for key, value in cast("dict[object, object]", node).items():
-        if isinstance(value, dict | list):
+        if isinstance(value, dict):
             if _holds_secret(value):
+                return True
+        elif isinstance(value, list):
+            items = cast("list[object]", value)
+            if _holds_secret(items) or (
+                _secret_named(str(key))
+                and any(_written_in(item) for item in items if not isinstance(item, dict | list))
+            ):
                 return True
         elif _secret_named(str(key)) and _written_in(value):
             return True
@@ -186,16 +199,22 @@ def _holds_secret(node: object) -> bool:
 
 
 def _secret_named(key: str) -> bool:
-    """`key` names a secret (`PROFILE_SECRET_PARTS`). A key holding a backslash is taken as one:
+    """`key` names a secret (`PROFILE_SECRET_NAMES`, `PROFILE_SECRET_PARTS`; not a path or
+    address to one, `PROFILE_REFERENCE_SUFFIXES`). A key holding a backslash is taken as one:
     `yaml_lite` leaves a double-quoted key's escapes as written, and `"pass\\u0077ord"` is
     `password` to dbt."""
     name = key.lower()
-    return "\\" in name or name == "pass" or any(part in name for part in PROFILE_SECRET_PARTS)
+    if "\\" in name or name in PROFILE_SECRET_NAMES:
+        return True
+    return not name.endswith(PROFILE_REFERENCE_SUFFIXES) and any(
+        part in name for part in PROFILE_SECRET_PARTS
+    )
 
 
 def _written_in(value: object) -> bool:
-    """A scalar value that is in the file: not empty, not only `env_var('NAME')`."""
-    if value is None:
+    """A scalar value that is in the file: not empty, not only `env_var('NAME')`; a switch
+    (`use_token: false`) is none."""
+    if value is None or isinstance(value, bool):
         return False
     if not isinstance(value, str):
         return True

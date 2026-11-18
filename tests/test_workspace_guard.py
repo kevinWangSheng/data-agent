@@ -741,3 +741,36 @@ def test_a_link_to_a_profile_with_a_secret_is_a_credential_file(tmp_path: Path) 
     (tmp_path / "ws").mkdir()
     (tmp_path / "ws" / "connection.yml").symlink_to(tmp_path / "home" / "profiles.yml")
     assert credential_files(tmp_path / "ws") == [Path("connection.yml")]
+
+
+@pytest.mark.parametrize(
+    ("line", "listed"),
+    [
+        # A path or an address to a secret is not the secret.
+        ("keyfile: /secrets/sa.json", False),
+        ("private_key_path: /keys/rsa.p8", False),
+        ("token_uri: https://oauth2.example/token", False),
+        ("use_token: false", False),
+        # A list under a secret-named key holds the secret.
+        ("api_key: [hunter2]", True),
+        ('keyfile_json: \'{"private_key": "abc"}\'', True),
+    ],
+)
+def test_a_profile_key_naming_a_path_or_a_switch_is_no_secret(
+    tmp_path: Path, line: str, listed: bool
+) -> None:
+    """Ticket 100 return round 2 (eng:code-review): name-part matching refused BigQuery's
+    keyfile path and Snowflake's private_key_path, and let a list of secrets through."""
+    (tmp_path / "profiles.yml").write_text(PROFILE.format(line=line))
+    assert credential_files(tmp_path) == ([Path("profiles.yml")] if listed else [])
+
+
+def test_a_profile_nested_past_the_recursion_limit_counts_as_holding_one(tmp_path: Path) -> None:
+    (tmp_path / "profiles.yml").write_text("[" * 100_000 + "]" * 100_000)
+    assert credential_files(tmp_path) == [Path("profiles.yml")]
+
+
+def test_a_link_loop_is_no_credential_file_and_no_crash(tmp_path: Path) -> None:
+    """eng:code-review: Path.resolve raises on a link loop (Python 3.12)."""
+    (tmp_path / "loop.yml").symlink_to(tmp_path / "loop.yml")
+    assert credential_files(tmp_path) == []

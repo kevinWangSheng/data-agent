@@ -37,7 +37,7 @@ from data_agent.run_config import CONFIG_NAMES
 from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap
-from data_agent.workspace_guard import is_credential, is_profile
+from data_agent.workspace_guard import is_credential, is_profile_name, named_or_linked
 
 TASK_TYPES = ("query", "dbt")
 # The only sandbox backend the web backend gives a run: `local` would run the agent's commands on
@@ -404,24 +404,18 @@ def prepare_workspace(
     def is_database(entry: Path) -> bool:
         return entry.is_file() and any(os.path.samefile(entry, f) for f in database_files)
 
-    def is_credential_file(entry: Path) -> bool:
-        """A credential file by its name, or a link to one (the copy follows links): sandbox_exec
-        reads any file in the workspace (ADR-0010)."""
-        return is_credential(entry.name) or (
-            entry.is_symlink() and is_credential(entry.resolve().name)
-        )
-
     def ignore(directory: str, names: list[str]) -> list[str]:
         skipped: list[str] = list(NOT_COPIED) if Path(directory) == project else []
+        # A profile and a credential file by name, or a link to one under any name (the copy
+        # follows links): sandbox_exec reads any file in the workspace (ADR-0010).
         skipped += [
             name
             for name in names
             if name not in skipped
             and (
-                # A link to a profile too, under any name: the copy follows links.
-                is_profile(Path(directory) / name)
+                named_or_linked(Path(directory) / name, is_profile_name)
                 or is_database(Path(directory) / name)
-                or is_credential_file(Path(directory) / name)
+                or named_or_linked(Path(directory) / name, is_credential)
             )
         ]
         for name in set(names) - set(skipped):
