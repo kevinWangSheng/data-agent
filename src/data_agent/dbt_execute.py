@@ -3,14 +3,14 @@
 Adapted from SignalPilot (Apache-2.0, see NOTICE): the tool's shape and its per-run scratch schema
 follow `signalpilot/gateway/gateway/mcp/tools/dbt_execute.py`; the command allowlist, the selector
 pattern, the 20,000-character output cap, the 900-second limit, `build_dbt_argv`, the reply
-(`exit_code`, `output`, the `run_results` summary) and the Postgres profile (`_url_parts`,
-`_emit_postgres`) follow `signalpilot/gateway/gateway/standalone_chat/dbt_executor.py`. Changes:
-dbt runs here, on the host, with the workspace's project as `--project-dir` (this machine has the
-workspace, so nothing is synced); `threads` outside 1-8 is refused instead of clamped; the
-profile is a DuckDB one too, written as JSON (which YAML reads) to a directory outside the
-workspace; the run's id names the schema (`scratch_schema`); and a `task` target runs the
-project's own profile, as a run did before (Harbor). The run_results summary is read only when
-this command wrote the file.
+(`exit_code`, `output`, the `run_results` summary) and the Postgres profile (`_emit_postgres`)
+follow `signalpilot/gateway/gateway/standalone_chat/dbt_executor.py`. Changes: the connection
+string is parsed by libpq, as the gateway's is, not by `_url_parts`; dbt runs here, on the host,
+with the workspace's project as `--project-dir` (this machine has the workspace, so nothing is
+synced); `threads` outside 1-8 is refused instead of clamped; the profile is a DuckDB one too,
+written as JSON (which YAML reads) to a directory outside the workspace; the run's id names the
+schema (`scratch_schema`); and a `task` target runs the project's own profile, as a run did
+before (Harbor). The run_results summary is read only when this command wrote the file.
 
 The agent and the sandbox never see the generated profile: it is outside the workspace, and the
 sandbox mounts the workspace alone.
@@ -27,7 +27,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NamedTuple
-from urllib.parse import parse_qs, unquote, urlparse
+
+from psycopg.conninfo import conninfo_to_dict
 
 from data_agent.sandbox import KILL_GRACE_S, Capture, Execution, local_env
 from data_agent.verifier_v2.project import PROJECT_FILE, dbt_projects, project_config
@@ -121,20 +122,20 @@ def workspace_project(workspace: Path) -> Path:
 
 
 def postgres_output(url: str, schema: str) -> dict[str, object]:
-    """A dbt-postgres output for the connection string (SignalPilot `_url_parts`,
-    `_emit_postgres`)."""
-    parts = urlparse(url)
-    query = {key: values[0] for key, values in parse_qs(parts.query).items()}
+    """A dbt-postgres output for the connection string (SignalPilot `_emit_postgres`). The
+    string is parsed by libpq, as the read-only gateway's connection parses it, so both decode
+    it the same way (percent-encoded parts, a socket directory as host)."""
+    params = conninfo_to_dict(url)
     return {
         "type": "postgres",
-        "host": parts.hostname or "",
-        "port": parts.port or 5432,
-        "user": unquote(parts.username or ""),
-        "password": unquote(parts.password or ""),
-        "dbname": (parts.path or "/").lstrip("/"),
+        "host": str(params.get("host") or ""),
+        "port": int(params.get("port") or 5432),
+        "user": str(params.get("user") or ""),
+        "password": str(params.get("password") or ""),
+        "dbname": str(params.get("dbname") or ""),
         "schema": schema,
         "threads": PROFILE_THREADS,
-        "sslmode": query.get("sslmode", "prefer"),
+        "sslmode": str(params.get("sslmode") or "prefer"),
     }
 
 

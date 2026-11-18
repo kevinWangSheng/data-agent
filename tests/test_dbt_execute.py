@@ -18,6 +18,7 @@ from data_agent.dbt_execute import (
     DbtExecutor,
     DbtRun,
     dbt_argv,
+    postgres_output,
     scratch_profile,
     scratch_schema,
 )
@@ -112,6 +113,14 @@ def test_a_scratch_run_writes_its_profile_under_the_events_dir(tmp_path: Path) -
         ),
     )
     assert DbtRun.of_run("task", tmp_path / "run").server_args() == ("--dbt-target", "task")
+
+
+def test_the_postgres_profile_decodes_the_url_as_libpq_does() -> None:
+    """The gateway hands the same URL to libpq, which decodes every part; the profile must
+    reach the database the gateway reads (a percent-encoded name, a socket directory as host)."""
+    url = "postgresql://agent@%2Fvar%2Frun%2FPg:6543/warehouse%20dev"
+    output = postgres_output(url, "da_run_r1")
+    assert (output["dbname"], output["host"]) == ("warehouse dev", "/var/run/Pg")
 
 
 def test_the_postgres_profile_holds_the_connection_and_the_run_schema() -> None:
