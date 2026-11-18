@@ -52,6 +52,8 @@ MAX_SCHEMA_CHARS = 63
 PROFILES_FILE = "profiles.yml"
 RUN_RESULTS = Path("target") / "run_results.json"
 MAX_FAILURES = 10
+# `env_var('NAME')` or `env_var("NAME", default)` in a profile's Jinja.
+ENV_VAR_CALL = re.compile(r"""env_var\(\s*['"]([^'"]+)['"]""")
 # The threads of a generated profile's output, which `threads` overrides per command.
 PROFILE_THREADS = 4
 POSTGRES_PORT = 5432
@@ -211,7 +213,7 @@ class DbtExecutor:
     `profiles_dir` (outside the workspace) whose schema is the run's (`scratch_schema(run_id)`),
     on the run's DuckDB file or the Postgres URL in `postgres_env`; dbt sees only the plain
     variables of this process (`local_env`). `task` uses the project's own profile, with the
-    `DBT_*` variables and the Postgres one too."""
+    `DBT_*` variables, the Postgres one and those the profile reads (`profile_env_names`)."""
 
     workspace: Path
     target: Target
@@ -249,8 +251,10 @@ class DbtExecutor:
             if (project / PROFILES_FILE).is_file():
                 argv += ["--profiles-dir", str(project.resolve())]
             dbt_env |= {name: value for name, value in env.items() if name.startswith("DBT_")}
-            if self.postgres_env is not None and self.postgres_env in env:
-                dbt_env[self.postgres_env] = env[self.postgres_env]
+            names = profile_env_names(task_profiles_file(project, env))
+            if self.postgres_env is not None:
+                names.add(self.postgres_env)
+            dbt_env |= {name: env[name] for name in names if name in env}
         return argv, project, dbt_env
 
     def write_profile(self, project: Path, env: Mapping[str, str]) -> None:
@@ -299,6 +303,27 @@ class DbtExecutor:
         sections += [f"exit_code: {done.exit_code}", f"output:\n{output}"]
         sections += run_results(project / RUN_RESULTS, started)
         return "\n".join(sections)
+
+
+def task_profiles_file(project: Path, env: Mapping[str, str]) -> Path | None:
+    """The profiles.yml a `task` run's dbt reads, found as dbt finds it: `--profiles-dir` (the
+    project's own file, which `command_line` passes), then DBT_PROFILES_DIR, then ~/.dbt."""
+    if (project / PROFILES_FILE).is_file():
+        return project / PROFILES_FILE
+    if env.get("DBT_PROFILES_DIR"):
+        return Path(env["DBT_PROFILES_DIR"]) / PROFILES_FILE
+    if env.get("HOME"):
+        return Path(env["HOME"]) / ".dbt" / PROFILES_FILE
+    return None
+
+
+def profile_env_names(path: Path | None) -> set[str]:
+    """The variables a profile reads with `env_var('NAME')`. A task's profile may take its
+    connection from any variables (the jaffle evaluation's DA_JAFFLE_*); only those reach dbt, so
+    the model key in this process's environment still does not."""
+    if path is None or not path.is_file():
+        return set()
+    return set(ENV_VAR_CALL.findall(path.read_text(errors="replace")))
 
 
 def run_dbt(argv: list[str], timeout: float, cwd: Path, env: Mapping[str, str]) -> Execution:

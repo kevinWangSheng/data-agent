@@ -292,6 +292,50 @@ def test_task_runs_dbt_with_the_projects_own_profile(
     assert (project / "profiles.yml").read_text() == "shop:\n  target: dev\n"
 
 
+JAFFLE_PROFILE = """\
+jaffle_shop:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_ENV_SECRET_DA_JAFFLE_HOST') }}"
+      port: "{{ env_var('DA_JAFFLE_PORT') | as_number }}"
+      user: "{{ env_var("DA_JAFFLE_USER") }}"
+      dbname: "{{ env_var( 'DA_JAFFLE_DBNAME' , 'jaffle') }}"
+      schema: jaffle_case
+"""
+JAFFLE_ENV = {"DA_JAFFLE_PORT": "5433", "DA_JAFFLE_USER": "u", "DA_JAFFLE_DBNAME": "jaffle"}
+
+
+@pytest.mark.parametrize("where", ["project", "profiles_dir_env", "home"])
+def test_task_passes_the_variables_the_tasks_profile_reads(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path], where: str
+) -> None:
+    """Codex review on db500d2: the jaffle evaluation's profile reads DA_JAFFLE_* variables,
+    which a task run's dbt did not get. It gets the ones the profile dbt will use names, from
+    wherever dbt finds it, and still not the others."""
+    env, record = fake_dbt
+    workspace = workspace_with_project(tmp_path)
+    project = workspace / "dbt_shop"
+    env = env | JAFFLE_ENV | {"DA_UNRELATED": "x"}
+    if where == "project":
+        profiles_dir = project
+    elif where == "profiles_dir_env":
+        profiles_dir = tmp_path / "case-profiles"
+        env |= {"DBT_PROFILES_DIR": str(profiles_dir)}
+    else:
+        home = tmp_path / "home"
+        profiles_dir = home / ".dbt"
+        env = {k: v for k, v in env.items() if k != "DBT_PROFILES_DIR"} | {"HOME": str(home)}
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    (profiles_dir / "profiles.yml").write_text(JAFFLE_PROFILE)
+    DbtExecutor(workspace, "task", postgres_env=PG_ENV).execute("run", env=env)
+    seen = json.loads(record.read_text())["env"]
+    assert {name: seen.get(name) for name in JAFFLE_ENV} == JAFFLE_ENV
+    assert "DA_UNRELATED" not in seen
+    assert "DATA_AGENT_MODEL_KEY" not in seen
+
+
 def test_a_workspace_without_a_dbt_project_is_an_error(
     tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
 ) -> None:
