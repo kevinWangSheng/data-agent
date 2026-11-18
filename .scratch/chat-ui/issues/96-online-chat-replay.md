@@ -1,6 +1,6 @@
 # 96 — 在线版：录好的对话回放
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 95
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-17
@@ -47,8 +47,8 @@ Branch: worktree-96-online-chat-replay
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2
+- Attempts: 3
+- Review rounds: 3
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
@@ -213,3 +213,34 @@ The branch is done and ready for your review: the exporter can now export a reco
 - 配一个修复前会失败的测试：一轮的事件文件最后一行是半行，导出后每行都能 `json.loads`，事件数等于能解析的行数。
 - 修完 `make check`，`da-review` 只看新提交（这次改的是 Python），`eng:code-review` 只看新提交；最终回复照工作流程第 6 步。
 - 主会话合并后会用 `runs/site-publish-2/export.sh` 重新导出。
+
+*Return round 2 (ticket agent, commits `a4b9653` and `99e8bbf`)*
+
+- **Fix:**
+  - `build()` used to copy each event file as-is with `shutil.copyfile`. It now calls `copy_events` (`evals/export.py:225`).
+  - `copy_events` writes the lines that parse as JSON objects, each unchanged and ending in a newline, and drops every other non-blank line.
+  - The export is not refused. After a clean scrub it prints one line per affected run, for example `export: <run_id>: dropped 1 event line(s) that do not parse`. The run id is already published as the run's directory and has passed `check_ids`.
+  - `read_events` and `copy_events` use the same parser, `parse_event_file`.
+  - The same loop covers featured runs, trials and conversation turns, so featured runs get the fix too.
+- **Tests:** both failed before the fix, because the half line was copied through.
+  - `tests/test_eval_export_conversation.py::test_a_turn_cut_off_mid_line_is_exported_without_the_half_line`: the cancelled turn's file ends with half a line. After export, every line loads with `json.loads`, the events equal the source's parseable events, and stdout reports 1 dropped line.
+  - `tests/test_eval_export.py::test_a_featured_run_cut_off_mid_line_is_exported_without_the_half_line`: the exported file is byte-for-byte the file without the half line, and the drop is reported.
+- **Real run** on a copy of the recorded demo conversation, in `runs/96/r3/` (the original is untouched). In the copy, turn 2's last line (its `result`) was cut in half and its `web-run.json` was set to `cancelled`:
+  - `uv run python -m evals export --manifest evals/manifest.json --out runs/96/r3/site --conversation runs/96/r3/runs/conversations/20261118T020857Z-6cd60d` printed:
+    - `scrub: changed 0 file(s) of 6; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0`
+    - `export: 20261118T020926Z-5e125c: dropped 1 event line(s) that do not parse`
+    - `export: 2 run(s), 1 conversation(s) -> runs/96/r3/site` (exit 0)
+  - Re-scrub: `changed 0 file(s) of 6`.
+  - Node `JSON.parse` on every exported line, as the site's `parseEventLines` does: turn 1 parsed 57 lines, turn 2 parsed 99 lines (the source had 100). Turn 2's `meta.json` has `cancelled: true`.
+  - Turn 1's exported `events.jsonl` is byte-identical to its source (`cmp`).
+- **`make check`** at `99e8bbf`: exit 0. Ruff passed, 321 files already formatted, basedpyright 0 errors, pytest 2424 passed / 1 skipped, vitest 295 passed. Logs: `runs/96/make-check-r3.log` and `runs/96/make-check-r3b.log`.
+- **Review**, both on the new commits only (base `473c4c3`):
+  - **`da-review 473c4c3` (Codex):** no actionable findings. It ran 4 checks of its own on copy and read, and all passed. Log: `runs/96/da-review-r3.log`.
+  - **`eng:code-review 473c4c3`, Spec:** all four return items are done, with no scope creep and Authority respected.
+  - **`eng:code-review 473c4c3`, Standards:** no hard violations. Three judgement-call smells were fixed in `99e8bbf`:
+    - the opaque `event_lines(path)[1]` is now unpacked by name;
+    - `event_lines` is renamed `parse_event_file`, since it returns more than lines;
+    - the per-run dict is renamed `dropped_by_run`, so it no longer shares the name of the int count.
+  - **Not fixed, with reasons:**
+    - *The two new tests have the same shape.* They cover two separate inputs (a featured run and a conversation turn), and the reviewer also advised against a shared helper.
+    - *Spec, low severity: Python's `json.loads` accepts `NaN` and `Infinity`, but the site's `JSON.parse` rejects them.* The event writer uses `json.dumps` with the default `allow_nan=True` (`src/data_agent/events.py:94`). But its fields come from SDK blocks (JSON tool input, tool result content) and SDK cost numbers, and I found no path that produces NaN. Rejecting those constants would also change `read_events`: a `result` line holding NaN would make a turn count as not ended, and the export would refuse it. Recorded as a known limit (unconfirmed in practice).
