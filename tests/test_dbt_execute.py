@@ -154,9 +154,9 @@ def test_a_postgres_parse_error_does_not_carry_the_password() -> None:
 
 
 def test_the_postgres_profile_holds_the_connection_and_the_run_schema() -> None:
-    profile = scratch_profile("shop", "da_run_r1", None, PG_URL)
+    profile = scratch_profile("da_run_r1", None, PG_URL)
     assert profile == {
-        "shop": {
+        "da_run": {
             "target": "da_run",
             "outputs": {
                 "da_run": {
@@ -224,13 +224,14 @@ def test_scratch_runs_dbt_on_the_workspace_project_with_a_profile_outside_it(
     assert project == (workspace / "dbt_shop").resolve()
     assert project.is_relative_to(workspace.resolve())
     profiles_dir = Path(argv[argv.index("--profiles-dir") + 1])
-    assert profiles_dir == profiles
+    assert profiles_dir == profiles.resolve()
     assert not profiles_dir.resolve().is_relative_to(workspace.resolve())
+    assert argv[argv.index("--profile") + 1] == "da_run"
     assert argv[argv.index("--target") + 1] == "da_run"
     assert Path(str(seen["cwd"])).resolve() == project
-    # The profile is the project's profile name on the run's DuckDB file and schema.
+    # The profile named on the command line, on the run's DuckDB file and schema.
     profile = json.loads((profiles / "profiles.yml").read_text())
-    output = profile["shop"]["outputs"]["da_run"]
+    output = profile["da_run"]["outputs"]["da_run"]
     assert output == {
         "type": "duckdb",
         "path": str(db.resolve()),
@@ -253,13 +254,53 @@ def test_a_scratch_postgres_run_reads_the_url_from_its_variable(
     workspace = workspace_with_project(tmp_path, ".")
     profiles = tmp_path / "run" / "profiles"
     DbtExecutor(workspace, "scratch", "r1", profiles, postgres_env=PG_ENV).execute("test", env=env)
-    output = json.loads((profiles / "profiles.yml").read_text())["shop"]["outputs"]["da_run"]
+    output = json.loads((profiles / "profiles.yml").read_text())["da_run"]["outputs"]["da_run"]
     assert (output["host"], output["password"], output["schema"]) == (
         "db.example",
         "pa@ss",
         "da_run_r1",
     )
     assert PG_ENV not in json.loads(record.read_text())["env"]
+
+
+def test_scratch_names_its_profile_whatever_the_project_file_says(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
+) -> None:
+    """Codex review on d887788: a dbt_project.yml with YAML anchors, which the project reader
+    cannot parse, gave the generated profile the name `default`, which dbt then did not find
+    under the project's `profile: shop`."""
+    env, record = fake_dbt
+    workspace = workspace_with_project(tmp_path)
+    project_file = workspace / "dbt_shop" / "dbt_project.yml"
+    project_file.write_text(
+        project_file.read_text() + "vars:\n  base: &base\n    region: eu\n  copy: *base\n"
+    )
+    profiles = tmp_path / "run" / "profiles"
+    DbtExecutor(workspace, "scratch", "r1", profiles, duckdb=tmp_path / "a.duckdb").execute(
+        "run", env=env
+    )
+    argv = json.loads(record.read_text())["argv"]
+    name = argv[argv.index("--profile") + 1]
+    assert list(json.loads((profiles / "profiles.yml").read_text())) == [name]
+
+
+def test_a_relative_scratch_profiles_dir_reaches_dbt_as_the_one_written(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review on d887788: dbt runs in the project, so a relative `--profiles-dir` named
+    another directory than the one the server wrote the profile to."""
+    env, record = fake_dbt
+    workspace = workspace_with_project(tmp_path)
+    monkeypatch.chdir(tmp_path / "run")
+    executor = DbtExecutor(
+        workspace, "scratch", "r1", Path("profiles"), duckdb=tmp_path / "a.duckdb"
+    )
+    executor.execute("run", env=env)
+    argv = json.loads(record.read_text())["argv"]
+    profiles_dir = Path(argv[argv.index("--profiles-dir") + 1])
+    assert profiles_dir.is_absolute()
+    assert (profiles_dir / "profiles.yml").is_file()
+    assert profiles_dir == (tmp_path / "run" / "profiles").resolve()
 
 
 def test_a_scratch_profiles_dir_inside_the_workspace_is_refused(tmp_path: Path) -> None:

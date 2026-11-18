@@ -32,7 +32,7 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 
 from data_agent.sandbox import KILL_GRACE_S, Capture, Execution, local_env
-from data_agent.verifier_v2.project import PROJECT_FILE, dbt_projects, project_config
+from data_agent.verifier_v2.project import PROJECT_FILE, dbt_projects
 
 type Target = Literal["scratch", "task"]
 TARGETS: tuple[Target, ...] = ("scratch", "task")
@@ -44,7 +44,9 @@ SELECTOR = re.compile(r"^[\w.+:,*@/][\w .+:,*@/-]*$")
 MIN_THREADS, MAX_THREADS = 1, 8
 MAX_OUTPUT_CHARS = 20_000
 TIMEOUT_S = 900
-# The output the generated profile defines, named on the command line.
+# The profile and the output the generated profiles.yml defines, both named on the command line,
+# so dbt never has to match the name dbt_project.yml gives.
+SCRATCH_PROFILE = "da_run"
 SCRATCH_TARGET = "da_run"
 SCHEMA_PREFIX = "da_run_"
 # Postgres cuts identifiers at 63 bytes; the schema keeps the run id's end, its random part.
@@ -159,10 +161,9 @@ def postgres_output(url: str, schema: str) -> dict[str, object]:
 
 
 def scratch_profile(
-    profile: str, schema: str, duckdb: Path | None, postgres_url: str | None
+    schema: str, duckdb: Path | None, postgres_url: str | None
 ) -> dict[str, object]:
-    """The profile `scratch` writes: the project's profile name, one output whose default schema
-    is the run's own."""
+    """The profile `scratch` writes: one output whose default schema is the run's own."""
     if duckdb is not None:
         output: dict[str, object] = {
             "type": "duckdb",
@@ -173,7 +174,7 @@ def scratch_profile(
     else:
         assert postgres_url is not None, "a dbt run has a DuckDB file or a Postgres URL"
         output = postgres_output(postgres_url, schema)
-    return {profile: {"target": SCRATCH_TARGET, "outputs": {SCRATCH_TARGET: output}}}
+    return {SCRATCH_PROFILE: {"target": SCRATCH_TARGET, "outputs": {SCRATCH_TARGET: output}}}
 
 
 def check_outside(profiles_dir: Path, workspace: Path) -> None:
@@ -245,8 +246,10 @@ class DbtExecutor:
         dbt_env = local_env(env)
         if self.target == "scratch":
             assert self.profiles_dir is not None
-            self.write_profile(project, env)
-            argv += ["--profiles-dir", str(self.profiles_dir), "--target", SCRATCH_TARGET]
+            self.write_profile(env)
+            # Absolute: dbt runs in the project, the server wrote from its own directory.
+            argv += ["--profiles-dir", str(self.profiles_dir.resolve())]
+            argv += ["--profile", SCRATCH_PROFILE, "--target", SCRATCH_TARGET]
         else:
             if (project / PROFILES_FILE).is_file():
                 argv += ["--profiles-dir", str(project.resolve())]
@@ -257,16 +260,14 @@ class DbtExecutor:
             dbt_env |= {name: env[name] for name in names if name in env}
         return argv, project, dbt_env
 
-    def write_profile(self, project: Path, env: Mapping[str, str]) -> None:
+    def write_profile(self, env: Mapping[str, str]) -> None:
         assert self.profiles_dir is not None
-        config = project_config(project)
-        name = str(config.get("profile") or config.get("name") or "default")
         url = None
         if self.postgres_env is not None:
             url = env.get(self.postgres_env)
             if not url:
                 raise DbtExecuteError(f"{self.postgres_env} (the Postgres URL) is not set")
-        profile = scratch_profile(name, self.schema, self.duckdb, url)
+        profile = scratch_profile(self.schema, self.duckdb, url)
         self.profiles_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         path = self.profiles_dir / PROFILES_FILE
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
