@@ -1564,8 +1564,9 @@ def build_options(
             )
             for event, matchers in v2_hooks.items():
                 all_hooks.setdefault(event, []).extend(matchers)
-    if network:
-        tools = [*tools, *WEB_TOOLS]
+    # The run-level switch (ticket 98): the web tools are loaded, or denied outright.
+    web, denied = (WEB_TOOLS, []) if network else ([], WEB_TOOLS)
+    tools = [*tools, *web]
     for event, matchers in tool_timing_hooks(emit).items():
         all_hooks.setdefault(event, []).extend(matchers)
     if budget is not None:
@@ -1595,7 +1596,7 @@ def build_options(
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
-        disallowed_tools=[] if network else WEB_TOOLS,
+        disallowed_tools=denied,
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
         hooks=all_hooks,

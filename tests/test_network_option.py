@@ -58,6 +58,7 @@ def test_with_network_the_web_tools_are_loaded_and_allowed(tmp_path: Path, task_
 def test_without_network_the_web_tools_are_left_out_and_denied(
     tmp_path: Path, task_type: str
 ) -> None:
+    """Benchmark integrity (data-eng-bench README): no looking up published solutions."""
     built = options(tmp_path, task_type)
     assert not WEB & set(built.tools or [])
     assert not WEB & set(built.allowed_tools)
