@@ -259,18 +259,19 @@ class Results:
         self.data = data
         self.lock = threading.Lock()
 
-    def reply(self, outcome: dict[str, Any], keep: bool = False) -> str:
+    def reply(self, outcome: dict[str, Any], with_id: bool = False) -> str:
         """DAB's `{"success", "result"}` as tool output: a failure becomes a tool error, a result
-        its JSON, cut past RESULT_CHARS. A `keep` result also gets an id (`keep`)."""
+        its JSON, cut past RESULT_CHARS. `with_id`: the result is also kept under an id (`keep`),
+        named on the reply's last line."""
         if not outcome["success"]:
             raise ToolError(cut(str(outcome["result"])))
         value = finite(outcome["result"])
         text = cut(json.dumps(value, ensure_ascii=False, default=str))
-        return f"{text}\n{self.keep(value)}" if keep else text
+        return f"{text}\n{self.keep(as_table(value))}" if with_id else text
 
-    def keep(self, value: Any) -> str:
-        """Keep `value` under the next result id; returns the line that names it."""
-        return self.data.note(self.data.add(as_table(value)))
+    def keep(self, table: QueryResult) -> str:
+        """Keep `table` under the next result id; returns the line that names it."""
+        return self.data.note(self.data.add(table))
 
 
 def cut(text: str) -> str:
@@ -365,7 +366,7 @@ def build_server(
                     sql_explain(db_name, dialect),
                     sql_run(db_name, dialect),
                 )
-            return results.reply(outcome, keep=True)
+            return results.reply(outcome, with_id=True)
 
     @server.tool(name="list_tables", description=list_spec["description"])
     def list_tables(
@@ -456,8 +457,7 @@ def build_server(
                 rows = records(outcome["result"])
         labeled = classify.classify(rows, key_column, text_column, allowed, instructions, setup)
         with results.lock:
-            table = QueryResult(labeled.columns, labeled.rows)
-            stored = results.data.note(results.data.add(table))
+            stored = results.keep(QueryResult(labeled.columns, labeled.rows))
         return classify.report(labeled, stored)
 
     return server

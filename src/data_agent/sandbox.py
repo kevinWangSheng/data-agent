@@ -186,19 +186,14 @@ def local_env(env: Mapping[str, str]) -> dict[str, str]:
     return {name: env[name] for name in LOCAL_ENV if name in env}
 
 
-def local_command_env(env: Mapping[str, str]) -> dict[str, str]:
-    """A local sandbox command's environment: `local_env` and the task's own variables."""
-    task = {
-        name: value
-        for name, value in env.items()
-        if name in LOCAL_TASK_ENV or name.startswith(LOCAL_TASK_PREFIXES)
-    }
-    return task | local_env(env)
-
-
 def reaches_local_commands(name: str) -> bool:
     """Whether a local sandbox command keeps the variable `name` (`local_command_env`)."""
     return name in LOCAL_ENV or name in LOCAL_TASK_ENV or name.startswith(LOCAL_TASK_PREFIXES)
+
+
+def local_command_env(env: Mapping[str, str]) -> dict[str, str]:
+    """A local sandbox command's environment: `local_env` and the task's own variables."""
+    return {name: value for name, value in env.items() if reaches_local_commands(name)}
 
 
 @dataclass

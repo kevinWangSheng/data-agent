@@ -639,7 +639,7 @@ async def test_an_unknown_result_id_is_a_tool_error(dab_root: Path, tmp_path: Pa
 def test_non_finite_numbers_and_nested_documents_become_plain_fields() -> None:
     results = dab_server_module.Results(dab_server_module.QueryResults())
     outcome = {"success": True, "result": [{"x": float("nan"), "doc": {"y": float("inf")}}]}
-    text = results.reply(outcome, keep=True)
+    text = results.reply(outcome, with_id=True)
     data, _, note = text.partition("\n")
     assert json.loads(data) == [{"x": None, "doc": {"y": None}}]
     assert note.startswith("[result id: query_1;")

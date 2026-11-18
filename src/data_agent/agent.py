@@ -2011,13 +2011,13 @@ async def run(
     its profile in `<events_dir>/profiles/`, which must be outside the workspace)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
-    # Looked up on the module, so a test can stand in for the docker CLI (tests/fake_docker.py).
     settings = ModelSettings.from_env(env)
-    if sandbox == "docker" and not sandboxes.docker_on_path():
-        raise ConfigError(
-            "docker is not on PATH; the docker sandbox (the default --sandbox) needs Docker"
-        )
     if sandbox == "docker":
+        # Looked up on the module, so a test can stand in for the docker CLI (fake_docker.py).
+        if not sandboxes.docker_on_path():
+            raise ConfigError(
+                "docker is not on PATH; the docker sandbox (the default --sandbox) needs Docker"
+            )
         check_databases_outside(task)
     database_env: dict[str, str] = {}
     for variable in task.postgres_envs:

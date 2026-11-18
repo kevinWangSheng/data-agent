@@ -245,14 +245,15 @@ def test_scan_reads_no_sql_outside_the_project(tmp_path: Path) -> None:
     assert "stg_orders" in section(output, "COMPLETE MODELS"), output
 
 
-def test_scan_does_not_point_at_snapshots_to_run(tmp_path: Path) -> None:
-    """Bash cannot run `dbt snapshot`, so the scan must not suggest it."""
+def test_scan_points_at_dbt_execute_for_snapshots(tmp_path: Path) -> None:
+    """Ticket 100: `dbt snapshot` runs through dbt_execute, only when the task asks for it."""
     project = tmp_path / "dbt_shop"
     shutil.copytree(DBT_SHOP, project)
     (project / "snapshots").mkdir()
     (project / "snapshots" / "orders_snapshot.sql").write_text("select 1\n")
     snapshots = section(scan(project), "SNAPSHOTS DIRECTORY")
-    assert "cannot" in snapshots and "dbt snapshot" in snapshots, snapshots
+    assert "`dbt_execute` with `command: snapshot`" in snapshots, snapshots
+    assert "only when the task asks" in snapshots, snapshots
 
 
 def test_scan_counts_only_sql_under_the_model_paths(tmp_path: Path) -> None:
