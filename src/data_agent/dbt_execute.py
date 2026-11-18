@@ -16,10 +16,12 @@ The agent and the sandbox never see the generated profile: it is outside the wor
 sandbox mounts the workspace alone.
 """
 
+import contextlib
 import json
 import os
 import re
 import shutil
+import subprocess
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,7 +29,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from data_agent.sandbox import local_env, run_process
+from data_agent.sandbox import KILL_GRACE_S, Capture, Execution, local_env
 from data_agent.verifier_v2.project import PROJECT_FILE, dbt_projects, project_config
 
 type Target = Literal["scratch", "task"]
@@ -258,7 +260,7 @@ class DbtExecutor:
             raise DbtExecuteError("dbt is not on PATH")
         full[0] = executable
         started = time.time()
-        done = run_process(full, TIMEOUT_S, cwd=project, env=dbt_env)
+        done = run_dbt(full, TIMEOUT_S, project, dbt_env)
         output = done.stdout + (f"\n{done.stderr}" if done.stderr else "")
         output = output[-MAX_OUTPUT_CHARS:].strip()
         if done.timed_out:
@@ -270,6 +272,33 @@ class DbtExecutor:
         sections += [f"exit_code: {done.exit_code}", f"output:\n{output}"]
         sections += run_results(project / RUN_RESULTS, started)
         return "\n".join(sections)
+
+
+def run_dbt(argv: list[str], timeout: float, cwd: Path, env: Mapping[str, str]) -> Execution:
+    """Run dbt to its end, or kill it past `timeout`. Unlike `sandbox.run_process`, dbt stays in
+    this process's group: cancelling a run signals the run's group, which then stops dbt too, and
+    dbt starts no process of its own to outlive it."""
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=dict(env),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    out, err = Capture(proc.stdout), Capture(proc.stderr)
+    try:
+        proc.wait(timeout=timeout)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        proc.wait()
+    for capture in (out, err):
+        capture.thread.join(KILL_GRACE_S)
+    return Execution(None if timed_out else proc.returncode, out.text(), err.text(), timed_out)
 
 
 def run_results(path: Path, since: float) -> list[str]:

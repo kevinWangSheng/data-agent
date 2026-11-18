@@ -6,11 +6,13 @@ import os
 import shutil
 import stat
 import sys
+import time
 from pathlib import Path
 
 import duckdb
 import pytest
 
+from data_agent import dbt_execute
 from data_agent.dbt_execute import (
     DbtExecuteError,
     DbtExecutor,
@@ -26,12 +28,16 @@ SHOP_SQL = FIXTURES / "shop.sql"
 PG_ENV = "DA_TEST_DBT_URL"
 PG_URL = "postgresql://agent:pa%40ss@db.example:6543/warehouse?sslmode=require"
 
-# A stand-in dbt: it records how it was started (argv, cwd, environment) and exits.
+# A stand-in dbt: it records how it was started (argv, cwd, environment, process group) and
+# exits; `seed` sleeps first, past any limit a test sets.
 FAKE_DBT = """#!{python}
-import json, os, sys
+import json, os, sys, time
 with open({record!r}, "w") as f:
-    json.dump({{"argv": sys.argv, "cwd": os.getcwd(), "env": dict(os.environ)}}, f)
-print("fake dbt ran")
+    record = {{"argv": sys.argv, "cwd": os.getcwd(), "env": dict(os.environ)}}
+    json.dump(record | {{"pgrp": os.getpgrp()}}, f)
+print("fake dbt ran", flush=True)
+if sys.argv[1] == "seed":
+    time.sleep(60)
 """
 
 
@@ -255,6 +261,30 @@ def test_a_workspace_without_a_dbt_project_is_an_error(
     executor = DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb")
     with pytest.raises(DbtExecuteError, match=r"no dbt_project\.yml"):
         executor.execute("run", env=env)
+
+
+def test_dbt_stays_in_the_servers_process_group(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
+) -> None:
+    """Codex review, round 1: dbt in a session of its own outlived a cancelled run, which the web
+    UI stops by signalling the run's process group."""
+    env, record = fake_dbt
+    workspace = workspace_with_project(tmp_path)
+    DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb").execute("run", env=env)
+    assert json.loads(record.read_text())["pgrp"] == os.getpgrp()
+
+
+def test_dbt_past_its_limit_is_killed_and_its_output_returned(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, _ = fake_dbt
+    monkeypatch.setattr(dbt_execute, "TIMEOUT_S", 1)
+    workspace = workspace_with_project(tmp_path)
+    executor = DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb")
+    started = time.monotonic()
+    with pytest.raises(DbtExecuteError, match=r"timed out after 1 seconds(.|\n)*fake dbt ran"):
+        executor.execute("seed", env=env)
+    assert time.monotonic() - started < 30
 
 
 # --- A real dbt run ---------------------------------------------------------------------------

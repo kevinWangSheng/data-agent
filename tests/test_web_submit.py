@@ -352,6 +352,29 @@ def test_a_dangling_link_in_the_project_is_skipped(
     assert not (workspace / "models" / "gone.sql").is_symlink()
 
 
+def test_no_profile_and_no_way_to_the_database_file_is_copied_into_the_workspace(
+    tmp_path: Path,
+) -> None:
+    """Codex review, round 1: a `profiles.yml` below the project's top, and the database file
+    reached through a linked directory (another path to the same file), stay out too."""
+    project = dbt_project(tmp_path, with_db=False)
+    (project / "nested").mkdir()
+    (project / "nested" / "profiles.yml").write_text("p:\n  target: dev\n")
+    (project / "data").mkdir()
+    (project / "data" / "shop.duckdb").write_bytes(b"db")
+    (project / "data" / "seed.csv").write_text("a\n1\n")
+    (project / "models" / "raw").symlink_to(project / "data")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    workspace = runs_dir / "r" / "workspace"
+    workspace.parent.mkdir()
+    source = DataSource(name="shop", duckdb=project / "data" / "shop.duckdb", dbt_project=project)
+    launcher.prepare_workspace(workspace, source, "dbt", runs_dir)
+    assert (workspace / "models" / "raw" / "seed.csv").is_file()
+    assert list(workspace.rglob("profiles.yml")) == []
+    assert list(workspace.rglob("shop.duckdb")) == []
+
+
 def never_start(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
     raise AssertionError("no run should start")
 

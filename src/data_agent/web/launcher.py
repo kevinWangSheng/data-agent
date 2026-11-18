@@ -34,15 +34,16 @@ from typing import IO, Any
 
 from data_agent.run_config import CONFIG_NAMES
 from data_agent.web.runs import RunsDir
-from data_agent.web.sources import DataSource, check_layout, duckdb_in_project, overlap
+from data_agent.web.sources import DataSource, check_layout, overlap
 
 TASK_TYPES = ("query", "dbt")
 # How long a run being stopped has to exit after SIGTERM before it gets SIGKILL.
 STOP_GRACE_SECONDS = 10.0
 WORKSPACE = "workspace"
-# A dbt run's copy of the project leaves out the build output and logs of earlier runs, and the
-# profile, which holds the connection.
-NOT_COPIED = ("target", "logs", "profiles.yml")
+# A dbt run's copy of the project leaves out the build output and logs of earlier runs, and
+# every dbt profile in it, which holds the connection.
+NOT_COPIED = ("target", "logs")
+PROFILES_FILE = "profiles.yml"
 # Where a dbt run's DuckDB file goes, in the run's directory, outside its workspace.
 DB_DIR = "db"
 # The files DuckDB keeps next to a database file, copied with it.
@@ -382,17 +383,25 @@ def prepare_workspace(
         return database
     project = source.dbt_project
     runs = runs_dir.resolve()
-    # The DuckDB file as written inside the project (`check_layout`), and the files beside it.
-    inside = None if source.duckdb is None else duckdb_in_project(source)
+    # The DuckDB file and the files beside it, known by identity: a linked directory in the
+    # project is another path to the same file.
     database_files = (
-        set()
-        if inside is None
-        else {project / inside, *(project / f"{inside}{suffix}" for suffix in DUCKDB_SIDE_SUFFIXES)}
+        []
+        if source.duckdb is None
+        else [path for path in (source.duckdb, *side_files(source.duckdb)) if path.is_file()]
     )
+
+    def is_database(entry: Path) -> bool:
+        return entry.is_file() and any(os.path.samefile(entry, f) for f in database_files)
 
     def ignore(directory: str, names: list[str]) -> list[str]:
         skipped: list[str] = list(NOT_COPIED) if Path(directory) == project else []
-        skipped += [name for name in names if Path(directory) / name in database_files]
+        skipped += [
+            name
+            for name in names
+            if name not in skipped
+            and (name == PROFILES_FILE or is_database(Path(directory) / name))
+        ]
         for name in set(names) - set(skipped):
             entry = Path(directory) / name
             if not entry.is_symlink():
@@ -419,8 +428,12 @@ def prepare_workspace(
     db_dir.mkdir()
     copy = db_dir / source.duckdb.name
     shutil.copy2(source.duckdb, copy)
-    for suffix in DUCKDB_SIDE_SUFFIXES:
-        side = source.duckdb.with_name(source.duckdb.name + suffix)
+    for side in side_files(source.duckdb):
         if side.is_file():
             shutil.copy2(side, db_dir / side.name)
     return ["--duckdb", str(copy)]
+
+
+def side_files(duckdb: Path) -> list[Path]:
+    """The files DuckDB keeps next to a database file."""
+    return [duckdb.with_name(duckdb.name + suffix) for suffix in DUCKDB_SIDE_SUFFIXES]
