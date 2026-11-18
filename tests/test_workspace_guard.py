@@ -711,3 +711,33 @@ def test_a_profile_secret_is_found_however_the_yaml_writes_it(
     and a flow mapping, so a docker run mounted the secret; the profile is parsed instead."""
     (tmp_path / "profiles.yml").write_text(text)
     assert credential_files(tmp_path) == ([Path("profiles.yml")] if listed else [])
+
+
+@pytest.mark.parametrize(
+    ("text", "listed"),
+    [
+        # dbt-duckdb's settings carry cloud storage keys.
+        ("shop:\n  outputs:\n    dev:\n      settings:\n        s3_secret_access_key: abc\n", True),
+        ("shop:\n  outputs:\n    dev:\n      aws_session_token: abc\n", True),
+        ("shop:\n  outputs:\n    dev:\n      db_password: abc\n", True),
+        ("shop:\n  outputs:\n    dev:\n      settings:\n        s3_region: eu-west-1\n", False),
+        # An escape yaml_lite leaves undecoded may spell a secret key: counted as one.
+        ('shop:\n  outputs:\n    dev:\n      "pass\\u0077ord": example\n', True),
+    ],
+)
+def test_a_profile_secret_key_is_known_by_what_its_name_holds(
+    tmp_path: Path, text: str, listed: bool
+) -> None:
+    """Ticket 100 return round 2 (da-review P1): a list of exact key names missed the storage
+    keys dbt-duckdb's settings take, and a key spelled with a YAML escape."""
+    (tmp_path / "profiles.yml").write_text(text)
+    assert credential_files(tmp_path) == ([Path("profiles.yml")] if listed else [])
+
+
+def test_a_link_to_a_profile_with_a_secret_is_a_credential_file(tmp_path: Path) -> None:
+    """Ticket 100 return round 2 (da-review P1): a link under another name reaches the profile."""
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "profiles.yml").write_text("shop:\n  outputs:\n    dev:\n      pass: x\n")
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "ws" / "connection.yml").symlink_to(tmp_path / "home" / "profiles.yml")
+    assert credential_files(tmp_path / "ws") == [Path("connection.yml")]

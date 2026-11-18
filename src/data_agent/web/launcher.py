@@ -33,12 +33,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from data_agent.dbt_execute import PROFILES_FILE
 from data_agent.run_config import CONFIG_NAMES
 from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap
-from data_agent.workspace_guard import is_credential
+from data_agent.workspace_guard import is_credential, is_profile
 
 TASK_TYPES = ("query", "dbt")
 # The only sandbox backend the web backend gives a run: `local` would run the agent's commands on
@@ -419,7 +418,8 @@ def prepare_workspace(
             for name in names
             if name not in skipped
             and (
-                name == PROFILES_FILE
+                # A link to a profile too, under any name: the copy follows links.
+                is_profile(Path(directory) / name)
                 or is_database(Path(directory) / name)
                 or is_credential_file(Path(directory) / name)
             )

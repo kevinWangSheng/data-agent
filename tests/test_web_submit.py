@@ -595,3 +595,23 @@ def test_a_dbt_runs_copy_leaves_credential_files_behind(tmp_path: Path, recorder
     assert not (cwd / "keys" / "server.pem").exists()
     assert not (cwd / "models" / "linked.sql").exists()
     assert (project / ".env").is_file()  # the original is untouched
+
+
+def test_a_dbt_runs_copy_leaves_a_link_to_a_profile_behind(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    """Ticket 100 return round 2 (da-review P1): the copy follows links, so a link under another
+    name to a profiles.yml outside the project would carry its secrets into the workspace."""
+    project = dbt_project(tmp_path, with_db=True)
+    outside = tmp_path / "home-dbt"
+    outside.mkdir()
+    (outside / "profiles.yml").write_text("shop:\n  outputs:\n    dev:\n      password: x\n")
+    (project / "connection.yml").symlink_to(outside / "profiles.yml")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    source = DataSource(name="shop", duckdb=project / "shop.duckdb", dbt_project=project)
+    with TestClient(create_app(runs_dir, [source], recorder)) as client:
+        assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
+    [(_, cwd)] = recorder.calls
+    assert (cwd / "models" / "a.sql").is_file()
+    assert not (cwd / "connection.yml").exists()

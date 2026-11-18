@@ -44,20 +44,17 @@ CREDENTIAL_NAMES = (
 )
 # A dbt profile is a credential file when it writes a secret in (`holds_literal_secret`): the keys
 # dbt's adapters keep passwords, tokens and private keys under.
-PROFILE_SECRET_KEYS = frozenset(
-    {
-        "password",
-        "pass",
-        "token",
-        "secret",
-        "client_secret",
-        "private_key",
-        "private_key_passphrase",
-        "api_key",
-        "access_token",
-        "refresh_token",
-        "keyfile_json",
-    }
+# A key is secret-named when it is `pass` or its name (lower case) holds one of these, so
+# `db_password`, `s3_secret_access_key` (dbt-duckdb's settings) and `aws_session_token` count.
+PROFILE_SECRET_PARTS = (
+    "password",
+    "passphrase",
+    "secret",
+    "token",
+    "private_key",
+    "api_key",
+    "keyfile",
+    "credential",
 )
 # `env_var('NAME')` with no default (filters may follow): the value comes from the environment.
 ENV_VAR_ONLY = re.compile(r"""^\{\{\s*env_var\(\s*(['"])[^'"]*\1\s*\)(?:\s*\|\s*\w+)*\s*\}\}$""")
@@ -134,10 +131,17 @@ def credential_files(workspace: Path) -> list[Path]:
         directories[:] = [name for name in directories if not is_credential(name)]
         for name in sorted(files):
             entry = here / name
-            if _credential_entry(entry) or (name == PROFILES_FILE and holds_literal_secret(entry)):
+            if _credential_entry(entry) or (is_profile(entry) and holds_literal_secret(entry)):
                 found.append(entry)
     # Sorted: os.walk follows the file system's listing order, which differs between systems.
     return sorted(entry.relative_to(workspace) for entry in found)
+
+
+def is_profile(entry: Path) -> bool:
+    """A dbt profile by its name, or a link to one under any name."""
+    return entry.name == PROFILES_FILE or (
+        entry.is_symlink() and entry.resolve().name == PROFILES_FILE
+    )
 
 
 def _credential_entry(entry: Path) -> bool:
@@ -146,8 +150,8 @@ def _credential_entry(entry: Path) -> bool:
 
 
 def holds_literal_secret(profile: Path) -> bool:
-    """A dbt profile with a secret written into it: a secret-named key (`PROFILE_SECRET_KEYS`, at
-    any depth, also inside a list) whose value is not empty and not only `env_var('NAME')` (a
+    """A dbt profile with a secret written into it: a secret-named key (`_secret_named`, at any
+    depth, also inside a list) whose value is not empty and not only `env_var('NAME')` (a
     default given to env_var is written in); a mapping under such a key is checked key by key.
     The file is parsed (as JSON, else as the YAML subset `yaml_lite` reads), so quoting and flow
     style hide no key. A stub profile, or one that reads its secrets from the environment, holds
@@ -176,9 +180,17 @@ def _holds_secret(node: object) -> bool:
         if isinstance(value, dict | list):
             if _holds_secret(value):
                 return True
-        elif str(key).lower() in PROFILE_SECRET_KEYS and _written_in(value):
+        elif _secret_named(str(key)) and _written_in(value):
             return True
     return False
+
+
+def _secret_named(key: str) -> bool:
+    """`key` names a secret (`PROFILE_SECRET_PARTS`). A key holding a backslash is taken as one:
+    `yaml_lite` leaves a double-quoted key's escapes as written, and `"pass\\u0077ord"` is
+    `password` to dbt."""
+    name = key.lower()
+    return "\\" in name or name == "pass" or any(part in name for part in PROFILE_SECRET_PARTS)
 
 
 def _written_in(value: object) -> bool:
