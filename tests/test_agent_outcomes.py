@@ -168,8 +168,9 @@ async def test_result_event_keeps_the_message_of_a_failed_api_call_only(
 
 
 @pytest.mark.parametrize("task_type", ["dbt", "query"])
-def test_web_search_and_fetch_are_never_available(tmp_path: Path, task_type: str) -> None:
-    """Benchmark integrity (data-eng-bench README): no looking up published solutions."""
+def test_web_search_and_fetch_are_off_without_the_network(tmp_path: Path, task_type: str) -> None:
+    """Benchmark integrity (data-eng-bench README): no looking up published solutions; only
+    `--network` (tests/test_network_option.py) turns them on."""
     task = Task(text="t", type=task_type, workspace=tmp_path, duckdb=tmp_path / "x.duckdb")  # type: ignore[arg-type]
     settings = agent.ModelSettings.from_env(ENV)
     options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)

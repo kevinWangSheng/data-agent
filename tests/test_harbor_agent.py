@@ -340,6 +340,14 @@ def test_the_agent_timeout_reaches_the_cli(
     assert float(args[args.index("--agent-timeout-sec") + 1]) == expected
 
 
+def test_a_trial_runs_without_the_network(local: Local) -> None:
+    """Ticket 98: an evaluation never passes `--network`, so the agent has no web tools."""
+    cls, tmp_path = local
+    env = LocalEnvironment(container_env(tmp_path, 0, jsonl(result_event())))
+    run(make_agent(cls, tmp_path), env)
+    assert "--network" not in stub_args(tmp_path)
+
+
 @pytest.mark.parametrize("value", [0, -5])
 def test_a_non_positive_agent_timeout_is_refused_before_any_trial(value: float) -> None:
     with pytest.raises(ValueError, match="agent_timeout_sec"):

@@ -742,6 +742,17 @@ def read_events(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
+async def test_a_dab_session_has_no_web_tools(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    """Ticket 98: DAB builds its options with `build_options` and never turns the network on."""
+    [seen] = await run_dab(monkeypatch, dab_root, tmp_path / "out", runs=1)
+    options = seen["options"]
+    assert not {"WebSearch", "WebFetch"} & set(options.tools or [])
+    assert not {"WebSearch", "WebFetch"} & set(options.allowed_tools)
+    assert {"WebSearch", "WebFetch"} <= set(options.disallowed_tools)
+
+
 async def test_each_run_writes_a_trace_and_a_submission_entry(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:
