@@ -2,9 +2,13 @@
 
 One run at a time. Each run gets `<runs_dir>/<id>/` for its event file and
 `<runs_dir>/<id>/workspace/` as its working directory: empty for a query run, a copy of the data
-source's dbt project (without `target/` and `logs/`) for a dbt run, with the DuckDB file (which
-lives inside the project, `check_layout`) copied to the same place in it. A query run reads the
-DuckDB file in place through the read-only gateway.
+source's dbt project for a dbt run. The copy leaves out `target/` and `logs/`, and what holds the
+database or its connection (ticket 99, spec "凭据与只读"): the DuckDB file goes to
+`<runs_dir>/<id>/db/` instead, and the project's `profiles.yml` stays behind. The run's dbt reaches
+the database through dbt_execute, whose `scratch` profile the run writes to
+`<runs_dir>/<id>/profiles/` (`data_agent.dbt_execute.DbtRun`); the sandbox mounts only the
+workspace, so it sees neither. A query run reads the DuckDB file in place through the read-only
+gateway.
 
 Cancelling signals only the process this server started, by its recorded pid (and its own process
 group when it leads one). When a run's process exits, whatever it left running in its group is
@@ -36,8 +40,13 @@ TASK_TYPES = ("query", "dbt")
 # How long a run being stopped has to exit after SIGTERM before it gets SIGKILL.
 STOP_GRACE_SECONDS = 10.0
 WORKSPACE = "workspace"
-# A dbt run's copy of the project leaves out the build output and logs of earlier runs.
-NOT_COPIED = ("target", "logs")
+# A dbt run's copy of the project leaves out the build output and logs of earlier runs, and the
+# profile, which holds the connection.
+NOT_COPIED = ("target", "logs", "profiles.yml")
+# Where a dbt run's DuckDB file goes, in the run's directory, outside its workspace.
+DB_DIR = "db"
+# The files DuckDB keeps next to a database file, copied with it.
+DUCKDB_SIDE_SUFFIXES = (".wal",)
 
 StartRun = Callable[[Sequence[str], Path], "subprocess.Popen[bytes]"]
 """Starts `data-agent run` with the given arguments (those after `data-agent run`) in the given
@@ -359,8 +368,10 @@ def prepare_workspace(
     workspace: Path, source: DataSource, task_type: str, runs_dir: Path
 ) -> list[str]:
     """Creates the run's working directory; returns the database arguments for `data-agent run`.
-    The copy follows links and skips dangling ones. Refused when the dbt project holds a
-    directory link reaching the runs directory, which the copy would copy into itself."""
+    A dbt run's DuckDB file is copied to `db/` beside the workspace, not into it, and the
+    project's `profiles.yml` is not copied. The copy follows links and skips dangling ones.
+    Refused when the dbt project holds a directory link reaching the runs directory, which the
+    copy would copy into itself."""
     if source.postgres_env is not None:
         database = ["--postgres-env", source.postgres_env]
     else:
@@ -371,9 +382,17 @@ def prepare_workspace(
         return database
     project = source.dbt_project
     runs = runs_dir.resolve()
+    # The DuckDB file as written inside the project (`check_layout`), and the files beside it.
+    inside = None if source.duckdb is None else duckdb_in_project(source)
+    database_files = (
+        set()
+        if inside is None
+        else {project / inside, *(project / f"{inside}{suffix}" for suffix in DUCKDB_SIDE_SUFFIXES)}
+    )
 
     def ignore(directory: str, names: list[str]) -> list[str]:
         skipped: list[str] = list(NOT_COPIED) if Path(directory) == project else []
+        skipped += [name for name in names if Path(directory) / name in database_files]
         for name in set(names) - set(skipped):
             entry = Path(directory) / name
             if not entry.is_symlink():
@@ -395,12 +414,13 @@ def prepare_workspace(
     shutil.copytree(project, workspace, ignore=ignore)
     if source.duckdb is None:
         return database
-    # Inside the project (`check_layout`): the copy keeps the file's place, so `profiles.yml`'s
-    # relative path reaches it. `target/` is not copied, so a file there is copied on its own.
-    inside = duckdb_in_project(source)
-    assert inside is not None
-    copy = workspace / inside
-    if inside.parts[0] in NOT_COPIED:
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source.duckdb, copy)
+    # Outside the workspace, so neither the agent's file tools nor the sandbox reach it.
+    db_dir = workspace.parent / DB_DIR
+    db_dir.mkdir()
+    copy = db_dir / source.duckdb.name
+    shutil.copy2(source.duckdb, copy)
+    for suffix in DUCKDB_SIDE_SUFFIXES:
+        side = source.duckdb.with_name(source.duckdb.name + suffix)
+        if side.is_file():
+            shutil.copy2(side, db_dir / side.name)
     return ["--duckdb", str(copy)]

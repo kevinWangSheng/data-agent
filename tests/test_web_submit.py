@@ -71,6 +71,8 @@ def dbt_project(root: Path, with_db: bool) -> Path:
     for skipped in ("target", "logs"):
         (project / skipped).mkdir()
         (project / skipped / "x.txt").write_text("old\n")
+    # The project's own profile, which a dbt run's copy leaves behind (ticket 99).
+    (project / "profiles.yml").write_text("p:\n  target: dev\n")
     if with_db:
         (project / "shop.duckdb").write_bytes(b"db")
     return project
@@ -137,7 +139,7 @@ def test_a_query_run_gets_an_empty_workspace_and_reads_the_duckdb_file_in_place(
     assert flag(args, "--data-source-name") == "shop"
 
 
-def test_a_dbt_run_works_on_a_copy_of_the_project_and_the_duckdb_file(
+def test_a_dbt_run_works_on_a_copy_of_the_project_with_the_duckdb_file_outside_it(
     tmp_path: Path, recorder: Recorder
 ) -> None:
     project = dbt_project(tmp_path, with_db=True)
@@ -153,10 +155,14 @@ def test_a_dbt_run_works_on_a_copy_of_the_project_and_the_duckdb_file(
     assert (cwd / "models" / "a.sql").read_text() == "select 1\n"
     assert not (cwd / "target").exists()
     assert not (cwd / "logs").exists()
+    # Ticket 99: neither the database nor the profile with its connection is in the workspace.
+    assert not (cwd / "shop.duckdb").exists()
+    assert not (cwd / "profiles.yml").exists()
     copy = Path(flag(args, "--duckdb"))
-    assert copy == cwd / "shop.duckdb"
+    assert copy == cwd.parent / "db" / "shop.duckdb"
     assert copy.read_bytes() == b"db"
     assert (project / "target" / "x.txt").is_file()  # the original is untouched
+    assert (project / "shop.duckdb").is_file()
 
 
 def test_a_postgres_dbt_run_copies_the_project_and_names_only_the_variable(
@@ -173,6 +179,7 @@ def test_a_postgres_dbt_run_copies_the_project_and_names_only_the_variable(
     [(args, cwd)] = recorder.calls
     assert (cwd / "dbt_project.yml").is_file()
     assert flag(args, "--postgres-env") == PG_ENV
+    assert not (cwd / "profiles.yml").exists()
     assert "--duckdb" not in args
     assert "pa55word" not in " ".join(args)
 
@@ -206,9 +213,9 @@ def test_a_duckdb_file_under_target_is_still_copied(tmp_path: Path, recorder: Re
     with TestClient(create_app(runs_dir, [source], recorder)) as client:
         assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
     [(args, cwd)] = recorder.calls
-    assert Path(flag(args, "--duckdb")) == cwd / "target" / "shop.duckdb"
-    assert (cwd / "target" / "shop.duckdb").read_bytes() == b"db"
-    assert not (cwd / "target" / "x.txt").exists()
+    assert Path(flag(args, "--duckdb")) == cwd.parent / "db" / "shop.duckdb"
+    assert (cwd.parent / "db" / "shop.duckdb").read_bytes() == b"db"
+    assert not (cwd / "target").exists()
 
 
 @pytest.mark.parametrize("where", ["runs_inside_project", "project_inside_runs", "same"])
@@ -254,9 +261,10 @@ def test_a_duckdb_link_inside_the_project_counts_as_inside(
         assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
     [(args, cwd)] = recorder.calls
     copy = Path(flag(args, "--duckdb"))
-    assert copy == cwd / "shop.duckdb"
+    assert copy == cwd.parent / "db" / "shop.duckdb"
     assert not copy.is_symlink()
     assert copy.read_bytes() == b"db"
+    assert not (cwd / "shop.duckdb").exists()
 
 
 def test_a_duckdb_file_under_a_linked_directory_in_the_project_counts_as_inside(
@@ -273,8 +281,9 @@ def test_a_duckdb_file_under_a_linked_directory_in_the_project_counts_as_inside(
     with TestClient(create_app(runs_dir, [source], recorder)) as client:
         assert client.post("/api/runs", json=body(task_type="dbt")).status_code == 201
     [(args, cwd)] = recorder.calls
-    assert Path(flag(args, "--duckdb")) == cwd / "data" / "shop.duckdb"
-    assert (cwd / "data" / "shop.duckdb").read_bytes() == b"db"
+    assert Path(flag(args, "--duckdb")) == cwd.parent / "db" / "shop.duckdb"
+    assert (cwd.parent / "db" / "shop.duckdb").read_bytes() == b"db"
+    assert not (cwd / "data" / "shop.duckdb").exists()
 
 
 @pytest.mark.parametrize("target", ["runs_dir", "its_parent"])
@@ -318,7 +327,7 @@ def test_relative_links_in_the_project_are_copied_whatever_the_server_cwd(
     source = DataSource(name="shop", duckdb=project / "shop.duckdb", dbt_project=project)
     args = launcher.prepare_workspace(workspace, source, "dbt", runs_dir)
     copy = Path(args[args.index("--duckdb") + 1])
-    assert copy == workspace / "shop.duckdb"
+    assert copy == workspace.parent / "db" / "shop.duckdb"
     assert not copy.is_symlink()
     assert copy.read_bytes() == b"db"
     assert (workspace / "models" / "shared" / "b.sql").read_text() == "select 2\n"

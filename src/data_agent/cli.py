@@ -15,6 +15,7 @@ from pathlib import Path
 
 from data_agent.agent import ConfigError, ConversationTurn, Task, run, source_gateway, stdin_lines
 from data_agent.context_tools import Dictionary
+from data_agent.dbt_execute import TARGETS, DbtExecuteError, DbtExecutor
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_multi_server, build_server
 from data_agent.run_config import CONFIG_NAMES, RunConfig, load_config
@@ -33,6 +34,13 @@ SANDBOX_HELP = (
     "own (docker) or directly on this machine (local). Use local only inside an isolated "
     "container, such as a Harbor task: it runs with this machine's files and network. Without "
     "this option the agent has no sandbox_exec"
+)
+
+# `--dbt-target` (ticket 99, spec "`dbt_execute`").
+DBT_TARGET_HELP = (
+    "with --sandbox, on a dbt task: where dbt_execute writes. scratch: a schema of the run's own, "
+    "through a profile generated outside the workspace; task: the project's own profile, as a "
+    "run without dbt_execute writes"
 )
 
 
@@ -121,6 +129,36 @@ def server_sandbox(
     return DockerSandbox(args.workspace, config.skills_dir, args.run_id)
 
 
+def server_dbt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> DbtExecutor | None:
+    """The dbt_execute `mcp-server --dbt-target` serves: on the workspace's project, with the
+    server's one database; `scratch` writes its profile to `--dbt-profiles-dir` and names its
+    schema after `--run-id`."""
+    if args.dbt_target is None:
+        if args.dbt_profiles_dir is not None:
+            parser.error("--dbt-profiles-dir goes with --dbt-target scratch")
+        return None
+    if args.sandbox is None:
+        parser.error("--dbt-target goes with --sandbox: dbt_execute comes with the sandbox")
+    if args.source is not None:
+        parser.error("--dbt-target takes one database, not --source")
+    if args.dbt_target == "scratch":
+        if args.dbt_profiles_dir is None or args.run_id is None:
+            parser.error("--dbt-target scratch needs --dbt-profiles-dir and --run-id")
+    elif args.dbt_profiles_dir is not None:
+        parser.error("--dbt-profiles-dir goes with --dbt-target scratch")
+    try:
+        return DbtExecutor(
+            args.workspace,
+            args.dbt_target,
+            args.run_id or "",
+            args.dbt_profiles_dir,
+            duckdb=args.duckdb,
+            postgres_env=args.postgres_env,
+        )
+    except DbtExecuteError as exc:
+        parser.error(str(exc))
+
+
 def serve_sources(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -199,6 +237,12 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument(
         "--run-id", help="with --sandbox docker: the run's id, which names its container"
     )
+    serve.add_argument("--dbt-target", choices=TARGETS, help=DBT_TARGET_HELP)
+    serve.add_argument(
+        "--dbt-profiles-dir",
+        type=Path,
+        help="with --dbt-target scratch: the directory outside the workspace its profile goes to",
+    )
 
     run_cmd = commands.add_parser("run", help="run the agent on one task")
     task_arg = run_cmd.add_mutually_exclusive_group(required=True)
@@ -245,6 +289,7 @@ def main(argv: list[str] | None = None) -> None:
         help="the previous turn's session to go on with (needs --chat)",
     )
     run_cmd.add_argument("--sandbox", choices=BACKENDS, help=SANDBOX_HELP)
+    run_cmd.add_argument("--dbt-target", choices=TARGETS, default="task", help=DBT_TARGET_HELP)
 
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
     web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
@@ -271,6 +316,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.workspace is not None and not args.workspace.is_dir():
             serve.error(f"workspace directory not found: {args.workspace}")
         sandbox = server_sandbox(serve, args, config)
+        dbt = server_dbt(serve, args)
         if args.source is not None:
             if args.dictionary is not None:
                 serve.error("with --source, give each database's dictionary as --source-dictionary")
@@ -288,7 +334,7 @@ def main(argv: list[str] | None = None) -> None:
         # Without the file (the server run on its own) build_server builds the dictionary.
         dictionary = Dictionary.load(args.dictionary) if args.dictionary is not None else None
         build_server(
-            gateway, config, args.workspace, not args.no_verifier_tools, dictionary, sandbox
+            gateway, config, args.workspace, not args.no_verifier_tools, dictionary, sandbox, dbt
         ).run("stdio")
         return
 
@@ -329,6 +375,7 @@ def main(argv: list[str] | None = None) -> None:
                 steering=steering,
                 sandbox=args.sandbox,
                 network=args.network,
+                dbt_target=args.dbt_target,
             )
         )
     except ConfigError as exc:

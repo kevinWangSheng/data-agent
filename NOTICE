@@ -33,6 +33,12 @@ License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-
   sandbox_vm.py (`_seed_project`), modified as noted at its top. src/data_agent/sandbox.py follows
   the same file's `sandbox_exec` (one sandbox per run, created on first use; the 300 s default
   timeout; the `exit_code`/`stdout`/`stderr` reply), written anew for this server.
+- src/data_agent/dbt_execute.py <- signalpilot/gateway/gateway/mcp/tools/dbt_execute.py (the
+  tool's arguments, the per-run scratch schema, the `target_schema` reply header) and
+  signalpilot/gateway/gateway/standalone_chat/dbt_executor.py (`_ALLOWED_COMMANDS`,
+  `_SELECTOR_RE`, the 20,000-character output cap and 900-second limit, `build_dbt_argv`,
+  `run_dbt_command`'s reply and run_results summary, `_url_parts` and `_emit_postgres`), modified
+  as noted at its top.
 - web/src/code/pretty-sql.ts <- signalpilot/web/lib/pretty-sql.ts, unmodified.
 - web/src/code/chat-code.tsx <- signalpilot/web/components/chat/chat-code.tsx, modified as noted at
   its top.
