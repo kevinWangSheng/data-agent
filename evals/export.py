@@ -191,7 +191,7 @@ def exportable(manifest_path: Path) -> set[str]:
     return task_list(manifest, "dev", manifest_path) - held_out
 
 
-def event_lines(path: Path) -> tuple[list[str], list[dict[str, Any]], int]:
+def parse_event_file(path: Path) -> tuple[list[str], list[dict[str, Any]], int]:
     """A file's lines that are events, as written and parsed, and how many other non-blank lines
     were set aside: a run killed mid-line ends with half a line, which is not an event."""
     try:
@@ -218,15 +218,16 @@ def event_lines(path: Path) -> tuple[list[str], list[dict[str, Any]], int]:
 
 
 def read_events(path: Path) -> list[dict[str, Any]]:
-    """The events of a file, lines that are not events aside (`event_lines`)."""
-    return event_lines(path)[1]
+    """The events of a file, lines that are not events aside (`parse_event_file`)."""
+    _, events, _ = parse_event_file(path)
+    return events
 
 
 def copy_events(source: Path, target: Path) -> int:
     """Write only `source`'s event lines, unchanged, to `target`; the number of lines dropped. The
     site parses every line (web/src/data/source.ts `parseEventLines`), so one half line would keep
     the run, or a whole conversation, from opening."""
-    lines, _, dropped = event_lines(source)
+    lines, _, dropped = parse_event_file(source)
     target.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     return dropped
 
@@ -618,12 +619,12 @@ def build(args: argparse.Namespace, stage: Path) -> tuple[int, dict[str, int]]:
     if len(set(ids)) < len(ids):
         raise Refused(f"{len(ids) - len(set(ids))} run id(s) repeat; each run needs its own id")
     check_ids(ids, args)
-    dropped: dict[str, int] = {}
+    dropped_by_run: dict[str, int] = {}
     for notes, events in runs + turns:
         run_dir = stage / "runs" / notes["id"]
         run_dir.mkdir(parents=True)
         if lost := copy_events(events, run_dir / "events.jsonl"):
-            dropped[notes["id"]] = lost
+            dropped_by_run[notes["id"]] = lost
         write_json(run_dir / "meta.json", notes)
     index: dict[str, Any] = {"runs": [notes for notes, _ in runs]}
     if conversations:
@@ -635,7 +636,7 @@ def build(args: argparse.Namespace, stage: Path) -> tuple[int, dict[str, int]]:
         "dab": dab_summary(args.dab) if args.dab else None,
     }
     write_json(stage / "eval.json", evaluation)
-    return len(runs) + len(turns), dropped
+    return len(runs) + len(turns), dropped_by_run
 
 
 def run(args: argparse.Namespace) -> int:
@@ -647,7 +648,7 @@ def run(args: argparse.Namespace) -> int:
     stage = Path(tempfile.mkdtemp(prefix=f".{out.name}.export-", dir=out.parent))
     try:
         try:
-            n, dropped = build(args, stage)
+            n, dropped_by_run = build(args, stage)
         except (Refused, OSError) as exc:
             print(f"export: {exc}", file=sys.stderr)
             return 2
@@ -664,7 +665,7 @@ def run(args: argparse.Namespace) -> int:
     finally:
         if stage.exists():
             shutil.rmtree(stage)
-    for run_id, lost in dropped.items():
+    for run_id, lost in dropped_by_run.items():
         # The id is checked by `check_ids` and published as the run's directory anyway.
         print(f"export: {run_id}: dropped {lost} event line(s) that do not parse")
     print(f"export: {n} run(s), {len(args.conversations)} conversation(s) -> {out}")
