@@ -663,3 +663,51 @@ def test_a_profile_that_cannot_be_read_counts_as_a_credential_file(tmp_path: Pat
         assert credential_files(tmp_path) == [Path("profiles.yml")]
     finally:
         profile.chmod(0o600)
+
+
+def test_credential_files_come_in_path_order_whatever_order_the_walk_takes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket 100 return round 2 (CI on ubuntu): os.walk visits directories in the order the
+    file system lists them, which differs between Linux and macOS; the list is sorted."""
+    for directory in ("a", "b", "c"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / ".env").write_text("KEY=x")
+    real_walk = os.walk
+
+    def reversed_walk(top: Path) -> Any:
+        for root, directories, files in real_walk(top):
+            directories.reverse()  # in place, so the walk follows it
+            yield root, directories, files
+
+    monkeypatch.setattr("data_agent.workspace_guard.os.walk", reversed_walk)
+    assert credential_files(tmp_path) == [Path("a/.env"), Path("b/.env"), Path("c/.env")]
+
+
+@pytest.mark.parametrize(
+    ("text", "listed"),
+    [
+        # A quoted key is the same key to YAML.
+        ('shop:\n  outputs:\n    dev:\n      "password": hunter2\n', True),
+        ("shop:\n  outputs:\n    dev:\n      'token': abc\n", True),
+        # JSON is YAML.
+        ('{"shop": {"outputs": {"dev": {"type": "postgres", "password": "hunter2"}}}}', True),
+        ('{"shop": {"outputs": {"dev": {"type": "postgres", "user": "agent"}}}}', False),
+        # A flow mapping, on one line or spanning lines.
+        ("shop: {outputs: {dev: {type: postgres, password: hunter2}}}\n", True),
+        ("shop:\n  outputs:\n    dev: {type: postgres,\n      password: hunter2}\n", True),
+        ("shop: {outputs: {dev: {password: \"{{ env_var('P') }}\"}}}\n", False),
+        # A secret in a list, and a number written in.
+        ("shop:\n  outputs:\n    dev:\n      hosts:\n        - password: x\n", True),
+        ("shop:\n  outputs:\n    dev:\n      password: 1234\n", True),
+        # Not YAML the parser reads: counted as holding one.
+        ("shop: &anchor\n  password: x\n", True),
+    ],
+)
+def test_a_profile_secret_is_found_however_the_yaml_writes_it(
+    tmp_path: Path, text: str, listed: bool
+) -> None:
+    """Ticket 100 return round 2 (Codex P1): the line regex missed a quoted key, a JSON profile
+    and a flow mapping, so a docker run mounted the secret; the profile is parsed instead."""
+    (tmp_path / "profiles.yml").write_text(text)
+    assert credential_files(tmp_path) == ([Path("profiles.yml")] if listed else [])

@@ -16,14 +16,17 @@ Read and Grep may also open the files Claude Code saves an over-long tool output
 """
 
 import fnmatch
+import json
 import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 from claude_agent_sdk import HookCallback, HookContext, HookInput, HookJSONOutput
 
 from data_agent.dbt_execute import PROFILES_FILE
+from data_agent.verifier_v2 import yaml_lite
 
 FILE_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit")
 GLOB_CHARS = frozenset("*?[{")
@@ -41,9 +44,20 @@ CREDENTIAL_NAMES = (
 )
 # A dbt profile is a credential file when it writes a secret in (`holds_literal_secret`): the keys
 # dbt's adapters keep passwords, tokens and private keys under.
-PROFILE_SECRET_KEY = re.compile(
-    r"^([ \t]*)(?:password|pass|token|secret|client_secret|private_key|private_key_passphrase"
-    r"|api_key|access_token|refresh_token|keyfile_json)[ \t]*:(.*)$"
+PROFILE_SECRET_KEYS = frozenset(
+    {
+        "password",
+        "pass",
+        "token",
+        "secret",
+        "client_secret",
+        "private_key",
+        "private_key_passphrase",
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "keyfile_json",
+    }
 )
 # `env_var('NAME')` with no default (filters may follow): the value comes from the environment.
 ENV_VAR_ONLY = re.compile(r"""^\{\{\s*env_var\(\s*(['"])[^'"]*\1\s*\)(?:\s*\|\s*\w+)*\s*\}\}$""")
@@ -122,7 +136,8 @@ def credential_files(workspace: Path) -> list[Path]:
             entry = here / name
             if _credential_entry(entry) or (name == PROFILES_FILE and holds_literal_secret(entry)):
                 found.append(entry)
-    return [entry.relative_to(workspace) for entry in found]
+    # Sorted: os.walk follows the file system's listing order, which differs between systems.
+    return sorted(entry.relative_to(workspace) for entry in found)
 
 
 def _credential_entry(entry: Path) -> bool:
@@ -131,30 +146,48 @@ def _credential_entry(entry: Path) -> bool:
 
 
 def holds_literal_secret(profile: Path) -> bool:
-    """A dbt profile with a secret written into it: a secret-named key (`PROFILE_SECRET_KEY`) whose
-    value is not empty and not only `env_var('NAME')` (a default given to env_var is written in);
-    a value on the lines below the key (a block scalar) counts too, a nested mapping does not. A
-    stub profile, or one that reads its secrets from the environment, holds none. A profile that
-    cannot be read counts as holding one."""
+    """A dbt profile with a secret written into it: a secret-named key (`PROFILE_SECRET_KEYS`, at
+    any depth, also inside a list) whose value is not empty and not only `env_var('NAME')` (a
+    default given to env_var is written in); a mapping under such a key is checked key by key.
+    The file is parsed (as JSON, else as the YAML subset `yaml_lite` reads), so quoting and flow
+    style hide no key. A stub profile, or one that reads its secrets from the environment, holds
+    none. A profile that cannot be read or parsed counts as holding one."""
     try:
-        lines = profile.read_text(errors="replace").splitlines()
+        text = profile.read_text(errors="replace")
     except OSError:
         return True
-    for number, line in enumerate(lines):
-        match = PROFILE_SECRET_KEY.match(line)
-        if match is None:
-            continue
-        value = re.sub(r"\s+#.*$", "", match.group(2)).strip()
-        if value in ("", "|", ">", "|-", ">-", "|+", ">+"):
-            below = next((rest for rest in lines[number + 1 :] if rest.strip()), "")
-            indent = len(below) - len(below.lstrip())
-            if indent > len(match.group(1)) and not re.match(r"^\s*[\w-]+\s*:", below):
+    try:
+        document = json.loads(text)
+    except ValueError:
+        try:
+            document = yaml_lite.load(text)
+        except yaml_lite.YamlLiteError:
+            return True
+    return _holds_secret(document)
+
+
+def _holds_secret(node: object) -> bool:
+    """A secret-named key with a value written in, anywhere in a parsed profile."""
+    if isinstance(node, list):
+        return any(_holds_secret(item) for item in cast("list[object]", node))
+    if not isinstance(node, dict):
+        return False
+    for key, value in cast("dict[object, object]", node).items():
+        if isinstance(value, dict | list):
+            if _holds_secret(value):
                 return True
-            continue
-        unquoted = value.strip("'\"").strip()
-        if unquoted and not ENV_VAR_ONLY.match(unquoted):
+        elif str(key).lower() in PROFILE_SECRET_KEYS and _written_in(value):
             return True
     return False
+
+
+def _written_in(value: object) -> bool:
+    """A scalar value that is in the file: not empty, not only `env_var('NAME')`."""
+    if value is None:
+        return False
+    if not isinstance(value, str):
+        return True
+    return bool(value.strip()) and not ENV_VAR_ONLY.match(value.strip())
 
 
 def _expand_braces(pattern: str) -> list[str]:
