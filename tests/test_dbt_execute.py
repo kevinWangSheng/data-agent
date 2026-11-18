@@ -546,3 +546,14 @@ def test_a_real_dbt_run_materializes_into_the_scratch_schema_only(tmp_path: Path
         con.close()
     assert not list(workspace.rglob("profiles.yml"))
     assert not list(workspace.rglob("*.duckdb"))
+
+
+def test_a_sandbox_path_as_project_dir_is_told_to_be_relative(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
+) -> None:
+    """The docker prompt tells the agent the workspace is /workspace in sandbox_exec; dbt_execute
+    runs on the host, so such a path is refused with the way to name the project instead."""
+    env, _ = fake_dbt
+    executor = DbtExecutor(two_projects(tmp_path), "task", duckdb=tmp_path / "a.duckdb")
+    with pytest.raises(DbtExecuteError, match="relative to the workspace"):
+        executor.execute("run", project_dir="/workspace/dbt_models_other", env=env)

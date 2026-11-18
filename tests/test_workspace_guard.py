@@ -1,5 +1,6 @@
 """Read, Glob, Grep, Write and Edit may only reach files inside the task workspace."""
 
+import os
 import re
 import shutil
 import subprocess
@@ -608,6 +609,15 @@ shop:
         ("pass: 'hunter2'  # the old one", True),
         ("private_key_passphrase: x1", True),
         ("password: \"{{ env_var('SHOP_PASSWORD') }}\"", False),
+        ("password: \"{{ env_var('SHOP_PASSWORD') | as_text }}\"", False),
+        # A default given to env_var is written in the file.
+        ("password: \"{{ env_var('SHOP_PASSWORD', 'hunter2') }}\"", True),
+        # A value on the lines below the key.
+        ("password: |\n        hunter2", True),
+        ("password:\n        hunter2", True),
+        # A nested mapping is no value of its own; its keys are checked on their own lines.
+        ("keyfile_json:\n        type: service_account", False),
+        ("keyfile_json:\n        private_key: abc", True),
         ("threads: 4", False),
         ("password: ''", False),
         ("password:", False),
@@ -624,3 +634,32 @@ def test_a_profile_holding_a_literal_secret_is_a_credential_file(
     (tmp_path / "project" / "profiles.yml").write_text(PROFILE.format(line=line))
     expected = [Path("project/profiles.yml")] if listed else []
     assert credential_files(tmp_path) == expected
+
+
+def test_credential_files_lists_a_credential_directory_and_a_link_to_one(tmp_path: Path) -> None:
+    (tmp_path / "keys.pem").mkdir()
+    (tmp_path / "keys.pem" / "inside.txt").write_text("x")
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / ".env").mkdir()
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "ws" / "settings").symlink_to(tmp_path / "outside" / ".env")
+    (tmp_path / "ws" / "keys.pem").symlink_to(tmp_path / "keys.pem")
+    assert credential_files(tmp_path / "ws") == [Path("keys.pem"), Path("settings")]
+    # Not entered: the directory is listed, not the files in it.
+    assert credential_files(tmp_path) == [
+        Path("keys.pem"),
+        Path("outside/.env"),
+        Path("ws/keys.pem"),
+        Path("ws/settings"),
+    ]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_a_profile_that_cannot_be_read_counts_as_a_credential_file(tmp_path: Path) -> None:
+    profile = tmp_path / "profiles.yml"
+    profile.write_text("shop: {}\n")
+    profile.chmod(0)
+    try:
+        assert credential_files(tmp_path) == [Path("profiles.yml")]
+    finally:
+        profile.chmod(0o600)

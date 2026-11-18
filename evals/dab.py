@@ -96,6 +96,7 @@ Databases, reachable only through the `{server}` MCP tools (pass the name as `db
 {databases}
 Workspace (your working directory): {workspace}
 """
+    # Always: DAB's sandbox_exec is the docker backend (`dab_server`, EXEC_IMAGE).
     + DOCKER_PATHS_RULE
     + """{turn_limit}
 """

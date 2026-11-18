@@ -194,7 +194,7 @@ DOCKER_PATHS_RULE = (
 )
 
 
-def sandbox_paths(sandbox: Backend | None) -> str:
+def docker_paths_note(sandbox: Backend | None) -> str:
     return DOCKER_PATHS_RULE if sandbox == "docker" else ""
 
 
@@ -203,7 +203,7 @@ QUERY_PROMPT = (
 Task type: query
 Database: {database}, reachable only through the `{server}` MCP tools.
 Workspace (your working directory): {workspace}
-{sandbox_paths}{turn_limit}
+{docker_paths_note}{turn_limit}
 """
     + SANDBOX_RULE
     + """
@@ -236,7 +236,7 @@ Task type: dbt
 Database: {database}. dbt writes to it only through the `dbt_execute` tool; you read it only \
 through the `{server}` MCP tools.
 Workspace (your working directory; the dbt project is this directory or one inside it): {workspace}
-{sandbox_paths}\
+{docker_paths_note}\
 Run dbt against the database with `dbt_execute`, which finds the project in the workspace (name \
 it with `project_dir` when the workspace holds several). Run \
 every other command (Python, scripts, `dbt parse`, `dbt ls`, `dbt deps`) with `sandbox_exec`, \
@@ -2012,8 +2012,8 @@ def check_no_credentials(task: Task) -> None:
         shown = ", ".join(str(path) for path in found[:5]) + (", ..." if len(found) > 5 else "")
         raise ConfigError(
             f"the workspace holds credential files ({shown}), which the docker sandbox would "
-            "mount; move them out of the workspace (--sandbox local is only for a run inside an "
-            "isolated container)"
+            "mount; move them out of the workspace, and have a profiles.yml read its secrets with "
+            "env_var() (--sandbox local is only for a run inside an isolated container)"
         )
 
 
@@ -2143,7 +2143,7 @@ async def run(
             turn_limit=TURN_LIMIT.format(max_turns=budget.max_turns) if budget else "",
             database=database_line(task),
             workspace=task.workspace.resolve(),
-            sandbox_paths=sandbox_paths(sandbox),
+            docker_paths_note=docker_paths_note(sandbox),
             task=task.text,
             task_file_note=TASK_FILE_NOTE.format(path=task_file) if task_file else "",
         )

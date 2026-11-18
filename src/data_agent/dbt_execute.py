@@ -124,7 +124,11 @@ def workspace_project(workspace: Path, project_dir: str = "") -> Path:
     if project_dir:
         project = (workspace / project_dir).resolve()
         if not project.is_relative_to(root):
-            raise DbtExecuteError(f"project_dir {project_dir!r} is outside the workspace")
+            raise DbtExecuteError(
+                f"project_dir {project_dir!r} is outside the workspace; give the project's "
+                "directory relative to the workspace (dbt_execute runs outside the sandbox, so "
+                "the sandbox's paths do not apply)"
+            )
         if not (project / PROJECT_FILE).is_file():
             raise DbtExecuteError(f"project_dir {project_dir!r} has no {PROJECT_FILE}")
         return project

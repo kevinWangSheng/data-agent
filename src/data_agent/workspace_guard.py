@@ -23,6 +23,8 @@ from pathlib import Path
 
 from claude_agent_sdk import HookCallback, HookContext, HookInput, HookJSONOutput
 
+from data_agent.dbt_execute import PROFILES_FILE
+
 FILE_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit")
 GLOB_CHARS = frozenset("*?[{")
 # File names that usually hold secrets: dotenv and direnv files, login and password files, keys.
@@ -39,12 +41,12 @@ CREDENTIAL_NAMES = (
 )
 # A dbt profile is a credential file when it writes a secret in (`holds_literal_secret`): the keys
 # dbt's adapters keep passwords, tokens and private keys under.
-PROFILES_FILE = "profiles.yml"
-PROFILE_SECRET_LINE = re.compile(
-    r"^[ \t]*(?:password|pass|token|secret|client_secret|private_key|private_key_passphrase"
-    r"|api_key|access_token|refresh_token|keyfile_json)[ \t]*:(.*)$",
-    re.MULTILINE,
+PROFILE_SECRET_KEY = re.compile(
+    r"^([ \t]*)(?:password|pass|token|secret|client_secret|private_key|private_key_passphrase"
+    r"|api_key|access_token|refresh_token|keyfile_json)[ \t]*:(.*)$"
 )
+# `env_var('NAME')` with no default (filters may follow): the value comes from the environment.
+ENV_VAR_ONLY = re.compile(r"""^\{\{\s*env_var\(\s*(['"])[^'"]*\1\s*\)(?:\s*\|\s*\w+)*\s*\}\}$""")
 # The file-name patterns ripgrep's `--type` stands for (`rg --type-list`, ripgrep 14), for the
 # types a dbt project is searched with; any other type is not trusted to skip a credential file.
 GREP_TYPES = {
@@ -104,42 +106,53 @@ def _is_credential_path(path: Path) -> bool:
 
 
 def credential_files(workspace: Path) -> list[Path]:
-    """The credential files in `workspace`, relative to it, by this guard's rule: a credential
-    name, anything in a credential-named directory (listed as the directory), or a link to one.
-    The guard stops only the file tools; the docker sandbox mounts the whole workspace, so a docker
-    run refuses a workspace holding any (ADR-0010: the sandbox holds no credentials)."""
+    """The credential files in `workspace`, relative to it: the names this guard keeps the file
+    tools from (`is_credential`), anything in a credential-named directory (listed as the
+    directory), a link to one, and a dbt profile with a secret written in (`holds_literal_secret`,
+    a rule of the docker mount only). The guard stops only the file tools; the docker sandbox
+    mounts the whole workspace, so a docker run refuses a workspace holding any (ADR-0010: the
+    sandbox holds no credentials)."""
     found: list[Path] = []
     for root, directories, files in os.walk(workspace):
         here = Path(root)
-        for name in sorted(directories):
-            entry = here / name
-            if is_credential(name) or (entry.is_symlink() and is_credential(entry.resolve().name)):
-                found.append(entry.relative_to(workspace))
+        found += [here / name for name in sorted(directories) if _credential_entry(here / name)]
         # Not into a credential directory (listed already), nor through a link (os.walk's own rule).
         directories[:] = [name for name in directories if not is_credential(name)]
         for name in sorted(files):
             entry = here / name
-            if (
-                is_credential(name)
-                or (entry.is_symlink() and is_credential(entry.resolve().name))
-                or (name == PROFILES_FILE and holds_literal_secret(entry))
-            ):
-                found.append(entry.relative_to(workspace))
-    return found
+            if _credential_entry(entry) or (name == PROFILES_FILE and holds_literal_secret(entry)):
+                found.append(entry)
+    return [entry.relative_to(workspace) for entry in found]
+
+
+def _credential_entry(entry: Path) -> bool:
+    """A credential by its name, or a link to one."""
+    return is_credential(entry.name) or (entry.is_symlink() and is_credential(entry.resolve().name))
 
 
 def holds_literal_secret(profile: Path) -> bool:
-    """A dbt profile with a secret written into it: a secret-named key (`PROFILE_SECRET_LINE`)
-    with a value that is not empty and not taken from `env_var()`. A stub profile, or one that
-    reads its secrets from the environment, holds none. Read as lines: a CLI run mounts a project
-    as it is, and its profile may hold the warehouse password."""
+    """A dbt profile with a secret written into it: a secret-named key (`PROFILE_SECRET_KEY`) whose
+    value is not empty and not only `env_var('NAME')` (a default given to env_var is written in);
+    a value on the lines below the key (a block scalar) counts too, a nested mapping does not. A
+    stub profile, or one that reads its secrets from the environment, holds none. A profile that
+    cannot be read counts as holding one."""
     try:
-        text = profile.read_text(errors="replace")
+        lines = profile.read_text(errors="replace").splitlines()
     except OSError:
-        return False
-    for match in PROFILE_SECRET_LINE.finditer(text):
-        value = re.sub(r"\s+#.*$", "", match.group(1)).strip().strip("'\"").strip()
-        if value and "env_var(" not in value:
+        return True
+    for number, line in enumerate(lines):
+        match = PROFILE_SECRET_KEY.match(line)
+        if match is None:
+            continue
+        value = re.sub(r"\s+#.*$", "", match.group(2)).strip()
+        if value in ("", "|", ">", "|-", ">-", "|+", ">+"):
+            below = next((rest for rest in lines[number + 1 :] if rest.strip()), "")
+            indent = len(below) - len(below.lstrip())
+            if indent > len(match.group(1)) and not re.match(r"^\s*[\w-]+\s*:", below):
+                return True
+            continue
+        unquoted = value.strip("'\"").strip()
+        if unquoted and not ENV_VAR_ONLY.match(unquoted):
             return True
     return False
 
