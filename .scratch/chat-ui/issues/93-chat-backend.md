@@ -137,3 +137,11 @@ I claimed the ticket in the main checkout (`in-progress`, Claimed by, Branch). T
   - Judged model variance, not an implementation fault.
 - b-ambiguous rerun 3×: "3 passed in 51.57s".
 - Every scenario has a 3/3 run: a, d, f, g in run 1; c in run 2 after the narrowed check; b in the rerun.
+
+### Main session, 2026-11-17: Codex on PR #104 (at 7d0eda7)
+
+- P1 `test_chat_e2e.py:394`. Codex made two points:
+  1. Changing ticket 88's assertion breaks the rule against editing acceptance tests. The human authorized this change (above), so the commit stays; this is noted on the PR.
+  2. An answer that starts with "Assumptions" and then lists all eight customers would pass, because the split leaves an empty result and the top-3 checks searched the whole answer. This is correct. Fixed in 42762ec: the top-3 checks also look only at the listed result, so that answer now fails. The check is stricter than before, and the answer-format rule (ticket 68) already puts the result first.
+- Hand-checked on seven answer shapes, all as intended: plain; C04 listed; assumptions first with all eight; bold "**Assumptions:**"; "### Assumptions"; C04 with no assumptions part; names only.
+- Real-model c after 42762ec: "3 passed in 27.52s".
