@@ -18,6 +18,7 @@ from data_agent.context_tools import Dictionary
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_multi_server, build_server
 from data_agent.run_config import CONFIG_NAMES, RunConfig, load_config
+from data_agent.sandbox import BACKENDS, DockerSandbox, LocalSandbox, Sandbox
 from data_agent.web.sources import DataSource, load_data_sources
 
 EXIT_OK, EXIT_UNFINISHED, EXIT_ERROR = 0, 1, 2
@@ -26,6 +27,13 @@ WEB_HOST = "127.0.0.1"
 WEB_PORT = 8765
 # The process's stdin, read as a descriptor: `sys.stdin` may be replaced, by pytest for one.
 STDIN_FD = 0
+# `--sandbox` (ticket 97, spec "`sandbox_exec`").
+SANDBOX_HELP = (
+    "give the agent sandbox_exec, which runs shell commands in a Docker container of the run's "
+    "own (docker) or directly on this machine (local). Use local only inside an isolated "
+    "container, such as a Harbor task: it runs with this machine's files and network. Without "
+    "this option the agent has no sandbox_exec"
+)
 
 
 def add_database(parser: argparse.ArgumentParser, server: bool) -> None:
@@ -95,8 +103,29 @@ def given_sources(parser: argparse.ArgumentParser, given: list[list[str]]) -> li
     return sources
 
 
-def serve_sources(
+def server_sandbox(
     parser: argparse.ArgumentParser, args: argparse.Namespace, config: RunConfig
+) -> Sandbox | None:
+    """The sandbox `mcp-server --sandbox` serves sandbox_exec on: it works in the workspace and
+    sees the config's Skill directory; a container is named and labelled by `--run-id`."""
+    if args.sandbox is None:
+        if args.run_id is not None:
+            parser.error("--run-id goes with --sandbox")
+        return None
+    if args.workspace is None:
+        parser.error("--sandbox needs --workspace: the sandbox works in it")
+    if args.sandbox == "local":
+        return LocalSandbox(args.workspace, config.skills_dir)
+    if args.run_id is None:
+        parser.error("--sandbox docker needs --run-id, the id its container is named after")
+    return DockerSandbox(args.workspace, config.skills_dir, args.run_id)
+
+
+def serve_sources(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    config: RunConfig,
+    sandbox: Sandbox | None,
 ) -> None:
     """`mcp-server --source ...`: one server over every database the entries name."""
     sources = given_sources(parser, args.source)
@@ -109,7 +138,7 @@ def serve_sources(
             parser.error(f"dictionary file not found: {path}")
         dictionaries[name] = Dictionary.load(Path(path))
     gateways = {source.name: source_gateway(source, os.environ) for source in sources}
-    build_multi_server(gateways, config, args.workspace, dictionaries).run("stdio")
+    build_multi_server(gateways, config, args.workspace, dictionaries, sandbox).run("stdio")
 
 
 def file_task(parser: argparse.ArgumentParser, args: argparse.Namespace, text: str) -> Task:
@@ -166,6 +195,10 @@ def main(argv: list[str] | None = None) -> None:
         metavar=("NAME", "FILE"),
         help="with --source: the value dictionary of the database NAME, as --dictionary",
     )
+    serve.add_argument("--sandbox", choices=BACKENDS, help=SANDBOX_HELP)
+    serve.add_argument(
+        "--run-id", help="with --sandbox docker: the run's id, which names its container"
+    )
 
     run_cmd = commands.add_parser("run", help="run the agent on one task")
     task_arg = run_cmd.add_mutually_exclusive_group(required=True)
@@ -204,6 +237,7 @@ def main(argv: list[str] | None = None) -> None:
         metavar="SESSION_ID",
         help="the previous turn's session to go on with (needs --chat)",
     )
+    run_cmd.add_argument("--sandbox", choices=BACKENDS, help=SANDBOX_HELP)
 
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
     web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
@@ -229,10 +263,11 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "mcp-server":
         if args.workspace is not None and not args.workspace.is_dir():
             serve.error(f"workspace directory not found: {args.workspace}")
+        sandbox = server_sandbox(serve, args, config)
         if args.source is not None:
             if args.dictionary is not None:
                 serve.error("with --source, give each database's dictionary as --source-dictionary")
-            serve_sources(serve, args, config)
+            serve_sources(serve, args, config, sandbox)
             return
         if args.source_dictionary is not None:
             serve.error("--source-dictionary goes with --source")
@@ -245,9 +280,9 @@ def main(argv: list[str] | None = None) -> None:
         )
         # Without the file (the server run on its own) build_server builds the dictionary.
         dictionary = Dictionary.load(args.dictionary) if args.dictionary is not None else None
-        build_server(gateway, config, args.workspace, not args.no_verifier_tools, dictionary).run(
-            "stdio"
-        )
+        build_server(
+            gateway, config, args.workspace, not args.no_verifier_tools, dictionary, sandbox
+        ).run("stdio")
         return
 
     if args.agent_timeout_sec is not None and not args.agent_timeout_sec > 0:
@@ -277,7 +312,16 @@ def main(argv: list[str] | None = None) -> None:
         # reads it. A cancelled run is stopped by signal, so its stdin is read no more.
         steering = None if turn is None else stdin_lines(STDIN_FD)
         outcome = asyncio.run(
-            run(task, config, args.events_dir, os.environ, deadline, turn=turn, steering=steering)
+            run(
+                task,
+                config,
+                args.events_dir,
+                os.environ,
+                deadline,
+                turn=turn,
+                steering=steering,
+                sandbox=args.sandbox,
+            )
         )
     except ConfigError as exc:
         run_cmd.error(str(exc))

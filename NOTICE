@@ -29,6 +29,10 @@ License: Apache License 2.0 (upstream LICENSE). The upstream files carry no per-
   `format_rows` (50-row floor, 12,000-character budget, 400-row maximum, `[INCOMPLETE DISPLAY]`
   notice) <- signalpilot/gateway/gateway/mcp/tools/query.py (`query_database`); modified as noted
   at its top.
+- sandbox-image/stub_profile.py <- the stub dbt profile in signalpilot/gateway/gateway/mcp/tools/
+  sandbox_vm.py (`_seed_project`), modified as noted at its top. src/data_agent/sandbox.py follows
+  the same file's `sandbox_exec` (one sandbox per run, created on first use; the 300 s default
+  timeout; the `exit_code`/`stdout`/`stderr` reply), written anew for this server.
 - web/src/code/pretty-sql.ts <- signalpilot/web/lib/pretty-sql.ts, unmodified.
 - web/src/code/chat-code.tsx <- signalpilot/web/components/chat/chat-code.tsx, modified as noted at
   its top.

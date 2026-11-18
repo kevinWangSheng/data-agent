@@ -64,6 +64,7 @@ from data_agent.gateway import (
     PostgresGateway,
 )
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
+from data_agent.sandbox import Backend, SandboxRun, docker_lifecycle
 from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
 from data_agent.verifier_tools import SNAPSHOT_ENV
@@ -1480,6 +1481,7 @@ def build_options(
     turn_budget: TurnBudget | None = None,
     guarded: set[str] | None = None,
     turn: ConversationTurn | None = None,
+    sandbox: SandboxRun | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the command and workspace guards deny (`guard_recorder`). With `spend` (the
@@ -1499,7 +1501,8 @@ def build_options(
     limit is the run config's, and nothing feeds the budget, so it reminds no one. A conversation
     `turn` resumes its previous session (`ConversationTurn.resume`) and keeps the session's record
     in the conversation's `CLAUDE_CONFIG_DIR`; without one (a single run, every evaluation) the
-    options set neither."""
+    options set neither. With `sandbox` the MCP server also serves sandbox_exec (ticket 97) on
+    that backend, for that run id; without it the server's tools are what they were before."""
     if task.type == "dbt":
         max_turns, budget = config.max_turns["dbt"], None
     else:
@@ -1520,6 +1523,7 @@ def build_options(
                 for name, path in (dictionaries or {}).items()
                 for arg in ("--source-dictionary", name, str(path))
             ),
+            *(sandbox.server_args() if sandbox else ()),
         ],
     }
     if task.type == "dbt":
@@ -1968,12 +1972,16 @@ async def run(
     deadline: float | None = None,
     turn: ConversationTurn | None = None,
     steering: AsyncGenerator[str] | None = None,
+    sandbox: Backend | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
     with `terminal_reason: "deadline"`; the outcome is an unfinished agent. `turn` makes the run a
     turn of a conversation (`ConversationTurn`): its `task` event names the conversation and the
-    turn. `steering`, a `--chat` run's stdin lines, is sent into the running turn (`query`)."""
+    turn. `steering`, a `--chat` run's stdin lines, is sent into the running turn (`query`).
+    `sandbox` gives the agent sandbox_exec on that backend; the run's id is the events
+    directory's name. With `docker` the run removes its container when it ends, and the
+    containers of killed runs before it starts (`docker_lifecycle`)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -2013,9 +2021,16 @@ async def run(
         secrets += url_secrets(env[variable])
         names += url_names(env[variable])
     verified = uses_verifiers(task.type, config)
+    sandbox_run = None if sandbox is None else SandboxRun(sandbox, events_dir.resolve().name)
+    containers = (
+        docker_lifecycle(sandbox_run.run_id)
+        if sandbox_run is not None and sandbox_run.backend == "docker"
+        else nullcontext()
+    )
     saving = saved_task(task.text, task.workspace) if verified else nullcontext()
     snapshotting = taken_snapshot(task.workspace) if verified else nullcontext()
     with (
+        containers,
         saving as task_file,
         snapshotting as snapshot,
         tool_ledger(spend, task.workspace),
@@ -2084,6 +2099,7 @@ async def run(
                 turn_budget=budget,
                 guarded=guarded,
                 turn=turn,
+                sandbox=sandbox_run,
             )
             open_calls: dict[str, str] = {}
             session_id: str | None = None

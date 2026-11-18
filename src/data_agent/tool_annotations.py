@@ -12,10 +12,12 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-# Every tool is read-only (SQL goes through the read-only gateway; map_columns only reads
+# Every data tool is read-only (SQL goes through the read-only gateway; map_columns only reads
 # workspace files). Claude Code runs an MCP tool concurrently with others in the same turn
 # only when it carries readOnlyHint; without it the calls of one turn run one at a time.
 READ_ONLY = ToolAnnotations(read_only_hint=True)
+# sandbox_exec (ticket 97) changes the workspace and the sandbox, so its calls run one at a time.
+SANDBOX = ToolAnnotations(read_only_hint=False)
 
 DATABASE_ARGUMENT = inspect.Parameter(
     "database",
