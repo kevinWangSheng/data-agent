@@ -1,7 +1,7 @@
 // The run page (spec "运行页"): three panes over one run, read only through the run view model. A
 // replay feeds the model the events up to the replay clock; "show all" feeds it every event.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import type { RunData } from '../data/source'
 import { fmtCost, fmtDur } from '../format'
@@ -12,10 +12,10 @@ import { ReplayControls } from './ReplayControls'
 import { Side } from './Side'
 import { TimeAxis } from './TimeAxis'
 import { buildRows, defaultExpanded, isIssue, isSql, sectionsOf, type Item } from './outline'
-import { autoplaySpeed, replayClock, revealedAt, speedsWith } from './replay'
 import type { Filter, Route } from './route'
 import { timeline } from './timeline'
 import { StatusChip } from './ui'
+import { useReplay } from './useReplay'
 
 type Navigate = (patch: Partial<Route>, push?: boolean) => void
 
@@ -46,21 +46,12 @@ export function RunPage({
   actions?: ReactNode
 }) {
   const { events, notes } = run
-  const [reading, setReading] = useState<number | null>(autoplay ? 0 : null)
-  const [playing, setPlaying] = useState(autoplay)
-  // Two significant digits, so the speed reads as a short label (0.58×).
-  const [autoSpeed] = useState(() => Number(autoplaySpeed(replayClock(eventTimes(events), true).at(-1) ?? 0).toPrecision(2)))
-  const [speed, setSpeed] = useState<number>(autoplay ? autoSpeed : 10)
-  const [skipIdle, setSkipIdle] = useState(true)
   const [follow, setFollow] = useState(autoplay)
-  const speeds = useMemo(() => speedsWith(autoplay ? autoSpeed : null), [autoplay, autoSpeed])
   const [expanded, setExpanded] = useState<Set<string> | null>(null)
 
   const times = useMemo(() => eventTimes(events), [events])
-  const clock = useMemo(() => replayClock(times, skipIdle), [times, skipIdle])
-  const total = clock.at(-1) ?? 0
-  const revealed = reading === null ? events.length : revealedAt(clock, reading)
-  const replaying = revealed < events.length
+  // Playing (again) follows the newest step.
+  const { revealed, replaying, togglePlay, controls } = useReplay(times, autoplay, { onPlay: () => setFollow(true) })
 
   const full = useMemo(() => buildRunView(events, notes), [events, notes])
   const view = useMemo(() => (revealed === events.length ? full : buildRunView(events.slice(0, revealed), notes)), [events, notes, revealed, full])
@@ -108,59 +99,11 @@ export function RunPage({
     [open],
   )
 
-  // --- Replay ---
-  const lastFrame = useRef<number | null>(null)
-  useEffect(() => {
-    if (!playing) return
-    let frame = 0
-    const tick = (now: number) => {
-      const dt = lastFrame.current === null ? 0 : now - lastFrame.current
-      lastFrame.current = now
-      // null: the end was reached (play and restart set a number first), so stay there.
-      setReading((r) => {
-        if (r === null) return null
-        const next = r + dt * speed
-        return next >= total ? null : next
-      })
-      frame = requestAnimationFrame(tick)
-    }
-    frame = requestAnimationFrame(tick)
-    return () => {
-      cancelAnimationFrame(frame)
-      lastFrame.current = null
-    }
-  }, [playing, speed, total])
-  // The replay reached the end: everything is shown, so it stops.
-  useEffect(() => {
-    if (playing && reading === null) setPlaying(false)
-  }, [playing, reading])
-
   // While following, the newest item is the selected one.
   const newest = order.reduce<Item | null>((a, b) => (a === null || b.seq > a.seq ? b : a), null)
   useEffect(() => {
     if (follow && replaying && newest && newest.id !== selectedId) navigate({ step: newest.id })
   }, [follow, replaying, newest, selectedId, navigate])
-
-  const togglePlay = () => {
-    if (playing) return setPlaying(false)
-    if (reading === null) setReading(0)
-    setFollow(true)
-    setPlaying(true)
-  }
-  const restart = () => {
-    setReading(0)
-    setFollow(true)
-    setPlaying(true)
-  }
-  const showAll = () => {
-    setPlaying(false)
-    setReading(null)
-  }
-  const changeSkipIdle = (skip: boolean) => {
-    // Stay on the same event when the clock changes under the replay.
-    if (reading !== null) setReading(replayClock(times, skip)[revealed - 1] ?? 0)
-    setSkipIdle(skip)
-  }
 
   // --- Keyboard ---
   useEffect(() => {
@@ -259,24 +202,7 @@ export function RunPage({
         {actions}
         <div className="flex-1" />
         <div className="max-[900px]:hidden">
-          <ReplayControls
-            elapsed={reading ?? total}
-            totalMs={total}
-            playing={playing}
-            showingAll={reading === null}
-            speed={speed}
-            speeds={speeds}
-            skipIdle={skipIdle}
-            onSpeedChange={setSpeed}
-            onTogglePlay={togglePlay}
-            onRestart={restart}
-            onScrub={(ms) => {
-              setReading(ms >= total ? null : ms)
-              if (ms >= total) setPlaying(false)
-            }}
-            onSkipIdleChange={changeSkipIdle}
-            onShowAll={showAll}
-          />
+          <ReplayControls {...controls} />
         </div>
       </div>
 

@@ -29,9 +29,9 @@ export function Transcript({
   title: string
   /** Whether the reader is at the latest; the owner sets it to scroll there (after a message). */
   stick: RefObject<boolean>
-  /** Whether turn `i`'s clarification options can be clicked now. */
-  canAnswer: (i: number) => boolean
-  onPick: (option: string) => void
+  /** Whether turn `i`'s clarification options can be clicked now; never when not given (read only). */
+  canAnswer?: (i: number) => boolean
+  onPick?: (option: string) => void
   runHref: (runId: string) => string
   onGo: (href: string) => void
   /** More of the header, after the title. */
@@ -74,7 +74,7 @@ export function Transcript({
       >
         <div className="mx-auto flex max-w-3xl flex-col gap-6">
           {view.turns.map((turn, i) => (
-            <Turn key={turn.runId} turn={turn} answerable={canAnswer(i)} onPick={onPick} runHref={runHref(turn.runId)} onGo={onGo} />
+            <Turn key={turn.runId} turn={turn} answerable={canAnswer?.(i) ?? false} onPick={onPick ?? (() => {})} runHref={runHref(turn.runId)} onGo={onGo} />
           ))}
           {view.turns.length === 0 && empty}
         </div>

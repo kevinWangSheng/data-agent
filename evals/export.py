@@ -229,15 +229,17 @@ def given_notes(run_dir: Path) -> Any:
         return None
 
 
-def check_featured(run_dirs: list[Path], dev: set[str]) -> list[dict[str, Any]]:
-    """Each featured run's notes.json, read once; refused, with a count only, when any is not
-    let through (`featured_allowed`): a run's id and directory are often its task's name, so
-    neither is printed (ADR-0004)."""
+def check_featured(
+    run_dirs: list[Path], dev: set[str], what: str = "featured run"
+) -> list[dict[str, Any]]:
+    """Each featured run's (or conversation's, `what`) notes.json, read once; refused, with a
+    count only, when any is not let through (`featured_allowed`): a run's id and directory are
+    often its task's name, so neither is printed (ADR-0004)."""
     given = [given_notes(r) for r in run_dirs]
     refused = sum(1 for g in given if not featured_allowed(g, dev))
     if refused:
         raise Refused(
-            f"{refused} featured run(s) refused: each needs a readable notes.json with a "
+            f"{refused} {what}(s) refused: each needs a readable notes.json with a "
             "`task_id` of the dev set or `local_data: true`; holdout and unlisted tasks are not "
             "exported (ADR-0004)"
         )
@@ -283,20 +285,6 @@ def featured_run(
     return notes, files[0]
 
 
-def check_conversations(conversation_dirs: list[Path], dev: set[str]) -> list[dict[str, Any]]:
-    """Each conversation's notes.json, read once and let through as a featured run's is
-    (`featured_allowed`); refused with a count only."""
-    given = [given_notes(c) for c in conversation_dirs]
-    refused = sum(1 for g in given if not featured_allowed(g, dev))
-    if refused:
-        raise Refused(
-            f"{refused} conversation(s) refused: each needs a readable notes.json with a "
-            "`task_id` of the dev set or `local_data: true`; holdout and unlisted tasks are not "
-            "exported (ADR-0004)"
-        )
-    return given
-
-
 def is_turn(turn: Any) -> bool:
     """A turn as `conversation.json` lists it, its run id a plain directory name."""
     if not isinstance(turn, dict):
@@ -315,9 +303,9 @@ def is_turn(turn: Any) -> bool:
 
 def turn_notes(turn: dict[str, Any], events: Path, which: str) -> dict[str, Any]:
     """A turn's run notes: a run's fields from its `task` event, titled by the turn's message, and
-    `cancelled` or `failed` as the server's record says of a run that wrote no `result` event (as
-    web/src/data/source.ts `turnNotes` gives them locally). A turn that has not ended is refused:
-    the site would show it running for ever."""
+    `cancelled` or `failed` as the server's record says of a run that wrote no `result` event (the
+    two flags web/src/data/source.ts `turnNotes` derives locally from the run's status). A turn
+    that has not ended is refused: the site would show it running for ever."""
     try:
         found = read_events(events)
     except Refused:
@@ -350,7 +338,7 @@ def turn_notes(turn: dict[str, Any], events: Path, which: str) -> dict[str, Any]
 def conversation(
     directory: Path, given: dict[str, Any], position: int
 ) -> tuple[dict[str, Any], list[tuple[dict[str, Any], Path]]]:
-    """A conversation whose notes.json `given` `check_conversations` let through: its index entry,
+    """A conversation whose notes.json `given` `check_featured` let through: its index entry,
     and each turn's notes and event file. An error names it by its `position` among the
     `--conversation`s, and a turn by its number."""
     which = f"the conversation given as --conversation #{position}"
@@ -588,7 +576,7 @@ def build(args: argparse.Namespace, stage: Path) -> int:
     """Write the export into `stage`; the number of runs."""
     dev = exportable(args.manifest)
     given = check_featured(args.runs, dev)
-    given_conversations = check_conversations(args.conversations, dev)
+    given_conversations = check_featured(args.conversations, dev, "conversation")
     trials = load_dev_trials(args.job, dev)
     runs: list[tuple[dict[str, Any], Path]] = [
         featured_run(r, g, i) for i, (r, g) in enumerate(zip(args.runs, given, strict=True), 1)
