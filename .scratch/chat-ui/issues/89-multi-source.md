@@ -1,6 +1,6 @@
 # 89 — agent 自己选库：多数据源
 
-Status: ready-for-agent
+Status: done
 Blocked by: 88
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-17
@@ -53,7 +53,7 @@ Branch: worktree-89-multi-source
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
+- Outcome: accepted (PR #101)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
@@ -130,3 +130,82 @@ Status: in-review
 ### Main session, 2026-11-17: rebase onto main
 
 退回：不是审查问题。工单 90（PR #99）已合入 main，和本分支在 `src/data_agent/agent.py`、`src/data_agent/cli.py` 冲突。把本分支 rebase 到最新 `origin/main` 上解决冲突，保留两边的行为：90 的 `ClaudeSDKClient`、`--chat` / `--conversation-dir` / `--turn` / `--resume`、`session_id` 和 `restored_sdk_cost_usd`；本工单的 `--data-sources`、`database` 参数和事件字段。`--chat` 加 `--data-sources` 要能一起用（对话 turn 的参数见 ticket 88 契约第 5 项）。解决后 `make check`，`da-review main` 看 rebase 后的整个 diff；最终回复给出新的提交和主会话要重跑的真跑命令。
+
+### Attempt 2 (ticket agent, rebase onto main; commits 07a5e4e, 321faf2), final reply as given
+
+I rebased ticket 89 onto `origin/main`, resolved the conflicts and kept both sides. It is now two commits on `worktree-89-multi-source`: `07a5e4e` and `321faf2`. `make check` passed, and `da-review main` found nothing to fix in the rebased diff. Nothing is pushed. The real-model run still has to be done by the main session; the commands are below.
+
+---
+
+**To copy into the ticket**
+
+Status: in-review
+
+## Comments
+### Attempt 2 (ticket agent): rebase onto main after ticket 90
+- **Rebase:** `git fetch`, then a rebase onto `origin/main`. The branch was rebased on `2ab6110` first. Main then gained two doc-only commits (`f05bb75` AGENTS.md, `564dd3b` ticket 95), so I rebased again onto `564dd3b`. `git diff 426728a 321faf2 -- src tests web evals` is empty, so the checks below still hold. Commits: `07a5e4e` (was `f413b94`) and `321faf2` (was `448c2cc`).
+- **Conflicts resolved, keeping both sides:**
+  - `agent.py`, `build_options`: the options keep 90's `CLAUDE_CONFIG_DIR` session env and `resume=turn.resume`, and take 89's `system_prompt(task, config)`.
+  - `agent.py`, `run`: 89's checks of each source's Postgres variable come first, then 90's `turn.config_dir.mkdir` and `restored_cost` read.
+  - `agent.py`, `task` event: it records `data_source` (null with several sources) together with 90's `conversation` / `turn` fields. 89's `source_names` follows.
+  - `cli.py`: the import takes both `ConversationTurn` and `source_gateway`. `turn = conversation_turn(...)` runs before the choice between `--data-sources` (`file_task`) and the single-database `Task`. `run(..., turn=turn)` is unchanged.
+  - 90's `session_id` and `restored_sdk_cost_usd` in the `result` event are untouched.
+- **New tests for `--chat` with `--data-sources`** (ticket 88 contract item 5), in `tests/test_multi_source_run.py`:
+  - `test_a_conversation_turn_runs_on_every_source`: `agent.run` with two sources and `ConversationTurn(c1, 2, resume="sid-1")`. It checks `options.resume`, `CLAUDE_CONFIG_DIR`, that the server requires `database`, a `task` event of `data_source: null, conversation: "c1", turn: 2`, and a `sql` event naming its database.
+  - `test_a_conversation_turn_takes_a_file_of_several_sources`: the CLI with `--data-sources` and `--chat --conversation-dir --turn 2 --resume sid-1`. The run gets both sources and the turn.
+  - The CLI test fake `fake_run` now accepts the `turn` keyword that 90 added; the two existing CLI tests failed on it after the rebase.
+- **Checks:** `make check` on the rebased tree (log in `runs/89-make-check.log`):
+  - ruff: "All checks passed!"; 316 files already formatted; basedpyright "0 errors, 0 warnings, 0 notes".
+  - pytest: `2359 passed, 1 skipped, 63 deselected, 8 xfailed`; web: 241 passed.
+  - Before the full run, `test_chat_eval_unchanged.py`, `test_conversation_turn.py`, `test_run_cli.py`, `test_agent_outcomes.py` and both multi-source files passed (108 passed).
+- **Review, `da-review main` on the whole rebased diff:** "No actionable regressions were identified." Codex also checked in memory that the single-source tool schemas equal `tests/fixtures/chat/eval-unchanged.json`, that all nine multi-source tools require `database`, and that dictionaries route to the right database. `eng:code-review` was not run again: the return note asked for `da-review` only, and the rebase changed no behaviour beyond joining the two sides.
+- **Real run for the main session to redo**, from the repo root with the model env loaded, on `321faf2`:
+  ```bash
+  uv run python tests/fixtures/chat/build_sources.py runs/89-sources
+  mkdir -p runs/89-ws runs/89-events runs/89-conv/c1
+  # 1. Two sources, single run (scenario g): expected North 13, South 10, East 8, West 6
+  uv run data-agent run --type query --config full --workspace runs/89-ws \
+    --events-dir runs/89-events/g --data-sources runs/89-sources/sources.toml \
+    --task "How many orders were placed by customers of each region?"
+  grep '"type": "sql"' runs/89-events/g/*.jsonl
+  # 2. Two sources as a conversation turn (--chat with --data-sources), then a resumed turn 2
+  uv run data-agent run --type query --config full --workspace runs/89-ws \
+    --events-dir runs/89-events/chat1 --data-sources runs/89-sources/sources.toml \
+    --chat --conversation-dir runs/89-conv/c1 --turn 1 \
+    --task "How many orders were placed by customers of each region?" </dev/null
+  SID=$(grep '"type": "result"' runs/89-events/chat1/*.jsonl | uv run python -c "import sys,json; print(json.loads(sys.stdin.read().split(':',1)[1] if sys.stdin else '')['session_id'])")
+  uv run data-agent run --type query --config full --workspace runs/89-ws \
+    --events-dir runs/89-events/chat2 --data-sources runs/89-sources/sources.toml \
+    --chat --conversation-dir runs/89-conv/c1 --turn 2 --resume "$SID" \
+    --task "Which region has the fewest?" </dev/null
+  grep -h '"type": "\(task\|sql\|result\)"' runs/89-events/chat*/*.jsonl
+  # 3. One source, README quickstart: expected Gold, 710.00
+  uv run python -c "import duckdb; duckdb.connect('runs/shop.duckdb').execute(open('tests/fixtures/shop.sql').read())"
+  uv run data-agent run --type query --config no-verifiers --duckdb runs/shop.duckdb \
+    --workspace runs/89-ws --events-dir runs/89-events/single \
+    --task "Which customer tier has the highest total amount of completed orders, and how much is it?"
+  ```
+  - For run 2, look at three things. Turn 2's `task` event should carry `conversation: "c1", turn: 2, data_source: null`. Its `sql` events should name a database. Its `result` event should carry `session_id` and `restored_sdk_cost_usd`.
+  - If the `SID=` one-liner trips, take `session_id` from the `result` line of `runs/89-events/chat1/*.jsonl` by hand.
+
+## Ledger
+- Attempts: 2
+- Review rounds: 2 (round 2: `da-review` after the rebase, nothing to fix)
+- Model spend: $0
+- Outcome: —
+
+The background job that waited for `make check` hit its time limit and was stopped. Nothing is lost: `make check` itself had already finished with exit code 0 (2359 passed, 8 xfailed; web 241 passed; full log in `runs/89-make-check.log`). The watcher most likely never ended because its `pgrep -f 'make check'` check matched its own command line. The ticket text in my previous reply stands as written.
+
+### Main session, 2026-11-17: real run after the rebase (at 321faf2)
+
+- Two sources, single run: "North: 13 orders; South: 10 orders; East: 8 orders; West: 6 orders", exit 0. `sql` events: orders, customers, orders.
+- Two sources as a conversation (`--chat --data-sources`):
+  - Turn 1: "North: 13, South: 10, East: 8, West: 6", exit 0. Its `task` event has `data_source: null, conversation: c1, turn: 1`, and its `sql` events name customers, orders, orders, orders.
+  - Turn 2 (`--resume`), "Which region has the fewest?": "West: 6", exit 0, answered from the session history with no query.
+  - Both turns' `result` carry the same `session_id`. Turn 2 has `restored_sdk_cost_usd` 0.077142 and its own `cost_usd` $0.0003.
+- One source (README quickstart, no-verifiers): "Gold tier has the highest total amount of completed orders: 710.00.", exit 0.
+- (The first attempt at the chat part failed because the main session's script did not create the workspace dir. That was a script error, not a code one; rerun above.)
+
+### Main session, 2026-11-17: merged
+
+- PR #101: CI `check` green; Codex GitHub app reacted 👍 with no comments. Squash-merged (73f8409).

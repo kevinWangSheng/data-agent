@@ -13,26 +13,47 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from data_agent.agent import ConfigError, ConversationTurn, Task, run
+from data_agent.agent import ConfigError, ConversationTurn, Task, run, source_gateway, stdin_lines
 from data_agent.context_tools import Dictionary
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
-from data_agent.mcp_server import build_server
-from data_agent.run_config import CONFIG_NAMES, load_config
+from data_agent.mcp_server import build_multi_server, build_server
+from data_agent.run_config import CONFIG_NAMES, RunConfig, load_config
+from data_agent.web.sources import DataSource, load_data_sources
 
 EXIT_OK, EXIT_UNFINISHED, EXIT_ERROR = 0, 1, 2
 # `data-agent web` listens here only; no option changes it (spec "后端接口", user story 35).
 WEB_HOST = "127.0.0.1"
 WEB_PORT = 8765
+# The process's stdin, read as a descriptor: `sys.stdin` may be replaced, by pytest for one.
+STDIN_FD = 0
 
 
-def add_database(parser: argparse.ArgumentParser) -> None:
+def add_database(parser: argparse.ArgumentParser, server: bool) -> None:
     """The data source: a DuckDB file, or a Postgres connection string read from the environment
-    variable `--postgres-env` names, so the string (password included) stays out of argv."""
+    variable `--postgres-env` names, so the string (password included) stays out of argv. Or
+    several (ticket 89): `run` reads them from a data-source file, and the MCP server `run`
+    starts gets them as `--source` entries."""
     database = parser.add_mutually_exclusive_group(required=True)
     database.add_argument("--duckdb", type=Path, help="DuckDB file to query")
     database.add_argument(
         "--postgres-env", metavar="VAR", help="environment variable holding a Postgres URL"
     )
+    if server:
+        database.add_argument(
+            "--source",
+            nargs=3,
+            action="append",
+            metavar=("NAME", "KIND", "LOCATION"),
+            help="one of several databases: its name, duckdb or postgres, and the DuckDB file "
+            "or the variable holding the Postgres URL; repeat for each",
+        )
+    else:
+        database.add_argument(
+            "--data-sources",
+            type=Path,
+            help="TOML file naming the data sources, as `data-agent web --data-sources` reads; "
+            "with several, the agent picks the one each query runs on",
+        )
 
 
 def check_database(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -42,13 +63,89 @@ def check_database(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error(f"environment variable {args.postgres_env} (--postgres-env) is not set")
 
 
+def check_sources(parser: argparse.ArgumentParser, sources: Sequence[DataSource]) -> None:
+    """As check_database, for each source; names are unique."""
+    names = [source.name for source in sources]
+    if len(set(names)) < len(names):
+        parser.error(f"data-source names repeat: {', '.join(names)}")
+    for source in sources:
+        if source.duckdb is not None and not source.duckdb.is_file():
+            parser.error(f"[sources.{source.name}]: DuckDB file not found: {source.duckdb}")
+        if source.postgres_env is not None and not os.environ.get(source.postgres_env):
+            parser.error(
+                f"[sources.{source.name}]: environment variable {source.postgres_env} is not set"
+            )
+
+
+def given_sources(parser: argparse.ArgumentParser, given: list[list[str]]) -> list[DataSource]:
+    """The MCP server's `--source NAME KIND LOCATION` entries (written by `Task.database_args`)."""
+    sources: list[DataSource] = []
+    for name, kind, location in given:
+        if kind == "duckdb":
+            sources.append(DataSource(name, duckdb=Path(location)))
+        elif kind == "postgres":
+            sources.append(DataSource(name, postgres_env=location))
+        else:
+            parser.error(f"--source {name}: kind must be duckdb or postgres, got {kind!r}")
+    if len(sources) < 2:
+        parser.error(
+            "--source names two or more databases; give one with --duckdb or --postgres-env"
+        )
+    check_sources(parser, sources)
+    return sources
+
+
+def serve_sources(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, config: RunConfig
+) -> None:
+    """`mcp-server --source ...`: one server over every database the entries name."""
+    sources = given_sources(parser, args.source)
+    names = {source.name for source in sources}
+    dictionaries: dict[str, Dictionary] = {}
+    for name, path in args.source_dictionary or []:
+        if name not in names:
+            parser.error(f"--source-dictionary {name}: no --source has that name")
+        if not Path(path).is_file():
+            parser.error(f"dictionary file not found: {path}")
+        dictionaries[name] = Dictionary.load(Path(path))
+    gateways = {source.name: source_gateway(source, os.environ) for source in sources}
+    build_multi_server(gateways, config, args.workspace, dictionaries).run("stdio")
+
+
+def file_task(parser: argparse.ArgumentParser, args: argparse.Namespace, text: str) -> Task:
+    """The task of `run --data-sources FILE`. A file with one source runs as `--duckdb` or
+    `--postgres-env` would, under the source's name; with several, the agent sees them all."""
+    if args.data_source_name is not None:
+        parser.error(
+            "--data-source-name goes with --duckdb or --postgres-env; the file names its sources"
+        )
+    try:
+        sources = load_data_sources(args.data_sources)
+    except ValueError as exc:
+        parser.error(str(exc))
+    check_sources(parser, sources)
+    if len(sources) == 1:
+        [only] = sources
+        return Task(
+            text=text,
+            type=args.type,
+            workspace=args.workspace,
+            duckdb=only.duckdb,
+            postgres_env=only.postgres_env,
+            data_source=only.name,
+        )
+    if args.type == "dbt":
+        parser.error("a dbt run takes one data source; --data-sources names several")
+    return Task(text=text, type=args.type, workspace=args.workspace, sources=tuple(sources))
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="data-agent")
     commands = parser.add_subparsers(dest="command", required=True)
 
     serve = commands.add_parser("mcp-server", help="serve the data tools over MCP stdio")
     serve.add_argument("--config", required=True, choices=CONFIG_NAMES)
-    add_database(serve)
+    add_database(serve, server=True)
     serve.add_argument(
         "--workspace", type=Path, help="keep the tools' file reads inside this directory"
     )
@@ -62,6 +159,13 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         help="value dictionary JSON written by `data-agent run`; built at startup when absent",
     )
+    serve.add_argument(
+        "--source-dictionary",
+        nargs=2,
+        action="append",
+        metavar=("NAME", "FILE"),
+        help="with --source: the value dictionary of the database NAME, as --dictionary",
+    )
 
     run_cmd = commands.add_parser("run", help="run the agent on one task")
     task_arg = run_cmd.add_mutually_exclusive_group(required=True)
@@ -69,7 +173,7 @@ def main(argv: list[str] | None = None) -> None:
     task_arg.add_argument("--task-file", type=Path, help="file holding the task text")
     run_cmd.add_argument("--type", required=True, choices=("dbt", "query"))
     run_cmd.add_argument("--workspace", required=True, type=Path, help="working directory")
-    add_database(run_cmd)
+    add_database(run_cmd, server=False)
     run_cmd.add_argument("--config", required=True, choices=CONFIG_NAMES)
     run_cmd.add_argument("--events-dir", required=True, type=Path, help="where the event file goes")
     run_cmd.add_argument(
@@ -85,7 +189,9 @@ def main(argv: list[str] | None = None) -> None:
     # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
     # and single runs never set these (spec decision 19).
     run_cmd.add_argument(
-        "--chat", action="store_true", help="run as a turn of a conversation (query tasks only)"
+        "--chat",
+        action="store_true",
+        help="run as a turn of a conversation (query tasks only), steered by JSON lines on stdin",
     )
     run_cmd.add_argument(
         "--conversation-dir",
@@ -123,6 +229,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "mcp-server":
         if args.workspace is not None and not args.workspace.is_dir():
             serve.error(f"workspace directory not found: {args.workspace}")
+        if args.source is not None:
+            if args.dictionary is not None:
+                serve.error("with --source, give each database's dictionary as --source-dictionary")
+            serve_sources(serve, args, config)
+            return
+        if args.source_dictionary is not None:
+            serve.error("--source-dictionary goes with --source")
         if args.dictionary is not None and not args.dictionary.is_file():
             serve.error(f"dictionary file not found: {args.dictionary}")
         gateway: Gateway = (
@@ -147,17 +260,25 @@ def main(argv: list[str] | None = None) -> None:
             run_cmd.error(f"task file not found: {args.task_file}")
         text = args.task_file.read_text()
     turn = conversation_turn(run_cmd, args)
-    task = Task(
-        text=text,
-        type=args.type,
-        workspace=args.workspace,
-        duckdb=args.duckdb,
-        postgres_env=args.postgres_env,
-        data_source=args.data_source_name,
-    )
+    if args.data_sources is not None:
+        task = file_task(run_cmd, args, text)
+    else:
+        task = Task(
+            text=text,
+            type=args.type,
+            workspace=args.workspace,
+            duckdb=args.duckdb,
+            postgres_env=args.postgres_env,
+            data_source=args.data_source_name,
+        )
     try:
         deadline = None if args.agent_timeout_sec is None else started + args.agent_timeout_sec
-        outcome = asyncio.run(run(task, config, args.events_dir, os.environ, deadline, turn=turn))
+        # A turn of a conversation is steered through stdin (contract item 6); a single run never
+        # reads it. A cancelled run is stopped by signal, so its stdin is read no more.
+        steering = None if turn is None else stdin_lines(STDIN_FD)
+        outcome = asyncio.run(
+            run(task, config, args.events_dir, os.environ, deadline, turn=turn, steering=steering)
+        )
     except ConfigError as exc:
         run_cmd.error(str(exc))
     print(outcome.answer)
@@ -208,9 +329,14 @@ def serve_web(
         parser.error(str(exc))
 
     def start_run(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
-        # Its own session, so cancelling can stop the run with the tools it started.
+        # Its own session, so cancelling can stop the run with the tools it started. A stdin pipe
+        # of its own: a conversation's turn is steered through it (data_agent.web.conversations),
+        # and no run reads the server's.
         return subprocess.Popen(
-            [sys.executable, "-m", "data_agent", "run", *args], cwd=cwd, start_new_session=True
+            [sys.executable, "-m", "data_agent", "run", *args],
+            cwd=cwd,
+            start_new_session=True,
+            stdin=subprocess.PIPE,
         )
 
     try:

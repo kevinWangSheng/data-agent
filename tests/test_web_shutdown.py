@@ -58,6 +58,43 @@ subprocess.Popen = Popen
 main(sys.argv[1:])
 """
 
+# Stands in for a conversation turn's `data-agent run` (ticket 93): its events go to
+# `--events-dir`, as a turn's working directory is the conversation's. Once its tool is up it says
+# both pids, then writes the first line it reads from stdin to `steered`.
+CHAT_RUN = """
+import os, subprocess, sys, time
+events_dir = sys.argv[sys.argv.index("--events-dir") + 1]
+open(os.path.join(events_dir, "run.jsonl"), "w").write(
+    '{"seq": 0, "type": "version", "ts": "2026-11-17T09:00:00+00:00"}\\n'
+    '{"seq": 1, "type": "status", "ts": "2026-11-17T09:00:01+00:00", "state": "started", '
+    '"session_id": "s1"}\\n'
+)
+tool = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+with open("pids.tmp", "w") as file:
+    file.write(f"{os.getpid()} {tool.pid}")
+os.rename("pids.tmp", "pids")
+line = sys.stdin.readline()
+with open("steered.tmp", "w") as file:
+    file.write(line)
+os.rename("steered.tmp", "steered")
+time.sleep(120)
+"""
+
+# SERVER with the run command swapped for CHAT_RUN, which gets the run's arguments.
+CHAT_SERVER = f"""
+import subprocess, sys
+from data_agent.cli import main
+
+class Popen(subprocess.Popen):
+    def __init__(self, args, *rest, **options):
+        if list(args[1:4]) == ["-m", "data_agent", "run"]:
+            args = [sys.executable, "-c", {CHAT_RUN!r}, *args[4:]]
+        super().__init__(args, *rest, **options)
+
+subprocess.Popen = Popen
+main(sys.argv[1:])
+"""
+
 
 def free_port() -> int:
     with socket.socket() as sock:
@@ -93,13 +130,13 @@ def serving(port: int) -> bool:
 class Server:
     """The `data-agent web` process; stopped, with the run it started, if a test leaves it up."""
 
-    def __init__(self, runs_dir: Path, sources: Path) -> None:
+    def __init__(self, runs_dir: Path, sources: Path, script: str = SERVER) -> None:
         self.port = free_port()
         self.process = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
-                SERVER,
+                script,
                 "web",
                 "--runs-dir",
                 str(runs_dir),
@@ -122,26 +159,41 @@ class Server:
                 os.killpg(self.run_pid, signal.SIGKILL)
 
 
-@pytest.fixture
-def server(tmp_path: Path) -> Iterator[Server]:
+def start_server(tmp_path: Path, script: str) -> Server:
     shop = tmp_path / "shop.duckdb"
     shop.write_bytes(b"")
     sources = tmp_path / "sources.toml"
     sources.write_text('[sources.shop]\nkind = "duckdb"\npath = "shop.duckdb"\n')
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    server = Server(runs_dir, sources)
+    return Server(runs_dir, sources, script)
+
+
+@pytest.fixture
+def server(tmp_path: Path) -> Iterator[Server]:
+    server = start_server(tmp_path, SERVER)
     yield server
     server.close()
 
 
-def submit(port: int) -> str:
+@pytest.fixture
+def chat_server(tmp_path: Path) -> Iterator[Server]:
+    server = start_server(tmp_path, CHAT_SERVER)
+    yield server
+    server.close()
+
+
+def post(port: int, path: str, body: object, status: int) -> dict[str, str]:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=TIMEOUT)
-    body = {"task": "t", "task_type": "query", "data_source": "shop", "config": "full"}
-    connection.request("POST", "/api/runs", json.dumps(body), {"Content-Type": "application/json"})
+    connection.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
     response = connection.getresponse()
-    assert response.status == 201, response.read()
-    return json.loads(response.read())["id"]
+    assert response.status == status, response.read()
+    return json.loads(response.read())
+
+
+def submit(port: int) -> str:
+    body = {"task": "t", "task_type": "query", "data_source": "shop", "config": "full"}
+    return post(port, "/api/runs", body, 201)["id"]
 
 
 def open_stream(port: int, run_id: str) -> http.client.HTTPConnection:
@@ -191,3 +243,40 @@ def test_stopping_the_server_cancels_its_run_even_with_a_stream_open(
     ) as client:
         [row] = client.get("/api/runs").json()
     assert (row["id"], row["status"]) == (run_id, "cancelled")
+
+
+def test_a_conversation_turn_is_steered_through_stdin_and_stopped_with_the_server(
+    tmp_path: Path, chat_server: Server
+) -> None:
+    """Ticket 93: the real `data-agent web` gives a turn a stdin pipe, which a message sent while
+    the turn runs reaches, and stopping the server leaves none of the turn's processes behind."""
+    conversation = post(chat_server.port, "/api/conversations", {}, 201)["id"]
+    path = f"/api/conversations/{conversation}/messages"
+    run_id = post(chat_server.port, path, {"text": "How many orders?"}, 201)["run_id"]
+    workspace = tmp_path / "runs" / "conversations" / conversation / "workspace"
+    wait_until((workspace / "pids").is_file)
+    chat_server.run_pid, tool_pid = (int(pid) for pid in (workspace / "pids").read_text().split())
+
+    steer = post(chat_server.port, path, {"text": "Only 2024."}, 202)
+    wait_until((workspace / "steered").is_file)
+    assert json.loads((workspace / "steered").read_text()) == {
+        "id": steer["id"],
+        "text": "Only 2024.",
+    }
+
+    chat_server.process.send_signal(signal.SIGTERM)
+    try:
+        chat_server.process.wait(timeout=EXIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"the server was still up {EXIT_SECONDS}s after SIGTERM")
+    assert not alive(chat_server.run_pid)
+    assert not alive(tool_pid)
+    with TestClient(
+        create_app(
+            tmp_path / "runs",
+            [DataSource(name="shop", duckdb=tmp_path / "shop.duckdb")],
+            never_start,
+        )
+    ) as client:
+        [row] = client.get("/api/conversations").json()
+    assert [(t["run_id"], t["status"]) for t in row["turns"]] == [(run_id, "cancelled")]

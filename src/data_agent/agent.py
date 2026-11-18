@@ -1,6 +1,7 @@
 """One `data-agent run`: one prompt on a Claude Agent SDK `ClaudeSDKClient` (ADR-0001 and its
 Update 2026-11-17), recorded as an event file. A run is a single task, or a turn of a conversation
-(`ConversationTurn`) that resumes the previous turn's session.
+(`ConversationTurn`) that resumes the previous turn's session and takes the messages sent while it
+runs (stdin steering, `query`).
 
 The model is whatever `DATA_AGENT_*` names; those values go only to the SDK's subprocess, mapped to
 the `ANTHROPIC_*` variables it reads, so the user's own Claude Code setup is untouched.
@@ -10,15 +11,17 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Container, Iterator, Mapping
-from contextlib import aclosing, contextmanager, nullcontext
+from collections.abc import AsyncGenerator, Container, Iterator, Mapping, Sequence
+from contextlib import ExitStack, aclosing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,6 +64,7 @@ from data_agent.gateway import (
     PostgresGateway,
 )
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
+from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
 from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
@@ -71,6 +75,7 @@ from data_agent.verifiers import (
     verifier_agents,
     verifier_hooks,
 )
+from data_agent.web.sources import DataSource
 from data_agent.workspace_guard import GUARDED_TOOLS, WRITE_TOOLS, workspace_guard
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -92,6 +97,9 @@ BUILD_COMMIT = Path(__file__).resolve().parent / "BUILD_COMMIT"
 # The MCP server's name in the SDK session; its tools appear as mcp__data__<tool>.
 MCP_SERVER = "data"
 QUERY_TOOL = f"mcp__{MCP_SERVER}__query_database"
+# Served only to a conversation turn (spec decision 8); calling it ends the turn
+# (`clarification_hooks`).
+CLARIFICATION_TOOL = f"mcp__{MCP_SERVER}__clarification"
 # Query tasks only read: the data tools plus reading the workspace. No Bash, Write or Edit, so the
 # read-only gateway is the only way to the data; the workspace guard keeps the file tools in it.
 QUERY_BUILTIN_TOOLS: list[str] = list(GUARDED_TOOLS)
@@ -114,11 +122,43 @@ All database access goes through the `{server}` MCP tools, which are read-only. 
 what the tools show you; do not guess table names, column names or values.
 """
 
+# Added only when the run has several data sources (ticket 89), after nao's
+# `ConfiguredDatabasesBlock` (two databases or more): their names and kinds, never where they are.
+DATABASES_HEADING = "## Databases"
+DATABASES_PROMPT = (
+    """
+"""
+    + DATABASES_HEADING
+    + """
+
+This run has several databases. Every `{server}` tool that reads data takes a `database` argument, \
+which must be one of these names:
+{databases}
+Pick the database from these names and what the tools show you of each. One query runs on one \
+database: SQL cannot join tables of two databases. When a question needs data from more than one, \
+query each database on its own and combine the results.
+"""
+)
+
 # Appended only when the run config turns the Skill layer on.
 SKILLS_PROMPT = """
 Follow these skills.
 
 {skills}
+"""
+
+# Appended to a conversation turn's system prompt only (spec decision 8, after nao's system prompt,
+# `apps/backend/src/components/ai/system-prompt.tsx`): single runs and evaluations have no
+# clarification tool, and their prompts stay as they were (decision 19).
+CLARIFICATION_PROMPT = """
+This is a conversation with the user, and you may ask them a question. When the question can be \
+read in ways that give different results (which rows count, how a measure is defined, which \
+period) and neither the conversation nor the data settles which one is meant, call \
+`clarification` with one short question and 2 to 5 options instead of answering. That ends your \
+turn; the option the user picks comes as the next message. Look at the data first when it can \
+tell you whether the readings differ. Ask only then: when every reading gives the same result, or \
+the conversation already says which one is meant, answer and state the reading you chose among \
+your assumptions. Never ask a question in plain text.
 """
 
 # The final-answer rule of query tasks, shared with the DAB runner's task prompt (ticket 68):
@@ -233,22 +273,40 @@ def taken_snapshot(workspace: Path) -> Iterator[Path]:
 
 
 @contextmanager
-def prebuilt_dictionary(gateway: Gateway, workspace: Path, emit: Emit) -> Iterator[Path]:
+def prebuilt_dictionary(
+    gateway: Gateway, workspace: Path, emit: Emit, database: str | None = None
+) -> Iterator[Path]:
     """The value dictionary (ticket 42), built before the agent starts and written as JSON
     outside the workspace for the MCP server to read; its coverage is recorded as the
-    `dictionary` event. The build counts toward the run's time, not the agent's first tool
-    call; a signal during it cancels the build and ends the run."""
+    `dictionary` event, which names the `database` of a run with several. The build counts
+    toward the run's time, not the agent's first tool call; a signal during it cancels the
+    build and ends the run."""
     with run_directory(workspace, "data-agent-dictionary-") as directory:
         dictionary = build_interruptible(DictionaryBuild(gateway))
         coverage = dictionary.coverage
         emit(
             "dictionary",
+            **({"database": database} if database is not None else {}),
             **{k: v for k, v in asdict(coverage).items() if k != "not_profiled"},
             tables_not_profiled=len(coverage.not_profiled),
         )
         path = directory / "dictionary.json"
         dictionary.save(path)
         yield path
+
+
+@contextmanager
+def prebuilt_dictionaries(
+    sources: Sequence[DataSource], workspace: Path, env: Mapping[str, str], emit: Emit
+) -> Iterator[dict[str, Path]]:
+    """`prebuilt_dictionary` for each of several data sources, in order: the files by name."""
+    with ExitStack() as stack:
+        yield {
+            source.name: stack.enter_context(
+                prebuilt_dictionary(source_gateway(source, env), workspace, emit, source.name)
+            )
+            for source in sources
+        }
 
 
 @dataclass(frozen=True)
@@ -532,11 +590,15 @@ class Spend:
             return fields
         return fields | tools | {"cost_usd": fields["cost_usd"] + tools["tool_cost_usd"]}
 
+    def passed(self) -> bool:
+        """Whether spend is over the budget, the cap being on."""
+        return not self.transcript_failed and self.cost_usd() > self.budget
+
     def check(self) -> bool:
         """Whether the run is to stop now: the cap may be checked and spend is over it."""
-        if self.transcript_failed or self.running or not self.between_calls:
+        if self.running or not self.between_calls:
             return False
-        self.stopped = self.cost_usd() > self.budget
+        self.stopped = self.passed()
         return self.stopped
 
     def unmetered(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -603,24 +665,340 @@ def spend_cap(model: str, budget: float) -> Spend | None:
     return None if price is None else Spend(price, budget)
 
 
-async def query(*, prompt: str, options: ClaudeAgentOptions) -> AsyncGenerator[Any]:
+async def query(
+    *,
+    prompt: str,
+    options: ClaudeAgentOptions,
+    steering: AsyncGenerator[str] | None = None,
+    emit: Emit | None = None,
+    spend: Spend | None = None,
+) -> AsyncGenerator[Any]:
     """One turn on a `ClaudeSDKClient` (spec decision 15, ADR-0001 Update 2026-11-17): connect,
     send `prompt`, and yield the session's messages up to and including the turn's
     ResultMessage. With background tasks off (`sdk_env`) a prompt gets exactly one result.
     Closing the stream, or its end, disconnects the client, which ends the CLI subprocess before
     `aclose` returns (the SDK's own `query` left that to the event loop's async-generator
-    finalizer, later)."""
+    finalizer, later).
+
+    `steering`, the stdin lines of a `--chat` run, is sent into the running turn
+    (`SteeredTurn`, to `emit`) from when `prompt` is sent until the turn ends; a line still
+    unsent then is never sent. `spend` is the run's price-table cap, which the caller applies
+    (`capped`) and a step's end keeps to too."""
+    if steering is not None:
+        # The CLI echoes each user message, with its uuid, when the model takes it in.
+        options = dataclasses.replace(
+            options, extra_args={**options.extra_args, "replay-user-messages": None}
+        )
     client = ClaudeSDKClient(options)
+    steered: SteeredTurn | None = None
+    steering_task: asyncio.Task[None] | None = None
     try:
         await client.connect()
-        await client.query(prompt)
-        async with aclosing(cast(AsyncGenerator[Any], client.receive_response())) as messages:
+        if steering is None:
+            await client.query(prompt)
+            async with aclosing(cast(AsyncGenerator[Any], client.receive_response())) as messages:
+                async for message in messages:
+                    yield message
+                    if isinstance(message, ResultMessage):
+                        return
+            return
+        assert emit is not None, "steering writes its events through emit"
+        steered = SteeredTurn(client, emit, options.max_turns, spend)
+        await client.query(user_message(prompt, steered.prompt_id))
+        steering_task = asyncio.create_task(steered.steer(steering))
+        ended = over_limit = False
+        async with aclosing(cast(AsyncGenerator[Any], client.receive_messages())) as messages:
             async for message in messages:
-                yield message
                 if isinstance(message, ResultMessage):
-                    return
+                    if ended := steered.end_step(message):
+                        break
+                    continue
+                if not steered.absorb(message):
+                    yield message
+                if over_limit := steered.count_turns(message):
+                    break
+        await stop_steering(steering_task)
+        if over_limit:
+            raise TurnLimitPassed(steered.max_turns or 0)
+        if ended:
+            yield steered_result(steered.results)
+        elif steered.results:
+            # The CLI ended (exit 0) inside a step it took a steering message in for: the earlier
+            # step's result is not this turn's.
+            raise RuntimeError("the session ended before the step reading a steering message did")
     finally:
-        await client.disconnect()
+        try:
+            # Re-raises a cancellation of this run (its deadline), which must not skip the
+            # disconnect.
+            await stop_steering(steering_task)
+        finally:
+            if steered is not None:
+                steered.close()
+            await client.disconnect()
+
+
+async def user_message(text: str, id_: str) -> AsyncGenerator[dict[str, Any]]:
+    """`text` as the stream-json user message the CLI echoes with `id_` as its uuid
+    (SignalPilot's `_steering_prompt`, claude_agent.py:357-370)."""
+    yield {
+        "type": "user",
+        "uuid": id_,
+        "message": {"role": "user", "content": text},
+        "parent_tool_use_id": None,
+    }
+
+
+class SteeredTurn:
+    """A turn steered through stdin, reconciled by the CLI's echoes as SignalPilot does
+    (claude_agent.py:355-408, claude_agent_events.py:157-163 and 326-339). Each steering message
+    goes in as one more `query()` with its `id` as the uuid; the CLI echoes it, that uuid kept,
+    when the model takes it in, and only then is `steer_delivered` emitted. A message the model
+    has not taken in by the end of a step is not lost: the CLI takes it in as the next step, which
+    ends with a result of its own (probes of 2026-11-17, ticket 92). So the turn ends at the
+    first result with no message waiting for its echo; an error result, or one a hook stopped
+    (a clarification), ends it anyway, and a message still waiting is then an `error` event, as
+    it is when the run stops the turn itself.
+
+    Each step gets the CLI's whole turn limit afresh, so the limit of the turn (`max_turns`,
+    spec decision 13) is kept here over the steps after the first (`count_turns`). A step's end
+    is a point between two model calls, where the price-table cap (`spend`) applies too."""
+
+    def __init__(
+        self, client: ClaudeSDKClient, emit: Emit, max_turns: int | None, spend: Spend | None
+    ) -> None:
+        self.client = client
+        self.emit = emit
+        self.max_turns = max_turns
+        self.spend = spend
+        self.prompt_id = str(uuid.uuid4())
+        self.waiting: dict[str, str] = {}  # sent and not yet echoed: id -> text
+        self.sent: set[str] = set()
+        self.results: list[ResultMessage] = []  # of the steps ended so far
+        self.started = False
+        # The step running: its turns as the CLI counts them, its main thread's tool calls
+        # still unanswered (tool_use id -> the response that made them), and the responses
+        # counted.
+        self.step_turns = 1
+        self.open_calls: dict[str, str] = {}
+        self.counted: set[str] = set()
+
+    async def steer(self, lines: AsyncGenerator[str]) -> None:
+        """Send each steering message among `lines` (`steer_message`). A line that is no
+        message, or repeats the id of one already sent (the CLI drops a user message whose uuid
+        it has seen), is an `error` event and is skipped; a blank line is ignored. stdin closing
+        ends steering, not the turn. A message the session cannot take (its CLI gone) is an
+        `error` event and ends steering; the turn's own stream reports the session's failure."""
+
+        def skip(number: int, reason: str) -> None:
+            self.emit("error", source="steer", error=f"stdin line {number} skipped: {reason}")
+
+        number = 0
+        async with aclosing(lines) as stdin:
+            async for line in stdin:
+                number += 1
+                if not line.strip():
+                    continue
+                message = steer_message(line)
+                if isinstance(message, str):
+                    skip(number, message)
+                    continue
+                if message.id in self.sent:
+                    skip(number, f"id {message.id!r} already sent")
+                    continue
+                # Counted before it is sent, so a result that comes meanwhile waits for it.
+                self.sent.add(message.id)
+                self.waiting[message.id] = message.text
+                try:
+                    await self.client.query(user_message(message.text, message.id))
+                except Exception as exc:
+                    del self.waiting[message.id]
+                    self.emit("error", source="steer", error=f"stdin line {number} not sent: {exc}")
+                    return
+
+    def absorb(self, message: Any) -> bool:
+        """Take in `message` if it belongs to the steering rather than to the turn, and say
+        whether it did: an echo (of the prompt, or of a steering message, which emits
+        `steer_delivered` with its `id` and `text`) or the init message of a step after the
+        first, in the same session."""
+        if isinstance(message, UserMessage) and message.parent_tool_use_id is None:
+            if message.uuid == self.prompt_id:
+                return True
+            if message.uuid is not None and message.uuid in self.waiting:
+                text = self.waiting.pop(message.uuid)
+                self.emit("steer_delivered", id=message.uuid, text=text)
+                return True
+        if isinstance(message, SystemMessage) and message.subtype == "init":
+            seen, self.started = self.started, True
+            return seen
+        return False
+
+    def turns_used(self) -> int:
+        """The turns of the steps ended so far, as the CLI counted each."""
+        return sum(result.num_turns for result in self.results)
+
+    def end_step(self, result: ResultMessage) -> bool:
+        """End the step `result` ends, and say whether the turn ends with it. It goes on while a
+        message waits for its echo, unless the step failed, a hook stopped it (the agent asked
+        the user, `clarification_hooks`: a step reading the message would answer past the
+        question), or the turn has no turn or budget left for another step. Out of budget, the
+        step's answer is kept, as `Spend` keeps a final answer that passes the cap."""
+        self.results.append(result)
+        self.step_turns, self.open_calls, self.counted = 1, {}, set()
+        stopped = result.terminal_reason == "hook_stopped"
+        if result.is_error or result.subtype != "success" or stopped or not self.waiting:
+            return True
+        if self.spend is not None and self.spend.passed():
+            return True
+        return self.max_turns is not None and self.turns_used() >= self.max_turns
+
+    def count_turns(self, message: Any) -> bool:
+        """Count the turn `message` may end, and say whether a step after the first has taken
+        the turn past `max_turns` with it.
+        The CLI counts a step's turns from 1, one more once a response's tool calls are all
+        answered, and ends the step when that count would pass its limit (`TurnBudget`); the
+        steps together are held to that here. A response counts once: the CLI may run its tools
+        while it still streams, so a call's result can come before its next call."""
+        if isinstance(message, AssistantMessage) and message.parent_tool_use_id is None:
+            calls = [block.id for block in message.content if isinstance(block, ToolUseBlock)]
+            for call in calls:
+                self.open_calls[call] = message.message_id or calls[0]
+        elif (
+            isinstance(message, UserMessage)
+            and message.parent_tool_use_id is None
+            and isinstance(message.content, list)
+        ):
+            for block in message.content:
+                if not isinstance(block, ToolResultBlock):
+                    continue
+                response = self.open_calls.pop(block.tool_use_id, None)
+                if response is None or response in self.open_calls.values():
+                    continue
+                if response not in self.counted:
+                    self.counted.add(response)
+                    self.step_turns += 1
+        over = self.max_turns is not None and self.turns_used() + self.step_turns > self.max_turns
+        return bool(self.results) and over
+
+    def close(self) -> None:
+        """Emit an `error` event for each message sent and never taken in."""
+        waiting, self.waiting = self.waiting, {}
+        for id_ in waiting:
+            self.emit(
+                "error", source="steer", error=f"message {id_!r} was not read: the turn ended"
+            )
+
+
+class TurnLimitPassed(Exception):
+    """A steered turn's steps together passed its turn limit (`SteeredTurn.count_turns`); the
+    run stopped them."""
+
+    def __init__(self, max_turns: int) -> None:
+        super().__init__(f"the steps of the turn passed its limit of {max_turns} turns")
+        self.max_turns = max_turns
+
+
+# What a result of the CLI counts, per step of a steered turn (probes of 2026-11-17 against the
+# bundled CLI 2.1.301): the step alone for these; the whole process so far for `total_cost_usd`,
+# `model_usage` and `duration_api_ms`.
+STEP_USAGE_TOKENS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+
+
+def steered_result(results: Sequence[ResultMessage]) -> ResultMessage:
+    """The result of a turn whose steps each ended with one of `results`: the last, with the
+    counts each step makes alone (`num_turns`, `duration_ms`, `usage` tokens) summed."""
+    last = results[-1]
+    if len(results) == 1:
+        return last
+    usage = dict(last.usage or {})
+    for key in STEP_USAGE_TOKENS:
+        usage[key] = sum(int((result.usage or {}).get(key) or 0) for result in results)
+    return dataclasses.replace(
+        last,
+        num_turns=sum(result.num_turns for result in results),
+        duration_ms=sum(result.duration_ms for result in results),
+        usage=usage,
+    )
+
+
+async def stop_steering(task: asyncio.Task[None] | None) -> None:
+    """Cancel steering and wait for it to end."""
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        # Re-raised only when this task is being cancelled too, not for steering's own end.
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+
+
+async def stdin_lines(fd: int) -> AsyncGenerator[str]:
+    """The lines read from file descriptor `fd` (a `--chat` run's stdin), each with its newline,
+    and the unterminated rest once `fd` closes. Nothing is read before the first line is asked
+    for. A daemon thread reads the descriptor itself (`os.read`, not `sys.stdin`, whose buffer
+    lock a thread blocked in a read keeps at interpreter shutdown), so a run whose stdin stays
+    open still ends; bytes that are not UTF-8 are replaced."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def put(line: str | None) -> bool:
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, line)
+        except RuntimeError:  # the event loop is closed: the run has ended
+            return False
+        return True
+
+    def read() -> None:
+        pending = b""
+        try:
+            while chunk := os.read(fd, 65536):
+                pending += chunk
+                while (end := pending.find(b"\n")) >= 0:
+                    if not put(pending[: end + 1].decode(errors="replace")):
+                        return
+                    pending = pending[end + 1 :]
+        except OSError:
+            pass
+        if pending:
+            put(pending.decode(errors="replace"))
+        put(None)
+
+    threading.Thread(target=read, name="steering-stdin", daemon=True).start()
+    while (line := await queue.get()) is not None:
+        yield line
+
+
+@dataclass(frozen=True)
+class SteerMessage:
+    """A message sent while a turn runs: `id` is the chat backend's message id, `text` its text."""
+
+    id: str
+    text: str
+
+
+def steer_message(line: str) -> SteerMessage | str:
+    """The steering message one stdin line holds (`{"id": str, "text": str}`, contract item 6 of
+    tests/acceptance/test_chat_api.py), else why the line is none. Other keys are ignored."""
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return "not JSON"
+    if not isinstance(value, dict):
+        return "not a JSON object"
+    fields = cast(dict[str, Any], value)
+    id_, text = fields.get("id"), fields.get("text")
+    if not isinstance(id_, str) or not id_:
+        return 'no "id" string'
+    if not isinstance(text, str) or not text.strip():
+        return 'no "text" string'
+    return SteerMessage(id_, text)
 
 
 async def capped(messages: AsyncGenerator[Any], spend: Spend | None) -> AsyncGenerator[Any]:
@@ -640,11 +1018,34 @@ class ConfigError(Exception):
     """The run cannot start: a missing setting or input. Nothing has been recorded."""
 
 
+def source_kind(source: DataSource) -> Literal["duckdb", "postgres"]:
+    return "postgres" if source.postgres_env else "duckdb"
+
+
+def source_location(source: DataSource) -> str:
+    """The DuckDB file's absolute path, or the Postgres variable's name."""
+    if source.postgres_env:
+        return source.postgres_env
+    assert source.duckdb is not None, "a data source names a DuckDB file or a Postgres variable"
+    return str(source.duckdb.resolve())
+
+
+def source_gateway(source: DataSource, env: Mapping[str, str]) -> Gateway:
+    """A gateway to `source`; a Postgres source's URL is read from `env` under its variable."""
+    if source.postgres_env:
+        return PostgresGateway(env[source.postgres_env])
+    assert source.duckdb is not None, "a data source names a DuckDB file or a Postgres variable"
+    return DuckDBGateway(source.duckdb)
+
+
 @dataclass(frozen=True)
 class Task:
     """The database is a DuckDB file, or a Postgres URL held in the variable `postgres_env`
     names: the run passes the name on, so the URL reaches no argv or MCP config. `data_source` is
-    the name the `task` event gives the data source, when the caller has one of its own."""
+    the name the `task` event gives the data source, when the caller has one of its own.
+
+    A query run may instead have `sources`, two or more data sources by name (ticket 89): the
+    agent sees them all and each query names the one it runs on."""
 
     text: str
     type: Literal["dbt", "query"]
@@ -652,10 +1053,34 @@ class Task:
     duckdb: Path | None = None
     postgres_env: str | None = None
     data_source: str | None = None
+    sources: tuple[DataSource, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.sources and (len(self.sources) < 2 or self.duckdb or self.postgres_env):
+            raise ValueError("`sources` holds two or more data sources, in place of the one")
 
     @property
-    def dialect(self) -> Literal["duckdb", "postgres"]:
-        return "postgres" if self.postgres_env else "duckdb"
+    def several(self) -> bool:
+        """Whether the run has several data sources, so each tool call names one."""
+        return bool(self.sources)
+
+    @property
+    def databases(self) -> tuple[DataSource, ...]:
+        """Every data source of the run, by name; a run with one has it alone."""
+        if self.sources:
+            return self.sources
+        only = DataSource(self.data_source_name, duckdb=self.duckdb, postgres_env=self.postgres_env)
+        return (only,)
+
+    @property
+    def dialects(self) -> tuple[Literal["duckdb", "postgres"], ...]:
+        """The data sources' dialects, each once, in the order of the sources."""
+        return tuple(dict.fromkeys(source_kind(source) for source in self.databases))
+
+    @property
+    def postgres_envs(self) -> tuple[str, ...]:
+        """The variables holding the run's Postgres URLs."""
+        return tuple(s.postgres_env for s in self.databases if s.postgres_env)
 
     @property
     def data_source_name(self) -> str:
@@ -669,6 +1094,14 @@ class Task:
         return self.duckdb.name
 
     def database_args(self) -> tuple[str, ...]:
+        """The MCP server's arguments naming the data sources: names, kinds, the DuckDB files and
+        the Postgres variables, never a URL."""
+        if self.sources:
+            return tuple(
+                arg
+                for source in self.sources
+                for arg in ("--source", source.name, source_kind(source), source_location(source))
+            )
         if self.postgres_env:
             return ("--postgres-env", self.postgres_env)
         assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
@@ -677,10 +1110,8 @@ class Task:
     def gateway(self, env: Mapping[str, str]) -> Gateway:
         """The harness's own gateway to the data source (the dictionary build); the MCP server
         opens its own."""
-        if self.postgres_env:
-            return PostgresGateway(env[self.postgres_env])
-        assert self.duckdb is not None, "a task names a DuckDB file or a Postgres variable"
-        return DuckDBGateway(self.duckdb)
+        [only] = self.databases
+        return source_gateway(only, env)
 
 
 @dataclass(frozen=True)
@@ -816,24 +1247,50 @@ def dbt_scripts(config: RunConfig) -> tuple[Path, ...]:
     return tuple(config.skills_dir / "dbt-workflow" / name for name in DBT_SCRIPTS)
 
 
-def skill_names(task_type: str, dialect: str) -> tuple[str, ...]:
+def skill_names(task_type: str, dialects: Sequence[str]) -> tuple[str, ...]:
+    """The task type's Skills, DuckDB's dialect Skill swapped for those of `dialects`."""
     names = DBT_SKILLS if task_type == "dbt" else QUERY_SKILLS
-    return tuple(DIALECT_SKILLS[dialect] if name == "duckdb-sql" else name for name in names)
+    return tuple(
+        skill
+        for name in names
+        for skill in ([DIALECT_SKILLS[d] for d in dialects] if name == "duckdb-sql" else [name])
+    )
 
 
-def injected_skills(task_type: str, config: RunConfig, dialect: str) -> tuple[str, ...]:
+def injected_skills(task_type: str, config: RunConfig, dialects: Sequence[str]) -> tuple[str, ...]:
     """The Skills the main agent's system prompt holds, in order; none when the layer is off."""
-    return skill_names(task_type, dialect) if config.skill else ()
+    return skill_names(task_type, dialects) if config.skill else ()
 
 
-def system_prompt(task_type: str, config: RunConfig, dialect: str = "duckdb") -> str:
-    base = DBT_SYSTEM_PROMPT if task_type == "dbt" else SYSTEM_PROMPT
-    names = injected_skills(task_type, config, dialect)
+def database_list(task: Task) -> str:
+    """The data sources by name and kind, one `- name (Kind)` line each."""
+    return "".join(
+        f"- {source.name} ({DATABASE_NAMES[source_kind(source)]})\n" for source in task.databases
+    )
+
+
+def database_line(task: Task) -> str:
+    """The task prompt's `Database:` value: the database's kind, or each source with its own."""
+    kinds = [DATABASE_NAMES[source_kind(source)] for source in task.databases]
+    if not task.several:
+        return kinds[0]
+    named = (f"{source.name} ({kind})" for source, kind in zip(task.databases, kinds, strict=True))
+    return f"one of {', '.join(named)}"
+
+
+def system_prompt(task: Task, config: RunConfig, chat: bool = False) -> str:
+    """`chat`: a conversation turn, which may ask the user (`CLARIFICATION_PROMPT`)."""
+    base = DBT_SYSTEM_PROMPT if task.type == "dbt" else SYSTEM_PROMPT
+    names = injected_skills(task.type, config, task.dialects)
     prompt = base.format(server=MCP_SERVER)
+    if task.several:
+        prompt += DATABASES_PROMPT.format(server=MCP_SERVER, databases=database_list(task))
     if names:
         prompt += SKILLS_PROMPT.format(skills=load_skills(names, config.skills_dir))
-    if uses_verifiers(task_type, config):
+    if uses_verifiers(task.type, config):
         prompt += VERIFIERS_PROMPT
+    if chat:
+        prompt += CLARIFICATION_PROMPT
     return prompt
 
 
@@ -954,6 +1411,40 @@ class TurnBudget:
         }
 
 
+def clarification_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:
+    """PostToolUse on the clarification tool (a conversation turn's only): a call that went
+    through, the tool having checked its question and options, is recorded as the
+    `clarification` event and ends the turn, as nao's `hasToolCall('clarification')` stop
+    condition does (`apps/backend/src/agents/stop-conditions.ts`). `continue: false` makes the
+    CLI call the model no more and end the turn with a `success` result, `terminal_reason:
+    "hook_stopped"` and an empty `result`, so the turn has no answer (probed, CLI 2.1.301). A
+    call the tool refused goes to PostToolUseFailure instead: the agent reads the error and goes
+    on (probed too). A turn asks once: when one response holds several calls, which the CLI may
+    run together (the tool is read-only), only the first to finish is recorded."""
+    asked = False
+
+    async def ask(
+        hook_input: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        nonlocal asked
+        stop: HookJSONOutput = {"continue_": False, "stopReason": "the agent asked the user"}
+        if asked:
+            return stop
+        asked = True
+        fields: dict[str, Any] = dict(hook_input)
+        arguments: dict[str, Any] = fields.get("tool_input") or {}
+        call = str(fields.get("tool_use_id", tool_use_id))
+        emit(
+            "clarification",
+            tool_use_id=call,
+            question=arguments.get("question"),
+            options=arguments.get("options"),
+        )
+        return stop
+
+    return {"PostToolUse": [HookMatcher(matcher=CLARIFICATION_TOOL, hooks=[ask])]}
+
+
 def guard_recorder(guard: HookCallback, guarded: set[str] | None) -> HookCallback:
     """`guard` as is, adding the id of each call it denies to `guarded` (when given), so the
     call's `tool_end` can say a guard rejected it. What the guard returns is unchanged."""
@@ -983,6 +1474,7 @@ def build_options(
     database_env: Mapping[str, str] | None = None,
     task_file: Path | None = None,
     dictionary: Path | None = None,
+    dictionaries: Mapping[str, Path] | None = None,
     snapshot: Path | None = None,
     deadline: float | None = None,
     turn_budget: TurnBudget | None = None,
@@ -996,7 +1488,8 @@ def build_options(
     variable: it reaches the MCP server through the SDK subprocess's environment. `task_file`
     (`saved_task`, verifier runs only) is named in the verifiers' prompts and may be Read.
     `dictionary` (`prebuilt_dictionary`, context runs only) is the value dictionary file the
-    MCP server serves dictionary_search from. `snapshot` (`taken_snapshot`, verifier runs only)
+    MCP server serves dictionary_search from; a run with several data sources gives them as
+    `dictionaries`, by source name. `snapshot` (`taken_snapshot`, verifier runs only)
     is the directory the v2 tools compare the workspace against; it reaches the MCP server the
     way the Postgres URL does, through the SDK subprocess's environment. `deadline` (monotonic
     seconds, ticket 54) is when the trial ends: the v2 hooks stop dispatching verifiers once too
@@ -1022,6 +1515,11 @@ def build_options(
             *(() if uses_verifiers(task.type, config) else ("--no-verifier-tools",)),
             *("--workspace", str(task.workspace.resolve())),
             *(("--dictionary", str(dictionary)) if dictionary else ()),
+            *(
+                arg
+                for name, path in (dictionaries or {}).items()
+                for arg in ("--source-dictionary", name, str(path))
+            ),
         ],
     }
     if task.type == "dbt":
@@ -1036,7 +1534,7 @@ def build_options(
     guard = guard_recorder(
         workspace_guard(
             task.workspace,
-            protected=(task.duckdb,) if task.duckdb else (),
+            protected=tuple(source.duckdb for source in task.databases if source.duckdb),
             readable=(task_file,) if task_file else (),
         ),
         guarded,
@@ -1070,7 +1568,12 @@ def build_options(
     if spend is not None:
         for event, matchers in spend.hooks(emit).items():
             all_hooks.setdefault(event, []).extend(matchers)
-    server_env = dict(database_env or {})
+    if turn is not None:
+        for event, matchers in clarification_hooks(emit).items():
+            all_hooks.setdefault(event, []).extend(matchers)
+    # The clarification tool's switch, set either way: a value the shell exported never reaches
+    # a single run or an evaluation.
+    server_env = dict(database_env or {}) | {CHAT_ENV: "" if turn is None else "1"}
     if snapshot is not None:
         server_env[SNAPSHOT_ENV] = str(snapshot)
     if spend is not None and spend.ledger is not None:
@@ -1082,7 +1585,7 @@ def build_options(
         model=settings.model,
         env=settings.sdk_env() | server_env | session_env,
         resume=None if turn is None else turn.resume,
-        system_prompt=system_prompt(task.type, config, task.dialect),
+        system_prompt=system_prompt(task, config, chat=turn is not None),
         cwd=str(task.workspace.resolve()),
         tools=tools,
         allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
@@ -1185,10 +1688,17 @@ def rejected_by(
 
 
 def record_message(
-    log: EventLog, message: Any, tools: dict[str, str], guarded: Container[str] = ()
+    log: EventLog,
+    message: Any,
+    tools: dict[str, str],
+    guarded: Container[str] = (),
+    sources: Sequence[str] = (),
 ) -> None:
     """Translate one SDK message into events. `tools` maps tool_use ids to tool names; `guarded`
-    holds the ids of the calls a guard denied (`guard_recorder`)."""
+    holds the ids of the calls a guard denied (`guard_recorder`). `sources` names the run's data
+    sources, and a `sql` event names the one its query ran on: a run's only source, or with
+    several the query's `database` argument when it is one of them (the server refuses any
+    other). A caller that names no sources gets no `database` field."""
     if isinstance(message, SystemMessage) and message.subtype == "init":
         log.emit(
             "status",
@@ -1217,7 +1727,13 @@ def record_message(
                     input=block.input,
                 )
                 if block.name == QUERY_TOOL:
-                    log.emit("sql", tool_use_id=block.id, sql=block.input.get("sql"))
+                    queried = sources[0] if len(sources) == 1 else block.input.get("database")
+                    log.emit(
+                        "sql",
+                        tool_use_id=block.id,
+                        sql=block.input.get("sql"),
+                        **({"database": queried} if queried in sources else {}),
+                    )
     elif isinstance(message, UserMessage) and isinstance(message.content, list):
         for block in message.content:
             if isinstance(block, ToolResultBlock):
@@ -1414,19 +1930,34 @@ def deadline_fields(spend: Spend | None, open_calls: Mapping[str, str]) -> dict[
     a verifier still running is not counted. Without a priced model nothing was counted."""
     open_tool_calls = [{"tool_use_id": i, "tool": name} for i, name in open_calls.items()]
     error = "the run stopped itself at the trial deadline"
+    return stopped_by_harness(spend, "error_deadline", "deadline", error) | {
+        "open_tool_calls": open_tool_calls
+    }
+
+
+def turn_limit_fields(spend: Spend | None, passed: TurnLimitPassed) -> dict[str, Any]:
+    """The result event of a steered turn stopped at its turn limit (`TurnLimitPassed`), its
+    `num_turns` as the CLI reports a limit passed (limit + 1)."""
+    fields = stopped_by_harness(spend, "error_max_turns", "max_turns", str(passed))
+    return fields | {"num_turns": passed.max_turns + 1}
+
+
+def stopped_by_harness(
+    spend: Spend | None, subtype: str, terminal_reason: str, error: str
+) -> dict[str, Any]:
+    """The result event of a run the harness stopped itself; the SDK never sent its own. Spend
+    is the price-table cap's count (`Spend.stopped_fields`); without a priced model nothing was
+    counted."""
     if spend is None:
         return {
             **result_fields(None, ""),
-            "subtype": "error_deadline",
-            "terminal_reason": "deadline",
+            "subtype": subtype,
+            "terminal_reason": terminal_reason,
             "cost_basis": "none",
             "sdk_cost_usd": None,
-            "open_tool_calls": open_tool_calls,
             "errors": [f"{error}; the model has no price, so its spend was not counted"],
         }
-    return spend.stopped_fields("error_deadline", "deadline", error) | {
-        "open_tool_calls": open_tool_calls
-    }
+    return spend.stopped_fields(subtype, terminal_reason, error)
 
 
 async def run(
@@ -1436,34 +1967,35 @@ async def run(
     env: Mapping[str, str],
     deadline: float | None = None,
     turn: ConversationTurn | None = None,
+    steering: AsyncGenerator[str] | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
     with `terminal_reason: "deadline"`; the outcome is an unfinished agent. `turn` makes the run a
     turn of a conversation (`ConversationTurn`): its `task` event names the conversation and the
-    turn."""
+    turn. `steering`, a `--chat` run's stdin lines, is sent into the running turn (`query`)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
     database_env: dict[str, str] = {}
-    if task.postgres_env:
+    for variable in task.postgres_envs:
         # The URL variable goes into the SDK env on top of `sdk_env()`: a printable name would
         # let `echo $VAR` show the URL to the model; a name the SDK env sets, or any BASH_/CLAUDE_
         # one, would override the CLI settings the harness relies on.
         if (
-            task.postgres_env in PRINTABLE_VARIABLES
-            or task.postgres_env in settings.sdk_env()
-            or task.postgres_env in (*settings.tool_env(), LEDGER_ENV)
-            or task.postgres_env.startswith(("BASH_", "CLAUDE_"))
+            variable in PRINTABLE_VARIABLES
+            or variable in settings.sdk_env()
+            or variable in (*settings.tool_env(), LEDGER_ENV, CHAT_ENV)
+            or variable.startswith(("BASH_", "CLAUDE_"))
         ):
             raise ConfigError(
-                f"{task.postgres_env} cannot hold the Postgres URL: the agent may print it, or "
+                f"{variable} cannot hold the Postgres URL: the agent may print it, or "
                 "it configures the Claude Code CLI; use another --postgres-env name"
             )
-        if not env.get(task.postgres_env):
-            raise ConfigError(f"{task.postgres_env} (the Postgres URL) is not set")
-        # Only this variable: the server would otherwise read the parent's, or none.
-        database_env[task.postgres_env] = env[task.postgres_env]
+        if not env.get(variable):
+            raise ConfigError(f"{variable} (the Postgres URL) is not set")
+        # Only these variables: the server would otherwise read the parent's, or none.
+        database_env[variable] = env[variable]
     if turn is not None:
         turn.config_dir.mkdir(exist_ok=True)
     # Read before the CLI resumes the session and appends to its record.
@@ -1477,9 +2009,9 @@ async def run(
     spend = spend_cap(settings.model, config.max_budget_usd)
     secrets = known_secrets(env)
     names: list[str] = []
-    if task.postgres_env:
-        secrets += url_secrets(env[task.postgres_env])
-        names = url_names(env[task.postgres_env])
+    for variable in task.postgres_envs:
+        secrets += url_secrets(env[variable])
+        names += url_names(env[variable])
     verified = uses_verifiers(task.type, config)
     saving = saved_task(task.text, task.workspace) if verified else nullcontext()
     snapshotting = taken_snapshot(task.workspace) if verified else nullcontext()
@@ -1493,7 +2025,7 @@ async def run(
             "version",
             git_commit=git_commit(),
             skill_version=skill_version(config.skills_dir) if config.skill else "none",
-            skills=list(injected_skills(task.type, config, task.dialect)),
+            skills=list(injected_skills(task.type, config, task.dialects)),
             config=config.name,
             layers=config.layers(),
             model=settings.model,
@@ -1503,18 +2035,21 @@ async def run(
         conversation = (
             {} if turn is None else {"conversation": turn.conversation, "turn": turn.number}
         )
+        # With several sources the run has no one data source; each `sql` event names its own.
+        data_source = None if task.several else task.data_source_name
         log.emit(
             "task",
             task=task.text,
             task_type=task.type,
-            data_source=task.data_source_name,
+            data_source=data_source,
             **conversation,
         )
+        source_names = tuple(source.name for source in task.databases)
         budget = None if task.type == "dbt" else TurnBudget(config.max_turns[task.type])
         prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
             server=MCP_SERVER,
             turn_limit=TURN_LIMIT.format(max_turns=budget.max_turns) if budget else "",
-            database=DATABASE_NAMES[task.dialect],
+            database=database_line(task),
             workspace=task.workspace.resolve(),
             task=task.text,
             scripts=" and the dbt-workflow scripts" if dbt_scripts(config) else "",
@@ -1524,10 +2059,15 @@ async def run(
         guarded: set[str] = set()
         building = (
             prebuilt_dictionary(task.gateway(env), task.workspace, log.emit)
-            if config.context
+            if config.context and not task.several
             else nullcontext()
         )
-        with building as dictionary:
+        building_each = (
+            prebuilt_dictionaries(task.sources, task.workspace, env, log.emit)
+            if config.context and task.several
+            else nullcontext()
+        )
+        with building as dictionary, building_each as dictionaries:
             options = build_options(
                 task,
                 config,
@@ -1538,6 +2078,7 @@ async def run(
                 database_env=database_env,
                 task_file=task_file,
                 dictionary=dictionary,
+                dictionaries=dictionaries,
                 snapshot=snapshot,
                 deadline=deadline,
                 turn_budget=budget,
@@ -1546,6 +2087,7 @@ async def run(
             )
             open_calls: dict[str, str] = {}
             session_id: str | None = None
+            over_limit: TurnLimitPassed | None = None
             # Cancels the stream at the deadline less its margin; closing the cancelled stream
             # (`aclosing`) ends the SDK session and its CLI subprocess.
             timer = asyncio.timeout(
@@ -1556,7 +2098,17 @@ async def run(
             try:
                 async with timer:
                     try:
-                        stream = query(prompt=prompt, options=options)
+                        stream = (
+                            query(prompt=prompt, options=options)
+                            if steering is None
+                            else query(
+                                prompt=prompt,
+                                options=options,
+                                steering=steering,
+                                emit=log.emit,
+                                spend=spend,
+                            )
+                        )
                         async with aclosing(capped(stream, spend)) as messages:
                             async for message in messages:
                                 session_id = message_session(message) or session_id
@@ -1565,8 +2117,10 @@ async def run(
                                 else:
                                     if budget is not None:
                                         budget.observe(message)
-                                    record_message(log, message, tools, guarded)
+                                    record_message(log, message, tools, guarded, source_names)
                                     track_open_calls(message, open_calls)
+                    except TurnLimitPassed as exc:
+                        over_limit = exc
                     except Exception as exc:
                         # A failed run ends with a ResultMessage and then a ResultError, whose
                         # details the result event already holds. Anything else (the SDK also
@@ -1583,6 +2137,8 @@ async def run(
             stopped = spend.result_fields()
         elif timer.expired() and final is None:
             stopped = deadline_fields(spend, open_calls)
+        elif over_limit is not None:
+            stopped = turn_limit_fields(spend, over_limit)
         else:
             stopped = None
         if stopped is None and (answer := final_answer(final)) is not None:

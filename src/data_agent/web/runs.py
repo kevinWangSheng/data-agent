@@ -23,6 +23,8 @@ HEAD_LINES = 8
 # The tail is read back in blocks of this size until it holds the last complete line.
 TAIL_BLOCK = 64 * 1024
 RECORD = "web-run.json"
+# The conversations' directory (data_agent.web.conversations), not a run.
+CONVERSATIONS = "conversations"
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class RunsDir:
         """The run's directory, or None when there is no run by that id. An id from a URL is a plain
         directory name: `..`, a path or a hidden name is no run. Entries the user placed in the
         runs directory, symlinks included, are runs like any other."""
-        if run_id in ("", ".", "..") or "/" in run_id or "\\" in run_id or run_id.startswith("."):
+        if not is_plain_name(run_id) or run_id == CONVERSATIONS:
             return None
         path = self.path / run_id
         return path if path.is_dir() else None
@@ -80,6 +82,24 @@ class RunsDir:
         last = last_line(path) if path is not None else None
         return last is not None and is_result(json.loads(last))
 
+    def session_id(self, run_id: str) -> str | None:
+        """The SDK session's id the run's `status` event (`state: "started"`) gives; None when it
+        has written none (yet)."""
+        path = self.event_file(run_id)
+        if path is None:
+            return None
+        with path.open("rb") as file:
+            for line in file:
+                if not line.endswith(b"\n"):
+                    break
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                if event.get("type") == "status" and event.get("state") == "started":
+                    session = event.get("session_id")
+                    return session if isinstance(session, str) and session else None
+        return None
+
     def read(self, run_id: str, offset: int = 0) -> Chunk | None:
         """The run's complete events from byte `offset` on; None before its event file exists."""
         path = self.event_file(run_id)
@@ -110,6 +130,11 @@ class RunsDir:
         if summary["status"] == "running" and record is not None:
             summary["status"] = record["status"]
         return summary
+
+
+def is_plain_name(name: str) -> bool:
+    """Whether an id from a URL is a plain directory name: not `..`, a path or a hidden name."""
+    return name not in ("", ".", "..") and "/" not in name and "\\" not in name and name[0] != "."
 
 
 def read_from(path: Path, offset: int = 0) -> Chunk:

@@ -22,7 +22,7 @@ import signal
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -43,10 +43,10 @@ from data_agent.db_facts import (
     table_facts,
 )
 from data_agent.gateway import Gateway, QueryBlocked, QueryFailed, QueryInterrupted, Session
-from data_agent.tool_annotations import READ_ONLY
+from data_agent.tool_annotations import READ_ONLY, database_tools
 
 # `literal` is re-exported for verifier_tools, with the other db_facts names it imports here.
-__all__ = ["Table", "find_table", "literal", "register_context_tools"]
+__all__ = ["ContextDatabase", "Table", "find_table", "literal", "register_context_tools"]
 
 SUMMARY_LIMIT = 200
 JOIN_CANDIDATES_PER_COLUMN = 25
@@ -495,20 +495,28 @@ def build_interruptible(build: DictionaryBuild) -> Dictionary:
     return result
 
 
-def register_context_tools(
-    server: MCPServer,
-    run: RunQuery,
-    catalog: LoadCatalog,
-    dialect: str,
-    dictionary: Dictionary,
-) -> None:
-    """Add the context-strategy tools to `server`; called only when the run config turns the
-    context layer on. `catalog` is the server's cached catalog, shared with describe_table and
-    the verifier tools; `dialect` is the gateway's, for the table facts hydrate reads;
-    `dictionary` is the prebuilt value dictionary dictionary_search answers from."""
+@dataclass(frozen=True)
+class ContextDatabase:
+    """What the context tools need of one database: its gateway's query function and dialect,
+    the server's cached catalog of it (shared with describe_table and the verifier tools), and
+    its prebuilt value dictionary, which dictionary_search answers from."""
 
-    @server.tool(annotations=READ_ONLY)
-    def discover(query: str, limit: int = 10) -> dict[str, list[dict[str, Any]]]:
+    run: RunQuery
+    catalog: LoadCatalog
+    dialect: str
+    dictionary: Dictionary
+
+
+def register_context_tools(server: MCPServer, databases: Mapping[str, ContextDatabase]) -> None:
+    """Add the context-strategy tools to `server`, over `databases` by name (with several, each
+    tool takes a `database` argument, `database_tools`); called only when the run config turns
+    the context layer on."""
+    tool = database_tools(server, databases)
+
+    @tool(annotations=READ_ONLY)
+    def discover(
+        db: ContextDatabase, query: str, limit: int = 10
+    ) -> dict[str, list[dict[str, Any]]]:
         """Search table, view and column names; returns refs with a short summary, best first.
 
         Each result is `{"ref", "summary"}`; the summary has at most 200 characters, so a wide
@@ -518,7 +526,7 @@ def register_context_tools(
         terms = terms_of(query)
         if not terms:
             raise ToolError("Error: query has no words to search for")
-        scored = [(*score(table, terms), table) for table in catalog()]
+        scored = [(*score(table, terms), table) for table in db.catalog()]
         ranked = sorted(
             (item for item in scored if item[0] > 0), key=lambda item: (-item[0], item[2].ref)
         )
@@ -529,15 +537,15 @@ def register_context_tools(
             ]
         }
 
-    @server.tool(annotations=READ_ONLY)
-    def hydrate(ref: str) -> str:
+    @tool(annotations=READ_ONLY)
+    def hydrate(db: ContextDatabase, ref: str) -> str:
         """Read one table or view in full: exact row count, every column with its type and
         whether it may be null, join candidates found from `<x>_id` columns, then the declared
         keys and the indexes. `ref` is a ref from discover (schema.table) or a bare table name."""
-        tables = catalog()
+        tables = db.catalog()
         table = find_table(tables, ref)
-        count = run(f"SELECT count(*) FROM {table.sql_name}", 1).rows[0][0]
-        facts = table_facts(run, dialect, table)
+        count = db.run(f"SELECT count(*) FROM {table.sql_name}", 1).rows[0][0]
+        facts = table_facts(db.run, db.dialect, table)
         lines = [f"{table.ref} ({table.kind}, {count} rows, {len(table.columns)} columns)"]
         lines.extend(column_line(column) for column in facts.columns)
         lines.append("Join candidates (by _id column name; check the key values before joining):")
@@ -545,8 +553,8 @@ def register_context_tools(
         lines.extend(key_lines(facts))
         return "\n".join(lines)
 
-    @server.tool(annotations=READ_ONLY)
-    def dictionary_search(keyword: str) -> str:
+    @tool(annotations=READ_ONLY)
+    def dictionary_search(db: ContextDatabase, keyword: str) -> str:
         """Find real values of categorical columns that contain `keyword` (ignores case), with
         their counts, to match dirty keys and enum spellings before filtering or joining.
 
@@ -562,4 +570,4 @@ def register_context_tools(
             raise ToolError("Error: keyword is empty")
         if len(keyword) > KEYWORD_CHARS:
             raise ToolError(f"Error: keyword is longer than {KEYWORD_CHARS} characters")
-        return dictionary.search(keyword)
+        return db.dictionary.search(keyword)

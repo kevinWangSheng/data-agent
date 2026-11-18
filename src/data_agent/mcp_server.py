@@ -6,7 +6,10 @@ table line, and the row estimate from `db_facts`), and the row display cap in `f
 `gateway/mcp/tools/query.py` (`query_database`; the same floor, budget, maximum and notice).
 """
 
+import itertools
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -22,6 +25,7 @@ from data_agent.classify import (
     setup_from_env,
 )
 from data_agent.context_tools import (
+    ContextDatabase,
     Dictionary,
     DictionaryBuild,
     build_interruptible,
@@ -29,6 +33,7 @@ from data_agent.context_tools import (
 )
 from data_agent.db_facts import (
     CatalogCache,
+    LoadCatalog,
     describe,
     plan_text,
     row_estimates,
@@ -46,7 +51,7 @@ from data_agent.gateway import (
 )
 from data_agent.label_tables import LABELS_DIR, LabelTables
 from data_agent.run_config import RunConfig
-from data_agent.tool_annotations import READ_ONLY
+from data_agent.tool_annotations import CHAT_ENV, READ_ONLY, database_tools
 from data_agent.verifier_tools import register_verifier_tools
 
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
@@ -63,6 +68,31 @@ WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
 GROUP BY t.table_schema, t.table_name, t.table_type
 ORDER BY t.table_schema, t.table_name
 """
+
+
+MIN_OPTIONS = 2
+MAX_OPTIONS = 5
+CLARIFICATION_SENT = (
+    "The question and its options are shown to the user. This turn ends here; the option they "
+    "pick, or their own reply, comes as the next message."
+)
+
+
+def check_clarification(question: str, options: list[str]) -> None:
+    """A question to show the user and 2-5 distinct, non-blank options to pick from (nao's
+    `clarification` input, `apps/shared/src/tools/clarification.ts`, options required here)."""
+    if not question.strip():
+        raise ToolError("question must not be blank")
+    if not MIN_OPTIONS <= len(options) <= MAX_OPTIONS:
+        raise ToolError(
+            f"give {MIN_OPTIONS} to {MAX_OPTIONS} options, got {len(options)}; when the question "
+            "has no short set of answers, answer instead and state your assumption"
+        )
+    if any(not option.strip() for option in options):
+        raise ToolError("options must not be blank")
+    # The picked option comes back as the next message, so two equal options cannot be told apart.
+    if len({option.strip() for option in options}) < len(options):
+        raise ToolError("options must differ from each other")
 
 
 def tool_error(exc: QueryBlocked | QueryFailed) -> ToolError:
@@ -173,6 +203,24 @@ def table_lines(
     return f"{head}): {columns}", f"{head}, {column_count} cols)"
 
 
+@dataclass(frozen=True)
+class Database:
+    """One database the server reaches, with what its tools keep of it: a catalog cached per
+    database, shared by every tool that looks one of its tables up, and its label tables."""
+
+    gateway: Gateway
+    catalog: LoadCatalog
+    labels: LabelTables
+
+    def run(self, sql: str, row_limit: int) -> QueryResult:
+        return run_query(self.gateway, sql, row_limit)
+
+
+def open_database(gateway: Gateway, labels: LabelTables) -> Database:
+    catalog = CatalogCache(partial(run_query, gateway), gateway.catalog_key).get
+    return Database(gateway, catalog, labels)
+
+
 def build_server(
     gateway: Gateway,
     config: RunConfig,
@@ -185,30 +233,106 @@ def build_server(
     also leaves out the verifier tools for a run whose task type has no verifiers. `workspace`
     bounds the files a tool may read (map_columns). `dictionary` is the prebuilt value
     dictionary the context layer searches (`data-agent run` builds it before the agent starts);
-    a server with that layer on and no dictionary builds one now, before it serves."""
-    server = MCPServer("data-agent")
-    run = partial(run_query, gateway)
-    # One catalog per server process, shared by every tool that looks a table up.
-    catalog = CatalogCache(run, gateway.catalog_key).get
+    a server with that layer on and no dictionary builds one now, before it serves. With one
+    database the tools take no `database` argument (`database_tools`)."""
+    dictionaries = {"": dictionary} if dictionary is not None else {}
+    server, databases = data_server({"": gateway}, config, workspace, dictionaries)
+    if config.verifiers and verifier_tools:
+        db = databases[""]
+        register_verifier_tools(server, db.run, db.catalog, workspace, gateway.dialect)
+    return server
 
-    @server.tool(annotations=READ_ONLY)
-    def query_database(sql: str, row_limit: int = 1000) -> str:
+
+def build_multi_server(
+    gateways: Mapping[str, Gateway],
+    config: RunConfig,
+    workspace: Path | None = None,
+    dictionaries: Mapping[str, Dictionary] | None = None,
+) -> MCPServer:
+    """A server over several databases by name (ticket 89): every query and context tool takes
+    a required `database` argument, one of the names, and works on that database alone; each
+    database has its own catalog, facts, dictionary and label tables. As `build_server`
+    otherwise, with a dictionary built now for a database `dictionaries` has none for. No
+    verifier tools: they check dbt runs, which have one database."""
+    server, _ = data_server(gateways, config, workspace, dictionaries or {})
+    return server
+
+
+def data_server(
+    gateways: Mapping[str, Gateway],
+    config: RunConfig,
+    workspace: Path | None,
+    dictionaries: Mapping[str, Dictionary],
+) -> tuple[MCPServer, dict[str, Database]]:
+    """The base tools and, when `config` turns that layer on, the context tools, over `gateways`
+    by name (`database_tools`); a database `dictionaries` has no dictionary for gets one built
+    now. The label tables of all the databases share one numbering. The clarification tool is
+    served in conversation mode only (spec decision 8), which `data-agent run --chat` switches
+    on through the environment (`CHAT_ENV`)."""
+    server = MCPServer("data-agent")
+    numbers = itertools.count(1)
+    databases = {
+        name: open_database(gateway, LabelTables(workspace, numbers))
+        for name, gateway in gateways.items()
+    }
+    register_base_tools(server, databases, workspace)
+    if os.environ.get(CHAT_ENV) == "1":
+        register_clarification_tool(server)
+    if config.context:
+        contexts: dict[str, ContextDatabase] = {}
+        for name, db in databases.items():
+            dictionary = dictionaries.get(name)
+            if dictionary is None:
+                dictionary = build_interruptible(DictionaryBuild(db.gateway))
+            contexts[name] = ContextDatabase(db.run, db.catalog, db.gateway.dialect, dictionary)
+        register_context_tools(server, contexts)
+    return server, databases
+
+
+def register_clarification_tool(server: MCPServer) -> None:
+    # Asking reads nothing and writes nothing; the turn's end is the run's PostToolUse hook. One
+    # tool for the whole conversation, so no `database` argument with several databases.
+    @server.tool(name="clarification", annotations=READ_ONLY)
+    def clarification_tool(question: str, options: list[str]) -> str:
+        """Ask the user one short question, with 2 to 5 distinct options to pick from.
+
+        Ask only when the question can be read in ways that give different results and
+        neither the conversation nor the data settles which one is meant. Otherwise answer,
+        and state the reading you chose among your assumptions. Calling this tool ends your
+        turn: call no other tool in the same response and write nothing after it. The option
+        the user picks, or their own reply, comes as the next message.
+        """
+        check_clarification(question, options)
+        return CLARIFICATION_SENT
+
+
+def register_base_tools(
+    server: MCPServer, databases: Mapping[str, Database], workspace: Path | None
+) -> None:
+    """The tools every config serves, over `databases` by name (`database_tools`)."""
+    tool = database_tools(server, databases)
+
+    @tool(annotations=READ_ONLY)
+    def query_database(db: Database, sql: str, row_limit: int = 1000) -> str:
         """Run one read-only SQL query (SELECT only) and return the rows as text.
 
         DDL, DML, multiple statements and file or network functions are blocked. At most
         `row_limit` rows come back (default 1000, max 10000). A query stopped by the timeout
         fails with the query's plan (EXPLAIN) and the indexes on the tables it reads.
         """
+        gateway = db.gateway
         try:
             return format_rows(gateway.query(sql, row_limit))
         except QueryTimedOut as exc:
             explain = partial(run_explain, gateway, row_limit=row_limit)
-            raise ToolError(timeout_report(str(exc), sql, gateway.dialect, explain, run)) from exc
+            failure = timeout_report(str(exc), sql, gateway.dialect, explain, db.run)
+            raise ToolError(failure) from exc
         except (QueryBlocked, QueryFailed) as exc:
             raise tool_error(exc) from exc
 
-    @server.tool(annotations=READ_ONLY)
+    @tool(annotations=READ_ONLY)
     def list_tables(
+        db: Database,
         schema: str | None = None,
         name_contains: str | None = None,
         max_tables: int = LIST_TABLES_DEFAULT_MAX,
@@ -228,8 +352,8 @@ def build_server(
         """
         if max_tables < 1:
             raise ToolError("max_tables must be at least 1")
-        tables = run_query(gateway, LIST_TABLES_SQL, row_limit=MAX_ROWS).rows
-        estimates = row_estimates(run, gateway.dialect)
+        tables = db.run(LIST_TABLES_SQL, MAX_ROWS).rows
+        estimates = row_estimates(db.run, db.gateway.dialect)
         wanted_schema = (schema or "").strip().lower()
         needle = (name_contains or "").strip().lower()
         lines = [
@@ -249,8 +373,8 @@ def build_server(
             return f"No tables found with {' and '.join(filters)}"
         return render_table_listing(lines, max_tables, columns, LIST_TABLES_CHAR_BUDGET)
 
-    @server.tool(annotations=READ_ONLY)
-    def describe_table(table: str) -> str:
+    @tool(annotations=READ_ONLY)
+    def describe_table(db: Database, table: str) -> str:
         """One table or view in detail, as the database reports it: its row estimate, every
         column with its type and whether it may be null, declared primary and foreign keys, and
         its indexes (name and definition). `table` is schema.table or a bare table name.
@@ -260,10 +384,10 @@ def build_server(
         says so. DuckDB lists only indexes made with CREATE INDEX: the index behind a primary key
         shows as the key.
         """
-        return describe(run, gateway.dialect, table, catalog)
+        return describe(db.run, db.gateway.dialect, table, db.catalog)
 
-    @server.tool(annotations=READ_ONLY)
-    def explain_query(sql: str) -> str:
+    @tool(annotations=READ_ONLY)
+    def explain_query(db: Database, sql: str) -> str:
         """The database's plan for one read-only SQL query, without running it (EXPLAIN, never
         ANALYZE), as the database prints it: each step with its estimated rows, the join methods,
         and the join and filter conditions.
@@ -271,11 +395,9 @@ def build_server(
         The query passes the same read-only checks as query_database; the plan is of the query
         as query_database would run it, row cap included.
         """
-        return run_explain(gateway, sql)
+        return run_explain(db.gateway, sql)
 
-    labels = LabelTables(workspace)
-
-    @server.tool(
+    @tool(
         annotations=READ_ONLY,
         description=description(
             source="`sql` is one read-only SQL query, run through the same gateway as "
@@ -286,6 +408,7 @@ def build_server(
         ),
     )
     def classify_text(
+        db: Database,
         sql: str,
         key_column: str,
         text_column: str,
@@ -294,16 +417,16 @@ def build_server(
     ) -> str:
         allowed = check_categories(categories)
         setup = setup_from_env(os.environ)
-        rows = fetch_sql(run, sql, gateway.dialect, key_column)
+        rows = fetch_sql(db.run, sql, db.gateway.dialect, key_column)
         classification = classify(rows, key_column, text_column, allowed, instructions, setup)
-        name, path = labels.add(classification.columns, classification.rows)
+        name, path = db.labels.add(classification.columns, classification.rows)
         stored = f"`{name}` (read it with query_labels)"
         if path is not None and workspace is not None:
             stored += f", also the file `{path.relative_to(workspace)}` in the workspace"
         return report(classification, stored)
 
-    @server.tool(annotations=READ_ONLY)
-    def query_labels(sql: str, row_limit: int = 1000) -> str:
+    @tool(annotations=READ_ONLY)
+    def query_labels(db: Database, sql: str, row_limit: int = 1000) -> str:
         """Run one read-only SQL query (DuckDB dialect) over the label tables classify_text made
         in this run (`labels_1`, `labels_2`, ...), and return the rows as text.
 
@@ -312,14 +435,6 @@ def build_server(
         and row cap as query_database apply.
         """
         try:
-            return format_rows(labels.query(sql, row_limit))
+            return format_rows(db.labels.query(sql, row_limit))
         except (QueryBlocked, QueryFailed) as exc:
             raise tool_error(exc) from exc
-
-    if config.context:
-        if dictionary is None:
-            dictionary = build_interruptible(DictionaryBuild(gateway))
-        register_context_tools(server, run, catalog, gateway.dialect, dictionary)
-    if config.verifiers and verifier_tools:
-        register_verifier_tools(server, run, catalog, workspace, gateway.dialect)
-    return server
