@@ -1,10 +1,10 @@
 # 97 — `sandbox_exec`：在隔离环境里执行任意命令
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (Opus 5.5), 2026-11-17
+Branch: worktree-97-sandbox-exec
 
 ## Goal
 
@@ -28,6 +28,7 @@ Branch: —
 - 网页后端和对话的接线（带 `--sandbox docker`）是工单 100 的事，本工单不碰 `web/`。
 - 不传任何 `DATA_AGENT_*`、连接串、profile 路径进容器。
 - 本机 Docker 是 colima（`default` profile，2026-11-17 是 Stopped）；跑集成测试前先 `colima start`，用完不用停。
+- colima 只把 `$HOME` 挂进 VM：`/var/folders/...`（pytest 的 `tmp_path`、`mktemp -d`）下的目录 bind mount 进容器后是空的，不报错（主会话 2026-11-17 实测；`$HOME` 下的目录正常，容器能联网）。真实 Docker 的集成测试把 workspace 建在 `$HOME` 下（例如 `tmp_path_factory` 换成 `$HOME/.cache/data-agent-tests/` 下的临时目录，测完删掉）。
 - 和工单 98、对话界面工单都可能改 `agent.py`、`cli.py`、`mcp_server.py`，后合并的一方 rebase。
 
 ## Acceptance
@@ -61,10 +62,69 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0.005 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
+- Outcome: implemented (`3151650`, `ca6af3d`, `868fd03`), real-model run done; PR #107 waiting for CI and the Codex PR review
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+- 2026-11-17（工单会话，主会话抄录）：分支 `worktree-97-sandbox-exec`，三个提交 `3151650`、`ca6af3d`、`868fd03`。
+  - 不调模型的真实运行：`uv run python runs/sandbox_demo.py`。用 stdio 起真实的 `data-agent mcp-server --sandbox docker --run-id demo-97`，先 `query_database`，再用 `sandbox_exec` 带 `data_files=["query_1"]` 跑 pandas。
+    - `query_database` 返回 "(20 rows) … [result id: query_1 …]"，`sandbox_exec` 退出码 0，结果和手算一致。
+    - server 运行时有一个容器 `data-agent-sandbox-demo-97`；server 被杀后容器还在；运行收尾后没有容器了。
+    - 启动清理也用真实 Docker 验证过：owner 进程已退出的容器被 `remove_orphaned_containers()` 删掉。
+  - `make check`：exit 0；ruff、format 通过；basedpyright 0 errors；pytest 2473 passed、1 skipped（基线 2424）；web 295 passed。
+  - 集成测试 `uv run pytest tests/test_sandbox_docker.py -m integration`（colima，Docker 29.2.1）：10 passed。覆盖：
+    - 网络开时 `pip install` 成功，关时失败；
+    - 看不到 workspace 外的文件和宿主的环境变量；
+    - `/skills` 只读；
+    - 产出文件在宿主机上看得到；
+    - stub profile 下 `dbt parse` 成功；
+    - 超时，包括忽略 TERM 的子进程；
+    - 容器被删除。
+  - 偏离工单的决定（主会话已确认，理由见各条）：
+    1. 镜像目录是 `sandbox-image/`（含 `Dockerfile` 和 `bash_env.sh`），不是 Authority 写的 `docker/sandbox/`。仓库根目录下的 `docker/` 会被 Python 当成命名空间包导入，顶替 Docker SDK，`evals/dab.py` 的 `importlib.import_module("docker")` 因此出错，曾挂掉 33 个测试。主会话接受：只改了目录名，范围不变。
+    2. 运行编号是 `<events-dir 目录名>-<8 位 hex>`（`SandboxRun.of_run`），容器名和标签都带它。只用目录名的话，不同 worktree 里同名的并发运行会互删容器（Codex 和 Spec 审查都指出）。主会话接受。**给 99**：临时 schema `da_run_<运行编号>` 要不要带这个后缀、`-` 怎么处理，由 99 定，写进 Comments。
+    3. 启动清理只删 owner 进程（MCP server pid 标签）已不在的容器，不会删掉并发运行的容器。
+    4. 容器以宿主 uid:gid 运行（`--user`），镜像设 `HOME=/tmp`，pip 自动改成用户安装。这样 Linux 上 workspace 里不会出现属主为 root 的文件，容器里也做不了 mknod。
+    5. stub profile 由 `BASH_ENV` 在每次 `bash -c` 前重写：只找两层以内的 `dbt_project.yml`，按项目当时用的 profile 名写到 `/tmp/stub-profiles`。entrypoint 的做法和第一次 `docker exec` 有竞态，没用。
+    6. local 后端给命令一个白名单环境（PATH、HOME、LANG 等），不带 `DATA_AGENT_*`、模型 key、Postgres URL。
+    7. `${CLAUDE_SKILL_DIR}` 的替换能力在 `sandbox.skill_text`，按工单留给 100 去接到提示词。
+    8. `sandbox_exec` 的注解不带 readOnlyHint，所以同一轮里的多次调用串行执行。
+  - 审查：
+    - da-review 第 1 轮 4 条，都修了：
+      - 宿主机内存无上限：每个输出流最多保留 10 MB，读线程把其余的读完丢掉；
+      - 产出文件属主是 root：改用 `--user`；
+      - `data/<id>.csv` 是 FIFO 时 server 会卡住：先写新文件再 rename 覆盖，从不打开已有路径；
+      - `timeout -k` 升级成 KILL 后退出码是 137：也算作超时。
+    - da-review 第 2 轮 2 条，都修了：
+      - 同名运行互删容器：见偏离第 2 条；
+      - 超时后忽略 TERM 的子进程还活着：容器里加一层 supervisor，杀掉 `timeout` 的整个进程组。新测试在旧 argv 下失败，修复后通过。
+    - eng:code-review Spec：
+      - 同名冲突：已修；
+      - 命令自己以 124 退出时被当成超时：已修，超过时限才算超时；
+      - stub 每次全量 glob：改成只找两层以内；
+      - pid 复用、共享 daemon：记为已知限制；
+      - local 环境白名单：不修。理由是 ADR-0010 第 2 点（沙箱拿不到凭据）；交给 100 在 Harbor 里核对。
+    - eng:code-review Standards：
+      - Authority 偏离：见偏离第 1 条；
+      - 改了两处：`report` 改名为 `clean_up`；`QueryResults` 改由 `register_sandbox_tool` 创建并返回；
+      - 其余不修，理由分别是：
+        - `image` 参数：spec 要求 DAB 的镜像可配置；
+        - `skill_text` 暂时没有调用方：100 会接入；
+        - backend 分支出现在三处：分别属于 CLI 构造、生命周期、工具说明三件事；
+        - Dockerfile 里的 `WORKDIR`、`CMD` 和 argv 重复：其他镜像没有这两项，所以 argv 写全；
+        - `sandbox.py` 约 560 行：只有一个概念，比仓库里已有的模块小；
+        - pid 和 `dropped` 元组的类型：改动比收益大。
+  - 已知限制：
+    - 孤儿容器的清理靠 pid 判断进程是否还在：pid 被复用时会暂时清不掉；用共享或远程 Docker daemon，或 data-agent 本身跑在容器里时，`os.kill(pid, 0)` 不可靠。
+    - rootless Docker 下 `--user` 会被映射成 subuid。
+    - 对话的每一轮里 `query_N` 都从 1 开始编号，会覆盖上一轮的 `data/query_N.csv`。
+    - local 白名单环境可能缺 Harbor 题目要用的变量（`DB_TYPE`、`VIRTUAL_ENV`、`DBT_PROFILES_DIR`），**100 要核对**。
+- 2026-11-17（主会话）真实模型运行，在工单分支 868fd03 上，deepseek-flash：先 `make sandbox-image`（exit 0），再 `uv run data-agent run --type query --config full --sandbox docker --duckdb runs/97-real/shop.duckdb --workspace runs/97-real/work --events-dir runs/97-real/events-1 --task "每位客户的订单总额是多少？查出结果后，用 sandbox_exec 通过 data_files 传入结果，用 pandas 算出总额的均值和中位数。"`（库由 `tests/fixtures/shop.sql` 建）。
+  - exit 0。工具调用：`list_tables`×1、`query_database`×5、`sandbox_exec`×1。`sandbox_exec` 的输入是 `data_files=["query_5"]`，命令用 pandas 读 `data/query_5.csv`，算均值和中位数。
+  - 答案："均值：178.27083333333334；中位数：150.75"。直接用只读方式查 `customer_orders.total_amount` 得到 12 行，均值 178.27、中位数 150.75，两者一致。
+  - 运行结束后 `docker ps -a --filter label=data-agent.sandbox.run` 为空。$0.005（price_table）。
+- 2026-11-17：PR #107。

@@ -27,7 +27,7 @@ dbt 任务带 `--sandbox` 时，agent 多一个 MCP 工具 `dbt_execute`：参�
 - `--dbt-target` 的 CLI 默认是 `task`（现在的行为，Harbor 不用改）；网页后端传 `scratch` 是工单 100 的接线，本工单只提供选项和 `launcher.py` 的布局。
 - 临时 schema 运行结束后保留（照 SignalPilot，spec Further Notes）。
 - 现有 dbt 运行仍用 Bash 跑 dbt，本工单不动；切换到 `dbt_execute` 是工单 100 的事。
-- 本机 Docker 是 colima，集成测试前先 `colima start`。
+- 本机 Docker 是 colima，集成测试前先 `colima start`。colima 只挂 `$HOME`，`tmp_path` 下的目录挂进容器是空的；真实 Docker 的集成测试把 workspace 建在 `$HOME` 下（见工单 97 Context）。
 - 依赖 97 的沙箱（stub profile 放在沙箱镜像里，dbt parse/compile 在沙箱里跑）。
 
 ## Acceptance

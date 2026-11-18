@@ -1,10 +1,10 @@
 # 98 — `--network` 选项：Web 工具由运行级开关控制
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (opus 5.5)
+Branch: worktree-98-network-option
 
 ## Goal
 
@@ -51,10 +51,22 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0.016 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
+- Outcome: merged (PR #106 → 8b1bc19)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+- 2026-11-17（工单会话，主会话抄录）：分支 `worktree-98-network-option`：c571ceb（实现）、87c488f（审查修复）。
+  - 改动：`build_options(network=False)` 打开时把 `WEB_TOOLS` 加进 tools，`disallowed_tools=[]`；`run(network=)` 往下传；`cli.py` 加 `--network`（默认关）；`Launcher.submit`、`Conversations.send` 加 `network: bool = True`，命令行带 `--network`（只加后端参数，界面开关在 101；HTTP API 还没暴露这个参数）。
+  - 测试：`tests/test_network_option.py`（`build_options` 的开和关；关时每种任务类型 × 配置的工具列表逐项对照；CLI 进程内一直走到 SDK 连接前；运行表单和对话的命令行）；`tests/test_harbor_agent.py::test_a_trial_runs_without_the_network`；`tests/test_dab.py::test_a_dab_session_has_no_web_tools`（变异检查：把 `build_options` 默认改成 `network=True`，这个测试会失败）。
+  - `make check`（最后一次）：ruff "All checks passed!"，"329 files already formatted"，basedpyright 0 errors，pytest "2444 passed, 1 skipped, 63 deselected"，web "295 passed"。改动前基线 2424 passed、1 skipped。
+  - `da-review main`："No actionable defects found"。
+  - `eng:code-review main`：Spec 没有意见。Standards 4 条判断题：(1) `test_agent_outcomes.py` 的旧测试被更严的新测试覆盖 → 已删；(2) `build_options` 里两处判断 network → 改成算一次；(3) `launcher`、`conversations` 里重复的一行 `*(("--network",) if network else ())` → 不修，只有一行；(4) 把 network/sandbox 合成一个运行选项类型 → 不修，归工单 100（`--sandbox` 走同样的路径）。
+  - 遗漏，交工单 100：`evals/configs/data-eng-bench-duckdb.data-agent.yaml:43` 的注释写的是 Web 工具在"每次 data-agent run"都关，评测仍是这样，产品已不对；100 改规则和文档时一起改措辞。
+- 2026-11-17（主会话）真实运行，在工单分支（87c488f）上，deepseek-flash，`--config full`，题目"DuckDB 最新发布版本号是多少，再查本地库里有几张表"，库是两张表的临时 DuckDB：
+  - `uv run data-agent run --network --type query --config full --workspace runs/98-real/ws-on --duckdb runs/98-real/shop.duckdb --events-dir runs/98-real/ev-on --task "$Q"`：exit 0；工具调用 `list_tables`×1、WebSearch×1、WebFetch×1、`query_database`×1；答案 "DuckDB 最新发布版本号：2.0.0 LTS（2026-10-21 发布）；本地库表数量：2 张"，附 duckdb.org 的来源链接；$0.0107。
+  - 同一命令不带 `--network`：exit 0；工具调用 `query_database`×2、`list_tables`×1、Glob×1，没有 Web 调用；答案 "v1.2.2；2"，并说明没有网络，版本来自本地引擎的 `version()`；$0.0047。
+- 2026-11-17：PR #106。CI 两个 check 都 pass；Codex GitHub app（`@codex review`，审 87c488f）："Didn't find any major issues"。squash 合入 main，8b1bc19。
