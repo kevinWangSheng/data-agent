@@ -37,6 +37,14 @@ CREDENTIAL_NAMES = (
     "id_ecdsa*",
     "id_ed25519*",
 )
+# A dbt profile is a credential file when it writes a secret in (`holds_literal_secret`): the keys
+# dbt's adapters keep passwords, tokens and private keys under.
+PROFILES_FILE = "profiles.yml"
+PROFILE_SECRET_LINE = re.compile(
+    r"^[ \t]*(?:password|pass|token|secret|client_secret|private_key|private_key_passphrase"
+    r"|api_key|access_token|refresh_token|keyfile_json)[ \t]*:(.*)$",
+    re.MULTILINE,
+)
 # The file-name patterns ripgrep's `--type` stands for (`rg --type-list`, ripgrep 14), for the
 # types a dbt project is searched with; any other type is not trusted to skip a credential file.
 GREP_TYPES = {
@@ -111,9 +119,29 @@ def credential_files(workspace: Path) -> list[Path]:
         directories[:] = [name for name in directories if not is_credential(name)]
         for name in sorted(files):
             entry = here / name
-            if is_credential(name) or (entry.is_symlink() and is_credential(entry.resolve().name)):
+            if (
+                is_credential(name)
+                or (entry.is_symlink() and is_credential(entry.resolve().name))
+                or (name == PROFILES_FILE and holds_literal_secret(entry))
+            ):
                 found.append(entry.relative_to(workspace))
     return found
+
+
+def holds_literal_secret(profile: Path) -> bool:
+    """A dbt profile with a secret written into it: a secret-named key (`PROFILE_SECRET_LINE`)
+    with a value that is not empty and not taken from `env_var()`. A stub profile, or one that
+    reads its secrets from the environment, holds none. Read as lines: a CLI run mounts a project
+    as it is, and its profile may hold the warehouse password."""
+    try:
+        text = profile.read_text(errors="replace")
+    except OSError:
+        return False
+    for match in PROFILE_SECRET_LINE.finditer(text):
+        value = re.sub(r"\s+#.*$", "", match.group(1)).strip().strip("'\"").strip()
+        if value and "env_var(" not in value:
+            return True
+    return False
 
 
 def _expand_braces(pattern: str) -> list[str]:

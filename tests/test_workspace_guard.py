@@ -11,7 +11,7 @@ import pytest
 from data_agent import agent
 from data_agent.agent import ModelSettings, Task
 from data_agent.run_config import load_config
-from data_agent.workspace_guard import GREP_TYPES, workspace_guard
+from data_agent.workspace_guard import GREP_TYPES, credential_files, workspace_guard
 
 
 @pytest.fixture
@@ -586,3 +586,41 @@ async def test_grep_exclusion_naming_a_directory_with_braces_decides_nothing(
         "permissionDecisionReason"
     ]
     assert "secrets{prod}/**" not in reason
+
+
+PROFILE = """\
+shop:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: db.example
+      user: agent
+      {line}
+      dbname: shop
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "listed"),
+    [
+        ("password: hunter2", True),
+        ("pass: 'hunter2'  # the old one", True),
+        ("private_key_passphrase: x1", True),
+        ("password: \"{{ env_var('SHOP_PASSWORD') }}\"", False),
+        ("threads: 4", False),
+        ("password: ''", False),
+        ("password:", False),
+    ],
+)
+def test_a_profile_holding_a_literal_secret_is_a_credential_file(
+    tmp_path: Path, line: str, listed: bool
+) -> None:
+    """Ticket 100 return round 1 (da-review P1): a CLI run mounts a project as it is, and its
+    profiles.yml may hold the warehouse password, which a shell in sandbox_exec could read and,
+    with --network, use. A profile whose secrets come from env_var(), or a stub, is no credential
+    file."""
+    (tmp_path / "project").mkdir()
+    (tmp_path / "project" / "profiles.yml").write_text(PROFILE.format(line=line))
+    expected = [Path("project/profiles.yml")] if listed else []
+    assert credential_files(tmp_path) == expected
