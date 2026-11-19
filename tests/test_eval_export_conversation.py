@@ -7,12 +7,13 @@ The conversation is the hand-made one of tests/fixtures/chat/conversation/, laid
 `<runs>/<run_id>/`. Its fourth turn was cancelled: the server's `web-run.json` says so."""
 
 import json
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from eval_cli import export
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHAT = REPO_ROOT / "tests" / "fixtures" / "chat" / "conversation"
@@ -21,18 +22,6 @@ CONVERSATION = INDEX["id"]
 TURNS = [t["run_id"] for t in INDEX["turns"]]
 CANCELLED = TURNS[3]
 NOTES = {"title": "Revenue, then customers", "local_data": True}
-
-
-def export(*args: str) -> subprocess.CompletedProcess[str]:
-    clean = {k: v for k, v in os.environ.items() if not k.startswith("DATA_AGENT_")}
-    return subprocess.run(
-        [sys.executable, "-m", "evals", "export", *args],
-        cwd=REPO_ROOT,
-        env=clean,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
 
 
 def manifest(tmp_path: Path, dev: list[str], holdout: list[str] | None = None) -> Path:

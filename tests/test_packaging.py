@@ -52,6 +52,12 @@ def build_and_extract_wheel(tmp_path: Path, env: dict[str, str] | None = None) -
     return extract_wheel(tmp_path, tmp_path / "dist")
 
 
+@pytest.fixture(scope="module")
+def installed_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The default wheel, shared by the probes that only read its installed contents."""
+    return build_and_extract_wheel(tmp_path_factory.mktemp("default-wheel"))
+
+
 def run_installed(tmp_path: Path, site: Path, probe: str) -> subprocess.CompletedProcess[str]:
     """The extracted package shadows the editable checkout; dependencies come from the venv."""
     return subprocess.run(
@@ -64,36 +70,37 @@ def run_installed(tmp_path: Path, site: Path, probe: str) -> subprocess.Complete
     )
 
 
-def test_installed_wheel_loads_its_skills(tmp_path: Path) -> None:
-    site = build_and_extract_wheel(tmp_path)
+def test_installed_wheel_loads_its_skills(tmp_path: Path, installed_wheel: Path) -> None:
     # The extracted package shadows the editable checkout; dependencies still come from the venv.
     probe = (
         "from data_agent import agent; "
         "print(agent.SKILLS_DIR); "
         f"assert agent.load_skills({QUERY_SKILLS!r}, agent.SKILLS_DIR)"
     )
-    proc = run_installed(tmp_path, site, probe)
+    proc = run_installed(tmp_path, installed_wheel, probe)
     assert proc.returncode == 0, proc.stderr
-    assert Path(proc.stdout.strip()).is_relative_to(site)
+    assert Path(proc.stdout.strip()).is_relative_to(installed_wheel)
 
 
-def test_installed_wheel_loads_every_run_config(tmp_path: Path) -> None:
-    site = build_and_extract_wheel(tmp_path)
+def test_installed_wheel_loads_every_run_config(tmp_path: Path, installed_wheel: Path) -> None:
     probe = (
         "from data_agent.run_config import CONFIG_NAMES, load_config; "
         "configs = [load_config(name) for name in CONFIG_NAMES]; "
         "assert len(configs) == 6, CONFIG_NAMES; "
         "print(*{c.skills_dir for c in configs}, sep='\\n')"
     )
-    proc = run_installed(tmp_path, site, probe)
+    proc = run_installed(tmp_path, installed_wheel, probe)
     assert proc.returncode == 0, proc.stderr
-    assert all(Path(line).is_relative_to(site) for line in proc.stdout.splitlines())
+    assert all(Path(line).is_relative_to(installed_wheel) for line in proc.stdout.splitlines())
 
 
-def test_installed_wheel_reports_the_commit_it_was_built_from(tmp_path: Path) -> None:
+def test_installed_wheel_reports_the_commit_it_was_built_from(
+    tmp_path: Path, installed_wheel: Path
+) -> None:
     """Away from the checkout there is no git to ask, so the commit is written in at build time."""
-    site = build_and_extract_wheel(tmp_path)
-    proc = run_installed(tmp_path, site, "from data_agent import agent; print(agent.git_commit())")
+    proc = run_installed(
+        tmp_path, installed_wheel, "from data_agent import agent; print(agent.git_commit())"
+    )
     assert proc.returncode == 0, proc.stderr
     built_from = subprocess.run(
         ["git", "describe", "--always", "--dirty", "--abbrev=40"],
@@ -113,17 +120,16 @@ def test_wheel_builds_without_git_and_reports_an_unknown_commit(tmp_path: Path) 
     assert (site / "data_agent" / "BUILD_COMMIT").read_text() == "unknown"
 
 
-def test_installed_wheel_loads_the_verifier_agents(tmp_path: Path) -> None:
-    site = build_and_extract_wheel(tmp_path)
+def test_installed_wheel_loads_the_verifier_agents(tmp_path: Path, installed_wheel: Path) -> None:
     probe = (
         "from data_agent import verifiers; "
         "agents = verifiers.verifier_agents('data'); "
         "assert set(agents) == {'verifier'}; "
         "print(verifiers.AGENTS_DIR)"
     )
-    proc = run_installed(tmp_path, site, probe)
+    proc = run_installed(tmp_path, installed_wheel, probe)
     assert proc.returncode == 0, proc.stderr
-    assert Path(proc.stdout.strip()).is_relative_to(site)
+    assert Path(proc.stdout.strip()).is_relative_to(installed_wheel)
 
 
 def test_runtime_requirements_include_pytz() -> None:
@@ -245,17 +251,16 @@ def test_wheel_built_with_the_ui_turned_off_never_calls_pnpm(tmp_path: Path) -> 
     assert (site / "data_agent" / "BUILD_COMMIT").is_file()
 
 
-def test_data_agent_web_from_the_wheel_serves_the_ui(tmp_path: Path) -> None:
+def test_data_agent_web_from_the_wheel_serves_the_ui(tmp_path: Path, installed_wheel: Path) -> None:
     """Built where pnpm is on PATH (a checkout, CI): the wheel carries the built UI."""
-    site = build_and_extract_wheel(tmp_path)
-    assert (site / "data_agent" / "web" / "static" / "index.html").is_file()
+    assert (installed_wheel / "data_agent" / "web" / "static" / "index.html").is_file()
     runs = tmp_path / "runs"
     runs.mkdir()
     port = free_port()
     server = subprocess.Popen(
         [sys.executable, "-m", "data_agent", "web", "--runs-dir", str(runs), "--port", str(port)],
         cwd=tmp_path,
-        env=os.environ | {"PYTHONPATH": str(site)},
+        env=os.environ | {"PYTHONPATH": str(installed_wheel)},
     )
     base = f"http://127.0.0.1:{port}"
     try:

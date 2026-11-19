@@ -3,12 +3,12 @@
 import json
 import os
 import subprocess
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from eval_cli import run_evals as evals
 from lifecycle_events import dispatches
 
 from evals.__main__ import main as evals_main
@@ -16,16 +16,6 @@ from evals.harbor import load_trials
 from evals.report import billed_usd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def evals(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "evals", *args],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
 
 
 def write_trial(job: Path, name: str, result: dict[str, Any]) -> None:

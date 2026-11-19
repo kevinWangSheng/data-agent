@@ -2,13 +2,12 @@
 (`eval.json`), the notes of trials without a `task` event, and what the command refuses."""
 
 import json
-import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+from eval_cli import export
 
 from evals.export import featured_allowed
 from evals.harbor import load_trials
@@ -18,18 +17,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 NEW_FIELDS = REPO_ROOT / "tests" / "fixtures" / "web" / "new-fields" / "events.jsonl"
 # A featured run's notes.json on local data, which the holdout check lets through.
 LOCAL_NOTES = {"title": "t", "failure_reason": None, "local_data": True}
-
-
-def export(*args: str) -> subprocess.CompletedProcess[str]:
-    clean = {k: v for k, v in os.environ.items() if not k.startswith("DATA_AGENT_")}
-    return subprocess.run(
-        [sys.executable, "-m", "evals", "export", *args],
-        cwd=REPO_ROOT,
-        env=clean,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
 
 
 def events(config: str, task: str | None) -> list[dict[str, Any]]:
