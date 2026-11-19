@@ -142,6 +142,24 @@ def test_dbt_parses_the_workspace_project_with_the_stub_profile(
     assert done.exit_code == 0, done.stdout + done.stderr
 
 
+def test_dbt_parses_two_workspace_projects_with_different_profiles(
+    root: Path, sandboxes: list[DockerSandbox]
+) -> None:
+    for name in ("shop", "billing"):
+        project = root / "workspace" / name
+        project.mkdir()
+        (project / "dbt_project.yml").write_text(
+            f"name: {name}\nversion: '1.0.0'\nconfig-version: 2\nprofile: {name}\n"
+        )
+    sandbox = make(sandboxes, root)
+    for name in ("shop", "billing"):
+        done = run(
+            sandbox,
+            f"python3 /skills/dbt-workflow/validate_project.py /workspace/{name}",
+        )
+        assert done.exit_code == 0, done.stdout + done.stderr
+
+
 def test_timeout_stops_the_command_in_the_container(
     root: Path, sandboxes: list[DockerSandbox]
 ) -> None:

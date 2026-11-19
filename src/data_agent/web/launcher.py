@@ -37,7 +37,12 @@ from data_agent.run_config import CONFIG_NAMES
 from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap
-from data_agent.workspace_guard import is_credential, is_profile_name, named_or_linked
+from data_agent.workspace_guard import (
+    is_credential,
+    is_duckdb_name,
+    is_profile_name,
+    named_or_linked,
+)
 
 TASK_TYPES = ("query", "dbt")
 # The only sandbox backend the web backend gives a run: `local` would run the agent's commands on
@@ -380,7 +385,8 @@ def prepare_workspace(
 ) -> list[str]:
     """Creates the run's working directory; returns the database arguments for `data-agent run`.
     A dbt run's DuckDB file is copied to `db/` beside the workspace, not into it, and the
-    project's `profiles.yml` is not copied. The copy follows links and skips dangling ones.
+    project's other DuckDB files and `profiles.yml` stay behind. The copy follows links and
+    skips dangling ones.
     Refused when the dbt project holds a directory link reaching the runs directory, which the
     copy would copy into itself."""
     if source.postgres_env is not None:
@@ -414,6 +420,7 @@ def prepare_workspace(
             if name not in skipped
             and (
                 named_or_linked(Path(directory) / name, is_profile_name)
+                or named_or_linked(Path(directory) / name, is_duckdb_name)
                 or is_database(Path(directory) / name)
                 or named_or_linked(Path(directory) / name, is_credential)
             )

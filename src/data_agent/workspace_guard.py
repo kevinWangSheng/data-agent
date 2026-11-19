@@ -143,6 +143,11 @@ def credential_files(workspace: Path) -> list[Path]:
     return sorted(entry.relative_to(workspace) for entry in found)
 
 
+def is_duckdb_name(name: str) -> bool:
+    """Names commonly used for DuckDB databases and their write-ahead logs."""
+    return name.lower().endswith((".duckdb", ".duckdb.wal"))
+
+
 def is_profile_name(name: str) -> bool:
     return name == PROFILES_FILE
 

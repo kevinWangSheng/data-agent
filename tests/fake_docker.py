@@ -22,6 +22,8 @@ class FakeDocker:
         args = list(args)
         self.calls.append(args)
         verb = args[0]
+        if verb == "info" or args[:2] == ["image", "inspect"]:
+            return Execution(0, "", "", False)
         if verb == "run":
             name = args[args.index("--name") + 1]
             labels = [args[i + 1] for i, arg in enumerate(args) if arg == "--label"]

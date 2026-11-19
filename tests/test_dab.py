@@ -14,7 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from decimal import Decimal
@@ -42,7 +42,7 @@ from mcp.types import CallToolResult, TextContent
 from data_agent import agent
 from data_agent.gateway import TIMEOUT_SECONDS
 from data_agent.run_config import load_config, skills_path
-from data_agent.sandbox import DockerSandbox, LocalSandbox
+from data_agent.sandbox import DockerSandbox, Execution, LocalSandbox
 from evals import dab
 from evals import dab_server as dab_server_module
 from evals.__main__ import main as evals_main
@@ -341,6 +341,45 @@ def test_cli_stops_when_spend_cannot_be_totalled(
     )
     assert code == 2
     assert "not JSON" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("unavailable", "diagnosis"),
+    [("info", "Docker daemon"), ("image", dab.EXEC_IMAGE)],
+)
+def test_dab_cli_checks_docker_before_running_queries(
+    dab_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    unavailable: str,
+    diagnosis: str,
+) -> None:
+    calls: list[list[str]] = []
+
+    def docker(args: Sequence[str], timeout: float = 60) -> Execution:
+        calls.append(list(args))
+        return Execution(int(args[0] == unavailable), "", "", False)
+
+    async def unexpected_run(*_: Any) -> int:
+        raise AssertionError("DAB must check Docker before running any trials")
+
+    monkeypatch.setattr("data_agent.sandbox.run_docker", docker)
+    monkeypatch.setattr(dab, "run_query", unexpected_run)
+    code = evals_main(
+        [
+            *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+            *("--config", CONFIG, "--out", str(tmp_path / "out")),
+        ]
+    )
+
+    assert code == 2
+    assert diagnosis in capsys.readouterr().err
+    expected = [["info"]]
+    if unavailable == "image":
+        expected.append(["image", "inspect", dab.EXEC_IMAGE])
+    assert calls == expected
+    assert not (tmp_path / "out").exists()
 
 
 async def test_mongo_queries_skip_the_sql_check(dab_root: Path, tmp_path: Path) -> None:

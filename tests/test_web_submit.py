@@ -390,6 +390,23 @@ def test_no_profile_and_no_way_to_the_database_file_is_copied_into_the_workspace
     assert list(workspace.rglob("shop.duckdb")) == []
 
 
+def test_a_postgres_dbt_project_is_copied_without_local_duckdb_files(tmp_path: Path) -> None:
+    project = dbt_project(tmp_path, with_db=False)
+    data = project / "data"
+    data.mkdir()
+    for name in ("analytics.duckdb", "analytics.duckdb.wal", "seed.csv"):
+        (data / name).touch()
+    runs_dir = tmp_path / "runs"
+    workspace = runs_dir / "r" / "workspace"
+    workspace.parent.mkdir(parents=True)
+    source = DataSource(name="shop", postgres_env="SHOP_URL", dbt_project=project)
+
+    args = launcher.prepare_workspace(workspace, source, "dbt", runs_dir)
+
+    assert args == ["--postgres-env", "SHOP_URL"]
+    assert {file.name for file in (workspace / "data").iterdir()} == {"seed.csv"}
+
+
 def never_start(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
     raise AssertionError("no run should start")
 

@@ -46,6 +46,7 @@ from claude_agent_sdk import ResultMessage, SystemMessage
 from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import McpStdioServerConfig
 
+from data_agent import sandbox
 from data_agent.agent import (
     ANSWER_RULE,
     DOCKER_PATHS_RULE,
@@ -703,6 +704,18 @@ def _error(message: str) -> int:
     return 2
 
 
+def check_sandbox() -> None:
+    """Check Docker and the local image once, before launching any paid DAB session."""
+    daemon = sandbox.run_docker(["info"])
+    if daemon.timed_out or daemon.exit_code != 0:
+        raise sandbox.SandboxError("the Docker daemon is unavailable; start Docker and try again")
+    image = sandbox.run_docker(["image", "inspect", EXEC_IMAGE])
+    if image.timed_out or image.exit_code != 0:
+        raise sandbox.SandboxError(
+            f"could not inspect the local Docker image {EXEC_IMAGE}; build it from the DAB clone"
+        )
+
+
 def run_cli(args: argparse.Namespace) -> int:
     budget = None
     if args.budget is not None:
@@ -723,6 +736,10 @@ def run_cli(args: argparse.Namespace) -> int:
         return _error(f"{exc}; run under `uv run --with-requirements evals/dab-requirements.txt`")
     except (ValueError, OSError) as exc:
         return _error(str(exc))
+    try:
+        check_sandbox()
+    except (sandbox.SandboxError, OSError) as exc:
+        return _error(f"sandbox infrastructure unavailable: {exc}")
     env = dict(os.environ)
     infra_errors = 0
     try:

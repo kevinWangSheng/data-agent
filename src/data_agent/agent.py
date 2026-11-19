@@ -85,7 +85,13 @@ from data_agent.verifiers import (
     verifier_hooks,
 )
 from data_agent.web.sources import DataSource
-from data_agent.workspace_guard import FILE_TOOLS, credential_files, workspace_guard
+from data_agent.workspace_guard import (
+    FILE_TOOLS,
+    credential_files,
+    is_duckdb_name,
+    named_or_linked,
+    workspace_guard,
+)
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_MODEL = "deepseek-flash"
@@ -1984,23 +1990,31 @@ def stopped_by_harness(
     return spend.stopped_fields(subtype, terminal_reason, error)
 
 
-def check_databases_outside(task: Task) -> None:
-    """ConfigError when a DuckDB file of the task, as given or once links are followed, is inside
-    the workspace: the docker sandbox mounts the workspace writable, and ADR-0010 keeps database
-    files out of the sandbox's reach. (The local backend runs inside a benchmark's own container,
-    where the task's database is in the project: a known limitation.)"""
+def workspace_database(task: Task) -> Path | None:
+    """The first database or WAL inside the workspace, including declared paths with any suffix."""
     root = task.workspace.resolve()
     for source in task.databases:
         if source.duckdb is None:
             continue
         given = Path(os.path.abspath(source.duckdb))
-        for path in (given, source.duckdb.resolve()):
-            if path == root or root in path.parents:
-                raise ConfigError(
-                    f"the DuckDB file {source.duckdb} is inside the workspace, which the docker "
-                    "sandbox mounts writable; keep it outside the workspace (--sandbox local is "
-                    "only for a run inside an isolated container)"
-                )
+        if given.is_relative_to(root) or source.duckdb.resolve().is_relative_to(root):
+            return source.duckdb
+    for directory, _, names in root.walk():
+        for name in names:
+            entry = directory / name
+            if named_or_linked(entry, is_duckdb_name):
+                return entry
+    return None
+
+
+def check_databases_outside(task: Task) -> None:
+    """The docker sandbox mounts the workspace writable, so keep database files outside it."""
+    if (path := workspace_database(task)) is not None:
+        raise ConfigError(
+            f"the DuckDB file {path} is inside the workspace, which the docker sandbox mounts "
+            "writable; keep it outside the workspace (--sandbox local is only for a run inside "
+            "an isolated container)"
+        )
 
 
 def check_no_credentials(task: Task) -> None:

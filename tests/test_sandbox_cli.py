@@ -187,6 +187,32 @@ def test_a_docker_run_refuses_a_duckdb_file_inside_its_workspace(
     assert not (tmp_path / "events").exists()
 
 
+@pytest.mark.parametrize("name", ["analytics.duckdb", "analytics.duckdb.wal"])
+def test_a_docker_run_refuses_other_duckdb_files_in_its_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], name: str
+) -> None:
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test")
+    workspace = tmp_path / "ws"
+    nested = workspace / "data"
+    nested.mkdir(parents=True)
+    (nested / name).touch()
+    db = make_db(tmp_path / "source.duckdb")
+    args = [
+        *("run", "--task", "q", "--type", "query", "--workspace", str(workspace)),
+        *("--duckdb", str(db), "--config", "full", "--events-dir", str(tmp_path / "events")),
+    ]
+
+    def unexpected_run(*_: Any, **__: Any) -> Any:
+        raise AssertionError("database check must run before the SDK session")
+
+    monkeypatch.setattr("data_agent.agent.query", unexpected_run)
+    with pytest.raises(SystemExit) as exited:
+        cli.main(args)
+    assert exited.value.code == 2
+    assert f"data/{name}" in capsys.readouterr().err
+    assert not (tmp_path / "events").exists()
+
+
 @pytest.mark.parametrize("name", [".env", "config/.pgpass", "keys/deploy.pem", "linked"])
 def test_a_docker_run_refuses_a_credential_file_inside_its_workspace(
     tmp_path: Path,
