@@ -246,3 +246,32 @@ def test_a_docker_run_refuses_a_credential_file_inside_its_workspace(
     err = capsys.readouterr().err
     assert "credential" in err and shown in err
     assert not (tmp_path / "events").exists()
+
+
+def test_a_docker_run_refuses_a_literal_secret_in_a_compact_profile_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    placeholder = "fixture-only"
+    (workspace / "profiles.yml").write_text(
+        'shop:\n  outputs:\n    dev: {"type":"postgres","password":"' + placeholder + '"}\n'
+    )
+    args = [
+        *("run", "--task", "q", "--type", "query", "--workspace", str(workspace)),
+        *("--duckdb", str(make_db(tmp_path / "shop.duckdb")), "--config", "full"),
+        *("--events-dir", str(tmp_path / "events")),
+    ]
+
+    def unexpected_run(*_: Any, **__: Any) -> Any:
+        raise AssertionError("credential check must run before the SDK session")
+
+    monkeypatch.setattr("data_agent.agent.query", unexpected_run)
+    with pytest.raises(SystemExit) as exited:
+        cli.main(args)
+    assert exited.value.code == 2
+    err = capsys.readouterr().err
+    assert "credential" in err and "profiles.yml" in err
+    assert placeholder not in err
+    assert not (tmp_path / "events").exists()

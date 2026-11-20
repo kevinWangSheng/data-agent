@@ -354,9 +354,10 @@ class _Flow:
                 raise YamlLiteError("unclosed flow mapping")
 
     def _plain(self, closers: str) -> str:
-        """A scalar's text up to one of `closers` outside quotes (a `:` only when followed by
-        a space, a closer or the end)."""
+        """A scalar's text up to a closer outside quotes. A quoted flow key may be followed
+        immediately by its colon and value. For plain keys, a colon within the scalar is content."""
         start = self.pos
+        quoted_scalar = self._peek() in ('"', "'")
         quote: str | None = None
         while self.pos < len(self.text):
             char = self.text[self.pos]
@@ -366,7 +367,10 @@ class _Flow:
             elif char in "\"'" and self.pos == start:
                 quote = char
             elif char in closers and (
-                char != ":" or self.pos + 1 >= len(self.text) or self.text[self.pos + 1] in " ,}]"
+                char != ":"
+                or quoted_scalar
+                or self.pos + 1 >= len(self.text)
+                or self.text[self.pos + 1] in " ,}]"
             ):
                 break
             self.pos += 1
