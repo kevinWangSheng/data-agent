@@ -124,6 +124,10 @@ DENIED_TOOLS: list[str] = ["Bash"]
 # out of the tools: benchmark solutions are public, and the official data-eng-bench configs turn web
 # lookup off the same way (`disallowed_tools: WebSearch,WebFetch`).
 WEB_TOOLS: list[str] = ["WebSearch", "WebFetch"]
+# The run-level reasoning effort (`--effort`, ticket 104): the values DeepSeek's Anthropic format
+# takes as `output_config.effort`. Unset, the session sends none and the endpoint's default holds.
+Effort = Literal["low", "high", "max"]
+EFFORTS: tuple[Effort, ...] = ("low", "high", "max")
 
 SYSTEM_PROMPT = """\
 You are a data agent. You answer questions about a user's data by exploring the database and \
@@ -1508,6 +1512,7 @@ def build_options(
     sandbox: SandboxRun | None = None,
     network: bool = False,
     dbt: DbtRun | None = None,
+    effort: Effort | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the workspace guard denies (`guard_recorder`). With `spend` (the
@@ -1532,7 +1537,8 @@ def build_options(
     (a dbt run with a sandbox, ticket 99) has the server serve dbt_execute on that target.
     `network` (ticket 98) loads WebSearch and WebFetch; without it, as on every evaluation, they
     are denied. Bash is denied on every run (ADR-0010). With the docker backend the Skills name
-    their scripts as the container sees them (`SKILLS_MOUNT`)."""
+    their scripts as the container sees them (`SKILLS_MOUNT`). `effort` (ticket 104) is the
+    session's reasoning effort; None leaves it to the endpoint, as before."""
     if task.type == "dbt":
         max_turns, budget = config.max_turns["dbt"], None
     else:
@@ -1608,6 +1614,7 @@ def build_options(
     session_env = {} if turn is None else {"CLAUDE_CONFIG_DIR": str(turn.config_dir)}
     return ClaudeAgentOptions(
         model=settings.model,
+        effort=effort,
         env=settings.sdk_env() | server_env | session_env,
         resume=None if turn is None else turn.resume,
         system_prompt=system_prompt(
@@ -2042,6 +2049,7 @@ async def run(
     sandbox: Backend | None = None,
     network: bool = False,
     dbt_target: Target = "task",
+    effort: Effort | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
@@ -2053,7 +2061,8 @@ async def run(
     and the containers of killed runs before it starts (`docker_lifecycle`). `network` gives the
     agent the web tools (`build_options`) and the docker sandbox the network. A dbt run with
     `sandbox` also gets dbt_execute, writing to `dbt_target` (`DbtRun.of_run`: `scratch` keeps
-    its profile in `<events_dir>/profiles/`, which must be outside the workspace)."""
+    its profile in `<events_dir>/profiles/`, which must be outside the workspace). `effort`
+    (ticket 104) is the session's reasoning effort, recorded in the `version` event when given."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -2137,6 +2146,8 @@ async def run(
             model=settings.model,
             sdk_version=claude_agent_sdk.__version__,
             cli_version=__cli_version__,
+            # Only when given: a run without it records what it did before ticket 104.
+            **({} if effort is None else {"effort": effort}),
         )
         conversation = (
             {} if turn is None else {"conversation": turn.conversation, "turn": turn.number}
@@ -2193,6 +2204,7 @@ async def run(
                 sandbox=sandbox_run,
                 network=network,
                 dbt=dbt_run,
+                effort=effort,
             )
             open_calls: dict[str, str] = {}
             session_id: str | None = None

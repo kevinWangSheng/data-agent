@@ -50,12 +50,14 @@ from data_agent import sandbox
 from data_agent.agent import (
     ANSWER_RULE,
     DOCKER_PATHS_RULE,
+    EFFORTS,
     MCP_SERVER,
     SANDBOX_RULE,
     SKILLS_PROMPT,
     SYSTEM_PROMPT,
     TURN_LIMIT,
     ConfigError,
+    Effort,
     ModelSettings,
     Task,
     TurnBudget,
@@ -393,6 +395,7 @@ async def run_once(
     out: Path,
     run: int,
     env: dict[str, str],
+    effort: Effort | None = None,
 ) -> tuple[str, str]:
     """One agent session on the query. Returns its answer and how it ended.
 
@@ -434,7 +437,9 @@ async def run_once(
         EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log,
     ):
         options = replace(
-            build_options(task, config, settings, stderr, log.emit, cap, turn_budget=budget),
+            build_options(
+                task, config, settings, stderr, log.emit, cap, turn_budget=budget, effort=effort
+            ),
             system_prompt=system_prompt(dab_query, config),
             mcp_servers={MCP_SERVER: server},
         )
@@ -447,6 +452,8 @@ async def run_once(
             model=settings.model,
             sdk_version=claude_agent_sdk.__version__,
             cli_version=__cli_version__,
+            # As `data-agent run` (ticket 104): only when given.
+            **({} if effort is None else {"effort": effort}),
             dab={
                 "commit": dab_commit(dab_root),
                 "dataset": dab_query.dataset,
@@ -556,6 +563,8 @@ def conditions(header: dict[str, Any]) -> dict[str, Any]:
     return {
         "config": header.get("config"),
         "model": header.get("model"),
+        # A header from before ticket 104, or of a run without --effort, has none: None both ways.
+        "effort": header.get("effort"),
         "hints": dab.get("hints"),
         "DAB commit": dab.get("commit"),
         "git commit": header.get("git_commit"),
@@ -615,6 +624,7 @@ async def run_query(
     runs: int,
     env: dict[str, str],
     budget: Decimal | None = None,
+    effort: Effort | None = None,
 ) -> int:
     """`runs` sessions on one query, one after another (DAB loads its Postgres and MongoDB
     databases per session under fixed names, so sessions on a dataset cannot overlap).
@@ -622,9 +632,9 @@ async def run_query(
     A session that broke on infrastructure is not an answer: it stays out of the submission (its
     trace stays for a look) and is counted in the return value, so the caller can fail and the
     run be redone after removing its directory. Runs already in the submission are skipped, so a
-    rerun only redoes what is missing, and only under the conditions (config, model, hints, DAB
-    commit, our commit, Skill version) of every run already in the submission, from a clean DAB
-    checkout; otherwise it raises ConditionsChanged before running anything.
+    rerun only redoes what is missing, and only under the conditions (config, model, effort,
+    hints, DAB commit, our commit, Skill version) of every run already in the submission, from a
+    clean DAB checkout; otherwise it raises ConditionsChanged before running anything.
     """
     if config.context:
         raise ValueError(
@@ -652,6 +662,7 @@ async def run_query(
         expected = {
             "config": config.name,
             "model": ModelSettings.from_env(env).model,
+            "effort": effort,
             "hints": dab_query.hints,
             "DAB commit": commit,
             "git commit": ours,
@@ -666,7 +677,7 @@ async def run_query(
             continue
         if budget is not None and spent(out) >= budget * spend.STOP_FRACTION:
             raise BudgetReached(f"spend under {out} reached {spend.STOP_PERCENT} of ${budget}")
-        answer, status = await run_once(dab_root, dab_query, config, out, run, env)
+        answer, status = await run_once(dab_root, dab_query, config, out, run, env, effort)
         print(f"{dab_query.dataset} query{dab_query.query_id} run{run}: {status}")
         if status == "infra_error":
             infra_errors += 1
@@ -693,6 +704,11 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.add_argument("--config", required=True, choices=CONFIG_NAMES)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--no-hints", action="store_true", help="leave out the hint file")
+    parser.add_argument(
+        "--effort",
+        choices=EFFORTS,
+        help="the model's reasoning effort (default: the endpoint's); a run condition",
+    )
     parser.add_argument(
         "--budget", help="stop once billed spend under --out reaches 80%% of this (USD)"
     )
@@ -745,7 +761,9 @@ def run_cli(args: argparse.Namespace) -> int:
     try:
         for dab_query in queries:
             infra_errors += asyncio.run(
-                run_query(args.dab_root, dab_query, config, args.out, args.runs, env, budget)
+                run_query(
+                    args.dab_root, dab_query, config, args.out, args.runs, env, budget, args.effort
+                )
             )
     except BudgetReached as exc:
         print(f"dab: {exc}; stop the batch and ask a human", file=sys.stderr)

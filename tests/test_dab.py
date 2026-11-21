@@ -1663,3 +1663,86 @@ async def test_dab_runs_have_the_same_price_table_cap(
     assert seen[0].max_budget_usd == agent.sdk_budget_usd(1.0, agent.DEFAULT_MODEL)
     assert seen[0].include_partial_messages
     assert "SubagentStop" in seen[0].hooks
+
+
+# Ticket 104: the run-level `--effort` (.scratch/dab-gap/spec.md (effort, 104)).
+
+
+@pytest.mark.parametrize("effort", [None, "low", "high", "max"])
+async def test_the_effort_reaches_the_session_and_the_version_header(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path, effort: str | None
+) -> None:
+    out = tmp_path / "out"
+    kwargs = {} if effort is None else {"effort": effort}
+    [seen] = await run_dab(monkeypatch, dab_root, out, runs=1, **kwargs)
+    assert seen["options"].effort == effort
+    [header, *_] = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
+    assert header["type"] == "version"
+    assert header.get("effort", "absent") == ("absent" if effort is None else effort)
+
+
+@pytest.mark.parametrize(("before", "now"), [(None, "max"), ("max", None), ("low", "max")])
+async def test_rerun_with_another_effort_refuses_to_mix_them(
+    monkeypatch: pytest.MonkeyPatch,
+    dab_root: Path,
+    tmp_path: Path,
+    before: agent.Effort | None,
+    now: agent.Effort | None,
+) -> None:
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=1, effort=before)
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["x", "y"], seen))
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    with pytest.raises(dab.ConditionsChanged, match="effort"):
+        await dab.run_query(dab_root, query, load_config(CONFIG), out, 2, ENV, effort=now)
+    assert seen == []
+    assert len(json.loads((out / "submission.json").read_text())) == 1
+
+
+async def test_rerun_with_the_same_effort_goes_on(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    await run_dab(monkeypatch, dab_root, out, runs=1, effort="max")
+    seen = await run_dab(monkeypatch, dab_root, out, runs=2, effort="max")
+    assert len(seen) == 1
+    assert len(json.loads((out / "submission.json").read_text())) == 2
+
+
+def test_the_cli_effort_reaches_the_session_and_another_is_refused_on_the_same_out(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["x", "y"], seen))
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test-secret")
+    args = [
+        *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+        *("--runs", "1", "--out", str(tmp_path / "out"), "--config", CONFIG),
+    ]
+    assert evals_main([*args, "--effort", "max"]) == 0
+    assert [s["options"].effort for s in seen] == ["max"]
+    assert evals_main([*args, "--runs", "2"]) == 2  # no --effort: other conditions
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize("value", ["medium", "xhigh", "MAX"])
+def test_an_effort_deepseek_does_not_take_is_refused_at_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+    dab_root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+) -> None:
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(dab, "query", scripted(["x"], seen))
+    args = [
+        *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+        *("--out", str(tmp_path / "out"), "--config", CONFIG, "--effort", value),
+    ]
+    with pytest.raises(SystemExit) as exited:
+        evals_main(args)
+    assert exited.value.code == 2
+    assert "--effort" in capsys.readouterr().err
+    assert seen == []
+    assert not (tmp_path / "out").exists()
