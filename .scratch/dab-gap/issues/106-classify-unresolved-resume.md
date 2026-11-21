@@ -1,6 +1,6 @@
 # 106 — classify_text：未定结果、只重跑没标上的行、多列文本
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（"分类工具（106）"）
 Claimed by: claude (worktree 106-classify-unresolved-resume)
@@ -196,3 +196,5 @@ Not fixed, with reasons:
 - **测试里手写第二个库的配置**：只有这一处用到，不值得给 `make_dab` 加选项。
 
 **给主会话（push 后）**：PR #115 的新提交要等 Codex GitHub app 出审查；没出的话评论 `@codex review`。
+
+**合入（2026-11-21，主会话）**：Codex 对 88a298d 无意见，CI 绿；人审快照差异后批准合入（"if is mergeable, just merge"）。PR #115 squash 合入。
