@@ -1,6 +1,6 @@
 # 106 — classify_text：未定结果、只重跑没标上的行、多列文本
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md（"分类工具（106）"）
 Claimed by: claude (worktree 106-classify-unresolved-resume)
@@ -154,3 +154,5 @@ Not fixed, with reasons:
 **主会话真实运行（2026-11-21，dda39b1，真 DeepSeek 端点）**
 - `make test-integration` 里的分类那条：`tests/test_classify.py::test_the_run_model_classifies_the_samples` → `1 passed`。
 - 产品 `mcp-server` stdio，20 行夹具文本 + 2 行故意含糊的文本，两列 `title`、`body`：第一次 `allow_unresolved` → `22 rows fetched; 20 labeled`，`unresolved: 2`；`resume_from=labels_1, retry_unresolved` → `2 rows sent to the model …; 20 rows kept as they were.`，`22 labeled`。两次共 $0.0005。脚本在本机 scratchpad（`t106/real.py`），不进 git。
+
+**退回（2026-11-21，主会话，PR #115 第 1 轮）：Codex P2 属实。** `evals/dab_server.py:428-455` 的 `label_ids` 只是 result id 的集合，不记来源库；DAB 一次运行里两个库列和键对得上时，`resume_from` 拿库 A 的标签表去续接库 B，`resumed_rows` 只比列和键，会把 A 的标签当 B 的结果保留。产品服务器用 `made[0] is db.labels` 绑定来源（`src/data_agent/mcp_server.py:503`）。修法：DAB 侧把每个标签结果和它的 `db_name` 一起存，跨库续接在调模型前拒绝；配一个修复前会失败的测试。
