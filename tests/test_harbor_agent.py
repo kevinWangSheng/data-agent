@@ -348,6 +348,17 @@ def test_a_trial_runs_without_the_network(local: Local) -> None:
     assert "--network" not in stub_args(tmp_path)
 
 
+def test_a_trial_runs_its_commands_in_the_task_container(local: Local) -> None:
+    """Ticket 100: the task container is the sandbox (`--sandbox local`), and dbt writes the
+    task's own database (the CLI's default `--dbt-target task`)."""
+    cls, tmp_path = local
+    env = LocalEnvironment(container_env(tmp_path, 0, jsonl(result_event())))
+    run(make_agent(cls, tmp_path), env)
+    args = stub_args(tmp_path)
+    assert args[args.index("--sandbox") + 1] == "local"
+    assert "--dbt-target" not in args
+
+
 @pytest.mark.parametrize("value", [0, -5])
 def test_a_non_positive_agent_timeout_is_refused_before_any_trial(value: float) -> None:
     with pytest.raises(ValueError, match="agent_timeout_sec"):

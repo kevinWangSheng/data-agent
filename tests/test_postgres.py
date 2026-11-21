@@ -194,6 +194,9 @@ async def test_run_without_the_database_variable_in_its_env_is_a_config_error(
     "name",
     [
         "DB_TYPE",
+        # A local sandbox command keeps these (ticket 100), so `echo $VAR` would show the URL.
+        "DBT_SHOP_URL",
+        "VIRTUAL_ENV",
         "BASH_MAX_TIMEOUT_MS",
         "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR",
         "ANTHROPIC_BASE_URL",

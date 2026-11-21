@@ -17,7 +17,8 @@
 # A dbt_project.yml that resolves outside the given directory is not read.
 # Only a model's own description is shown, not one of its columns'.
 # The REQUIRED COLUMNS heading states the YML contract instead of a remark about failing.
-# The snapshots hint says `dbt snapshot` cannot run here (data-agent's Bash allows no snapshot).
+# The snapshots hint says to run snapshots only when the task asks, through dbt_execute (ticket 100;
+# before it, that `dbt snapshot` could not run, as data-agent's Bash allowed no snapshot).
 # The full report goes to `.data-agent/scan/<project directory name>.md` under the given directory;
 # standard output is a summary of at most 20,000 characters whose last line is the report's path. A
 # report that fits is printed whole. Otherwise the five sections the Skill's Step 1 records (STUBS TO
@@ -738,7 +739,7 @@ def print_report(work_dir: Path) -> None:
     if snapshots_dir.exists():
         snap_files = list(snapshots_dir.rglob("*.sql"))
         print(f"SNAPSHOTS DIRECTORY: {len(snap_files)} snapshot file(s) in snapshots/")
-        print("  Read them for context only: you cannot run `dbt snapshot` here, so snapshot tables stay as they are.")
+        print("  Read them for context. Run them only when the task asks for it: `dbt_execute` with `command: snapshot`.")
         print()
 
     # Database-derived hints (lookup joins, staging-vs-raw gaps, parent-child

@@ -24,9 +24,12 @@ from data_agent.web.sources import DataSource
 
 WEB = {"WebSearch", "WebFetch"}
 SETTINGS = agent.ModelSettings.from_env({"DATA_AGENT_API_KEY": "sk-test"})
-QUERY_TOOLS = ["Read", "Glob", "Grep"]
-DBT_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"]
-# The tools each run got before the switch existed, by task type and config (main at b984112).
+# Ticket 100 (ADR-0010): every task has the same file tools, and Bash is denied on every run.
+QUERY_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit"]
+DBT_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit"]
+OFFLINE_DENIED = ["Bash", "WebSearch", "WebFetch"]
+# The tools each run gets without the switch, by task type and config (main at the start of
+# ticket 98, with ticket 100's tool surface).
 BEFORE: dict[tuple[str, str], list[str]] = {
     **{("query", config): QUERY_TOOLS for config in CONFIG_NAMES},
     **{("dbt", config): [*DBT_TOOLS, "Agent"] for config in CONFIG_NAMES},
@@ -62,7 +65,7 @@ def test_without_network_the_web_tools_are_left_out_and_denied(
     built = options(tmp_path, task_type)
     assert not WEB & set(built.tools or [])
     assert not WEB & set(built.allowed_tools)
-    assert built.disallowed_tools == ["WebSearch", "WebFetch"]
+    assert built.disallowed_tools == OFFLINE_DENIED
 
 
 @pytest.mark.parametrize(("task_type", "config"), sorted(BEFORE))
@@ -72,7 +75,7 @@ def test_without_network_the_tools_are_what_they_were(
     built = options(tmp_path, task_type, config, network=False)
     assert built.tools == BEFORE[task_type, config]
     assert built.allowed_tools == [*BEFORE[task_type, config], "mcp__data"]
-    assert built.disallowed_tools == ["WebSearch", "WebFetch"]
+    assert built.disallowed_tools == OFFLINE_DENIED
 
 
 @pytest.fixture
@@ -96,9 +99,12 @@ def test_the_cli_switch_reaches_the_sessions_tools(
 ) -> None:
     db = tmp_path / "x.duckdb"
     duckdb.connect(str(db)).close()
+    # Outside the database's directory: a docker run refuses a database in its workspace.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     argv = [
         "run",
-        *("--type", "query", "--workspace", str(tmp_path), "--duckdb", str(db)),
+        *("--type", "query", "--workspace", str(workspace), "--duckdb", str(db)),
         *("--config", "no-context", "--events-dir", str(tmp_path / "events")),
         *("--task", "How many tables are there?", *flags),
     ]
@@ -107,6 +113,11 @@ def test_the_cli_switch_reaches_the_sessions_tools(
     [options] = sessions
     assert (set(options.tools or []) >= WEB) is online
     assert (set(options.disallowed_tools) >= WEB) is not online
+    # Ticket 100: the same switch turns the sandbox's network on (`mcp-server --network`).
+    assert isinstance(options.mcp_servers, dict)
+    args = list(options.mcp_servers["data"]["args"])  # type: ignore[index]
+    assert args[args.index("--sandbox") + 1] == "docker"
+    assert ("--network" in args) is online
 
 
 @dataclass
@@ -158,6 +169,9 @@ def test_a_run_from_the_run_form_has_the_network_unless_turned_off(
     with_network, without = recorder.calls
     assert "--network" in with_network
     assert "--network" not in without
+    # Ticket 100: the docker sandbox either way; `local` is never offered.
+    for args in recorder.calls:
+        assert args[args.index("--sandbox") + 1] == "docker"
 
 
 def test_a_conversation_turn_has_the_network_unless_turned_off(
@@ -172,3 +186,6 @@ def test_a_conversation_turn_has_the_network_unless_turned_off(
     assert "--chat" in with_network
     assert "--network" in with_network
     assert "--network" not in without
+    for args in recorder.calls:
+        assert args[args.index("--sandbox") + 1] == "docker"
+        assert "--dbt-target" not in args

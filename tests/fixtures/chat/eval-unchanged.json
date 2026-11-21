@@ -4,9 +4,12 @@
       "Read",
       "Glob",
       "Grep",
+      "Write",
+      "Edit",
       "mcp__data"
     ],
     "disallowed_tools": [
+      "Bash",
       "WebSearch",
       "WebFetch"
     ],
@@ -81,23 +84,6 @@
           }
         },
         {
-          "name": "execute_python",
-          "parameters": {
-            "properties": {
-              "code": {
-                "description": "FAKE-DAB code argument.",
-                "title": "Code",
-                "type": "string"
-              }
-            },
-            "required": [
-              "code"
-            ],
-            "title": "execute_pythonArguments",
-            "type": "object"
-          }
-        },
-        {
           "name": "explain_query",
           "parameters": {
             "properties": {
@@ -156,6 +142,42 @@
             "title": "query_databaseArguments",
             "type": "object"
           }
+        },
+        {
+          "name": "sandbox_exec",
+          "parameters": {
+            "properties": {
+              "command": {
+                "title": "Command",
+                "type": "string"
+              },
+              "data_files": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Data Files"
+              },
+              "timeout_seconds": {
+                "default": 300,
+                "title": "Timeout Seconds",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "title": "sandbox_execArguments",
+            "type": "object"
+          }
         }
       ]
     },
@@ -167,7 +189,9 @@
     "tools": [
       "Read",
       "Glob",
-      "Grep"
+      "Grep",
+      "Write",
+      "Edit"
     ]
   },
   "harbor-dbt": {
@@ -177,11 +201,11 @@
       "Grep",
       "Write",
       "Edit",
-      "Bash",
       "Agent",
       "mcp__data"
     ],
     "disallowed_tools": [
+      "Bash",
       "WebSearch",
       "WebFetch"
     ],
@@ -320,6 +344,54 @@
               "models"
             ],
             "title": "contract_checkArguments",
+            "type": "object"
+          }
+        },
+        {
+          "name": "dbt_execute",
+          "parameters": {
+            "properties": {
+              "command": {
+                "title": "Command",
+                "type": "string"
+              },
+              "exclude": {
+                "default": "",
+                "title": "Exclude",
+                "type": "string"
+              },
+              "full_refresh": {
+                "default": false,
+                "title": "Full Refresh",
+                "type": "boolean"
+              },
+              "project_dir": {
+                "default": "",
+                "title": "Project Dir",
+                "type": "string"
+              },
+              "select": {
+                "default": "",
+                "title": "Select",
+                "type": "string"
+              },
+              "threads": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Threads"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "title": "dbt_executeArguments",
             "type": "object"
           }
         },
@@ -547,6 +619,42 @@
             "title": "query_labelsArguments",
             "type": "object"
           }
+        },
+        {
+          "name": "sandbox_exec",
+          "parameters": {
+            "properties": {
+              "command": {
+                "title": "Command",
+                "type": "string"
+              },
+              "data_files": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Data Files"
+              },
+              "timeout_seconds": {
+                "default": 300,
+                "title": "Timeout Seconds",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "title": "sandbox_execArguments",
+            "type": "object"
+          }
         }
       ]
     },
@@ -561,7 +669,6 @@
       "Grep",
       "Write",
       "Edit",
-      "Bash",
       "Agent"
     ]
   }

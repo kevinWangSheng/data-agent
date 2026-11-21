@@ -164,7 +164,6 @@ async def test_skill_off_dbt_run_loads_no_skill_text_or_scripts(
         assert f"name: {name}" not in options.system_prompt, name
     assert "skill" not in options.system_prompt.lower()
     assert events[0]["skill_version"] == "none"
-    assert agent.dbt_scripts(load_config(config)) == ()
     assert "dbt-workflow" not in options.user_prompt
 
 

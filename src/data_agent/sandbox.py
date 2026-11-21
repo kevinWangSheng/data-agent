@@ -13,6 +13,7 @@ import io
 import itertools
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -71,6 +72,13 @@ LOCAL_ENV = (
     "LOGNAME",
     "TERM",
 )
+# What a local command also keeps: the variables a Harbor task's image and its tasks use (a task
+# asks to print DB_TYPE; dbt and the task's profile read DBT_* and DUCKDB_PATH; VIRTUAL_ENV is
+# the image's Python). None of them holds a credential, except dbt's DBT_ENV_SECRET_*: dbt keeps
+# secrets there (a profile's password), so they stay out; dbt_execute's own environment has them.
+LOCAL_TASK_ENV = ("DB_TYPE", "DUCKDB_PATH", "VIRTUAL_ENV")
+LOCAL_TASK_PREFIXES = ("DBT_",)
+LOCAL_SECRET_PREFIXES = ("DBT_ENV_SECRET_",)
 
 
 class SandboxError(Exception):
@@ -180,6 +188,18 @@ def local_env(env: Mapping[str, str]) -> dict[str, str]:
     return {name: env[name] for name in LOCAL_ENV if name in env}
 
 
+def reaches_local_commands(name: str) -> bool:
+    """Whether a local sandbox command keeps the variable `name` (`local_command_env`)."""
+    if name.startswith(LOCAL_SECRET_PREFIXES):
+        return False
+    return name in LOCAL_ENV or name in LOCAL_TASK_ENV or name.startswith(LOCAL_TASK_PREFIXES)
+
+
+def local_command_env(env: Mapping[str, str]) -> dict[str, str]:
+    """A local sandbox command's environment: `local_env` and the task's own variables."""
+    return {name: value for name, value in env.items() if reaches_local_commands(name)}
+
+
 @dataclass
 class LocalSandbox:
     """Commands run on this machine, in the workspace, with a scrubbed environment."""
@@ -197,7 +217,7 @@ class LocalSandbox:
 
     def execute(self, command: str, timeout: float) -> Execution:
         argv = [sys.executable, *supervised(command, timeout)]
-        env = local_env(os.environ)
+        env = local_command_env(os.environ)
         done = run_process(argv, timeout + CLIENT_MARGIN_S, cwd=self.workspace, env=env)
         return timeout_past_limit(done, timeout)
 
@@ -208,6 +228,11 @@ def run_docker(args: Sequence[str], timeout: float = DOCKER_TIMEOUT_S) -> Execut
         return run_process(["docker", *args], timeout)
     except FileNotFoundError as exc:
         raise SandboxError("docker is not installed here (no `docker` on PATH)") from exc
+
+
+def docker_on_path() -> bool:
+    """Whether this machine has the docker CLI, which every docker call runs."""
+    return shutil.which("docker") is not None
 
 
 def container_name(run_id: str) -> str:
@@ -294,20 +319,23 @@ def skill_text(sandbox: Sandbox, name: str, text: str) -> str:
 
 
 class SandboxRun(NamedTuple):
-    """A run's `--sandbox` choice and its id, as the run passes them to its MCP server."""
+    """A run's `--sandbox` choice, its id and its `--network` switch, as the run passes them to
+    its MCP server."""
 
     backend: Backend
     run_id: str
+    network: bool = False
 
     @classmethod
-    def of_run(cls, backend: Backend, events_dir: Path) -> "SandboxRun":
+    def of_run(cls, backend: Backend, events_dir: Path, network: bool = False) -> "SandboxRun":
         """The id is the `--events-dir` directory's name, which names the run (the web UI's run
         id), and a part of its own: runs in other worktrees may use the same name at once, and
         each removes only its own container."""
-        return cls(backend, f"{events_dir.resolve().name}-{uuid.uuid4().hex[:8]}")
+        return cls(backend, f"{events_dir.resolve().name}-{uuid.uuid4().hex[:8]}", network)
 
     def server_args(self) -> tuple[str, ...]:
-        return ("--sandbox", self.backend, "--run-id", self.run_id)
+        network = ("--network",) if self.network else ()
+        return ("--sandbox", self.backend, "--run-id", self.run_id, *network)
 
 
 def labelled(label: str) -> list[tuple[str, str]]:

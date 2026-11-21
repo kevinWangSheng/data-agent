@@ -4,7 +4,8 @@ One run at a time. Each run gets `<runs_dir>/<id>/` for its event file and
 `<runs_dir>/<id>/workspace/` as its working directory: empty for a query run, a copy of the data
 source's dbt project for a dbt run. The copy leaves out `target/` and `logs/`, and what holds the
 database or its connection (ticket 99, spec "凭据与只读"): the DuckDB file goes to
-`<runs_dir>/<id>/db/` instead, and the project's `profiles.yml` stays behind. The run's dbt reaches
+`<runs_dir>/<id>/db/` instead, and the project's `profiles.yml` and its credential files (`.env*`,
+keys, or links to them; ticket 100) stay behind. The run's dbt reaches
 the database through dbt_execute, whose `scratch` profile the run writes to
 `<runs_dir>/<id>/profiles/` (`data_agent.dbt_execute.DbtRun`); the sandbox mounts only the
 workspace, so it sees neither. A query run reads the DuckDB file in place through the read-only
@@ -32,12 +33,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from data_agent.dbt_execute import PROFILES_FILE
 from data_agent.run_config import CONFIG_NAMES
+from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap
+from data_agent.workspace_guard import (
+    is_credential,
+    is_duckdb_name,
+    is_profile_name,
+    named_or_linked,
+)
 
 TASK_TYPES = ("query", "dbt")
+# The only sandbox backend the web backend gives a run: `local` would run the agent's commands on
+# this machine (ADR-0010).
+SANDBOX: Backend = "docker"
 # How long a run being stopped has to exit after SIGTERM before it gets SIGKILL.
 STOP_GRACE_SECONDS = 10.0
 WORKSPACE = "workspace"
@@ -131,7 +141,8 @@ class Launcher:
         self, task: str, task_type: str, source_name: str, config: str, network: bool = True
     ) -> str:
         """Checks the request, prepares the run's directories and starts it; returns its id. The
-        run has the web tools (`data-agent run --network`, ticket 98) unless `network` is off."""
+        run has the web tools and a sandbox with the network (`data-agent run --network`, tickets
+        98 and 100) unless `network` is off."""
         source = self.check(task, task_type, source_name, config)
 
         def prepare(run_dir: Path) -> tuple[list[str], Path]:
@@ -150,6 +161,10 @@ class Launcher:
                 *database,
                 "--data-source-name",
                 source.name,
+                # The web backend runs only in a container (spec "`sandbox_exec`"), and its dbt
+                # writes only to a schema of the run's own.
+                *("--sandbox", SANDBOX),
+                *(("--dbt-target", "scratch") if task_type == "dbt" else ()),
                 *(("--network",) if network else ()),
             ]
             return args, workspace
@@ -370,7 +385,8 @@ def prepare_workspace(
 ) -> list[str]:
     """Creates the run's working directory; returns the database arguments for `data-agent run`.
     A dbt run's DuckDB file is copied to `db/` beside the workspace, not into it, and the
-    project's `profiles.yml` is not copied. The copy follows links and skips dangling ones.
+    project's other DuckDB files and `profiles.yml` stay behind. The copy follows links and
+    skips dangling ones.
     Refused when the dbt project holds a directory link reaching the runs directory, which the
     copy would copy into itself."""
     if source.postgres_env is not None:
@@ -396,11 +412,18 @@ def prepare_workspace(
 
     def ignore(directory: str, names: list[str]) -> list[str]:
         skipped: list[str] = list(NOT_COPIED) if Path(directory) == project else []
+        # A profile and a credential file by name, or a link to one under any name (the copy
+        # follows links): sandbox_exec reads any file in the workspace (ADR-0010).
         skipped += [
             name
             for name in names
             if name not in skipped
-            and (name == PROFILES_FILE or is_database(Path(directory) / name))
+            and (
+                named_or_linked(Path(directory) / name, is_profile_name)
+                or named_or_linked(Path(directory) / name, is_duckdb_name)
+                or is_database(Path(directory) / name)
+                or named_or_linked(Path(directory) / name, is_credential)
+            )
         ]
         for name in set(names) - set(skipped):
             entry = Path(directory) / name

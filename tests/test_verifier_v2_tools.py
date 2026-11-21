@@ -203,6 +203,15 @@ def test_yaml_lite_reads_block_scalars_flow_mappings_and_continued_scalars() -> 
     assert yaml_lite.load("") == {}
 
 
+def test_yaml_lite_reads_compact_quoted_flow_keys() -> None:
+    data = yaml_lite.load(
+        """config: {"materialized":"table", 'test:tag':['example'], label:tag: value}\n"""
+    )
+    assert data == {
+        "config": {"materialized": "table", "test:tag": ["example"], "label:tag": "value"}
+    }
+
+
 @pytest.mark.parametrize(
     "text",
     [

@@ -22,6 +22,8 @@ class FakeDocker:
         args = list(args)
         self.calls.append(args)
         verb = args[0]
+        if verb == "info" or args[:2] == ["image", "inspect"]:
+            return Execution(0, "", "", False)
         if verb == "run":
             name = args[args.index("--name") + 1]
             labels = [args[i + 1] for i, arg in enumerate(args) if arg == "--label"]
@@ -56,7 +58,9 @@ def container_of(exec_args: list[str]) -> str:
 
 
 def install(monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
-    """Every docker call of the test goes to the returned stand-in."""
+    """Every docker call of the test goes to the returned stand-in, and the docker CLI counts as
+    installed (`docker_on_path`)."""
     fake = FakeDocker()
     monkeypatch.setattr(sandbox_module, "run_docker", fake)
+    monkeypatch.setattr(sandbox_module, "docker_on_path", lambda: True)
     return fake

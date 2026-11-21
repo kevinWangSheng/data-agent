@@ -1,5 +1,6 @@
 """Read, Glob, Grep, Write and Edit may only reach files inside the task workspace."""
 
+import os
 import re
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ import pytest
 from data_agent import agent
 from data_agent.agent import ModelSettings, Task
 from data_agent.run_config import load_config
-from data_agent.workspace_guard import GREP_TYPES, workspace_guard
+from data_agent.workspace_guard import GREP_TYPES, credential_files, workspace_guard
 
 
 @pytest.fixture
@@ -29,10 +30,9 @@ async def decide(
     workspace: Path,
     tool: str,
     tool_input: dict[str, Any],
-    protected: tuple[Path, ...] = (),
     readable: tuple[Path, ...] = (),
 ) -> str:
-    output = await hook_output(workspace, tool, tool_input, protected, readable)
+    output = await hook_output(workspace, tool, tool_input, readable)
     return output.get("permissionDecision", "none")
 
 
@@ -40,11 +40,10 @@ async def hook_output(
     workspace: Path,
     tool: str,
     tool_input: dict[str, Any],
-    protected: tuple[Path, ...] = (),
     readable: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     """The guard's `hookSpecificOutput` for one call; empty when it lets the call run."""
-    guard = workspace_guard(workspace, protected, readable)
+    guard = workspace_guard(workspace, readable)
     hook_input: Any = {
         "hook_event_name": "PreToolUse",
         "session_id": "s",
@@ -105,13 +104,24 @@ async def test_paths_outside_the_workspace_are_denied(
     assert await decide(workspace, tool, filled) == "deny"
 
 
-def test_query_runs_install_the_guard_for_every_file_tool(tmp_path: Path) -> None:
-    task = Task(text="q", type="query", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
+FILE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit"]
+
+
+@pytest.mark.parametrize("task_type", ["query", "dbt"])
+def test_every_run_has_the_file_tools_and_guards_them_all(tmp_path: Path, task_type: str) -> None:
+    """Ticket 100: every task has the same file tools, Write and Edit included, all guarded; Bash
+    is neither loaded nor allowed, and denied outright."""
+    task = Task(text="q", type=task_type, workspace=tmp_path, duckdb=tmp_path / "x.duckdb")  # type: ignore[arg-type]
     settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
     options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
     matchers = (options.hooks or {}).get("PreToolUse", [])
     guarded = {name for m in matchers if m.matcher for name in m.matcher.split("|")}
-    assert set(agent.QUERY_BUILTIN_TOOLS) <= guarded
+    assert set(FILE_TOOLS) <= guarded
+    tools = options.tools if isinstance(options.tools, list) else []
+    assert tools[:5] == FILE_TOOLS
+    assert "Bash" not in [*tools, *options.allowed_tools]
+    assert "Bash" in options.disallowed_tools
+    assert not [m for m in matchers if m.matcher == "Bash"]
 
 
 @pytest.mark.parametrize(
@@ -123,61 +133,21 @@ def test_query_runs_install_the_guard_for_every_file_tool(tmp_path: Path) -> Non
             {"file_path": "{ws}/models/orders.sql", "old_string": "1", "new_string": "2"},
             "none",
         ),
+        ("Write", {"file_path": "outputs/chart.png", "content": "x"}, "none"),
         ("Write", {"file_path": "../secret.env", "content": "x"}, "deny"),
         ("Write", {"file_path": "{home}/.bashrc", "content": "x"}, "deny"),
         ("Write", {"file_path": "escape/secret.env", "content": "x"}, "deny"),
         ("Edit", {"file_path": "secret_link", "old_string": "x", "new_string": "y"}, "deny"),
-        ("Write", {"file_path": "shop.duckdb", "content": ""}, "deny"),
-        ("Write", {"file_path": "{ws}/shop.duckdb.wal", "content": ""}, "deny"),
-        ("Edit", {"file_path": "shop.duckdb", "old_string": "a", "new_string": "b"}, "deny"),
     ],
 )
-async def test_writes_stay_inside_the_workspace_and_off_the_database(
+async def test_writes_stay_inside_the_workspace(
     workspace: Path, tool: str, tool_input: dict[str, Any], decision: str
 ) -> None:
+    """The guard keeps two rules (ADR-0010): inside the workspace, off credential files. A
+    database file in the workspace is no longer its business: the product keeps it out of the
+    workspace, and a benchmark's local sandbox reaches it anyway (a known limitation)."""
     filled = {k: v.format(ws=workspace, home=Path.home()) for k, v in tool_input.items()}
-    assert await decide(workspace, tool, filled, (workspace / "shop.duckdb",)) == decision
-
-
-def test_dbt_runs_guard_file_writes_and_bash(tmp_path: Path) -> None:
-    task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
-    settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
-    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
-    matchers = (options.hooks or {}).get("PreToolUse", [])
-    guarded = {name for m in matchers if m.matcher for name in m.matcher.split("|")}
-    assert {"Read", "Glob", "Grep", "Write", "Edit", "Bash"} <= guarded
-    assert {"Write", "Edit", "Bash"} <= set(options.tools or [])
-    query = Task(text="q", type="query", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
-    query_tools = (
-        agent.build_options(query, load_config("full"), settings, [], lambda *_, **__: None).tools
-        or []
-    )
-    assert not {"Write", "Edit", "Bash"} & set(query_tools)
-
-
-async def test_dbt_runs_let_bash_print_db_type_and_wait_for_validate(tmp_path: Path) -> None:
-    """The Bash guard gets the harness's variable list, and Bash's default timeout outlasts
-    validate_project.py's 300-second cap, so a slow dbt parse is never cut off mid-run."""
-    task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")
-    settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
-    options = agent.build_options(task, load_config("full"), settings, [], lambda *_, **__: None)
-    assert options.env["BASH_DEFAULT_TIMEOUT_MS"] == "360000"
-    assert options.env["BASH_MAX_TIMEOUT_MS"] == "600000"
-    # Else the CLI carries a `cd dir && ...` into the next Bash call, which the guard cannot see.
-    assert options.env["CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"] == "1"
-    matchers = (options.hooks or {}).get("PreToolUse", [])
-    bash_hooks = [hook for m in matchers if m.matcher == "Bash" for hook in m.hooks]
-    assert len(bash_hooks) == 1
-    hook_input: Any = {
-        "hook_event_name": "PreToolUse",
-        "session_id": "s",
-        "transcript_path": "t",
-        "cwd": str(tmp_path),
-        "tool_name": "Bash",
-        "tool_input": {"command": "echo $DB_TYPE"},
-        "tool_use_id": "u",
-    }
-    assert await bash_hooks[0](hook_input, "u", {"signal": None}) == {}
+    assert await decide(workspace, tool, filled) == decision
 
 
 async def test_denial_does_not_write_the_workspace_path(workspace: Path) -> None:
@@ -617,3 +587,190 @@ async def test_grep_exclusion_naming_a_directory_with_braces_decides_nothing(
         "permissionDecisionReason"
     ]
     assert "secrets{prod}/**" not in reason
+
+
+PROFILE = """\
+shop:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: db.example
+      user: agent
+      {line}
+      dbname: shop
+"""
+
+
+@pytest.mark.parametrize(
+    ("line", "listed"),
+    [
+        ("password: hunter2", True),
+        ("pass: 'hunter2'  # the old one", True),
+        ("private_key_passphrase: x1", True),
+        ("password: \"{{ env_var('SHOP_PASSWORD') }}\"", False),
+        ("password: \"{{ env_var('SHOP_PASSWORD') | as_text }}\"", False),
+        # A default given to env_var is written in the file.
+        ("password: \"{{ env_var('SHOP_PASSWORD', 'hunter2') }}\"", True),
+        # A value on the lines below the key.
+        ("password: |\n        hunter2", True),
+        ("password:\n        hunter2", True),
+        # A nested mapping is no value of its own; its keys are checked on their own lines.
+        ("keyfile_json:\n        type: service_account", False),
+        ("keyfile_json:\n        private_key: abc", True),
+        ("threads: 4", False),
+        ("password: ''", False),
+        ("password:", False),
+    ],
+)
+def test_a_profile_holding_a_literal_secret_is_a_credential_file(
+    tmp_path: Path, line: str, listed: bool
+) -> None:
+    """Ticket 100 return round 1 (da-review P1): a CLI run mounts a project as it is, and its
+    profiles.yml may hold the warehouse password, which a shell in sandbox_exec could read and,
+    with --network, use. A profile whose secrets come from env_var(), or a stub, is no credential
+    file."""
+    (tmp_path / "project").mkdir()
+    (tmp_path / "project" / "profiles.yml").write_text(PROFILE.format(line=line))
+    expected = [Path("project/profiles.yml")] if listed else []
+    assert credential_files(tmp_path) == expected
+
+
+def test_credential_files_lists_a_credential_directory_and_a_link_to_one(tmp_path: Path) -> None:
+    (tmp_path / "keys.pem").mkdir()
+    (tmp_path / "keys.pem" / "inside.txt").write_text("x")
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / ".env").mkdir()
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "ws" / "settings").symlink_to(tmp_path / "outside" / ".env")
+    (tmp_path / "ws" / "keys.pem").symlink_to(tmp_path / "keys.pem")
+    assert credential_files(tmp_path / "ws") == [Path("keys.pem"), Path("settings")]
+    # Not entered: the directory is listed, not the files in it.
+    assert credential_files(tmp_path) == [
+        Path("keys.pem"),
+        Path("outside/.env"),
+        Path("ws/keys.pem"),
+        Path("ws/settings"),
+    ]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_a_profile_that_cannot_be_read_counts_as_a_credential_file(tmp_path: Path) -> None:
+    profile = tmp_path / "profiles.yml"
+    profile.write_text("shop: {}\n")
+    profile.chmod(0)
+    try:
+        assert credential_files(tmp_path) == [Path("profiles.yml")]
+    finally:
+        profile.chmod(0o600)
+
+
+def test_credential_files_come_in_path_order_whatever_order_the_walk_takes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket 100 return round 2 (CI on ubuntu): os.walk visits directories in the order the
+    file system lists them, which differs between Linux and macOS; the list is sorted."""
+    for directory in ("a", "b", "c"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / ".env").write_text("KEY=x")
+    real_walk = os.walk
+
+    def reversed_walk(top: Path) -> Any:
+        for root, directories, files in real_walk(top):
+            directories.reverse()  # in place, so the walk follows it
+            yield root, directories, files
+
+    monkeypatch.setattr("data_agent.workspace_guard.os.walk", reversed_walk)
+    assert credential_files(tmp_path) == [Path("a/.env"), Path("b/.env"), Path("c/.env")]
+
+
+@pytest.mark.parametrize(
+    ("text", "listed"),
+    [
+        # A quoted key is the same key to YAML.
+        ('shop:\n  outputs:\n    dev:\n      "password": hunter2\n', True),
+        ("shop:\n  outputs:\n    dev:\n      'token': abc\n", True),
+        # JSON is YAML.
+        ('{"shop": {"outputs": {"dev": {"type": "postgres", "password": "hunter2"}}}}', True),
+        ('{"shop": {"outputs": {"dev": {"type": "postgres", "user": "agent"}}}}', False),
+        # A flow mapping, on one line or spanning lines.
+        ("shop: {outputs: {dev: {type: postgres, password: hunter2}}}\n", True),
+        ("shop:\n  outputs:\n    dev: {type: postgres,\n      password: hunter2}\n", True),
+        ("shop: {outputs: {dev: {password: \"{{ env_var('P') }}\"}}}\n", False),
+        # A secret in a list, and a number written in.
+        ("shop:\n  outputs:\n    dev:\n      hosts:\n        - password: x\n", True),
+        ("shop:\n  outputs:\n    dev:\n      password: 1234\n", True),
+        # Not YAML the parser reads: counted as holding one.
+        ("shop: &anchor\n  password: x\n", True),
+    ],
+)
+def test_a_profile_secret_is_found_however_the_yaml_writes_it(
+    tmp_path: Path, text: str, listed: bool
+) -> None:
+    """Ticket 100 return round 2 (Codex P1): the line regex missed a quoted key, a JSON profile
+    and a flow mapping, so a docker run mounted the secret; the profile is parsed instead."""
+    (tmp_path / "profiles.yml").write_text(text)
+    assert credential_files(tmp_path) == ([Path("profiles.yml")] if listed else [])
+
+
+@pytest.mark.parametrize(
+    ("text", "listed"),
+    [
+        # dbt-duckdb's settings carry cloud storage keys.
+        ("shop:\n  outputs:\n    dev:\n      settings:\n        s3_secret_access_key: abc\n", True),
+        ("shop:\n  outputs:\n    dev:\n      aws_session_token: abc\n", True),
+        ("shop:\n  outputs:\n    dev:\n      db_password: abc\n", True),
+        ("shop:\n  outputs:\n    dev:\n      settings:\n        s3_region: eu-west-1\n", False),
+        # An escape yaml_lite leaves undecoded may spell a secret key: counted as one.
+        ('shop:\n  outputs:\n    dev:\n      "pass\\u0077ord": example\n', True),
+    ],
+)
+def test_a_profile_secret_key_is_known_by_what_its_name_holds(
+    tmp_path: Path, text: str, listed: bool
+) -> None:
+    """Ticket 100 return round 2 (da-review P1): a list of exact key names missed the storage
+    keys dbt-duckdb's settings take, and a key spelled with a YAML escape."""
+    (tmp_path / "profiles.yml").write_text(text)
+    assert credential_files(tmp_path) == ([Path("profiles.yml")] if listed else [])
+
+
+def test_a_link_to_a_profile_with_a_secret_is_a_credential_file(tmp_path: Path) -> None:
+    """Ticket 100 return round 2 (da-review P1): a link under another name reaches the profile."""
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "profiles.yml").write_text("shop:\n  outputs:\n    dev:\n      pass: x\n")
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "ws" / "connection.yml").symlink_to(tmp_path / "home" / "profiles.yml")
+    assert credential_files(tmp_path / "ws") == [Path("connection.yml")]
+
+
+@pytest.mark.parametrize(
+    ("line", "listed"),
+    [
+        # A path or an address to a secret is not the secret.
+        ("keyfile: /secrets/sa.json", False),
+        ("private_key_path: /keys/rsa.p8", False),
+        ("token_uri: https://oauth2.example/token", False),
+        ("use_token: false", False),
+        # A list under a secret-named key holds the secret.
+        ("api_key: [hunter2]", True),
+        ('keyfile_json: \'{"private_key": "abc"}\'', True),
+    ],
+)
+def test_a_profile_key_naming_a_path_or_a_switch_is_no_secret(
+    tmp_path: Path, line: str, listed: bool
+) -> None:
+    """Ticket 100 return round 2 (eng:code-review): name-part matching refused BigQuery's
+    keyfile path and Snowflake's private_key_path, and let a list of secrets through."""
+    (tmp_path / "profiles.yml").write_text(PROFILE.format(line=line))
+    assert credential_files(tmp_path) == ([Path("profiles.yml")] if listed else [])
+
+
+def test_a_profile_nested_past_the_recursion_limit_counts_as_holding_one(tmp_path: Path) -> None:
+    (tmp_path / "profiles.yml").write_text("[" * 100_000 + "]" * 100_000)
+    assert credential_files(tmp_path) == [Path("profiles.yml")]
+
+
+def test_a_link_loop_is_no_credential_file_and_no_crash(tmp_path: Path) -> None:
+    """eng:code-review: Path.resolve raises on a link loop (Python 3.12)."""
+    (tmp_path / "loop.yml").symlink_to(tmp_path / "loop.yml")
+    assert credential_files(tmp_path) == []

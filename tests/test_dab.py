@@ -14,7 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from decimal import Decimal
@@ -32,16 +32,21 @@ from claude_agent_sdk import (
     TextBlock,
     ToolUseBlock,
 )
+from fake_docker import install
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 
 from data_agent import agent
 from data_agent.gateway import TIMEOUT_SECONDS
-from data_agent.run_config import load_config
+from data_agent.run_config import load_config, skills_path
+from data_agent.sandbox import DockerSandbox, Execution, LocalSandbox
 from evals import dab
+from evals import dab_server as dab_server_module
 from evals.__main__ import main as evals_main
-from evals.dab_server import RESULT_CHARS, STORAGE_DIR
+from evals.dab_server import RESULT_CHARS, QueryTimeout
 
 FAKE_DAB = Path(__file__).parent / "fixtures" / "fake_dab"
 ENV = {"DATA_AGENT_API_KEY": "sk-test-secret"}
@@ -95,15 +100,21 @@ def dab_root(tmp_path: Path) -> Path:
 # --- the MCP server around DAB's tools ---------------------------------------------------------
 
 
+SKILLS = skills_path("skills")
+RUN_ID = "run0-0000aaaa"
+
+
 @asynccontextmanager
-async def dab_server(root: Path, log: Path, *extra: str) -> AsyncIterator[ClientSession]:
+async def dab_server(
+    root: Path, log: Path, *extra: str, env: dict[str, str] | None = None
+) -> AsyncIterator[ClientSession]:
     config = root / "query_toyset" / "db_config.yaml"
     workspace = log.parent / "workspace"
     workspace.mkdir(exist_ok=True)
     params = StdioServerParameters(
         command=sys.executable,
-        args=[*dab.server_args(root, config, log, workspace), *extra],
-        env={**os.environ, **dab.server_env()},
+        args=[*dab.server_args(root, config, log, workspace, RUN_ID, SKILLS), *extra],
+        env={**os.environ, **dab.server_env(), **(env or {})},
         cwd=str(workspace),  # as for the agent: not the repo root
     )
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
@@ -116,10 +127,34 @@ def text_of(result: CallToolResult) -> str:
 
 
 def data_of(result: CallToolResult) -> Any:
-    """The JSON result under the line that names its variable."""
-    note, _, data = text_of(result).partition("\n")
-    assert note.startswith("Result `var_"), note
+    """The JSON result, on the reply's first line (a result id's line may follow it)."""
+    data, _, _ = text_of(result).partition("\n")
     return json.loads(data)
+
+
+def local_dab(root: Path, workspace: Path) -> MCPServer:
+    """The tool server in this process, its sandbox_exec on the local backend: the tests reach no
+    Docker. `main` gives it the docker backend (test_the_server_runs_code_in_dabs_image...)."""
+    tools = dab.scaffold(root)
+    config = str(root / "query_toyset" / "db_config.yaml")
+    log = workspace.parent / "tools.jsonl"
+    query_tool = tools.query_tool(
+        log_path=log, name="query_db", db_config_path=config, check_load=False
+    )
+    list_tool = tools.list_tool(
+        log_path=log, name="list_db", db_config_path=config, check_load=False
+    )
+    workspace.mkdir(exist_ok=True)
+    sandbox = LocalSandbox(workspace, SKILLS)
+    return dab_server_module.build_server(query_tool, list_tool, sandbox, QueryTimeout(30))
+
+
+async def call_local(server: MCPServer, tool: str, arguments: dict[str, Any]) -> str:
+    """The reply of an in-process call; a tool error fails the test."""
+    result = await server.call_tool(tool, arguments)
+    assert isinstance(result, CallToolResult)
+    assert not result.is_error, text_of(result)
+    return text_of(result)
 
 
 def logged_calls(log: Path) -> list[dict[str, Any]]:
@@ -136,7 +171,7 @@ async def test_server_exposes_dab_tools_under_our_tool_names(
     assert set(tools) == {
         "query_database",
         "list_tables",
-        "execute_python",
+        "sandbox_exec",  # ours, as on every run (ticket 100), in place of DAB's execute_python
         "describe_table",  # ours, for Postgres and DuckDB databases (ticket 37)
         "explain_query",
         "classify_text",  # ours, for every database (ticket 70)
@@ -146,13 +181,15 @@ async def test_server_exposes_dab_tools_under_our_tool_names(
     assert tools["list_tables"].description == "FAKE-DAB list description."
     sql_arg = tools["query_database"].input_schema["properties"]["sql"]
     assert sql_arg["description"] == "FAKE-DAB query argument."
-    # DAB's agent states its print format in its prompt; ours says it in the tool description,
-    # with DAB's result marker.
-    exec_description = tools["execute_python"].description or ""
-    assert exec_description.startswith("FAKE-DAB exec description.")
-    assert "FAKE-RESULT:" in exec_description
-    code_arg = tools["execute_python"].input_schema["properties"]["code"]
-    assert code_arg["description"] == "FAKE-DAB code argument."
+    # The docker backend, offline (ticket 100).
+    sandbox_description = tools["sandbox_exec"].description or ""
+    assert "an isolated container" in sandbox_description
+    assert "It has no network" in sandbox_description
+    assert set(tools["sandbox_exec"].input_schema["properties"]) == {
+        "command",
+        "timeout_seconds",
+        "data_files",
+    }
 
 
 async def test_query_runs_through_the_dab_tool(dab_root: Path, tmp_path: Path) -> None:
@@ -304,6 +341,45 @@ def test_cli_stops_when_spend_cannot_be_totalled(
     )
     assert code == 2
     assert "not JSON" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("unavailable", "diagnosis"),
+    [("info", "Docker daemon"), ("image", dab.EXEC_IMAGE)],
+)
+def test_dab_cli_checks_docker_before_running_queries(
+    dab_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    unavailable: str,
+    diagnosis: str,
+) -> None:
+    calls: list[list[str]] = []
+
+    def docker(args: Sequence[str], timeout: float = 60) -> Execution:
+        calls.append(list(args))
+        return Execution(int(args[0] == unavailable), "", "", False)
+
+    async def unexpected_run(*_: Any) -> int:
+        raise AssertionError("DAB must check Docker before running any trials")
+
+    monkeypatch.setattr("data_agent.sandbox.run_docker", docker)
+    monkeypatch.setattr(dab, "run_query", unexpected_run)
+    code = evals_main(
+        [
+            *("dab", "--dab-root", str(dab_root), "--dataset", "toyset", "--query", "1"),
+            *("--config", CONFIG, "--out", str(tmp_path / "out")),
+        ]
+    )
+
+    assert code == 2
+    assert diagnosis in capsys.readouterr().err
+    expected = [["info"]]
+    if unavailable == "image":
+        expected.append(["image", "inspect", dab.EXEC_IMAGE])
+    assert calls == expected
+    assert not (tmp_path / "out").exists()
 
 
 async def test_mongo_queries_skip_the_sql_check(dab_root: Path, tmp_path: Path) -> None:
@@ -569,92 +645,104 @@ async def test_the_timeout_defaults_to_the_gateways(dab_root: Path, tmp_path: Pa
     assert data_of(result) == [{"setting": str(TIMEOUT_SECONDS * 1000)}]
 
 
-PRINT = "import json\nprint('FAKE-RESULT:' + json.dumps({}))"
+async def test_results_reach_the_sandbox_as_data_files(dab_root: Path, tmp_path: Path) -> None:
+    """Ticket 100: DAB's result variables became result ids, read through `data_files`, so rows of
+    two databases are combined outside both."""
+    server = local_dab(dab_root, tmp_path / "workspace")
+    prices = await call_local(
+        server, "query_database", {"db_name": "prices_db", "sql": "SELECT * FROM prices LIMIT 3"}
+    )
+    articles = await call_local(
+        server, "query_database", {"db_name": "articles_db", "sql": '{"collection": "articles"}'}
+    )
+    tables = await call_local(server, "list_tables", {"db_name": "prices_db"})
+    command = "cat data/query_1.csv data/query_2.csv"
+    joined = await call_local(
+        server, "sandbox_exec", {"command": command, "data_files": ["query_1", "query_2"]}
+    )
+    assert "[result id: query_1;" in prices
+    assert "[result id: query_2;" in articles
+    assert "result id" not in tables  # a listing is no query result
+    assert joined == (
+        "exit_code: 0\nstdout:\nticker,close\nT000,0.0\nT001,1.0\nT002,2.0\n"
+        'echo\n"{""collection"": ""articles""}"\n'
+    )
 
 
-async def test_results_are_variables_in_python(dab_root: Path, tmp_path: Path) -> None:
-    log = tmp_path / "tools.jsonl"
-    async with dab_server(dab_root, log) as session:
-        prices = await session.call_tool(
-            "query_database", {"db_name": "prices_db", "sql": "SELECT * FROM prices LIMIT 3"}
-        )
-        articles = await session.call_tool(
-            "query_database", {"db_name": "articles_db", "sql": '{"collection": "articles"}'}
-        )
-        # A join across two databases, done outside both.
-        code = PRINT.format("[p['ticker'] for p in var_1] + var_2")
-        joined = await session.call_tool("execute_python", {"code": code})
-        again = await session.call_tool("execute_python", {"code": PRINT.format("len(var_3)")})
-    assert text_of(prices).startswith("Result `var_1`")
-    assert text_of(articles).startswith("Result `var_2`")
-    assert data_of(joined) == ["T000", "T001", "T002", {"echo": '{"collection": "articles"}'}]
-    assert text_of(joined).startswith("Result `var_3`")
-    assert data_of(again) == 4
-    assert [call["tool_name"] for call in logged_calls(log)][-2:] == ["execute_python"] * 2
+async def test_an_unknown_result_id_is_a_tool_error(dab_root: Path, tmp_path: Path) -> None:
+    server = local_dab(dab_root, tmp_path / "workspace")
+    with pytest.raises(ToolError, match="unknown result id query_1"):
+        await server.call_tool("sandbox_exec", {"command": "true", "data_files": ["query_1"]})
 
 
-async def test_non_finite_numbers_are_kept_as_null(dab_root: Path, tmp_path: Path) -> None:
-    # DAB's exec tool writes each variable's repr into the code; a NaN there is an undefined name
-    # that would break every later execute_python call.
-    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
-        code = PRINT.format("[float('nan'), {'x': float('inf')}, -float('inf'), 1.5]")
-        odd = await session.call_tool("execute_python", {"code": code})
-        later = await session.call_tool("execute_python", {"code": PRINT.format("var_1")})
-    assert data_of(odd) == [None, {"x": None}, None, 1.5]
-    assert not later.is_error, text_of(later)
-    assert data_of(later) == [None, {"x": None}, None, 1.5]
+def test_non_finite_numbers_and_nested_documents_become_plain_fields() -> None:
+    results = dab_server_module.Results(dab_server_module.QueryResults())
+    outcome = {"success": True, "result": [{"x": float("nan"), "doc": {"y": float("inf")}}]}
+    text = results.reply(outcome, with_id=True)
+    data, _, note = text.partition("\n")
+    assert json.loads(data) == [{"x": None, "doc": {"y": None}}]
+    assert note.startswith("[result id: query_1;")
+    kept = results.data.results["query_1"]
+    assert kept.columns == ["x", "doc"]
+    assert kept.rows == [(None, '{"y": null}')]
 
 
-async def test_long_results_are_saved_in_the_workspace_with_a_preview(
+async def test_long_results_are_cut_and_data_files_give_them_whole(
     dab_root: Path, tmp_path: Path
 ) -> None:
     sql = "SELECT p.ticker FROM prices p, prices q LIMIT 5000"
-    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
-        result = await session.call_tool("query_database", {"db_name": "prices_db", "sql": sql})
-        code = PRINT.format("len(json.load(open(var_1)))")
-        counted = await session.call_tool("execute_python", {"code": code})
-    text = text_of(result)
-    saved = tmp_path / "workspace" / STORAGE_DIR / "var_1.json"
-    assert f"`{STORAGE_DIR}/var_1.json`" in text
+    server = local_dab(dab_root, tmp_path / "workspace")
+    text = await call_local(server, "query_database", {"db_name": "prices_db", "sql": sql})
+    counted = await call_local(
+        server,
+        "sandbox_exec",
+        {"command": "wc -l < data/query_1.csv", "data_files": ["query_1"]},
+    )
     assert len(text) < RESULT_CHARS + 500
-    assert len(json.loads(saved.read_text())) == 5000
-    assert data_of(counted) == 5000
+    assert "cut at 10,000" in text
+    assert "[result id: query_1;" in text
+    assert counted.split() == ["exit_code:", "0", "stdout:", "5001"]  # the header and 5000 rows
 
 
-@pytest.mark.parametrize("link", ["file", "directory"])
-async def test_saved_results_never_follow_links_out_of_the_workspace(
-    dab_root: Path, tmp_path: Path, link: str
+async def test_failed_commands_come_back_with_their_exit_code(
+    dab_root: Path, tmp_path: Path
 ) -> None:
-    # execute_python code runs as root on the workspace and could plant a link where the next
-    # long result is saved; the server must not write through it.
-    target = tmp_path / "outside"
-    target.mkdir()
-    (target / "var_2.json").write_text("keep")
-    plant = {
-        "file": f"os.makedirs('file_storage', exist_ok=True)\n"
-        f"os.symlink({str(target / 'var_2.json')!r}, 'file_storage/var_2.json')",
-        "directory": f"os.symlink({str(target)!r}, 'file_storage')",
-    }[link]
-    sql = "SELECT p.ticker FROM prices p, prices q LIMIT 5000"
-    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
-        planted = await session.call_tool(
-            "execute_python", {"code": f"import os\n{plant}\n" + PRINT.format("1")}
-        )
-        result = await session.call_tool("query_database", {"db_name": "prices_db", "sql": sql})
-    assert not planted.is_error
-    assert result.is_error
-    assert (target / "var_2.json").read_text() == "keep"
+    server = local_dab(dab_root, tmp_path / "workspace")
+    failed = await call_local(server, "sandbox_exec", {"command": "python3 -c '1 / 0'"})
+    assert failed.startswith("exit_code: 1\n")
+    assert "ZeroDivisionError" in failed
 
 
-async def test_python_errors_come_back_as_tool_errors(dab_root: Path, tmp_path: Path) -> None:
-    async with dab_server(dab_root, tmp_path / "tools.jsonl") as session:
-        failed = await session.call_tool("execute_python", {"code": "1 / 0"})
-        later = await session.call_tool("execute_python", {"code": PRINT.format("var_2")})
+def fake_docker_cli(directory: Path) -> Path:
+    """A `docker` that records its arguments and fails, as one without a daemon does."""
+    directory.mkdir()
+    calls = directory / "calls.txt"
+    script = directory / "docker"
+    script.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" >> {calls}\necho "no daemon here" >&2\nexit 1\n'
+    )
+    script.chmod(0o755)
+    return calls
+
+
+async def test_the_server_runs_code_in_dabs_image_without_the_network(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    """Ticket 100: the server's sandbox is the docker backend, offline, on DAB's image, named
+    after the run's id (`main`)."""
+    calls = fake_docker_cli(tmp_path / "bin")
+    path = f"{calls.parent}{os.pathsep}{os.environ['PATH']}"
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", env={"PATH": path}) as session:
+        failed = await session.call_tool("sandbox_exec", {"command": "echo hi"})
     assert failed.is_error
-    assert "ZeroDivisionError" in text_of(failed)
-    # A failed call stores nothing, so the next result is var_1 and var_2 does not exist.
-    assert later.is_error
-    assert "var_2" in text_of(later)
+    assert "no daemon here" in text_of(failed)
+    run = calls.read_text().splitlines()
+    assert run[0] == "run"
+    assert run[run.index("--network") + 1] == "none"
+    assert run[run.index("--name") + 1] == f"data-agent-sandbox-{RUN_ID}"
+    assert dab.EXEC_IMAGE in run
+    mounts = [run[i + 1] for i, arg in enumerate(run) if arg == "--mount"]
+    assert any(f"source={SKILLS.resolve()},target=/skills,readonly" in m for m in mounts)
 
 
 # --- loading a query and sizing its data --------------------------------------------------------
@@ -745,12 +833,18 @@ def read_events(path: Path) -> list[dict[str, Any]]:
 async def test_a_dab_session_has_no_web_tools(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:
-    """Ticket 98: DAB builds its options with `build_options` and never turns the network on."""
+    """Ticket 98: DAB builds its options with `build_options` and never turns the network on.
+    Ticket 100: no Bash, the file tools of every run, and a tool server whose sandbox is offline
+    (its only switch is the image; it has no network option)."""
     [seen] = await run_dab(monkeypatch, dab_root, tmp_path / "out", runs=1)
     options = seen["options"]
     assert not {"WebSearch", "WebFetch"} & set(options.tools or [])
     assert not {"WebSearch", "WebFetch"} & set(options.allowed_tools)
-    assert {"WebSearch", "WebFetch"} <= set(options.disallowed_tools)
+    assert {"Bash", "WebSearch", "WebFetch"} <= set(options.disallowed_tools)
+    assert options.tools == ["Read", "Glob", "Grep", "Write", "Edit"]
+    args = options.mcp_servers["data"]["args"]
+    assert "--network" not in args
+    assert args[args.index("--image") + 1] == dab.EXEC_IMAGE
 
 
 async def test_each_run_writes_a_trace_and_a_submission_entry(
@@ -800,7 +894,8 @@ async def test_the_agent_gets_the_task_and_dab_tools_but_no_answer(
     server = options.mcp_servers["data"]
     assert server["args"][:2] == ["-m", "evals.dab_server"]
     assert server["env"] == dab.server_env()
-    assert server["args"][-2:] == ["--workspace", str(workspace)]
+    args = server["args"]
+    assert args[args.index("--workspace") + 1] == str(workspace)
     assert options.max_turns == 50
     # The price-table cap holds the configured $1; the SDK gets its backstop.
     assert options.max_budget_usd == agent.sdk_budget_usd(1.0, agent.DEFAULT_MODEL)
@@ -819,6 +914,14 @@ async def test_the_prompt_states_the_turn_limit_in_force(
     assert "Turn limit: 75." in seen[0]["prompt"]
     assert "Turn limit: 50" not in seen[0]["prompt"]
     assert seen[0]["options"].max_turns == 75
+
+
+async def test_the_prompt_says_where_the_workspace_is_in_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # Ticket 100 return round 1: DAB's sandbox_exec is the docker backend, workspace at /workspace.
+    [seen] = await run_dab(monkeypatch, dab_root, tmp_path / "out", runs=1)
+    assert "In `sandbox_exec` the workspace is at `/workspace`" in seen["prompt"]
 
 
 async def test_the_turn_budget_follows_the_session(
@@ -1144,55 +1247,30 @@ def test_cli_fails_when_the_out_directory_holds_other_conditions(
     assert len(seen) == 1
 
 
-class FakeContainer:
-    def __init__(self, name: str, source: Path) -> None:
-        self.name = name
-        self.attrs = {"Mounts": [{"Source": str(source), "Destination": "/workspace"}]}
-        self.removed = False
-
-    def remove(self, force: bool = False) -> None:
-        self.removed = force
-
-
-class FakeDocker:
-    def __init__(self, containers: list[FakeContainer]) -> None:
-        self.containers = self
-        self.listed: list[dict[str, Any]] = []
-        self._containers = containers
-
-    def list(self, **kwargs: Any) -> list[FakeContainer]:
-        self.listed.append(kwargs)
-        return self._containers
-
-
-def test_leftover_exec_containers_of_the_workspace_are_removed(tmp_path: Path) -> None:
-    ours = FakeContainer("ours", tmp_path / "run0" / "workspace")
-    other = FakeContainer("other", tmp_path / "run1" / "workspace")
-    client = FakeDocker([ours, other])
-    removed = dab.remove_exec_containers(tmp_path / "run0" / "workspace", client)
-    assert removed == ["ours"]
-    assert ours.removed and not other.removed
-    assert client.listed == [{"all": True, "filters": {"ancestor": dab.EXEC_IMAGE}}]
-
-
-async def test_each_run_removes_its_exec_container_after_the_session(
+async def test_each_run_removes_its_sandbox_container_after_the_session(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:
-    # The SDK kills the tool server (SIGINT, SIGTERM, then for good) within about half a second,
-    # before DAB's own clean-up can stop the container; the runner removes it instead.
-    cleaned: list[Path] = []
-    monkeypatch.setattr(dab, "remove_exec_containers", lambda ws: cleaned.append(ws) or [])
+    # The SDK kills the tool server (SIGINT, SIGTERM, then for good) within about half a second
+    # of the session's end, before it could remove its container; the runner removes it instead,
+    # also when the session broke.
+    docker = install(monkeypatch)
+    run_ids: list[str] = []
 
-    async def broken_query(**_: Any) -> AsyncIterator[Any]:
+    async def starting_a_container(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        args = options.mcp_servers["data"]["args"]
+        run_ids.append(args[args.index("--run-id") + 1])
+        workspace = Path(args[args.index("--workspace") + 1])
+        DockerSandbox(workspace, SKILLS, run_ids[-1], image=dab.EXEC_IMAGE).execute("true", 30)
         raise RuntimeError("endpoint unreachable")
         yield
 
-    out = tmp_path / "out"
-    await run_dab(monkeypatch, dab_root, out, runs=1)
-    monkeypatch.setattr(dab, "query", broken_query)
+    monkeypatch.setattr(dab, "query", starting_a_container)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
-    await dab.run_query(dab_root, query, load_config(CONFIG), out, 2, ENV)
-    assert cleaned == [dab.run_dir(out, "toyset", "1", r) / "workspace" for r in (0, 1)]
+    await dab.run_query(dab_root, query, load_config(CONFIG), tmp_path / "out", 2, ENV)
+    assert len(docker.verb("run")) == 2
+    assert len(set(run_ids)) == 2
+    assert all(run_id.startswith("run") for run_id in run_ids)
+    assert docker.containers == {}
 
 
 async def test_a_dab_server_that_failed_to_start_is_an_infra_error(
@@ -1428,7 +1506,6 @@ async def test_dab_logs_are_masked_when_the_run_is_interrupted(
         raise asyncio.CancelledError
         yield
 
-    monkeypatch.setattr(dab, "remove_exec_containers", lambda ws: [])
     monkeypatch.setattr(dab, "query", interrupted_query)
     query = dab.load_query(dab_root, "toyset", "1", hints=True)
     with pytest.raises(asyncio.CancelledError):

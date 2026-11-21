@@ -145,3 +145,28 @@ async def test_no_docker_call_without_the_docker_backend(
         assert "--sandbox" not in args and "--run-id" not in args
     else:
         assert flag(args, "--sandbox") == "local"
+
+
+@pytest.mark.parametrize("backend", ["docker", "local", None])
+async def test_a_docker_run_is_told_where_the_workspace_is_in_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker, backend: Backend | None
+) -> None:
+    """Ticket 100 return round 1: the prompt gave only the host path, and the agent's first
+    sandbox_exec in a docker run used it, where the container has the workspace at /workspace."""
+    prompts: list[str] = []
+
+    async def fake_query(*, prompt: str, **_: Any) -> AsyncIterator[Any]:
+        prompts.append(prompt)
+        yield result()
+
+    monkeypatch.setattr(agent, "query", fake_query)
+    db = tmp_path / "x.duckdb"
+    duckdb.connect(str(db)).close()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = Task(text="q", type="query", workspace=workspace, duckdb=db)
+    await agent.run(task, load_config("full"), tmp_path / "run-7", ENV, sandbox=backend)
+    [prompt] = prompts
+    assert f"Workspace (your working directory): {workspace.resolve()}" in prompt
+    line = "In `sandbox_exec` the workspace is at `/workspace`"
+    assert (line in prompt) == (backend == "docker")

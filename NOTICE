@@ -56,7 +56,8 @@ no per-file copyright header.
 - skills/sql-workflow/SKILL.md, skills/duckdb-sql/SKILL.md <- skills/ (same paths), modified as
   noted at the top of each file.
 - skills/dbt-workflow/SKILL.md, skills/dbt-write/SKILL.md, skills/dbt-debugging/SKILL.md <- skills/
-  (same paths), modified as noted at the top of each file.
+  (same paths), modified as noted at the top of each file (in dbt-workflow and dbt-write, the
+  Bash commands became sandbox_exec and dbt_execute calls, ADR-0010).
 - skills/dbt-workflow/scan_project.py <- skills/dbt-workflow/scan_project.py, modified as noted at
   its top; skills/dbt-workflow/validate_project.py <- same path, modified as noted at its top.
 - src/data_agent/agents/verifier.md <- agents/verifier.md, rewritten for the v2 tools as noted at

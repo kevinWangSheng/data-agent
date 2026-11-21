@@ -1,12 +1,12 @@
-"""Keep the file tools (Read, Glob, Grep, and Write, Edit in dbt runs) inside the task workspace.
+"""Keep the file tools (Read, Glob, Grep, Write, Edit) inside the task workspace.
 
 The SDK's allow list says which tools may run, not where they may look, so a `PreToolUse` hook
 checks every path argument: resolved against the workspace, with symlinks followed, it must stay
-inside the workspace, or the call is denied. Write and Edit may also not touch a protected file:
-the database, which only `dbt run` may change. Credential files inside the workspace (`.env*`, keys)
+inside the workspace, or the call is denied. Credential files inside the workspace (`.env*`, keys)
 are off limits too: no tool may read or change them, and Grep may not search a directory holding
 one unless its `glob` or `type` filter skips every one of them (dbt packages ship sample dotenv
-files, which would otherwise close the whole project to Grep). Glob still lists them, as it shows
+files, which would otherwise close the whole project to Grep). ADR-0010 keeps the guard to these
+two rules. Glob still lists them, as it shows
 names, not contents.
 
 A few files outside the workspace may be named `readable` (the run's task file, ticket 32): Read
@@ -16,15 +16,19 @@ Read and Grep may also open the files Claude Code saves an over-long tool output
 """
 
 import fnmatch
+import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 from claude_agent_sdk import HookCallback, HookContext, HookInput, HookJSONOutput
 
-GUARDED_TOOLS = ("Read", "Glob", "Grep")
-WRITE_TOOLS = ("Write", "Edit")
+from data_agent.dbt_execute import PROFILES_FILE
+from data_agent.verifier_v2 import yaml_lite
+
+FILE_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit")
 GLOB_CHARS = frozenset("*?[{")
 # File names that usually hold secrets: dotenv and direnv files, login and password files, keys.
 CREDENTIAL_NAMES = (
@@ -38,6 +42,24 @@ CREDENTIAL_NAMES = (
     "id_ecdsa*",
     "id_ed25519*",
 )
+# A dbt profile is a credential file when it writes a secret in (`holds_literal_secret`). A key is
+# secret-named when it is one of `PROFILE_SECRET_NAMES` or its name (lower case) holds one of
+# `PROFILE_SECRET_PARTS`, so `db_password`, `s3_secret_access_key` (dbt-duckdb's settings) and
+# `aws_session_token` count; unless it ends in `PROFILE_REFERENCE_SUFFIXES`, a path or address
+# to the secret (`private_key_path`, `token_uri`).
+PROFILE_SECRET_NAMES = frozenset({"pass", "keyfile_json"})
+PROFILE_SECRET_PARTS = (
+    "password",
+    "passphrase",
+    "secret",
+    "token",
+    "private_key",
+    "api_key",
+    "credential",
+)
+PROFILE_REFERENCE_SUFFIXES = ("_path", "_file", "_uri", "_url")
+# `env_var('NAME')` with no default (filters may follow): the value comes from the environment.
+ENV_VAR_ONLY = re.compile(r"""^\{\{\s*env_var\(\s*(['"])[^'"]*\1\s*\)(?:\s*\|\s*\w+)*\s*\}\}$""")
 # The file-name patterns ripgrep's `--type` stands for (`rg --type-list`, ripgrep 14), for the
 # types a dbt project is searched with; any other type is not trusted to skip a credential file.
 GREP_TYPES = {
@@ -73,11 +95,6 @@ def _glob_stays_inside(base: Path, pattern: str, workspace: Path) -> bool:
     return inside(resolve(base, str(Path(*parts[:fixed]))), workspace)
 
 
-def _protects(protected: Path, path: Path) -> bool:
-    """`protected` itself or a file beside it named after it, such as DuckDB's `.wal`."""
-    return path.parent == protected.parent and path.name.startswith(protected.name)
-
-
 def is_credential(name: str) -> bool:
     return any(fnmatch.fnmatchcase(name, pattern) for pattern in CREDENTIAL_NAMES)
 
@@ -99,6 +116,114 @@ def _files_below(directory: Path) -> list[Path]:
 def _is_credential_path(path: Path) -> bool:
     """`path` names a credential file, or lies in a credential-named directory."""
     return any(is_credential(part) for part in path.parts)
+
+
+def credential_files(workspace: Path) -> list[Path]:
+    """The credential files in `workspace`, relative to it: the names this guard keeps the file
+    tools from (`is_credential`), anything in a credential-named directory (listed as the
+    directory), a link to one, and a dbt profile with a secret written in (`holds_literal_secret`,
+    a rule of the docker mount only). The guard stops only the file tools; the docker sandbox
+    mounts the whole workspace, so a docker run refuses a workspace holding any (ADR-0010: the
+    sandbox holds no credentials)."""
+    found: list[Path] = []
+    for root, directories, files in os.walk(workspace):
+        here = Path(root)
+        found += [
+            here / name for name in directories if named_or_linked(here / name, is_credential)
+        ]
+        # Not into a credential directory (listed already), nor through a link (os.walk's own rule).
+        directories[:] = [name for name in directories if not is_credential(name)]
+        for name in sorted(files):
+            entry = here / name
+            if named_or_linked(entry, is_credential) or (
+                named_or_linked(entry, is_profile_name) and holds_literal_secret(entry)
+            ):
+                found.append(entry)
+    # Sorted: os.walk follows the file system's listing order, which differs between systems.
+    return sorted(entry.relative_to(workspace) for entry in found)
+
+
+def is_duckdb_name(name: str) -> bool:
+    """Names commonly used for DuckDB databases and their write-ahead logs."""
+    return name.lower().endswith((".duckdb", ".duckdb.wal"))
+
+
+def is_profile_name(name: str) -> bool:
+    return name == PROFILES_FILE
+
+
+def named_or_linked(entry: Path, named: Callable[[str], bool]) -> bool:
+    """`entry`'s name passes `named`, or it is a link whose target's does (under any name of its
+    own). `os.path.realpath`, unlike `Path.resolve`, does not raise on a link loop."""
+    return named(entry.name) or (entry.is_symlink() and named(Path(os.path.realpath(entry)).name))
+
+
+def holds_literal_secret(profile: Path) -> bool:
+    """A dbt profile with a secret written into it: a secret-named key (`_secret_named`, at any
+    depth, also inside a list) whose value is not empty and not only `env_var('NAME')` (a
+    default given to env_var is written in); a mapping under such a key is checked key by key,
+    a list under it by its items. The file is parsed (as JSON, else as the YAML subset
+    `yaml_lite` reads), so quoting and flow style hide no key. A stub profile, or one that reads
+    its secrets from the environment, holds none. A profile that cannot be read or parsed (also:
+    nested past the recursion limit) counts as holding one; so does one using anchors or tags,
+    which `yaml_lite` does not read."""
+    try:
+        text = profile.read_text(errors="replace")
+    except OSError:
+        return True
+    try:
+        try:
+            document = json.loads(text)
+        except ValueError:
+            document = yaml_lite.load(text)
+        return _holds_secret(document)
+    except (yaml_lite.YamlLiteError, RecursionError):
+        return True
+
+
+def _holds_secret(node: object) -> bool:
+    """A secret-named key with a value written in, anywhere in a parsed profile."""
+    if isinstance(node, list):
+        return any(_holds_secret(item) for item in cast("list[object]", node))
+    if not isinstance(node, dict):
+        return False
+    for key, value in cast("dict[object, object]", node).items():
+        if isinstance(value, dict):
+            if _holds_secret(value):
+                return True
+        elif isinstance(value, list):
+            items = cast("list[object]", value)
+            if _holds_secret(items) or (
+                _secret_named(str(key))
+                and any(_written_in(item) for item in items if not isinstance(item, dict | list))
+            ):
+                return True
+        elif _secret_named(str(key)) and _written_in(value):
+            return True
+    return False
+
+
+def _secret_named(key: str) -> bool:
+    """`key` names a secret (`PROFILE_SECRET_NAMES`, `PROFILE_SECRET_PARTS`; not a path or
+    address to one, `PROFILE_REFERENCE_SUFFIXES`). A key holding a backslash is taken as one:
+    `yaml_lite` leaves a double-quoted key's escapes as written, and `"pass\\u0077ord"` is
+    `password` to dbt."""
+    name = key.lower()
+    if "\\" in name or name in PROFILE_SECRET_NAMES:
+        return True
+    return not name.endswith(PROFILE_REFERENCE_SUFFIXES) and any(
+        part in name for part in PROFILE_SECRET_PARTS
+    )
+
+
+def _written_in(value: object) -> bool:
+    """A scalar value that is in the file: not empty, not only `env_var('NAME')`; a switch
+    (`use_token: false`) is none."""
+    if value is None or isinstance(value, bool):
+        return False
+    if not isinstance(value, str):
+        return True
+    return bool(value.strip()) and not ENV_VAR_ONLY.match(value.strip())
 
 
 def _expand_braces(pattern: str) -> list[str]:
@@ -225,13 +350,11 @@ def outside_paths(
     tool: str,
     tool_input: dict[str, object],
     workspace: Path,
-    protected: Sequence[Path] = (),
     readable: Sequence[Path] = (),
 ) -> list[str]:
-    """The path arguments of one tool call that reach outside `workspace` (already resolved), that
-    reach a credential file, or that Write or Edit would use to change a `protected` file (already
-    resolved). Read may also open a `readable` file (already resolved); Read and Grep a saved tool
-    result."""
+    """The path arguments of one tool call that reach outside `workspace` (already resolved) or
+    that reach a credential file. Read may also open a `readable` file (already resolved); Read
+    and Grep a saved tool result."""
     bad: list[str] = []
     match tool:
         case "Read":
@@ -246,12 +369,7 @@ def outside_paths(
         case "Write" | "Edit":
             raw = str(tool_input.get("file_path", ""))
             path = resolve(workspace, raw)
-            if (
-                not raw
-                or not inside(path, workspace)
-                or any(_protects(p, path) for p in protected)
-                or _names_credential(workspace, raw)
-            ):
+            if not raw or not inside(path, workspace) or _names_credential(workspace, raw):
                 bad.append(raw)
         case "Glob" | "Grep":
             raw_base = tool_input.get("path")
@@ -327,11 +445,8 @@ def _excluding_retry(
     return retry
 
 
-def workspace_guard(
-    workspace: Path, protected: Sequence[Path] = (), readable: Sequence[Path] = ()
-) -> HookCallback:
+def workspace_guard(workspace: Path, readable: Sequence[Path] = ()) -> HookCallback:
     root = workspace.resolve()
-    kept = [path.resolve() for path in protected]
     readable_paths = [path.resolve() for path in readable]
 
     async def guard(
@@ -339,9 +454,7 @@ def workspace_guard(
     ) -> HookJSONOutput:
         if hook_input["hook_event_name"] != "PreToolUse":
             return {}
-        bad = outside_paths(
-            hook_input["tool_name"], hook_input["tool_input"], root, kept, readable_paths
-        )
+        bad = outside_paths(hook_input["tool_name"], hook_input["tool_input"], root, readable_paths)
         if not bad:
             return {}
         return {
@@ -353,8 +466,7 @@ def workspace_guard(
                 "permissionDecisionReason": (
                     "Only files inside the workspace (the working directory) can be used, not "
                     "credential files such as .env (Grep: search a directory without them, or "
-                    "pass a glob or type that skips them), and only dbt run may change the "
-                    f"database; denied: {', '.join(bad)}"
+                    f"pass a glob or type that skips them); denied: {', '.join(bad)}"
                 ),
             }
         }

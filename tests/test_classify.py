@@ -22,7 +22,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 from test_agent_outcomes import TOOL_RESULT, call, result, run_with
-from test_dab import dab_server, logged_calls, make_dab
+from test_dab import call_local, dab_server, local_dab, logged_calls, make_dab
 
 from data_agent import agent, classify
 from data_agent.gateway import DuckDBGateway
@@ -536,29 +536,32 @@ async def dab_with_model(
         yield session
 
 
-PRINT = "import json\nprint('FAKE-RESULT:' + json.dumps({}))"
-
-
-async def test_dab_classifies_sql_rows_into_a_python_variable(
+async def test_dab_classifies_sql_rows_into_a_result_for_data_files(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Ticket 100: the label table gets a result id, as a query result does, and sandbox_exec
+    reads it through `data_files` (in place of DAB's Python variables)."""
     root = make_dab(tmp_path / "dab")
     add_notes(root)
     log = tmp_path / "tools.jsonl"
     with serve(FakeModel(by_fixture)) as model:
-        async with dab_with_model(root, log, model, make_ledger(tmp_path), monkeypatch) as session:
-            names = {tool.name for tool in (await session.list_tools()).tools}
-            args = classify_args("SELECT id, body FROM notes") | {"db_name": "prices_db"}
-            outcome = await session.call_tool("classify_text", args)
-            code = PRINT.format("sorted((r['id'], r['label']) for r in var_1)")
-            labels = await session.call_tool("execute_python", {"code": code})
+        for name, value in model_env(model, make_ledger(tmp_path)).items():
+            monkeypatch.setenv(name, value)
+        server = local_dab(root, tmp_path / "workspace")
+        names = {tool.name for tool in await server.list_tools()}
+        args = classify_args("SELECT id, body FROM notes") | {"db_name": "prices_db"}
+        text = await call_local(server, "classify_text", args)
+        command = "test -s data/query_1.csv"
+        ran = await call_local(
+            server, "sandbox_exec", {"command": command, "data_files": ["query_1"]}
+        )
     assert "classify_text" in names
-    text = text_of(outcome)
-    assert not outcome.is_error, text
     assert "20 rows fetched; 20 labeled with a category." in text
-    assert "Label table: variable `var_1`" in text
-    _, _, data = text_of(labels).partition("\n")
-    assert json.loads(data) == [[i, c] for i, _, c in fixture_rows()]
+    assert "Label table: [result id: query_1;" in text
+    assert ran == "exit_code: 0"
+    with (tmp_path / "workspace" / "data" / "query_1.csv").open() as f:
+        labels = [(int(row["id"]), row["label"]) for row in csv.DictReader(f)]
+    assert labels == [(i, c) for i, _, c in fixture_rows()]
     # The rows came through DAB's query tool, the count first.
     queries = [c["args"]["query"] for c in logged_calls(log) if c["tool_name"] == "query_db"]
     assert queries[0].startswith("SELECT COUNT(*) AS n FROM (")

@@ -16,13 +16,13 @@ the file's directory:
 The connection string stays in the server's environment; the file, responses, run arguments and
 events carry only the variable's name.
 
-A DuckDB source with a dbt project keeps its file inside the project, and the runs directory and a
-dbt project do not contain each other (`check_layout`): each dbt run works on its own copy of the
-project, the DuckDB file included, and leaves the original alone.
+The runs directory and a dbt project do not contain each other (`check_layout`): each dbt run
+works on its own copy of the project and leaves the original alone. The DuckDB file may be inside
+the project or anywhere else: a dbt run gets its own copy of it beside the workspace and a profile
+of its own (ticket 99, `data_agent.web.launcher.prepare_workspace`).
 """
 
 import json
-import os
 import re
 import tomllib
 from collections.abc import Sequence
@@ -127,9 +127,7 @@ def resolve(base: Path, value: Any, what: str) -> Path:
 
 def check_layout(runs_dir: Path, sources: Sequence[DataSource]) -> None:
     """ValueError naming the first source a dbt run could not copy into its own working directory:
-    a runs directory and a dbt project inside one another would copy the workspace into itself,
-    and a DuckDB file outside its dbt project has no place in the copy that `profiles.yml`'s
-    relative path still reaches."""
+    a runs directory and a dbt project inside one another would copy the workspace into itself."""
     runs = runs_dir.resolve()
     for source in sources:
         if source.dbt_project is None:
@@ -141,21 +139,6 @@ def check_layout(runs_dir: Path, sources: Sequence[DataSource]) -> None:
                 f"{where}: dbt_project {project} and the runs directory {runs} contain one "
                 "another; dbt runs copy the project into the runs directory, so keep them apart"
             )
-        if source.duckdb is not None and duckdb_in_project(source) is None:
-            raise ValueError(
-                f"{where}: the DuckDB file must be inside dbt_project ({project}) so each dbt "
-                "run's copy of the project carries its own copy of the file"
-            )
-
-
-def duckdb_in_project(source: DataSource) -> Path | None:
-    """The DuckDB file's path relative to the source's dbt project, or None when it is outside.
-    Compared as written, without following links, because that is the place the copy of the
-    project (which copies what links point to) gives the file."""
-    assert source.duckdb is not None and source.dbt_project is not None
-    file = Path(os.path.abspath(source.duckdb))
-    project = Path(os.path.abspath(source.dbt_project))
-    return file.relative_to(project) if file.is_relative_to(project) else None
 
 
 def overlap(a: Path, b: Path) -> bool:
