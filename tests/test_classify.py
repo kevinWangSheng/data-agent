@@ -1,5 +1,6 @@
-"""classify_text (ticket 70): the product server's tool and its label tables, the DAB server's tool,
-and how its model calls count toward the run's spend. The model is `fake_model`'s local stand-in."""
+"""classify_text (ticket 70; its unresolved answer, resume_from and text columns, ticket 106): the
+product server's tool and its label tables, the DAB server's tool, and how its model calls count
+toward the run's spend. The model is `fake_model`'s local stand-in."""
 
 import csv
 import dataclasses
@@ -7,6 +8,8 @@ import itertools
 import json
 import os
 import re
+import shutil
+import sqlite3
 import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -757,6 +760,433 @@ async def test_a_dab_run_gives_its_server_the_ledger(
     final = json.loads(trace.read_text().splitlines()[-1])
     assert final["tool_cost_usd"] == pytest.approx(1000 * FLASH.input / 1e6)
     assert API_KEY not in trace.read_text()
+
+
+# --- ticket 106: unresolved, resume_from, several text columns ----------------------------------
+# (ideas from Stela's semantic-analysis; see classify's docstring)
+
+MARK = classify.UNRESOLVED_MARK
+TEXTS = {i: t for i, t, _ in fixture_rows()}
+FOG = next(i for i, t in TEXTS.items() if "fog" in t)
+RECORD = next(i for i, t in TEXTS.items() if "record" in t)
+CELLO = next(i for i, t in TEXTS.items() if "cello" in t)
+
+# The system prompt and reply format before ticket 106, word for word.
+OLD_SYSTEM = """\
+You sort texts into categories. You get a list of categories, possibly instructions on how to \
+choose, and numbered texts. Give every text exactly one category from the list, written exactly \
+as it is in the list. Reply with only a JSON object that maps each text's number to its category, \
+for example {"1": "<category>", "2": "<category>"}, and nothing else.
+"""
+OLD_REPLY = [
+    "20 rows fetched; 18 labeled with a category.",
+    "Rows per category:",
+    "  weather: 4",
+    "  sport: 5",
+    "  cooking: 5",
+    "  music: 4",
+    "Rows without a category (counted in no category above):",
+    "  outside_categories: 1 (the model answered a label outside the categories)",
+    "  no_label: 1 (the model's reply had no label for them)",
+    f"Labels outside the categories: {MARK!r} x1",
+    "Label table: `labels_1` (read it with query_labels), also the file "
+    "`data_agent_labels/labels_1.csv` in the workspace. Columns: id, year, label, outcome, "
+    "model_label; `label` is a category or null, `outcome` is one of labeled, "
+    "outside_categories, no_label, failed, empty_text.",
+    "Model calls: 1 (1000 input, 200 cached input, 50 output tokens; $0.0004, counted in the "
+    "run's spend).",
+]
+
+
+def setenv(monkeypatch: pytest.MonkeyPatch, model: FakeModel, tmp_path: Path) -> Any:
+    ledger = make_ledger(tmp_path)
+    for name, value in model_env(model, ledger).items():
+        monkeypatch.setenv(name, value)
+    return ledger
+
+
+def label_table(workspace: Path, name: str) -> dict[int, dict[str, str]]:
+    with (workspace / "data_agent_labels" / f"{name}.csv").open(newline="") as f:
+        return {int(row["id"]): row for row in csv.DictReader(f)}
+
+
+def sent(model: FakeModel) -> list[str]:
+    return [text for request in model.requests for text in model.texts(request)]
+
+
+# --- unresolved --------------------------------------------------------------------------------
+
+
+def unsure_of_fog(text: str) -> str | None:
+    return MARK if "fog" in text else by_fixture(text)
+
+
+async def test_an_unresolved_answer_counts_apart_from_every_category(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    with serve(FakeModel(unsure_of_fog)) as model:
+        setenv(monkeypatch, model, tmp_path)
+        outcome = await call_tool(
+            product_server(articles_db, workspace),
+            "classify_text",
+            classify_args(allow_unresolved=True),
+        )
+    text = text_of(outcome)
+    assert not outcome.is_error, text
+    assert "20 rows fetched; 19 labeled with a category." in text
+    assert "  weather: 4" in text  # the fog text is a weather text, counted in no category
+    assert sum(int(n) for n in re.findall(r"^  \w+: (\d+)$", text, re.M)) == 19
+    assert "  unresolved: 1 (the model answered it could not tell which category fits)" in text
+    assert "outside_categories" not in text.split("Label table:")[0]
+    assert "Labels outside the categories" not in text
+    assert "`outcome` is one of labeled, unresolved," in text
+    row = label_table(workspace, "labels_1")[FOG]
+    assert (row["label"], row["outcome"], row["model_label"]) == ("", "unresolved", MARK)
+    # The system prompt names the mark.
+    [request] = model.requests
+    assert MARK in request["body"]["system"]
+
+
+async def test_the_mark_may_not_be_a_category(
+    fake: FakeModel, articles_db: Path, workspace: Path
+) -> None:
+    args = classify_args(categories=[*CATEGORIES, MARK], allow_unresolved=True)
+    outcome = await call_tool(product_server(articles_db, workspace), "classify_text", args)
+    assert outcome.is_error
+    assert MARK in text_of(outcome)
+    assert fake.requests == []
+
+
+async def test_without_the_new_parameters_prompt_and_reply_are_as_before(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    """The mark is an ordinary label outside the categories when unresolved is not allowed."""
+
+    def label(text: str) -> str | None:
+        return None if "cello" in text else unsure_of_fog(text)
+
+    with serve(FakeModel(label)) as model:
+        setenv(monkeypatch, model, tmp_path)
+        outcome = await call_tool(
+            product_server(articles_db, workspace), "classify_text", classify_args()
+        )
+    text = text_of(outcome)
+    assert text.splitlines()[:-1] == OLD_REPLY
+    [request] = model.requests
+    assert request["body"]["system"] == OLD_SYSTEM
+    prompt = request["body"]["messages"][0]["content"]
+    blocks = "\n".join(f'<text id="{i}">\n{TEXTS[i]}\n</text>' for i in sorted(TEXTS))
+    assert prompt == f'Categories: ["weather", "sport", "cooking", "music"]\n\nTexts:\n{blocks}'
+    assert list(label_table(workspace, "labels_1")[1]) == [
+        "id",
+        "year",
+        "label",
+        "outcome",
+        "model_label",
+    ]
+
+
+# --- resume ------------------------------------------------------------------------------------
+
+
+def flaky(text: str) -> str | None:
+    """No label for the fog text, the mark for the cello text; the rest by the fixture."""
+    if "fog" in text:
+        return None
+    if "cello" in text:
+        return MARK
+    return by_fixture(text)
+
+
+async def test_a_resume_sends_only_the_rows_without_a_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    monkeypatch.setattr(classify, "BATCH_ROWS", 1)
+    first_model = FakeModel(flaky, fail=lambda texts: any("record" in t for t in texts))
+    with serve(first_model):
+        setenv(monkeypatch, first_model, tmp_path)
+        server = product_server(articles_db, workspace)
+        first = text_of(
+            await call_tool(server, "classify_text", classify_args(allow_unresolved=True))
+        )
+    assert "  failed: 1 " in first and "  no_label: 1 " in first and "  unresolved: 1 " in first
+    with serve(FakeModel(by_fixture)) as model:
+        for name, value in model_env(model, None).items():
+            monkeypatch.setenv(name, value)  # the new endpoint, the same ledger
+        outcome = await call_tool(server, "classify_text", classify_args(resume_from="labels_1"))
+    text = text_of(outcome)
+    assert not outcome.is_error, text
+    # Only the failed and no-label rows went to the model; the unresolved one was kept.
+    assert sorted(sent(model)) == sorted([TEXTS[FOG], TEXTS[RECORD]])
+    assert "20 rows fetched; 19 labeled with a category." in text
+    assert "  unresolved: 1 " in text
+    assert (
+        "Resumed from labels_1: 2 rows sent to the model (failed or no_label there, or not in "
+        "it); 18 rows kept as they were." in text
+    )
+    first_rows, merged = label_table(workspace, "labels_1"), label_table(workspace, "labels_2")
+    assert set(merged) == set(TEXTS)
+    for key, row in merged.items():
+        if key in (FOG, RECORD):
+            assert (row["label"], row["outcome"]) == (by_fixture(TEXTS[key]), "labeled")
+        else:
+            assert row == first_rows[key]
+
+
+async def test_a_resume_may_retry_the_unresolved_rows_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    with serve(FakeModel(flaky)) as model:
+        setenv(monkeypatch, model, tmp_path)
+        server = product_server(articles_db, workspace)
+        await call_tool(server, "classify_text", classify_args(allow_unresolved=True))
+        model.label = by_fixture
+        model.requests.clear()
+        args = classify_args(resume_from="labels_1", retry_unresolved=True)
+        text = text_of(await call_tool(server, "classify_text", args))
+    assert sorted(sent(model)) == sorted([TEXTS[FOG], TEXTS[CELLO]])
+    assert "20 rows fetched; 20 labeled with a category." in text
+    assert "2 rows sent to the model (failed, no_label or unresolved there, or not in it)" in text
+
+
+async def test_a_resume_classifies_the_rows_a_budget_stop_left_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    """The first call stops at the budget with 10 rows left; the resume, with room for one more
+    batch, labels 5 of them, stops again and keeps every label it had."""
+    monkeypatch.setattr(classify, "BATCH_ROWS", 5)
+    monkeypatch.setattr(classify, "MAX_CONCURRENT_BATCHES", 1)
+    ledger = make_ledger(tmp_path, budget=2 * CALL_USD, spent=0.5 * CALL_USD)
+    with serve(FakeModel(by_fixture)) as model:
+        for name, value in model_env(model, ledger).items():
+            monkeypatch.setenv(name, value)
+        server = product_server(articles_db, workspace)
+        first = text_of(await call_tool(server, "classify_text", classify_args()))
+        assert "  not classified: 10 " in first
+        # 2.5 calls spent; room for one more.
+        ledger.publish(RunState(3.4 * CALL_USD, 0.5 * CALL_USD, *FLASH_PRICES))
+        model.requests.clear()
+        text = text_of(
+            await call_tool(server, "classify_text", classify_args(resume_from="labels_1"))
+        )
+    assert len(model.requests) == 1
+    assert "20 rows fetched; 15 labeled with a category." in text
+    assert "  not classified: 5 (the run's budget of $" in text
+    assert "5 rows sent to the model" in text
+    first_rows, merged = label_table(workspace, "labels_1"), label_table(workspace, "labels_2")
+    assert len(merged) == 15
+    assert all(merged[key] == row for key, row in first_rows.items())
+
+
+FLASH_PRICES = (FLASH.input, FLASH.cached_input, FLASH.output)
+
+
+async def test_retried_rows_the_budget_leaves_out_keep_their_old_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    monkeypatch.setattr(classify, "BATCH_ROWS", 5)
+    monkeypatch.setattr(classify, "MAX_CONCURRENT_BATCHES", 1)
+    ledger = make_ledger(tmp_path)
+    with serve(FakeModel(lambda text: None)) as model:
+        for name, value in model_env(model, ledger).items():
+            monkeypatch.setenv(name, value)
+        server = product_server(articles_db, workspace)
+        first = text_of(await call_tool(server, "classify_text", classify_args()))
+        assert "  no_label: 20 " in first
+        # 4 calls spent; room for one more.
+        ledger.publish(RunState(4.9 * CALL_USD, 0.0, *FLASH_PRICES))
+        model.label = by_fixture
+        model.requests.clear()
+        text = text_of(
+            await call_tool(server, "classify_text", classify_args(resume_from="labels_1"))
+        )
+    assert len(model.requests) == 1
+    assert "20 rows fetched; 5 labeled with a category." in text
+    assert "  no_label: 15 " in text
+    assert "not classified" not in text
+    assert "5 rows sent to the model" in text and "15 rows kept as they were" in text
+    assert "was reached before 15 of the rows to retry were sent: they keep their outcome" in text
+    merged = label_table(workspace, "labels_2")
+    assert sorted(r["outcome"] for r in merged.values()) == ["labeled"] * 5 + ["no_label"] * 15
+
+
+@pytest.mark.parametrize(
+    ("resume_from", "sql", "error"),
+    [
+        ("labels_9", ARTICLES, "no label table 'labels_9'"),
+        ("labels_1", "SELECT id, body FROM articles", "its columns are"),
+    ],
+)
+async def test_a_resume_from_an_unknown_or_different_table_fails_before_any_call(
+    resume_from: str, sql: str, error: str, fake: FakeModel, articles_db: Path, workspace: Path
+) -> None:
+    server = product_server(articles_db, workspace)
+    await call_tool(server, "classify_text", classify_args())
+    fake.requests.clear()
+    outcome = await call_tool(server, "classify_text", classify_args(sql, resume_from=resume_from))
+    assert outcome.is_error
+    assert error in text_of(outcome)
+    assert fake.requests == []
+
+
+async def test_a_resume_holds_only_the_rows_its_query_returns(
+    fake: FakeModel, articles_db: Path, workspace: Path
+) -> None:
+    """Rows of the resumed table that this query no longer returns are not carried over: the
+    label table and the counts are this query's rows."""
+    server = product_server(articles_db, workspace)
+    await call_tool(server, "classify_text", classify_args())
+    fake.requests.clear()
+    sql = f"{ARTICLES} WHERE id <= 10"
+    text = text_of(
+        await call_tool(server, "classify_text", classify_args(sql, resume_from="labels_1"))
+    )
+    assert fake.requests == []
+    assert "10 rows fetched; 10 labeled with a category." in text
+    assert "0 rows sent to the model" in text and "10 rows kept as they were" in text
+    counts = [
+        int(line.rsplit(": ", 1)[1])
+        for line in text.splitlines()
+        if line.startswith("  ") and line.strip().split(":")[0] in CATEGORIES
+    ]
+    assert sum(counts) == 10
+    assert set(label_table(workspace, "labels_2")) == {key for key in TEXTS if key <= 10}
+
+
+# --- several text columns ----------------------------------------------------------------------
+
+
+async def test_several_text_columns_go_in_one_text_by_column_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    def label(text: str) -> str | None:
+        return by_fixture(text.split("\n")[0].removeprefix("body: "))
+
+    sql = "SELECT id, body, 'Title ' || id AS title, year FROM articles"
+    with serve(FakeModel(label)) as model:
+        setenv(monkeypatch, model, tmp_path)
+        args = classify_args(sql, text_column=["body", "title"])
+        text = text_of(
+            await call_tool(product_server(articles_db, workspace), "classify_text", args)
+        )
+    assert "20 rows fetched; 20 labeled with a category." in text
+    assert sorted(sent(model)) == sorted(f"body: {t}\ntitle: Title {i}" for i, t in TEXTS.items())
+    assert "Columns: id, year, label, outcome, model_label;" in text
+
+
+async def test_text_columns_must_exist_and_differ_from_the_key(
+    fake: FakeModel, articles_db: Path, workspace: Path
+) -> None:
+    server = product_server(articles_db, workspace)
+    for columns, error in [
+        (["body", "missing"], "no column 'missing'"),
+        (["body", "id"], "key_column and text_column must be different columns"),
+        (["body", "body"], "text_column must not repeat"),
+        ([], "text_column must name at least one column"),
+    ]:
+        outcome = await call_tool(server, "classify_text", classify_args(text_column=columns))
+        assert outcome.is_error, columns
+        assert error in text_of(outcome), columns
+    assert fake.requests == []
+
+
+# --- both servers ------------------------------------------------------------------------------
+
+NEW_PARAMETERS = {"allow_unresolved", "resume_from", "retry_unresolved"}
+
+
+def takes_a_list(schema: dict[str, Any]) -> bool:
+    return any(option.get("type") == "array" for option in schema.get("anyOf", [schema]))
+
+
+async def test_both_servers_register_the_new_parameters(
+    fake: FakeModel, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    product = {t.name: t for t in await product_server(articles_db, workspace).list_tools()}
+    root = make_dab(tmp_path / "dab")
+    dab_tools = {t.name: t for t in await local_dab(root, tmp_path / "dabws").list_tools()}
+    for tools in (product, dab_tools):
+        tool = tools["classify_text"]
+        properties = tool.input_schema["properties"]
+        assert properties.keys() >= NEW_PARAMETERS
+        assert takes_a_list(properties["text_column"])
+        assert set(tool.input_schema["required"]).isdisjoint(NEW_PARAMETERS)
+        for name in ("resume_from", "retry_unresolved", "allow_unresolved", MARK):
+            assert name in (tool.description or ""), name
+
+
+async def test_dab_resumes_from_a_result_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = make_dab(tmp_path / "dab")
+    add_notes(root)
+    base = classify_args("SELECT id, body FROM notes") | {"db_name": "prices_db"}
+    with serve(FakeModel(flaky)) as model:
+        setenv(monkeypatch, model, tmp_path)
+        server = local_dab(root, tmp_path / "workspace")
+        first = await call_local(server, "classify_text", base)
+        assert "Label table: [result id: query_1;" in first
+        model.label = by_fixture
+        model.requests.clear()
+        text = await call_local(server, "classify_text", base | {"resume_from": "query_1"})
+        listed = await call_local(
+            server, "query_database", {"db_name": "prices_db", "sql": "SELECT 1 AS x"}
+        )
+        plain = listed.splitlines()[-1].split()[2][:-1]
+        bad = await call_tool(server, "classify_text", base | {"resume_from": plain})
+    # Without allow_unresolved the cello's mark is outside the categories: not retried.
+    assert sent(model) == [TEXTS[FOG]]
+    assert "19 labeled with a category." in text
+    assert "Resumed from query_1: 1 rows sent to the model" in text
+    assert "Label table: [result id: query_2;" in text
+    assert bad.is_error
+    assert f"there is no label table {plain!r} from classify_text" in text_of(bad)
+
+
+async def test_dab_resumes_only_from_a_table_this_tool_made(
+    fake: FakeModel, tmp_path: Path
+) -> None:
+    """A query result shaped like a label table is not one: as on the product server, only a
+    table classify_text stored can be resumed."""
+    root = make_dab(tmp_path / "dab")
+    add_notes(root)
+    server = local_dab(root, tmp_path / "workspace")
+    sql = "SELECT id, 'sport' AS label, 'labeled' AS outcome, NULL AS model_label FROM notes"
+    listed = await call_local(server, "query_database", {"db_name": "prices_db", "sql": sql})
+    lookalike = listed.splitlines()[-1].split()[2][:-1]
+    base = classify_args("SELECT id, body FROM notes") | {"db_name": "prices_db"}
+    outcome = await call_tool(server, "classify_text", base | {"resume_from": lookalike})
+    assert outcome.is_error
+    assert f"there is no label table {lookalike!r} from classify_text" in text_of(outcome)
+    assert fake.requests == []
+
+
+async def test_dab_resumes_only_on_the_database_the_table_came_from(
+    fake: FakeModel, tmp_path: Path
+) -> None:
+    """Two databases of one run with the same columns and keys: a label table from one is not
+    the other's labels, so resuming it on the other is refused before any model call (the
+    product server binds a label table to its database the same way)."""
+
+    root = make_dab(tmp_path / "dab")
+    add_notes(root)
+    dataset = root / "query_toyset"
+    shutil.copy(dataset / "query_dataset" / "prices.db", dataset / "query_dataset" / "copy.db")
+    config = json.loads((dataset / "db_config.yaml").read_text())
+    config["db_clients"]["copy_db"] = {"db_type": "sqlite", "db_path": "query_dataset/copy.db"}
+    (dataset / "db_config.yaml").write_text(json.dumps(config))
+    with sqlite3.connect(dataset / "query_dataset" / "copy.db") as conn:
+        conn.execute("UPDATE notes SET body = 'Fog closed the harbour.'")
+    server = local_dab(root, tmp_path / "workspace")
+    base = classify_args("SELECT id, body FROM notes")
+    first = await call_local(server, "classify_text", base | {"db_name": "prices_db"})
+    assert "Label table: [result id: query_1;" in first
+    fake.requests.clear()
+    other = base | {"db_name": "copy_db", "resume_from": "query_1"}
+    outcome = await call_tool(server, "classify_text", other)
+    assert outcome.is_error
+    assert "'query_1' was made from database 'prices_db', not 'copy_db'" in text_of(outcome)
+    assert fake.requests == []
 
 
 # --- the real model (make test-integration; the main session runs it) ---------------------------

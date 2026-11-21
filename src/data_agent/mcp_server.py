@@ -22,6 +22,7 @@ from data_agent.classify import (
     description,
     fetch_sql,
     report,
+    resume_of,
     setup_from_env,
 )
 from data_agent.context_tools import (
@@ -383,6 +384,8 @@ def register_base_tools(
     `results` (a run with a sandbox) each successful query_database result is kept there and its
     text ends with the result's id, for sandbox_exec's `data_files`."""
     tool = database_tools(server, databases)
+    # classify_text's label tables by name, with the database's store that holds them.
+    label_tables: dict[str, tuple[LabelTables, QueryResult]] = {}
 
     @tool(annotations=READ_ONLY)
     def query_database(db: Database, sql: str, row_limit: int = 1000) -> str:
@@ -479,6 +482,8 @@ def register_base_tools(
             "query_database.",
             stored=f"a table `labels_<n>` that query_labels reads, also saved as "
             f"`{LABELS_DIR}/labels_<n>.csv` in the workspace.",
+            resumed="the name of a label table this tool made in this run on the same "
+            "database (`labels_<n>`)",
             env=os.environ,
         ),
     )
@@ -486,15 +491,25 @@ def register_base_tools(
         db: Database,
         sql: str,
         key_column: str,
-        text_column: str,
+        text_column: str | list[str],
         categories: list[str],
         instructions: str = "",
+        allow_unresolved: bool = False,
+        resume_from: str = "",
+        retry_unresolved: bool = False,
     ) -> str:
         allowed = check_categories(categories)
+        made = label_tables.get(resume_from)
+        found = made[1] if made is not None and made[0] is db.labels else None
+        resume = resume_of(resume_from, found, retry_unresolved)
         setup = setup_from_env(os.environ)
         rows = fetch_sql(db.run, sql, db.gateway.dialect, key_column)
-        classification = classify(rows, key_column, text_column, allowed, instructions, setup)
+        classification = classify(
+            rows, key_column, text_column, allowed, instructions, setup, allow_unresolved, resume
+        )
         name, path = db.labels.add(classification.columns, classification.rows)
+        # As made, for a later call's resume_from (the DuckDB table holds some values as text).
+        label_tables[name] = (db.labels, QueryResult(classification.columns, classification.rows))
         stored = f"`{name}` (read it with query_labels)"
         if path is not None and workspace is not None:
             stored += f", also the file `{path.relative_to(workspace)}` in the workspace"
