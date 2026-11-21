@@ -15,7 +15,15 @@ from mcp.types import CallToolResult, TextContent
 from data_agent.gateway import DuckDBGateway
 from data_agent.mcp_server import build_multi_server, build_server
 from data_agent.run_config import CONFIG_NAMES, load_config
-from data_agent.sandbox import KEEP_BYTES, LocalSandbox
+from data_agent.sandbox import (
+    KEEP_BYTES,
+    MAX_OUTPUT_FILES,
+    OUTPUT_FILES_CHARS,
+    Execution,
+    LocalSandbox,
+    outputs_snapshot,
+    reply_text,
+)
 
 SKILLS = Path("/opt/skills")
 
@@ -298,3 +306,45 @@ async def test_output_files_are_reported_on_timeout(server: MCPServer) -> None:
     )
     assert "timed out after 1 seconds" in error
     assert error.endswith("output_files:\n- outputs/partial.csv")
+
+
+def test_outputs_snapshot_refuses_a_symlink_swapped_in_between_lstat_and_open(
+    workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """da-review P2: directory traversal uses O_NOFOLLOW descriptors, so a symlink swapped in
+    after lstat (for outputs/ or a nested dir) is never followed."""
+    import os
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.csv").write_text("a\n1\n")
+    outputs = workspace / "outputs"
+    outputs.mkdir()
+    nested = outputs / "sub"
+    nested.mkdir()
+    (outputs / "ok.csv").write_text("x\n1\n")
+
+    real_lstat = os.lstat
+
+    def swap_on_lstat(path: Any, *, dir_fd: int | None = None) -> os.stat_result:
+        st = real_lstat(path, dir_fd=dir_fd)
+        if path == "sub" and nested.is_dir() and not nested.is_symlink():
+            nested.rmdir()
+            nested.symlink_to(outside)
+        return st
+
+    monkeypatch.setattr(os, "lstat", swap_on_lstat)
+    found = outputs_snapshot(workspace)
+    assert set(found) == {"outputs/ok.csv"}
+
+
+def test_output_files_manifest_is_bounded_and_saved_whole(workspace: Path) -> None:
+    """da-review P2: a large output_files list is bounded inline and saved to sandbox_logs/."""
+    paths = [f"outputs/part-{i:05d}.csv" for i in range(MAX_OUTPUT_FILES + 50)]
+    reply = reply_text(Execution(0, "", "", False), workspace, paths)
+    assert len(reply) < OUTPUT_FILES_CHARS + 500
+    assert "[OUTPUT FILES CUT]" in reply
+    assert f"of {len(paths):,} output files" in reply
+    [saved] = (workspace / "sandbox_logs").glob("*.output_files.txt")
+    assert saved.read_text().splitlines() == paths
+    assert str(saved.relative_to(workspace)) in reply
