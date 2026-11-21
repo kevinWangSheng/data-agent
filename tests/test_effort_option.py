@@ -42,6 +42,7 @@ def test_without_effort_the_options_leave_the_models_reasoning_to_the_endpoint(
     assert (built.effort, built.thinking, built.max_thinking_tokens) == (None, None, None)
     argv = cli_args(built)
     assert not {"--effort", "--thinking", "--max-thinking-tokens"} & set(argv)
+    assert agent.EFFORT_ENV not in built.env
 
 
 def test_effort_max_sets_the_sessions_effort_and_nothing_else(tmp_path: Path) -> None:
@@ -49,8 +50,10 @@ def test_effort_max_sets_the_sessions_effort_and_nothing_else(tmp_path: Path) ->
     assert maxed.effort == "max"
     argv = cli_args(maxed)
     assert argv[argv.index("--effort") + 1] == "max"
+    # The CLI (2.1.301) lets this variable override --effort; one the shell exported must not.
+    assert maxed.env == plain.env | {agent.EFFORT_ENV: "max"}
     for f in fields(ClaudeAgentOptions):
-        if f.name == "effort":
+        if f.name in ("effort", "env"):
             continue
         if f.name in CALLABLES:
             assert (getattr(plain, f.name) is None) == (getattr(maxed, f.name) is None)

@@ -1711,7 +1711,10 @@ async def test_rerun_with_the_same_effort_goes_on(
 
 
 def test_the_cli_effort_reaches_the_session_and_another_is_refused_on_the_same_out(
-    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    dab_root: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     seen: list[dict[str, Any]] = []
     monkeypatch.setattr(dab, "query", scripted(["x", "y"], seen))
@@ -1722,7 +1725,9 @@ def test_the_cli_effort_reaches_the_session_and_another_is_refused_on_the_same_o
     ]
     assert evals_main([*args, "--effort", "max"]) == 0
     assert [s["options"].effort for s in seen] == ["max"]
+    capsys.readouterr()
     assert evals_main([*args, "--runs", "2"]) == 2  # no --effort: other conditions
+    assert "effort 'max' there, None now" in capsys.readouterr().err
     assert len(seen) == 1
 
 

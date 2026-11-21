@@ -292,11 +292,11 @@ def main(argv: list[str] | None = None) -> None:
         help="give the agent WebSearch and WebFetch, and the docker sandbox the network "
         "(never on an evaluation run)",
     )
-    # Run-level too (ticket 104): unset, the session sends no effort; the endpoint's default holds.
+    # Run-level too (ticket 104): unset, the CLI's own default holds (`agent.EFFORTS`).
     run_cmd.add_argument(
         "--effort",
         choices=EFFORTS,
-        help="the model's reasoning effort (default: the endpoint's)",
+        help="the model's reasoning effort (default: the Claude Code CLI's)",
     )
     # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
     # and single runs never set these (spec decision 19).

@@ -677,7 +677,7 @@ async def run_query(
             continue
         if budget is not None and spent(out) >= budget * spend.STOP_FRACTION:
             raise BudgetReached(f"spend under {out} reached {spend.STOP_PERCENT} of ${budget}")
-        answer, status = await run_once(dab_root, dab_query, config, out, run, env, effort)
+        answer, status = await run_once(dab_root, dab_query, config, out, run, env, effort=effort)
         print(f"{dab_query.dataset} query{dab_query.query_id} run{run}: {status}")
         if status == "infra_error":
             infra_errors += 1
@@ -707,7 +707,7 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.add_argument(
         "--effort",
         choices=EFFORTS,
-        help="the model's reasoning effort (default: the endpoint's); a run condition",
+        help="the model's reasoning effort (default: the Claude Code CLI's); a run condition",
     )
     parser.add_argument(
         "--budget", help="stop once billed spend under --out reaches 80%% of this (USD)"
@@ -762,7 +762,14 @@ def run_cli(args: argparse.Namespace) -> int:
         for dab_query in queries:
             infra_errors += asyncio.run(
                 run_query(
-                    args.dab_root, dab_query, config, args.out, args.runs, env, budget, args.effort
+                    args.dab_root,
+                    dab_query,
+                    config,
+                    args.out,
+                    args.runs,
+                    env,
+                    budget,
+                    effort=args.effort,
                 )
             )
     except BudgetReached as exc:

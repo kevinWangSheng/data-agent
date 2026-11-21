@@ -25,7 +25,7 @@ from contextlib import ExitStack, aclosing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, cast, get_args
 
 import claude_agent_sdk
 from claude_agent_sdk import (
@@ -125,9 +125,14 @@ DENIED_TOOLS: list[str] = ["Bash"]
 # lookup off the same way (`disallowed_tools: WebSearch,WebFetch`).
 WEB_TOOLS: list[str] = ["WebSearch", "WebFetch"]
 # The run-level reasoning effort (`--effort`, ticket 104): the values DeepSeek's Anthropic format
-# takes as `output_config.effort`. Unset, the session sends none and the endpoint's default holds.
+# takes as `output_config.effort`. Unset, the options pass none and the Claude Code CLI sends its
+# own: the `effortLevel` of the user settings the session loads, else `high` (CLI 2.1.301).
 Effort = Literal["low", "high", "max"]
-EFFORTS: tuple[Effort, ...] = ("low", "high", "max")
+EFFORTS: tuple[Effort, ...] = get_args(Effort)
+# The CLI's effort variable, which wins over `--effort` (CLI 2.1.301): a run given an effort sets it
+# to the same value, so one the shell exported cannot change what is sent while the record says
+# otherwise. A run without an effort leaves it as inherited.
+EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
 
 SYSTEM_PROMPT = """\
 You are a data agent. You answer questions about a user's data by exploring the database and \
@@ -1538,7 +1543,7 @@ def build_options(
     `network` (ticket 98) loads WebSearch and WebFetch; without it, as on every evaluation, they
     are denied. Bash is denied on every run (ADR-0010). With the docker backend the Skills name
     their scripts as the container sees them (`SKILLS_MOUNT`). `effort` (ticket 104) is the
-    session's reasoning effort; None leaves it to the endpoint, as before."""
+    session's reasoning effort; None leaves it to the CLI (`EFFORTS`), as before."""
     if task.type == "dbt":
         max_turns, budget = config.max_turns["dbt"], None
     else:
@@ -1612,10 +1617,11 @@ def build_options(
         # config. The key is the one `sdk_env` already gives the CLI.
         server_env |= settings.tool_env() | {LEDGER_ENV: str(spend.ledger.directory)}
     session_env = {} if turn is None else {"CLAUDE_CONFIG_DIR": str(turn.config_dir)}
+    effort_env = {} if effort is None else {EFFORT_ENV: effort}
     return ClaudeAgentOptions(
         model=settings.model,
         effort=effort,
-        env=settings.sdk_env() | server_env | session_env,
+        env=settings.sdk_env() | server_env | session_env | effort_env,
         resume=None if turn is None else turn.resume,
         system_prompt=system_prompt(
             task,
