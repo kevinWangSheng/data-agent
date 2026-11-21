@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -48,7 +49,7 @@ def recorder() -> Iterator[Recorder]:
         process.wait(timeout=TIMEOUT)
 
 
-def body(**overrides: str) -> dict[str, str]:
+def body(**overrides: Any) -> dict[str, Any]:
     return {"task": "t", "task_type": "query", "data_source": "shop", "config": "full", **overrides}
 
 
@@ -632,3 +633,30 @@ def test_a_dbt_runs_copy_leaves_a_link_to_a_profile_behind(
     [(_, cwd)] = recorder.calls
     assert (cwd / "models" / "a.sql").is_file()
     assert not (cwd / "connection.yml").exists()
+
+
+def test_submit_defaults_network_on_and_forwards_network_false(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    """Ticket 103: POST /api/runs defaults network=True and forwards network=False."""
+    shop = tmp_path / "shop.duckdb"
+    shop.write_bytes(b"")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    with TestClient(create_app(runs_dir, [DataSource(name="shop", duckdb=shop)], recorder)) as c:
+        first = c.post("/api/runs", json=body())
+        assert first.status_code == 201, first.text
+        wait_until(lambda: statuses(c).get(first.json()["id"]) == "failure")
+
+        second = c.post("/api/runs", json=body(network=False))
+        assert second.status_code == 201, second.text
+        wait_until(lambda: statuses(c).get(second.json()["id"]) == "failure")
+
+        third = c.post("/api/runs", json=body(network=True))
+        assert third.status_code == 201, third.text
+        wait_until(lambda: statuses(c).get(third.json()["id"]) == "failure")
+
+    (default_args, _), (off_args, _), (on_args, _) = recorder.calls
+    assert "--network" in default_args
+    assert "--network" not in off_args
+    assert "--network" in on_args

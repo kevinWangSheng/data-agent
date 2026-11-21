@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -421,6 +422,9 @@ def docker_lifecycle(run_id: str) -> Iterator[None]:
 DEFAULT_TIMEOUT_S = 300
 MAX_TIMEOUT_S = 900
 OUTPUT_CHARS = 30_000
+# Cap on the inline `output_files:` manifest; past either limit the full list is saved in LOGS_DIR.
+MAX_OUTPUT_FILES = 100
+OUTPUT_FILES_CHARS = 4_000
 # Workspace directories: query results for the command (nao's `data_files`), the whole output of
 # a reply that was cut, and the files the agent makes for the user.
 DATA_DIR = "data"
@@ -514,10 +518,87 @@ def clipped(stdout: str, stderr: str, limit: int) -> tuple[str, str]:
     return stdout[:out_room], stderr[len(stderr) - err_room :]
 
 
-def reply_text(done: Execution, workspace: Path) -> str:
+def _walk_outputs_fd(dir_fd: int, prefix: str, found: dict[str, tuple[int, int, int]]) -> None:
+    try:
+        names = os.listdir(dir_fd)
+    except OSError:
+        return
+    for name in names:
+        try:
+            st = os.lstat(name, dir_fd=dir_fd)
+        except OSError:
+            continue
+        rel = f"{prefix}/{name}"
+        if stat.S_ISREG(st.st_mode):
+            found[rel] = (st.st_mtime_ns, st.st_size, st.st_ino)
+        elif stat.S_ISDIR(st.st_mode):
+            try:
+                child_fd = os.open(
+                    name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+                )
+            except OSError:
+                continue
+            try:
+                _walk_outputs_fd(child_fd, rel, found)
+            finally:
+                os.close(child_fd)
+
+
+def outputs_snapshot(workspace: Path) -> dict[str, tuple[int, int, int]]:
+    """Regular files under `workspace/outputs/`, keyed by workspace-relative POSIX path with
+    `(mtime_ns, size, inode)`. Every directory (including `outputs/` itself) is opened with
+    `O_NOFOLLOW` relative to its parent descriptor so symlink swaps cannot escape the workspace."""
+    try:
+        root_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return {}
+    try:
+        try:
+            outputs_fd = os.open(
+                OUTPUTS_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd
+            )
+        except OSError:
+            return {}
+    finally:
+        os.close(root_fd)
+    found: dict[str, tuple[int, int, int]] = {}
+    try:
+        _walk_outputs_fd(outputs_fd, OUTPUTS_DIR, found)
+    finally:
+        os.close(outputs_fd)
+    return found
+
+
+def _format_output_files(output_files: Sequence[str], workspace: Path) -> str:
+    """Format the `output_files:` section, bounding its inline size and saving the full list under
+    `LOGS_DIR` when truncated."""
+    shown: list[str] = []
+    chars = 0
+    for path in output_files:
+        line = f"- {path}"
+        if len(shown) >= MAX_OUTPUT_FILES or chars + len(line) + 1 > OUTPUT_FILES_CHARS:
+            break
+        shown.append(line)
+        chars += len(line) + 1
+    lines = ["output_files:", *shown]
+    if len(shown) < len(output_files):
+        manifest = ("\n".join(output_files) + "\n").encode()
+        saved = write_file(
+            workspace, LOGS_DIR, f"{uuid.uuid4().hex[:12]}.output_files.txt", manifest, False
+        )
+        lines.append(
+            f"[OUTPUT FILES CUT] showing {len(shown):,} of {len(output_files):,} output files; "
+            f"all of them are listed in {saved}."
+        )
+    return "\n".join(lines)
+
+
+def reply_text(done: Execution, workspace: Path, output_files: Sequence[str] = ()) -> str:
     """SignalPilot's reply (`exit_code`, then each stream that has output). Past OUTPUT_CHARS the
     streams are cut, each cut stream is saved whole under LOGS_DIR, and the last line names the
-    files."""
+    files. When the command created or updated files under OUTPUTS_DIR, an `output_files:` section
+    lists their workspace-relative POSIX paths at the end (bounded and saved to LOGS_DIR if long).
+    """
     stdout, stderr = done.stdout, done.stderr
     notes: list[str] = []
     if len(stdout) + len(stderr) > OUTPUT_CHARS:
@@ -547,6 +628,8 @@ def reply_text(done: Execution, workspace: Path) -> str:
         sections.append(f"stderr:\n{stderr}")
     if notes:
         sections.append(f"[OUTPUT CUT] {'; '.join(notes)}.")
+    if output_files:
+        sections.append(_format_output_files(output_files, workspace))
     return "\n".join(sections)
 
 
@@ -565,8 +648,11 @@ def execute_tool(
     for result_id, result in results.picked(data_files).items():
         data = csv_text(result).encode()
         write_file(sandbox.workspace, DATA_DIR, f"{result_id}.csv", data, True)
+    before = outputs_snapshot(sandbox.workspace)
     done = sandbox.execute(command, timeout_seconds)
-    text = reply_text(done, sandbox.workspace)
+    after = outputs_snapshot(sandbox.workspace)
+    output_files = sorted(rel for rel, meta in after.items() if before.get(rel) != meta)
+    text = reply_text(done, sandbox.workspace, output_files)
     if done.timed_out:
         raise SandboxError(
             f"The command timed out after {timeout_seconds} seconds and was killed. Its output "

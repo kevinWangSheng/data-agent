@@ -22,6 +22,7 @@ class Quiet:
     client: TestClient
     runs_dir: Path
     processes: list["subprocess.Popen[bytes]"]
+    calls: list[tuple[list[str], Path]]
 
 
 @pytest.fixture
@@ -31,8 +32,10 @@ def quiet(tmp_path: Path) -> Iterator[Quiet]:
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     processes: list[subprocess.Popen[bytes]] = []
+    calls: list[tuple[list[str], Path]] = []
 
     def start_run(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
+        calls.append((list(args), cwd))
         process = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"], cwd=cwd, stdin=subprocess.PIPE
         )
@@ -42,7 +45,7 @@ def quiet(tmp_path: Path) -> Iterator[Quiet]:
     try:
         app = create_app(runs_dir, [DataSource("shop", duckdb=shop)], start_run)
         with TestClient(app) as client:
-            yield Quiet(client, runs_dir, processes)
+            yield Quiet(client, runs_dir, processes, calls)
     finally:
         # Only the runs this test started, by their own handles.
         for process in processes:
@@ -121,3 +124,29 @@ def test_the_data_source_file_a_turn_gets_reads_back_as_the_same_sources(tmp_pat
         DataSource('or"ders.v2', duckdb=file.resolve()),
         DataSource("客户 🦆", postgres_env="CRM_URL"),
     ]
+
+
+def test_conversation_message_defaults_network_on_and_forwards_network_false(
+    quiet: Quiet,
+) -> None:
+    """Ticket 103: POST /api/conversations/{id}/messages defaults network=True and forwards
+    network=False to the started turn."""
+    conversation = quiet.client.post("/api/conversations", json={}).json()["id"]
+    path = f"/api/conversations/{conversation}/messages"
+
+    first = quiet.client.post(path, json={"text": "First"})
+    assert first.status_code == 201, first.text
+    assert quiet.client.post(f"/api/conversations/{conversation}/cancel").status_code == 200
+
+    second = quiet.client.post(path, json={"text": "Second", "network": False})
+    assert second.status_code == 201, second.text
+    assert quiet.client.post(f"/api/conversations/{conversation}/cancel").status_code == 200
+
+    third = quiet.client.post(path, json={"text": "Third", "network": True})
+    assert third.status_code == 201, third.text
+    assert quiet.client.post(f"/api/conversations/{conversation}/cancel").status_code == 200
+
+    (default_args, _), (off_args, _), (on_args, _) = quiet.calls
+    assert "--network" in default_args
+    assert "--network" not in off_args
+    assert "--network" in on_args

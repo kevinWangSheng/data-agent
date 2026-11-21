@@ -49,6 +49,7 @@ class Submit(BaseModel):
     task_type: str
     data_source: str
     config: str
+    network: bool = True
 
 
 class NewConversation(BaseModel):
@@ -57,6 +58,7 @@ class NewConversation(BaseModel):
 
 class Message(BaseModel):
     text: str
+    network: bool = True
 
 
 def create_app(
@@ -119,7 +121,12 @@ def create_app(
         """Starts a run; the data source is named, never given as a connection."""
         try:
             run_id = await to_thread.run_sync(
-                launcher.submit, body.task, body.task_type, body.data_source, body.config
+                launcher.submit,
+                body.task,
+                body.task_type,
+                body.data_source,
+                body.config,
+                body.network,
             )
         except Refused as exc:
             raise HTTPException(exc.status, exc.detail) from exc
@@ -154,7 +161,9 @@ def create_app(
     async def send(conversation: str, body: Message) -> JSONResponse:
         """A new turn (201) when none is running, else a steer into the running one (202)."""
         try:
-            sent = await to_thread.run_sync(conversations.send, conversation, body.text)
+            sent = await to_thread.run_sync(
+                conversations.send, conversation, body.text, body.network
+            )
         except Refused as exc:
             raise HTTPException(exc.status, exc.detail) from exc
         return JSONResponse(sent, status_code=201 if sent["kind"] == "turn" else 202)

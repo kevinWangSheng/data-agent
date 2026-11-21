@@ -15,7 +15,15 @@ from mcp.types import CallToolResult, TextContent
 from data_agent.gateway import DuckDBGateway
 from data_agent.mcp_server import build_multi_server, build_server
 from data_agent.run_config import CONFIG_NAMES, load_config
-from data_agent.sandbox import KEEP_BYTES, LocalSandbox
+from data_agent.sandbox import (
+    KEEP_BYTES,
+    MAX_OUTPUT_FILES,
+    OUTPUT_FILES_CHARS,
+    Execution,
+    LocalSandbox,
+    outputs_snapshot,
+    reply_text,
+)
 
 SKILLS = Path("/opt/skills")
 
@@ -221,3 +229,122 @@ async def test_result_ids_are_unique_across_databases(tmp_path: Path, workspace:
         server, "sandbox_exec", {"command": "cat data/query_2.csv", "data_files": ["query_2"]}
     )
     assert "x\n2\n" in reply
+
+
+async def test_output_files_lists_created_and_updated_files_sorted_and_omits_unchanged(
+    server: MCPServer,
+) -> None:
+    """Ticket 103: files created or updated under outputs/ are listed in POSIX sorted order;
+    unchanged existing files and commands without outputs produce no output_files section."""
+    created = await call(
+        server,
+        "sandbox_exec",
+        {
+            "command": (
+                "mkdir -p outputs/sub && printf 'a,1\\n' > outputs/b.csv "
+                "&& printf 'x' > outputs/sub/chart.png && printf '0' > outputs/a.csv"
+            )
+        },
+    )
+    assert created.endswith(
+        "output_files:\n- outputs/a.csv\n- outputs/b.csv\n- outputs/sub/chart.png"
+    )
+
+    no_changes = await call(server, "sandbox_exec", {"command": "echo hi"})
+    assert no_changes == "exit_code: 0\nstdout:\nhi\n"
+    assert "output_files:" not in no_changes
+
+    updated = await call(
+        server,
+        "sandbox_exec",
+        {"command": "printf 'a,2\\n' >> outputs/b.csv"},
+    )
+    assert updated == "exit_code: 0\noutput_files:\n- outputs/b.csv"
+
+
+async def test_output_files_ignores_symlinks_pointing_outside_workspace(
+    server: MCPServer, tmp_path: Path
+) -> None:
+    """Ticket 103: symlinks under outputs/ (or outputs/ itself) pointing outside the workspace
+    are never followed or listed."""
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("top-secret\n")
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    (outside_dir / "leaked.csv").write_text("k,v\n1,2\n")
+
+    reply = await call(
+        server,
+        "sandbox_exec",
+        {
+            "command": (
+                f"mkdir -p outputs && ln -s {outside_file} outputs/secret_link.txt "
+                f"&& ln -s {outside_dir} outputs/linked_dir "
+                "&& printf 'ok\\n' > outputs/real.csv"
+            )
+        },
+    )
+    assert reply == "exit_code: 0\noutput_files:\n- outputs/real.csv"
+
+    linked_root = await call(
+        server,
+        "sandbox_exec",
+        {"command": f"rm -rf outputs && ln -s {outside_dir} outputs"},
+    )
+    assert linked_root == "exit_code: 0"
+    assert "output_files:" not in linked_root
+
+
+async def test_output_files_are_reported_on_timeout(server: MCPServer) -> None:
+    error = await call_error(
+        server,
+        "sandbox_exec",
+        {
+            "command": "mkdir -p outputs && printf '1\\n' > outputs/partial.csv && sleep 30",
+            "timeout_seconds": 1,
+        },
+    )
+    assert "timed out after 1 seconds" in error
+    assert error.endswith("output_files:\n- outputs/partial.csv")
+
+
+def test_outputs_snapshot_refuses_a_symlink_swapped_in_between_lstat_and_open(
+    workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """da-review P2: directory traversal uses O_NOFOLLOW descriptors, so a symlink swapped in
+    after lstat (for outputs/ or a nested dir) is never followed."""
+    import os
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.csv").write_text("a\n1\n")
+    outputs = workspace / "outputs"
+    outputs.mkdir()
+    nested = outputs / "sub"
+    nested.mkdir()
+    (outputs / "ok.csv").write_text("x\n1\n")
+
+    real_lstat = os.lstat
+
+    def swap_on_lstat(path: Any, *, dir_fd: int | None = None) -> os.stat_result:
+        st = real_lstat(path, dir_fd=dir_fd)
+        if path == "sub" and nested.is_dir() and not nested.is_symlink():
+            nested.rmdir()
+            nested.symlink_to(outside)
+        return st
+
+    monkeypatch.setattr(os, "lstat", swap_on_lstat)
+    found = outputs_snapshot(workspace)
+    assert set(found) == {"outputs/ok.csv"}
+
+
+def test_output_files_manifest_is_bounded_and_saved_whole(workspace: Path) -> None:
+    """da-review P2: a large output_files list is bounded inline and saved to sandbox_logs/."""
+    paths = [f"outputs/part-{i:05d}.csv" for i in range(MAX_OUTPUT_FILES + 50)]
+    reply = reply_text(Execution(0, "", "", False), workspace, paths)
+    assert len(reply) < OUTPUT_FILES_CHARS + 500
+    assert "[OUTPUT FILES CUT]" in reply
+    assert f"of {len(paths):,} output files" in reply
+    [saved] = (workspace / "sandbox_logs").glob("*.output_files.txt")
+    assert saved.read_text().splitlines() == paths
+    assert str(saved.relative_to(workspace)) in reply
