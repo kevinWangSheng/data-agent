@@ -1,6 +1,6 @@
 # 104 — 运行级 effort 选项
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md（"effort（104）"）
 Claimed by: —

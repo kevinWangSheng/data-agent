@@ -1,6 +1,6 @@
 # DAB 同模型差距：effort、通用分析规则、分类工具
 
-Status: needs-triage（等人审）
+Status: ready-for-agent（人 2026-11-21 放行，编排会话派工）
 日期：2026-11-21。决策见 `docs/adr/0005-dab-integration.md` Update 2026-11-21。取证见 `docs/research/2026-11-21-dab-same-model-gap.md`。
 
 ## Problem Statement

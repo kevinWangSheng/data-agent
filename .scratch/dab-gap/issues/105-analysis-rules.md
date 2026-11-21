@@ -1,6 +1,6 @@
 # 105 — sql-workflow 补通用分析规则
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md（"通用分析规则（105）"）
 Claimed by: —

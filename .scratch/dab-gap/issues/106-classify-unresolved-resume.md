@@ -1,6 +1,6 @@
 # 106 — classify_text：未定结果、只重跑没标上的行、多列文本
 
-Status: needs-triage
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md（"分类工具（106）"）
 Claimed by: —
