@@ -371,6 +371,14 @@
   - 无上下文的 Opus 子 agent 冷读过 spec 和工单，报了 11 条，主会话对照代码核实后都改进了 spec 和工单：对话入口 `conversations.py`、DAB 走进程内 `build_options`、运行编号和由运行进程删容器、Skill 目录挂载、`--dbt-target`、网页 dbt 运行的库文件移出 workspace、`NOTICE`、联网开关放进 101。
   - 工单 100 要重新生成 `tests/fixtures/chat/eval-unchanged.json`，这个快照按规矩不能改；预计改 60–100 行（共 568 行）。人 2026-11-17 批准覆盖（照快照测试的通行做法，旧版本在 git 历史里），差异在 PR 里由人审。
 
+- 2026-11-21：DAB 同模型差距（plan §10 之后的新一轮）。**下一会话从这里开始。**
+  - 现状：一期工单全部 `done`（到 103，PR #112）；本 HANDOFF 和 plan §10 自 11-17 起没更新，88–103 的结果看各工单 Comments。
+  - 榜单：DAB 0.7588 第 31/56，低于全榜中位数 0.7820；同模型 `deepseek-flash` 的 DUO 0.9230、Stela 0.8114。data-eng-bench 的 Hub 榜单 0 行，没有对比点。两个榜单 PR（DAB #144、data-eng-bench #20）仍 open、没有评论。
+  - 取证：`docs/research/2026-11-21-dab-same-model-gap.md`（f0a1130）。人批准 ADR-0005 第二次例外（Update 2026-11-21）。
+  - spec `.scratch/dab-gap/spec.md`，工单 104 effort 选项、105 `sql-workflow` 通用分析规则、106 `classify_text` 未定与重跑，互不依赖；都是 `needs-triage`，人说在新会话里审和派。派工前要先 push main（`-w` 从 `origin/main` 建 worktree）。
+  - 验证顺序和花费在 spec "验证"一节：effort 对比约 $4–8（小额），全量 540 次约 $14–25（先问人）。新结果另开 DAB PR，#144 保留；Tuned prompt 怎么填提交时由人定（建议新结果填"是"）。
+  - 没处理：`.claude/worktrees/` 下 4 个 11-18 的清理分支（cleanup-prune-features 等，基于 d146977，未合入，来源不明），待人定；根目录未跟踪的 `.playwright-mcp/`。
+
 ## 0. 一句话
 
 做一个开源、可自托管的**通用 data agent**，对标 **SignalPilot**，主语是 agent（skills 方法、验证子 agent、问/做策略、上下文策略、失败归因自改进），工具层复用现成，在四个公开榜单上出分并做消融。目的是求职作品集，目标岗位 **agent 应用开发为主**。
