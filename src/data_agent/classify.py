@@ -6,6 +6,12 @@ The model and its endpoint are the run's (`ModelSettings.tool_env`, set for the 
 every call's tokens go into the run's spend ledger (`tool_spend`), and no batch starts once the
 run's spend has reached its budget. Labels are facts: a label outside the categories, a row the
 reply left out, or a failed call is reported as such and gets no category.
+
+Ticket 106 (ideas from Stela's `semantic-analysis`: its unresolved outcome and `resume=`): with
+`allow_unresolved` the model may answer UNRESOLVED_MARK for a text it cannot place, and the row is
+`unresolved`; a call may resume from an earlier label table of the run, sending the model only the
+rows that table left as `failed` or `no_label` (and `unresolved`, when asked) or does not have;
+and a row's text may be several columns, each given by its name.
 """
 
 import json
@@ -47,6 +53,10 @@ OUTSIDE = "outside_categories"  # the model answered something not in the list
 NO_LABEL = "no_label"  # the model's reply left the row out
 FAILED = "failed"  # the call failed or its reply could not be read
 EMPTY = "empty_text"  # nothing to classify; no call made
+UNRESOLVED = "unresolved"  # the model answered UNRESOLVED_MARK (only with allow_unresolved)
+UNRESOLVED_MARK = "__unresolved__"
+UNRESOLVED_NOTE = "the model answered it could not tell which category fits"
+RETRIED = (FAILED, NO_LABEL)  # the outcomes a resume sends to the model again
 UNLABELED_NOTES = {
     OUTSIDE: "the model answered a label outside the categories",
     NO_LABEL: "the model's reply had no label for them",
@@ -65,6 +75,15 @@ sentiment, kind) and matching keywords would only approximate it.
 `text_column` holds its text; any other columns are kept in the label table. At most \
 {limit} rows per call: more is an error and nothing is classified. `instructions` (optional) \
 says how to choose between the categories.
+
+`text_column` may be a list of columns: each row's text is then every non-empty one of them, \
+each line starting with the column's name ("title: ..."). `allow_unresolved` (default false) \
+lets the model answer `{mark}` for a text it cannot place in a category; such a row gets the \
+outcome `unresolved` and no category. `resume_from` takes {resumed}: this call then fetches \
+the same query's rows (give the same `sql`, `key_column` and `text_column`) and sends the model \
+only the rows that table left `failed` or `no_label`, plus those it does not have (left out \
+when the budget was reached); with `retry_unresolved` its `unresolved` rows too. Every other row \
+is kept as it was, and the merged table is stored as a new one.
 
 Returns the number of rows per category; the rows that got no category, by reason (a label \
 outside the categories, no label in the reply, a failed model call, an empty text, or the \
@@ -86,6 +105,10 @@ You sort texts into categories. You get a list of categories, possibly instructi
 choose, and numbered texts. Give every text exactly one category from the list, written exactly \
 as it is in the list. Reply with only a JSON object that maps each text's number to its category, \
 for example {"1": "<category>", "2": "<category>"}, and nothing else.
+"""
+UNRESOLVED_RULE = f"""\
+If a text does not let you tell which category fits, answer "{UNRESOLVED_MARK}" for it instead \
+of a category.
 """
 TEXT_BLOCK = '<text id="{number}">\n{text}\n</text>'
 
@@ -170,12 +193,20 @@ def setup_from_env(env: Mapping[str, str]) -> Setup:
     return Setup(model, found[0], known_secrets(env))
 
 
-def description(source: str, stored: str, env: Mapping[str, str]) -> str:
-    """DESCRIPTION for a server; with the run's budget when the run's ledger is there (without
-    one the tool refuses to call a model, and the description names no budget)."""
+def description(source: str, stored: str, resumed: str, env: Mapping[str, str]) -> str:
+    """DESCRIPTION for a server (`resumed`: what `resume_from` names there); with the run's
+    budget when the run's ledger is there (without one the tool refuses to call a model, and the
+    description names no budget)."""
     found = run_ledger(env)
     note = BUDGET_NOTE.format(budget=found[1].budget_usd) if found else ""
-    return DESCRIPTION.format(source=source, limit=ROW_LIMIT, stored=stored, budget=note)
+    return DESCRIPTION.format(
+        source=source,
+        limit=ROW_LIMIT,
+        stored=stored,
+        resumed=resumed,
+        mark=UNRESOLVED_MARK,
+        budget=note,
+    )
 
 
 def check_categories(categories: Sequence[str]) -> list[str]:
@@ -185,6 +216,44 @@ def check_categories(categories: Sequence[str]) -> list[str]:
     if len(set(cleaned)) != len(cleaned):
         raise ToolError("categories must not repeat")
     return cleaned
+
+
+def text_columns(text_column: str | Sequence[str]) -> list[str]:
+    """The text columns: one name, or a list of them."""
+    columns = [text_column] if isinstance(text_column, str) else list(text_column)
+    if not columns:
+        raise ToolError("text_column must name at least one column")
+    if len(set(columns)) != len(columns):
+        raise ToolError("text_column must not repeat a column")
+    return columns
+
+
+@dataclass(frozen=True)
+class Resume:
+    """An earlier label table of the run to resume from: `name` as its reply gave it."""
+
+    name: str
+    table: QueryResult
+    retry_unresolved: bool = False
+
+    @property
+    def retried(self) -> tuple[str, ...]:
+        return (*RETRIED, UNRESOLVED) if self.retry_unresolved else RETRIED
+
+
+def resume_of(name: str, table: QueryResult | None, retry_unresolved: bool) -> Resume | None:
+    """The Resume for a call's `resume_from` (None when it is empty), `table` being what the
+    server has under that name."""
+    if not name:
+        if retry_unresolved:
+            raise ToolError("retry_unresolved needs resume_from (the label table to resume from)")
+        return None
+    if table is None:
+        raise ToolError(
+            f"there is no label table {name!r} from {TOOL} in this run: "
+            "resume_from takes the label table a reply of this tool named"
+        )
+    return Resume(name, table, retry_unresolved)
 
 
 def too_many(count: int) -> ToolError:
@@ -218,18 +287,18 @@ def fetch_sql(run: RunQuery, sql: str, dialect: str, key_column: str) -> QueryRe
     return QueryResult(columns, rows)
 
 
-def check_rows(result: QueryResult, key_column: str, text_column: str) -> None:
+def check_rows(result: QueryResult, key_column: str, texts: Sequence[str]) -> None:
     """Refuse, before any model call, rows the label table could not key."""
     if len(result.rows) > ROW_LIMIT:
         raise too_many(len(result.rows))
     if not result.rows and not result.columns:
         return  # DAB's rows are dicts: an empty result names no columns
-    for name in (key_column, text_column):
+    for name in (key_column, *texts):
         if name not in result.columns:
             raise ToolError(f"the query returns no column {name!r}; it returns {result.columns}")
-    if key_column == text_column:
+    if key_column in texts:
         raise ToolError("key_column and text_column must be different columns")
-    clash = [c for c in result.columns if c != text_column and c in ADDED_COLUMNS]
+    clash = [c for c in result.columns if c not in texts and c in ADDED_COLUMNS]
     if clash:
         raise ToolError(f"rename the query's column(s) {clash}: the label table adds them")
     key = result.columns.index(key_column)
@@ -311,14 +380,24 @@ class Classification:
     cost_usd: float
     run_spent_usd: float | None  # the run's spend after the last batch, every tool call's included
     run_budget_usd: float | None
+    unresolved_allowed: bool = False
+    resume: Resume | None = None
+    sent: int = 0  # rows sent to the model
+    kept: int = 0  # rows of the resumed table kept as they were
+    not_retried: int = 0  # of those, rows to retry that the budget left out
 
 
 def run_batch(
-    setup: Setup, categories: list[str], instructions: str, batch: list[tuple[int, str]]
+    setup: Setup,
+    categories: list[str],
+    instructions: str,
+    batch: list[tuple[int, str]],
+    allow_unresolved: bool = False,
 ) -> BatchResult:
     prompt = user_prompt(categories, instructions, [text for _, text in batch])
+    system = SYSTEM_PROMPT + UNRESOLVED_RULE if allow_unresolved else SYSTEM_PROMPT
     try:
-        reply = setup.model(SYSTEM_PROMPT, prompt)
+        reply = setup.model(system, prompt)
     except Exception as exc:
         error = mask(f"{type(exc).__name__}: {exc}", setup.secrets)
         failed = Outcome(None, FAILED, None)
@@ -344,6 +423,8 @@ def run_batch(
             outcomes[index] = Outcome(None, NO_LABEL, None)
         elif answer in allowed:
             outcomes[index] = Outcome(answer, LABELED, answer)
+        elif allow_unresolved and answer == UNRESOLVED_MARK:
+            outcomes[index] = Outcome(None, UNRESOLVED, answer)
         else:
             outcomes[index] = Outcome(None, OUTSIDE, mask(answer, setup.secrets))
     return BatchResult(outcomes, reply.tokens)
@@ -358,13 +439,46 @@ def over_budget(ledger: Ledger, reserved: float) -> tuple[bool, float | None]:
     return ledger.spent_usd(state) + reserved >= state.budget_usd, state.budget_usd
 
 
+def row_text(row: tuple[Any, ...], at: list[tuple[int, str]]) -> str:
+    """A row's text: one column's value as it is; several, each non-empty one by its name."""
+    if len(at) == 1:
+        value = row[at[0][0]]
+        return "" if value is None else str(value)
+    parts = [(name, "" if row[i] is None else str(row[i])) for i, name in at]
+    return "\n".join(f"{name}: {value}" for name, value in parts if value.strip())
+
+
+def resumed_rows(
+    resume: Resume, columns: list[str] | None, key_column: str
+) -> dict[Any, tuple[Any, ...]]:
+    """The resumed table's rows by key, refused unless it is a label table with the columns this
+    call's would have (`columns`; None for a result that names no columns)."""
+    table = resume.table
+    if tuple(table.columns[-len(ADDED_COLUMNS) :]) != ADDED_COLUMNS:
+        raise ToolError(
+            f"{resume.name} is not a label table of {TOOL}: its columns are {table.columns}"
+        )
+    if columns is not None and table.columns != columns:
+        raise ToolError(
+            f"cannot resume from {resume.name}: its columns are {table.columns}, and this "
+            f"query's label table has {columns}. Resume with the query and text_column that "
+            "made it"
+        )
+    if key_column not in table.columns:
+        raise ToolError(f"cannot resume from {resume.name}: it has no column {key_column!r}")
+    key = table.columns.index(key_column)
+    return {row[key]: row for row in table.rows}
+
+
 def classify(
     result: QueryResult,
     key_column: str,
-    text_column: str,
+    text_column: str | Sequence[str],
     categories: Sequence[str],
     instructions: str,
     setup: Setup,
+    allow_unresolved: bool = False,
+    resume: Resume | None = None,
 ) -> Classification:
     """Label every row of `result`; rows checked by `check_rows`. Up to MAX_CONCURRENT_BATCHES
     batches run at once. A batch starts only while the run's spend (its own and every tool
@@ -373,15 +487,43 @@ def classify(
     with nothing running, no more start. So a classification passes the budget by the calls in
     flight when it is reached: one call when every batch costs about the same, more when a batch
     costs more than every one before it (a run passes it the same way by its last main call,
-    `agent.Spend`)."""
+    `agent.Spend`).
+
+    With `resume`, a row the resumed table has with an outcome outside `resume.retried` is kept
+    as it is there and not sent; the label table is the resumed one with the new outcomes in
+    place (a retried row the budget left out keeps its old outcome)."""
     allowed = check_categories(categories)
-    check_rows(result, key_column, text_column)
-    text_at = result.columns.index(text_column) if result.columns else -1
+    if allow_unresolved and UNRESOLVED_MARK in allowed:
+        raise ToolError(f"{UNRESOLVED_MARK!r} is the unresolved answer, not a category")
+    texts_named = text_columns(text_column)
+    check_rows(result, key_column, texts_named)
+    at = [(result.columns.index(name), name) for name in texts_named] if result.columns else []
+    text_at = {i for i, _ in at}
+    keep = [i for i in range(len(result.columns)) if i not in text_at]
+    columns = [*(result.columns[i] for i in keep), *ADDED_COLUMNS]
+    old: dict[Any, tuple[Any, ...]] = {}
+    retried: tuple[str, ...] = ()
+    resumed = resume.name if resume else ""
+    if resume is not None:
+        old = resumed_rows(resume, columns if result.columns else None, key_column)
+        retried = resume.retried
+        if not result.columns:
+            columns = resume.table.columns
+    key_at = result.columns.index(key_column) if result.columns else -1
     texts: list[tuple[int, str]] = []
     outcomes: dict[int, Outcome] = {}
+    kept: dict[int, tuple[Any, ...]] = {}
     for index, row in enumerate(result.rows):
-        value = row[text_at]
-        text = "" if value is None else str(value)
+        before = old.get(row[key_at])
+        if before is not None and before[-2] not in retried:  # [-2]: its OUTCOME
+            if before[-3] is not None and before[-3] not in allowed:  # [-3]: its LABEL
+                raise ToolError(
+                    f"cannot resume from {resumed}: its label {before[-3]!r} is not one of "
+                    "the categories. Resume with the categories that made it"
+                )
+            kept[index] = before
+            continue
+        text = row_text(row, at)
         if text.strip():
             texts.append((index, text))
         else:
@@ -407,7 +549,10 @@ def classify(
                 if over:
                     stopped = not running  # with calls running, wait for their real cost
                     break
-                running.add(pool.submit(run_batch, setup, allowed, instructions, todo.pop(0)))
+                batch = todo.pop(0)
+                running.add(
+                    pool.submit(run_batch, setup, allowed, instructions, batch, allow_unresolved)
+                )
             if not running:
                 break
             done, running = wait(running, return_when=FIRST_COMPLETED)
@@ -421,26 +566,35 @@ def classify(
                         per_call = max(per_call or 0.0, state.priced_usd(batch.tokens))
                 if batch.error and batch.error not in errors:
                     errors.append(batch.error)
-    keep = [i for i in range(len(result.columns)) if i != text_at]
-    rows = [
-        (*(row[i] for i in keep), o.label, o.outcome, o.model_label)
-        for index, row in enumerate(result.rows)
-        if (o := outcomes.get(index)) is not None
-    ]
+    left = [index for batch in todo for index, _ in batch]
+    # Of the rows the budget left out, those the resumed table has keep their outcome there.
+    not_retried = sum(result.rows[index][key_at] in old for index in left)
+    rows: list[tuple[Any, ...]] = []
+    fetched_keys: set[Any] = set()
+    for index, row in enumerate(result.rows):
+        fetched_keys.add(row[key_at])
+        if (o := outcomes.get(index)) is not None:
+            rows.append((*(row[i] for i in keep), o.label, o.outcome, o.model_label))
+        elif index in kept:
+            rows.append(kept[index])
+        elif (before := old.get(row[key_at])) is not None:
+            rows.append(before)  # a retried row the budget left out: as it was
+    # The resumed table's rows this query no longer returns stay too.
+    rows += [row for key, row in old.items() if key not in fetched_keys]
     counts = dict.fromkeys(allowed, 0)
     unlabeled: dict[str, int] = {}
     outside: Counter[str] = Counter()
-    for o in outcomes.values():
-        if o.label is not None:
-            counts[o.label] += 1
+    for *_, label, outcome, model_label in rows:
+        if label is not None:
+            counts[label] = counts.get(label, 0) + 1
         else:
-            unlabeled[o.outcome] = unlabeled.get(o.outcome, 0) + 1
-            if o.outcome == OUTSIDE and o.model_label is not None:
-                outside[o.model_label] += 1
+            unlabeled[outcome] = unlabeled.get(outcome, 0) + 1
+            if outcome == OUTSIDE and model_label is not None:
+                outside[model_label] += 1
     total = ToolTokens(*tokens)
     after = setup.ledger.run_state()
     return Classification(
-        columns=[*(result.columns[i] for i in keep), *ADDED_COLUMNS],
+        columns=columns,
         rows=rows,
         fetched=len(result.rows),
         categories=allowed,
@@ -448,13 +602,18 @@ def classify(
         unlabeled=unlabeled,
         outside=outside,
         errors=errors,
-        not_run=sum(len(batch) for batch in todo),
-        budget_usd=budget if stopped else None,
+        not_run=len(left) - not_retried,
+        budget_usd=budget if stopped else None,  # not_run or not_retried rows left
         calls=calls,
         tokens=total,
         cost_usd=state.priced_usd(total) if state else 0.0,
         run_spent_usd=setup.ledger.spent_usd(after) if after else None,
         run_budget_usd=after.budget_usd if after else None,
+        unresolved_allowed=allow_unresolved,
+        resume=resume,
+        sent=len(texts) - len(left),
+        kept=len(rows) - len(outcomes),
+        not_retried=not_retried,
     )
 
 
@@ -462,11 +621,26 @@ def report(c: Classification, stored: str) -> str:
     """The tool's reply: counts and where the labels are, every unlabeled row accounted for."""
     labeled = sum(c.counts.values())
     lines = [f"{c.fetched} rows fetched; {labeled} labeled with a category."]
+    if c.resume is not None:
+        retried = c.resume.retried
+        named = f"{', '.join(retried[:-1])} or {retried[-1]}"
+        lines.append(
+            f"Resumed from {c.resume.name}: {c.sent} rows sent to the model ({named} there, or "
+            f"not in it); {c.kept} rows kept as they were."
+        )
+        if c.not_retried:
+            lines.append(
+                f"The run's budget of ${c.budget_usd} was reached before {c.not_retried} of the "
+                f"rows to retry were sent: they keep their outcome from {c.resume.name}."
+            )
     lines.append("Rows per category:")
     lines += [f"  {category}: {c.counts[category]}" for category in c.categories]
+    notes = UNLABELED_NOTES
+    if c.unresolved_allowed or c.unlabeled.get(UNRESOLVED):
+        notes = {UNRESOLVED: UNRESOLVED_NOTE, **UNLABELED_NOTES}
     if c.unlabeled or c.not_run:
         lines.append("Rows without a category (counted in no category above):")
-        for outcome, note in UNLABELED_NOTES.items():
+        for outcome, note in notes.items():
             if c.unlabeled.get(outcome):
                 lines.append(f"  {outcome}: {c.unlabeled[outcome]} ({note})")
         if c.not_run:
@@ -481,7 +655,7 @@ def report(c: Classification, stored: str) -> str:
         lines.append("Errors: " + "; ".join(c.errors[:3]))
     lines.append(
         f"Label table: {stored}. Columns: {', '.join(c.columns)}; `{LABEL}` is a category or null, "
-        f"`{OUTCOME}` is one of {LABELED}, {', '.join(UNLABELED_NOTES)}."
+        f"`{OUTCOME}` is one of {LABELED}, {', '.join(notes)}."
     )
     t = c.tokens
     lines.append(

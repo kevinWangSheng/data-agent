@@ -430,6 +430,7 @@ def build_server(
             source="`sql` is one query on database `db_name`, run like query_database (SQL "
             "passes the read-only gateway; a MongoDB query is its JSON request).",
             stored="a result id for sandbox_exec's data_files, as query results are.",
+            resumed="the result id of a label table this tool made in this run",
             env=os.environ,
         ),
     )
@@ -437,11 +438,17 @@ def build_server(
         db_name: str,
         sql: str,
         key_column: str,
-        text_column: str,
+        text_column: str | list[str],
         categories: list[str],
         instructions: str = "",
+        allow_unresolved: bool = False,
+        resume_from: str = "",
+        retry_unresolved: bool = False,
     ) -> str:
         allowed = classify.check_categories(categories)
+        with results.lock:
+            found = results.data.results.get(resume_from)
+        resume = classify.resume_of(resume_from, found, retry_unresolved)
         setup = classify.setup_from_env(os.environ)
         db_type = checkable(db_name)
         # The fetch holds the lock like any query; the model calls do not.
@@ -455,7 +462,9 @@ def build_server(
                 if not outcome["success"]:
                     raise ToolError(str(outcome["result"]))
                 rows = records(outcome["result"])
-        labeled = classify.classify(rows, key_column, text_column, allowed, instructions, setup)
+        labeled = classify.classify(
+            rows, key_column, text_column, allowed, instructions, setup, allow_unresolved, resume
+        )
         with results.lock:
             stored = results.keep(QueryResult(labeled.columns, labeled.rows))
         return classify.report(labeled, stored)
