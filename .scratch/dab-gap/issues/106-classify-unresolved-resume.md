@@ -1,6 +1,6 @@
 # 106 — classify_text：未定结果、只重跑没标上的行、多列文本
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md（"分类工具（106）"）
 Claimed by: claude (worktree 106-classify-unresolved-resume)
@@ -51,10 +51,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 1
+- Attempts: 3
+- Review rounds: 2
 - Model spend: $0
-- Outcome: implemented; snapshot regenerated (human to review the diff above before merge); round-1 review findings fixed
+- Outcome: Codex P2 return fixed (DAB resume bound to source db_name, test red before fix); round-2 reviews no bugs, one lock nit fixed; snapshot unchanged since dda39b1
 
 ## Comments
 
@@ -156,3 +156,43 @@ Not fixed, with reasons:
 - 产品 `mcp-server` stdio，20 行夹具文本 + 2 行故意含糊的文本，两列 `title`、`body`：第一次 `allow_unresolved` → `22 rows fetched; 20 labeled`，`unresolved: 2`；`resume_from=labels_1, retry_unresolved` → `2 rows sent to the model …; 20 rows kept as they were.`，`22 labeled`。两次共 $0.0005。脚本在本机 scratchpad（`t106/real.py`），不进 git。
 
 **退回（2026-11-21，主会话，PR #115 第 1 轮）：Codex P2 属实。** `evals/dab_server.py:428-455` 的 `label_ids` 只是 result id 的集合，不记来源库；DAB 一次运行里两个库列和键对得上时，`resume_from` 拿库 A 的标签表去续接库 B，`resumed_rows` 只比列和键，会把 A 的标签当 B 的结果保留。产品服务器用 `made[0] is db.labels` 绑定来源（`src/data_agent/mcp_server.py:503`）。修法：DAB 侧把每个标签结果和它的 `db_name` 一起存，跨库续接在调模型前拒绝；配一个修复前会失败的测试。
+
+**第 3 轮（退回修复，PR #115 Codex P2；分支 `worktree-106-classify-unresolved-resume`，提交 2a7d58b、88a298d）**
+
+**修复**（只改了 `evals/dab_server.py` 和 `tests/test_classify.py`）
+- `label_ids: set[str]` 改成 `label_dbs: dict[str, str]`，每个标签结果和它的 `db_name` 一起存。
+- 续接别的库的标签表，在取数、`setup_from_env`、调模型之前就拒绝，报错是 `label table 'query_1' was made from database 'prices_db', not 'copy_db': resume_from takes a label table of the same database`。
+- 不是本工具存的 id 或空的 `resume_from`，行为不变。
+- 工具描述的 `resumed=` 跟产品服务器一致，改成 "…made in this run on the same database"。
+- 88a298d 是审查提出的小改动：查 `label_dbs` 挪进 `results.lock`，写入一直在锁里。
+
+**测试**
+- 新测试 `test_dab_resumes_only_on_the_database_the_table_came_from`：两个 sqlite 库的列和键相同、正文不同，在 `prices_db` 分类后拿 `query_1` 去 `copy_db` 续接。断言报错、报错文字，以及假模型一次都没被调用。
+- 修复前是红的：调用成功，回 `20 rows fetched; 20 labeled with a category.`，A 库的标签被当成了 B 库的结果。修复后是绿的。
+
+**检查**
+- `make check`（最后一次，88a298d，输出在 `/tmp/106-r3-check2.txt`）：
+  - ruff `All checks passed!`
+  - basedpyright `0 errors, 0 warnings, 0 notes`
+  - pytest `2555 passed, 2 skipped, 77 deselected`
+  - web `Tests 320 passed (320)`
+- `tests/fixtures/chat/eval-unchanged.json` 从 dda39b1 起没变（`git diff dda39b1 HEAD --stat` 只有上面两个文件）。
+
+**真实运行（第 3 步）**
+- 这次的改动只在 DAB 服务器的参数检查上，不调模型。我用新测试的进程内 DAB 服务器加假模型跑过（输出见上面"测试"）。
+- 没有用真模型跑 DAB 的 stdio 进程，因为 worktree 里加载不了模型 env。需要的话由主会话跑。
+
+**审查**
+- `da-review main` 不可用：`ERROR: The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.` 照 memory 的规则，改由一个只读的 Fable 子 agent 审 2a7d58b，结论是没有 bug。它核对了 Mongo 路径、空 `resume_from`、拒绝发生在任何花费之前，以及测试能区分修复前后。
+- `eng:code-review main`（Standards、Spec 两个子 agent）：Standards 没有违反规则的地方，Spec 显示退回的要求全部做到、没有超出范围。
+
+修了：
+- 查 `label_dbs` 在锁外（Standards 和 Spec 都提到）→ 88a298d。
+
+不修，理由如下：
+- **产品服务器跨库续接时，报的是笼统的 "there is no label table … in this run"**，DAB 这边报的是具体库名。退回只要求改 DAB 一侧，产品服务器拒绝的时机本来就对。统一报错文字可以另做。
+- **绑定只到库，不到来源查询**（Fable）：在同一个库的另一张表上续接，键重叠时旧标签还会保留。产品服务器也是这样，不在这次 P2 的范围内；要收紧的话应该开后续工单。
+- **两个服务器各写了一份"只在来源库续接"的规则**（Standards，小的重复）：它们存标签表的方式不同，按 CODING_STANDARDS 的"plain, explicit"留着。
+- **测试里手写第二个库的配置**：只有这一处用到，不值得给 `make_dab` 加选项。
+
+**给主会话（push 后）**：PR #115 的新提交要等 Codex GitHub app 出审查；没出的话评论 `@codex review`。
