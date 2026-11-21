@@ -36,7 +36,7 @@ Stop exploring after 3-5 tool calls. Write SQL based on what you've found.
 Read the task question carefully for cardinality clues:
 
 - "for each X" → GROUP BY X, one output row per X
-- "top N" / "top 5" → `RANK() OVER (...) <= N`, keeping every row tied at rank N (8.1)
+- "top N" / "top 5" → `RANK()` in a subquery, then `WHERE r <= N`; this keeps rows tied with the Nth (8.1)
 - "total / sum / average" → single row aggregate
 - "list all" → detail rows, no aggregation
 - "how many" → COUNT, result is 1 row 1 column
@@ -49,7 +49,7 @@ Write a comment at the top of your SQL:
 Critical checks:
 - If the question asks for a single number, the result MUST be 1 row × 1 column
 - If the question says "how many", verify the result has exactly 1 row with a COUNT value
-- If "top N" appears in the question, verify the result has N rows; more than N only when rows tie at rank N
+- If "top N" appears in the question, verify any rows beyond N are tied with the Nth row
 
 ## 3. Iterative Query Building - Build Bottom-Up
 
@@ -138,7 +138,7 @@ If your query works and passes all verification checks, ANSWER IMMEDIATELY - do 
 
 ## 8. Analysis Rules
 
-1. **Top N keeps ties**: rank with `RANK()` and keep every row tied at rank N; do not add a tie-breaker the question did not give. "The 3 customers with the most orders", with two tied for 3rd → 4 rows:
+1. **Top N keeps ties**: rank with `RANK()` and keep every row tied with the Nth; do not add a tie-breaker the question did not give. "The 3 customers with the most orders", with two tied for 3rd → 4 rows:
    ```sql
    SELECT customer_id, n FROM (
      SELECT customer_id, COUNT(*) AS n, RANK() OVER (ORDER BY COUNT(*) DESC) AS r
@@ -149,10 +149,12 @@ If your query works and passes all verification checks, ANSWER IMMEDIATELY - do 
 3. **Time windows**: filter on the date of the event the question names. "Orders placed in March" uses `order_date`, not `ship_date` or the customer's `signup_date`. A duration runs to the event that completes it: "days to deliver" ends at `delivered_at`, not `shipped_at`.
 4. **Join keys**: before joining, sample the key on both sides (prefixes or suffixes, whitespace, case, type), normalize, then join and check the match rate. `orders.customer_ref = ' CUST-42'` vs `customers.customer_id = 'cust-42'`:
    ```sql
-   SELECT COUNT(*) AS total, COUNT(c.customer_id) AS matched
-   FROM orders o LEFT JOIN customers c ON LOWER(TRIM(o.customer_ref)) = c.customer_id;
+   SELECT COUNT(DISTINCT o.order_id) AS total,
+          COUNT(DISTINCT o.order_id) FILTER (WHERE c.customer_id IS NOT NULL) AS matched
+   FROM orders o
+   LEFT JOIN customers c ON LOWER(TRIM(o.customer_ref)) = LOWER(TRIM(c.customer_id));
    ```
    A low match rate means the keys still differ: find out why before using the result.
-5. **Values stored as text**: parse number-, list- or dict-shaped strings (cast, or the backend's JSON and list functions) before using them; do not approximate with substring matching. `tags = '["gift", "giftcard"]'`: `LIKE '%gift%'` also matches `giftcard`; parse the list and compare elements.
+5. **Values stored as text**: parse number-, list- or dict-shaped strings (cast, or the backend's JSON and list functions) before using them; do not approximate with substring matching. `tags = '["giftcard"]'`: `LIKE '%gift%'` matches it though `gift` is not an element; parse the list and compare elements.
 6. **Which column**: when a code column and a label column both exist (`status_code = 3`, `status = 'shipped'`), use the one the question literally names. Names in the answer are copied from the data as stored, not retyped or re-cased.
-7. **Recompute**: compute the final number a second way and answer only when both agree, e.g. filter then aggregate vs aggregate then filter, or revenue summed from `orders` vs from `order_items`.
+7. **Recompute**: before answering, compute the final number a second way, e.g. filter then aggregate vs aggregate then filter, or a count from the detail table vs from a summary table. If they differ, find out why; the turn budget in section 6 still applies, so at 3 turns left give the best-supported answer.

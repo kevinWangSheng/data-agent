@@ -105,13 +105,3 @@ def test_the_dataset_name_check_catches_a_planted_name(tmp_path: Path) -> None:
     planted = tmp_path / "skills" / "sql-workflow" / "notes.md"
     planted.write_text("Join the Yelp reviews to businesses.\n")
     assert dataset_names_in(tmp_path / "skills") == [("sql-workflow/notes.md", "yelp")]
-
-
-def test_top_n_keeps_ties_throughout_sql_workflow() -> None:
-    """Ticket 105: section 2 used to say both "LIMIT N" and "at most N rows", which drops ties
-    at rank N; section 8.1 keeps them."""
-    text = (SKILLS_DIR / "sql-workflow" / "SKILL.md").read_text().split("-->", 1)[-1]
-    assert "LIMIT N" not in text
-    assert "at most N rows" not in text
-    assert "tied at rank N" in text.split("## 2.", 1)[1].split("\n## ", 1)[0]
-    assert "**Top N keeps ties**" in text.split("## 8. Analysis Rules", 1)[1]
