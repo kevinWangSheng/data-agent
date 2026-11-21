@@ -13,6 +13,8 @@ import { ChatCode } from '../code/chat-code'
 import { Md } from '../code/markdown'
 import { fmtCost, fmtDur } from '../format'
 import type { Narration, RunStatus, RunView, Step, VerifierDispatch } from '../run-view/model'
+import { DbtInputView, DbtResultView, SandboxInputView, SandboxResultView } from '../run-page/ToolPanels'
+import { isDbtExecute, isSandboxExec } from '../run-page/tool-views'
 import { shortTool } from '../run-page/tools'
 import { Caret, DataTable, errorLine, inputLine, phaseLabel, Pre, StatusChip, StepChip, StepTag, VerdictChip } from '../run-page/ui'
 import { Link } from '../site/Link'
@@ -175,10 +177,12 @@ function Note({ note }: { note: Narration }) {
   )
 }
 
-/** One tool call: a line with its kind, input and outcome; opened, its SQL and result. */
-function StepCard({ step, database }: { step: Step; database: string | null | undefined }) {
-  const [open, setOpen] = useState(false)
+/** One tool call: a line with its kind, input and outcome; opened, its SQL, sandbox/dbt view and result. */
+export function StepCard({ step, database, defaultOpen = false }: { step: Step; database: string | null | undefined; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
   const rejected = step.result !== null && (step.rejectedBy !== null || step.isError)
+  const sandbox = isSandboxExec(step.tool)
+  const dbt = isDbtExecute(step.tool)
   return (
     <div data-testid="step-card" className="rounded-md border border-line bg-panel">
       <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-panel-2">
@@ -197,9 +201,21 @@ function StepCard({ step, database }: { step: Step; database: string | null | un
         <div className="flex flex-col gap-2 border-t border-line p-2.5">
           <div className="mono text-[11px] text-ink-3">{shortTool(step.tool)}</div>
           {rejected && <div className={`banner ${step.rejectedBy === 'gateway' ? 'banner-block' : step.rejectedBy !== null ? 'banner-deny' : 'banner-fail'} text-[12px] mono`}>{errorLine(step)}</div>}
-          {step.sql ? <ChatCode code={step.sql} language="sql" maxHeight={260} /> : <Pre text={JSON.stringify(step.input, null, 2)} maxHeight={200} />}
+          {sandbox ? (
+            <SandboxInputView input={step.input} compact />
+          ) : dbt ? (
+            <DbtInputView input={step.input} />
+          ) : step.sql ? (
+            <ChatCode code={step.sql} language="sql" maxHeight={260} />
+          ) : (
+            <Pre text={JSON.stringify(step.input, null, 2)} maxHeight={200} />
+          )}
           {step.result === null ? (
             <div className="text-[12px] text-ink-3">Waiting for the tool to return…</div>
+          ) : sandbox ? (
+            <SandboxResultView result={step.result} compact />
+          ) : dbt ? (
+            <DbtResultView result={step.result} compact />
           ) : step.table ? (
             <DataTable table={step.table} max={20} />
           ) : (

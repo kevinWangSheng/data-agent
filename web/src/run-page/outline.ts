@@ -33,8 +33,8 @@ export const fixId = (n: number) => `fix-${n}`
 
 export const isSql = (step: Step) => toolKind(step.tool) === 'sql' || step.sql !== null
 export const isIssue = (step: Step) => step.rejectedBy !== null || step.isError
-/** A write, an edit or a shell call (dbt): what changes the project between verifications. */
-export const isChange = (step: Step) => ['edit', 'shell'].includes(toolKind(step.tool))
+/** A write, an edit, a dbt run or a shell call: what changes the project between verifications. */
+export const isChange = (step: Step) => ['edit', 'shell', 'sandbox', 'dbt'].includes(toolKind(step.tool))
 
 /**
  * One section per phase. A thinking or text goes with the main agent's next step (it leads up to

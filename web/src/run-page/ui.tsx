@@ -3,6 +3,7 @@
 import type { CSSProperties, ReactNode } from 'react'
 
 import type { Phase, ResultTable, RunStatus, Step } from '../run-view/model'
+import { formatDbtCommandLine, isDbtExecute, parseDbtInput } from './tool-views'
 import { KIND_NAME, KIND_TAG, toolKind } from './tools'
 
 export function phaseLabel(phase: Phase): string {
@@ -222,6 +223,7 @@ export function errorLine(step: Step): string {
 
 /** A one-line description of a step's input, for list rows. */
 export function inputLine(step: Step): string {
+  if (isDbtExecute(step.tool)) return formatDbtCommandLine(parseDbtInput(step.input))
   const input = (step.input ?? {}) as Record<string, unknown>
   const text =
     step.sql ??

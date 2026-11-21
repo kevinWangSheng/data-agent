@@ -15,6 +15,7 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
   const [taskType, setTaskType] = useState<TaskType>('query')
   const [dataSource, setDataSource] = useState('')
   const [config, setConfig] = useState('')
+  const [network, setNetwork] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const taskBox = useRef<HTMLTextAreaElement>(null)
@@ -49,7 +50,7 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
     setBusy(true)
     setError(null)
     try {
-      onStarted(await live.submit({ task, task_type: taskType, data_source: dataSource, config }))
+      onStarted(await live.submit({ task, task_type: taskType, data_source: dataSource, config, network }))
     } catch (err: unknown) {
       setError(errorText(err))
     } finally {
@@ -98,6 +99,11 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
           </select>
         </label>
       </div>
+      <label className="flex items-center gap-2 text-[12px] text-ink-2 select-none cursor-pointer">
+        <input type="checkbox" data-testid="new-run-network" checked={network} onChange={(e) => setNetwork(e.target.checked)} />
+        <span>Network access</span>
+        <span className="text-[11px] text-ink-3">(sandbox network, WebSearch &amp; WebFetch)</span>
+      </label>
       {noSources && (
         <div className="text-[11.5px] text-ink-3">
           The server was started without data sources: start it with <code className="mono">data-agent web --data-sources FILE</code>.

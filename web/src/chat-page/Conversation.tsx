@@ -22,6 +22,38 @@ const BOX: Record<Exclude<Composer, 'none'>, { placeholder: string; send: string
   settling: { placeholder: 'Ask a question about your data…', send: 'Send', hint: 'Waiting for this turn to wrap up; you can send once it has.' },
 }
 
+export function ChatNetworkToggle({
+  network,
+  mode,
+  onChange,
+}: {
+  network: boolean
+  mode: Composer
+  onChange: (next: boolean) => void
+}) {
+  const steering = mode === 'steer'
+  return (
+    <label
+      className={`flex items-center gap-1.5 text-[11px] text-ink-2 select-none ${steering ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+      title={
+        steering
+          ? 'Network setting applies when starting a new turn, not when steering a running turn'
+          : 'Allow sandbox network, WebSearch & WebFetch for the next turn'
+      }
+    >
+      <input
+        type="checkbox"
+        data-testid="chat-network"
+        checked={network}
+        disabled={steering}
+        onChange={(e) => onChange(e.target.checked)}
+        aria-label={steering ? 'Network access (next turn)' : 'Network access'}
+      />
+      <span>{steering ? 'Network access (next turn)' : 'Network access'}</span>
+    </label>
+  )
+}
+
 export function Conversation({
   live,
   id,
@@ -38,6 +70,7 @@ export function Conversation({
 }) {
   const { row, view, error, refresh, takeRow } = useConversation(live, id)
   const [draft, setDraft] = useState('')
+  const [network, setNetwork] = useState(true)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const input = useRef<HTMLTextAreaElement>(null)
@@ -65,7 +98,7 @@ export function Conversation({
     setBusy(true)
     setActionError(null)
     try {
-      await live.send(id, text)
+      await live.send(id, text, network)
       if (fromBox) setDraft('')
       stick.current = true
       await refresh()
@@ -142,7 +175,10 @@ export function Conversation({
                 </button>
               </div>
             </div>
-            <div className="mx-auto mt-1 max-w-3xl text-[10.5px] text-ink-3">{box.hint}</div>
+            <div className="mx-auto mt-1 flex max-w-3xl flex-wrap items-center justify-between gap-2 text-[10.5px] text-ink-3">
+              <span>{box.hint}</span>
+              <ChatNetworkToggle network={network} mode={mode} onChange={setNetwork} />
+            </div>
             {actionError && (
               <div className="banner banner-fail mx-auto mt-2 max-w-3xl text-[12px]" role="alert">
                 {actionError}

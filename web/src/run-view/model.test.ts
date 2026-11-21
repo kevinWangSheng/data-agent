@@ -444,3 +444,46 @@ describe('the query the answer rests on', () => {
     expect(buildRunView(events).answer).toMatchObject({ seq: 9, sqlStep: 'q1', table: tierTable, sqlInferred: true })
   })
 })
+
+// --- Agent tools (ticket 101): sandbox_exec, dbt_execute, result_id note, guard classification --
+
+describe('agent tools (ticket 101)', () => {
+  const ts = '2026-11-21T10:00:00+00:00'
+
+  test('query_database result with trailing [result id: ...] note still parses as a table', () => {
+    const text =
+      'tier | revenue\\n--------------\\nGold | 710.00\\n(1 rows)\\n[result id: query_1; list it in sandbox_exec\'s data_files to read all 1 rows as data/query_1.csv]'
+    const step = buildRunView(queryCall(`{"result": "${text}"}`)).steps[0]
+    expect(step.table).toEqual({ columns: ['tier', 'revenue'], rows: [['Gold', '710.00']] })
+  })
+
+  test('new tool surface: Bash without rejected_by is not classified as guard, file tools still are', () => {
+    const events: RunEvent[] = [
+      version({}),
+      { seq: 1, type: 'tool_start', ts, tool: 'mcp__data__sandbox_exec', tool_use_id: 's1', input: { command: 'echo ok' }, parent: null },
+      { seq: 2, type: 'tool_end', ts, tool: 'mcp__data__sandbox_exec', tool_use_id: 's1', content: 'exit_code: 0\nstdout:\nok', is_error: false, parent: null },
+      { seq: 3, type: 'tool_start', ts, tool: 'Read', tool_use_id: 'r1', input: { file_path: '.env' }, parent: null },
+      { seq: 4, type: 'tool_end', ts, tool: 'Read', tool_use_id: 'r1', content: 'PreToolUse:Read hook error: credential file', is_error: true, parent: null },
+      { seq: 5, type: 'tool_start', ts, tool: 'Bash', tool_use_id: 'b1', input: { command: 'ls' }, parent: null },
+      { seq: 6, type: 'tool_end', ts, tool: 'Bash', tool_use_id: 'b1', content: 'PreToolUse:Bash hook error: disallowed', is_error: true, parent: null },
+    ]
+    const view = buildRunView(events)
+    expect(view.steps.find((s) => s.id === 'r1')?.rejectedBy).toBe('guard')
+    expect(view.steps.find((s) => s.id === 'b1')?.rejectedBy).toBe('unknown')
+  })
+
+  test('dbt_execute splits build and self-check phases on the agent-tools fixture', () => {
+    const events = loadEvents('agent-tools')
+    const view = buildRunView(events)
+    expect(view.phases.map((p) => p.kind)).toEqual(['explore', 'build', 'self-check'])
+    expect(view.phases.find((p) => p.kind === 'build')?.steps).toEqual(['t-w1', 't-dbt1'])
+    expect(view.answer?.table).toEqual({
+      columns: ['tier', 'revenue'],
+      rows: [
+        ['Gold', '710.00'],
+        ['Silver', '420.50'],
+        ['Bronze', '190.00'],
+      ],
+    })
+  })
+})
