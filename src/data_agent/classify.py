@@ -490,8 +490,9 @@ def classify(
     `agent.Spend`).
 
     With `resume`, a row the resumed table has with an outcome outside `resume.retried` is kept
-    as it is there and not sent; the label table is the resumed one with the new outcomes in
-    place (a retried row the budget left out keeps its old outcome)."""
+    as it is there and not sent; the label table is this query's rows, each with its new outcome
+    or the one it has in the resumed table (a retried row the budget left out keeps its old
+    outcome). Rows of the resumed table this query no longer returns are not carried over."""
     allowed = check_categories(categories)
     if allow_unresolved and UNRESOLVED_MARK in allowed:
         raise ToolError(f"{UNRESOLVED_MARK!r} is the unresolved answer, not a category")
@@ -570,17 +571,13 @@ def classify(
     # Of the rows the budget left out, those the resumed table has keep their outcome there.
     not_retried = sum(result.rows[index][key_at] in old for index in left)
     rows: list[tuple[Any, ...]] = []
-    fetched_keys: set[Any] = set()
     for index, row in enumerate(result.rows):
-        fetched_keys.add(row[key_at])
         if (o := outcomes.get(index)) is not None:
             rows.append((*(row[i] for i in keep), o.label, o.outcome, o.model_label))
         elif index in kept:
             rows.append(kept[index])
         elif (before := old.get(row[key_at])) is not None:
             rows.append(before)  # a retried row the budget left out: as it was
-    # The resumed table's rows this query no longer returns stay too.
-    rows += [row for key, row in old.items() if key not in fetched_keys]
     counts = dict.fromkeys(allowed, 0)
     unlabeled: dict[str, int] = {}
     outside: Counter[str] = Counter()

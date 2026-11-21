@@ -1027,6 +1027,30 @@ async def test_a_resume_from_an_unknown_or_different_table_fails_before_any_call
     assert fake.requests == []
 
 
+async def test_a_resume_holds_only_the_rows_its_query_returns(
+    fake: FakeModel, articles_db: Path, workspace: Path
+) -> None:
+    """Rows of the resumed table that this query no longer returns are not carried over: the
+    label table and the counts are this query's rows."""
+    server = product_server(articles_db, workspace)
+    await call_tool(server, "classify_text", classify_args())
+    fake.requests.clear()
+    sql = f"{ARTICLES} WHERE id <= 10"
+    text = text_of(
+        await call_tool(server, "classify_text", classify_args(sql, resume_from="labels_1"))
+    )
+    assert fake.requests == []
+    assert "10 rows fetched; 10 labeled with a category." in text
+    assert "0 rows sent to the model" in text and "10 rows kept as they were" in text
+    counts = [
+        int(line.rsplit(": ", 1)[1])
+        for line in text.splitlines()
+        if line.startswith("  ") and line.strip().split(":")[0] in CATEGORIES
+    ]
+    assert sum(counts) == 10
+    assert set(label_table(workspace, "labels_2")) == {key for key in TEXTS if key <= 10}
+
+
 # --- several text columns ----------------------------------------------------------------------
 
 
