@@ -1,6 +1,6 @@
 # 104 — 运行级 effort 选项
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（"effort（104）"）
 Claimed by: claude (worktree 104-effort-option)
@@ -90,3 +90,5 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 **主会话真实运行（2026-11-21，fbc4ad8，真 DeepSeek 端点）**：`uv run data-agent run --type query --duckdb <shop.sql 建的 DuckDB> --config no-context --task "How many customers are there?" --effort max` → exit 0，答 "There are 12 customers."；`version` 事件 `"effort": "max"`；stderr 没有 "rejected output_config.effort" 回退信息（该信息打印位置未确认）。
 
 **待人定（不挡合并）**：不给 `--effort` 时 CLI 会发自己的 effort（本机 `~/.claude/settings.json` 的 `xhigh`，空配置为 `high`），不是端点默认。spec 验证第 1 步的"默认"组实际是服务器上 CLI 的这个值，跑前在服务器核实。
+
+**合入（2026-11-21，主会话）**：PR #113 → 2bc3f0e，CI 绿，Codex GitHub app 无意见。服务器上 `~/.claude/settings.json` 没有 `effortLevel`、`CLAUDE_CODE_EFFORT_LEVEL` 未设，所以服务器上不给 `--effort` 时 CLI 发 `high`（与端点默认一致），spec 验证第 1 步实际是 `high` 对 `max`。

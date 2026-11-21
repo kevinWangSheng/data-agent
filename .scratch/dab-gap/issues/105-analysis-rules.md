@@ -1,6 +1,6 @@
 # 105 — sql-workflow 补通用分析规则
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（"通用分析规则（105）"）
 Claimed by: claude (105 worktree)
@@ -97,3 +97,5 @@ Not fixed:
 **Review 2 (`eng:code-review main`)**
 - Spec axis: line 52's wording was fixed in a4508cc. I removed `test_top_n_keeps_ties_throughout_sql_workflow`, because the spec's Testing Decisions says the rules get no unit tests. Not fixed: the planted-name test checks the helper rather than the test function itself (nit; both share one helper with a trivial `== []`). Also not fixed: `rglob` scans untracked files such as `__pycache__`, which is harmless and matches "skills/ 下所有文件".
 - Standards axis: no hard violations. `NOTICE` already covers "modified as noted at the top of each file". Not fixed: the concern that 8.6 ("names copied as stored") is close to answer-format guidance, because spec rule 6 asks for it verbatim ("答案里出现的名字从数据里原样取"). Also not fixed: the overlap between 8.2 and section 7, a minor judgement call.
+
+**合入（2026-11-21，主会话）**：PR #114 → 10cccc6，CI 绿，Codex GitHub app 无意见。效果验证照 spec "验证"第 2 步。
