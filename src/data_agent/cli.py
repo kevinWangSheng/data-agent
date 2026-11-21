@@ -13,7 +13,15 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from data_agent.agent import ConfigError, ConversationTurn, Task, run, source_gateway, stdin_lines
+from data_agent.agent import (
+    EFFORTS,
+    ConfigError,
+    ConversationTurn,
+    Task,
+    run,
+    source_gateway,
+    stdin_lines,
+)
 from data_agent.context_tools import Dictionary
 from data_agent.dbt_execute import TARGETS, DbtExecuteError, DbtExecutor
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
@@ -284,6 +292,12 @@ def main(argv: list[str] | None = None) -> None:
         help="give the agent WebSearch and WebFetch, and the docker sandbox the network "
         "(never on an evaluation run)",
     )
+    # Run-level too (ticket 104): unset, the CLI's own default holds (`agent.EFFORTS`).
+    run_cmd.add_argument(
+        "--effort",
+        choices=EFFORTS,
+        help="the model's reasoning effort (default: the Claude Code CLI's)",
+    )
     # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
     # and single runs never set these (spec decision 19).
     run_cmd.add_argument(
@@ -390,6 +404,7 @@ def main(argv: list[str] | None = None) -> None:
                 sandbox=args.sandbox,
                 network=args.network,
                 dbt_target=args.dbt_target,
+                effort=args.effort,
             )
         )
     except ConfigError as exc:
