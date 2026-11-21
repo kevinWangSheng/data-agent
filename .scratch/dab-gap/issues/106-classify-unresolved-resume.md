@@ -1,6 +1,6 @@
 # 106 — classify_text：未定结果、只重跑没标上的行、多列文本
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md（"分类工具（106）"）
 Claimed by: claude (worktree 106-classify-unresolved-resume)
@@ -51,10 +51,10 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 0
+- Attempts: 2
+- Review rounds: 1
 - Model spend: $0
-- Outcome: implemented; blocked on the eval-snapshot decision
+- Outcome: implemented; snapshot regenerated (human to review the diff above before merge); round-1 review findings fixed
 
 ## Comments
 
@@ -88,3 +88,69 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 **Reviews:** I didn't run `da-review main` or `eng:code-review main`, because I stopped at the red acceptance test. They are still to do after the decision.
 
 **2026-11-21 人定**：批准重新生成 `eval-unchanged.json`（见 Authority 的例外）。在原分支接着做：重新生成快照、`make check`、两道审查。
+
+**Round 2 (continued on the same branch, commits b192af0, b5306ed, dda39b1)**
+
+**Snapshot regenerated** (Authority exception; `tests/acceptance/test_chat_eval_unchanged.py` not changed)
+- **How:** a throwaway script `/tmp/106-regen/test_regen_106.py` imports the acceptance module, calls its `harbor_dbt` / `dab_query` / `surface` and rewrites the JSON. It is outside the repo and not committed.
+- **Structural check:** across both entries (`dab-query`, `harbor-dbt`), the only top-level field that changed is `mcp_tools`, and inside it the only changed tool is `classify_text`.
+- **Old → new diff** (identical for both entries):
+
+```diff
++              "allow_unresolved": {"default": false, "title": "Allow Unresolved", "type": "boolean"},
+               "categories": {...unchanged...},
++              "resume_from": {"default": "", "title": "Resume From", "type": "string"},
++              "retry_unresolved": {"default": false, "title": "Retry Unresolved", "type": "boolean"},
+               "sql": {...unchanged...},
+               "text_column": {
+-                "title": "Text Column",
+-                "type": "string"
++                "anyOf": [{"type": "string"}, {"items": {"type": "string"}, "type": "array"}],
++                "title": "Text Column"
+               }
+```
+
+The full diff is in `/tmp/106-regen/snapshot.diff`. The `required` list did not change.
+
+**`make check`** (final, after the fixes; output in `/tmp/106-regen/check2.txt`)
+- ruff: `All checks passed!`
+- basedpyright: `0 errors, 0 warnings, 0 notes`
+- pytest: `2554 passed, 2 skipped, 77 deselected`
+- web: `Tests 320 passed (320)`
+
+**Local run (step 3, rerun on the final code)**
+- Command: `uv run python /tmp/106-run/run.py "$PWD" /tmp/106-run/out-r2`. This is the real `data-agent mcp-server` over stdio with a fake model endpoint.
+- First call: `20 rows fetched; 17 labeled`, `unresolved: 1`, `no_label: 2`.
+- Resume: `Resumed from labels_1: 3 rows sent to the model (failed, no_label or unresolved there, or not in it); 17 rows kept as they were.` → `20 labeled`.
+- Full output: `/tmp/106-run/output-r2.txt`.
+
+**Reviews**
+- `da-review main` failed: `ERROR: The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.` A read-only Fable subagent reviewed instead (per the memory rule).
+- `eng:code-review main` ran its Standards and Spec subagents.
+
+Fixed:
+1. **A resume carried over rows the new query no longer returns** (Spec, Standards and Fable all found it). Those rows skipped the category check, so the reply could read `1 rows fetched; 3 labeled` while its per-category lines added up to less.
+   - Fix: the new label table holds only this query's rows, and the tool description now says so.
+   - Test: `test_a_resume_holds_only_the_rows_its_query_returns`, red before the fix.
+   - Commit: b5306ed.
+2. **The DAB server would resume from any result id** (Fable). A `query_database` result with label-table-shaped columns gave `20 labeled` with no model call.
+   - Fix: the DAB server now accepts only result ids that `classify_text` itself stored, which matches the product server's `label_tables`.
+   - Test: `test_dab_resumes_only_from_a_table_this_tool_made`, red before the fix.
+   - I also updated one assertion in this branch's own `test_dab_resumes_from_a_result_id`: a plain `query_database` result is now refused with the stricter "there is no label table … from classify_text" message.
+   - Commit: dda39b1.
+3. **Description said a one-item `text_column` list adds the column name** (Fable). It doesn't; the wording now says "with more than one". Commit: dda39b1.
+
+Not fixed, with reasons:
+- **NaN keys never match on resume** (Fable, low). `check_rows` doesn't catch duplicate NaN keys either, and that predates this ticket. Since the stale-row fix, the only effect is that such a row is sent again. Not worth widening scope.
+- **Different categories on resume are refused** (Spec reviewer called it scope creep). I kept it: without it, kept labels outside the new categories would make the reply's counts wrong, which breaks "tools return facts".
+- **`allow_unresolved` is opt-in** (Spec reviewer: the spec doesn't say opt-in). This is how "no new parameters → same prompt and reply" holds. The human should confirm it.
+- **`kept` also counts retried rows the budget left out**: the reply says this on its own line ("they keep their outcome from …"), so it isn't ambiguous.
+- **Standards judgement calls** (positional tuple indexes `[-2]`/`[-3]`, `classify()` length, `allow_unresolved`+`resume` travelling together): no documented standard is broken. The positional indexes carry comments. A refactor is out of scope.
+
+**For the main session to run (real model):**
+- `make test-integration`, covering `tests/test_classify.py::test_the_run_model_classifies_the_samples`.
+- `uv run python /tmp/106-run/run.py "$PWD" /tmp/106-run/out-real` with `DATA_AGENT_*` pointed at the real model.
+
+**主会话真实运行（2026-11-21，dda39b1，真 DeepSeek 端点）**
+- `make test-integration` 里的分类那条：`tests/test_classify.py::test_the_run_model_classifies_the_samples` → `1 passed`。
+- 产品 `mcp-server` stdio，20 行夹具文本 + 2 行故意含糊的文本，两列 `title`、`body`：第一次 `allow_unresolved` → `22 rows fetched; 20 labeled`，`unresolved: 2`；`resume_from=labels_1, retry_unresolved` → `2 rows sent to the model …; 20 rows kept as they were.`，`22 labeled`。两次共 $0.0005。脚本在本机 scratchpad（`t106/real.py`），不进 git。
