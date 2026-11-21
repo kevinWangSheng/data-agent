@@ -8,9 +8,9 @@
 
 ```bash
 uv sync                 # 装依赖（只用 uv，不用 pip）
-make check              # 快检查：ruff、格式、basedpyright、单元测试；不联网、不调模型
+make check              # 快检查：ruff、格式、basedpyright、pytest，加 web 的 typecheck 与测试；不联网、不调模型
 make fmt                # 自动修 lint 与格式
-make test-integration   # 真调模型的集成测试；手动跑，需要环境里有 ~/.config/data-agent/env 的变量
+make test-integration   # 真调模型的集成测试，加对话页面的 Playwright 主流程（先 make playwright-install）；手动跑，需要环境里有 ~/.config/data-agent/env 的变量
 da-review main          # Codex 换模型审查本分支（只读）
 uv run pytest tests/test_x.py -q   # 只跑一个测试文件
 ```
@@ -25,7 +25,7 @@ src/data_agent/   agent 本体（CLI、只读网关、MCP 工具、事件流）
 skills/           给 data agent 用的 SKILL.md（不是给 coding agent 的）
 evals/            评测脚本：抽样、批量运行、算分、报告
 tests/            单元测试；tests/fixtures/ 放小样本数据
-web/              网页界面（以后）
+web/              网页界面（对话页面、在线回放；用 pnpm）
 .scratch/<feature>/   spec 与工单（本地 issue tracker）
 docs/             plan、ADR、research、agents/（tracker 约定、工单模板）
 runs/             运行产出，不进 git
