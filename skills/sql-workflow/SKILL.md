@@ -11,7 +11,9 @@ now use query_database or were removed. Content about benchmark scoring was remo
 "Saving Output" section (result.sql/result.csv and their CSV format) and "Common Benchmark Traps";
 that section's general SQL checks are kept as section 7, with a domain-neutral example. Section 6
 works from the turn limit the task prompt states and the turns-left reminders, in place of an
-undefined N. -->
+undefined N. Section 8 (general analysis rules: ties in top N, bound words, time windows, join keys,
+values stored as text, column choice, recomputing) was added for data-agent, and section 2's
+"top N" lines now keep ties instead of cutting at LIMIT N. -->
 
 # SQL Workflow Skill
 
@@ -34,7 +36,7 @@ Stop exploring after 3-5 tool calls. Write SQL based on what you've found.
 Read the task question carefully for cardinality clues:
 
 - "for each X" → GROUP BY X, one output row per X
-- "top N" / "top 5" → LIMIT N or QUALIFY RANK() <= N
+- "top N" / "top 5" → `RANK()` in a subquery, then `WHERE r <= N`; this keeps rows tied with the Nth (8.1)
 - "total / sum / average" → single row aggregate
 - "list all" → detail rows, no aggregation
 - "how many" → COUNT, result is 1 row 1 column
@@ -47,7 +49,7 @@ Write a comment at the top of your SQL:
 Critical checks:
 - If the question asks for a single number, the result MUST be 1 row × 1 column
 - If the question says "how many", verify the result has exactly 1 row with a COUNT value
-- If "top N" appears in the question, verify the result has at most N rows
+- If "top N" appears in the question, verify any rows beyond N are tied with the Nth row
 
 ## 3. Iterative Query Building - Build Bottom-Up
 
@@ -133,3 +135,26 @@ If your query works and passes all verification checks, ANSWER IMMEDIATELY - do 
   * Filter conditions match domain values (check the column's distinct values if unsure)
   * "Excluding X" means the right thing (NOT IN vs EXCEPT vs WHERE NOT)
   * Metrics match the question's definition (e.g., "customers who ordered" means at least one order, not every customer row)
+
+## 8. Analysis Rules
+
+1. **Top N keeps ties**: rank with `RANK()` and keep every row tied with the Nth; do not add a tie-breaker the question did not give. "The 3 customers with the most orders", with two tied for 3rd → 4 rows:
+   ```sql
+   SELECT customer_id, n FROM (
+     SELECT customer_id, COUNT(*) AS n, RANK() OVER (ORDER BY COUNT(*) DESC) AS r
+     FROM orders GROUP BY customer_id) t
+   WHERE r <= 3;
+   ```
+2. **Bound words**: "at least", "no fewer than" include the boundary (`>=`); "more than", "over", "exceeds" do not (`>`). Every constraint in the question must hold for every row of the final result; check each one before answering. "Customers in Canada with at least 5 orders in 2023" → on the final rows, re-check country, the 2023 window and count >= 5.
+3. **Time windows**: filter on the date of the event the question names. "Orders placed in March" uses `order_date`, not `ship_date` or the customer's `signup_date`. A duration runs to the event that completes it: "days to deliver" ends at `delivered_at`, not `shipped_at`.
+4. **Join keys**: before joining, sample the key on both sides (prefixes or suffixes, whitespace, case, type), normalize, then join and check the match rate. `orders.customer_ref = ' CUST-42'` vs `customers.customer_id = 'cust-42'`:
+   ```sql
+   SELECT COUNT(DISTINCT o.order_id) AS total,
+          COUNT(DISTINCT o.order_id) FILTER (WHERE c.customer_id IS NOT NULL) AS matched
+   FROM orders o
+   LEFT JOIN customers c ON LOWER(TRIM(o.customer_ref)) = LOWER(TRIM(c.customer_id));
+   ```
+   A low match rate means the keys still differ: find out why before using the result.
+5. **Values stored as text**: parse number-, list- or dict-shaped strings (cast, or the backend's JSON and list functions) before using them; do not approximate with substring matching. `tags = '["giftcard"]'`: `LIKE '%gift%'` matches it though `gift` is not an element; parse the list and compare elements.
+6. **Which column**: when a code column and a label column both exist (`status_code = 3`, `status = 'shipped'`), use the one the question literally names. Names in the answer are copied from the data as stored, not retyped or re-cased.
+7. **Recompute**: before answering, compute the final number a second way, e.g. filter then aggregate vs aggregate then filter, or a count from the detail table vs from a summary table. If they differ, find out why; the turn budget in section 6 still applies, so at 3 turns left give the best-supported answer.
