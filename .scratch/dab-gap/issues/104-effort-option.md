@@ -1,10 +1,10 @@
 # 104 — 运行级 effort 选项
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md（"effort（104）"）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 104-effort-option)
+Branch: worktree-104-effort-option
 
 ## Goal
 
@@ -48,9 +48,45 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0
-- Outcome: —
+- Outcome: done (needs a human decision on the no-flag default)
 
 ## Comments
+
+**Evidence**
+- `make check` (before and after the fixes): ruff passed, 348 files formatted, basedpyright 0 errors, pytest 2559 passed and 2 skipped, web 320 passed.
+- New tests: `tests/test_effort_option.py` (8) and the end of `tests/test_dab.py` (12).
+- Request-body check at no cost: I ran the real `data-agent run` (bundled CLI 2.1.301) against a local HTTP server that logs request bodies, on a DuckDB file built from `tests/fixtures/shop.sql`:
+  ```
+  DATA_AGENT_API_KEY=sk-local-fake DATA_AGENT_BASE_URL=http://127.0.0.1:18904 \
+    uv run data-agent run --type query --workspace /tmp/104-capture/run/ws \
+    --duckdb /tmp/104-capture/run/shop.duckdb --config no-context \
+    --events-dir /tmp/104-capture/run/events --task "How many customers are there?" --effort max
+  ```
+  - With `--effort max`: the body had `output_config: {"effort": "max"}` and the `version` event had `"effort": "max"`.
+  - With no flag: the only difference in the body was `output_config.effort`, which was `"xhigh"` (from user settings), or `"high"` with an empty config directory.
+  - With `CLAUDE_CODE_EFFORT_LEVEL=low` set: `"low"` was sent before the fix and `"max"` after.
+  - Every run sent `thinking: {"type":"adaptive"}`.
+  - The server script is `/tmp/104-capture/server.py <port> <log.jsonl>`; it answers a single streamed "3".
+
+**Reviews**
+- The Fable reviewer (standing in for Codex) found nothing blocking.
+- Fixed in `fbc4ad8`: the `CLAUDE_CODE_EFFORT_LEVEL` override, wrong comments and help text that said "endpoint default", `EFFORTS` now comes from `get_args(Effort)`, `effort=` is passed by keyword in `evals/dab.py`, and the DAB rerun test now checks that the error names the effort.
+- `eng:code-review` Spec: no missing requirements and no scope creep. It also raised the default issue above, which is a spec decision, not something to fix here.
+- Not fixed:
+  - The repeated `**({} if effort is None else {...})` line in the two version headers: two lines, a helper isn't worth it.
+  - Tests that use SDK private methods: it's the only way to see the CLI arguments, and `test_network_option` does the same.
+  - The DeepSeek-specific test names: the allowed values really are DeepSeek's.
+  - Leaving the key out when no effort is given: the spec says to change nothing then.
+
+**Known limitations**
+- Verifier subagents set no effort of their own, so whether they inherit the session's is 未确认; the main session's request check should include a dbt run with verifiers.
+- `evals/board.py:144-145` still says data-agent sets no effort; that file is outside this ticket's scope.
+
+**For the main session to check against the real endpoint:** run the same command with the real `DATA_AGENT_*` variables and `--effort max`, and check that the run finishes normally. The CLI has a fallback (the string "rejected output_config.effort; latching unsupported and retrying without it" is in the binary): if DeepSeek rejects the field, the CLI silently retries without it. I haven't confirmed where that message gets printed, so check the run's stderr or the CLI debug output for it. To see exactly what is sent, the local-server method above works.
+
+**主会话真实运行（2026-11-21，fbc4ad8，真 DeepSeek 端点）**：`uv run data-agent run --type query --duckdb <shop.sql 建的 DuckDB> --config no-context --task "How many customers are there?" --effort max` → exit 0，答 "There are 12 customers."；`version` 事件 `"effort": "max"`；stderr 没有 "rejected output_config.effort" 回退信息（该信息打印位置未确认）。
+
+**待人定（不挡合并）**：不给 `--effort` 时 CLI 会发自己的 effort（本机 `~/.claude/settings.json` 的 `xhigh`，空配置为 `high`），不是端点默认。spec 验证第 1 步的"默认"组实际是服务器上 CLI 的这个值，跑前在服务器核实。

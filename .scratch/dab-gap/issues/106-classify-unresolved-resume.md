@@ -1,10 +1,10 @@
 # 106 — classify_text：未定结果、只重跑没标上的行、多列文本
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../spec.md（"分类工具（106）"）
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 106-classify-unresolved-resume)
+Branch: worktree-106-classify-unresolved-resume
 
 ## Goal
 

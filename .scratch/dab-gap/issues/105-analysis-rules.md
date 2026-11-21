@@ -1,10 +1,10 @@
 # 105 — sql-workflow 补通用分析规则
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md（"通用分析规则（105）"）
-Claimed by: —
-Branch: —
+Claimed by: claude (105 worktree)
+Branch: worktree-105-analysis-rules
 
 ## Goal
 
@@ -48,9 +48,52 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1 (fixes in a4508cc; no second round needed)
 - Model spend: $0
-- Outcome: —
+- Outcome: 7 rules added, top-N contradiction removed, dataset-name test added; verification run pending in the main session.
 
 ## Comments
+
+**What changed in the Skill** (`skills/sql-workflow/SKILL.md`)
+- Lines 37 and 50 (section 2): "top N" no longer says `LIMIT N` or "at most N rows". It now says to use `RANK()` in a subquery, then `WHERE r <= N`, and to check that any rows beyond N are tied with the Nth row.
+- New section 8, "Analysis Rules", one line per rule, each with an `orders`/`customers` example:
+  - 8.1 Top N keeps ties: use `RANK()`, keep rows tied with the Nth, and don't add a tie-breaker the question didn't give (example SQL included).
+  - 8.2 Bound words: "at least" means `>=`, "more than" means `>`; every constraint must hold on every final row and is checked before answering.
+  - 8.3 Time windows: filter on the date of the event the question names (`order_date`, not `ship_date`); a duration runs to the event that completes it.
+  - 8.4 Join keys: sample both sides, normalize them, then check the match rate with `COUNT(DISTINCT order_id)` and `FILTER`; a low rate gets investigated first.
+  - 8.5 Values stored as text: parse number-, list- and dict-shaped strings; no substring matching (`'["giftcard"]'` with `LIKE '%gift%'`).
+  - 8.6 Column choice: use the code or label column the question literally names; names in the answer are copied from the data as stored.
+  - 8.7 Recompute: compute the final number a second way; if the two differ, find out why. The turn budget in section 6 still applies, so at 3 turns left give the best-supported answer.
+- The header note gained one sentence describing section 8 and the section 2 change.
+
+**Tests** (`tests/test_skills.py`)
+- `test_skills_name_no_dab_dataset`: no file under `skills/` contains any of the 12 dataset names (case-insensitive).
+- `test_the_dataset_name_check_catches_a_planted_name`: copies `skills/` to a temp directory, plants a file mentioning "Yelp", and asserts the check reports `("sql-workflow/notes.md", "yelp")`.
+
+**Checks**
+- `make check` passes:
+  - ruff: "All checks passed!"
+  - basedpyright: "0 errors, 0 warnings, 0 notes"
+  - pytest: "2541 passed, 2 skipped, 77 deselected"
+  - web: "Test Files 20 passed / Tests 320 passed"
+- No tests under `tests/acceptance/` went red.
+- I ran the 8.4 match-rate SQL in DuckDB with a deliberately duplicated customer key and got `(3, 1)` as expected. The 8.1 query also runs in DuckDB (Fable checked it). Neither was run on Postgres; both are standard SQL.
+
+**Real run (step 3)**: none. The only change is Skill text. The ticket's Authority gives no server access and a $0 spend cap, and its Evidence section hands the effect check to the main session (spec "验证" step 2).
+
+**Review 1 (Fable in place of `da-review`; Codex returned "model not supported when using Codex with a ChatGPT account")**. Fixed in a4508cc:
+1. 8.7's "answer only when both agree" contradicted section 6's "answer at 3 turns left", so an agent could run out of turns with no answer. 8.7 now defers to the turn budget, and the `orders` vs `order_items` revenue example (which can legitimately differ) became a count from a detail table vs a summary table.
+2. The 8.5 example didn't show the failure it described. The value is now `'["giftcard"]'`.
+3. Line 52's "has N rows" was wrong when fewer than N candidates exist.
+4. "Tied at rank N" is wrong for `RANK()` (with counts 5,3,3,3 the ties have rank 2). It now says "tied with the Nth row". Line 39 also no longer shows a window function as a bare predicate.
+5. The 8.4 match-rate query was inflated by duplicate keys and only normalized one side. It now uses distinct counts and normalizes both sides.
+
+Not fixed:
+- `duckdb-sql` and `postgres-sql` still show `ROW_NUMBER() <= 10`, which cuts ties. Those files are outside this ticket's Authority, so this is a candidate follow-up ticket.
+- An agent might read tied extra rows as the "alternative answers" `ANSWER_RULE` forbids. The spec forbids changing `ANSWER_RULE`, so watch for this in the verification run.
+- The name test only catches the 12 exact names. Spelling variants are not caught, and common words like "patents" or "yelp" could cause false positives. This matches the spec's literal wording.
+
+**Review 2 (`eng:code-review main`)**
+- Spec axis: line 52's wording was fixed in a4508cc. I removed `test_top_n_keeps_ties_throughout_sql_workflow`, because the spec's Testing Decisions says the rules get no unit tests. Not fixed: the planted-name test checks the helper rather than the test function itself (nit; both share one helper with a trivial `== []`). Also not fixed: `rglob` scans untracked files such as `__pycache__`, which is harmless and matches "skills/ 下所有文件".
+- Standards axis: no hard violations. `NOTICE` already covers "modified as noted at the top of each file". Not fixed: the concern that 8.6 ("names copied as stored") is close to answer-format guidance, because spec rule 6 asks for it verbatim ("答案里出现的名字从数据里原样取"). Also not fixed: the overlap between 8.2 and section 7, a minor judgement call.
