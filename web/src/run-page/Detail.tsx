@@ -8,6 +8,8 @@ import { Md } from '../code/markdown'
 import { fmtClock, fmtDur } from '../format'
 import type { KeyMoment, Narration, RunView, Step, VerifierDispatch } from '../run-view/model'
 import { fixId, isChange, narrationId, sectionStats, verifyId, type Item, type Section } from './outline'
+import { DbtInputView, DbtResultView, SandboxInputView, SandboxResultView } from './ToolPanels'
+import { isDbtExecute, isSandboxExec } from './tool-views'
 import { KIND_NAME, shortTool, toolKind } from './tools'
 import {
   Caret,
@@ -50,7 +52,7 @@ function Header({ tag, title, right, sub }: { tag: ReactNode; title: ReactNode; 
   )
 }
 
-const CopyLink = () => <CopyButton text={window.location.href} label="Copy link" />
+const CopyLink = () => <CopyButton text={typeof window === 'undefined' ? '' : window.location.href} label="Copy link" />
 
 export function Detail({
   view,
@@ -234,6 +236,8 @@ function InputView({ step }: { step: Step }) {
         {str('file_path').endsWith('.sql') ? <ChatCode code={str('content')} language="sql" maxHeight={520} /> : <Pre text={str('content')} maxHeight={520} />}
       </div>
     )
+  if (isSandboxExec(step.tool)) return <SandboxInputView input={step.input} />
+  if (isDbtExecute(step.tool)) return <DbtInputView input={step.input} />
   if (step.tool === 'Bash')
     return (
       <div>
@@ -291,6 +295,9 @@ function ResultView({ view, step, onSelect }: { view: RunView; step: Step; onSel
   const [raw, setRaw] = useState(false)
   if (step.result === null) return <div className="text-ink-3 text-[12px]">Waiting for the tool to return…</div>
   const dispatch = view.dispatches.find((d) => d.toolUseId === step.id)
+  const sandbox = isSandboxExec(step.tool)
+  const dbt = isDbtExecute(step.tool)
+  const structured = Boolean(step.table || dispatch || sandbox || dbt)
   return (
     <div className="space-y-2">
       {dispatch && (
@@ -301,8 +308,16 @@ function ResultView({ view, step, onSelect }: { view: RunView; step: Step; onSel
           </button>
         </div>
       )}
-      {step.table && !raw ? <DataTable table={step.table} /> : !dispatch || raw ? <Pre text={step.result} maxHeight={520} /> : null}
-      {(step.table || dispatch) && (
+      {!raw && sandbox ? (
+        <SandboxResultView result={step.result} />
+      ) : !raw && dbt ? (
+        <DbtResultView result={step.result} />
+      ) : step.table && !raw ? (
+        <DataTable table={step.table} />
+      ) : !dispatch || raw ? (
+        <Pre text={step.result} maxHeight={520} />
+      ) : null}
+      {structured && (
         <button type="button" className="link" onClick={() => setRaw(!raw)}>
           {raw ? 'hide raw result' : 'raw result'}
         </button>
@@ -419,7 +434,7 @@ function Change({ step, numbers, onSelect }: { step: Step; numbers: Map<string, 
       <button type="button" className="flex items-center gap-2 mb-1 text-left hover:underline" onClick={() => onSelect(step.id)}>
         <StepTag step={step} />
         <span className="mono text-[11.5px]">
-          #{numbers.get(step.id)} {shortTool(step.tool)} {str('file_path') || str('command')}
+          #{numbers.get(step.id)} {shortTool(step.tool)} {str('file_path') || inputLine(step)}
         </span>
         <StepChip step={step} />
       </button>
@@ -592,7 +607,7 @@ function DispatchDetail({ view, dispatch, sections, numbers, onSelect }: { view:
       {before && (
         <Block title={`What the main agent changed after #${dispatch.n - 1} (${previous?.overall ?? '?'}) · ${changes.length}`}>
           {changes.length === 0 ? (
-            <div className="text-[12px] text-ink-3">No edits or shell calls between the two verifications.</div>
+            <div className="text-[12px] text-ink-3">No edits, dbt runs or shell calls between the two verifications.</div>
           ) : (
             <div className="space-y-3">
               {changes.map((s) => (

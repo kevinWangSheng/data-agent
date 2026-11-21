@@ -9,9 +9,64 @@ import { memo, useMemo, useState, type ReactNode } from "react";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { StandardSQL } from "@codemirror/lang-sql";
 
-export type ChatCodeLanguage = "sql" | "text";
+export type ChatCodeLanguage = "sql" | "shell" | "text";
+
+const SHELL_KEYWORDS = new Set([
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "for",
+  "in",
+  "do",
+  "done",
+  "while",
+  "until",
+  "case",
+  "esac",
+  "function",
+  "export",
+  "local",
+  "return",
+  "set",
+  "unset",
+  "exit",
+]);
+
+// Lightweight shell tokenizer using the existing `tok-*` classes (no extra parser dependency).
+const SHELL_TOKEN =
+  /(#[^\n]*)|('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")|(\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*)|(\|\||&&|>>|<<|[|;&><])|((?:^|(?<=\s))--?[A-Za-z0-9_-]+)|(\b[A-Za-z_][A-Za-z0-9_-]*\b)|(\b\d+(?:\.\d+)?\b)/g;
+
+function highlightShell(code: string): ReactNode[] {
+  const children: ReactNode[] = [];
+  let cursor = 0;
+  for (const m of code.matchAll(SHELL_TOKEN)) {
+    const start = m.index ?? 0;
+    const text = m[0];
+    let cls: string | null = null;
+    if (m[1]) cls = "tok-comment";
+    else if (m[2]) cls = "tok-string";
+    else if (m[3]) cls = "tok-typeName";
+    else if (m[4]) cls = "tok-operator";
+    else if (m[5]) cls = "tok-typeName";
+    else if (m[6]) cls = SHELL_KEYWORDS.has(text) ? "tok-keyword" : null;
+    else if (m[7]) cls = "tok-number";
+    if (!cls) continue;
+    if (start > cursor) children.push(code.slice(cursor, start));
+    children.push(
+      <span key={`${start}-${start + text.length}`} className={cls}>
+        {text}
+      </span>,
+    );
+    cursor = start + text.length;
+  }
+  if (cursor < code.length) children.push(code.slice(cursor));
+  return children.length ? children : [code];
+}
 
 function highlight(code: string, language: ChatCodeLanguage): ReactNode[] {
+  if (language === "shell") return highlightShell(code);
   const parser = language === "sql" ? StandardSQL.language.parser : null;
   if (!parser) return [code];
   try {

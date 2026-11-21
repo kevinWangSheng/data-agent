@@ -42,6 +42,8 @@
   --k-file: #7f6212;
   --k-edit: #ab3764;
   --k-shell: #565a62;
+  --k-sandbox: #0f6e8c;
+  --k-dbt: #c24e1a;
   --k-check: #6a4bc4;
   --k-agent: #6a4bc4;
   --k-other: #565a62;
@@ -94,6 +96,8 @@
     --k-file: #d8b65a;
     --k-edit: #f07aa6;
     --k-shell: #a3a8b0;
+    --k-sandbox: #5cc4e8;
+    --k-dbt: #f29463;
     --k-check: #b39cff;
     --k-agent: #b39cff;
     --k-other: #a3a8b0;
@@ -144,6 +148,8 @@
   --k-file: #d8b65a;
   --k-edit: #f07aa6;
   --k-shell: #a3a8b0;
+  --k-sandbox: #5cc4e8;
+  --k-dbt: #f29463;
   --k-check: #b39cff;
   --k-agent: #b39cff;
   --k-other: #a3a8b0;

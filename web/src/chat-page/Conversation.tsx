@@ -38,6 +38,7 @@ export function Conversation({
 }) {
   const { row, view, error, refresh, takeRow } = useConversation(live, id)
   const [draft, setDraft] = useState('')
+  const [network, setNetwork] = useState(true)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const input = useRef<HTMLTextAreaElement>(null)
@@ -65,7 +66,7 @@ export function Conversation({
     setBusy(true)
     setActionError(null)
     try {
-      await live.send(id, text)
+      await live.send(id, text, network)
       if (fromBox) setDraft('')
       stick.current = true
       await refresh()
@@ -142,7 +143,13 @@ export function Conversation({
                 </button>
               </div>
             </div>
-            <div className="mx-auto mt-1 max-w-3xl text-[10.5px] text-ink-3">{box.hint}</div>
+            <div className="mx-auto mt-1 flex max-w-3xl flex-wrap items-center justify-between gap-2 text-[10.5px] text-ink-3">
+              <span>{box.hint}</span>
+              <label className="flex items-center gap-1.5 text-[11px] text-ink-2 select-none cursor-pointer" title="Allow sandbox network, WebSearch & WebFetch for the next turn">
+                <input type="checkbox" data-testid="chat-network" checked={network} onChange={(e) => setNetwork(e.target.checked)} aria-label="Network access" />
+                <span>Network access</span>
+              </label>
+            </div>
             {actionError && (
               <div className="banner banner-fail mx-auto mt-2 max-w-3xl text-[12px]" role="alert">
                 {actionError}

@@ -189,14 +189,19 @@ const SQL_TOOLS = new Set([...QUERY_TOOLS, `${DATA_TOOL_PREFIX}explain_query`, `
 const WRITE_TOOLS = new Set(['Write', 'Edit'])
 const AGENT_TOOLS = new Set(['Agent', 'Task'])
 const CONTEXT_TOOLS = ['discover', 'hydrate', 'dictionary_search'] as const
-/** The tools the guard hooks are registered on (src/data_agent/agent.py, run options): the
- *  command guard on Bash, the workspace guard on the file tools. */
-const GUARDED_TOOLS = new Set(['Bash', 'Read', 'Glob', 'Grep', 'Write', 'Edit'])
+const SANDBOX_TOOL = `${DATA_TOOL_PREFIX}sandbox_exec`
+const DBT_TOOL = `${DATA_TOOL_PREFIX}dbt_execute`
+/** The tools the workspace guard hook is registered on (src/data_agent/agent.py). */
+const GUARDED_TOOLS = new Set(['Read', 'Glob', 'Grep', 'Write', 'Edit'])
+/** Legacy event files (before ADR-0010 / ticket 100) also ran a command guard on built-in Bash. */
+const LEGACY_GUARDED_TOOLS = new Set([...GUARDED_TOOLS, 'Bash'])
 
-/** A Bash call that builds the project: `dbt run` / `dbt build` or the validate script. */
+/** A call that builds the dbt project: `dbt_execute`, a sandbox validate script, or legacy Bash. */
 function isDbtBuild(step: Step): boolean {
+  const command = String((step.input as { command?: unknown } | null)?.command ?? '').trim()
+  if (step.tool === DBT_TOOL) return /^(run|build|seed|snapshot)\b/i.test(command)
+  if (step.tool === SANDBOX_TOOL) return /validate_project\.py/.test(command)
   if (step.tool !== 'Bash') return false
-  const command = String((step.input as { command?: unknown } | null)?.command ?? '')
   return /\bdbt\s+(?:[-\w=/. ]+\s+)?(run|build)\b/.test(command) || /validate_project\.py/.test(command)
 }
 
@@ -233,16 +238,18 @@ function resultText(content: unknown): string {
 const ROW_COUNT = /^\((\d+) rows\)$/
 const INCOMPLETE_DISPLAY = '[INCOMPLETE DISPLAY]'
 const SHOWN_COUNT = /only the first (\d+) are shown/
+const RESULT_ID_NOTE = /^\[result id: [^\]]+\]$/
 
 /** The gateway's text table (`format_rows`, `mcp_server.py`): a `a | b` header, a dash rule, the
- *  rows, then `(n rows)` as the last line, or followed by the `[INCOMPLETE DISPLAY]` note when only
- *  the first rows are shown. The footer is found from the end, so every line above it is data: in a
- *  one-column table a blank line is an empty value, and a value that reads like `(n rows)` stays a
- *  value. A value with a line break is written as is, so in a multi-column table a line whose cell
- *  count differs from the header's cannot be told from a row: no table. The rows must number the
- *  footer's count, or the note's shown count when the display is cut; otherwise no table. */
+ *  rows, then `(n rows)` as the last line, optionally followed by `[INCOMPLETE DISPLAY]` and/or
+ *  the sandbox `[result id: ...]` note. The footer is found from the end, so every line above it is
+ *  data: in a one-column table a blank line is an empty value, and a value that reads like `(n rows)`
+ *  stays a value. A value with a line break is written as is, so in a multi-column table a line
+ *  whose cell count differs from the header's cannot be told from a row: no table. The rows must
+ *  number the footer's count, or the note's shown count when the display is cut; otherwise no table. */
 function parseTable(text: string): ResultTable | null {
-  const lines = text.split('\n')
+  const rawLines = text.split('\n')
+  const lines = rawLines.length > 0 && RESULT_ID_NOTE.test(rawLines[rawLines.length - 1]) ? rawLines.slice(0, -1) : rawLines
   if (lines.length < 2 || !/^-+$/.test(lines[1].trim())) return null
   const note = lines[lines.length - 1]
   const cut = note.startsWith(INCOMPLETE_DISPLAY)
@@ -259,11 +266,16 @@ function parseTable(text: string): ResultTable | null {
 const GATEWAY_BLOCKED = /^Error executing tool \S+: Query blocked by the read-only gateway:/
 const HOOK_DENIED = /^PreToolUse:(\S+) hook error/
 
-/** The rejection kind when the event file does not name it (spec, "旧事件文件缺新字段时的退路"). */
-function rejectionFromText(text: string): Rejection | null {
+/** The rejection kind when the event file does not name it (spec, "旧事件文件缺新字段时的退路").
+ *  Legacy runs (without `sandbox_exec` or `dbt_execute`) keep the Bash -> `guard` fallback; runs on
+ *  the ADR-0010 tool surface treat only the workspace-guarded file tools as `guard`. */
+function rejectionFromText(text: string, legacyBashGuard: boolean): Rejection | null {
   if (GATEWAY_BLOCKED.test(text)) return 'gateway'
   const hook = HOOK_DENIED.exec(text)
-  if (hook) return GUARDED_TOOLS.has(hook[1]) ? 'guard' : 'unknown'
+  if (hook) {
+    const guarded = legacyBashGuard ? LEGACY_GUARDED_TOOLS : GUARDED_TOOLS
+    return guarded.has(hook[1]) ? 'guard' : 'unknown'
+  }
   return null
 }
 
@@ -308,6 +320,9 @@ export function eventTimes(events: readonly RunEvent[]): (number | null)[] {
 type OpenDispatch = VerifierDispatch & { seq: number; agentId: string | null }
 
 export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): RunView {
+  const hasNewToolSurface = events.some(
+    (e) => e.type === 'tool_start' && (e.tool === SANDBOX_TOOL || e.tool === DBT_TOOL),
+  )
   const steps: Step[] = []
   const stepById = new Map<string, Step>()
   const parentOf = new Map<string, string | null>()
@@ -403,7 +418,7 @@ export function buildRunView(events: readonly RunEvent[], notes?: RunNotes): Run
           named === 'guard' || named === 'gateway'
             ? named
             : step.isError
-              ? rejectionFromText(text)
+              ? rejectionFromText(text, !hasNewToolSurface)
               : null
         endSeq.set(id, e.seq)
         removeOpenCall(step)

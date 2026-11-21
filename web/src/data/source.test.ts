@@ -265,6 +265,13 @@ describe('localSource', () => {
     expect(calls).toEqual([{ url: '/api/runs', method: 'POST', body: submission }])
   })
 
+  test('submit passes network: false when networking is turned off', async () => {
+    const { fetchFn, calls } = fakeBackend({ 'POST /api/runs': [201, { id: 'offline-run' }] })
+    const submission = { task: 'How many orders?', task_type: 'query' as const, data_source: 'shop', config: 'full', network: false }
+    expect(await localSource('/api/', fetchFn, openStream).live!.submit(submission)).toBe('offline-run')
+    expect(calls).toEqual([{ url: '/api/runs', method: 'POST', body: submission }])
+  })
+
   test('a refused submit fails with the reason the backend gives', async () => {
     const detail = 'no data source is configured; start the server with --data-sources FILE'
     const { fetchFn } = fakeBackend({ 'POST /api/runs': [400, { detail }] })
@@ -323,6 +330,12 @@ describe('localSource: conversations', () => {
     const { fetchFn, calls } = fakeBackend({ 'POST /api/conversations/c1/messages': [201, { kind: 'turn', turn: 2, run_id: 'r2' }] })
     expect(await live(fetchFn).send('c1', 'And in 2024?')).toEqual({ kind: 'turn', turn: 2, run_id: 'r2' })
     expect(calls).toEqual([{ url: '/api/conversations/c1/messages', method: 'POST', body: { text: 'And in 2024?' } }])
+  })
+
+  test('send forwards network: false when networking is turned off', async () => {
+    const { fetchFn, calls } = fakeBackend({ 'POST /api/conversations/c1/messages': [201, { kind: 'turn', turn: 2, run_id: 'r2' }] })
+    expect(await live(fetchFn).send('c1', 'Offline turn', false)).toEqual({ kind: 'turn', turn: 2, run_id: 'r2' })
+    expect(calls).toEqual([{ url: '/api/conversations/c1/messages', method: 'POST', body: { text: 'Offline turn', network: false } }])
   })
 
   test('a message to a running conversation answers the steer', async () => {

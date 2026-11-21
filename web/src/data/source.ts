@@ -36,7 +36,7 @@ export type RunRow = {
 /** What the run form offers (`GET /api/options`): data sources by name only. */
 export type RunOptions = { data_sources: string[]; task_types: TaskType[]; configs: string[] }
 
-export type Submission = { task: string; task_type: TaskType; data_source: string; config: string }
+export type Submission = { task: string; task_type: TaskType; data_source: string; config: string; network?: boolean }
 
 /** A turn of a conversation row: the index's turn plus its run's status as `/api/runs` gives it. */
 export type ConversationTurn = IndexTurn & { status: RunStatus }
@@ -73,7 +73,7 @@ export interface LiveSource {
   /** Starts an empty conversation; answers its id. */
   startConversation(): Promise<string>
   /** Sends a user message: a new turn when the conversation is idle, else into the running turn. */
-  send(id: string, text: string): Promise<Sent>
+  send(id: string, text: string, network?: boolean): Promise<Sent>
   /** Stops the conversation's running turn; answers its row. */
   cancelTurn(id: string): Promise<ConversationRow>
 }
@@ -337,7 +337,7 @@ export function localSource(
       conversations: () => send<ConversationRow[]>('conversations'),
       conversation: (id) => send<ConversationRow>(conversationPath(id)),
       startConversation: async () => (await post<{ id: string }>('conversations', {})).id,
-      send: (id, text) => post<Sent>(`${conversationPath(id)}/messages`, { text }),
+      send: (id, text, network) => post<Sent>(`${conversationPath(id)}/messages`, network === undefined ? { text } : { text, network }),
       cancelTurn: (id) => post<ConversationRow>(`${conversationPath(id)}/cancel`),
     },
   }

@@ -180,6 +180,8 @@ describe('toolKind', () => {
     ['Read', 'file'],
     ['Edit', 'edit'],
     ['Bash', 'shell'],
+    ['mcp__data__sandbox_exec', 'sandbox'],
+    ['mcp__data__dbt_execute', 'dbt'],
     ['Agent', 'agent'],
     ['WebSearch', 'other'],
   ])('%s is %s', (tool, kind) => {

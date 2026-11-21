@@ -1,7 +1,7 @@
 // What kind of tool a step called, for its tag and colour. Names from src/data_agent/mcp_server.py,
 // verifier_tools.py and the built-in tools the agent is given.
 
-export type ToolKind = 'sql' | 'context' | 'schema' | 'check' | 'file' | 'edit' | 'shell' | 'agent' | 'other'
+export type ToolKind = 'sql' | 'context' | 'schema' | 'check' | 'file' | 'edit' | 'shell' | 'sandbox' | 'dbt' | 'agent' | 'other'
 
 const DATA = 'mcp__data__'
 const SQL = new Set(['query_database', 'query_labels', 'explain_query', 'classify_text'])
@@ -27,6 +27,8 @@ export function toolKind(tool: string): ToolKind {
     if (SQL.has(name)) return 'sql'
     if (CONTEXT.has(name)) return 'context'
     if (CHECK.has(name)) return 'check'
+    if (name === 'sandbox_exec') return 'sandbox'
+    if (name === 'dbt_execute') return 'dbt'
     return 'schema'
   }
   if (tool === 'Read' || tool === 'Glob' || tool === 'Grep') return 'file'
@@ -44,6 +46,8 @@ export const KIND_TAG: Record<ToolKind, string> = {
   file: 'FILE',
   edit: 'EDIT',
   shell: 'SH',
+  sandbox: 'SBX',
+  dbt: 'DBT',
   agent: 'AGT',
   other: 'TOOL',
 }
@@ -55,7 +59,9 @@ export const KIND_NAME: Record<ToolKind, string> = {
   check: 'Verifier fact tool',
   file: 'File read or search',
   edit: 'File write or edit',
-  shell: 'Shell (dbt only)',
+  shell: 'Shell (legacy)',
+  sandbox: 'Sandbox shell',
+  dbt: 'dbt execution',
   agent: 'Subagent dispatch',
   other: 'Tool',
 }
