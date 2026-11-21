@@ -8,6 +8,8 @@ import itertools
 import json
 import os
 import re
+import shutil
+import sqlite3
 import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -1156,6 +1158,34 @@ async def test_dab_resumes_only_from_a_table_this_tool_made(
     outcome = await call_tool(server, "classify_text", base | {"resume_from": lookalike})
     assert outcome.is_error
     assert f"there is no label table {lookalike!r} from classify_text" in text_of(outcome)
+    assert fake.requests == []
+
+
+async def test_dab_resumes_only_on_the_database_the_table_came_from(
+    fake: FakeModel, tmp_path: Path
+) -> None:
+    """Two databases of one run with the same columns and keys: a label table from one is not
+    the other's labels, so resuming it on the other is refused before any model call (the
+    product server binds a label table to its database the same way)."""
+
+    root = make_dab(tmp_path / "dab")
+    add_notes(root)
+    dataset = root / "query_toyset"
+    shutil.copy(dataset / "query_dataset" / "prices.db", dataset / "query_dataset" / "copy.db")
+    config = json.loads((dataset / "db_config.yaml").read_text())
+    config["db_clients"]["copy_db"] = {"db_type": "sqlite", "db_path": "query_dataset/copy.db"}
+    (dataset / "db_config.yaml").write_text(json.dumps(config))
+    with sqlite3.connect(dataset / "query_dataset" / "copy.db") as conn:
+        conn.execute("UPDATE notes SET body = 'Fog closed the harbour.'")
+    server = local_dab(root, tmp_path / "workspace")
+    base = classify_args("SELECT id, body FROM notes")
+    first = await call_local(server, "classify_text", base | {"db_name": "prices_db"})
+    assert "Label table: [result id: query_1;" in first
+    fake.requests.clear()
+    other = base | {"db_name": "copy_db", "resume_from": "query_1"}
+    outcome = await call_tool(server, "classify_text", other)
+    assert outcome.is_error
+    assert "'query_1' was made from database 'prices_db', not 'copy_db'" in text_of(outcome)
     assert fake.requests == []
 
 

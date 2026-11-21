@@ -424,9 +424,10 @@ def build_server(
         with results.lock:
             return sql_explain(db_name, dialect)(sql)
 
-    # The result ids classify_text stored: only these can be resumed (a query result shaped
-    # like a label table is not one).
-    label_ids: set[str] = set()
+    # The result ids classify_text stored, each with the database its rows came from: only these
+    # can be resumed (a query result shaped like a label table is not one), and only on that
+    # database (two databases of a run may share columns and keys, not labels).
+    label_dbs: dict[str, str] = {}
 
     @server.tool(
         name=classify.TOOL,
@@ -434,7 +435,8 @@ def build_server(
             source="`sql` is one query on database `db_name`, run like query_database (SQL "
             "passes the read-only gateway; a MongoDB query is its JSON request).",
             stored="a result id for sandbox_exec's data_files, as query results are.",
-            resumed="the result id of a label table this tool made in this run",
+            resumed="the result id of a label table this tool made in this run on the same "
+            "database",
             env=os.environ,
         ),
     )
@@ -450,8 +452,14 @@ def build_server(
         retry_unresolved: bool = False,
     ) -> str:
         allowed = classify.check_categories(categories)
+        source = label_dbs.get(resume_from)
+        if source is not None and source != db_name:
+            raise ToolError(
+                f"label table {resume_from!r} was made from database {source!r}, not "
+                f"{db_name!r}: resume_from takes a label table of the same database"
+            )
         with results.lock:
-            found = results.data.results.get(resume_from) if resume_from in label_ids else None
+            found = results.data.results.get(resume_from) if source is not None else None
         resume = classify.resume_of(resume_from, found, retry_unresolved)
         setup = classify.setup_from_env(os.environ)
         db_type = checkable(db_name)
@@ -471,7 +479,7 @@ def build_server(
         )
         with results.lock:
             result_id = results.data.add(QueryResult(labeled.columns, labeled.rows))
-            label_ids.add(result_id)
+            label_dbs[result_id] = db_name
             stored = results.data.note(result_id)
         return classify.report(labeled, stored)
 
