@@ -92,3 +92,11 @@ Status 改为 `ready-for-human`，Comment 写明试了什么、哪里失败、�
 **待人定（不挡合并）**：不给 `--effort` 时 CLI 会发自己的 effort（本机 `~/.claude/settings.json` 的 `xhigh`，空配置为 `high`），不是端点默认。spec 验证第 1 步的"默认"组实际是服务器上 CLI 的这个值，跑前在服务器核实。
 
 **合入（2026-11-21，主会话）**：PR #113 → 2bc3f0e，CI 绿，Codex GitHub app 无意见。服务器上 `~/.claude/settings.json` 没有 `effortLevel`、`CLAUDE_CODE_EFFORT_LEVEL` 未设，所以服务器上不给 `--effort` 时 CLI 发 `high`（与端点默认一致），spec 验证第 1 步实际是 `high` 对 `max`。
+
+**spec 验证第 1 步：effort 对比（2026-11-21，主会话，服务器 2bc3f0e，no-context）**
+- 跑法：`runs/e104/par.py`（照 `runs/f18b/par.py`），运行名 `e104-<default|max>-<dataset>-<f|p>`，38 个运行全部 exit 0；合并在服务器 `runs/e104-merged-<effort>`，算分 `runs/e104-score`（`dab-score --strict`，本机有 `run.log`）。
+- 11-15 重跑里不到 5/5 的 20 道题 × 3：default（服务器上 CLI 发 `high`）**31/60**，`max` **24/60**。
+- 原来 5/5 的 10 道题 × 1：两组都 10/10。
+- 花费：default $2.84，`max` $4.68（1.65 倍）；没做完的 trial：default 3 个，`max` 6 个。
+- 30 题宏平均 Pass@1：default 0.7384，`max` 0.7009（−3.75 分，95% 区间 −8.33 到 +0.83，不显著）。`max` 掉得多的：agnews 6/12 → 3/12，crmarenapro 7/12 → 4/12，stockmarket 6/9 → 4/9。
+- **结论**：留下 `max` 的第一条（20 道题上通过次数比默认多）不成立。照 spec，DAB 重跑用默认 effort，`--effort` 不给。
