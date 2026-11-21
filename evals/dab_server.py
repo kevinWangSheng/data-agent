@@ -452,14 +452,14 @@ def build_server(
         retry_unresolved: bool = False,
     ) -> str:
         allowed = classify.check_categories(categories)
-        source = label_dbs.get(resume_from)
+        with results.lock:
+            source = label_dbs.get(resume_from)
+            found = results.data.results.get(resume_from) if source is not None else None
         if source is not None and source != db_name:
             raise ToolError(
                 f"label table {resume_from!r} was made from database {source!r}, not "
                 f"{db_name!r}: resume_from takes a label table of the same database"
             )
-        with results.lock:
-            found = results.data.results.get(resume_from) if source is not None else None
         resume = classify.resume_of(resume_from, found, retry_unresolved)
         setup = classify.setup_from_env(os.environ)
         db_type = checkable(db_name)
