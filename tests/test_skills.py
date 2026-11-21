@@ -1,6 +1,7 @@
 """The Skills preloaded for query runs: real tools only, no scoring hints, correct DuckDB facts."""
 
 import re
+import shutil
 from pathlib import Path
 
 import duckdb
@@ -67,3 +68,50 @@ def test_duckdb_skill_states_division_as_duckdb_does_it() -> None:
     assert "`5 / 2 = 2.5`" in text
     assert "`5 // 2 = 2`" in text
     assert "5/2 = 2`" not in text
+
+
+# The 12 DataAgentBench datasets (ticket 105, ADR-0005): no Skill may name them.
+DAB_DATASETS = (
+    "agnews",
+    "bookreview",
+    "crmarenapro",
+    "DEPS_DEV_V1",
+    "GITHUB_REPOS",
+    "googlelocal",
+    "music_brainz_20k",
+    "PANCANCER_ATLAS",
+    "PATENTS",
+    "stockindex",
+    "stockmarket",
+    "yelp",
+)
+
+
+def dataset_names_in(root: Path) -> list[tuple[str, str]]:
+    """(file, dataset) for every file under root that names a DAB dataset, case-insensitive."""
+    hits = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        text = path.read_text(errors="ignore").lower()
+        hits += [(str(path.relative_to(root)), n) for n in DAB_DATASETS if n.lower() in text]
+    return hits
+
+
+def test_skills_name_no_dab_dataset() -> None:
+    assert dataset_names_in(SKILLS_DIR) == []
+
+
+def test_the_dataset_name_check_catches_a_planted_name(tmp_path: Path) -> None:
+    shutil.copytree(SKILLS_DIR, tmp_path / "skills")
+    planted = tmp_path / "skills" / "sql-workflow" / "notes.md"
+    planted.write_text("Join the Yelp reviews to businesses.\n")
+    assert dataset_names_in(tmp_path / "skills") == [("sql-workflow/notes.md", "yelp")]
+
+
+def test_top_n_keeps_ties_throughout_sql_workflow() -> None:
+    """Ticket 105: section 2 used to say both "LIMIT N" and "at most N rows", which drops ties
+    at rank N; section 8.1 keeps them."""
+    text = (SKILLS_DIR / "sql-workflow" / "SKILL.md").read_text().split("-->", 1)[-1]
+    assert "LIMIT N" not in text
+    assert "at most N rows" not in text
+    assert "tied at rank N" in text.split("## 2.", 1)[1].split("\n## ", 1)[0]
+    assert "**Top N keeps ties**" in text.split("## 8. Analysis Rules", 1)[1]
