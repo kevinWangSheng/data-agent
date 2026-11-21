@@ -38,7 +38,7 @@ A trial is one run of one task. Other terms used below:
 
 - **Context tools**: `discover`, `hydrate` and `dictionary_search`, which look up schema summaries
   and real column values on demand.
-- **Guard rejection**: a tool call refused by the command guard or the workspace guard.
+- **Guard rejection**: a tool call refused by the command guard or the workspace guard (the command guard was later removed in ADR-0010 when shell commands moved to `sandbox_exec`).
 - **Run names**: dev-3, accept-1, accept-2 and "final" are four successive runs of the development
   set, described under [How the development-set score moved](#how-the-development-set-score-moved).
   The final run was done in two stages.

@@ -9,7 +9,8 @@ were replaced (dbt_project_map by the dbt-workflow scan, get_date_boundaries by 
 and describe_table by list_tables, both through this agent's tools); the remark about a sandbox
 was reworded (ADR-0005); the rule about models named like source tables was rewritten as a general
 rule without example table names; the current_date fix keeps a real current date the task or
-project asks for. -->
+project asks for; ADR-0010: Section 5 re-runs models through `dbt_execute` and Section 6 runs
+`dbt deps` in `sandbox_exec`. -->
 
 # dbt Debugging Skill
 
@@ -58,7 +59,7 @@ If the dbt-workflow scan warns about `current_date` usage:
 If a model uses ROW_NUMBER/RANK:
 1. Check if ORDER BY columns are unique within each partition
 2. If not unique, append the primary key to ORDER BY
-3. Re-run `dbt run --select <model>`
+3. Re-run with `dbt_execute` (`command: run`, `select: <model>`)
 
 ## 6. DuckDB Error Messages
 
@@ -69,7 +70,7 @@ If a model uses ROW_NUMBER/RANK:
 | `column not found` | Check exact names - case matters in DuckDB |
 | `Cannot mix TIMESTAMP and INTEGER` | Cast both args to same type |
 | `No function matches DOUBLE / VARCHAR` | Add explicit `CAST()` |
-| `fivetran_utils is undefined` | Run `dbt deps` (only if `packages.yml` exists) |
+| `fivetran_utils is undefined` | Run `dbt deps` in `sandbox_exec` (only if `packages.yml` exists) |
 
 ## 7. Package Model Build Failures
 
