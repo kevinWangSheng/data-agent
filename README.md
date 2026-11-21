@@ -10,6 +10,8 @@ Anthropic-compatible endpoint. Everything below was measured with `deepseek-flas
 **Online version: <https://kevinwangsheng.github.io/data-agent/>**. It replays real runs step by
 step and shows the evaluation results. It is read-only and cannot start a run.
 
+![Web UI demo: step-by-step run replay with sandbox_exec and dbt_execute panels, plus multi-turn chat with a network toggle](docs/assets/demo.gif)
+
 ## Results
 
 | Benchmark | Score | Runs | API cost | Submission |
@@ -75,7 +77,8 @@ WebSearch, WebFetch and a container that can reach the network.
 
 `data-agent web` serves a page on this machine's loopback address only. You submit a task there and
 watch the run step by step as it happens. You can also cancel it, or open any earlier run from the
-run list. A wheel built where [pnpm](https://pnpm.io/) is on `PATH` carries the built page, so
+run list. The local UI also includes a chat view that supports multi-turn follow-ups, clarifying
+questions when the agent needs input, and mid-run steering. A wheel built where [pnpm](https://pnpm.io/) is on `PATH` carries the built page, so
 installing from it needs no Node. From a checkout, build the page once:
 
 ```bash
@@ -98,8 +101,9 @@ project. Without `--data-sources` the page still lists and replays runs, but can
 started with `data-agent run --events-dir runs-web/<name>` appear in the list too. One run goes at a
 time.
 
-Runs started from the page are online by default: the agent gets WebSearch and WebFetch, and its
-container can reach the network (to `pip install` a package, say). Data it has queried can then
+Runs started from the page are online by default, with a toggle in the UI to turn network access
+off: when online, the agent gets WebSearch and WebFetch, and its container can reach the network
+(to `pip install` a package, say). Data it has queried can then
 leave the machine through its code or a web request. Runs from the page always use the Docker
 sandbox, and a dbt run writes only to a schema of its own (`da_run_<run id>`), never the project's
 production schemas.
@@ -189,7 +193,7 @@ uv run python -m evals ablate --help   # several configs on a split
 uv run python -m evals dab --help      # DataAgentBench queries
 ```
 
-The runs above used one 6-core, 8 GB Linux server with Docker, three trials at a time. All formal
+The runs above used one 6-core, 8 GB Linux server with Docker, three data-eng-bench trials at a time (DataAgentBench ran four datasets in parallel). All formal
 evaluation runs together cost about $81 in API fees. The full results, costs and failure attribution
 are in the [evaluation report](docs/report.md); the run-by-run record, including what went wrong, is
 in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
@@ -203,8 +207,8 @@ in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
   specific to a query or dataset, but the 0.7588 is not a blind score; 0.7421 is.
 - Two DataAgentBench questions require the agent's text classification to match the dataset's own
   labels exactly; they failed in every run.
-- Data sources are DuckDB, Postgres and dbt projects. There is no clarifying question to the user
-  and no memory across runs yet. The web UI is for one user on one machine: it has no login.
+- Data sources are DuckDB, Postgres and dbt projects. There is no memory across runs yet. The web UI
+  is for one user on one machine: it has no login.
 
 ## How it was built
 
