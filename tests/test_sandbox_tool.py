@@ -221,3 +221,80 @@ async def test_result_ids_are_unique_across_databases(tmp_path: Path, workspace:
         server, "sandbox_exec", {"command": "cat data/query_2.csv", "data_files": ["query_2"]}
     )
     assert "x\n2\n" in reply
+
+
+async def test_output_files_lists_created_and_updated_files_sorted_and_omits_unchanged(
+    server: MCPServer,
+) -> None:
+    """Ticket 103: files created or updated under outputs/ are listed in POSIX sorted order;
+    unchanged existing files and commands without outputs produce no output_files section."""
+    created = await call(
+        server,
+        "sandbox_exec",
+        {
+            "command": (
+                "mkdir -p outputs/sub && printf 'a,1\\n' > outputs/b.csv "
+                "&& printf 'x' > outputs/sub/chart.png && printf '0' > outputs/a.csv"
+            )
+        },
+    )
+    assert created.endswith(
+        "output_files:\n- outputs/a.csv\n- outputs/b.csv\n- outputs/sub/chart.png"
+    )
+
+    no_changes = await call(server, "sandbox_exec", {"command": "echo hi"})
+    assert no_changes == "exit_code: 0\nstdout:\nhi\n"
+    assert "output_files:" not in no_changes
+
+    updated = await call(
+        server,
+        "sandbox_exec",
+        {"command": "printf 'a,2\\n' >> outputs/b.csv"},
+    )
+    assert updated == "exit_code: 0\noutput_files:\n- outputs/b.csv"
+
+
+async def test_output_files_ignores_symlinks_pointing_outside_workspace(
+    server: MCPServer, tmp_path: Path
+) -> None:
+    """Ticket 103: symlinks under outputs/ (or outputs/ itself) pointing outside the workspace
+    are never followed or listed."""
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("top-secret\n")
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    (outside_dir / "leaked.csv").write_text("k,v\n1,2\n")
+
+    reply = await call(
+        server,
+        "sandbox_exec",
+        {
+            "command": (
+                f"mkdir -p outputs && ln -s {outside_file} outputs/secret_link.txt "
+                f"&& ln -s {outside_dir} outputs/linked_dir "
+                "&& printf 'ok\\n' > outputs/real.csv"
+            )
+        },
+    )
+    assert reply == "exit_code: 0\noutput_files:\n- outputs/real.csv"
+
+    linked_root = await call(
+        server,
+        "sandbox_exec",
+        {"command": f"rm -rf outputs && ln -s {outside_dir} outputs"},
+    )
+    assert linked_root == "exit_code: 0"
+    assert "output_files:" not in linked_root
+
+
+async def test_output_files_are_reported_on_timeout(server: MCPServer) -> None:
+    error = await call_error(
+        server,
+        "sandbox_exec",
+        {
+            "command": "mkdir -p outputs && printf '1\\n' > outputs/partial.csv && sleep 30",
+            "timeout_seconds": 1,
+        },
+    )
+    assert "timed out after 1 seconds" in error
+    assert error.endswith("output_files:\n- outputs/partial.csv")

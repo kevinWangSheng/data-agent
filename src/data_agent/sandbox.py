@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -514,10 +515,38 @@ def clipped(stdout: str, stderr: str, limit: int) -> tuple[str, str]:
     return stdout[:out_room], stderr[len(stderr) - err_room :]
 
 
-def reply_text(done: Execution, workspace: Path) -> str:
+def outputs_snapshot(workspace: Path) -> dict[str, tuple[int, int, int]]:
+    """Regular files under `workspace/outputs/`, keyed by workspace-relative POSIX path with
+    `(mtime_ns, size, inode)`. Symlinks (including `outputs/` itself or any nested directory/file)
+    are never followed or listed."""
+    outputs = workspace / OUTPUTS_DIR
+    try:
+        root_stat = os.lstat(outputs)
+    except OSError:
+        return {}
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return {}
+    found: dict[str, tuple[int, int, int]] = {}
+    for dirpath, _, filenames in os.walk(outputs, followlinks=False):
+        folder = Path(dirpath)
+        for name in filenames:
+            path = folder / name
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            rel = path.relative_to(workspace).as_posix()
+            found[rel] = (st.st_mtime_ns, st.st_size, st.st_ino)
+    return found
+
+
+def reply_text(done: Execution, workspace: Path, output_files: Sequence[str] = ()) -> str:
     """SignalPilot's reply (`exit_code`, then each stream that has output). Past OUTPUT_CHARS the
     streams are cut, each cut stream is saved whole under LOGS_DIR, and the last line names the
-    files."""
+    files. When the command created or updated files under OUTPUTS_DIR, an `output_files:` section
+    lists their workspace-relative POSIX paths at the end."""
     stdout, stderr = done.stdout, done.stderr
     notes: list[str] = []
     if len(stdout) + len(stderr) > OUTPUT_CHARS:
@@ -547,6 +576,9 @@ def reply_text(done: Execution, workspace: Path) -> str:
         sections.append(f"stderr:\n{stderr}")
     if notes:
         sections.append(f"[OUTPUT CUT] {'; '.join(notes)}.")
+    if output_files:
+        listed = "\n".join(f"- {path}" for path in output_files)
+        sections.append(f"output_files:\n{listed}")
     return "\n".join(sections)
 
 
@@ -565,8 +597,11 @@ def execute_tool(
     for result_id, result in results.picked(data_files).items():
         data = csv_text(result).encode()
         write_file(sandbox.workspace, DATA_DIR, f"{result_id}.csv", data, True)
+    before = outputs_snapshot(sandbox.workspace)
     done = sandbox.execute(command, timeout_seconds)
-    text = reply_text(done, sandbox.workspace)
+    after = outputs_snapshot(sandbox.workspace)
+    output_files = sorted(rel for rel, meta in after.items() if before.get(rel) != meta)
+    text = reply_text(done, sandbox.workspace, output_files)
     if done.timed_out:
         raise SandboxError(
             f"The command timed out after {timeout_seconds} seconds and was killed. Its output "
