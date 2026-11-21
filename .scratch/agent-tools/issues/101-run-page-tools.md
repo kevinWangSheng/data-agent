@@ -1,7 +1,7 @@
 # 101 — 运行页显示 `sandbox_exec` 和 `dbt_execute`
 
 Status: ready-for-agent
-Blocked by: 100
+Blocked by: 100, 103
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -54,3 +54,5 @@ Branch: —
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+
+- 2026-11-21（主会话）：开工前核对源码命中两处 Stop condition（`web/app.py` 尚未暴露 `network` 参数；`sandbox.py` 未记录 `outputs/` 产出文件）。人决定单开前置工单 [103](103-web-network-and-sandbox-outputs.md) 补齐这两处 `src/` 改动，合入后再继续 101。同时人确认：保留旧事件（无 `rejected_by` 字段）的 Bash -> `guard` 退路以保证旧夹具和验收测试 `run-view.test.ts:355` 继续通过，并更新过时文案（如 `Shell (dbt only)`）。
