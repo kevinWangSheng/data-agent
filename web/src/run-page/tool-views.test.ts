@@ -8,6 +8,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, test } from 'vitest'
 
+import { ChatNetworkToggle } from '../chat-page/Conversation'
 import { StepCard } from '../chat-page/Turn'
 import type { LiveSource } from '../data/source'
 import { NewRun } from '../local/NewRun'
@@ -185,10 +186,13 @@ describe('run page and chat page rendering: sandbox_exec and dbt_execute', () =>
 
     const failHtml = renderRunStep(agentToolsView, 't-sbx2')
     expect(failHtml).toContain('chip-fail">exit 2</span>')
+    expect(failHtml).toContain('1+ output files')
+    expect(failHtml).not.toContain('>1 output file<')
     expect(failHtml).toContain('data-testid="sandbox-output-cut"')
     expect(failHtml).toContain('sandbox_logs/a1b2c3d4e5f6.stdout.txt')
     expect(failHtml).toContain('data-testid="sandbox-output-files-cut"')
     expect(failHtml).toContain('sandbox_logs/f6e5d4c3b2a1.output_files.txt')
+    expect(failHtml).toContain('max-w-full overflow-hidden text-ellipsis')
   })
 
   test('sandbox_exec renders all structured fields in chat page StepCard', () => {
@@ -263,5 +267,60 @@ describe('network switch defaults', () => {
     const html = renderToStaticMarkup(createElement(NewRun, { live: stubLive, onStarted: () => {}, onClose: () => {} }))
     expect(html).toContain('data-testid="new-run-network"')
     expect(html).toMatch(/data-testid="new-run-network"[^>]*checked/)
+  })
+
+  test('ChatNetworkToggle is enabled in turn mode and disabled with "(next turn)" label in steer mode', () => {
+    const turnHtml = renderToStaticMarkup(
+      createElement(ChatNetworkToggle, { network: true, mode: 'turn', onChange: () => {} }),
+    )
+    expect(turnHtml).toContain('data-testid="chat-network"')
+    expect(turnHtml).toContain('Network access')
+    expect(turnHtml).not.toContain('disabled')
+    expect(turnHtml).not.toContain('(next turn)')
+
+    const steerHtml = renderToStaticMarkup(
+      createElement(ChatNetworkToggle, { network: true, mode: 'steer', onChange: () => {} }),
+    )
+    expect(steerHtml).toContain('data-testid="chat-network"')
+    expect(steerHtml).toMatch(/data-testid="chat-network"[^>]*disabled/)
+    expect(steerHtml).toContain('opacity-60')
+    expect(steerHtml).toContain('Network access (next turn)')
+  })
+})
+
+describe('Detail step keying and raw-result button', () => {
+  test('StepDetail is keyed by selected.step.id so state resets when switching steps', () => {
+    const { sections, loose } = sectionsOf(agentToolsView)
+    const order = [...loose, ...sections.flatMap((s) => s.items)]
+    const numbers = new Map(agentToolsView.steps.map((s, i) => [s.id, i + 1]))
+    for (const id of ['t-sbx1', 't-sbx2', 't-dbt1']) {
+      const step = stepOf(agentToolsView, id)
+      const tree = Detail({
+        view: agentToolsView,
+        selectedId: id,
+        selected: { kind: 'step', step },
+        order,
+        numbers,
+        sections,
+        onSelect: () => {},
+      })
+      expect((tree.props as { children: { key: string | null } }).children.key).toBe(id)
+    }
+  })
+
+  test('unstructured sandbox_exec and dbt_execute error text omits the raw result button', () => {
+    const ts = '2026-11-21T10:00:00+00:00'
+    const events: RunEvent[] = [
+      { seq: 0, type: 'tool_start', ts, tool: 'mcp__data__sandbox_exec', tool_use_id: 's-err', input: { command: '' }, parent: null },
+      { seq: 1, type: 'tool_end', ts, tool: 'mcp__data__sandbox_exec', tool_use_id: 's-err', content: 'Error executing tool sandbox_exec: command must not be blank', is_error: true, parent: null },
+      { seq: 2, type: 'tool_start', ts, tool: 'mcp__data__dbt_execute', tool_use_id: 'd-err', input: { command: 'show' }, parent: null },
+      { seq: 3, type: 'tool_end', ts, tool: 'mcp__data__dbt_execute', tool_use_id: 'd-err', content: 'Error executing tool dbt_execute: command must be one of: run, test', is_error: true, parent: null },
+    ]
+    const view = buildRunView(events)
+    expect(renderRunStep(view, 's-err')).not.toContain('raw result')
+    expect(renderRunStep(view, 'd-err')).not.toContain('raw result')
+    // Structured results still show the raw result toggle.
+    expect(renderRunStep(agentToolsView, 't-sbx1')).toContain('raw result')
+    expect(renderRunStep(agentToolsView, 't-dbt1')).toContain('raw result')
   })
 })

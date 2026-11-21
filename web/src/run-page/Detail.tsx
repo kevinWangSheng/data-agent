@@ -9,7 +9,7 @@ import { fmtClock, fmtDur } from '../format'
 import type { KeyMoment, Narration, RunView, Step, VerifierDispatch } from '../run-view/model'
 import { fixId, isChange, narrationId, sectionStats, verifyId, type Item, type Section } from './outline'
 import { DbtInputView, DbtResultView, SandboxInputView, SandboxResultView } from './ToolPanels'
-import { isDbtExecute, isSandboxExec } from './tool-views'
+import { isDbtExecute, isSandboxExec, parseDbtResult, parseSandboxResult } from './tool-views'
 import { KIND_NAME, shortTool, toolKind } from './tools'
 import {
   Caret,
@@ -90,7 +90,7 @@ export function Detail({
     ) : (
       <SectionDetail view={view} section={selected.section} numbers={numbers} onSelect={onSelect} />
     )
-  } else if (selected.kind === 'step') body = <StepDetail view={view} step={selected.step} number={numbers.get(selected.step.id)} order={order} numbers={numbers} onSelect={onSelect} />
+  } else if (selected.kind === 'step') body = <StepDetail key={selected.step.id} view={view} step={selected.step} number={numbers.get(selected.step.id)} order={order} numbers={numbers} onSelect={onSelect} />
   else body = <NarrationDetail narration={selected.narration} order={order} numbers={numbers} onSelect={onSelect} />
   return <div className="px-5 py-4 max-w-[1100px]">{body}</div>
 }
@@ -295,9 +295,9 @@ function ResultView({ view, step, onSelect }: { view: RunView; step: Step; onSel
   const [raw, setRaw] = useState(false)
   if (step.result === null) return <div className="text-ink-3 text-[12px]">Waiting for the tool to return…</div>
   const dispatch = view.dispatches.find((d) => d.toolUseId === step.id)
-  const sandbox = isSandboxExec(step.tool)
-  const dbt = isDbtExecute(step.tool)
-  const structured = Boolean(step.table || dispatch || sandbox || dbt)
+  const sandboxParsed = isSandboxExec(step.tool) ? parseSandboxResult(step.result) : null
+  const dbtParsed = isDbtExecute(step.tool) ? parseDbtResult(step.result) : null
+  const structured = Boolean(step.table || dispatch || sandboxParsed !== null || dbtParsed !== null)
   return (
     <div className="space-y-2">
       {dispatch && (
@@ -308,10 +308,10 @@ function ResultView({ view, step, onSelect }: { view: RunView; step: Step; onSel
           </button>
         </div>
       )}
-      {!raw && sandbox ? (
-        <SandboxResultView result={step.result} />
-      ) : !raw && dbt ? (
-        <DbtResultView result={step.result} />
+      {!raw && sandboxParsed !== null ? (
+        <SandboxResultView result={step.result} parsed={sandboxParsed} />
+      ) : !raw && dbtParsed !== null ? (
+        <DbtResultView result={step.result} parsed={dbtParsed} />
       ) : step.table && !raw ? (
         <DataTable table={step.table} />
       ) : !dispatch || raw ? (

@@ -4,7 +4,7 @@
 import { FileOutput } from 'lucide-react'
 
 import { ChatCode, CopyButton } from '../code/chat-code'
-import { parseDbtInput, parseDbtResult, parseSandboxInput, parseSandboxResult } from './tool-views'
+import { parseDbtInput, parseDbtResult, parseSandboxInput, parseSandboxResult, type DbtResult, type SandboxResult } from './tool-views'
 import { Caret, Pre } from './ui'
 
 function lineCount(text: string): string {
@@ -35,8 +35,8 @@ export function SandboxInputView({ input, compact = false }: { input: unknown; c
       {dataFiles.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5" data-testid="sandbox-data-files">
           <span className="text-[11px] text-ink-3">data_files</span>
-          {dataFiles.map((id) => (
-            <span key={id} className="chip chip-na mono" title={`Written to data/${id}.csv before execution`}>
+          {dataFiles.map((id, i) => (
+            <span key={`${id}-${i}`} className="chip chip-na mono" title={`Written to data/${id}.csv before execution`}>
               {id}
             </span>
           ))}
@@ -46,8 +46,8 @@ export function SandboxInputView({ input, compact = false }: { input: unknown; c
   )
 }
 
-export function SandboxResultView({ result, compact = false }: { result: string; compact?: boolean }) {
-  const parsed = parseSandboxResult(result)
+export function SandboxResultView({ result, parsed: given, compact = false }: { result: string; parsed?: SandboxResult | null; compact?: boolean }) {
+  const parsed = given === undefined ? parseSandboxResult(result) : given
   if (!parsed) return <Pre text={result} maxHeight={compact ? 220 : 520} />
   const { exitCode, stdout, stderr, outputCut, outputFiles, outputFilesCut, timedOut, timeoutNotice } = parsed
   const hasStream = (stdout !== null && stdout.length > 0) || (stderr !== null && stderr.length > 0)
@@ -57,9 +57,9 @@ export function SandboxResultView({ result, compact = false }: { result: string;
     <div className="space-y-2" data-testid="sandbox-result">
       <div className="flex flex-wrap items-center gap-2">
         <ExitChip exitCode={exitCode} timedOut={timedOut} />
-        {outputFiles.length > 0 && (
-          <span className="text-[11px] text-ink-3">
-            {outputFiles.length} output file{outputFiles.length === 1 ? '' : 's'}
+        {(outputFiles.length > 0 || outputFilesCut) && (
+          <span className="text-[11px] text-ink-3" data-testid="sandbox-output-files-count">
+            {outputFilesCut ? `${outputFiles.length}+ output files` : `${outputFiles.length} output file${outputFiles.length === 1 ? '' : 's'}`}
           </span>
         )}
       </div>
@@ -108,8 +108,8 @@ export function SandboxResultView({ result, compact = false }: { result: string;
           </div>
           {outputFiles.length > 0 && (
             <ul className="flex flex-wrap gap-1.5 list-none m-0 p-0">
-              {outputFiles.map((file) => (
-                <li key={file} className="chip chip-info mono">
+              {outputFiles.map((file, i) => (
+                <li key={`${file}-${i}`} className="chip chip-info mono max-w-full overflow-hidden text-ellipsis" title={file}>
                   {file}
                 </li>
               ))}
@@ -155,8 +155,8 @@ export function DbtInputView({ input }: { input: unknown }) {
   )
 }
 
-export function DbtResultView({ result, compact = false }: { result: string; compact?: boolean }) {
-  const parsed = parseDbtResult(result)
+export function DbtResultView({ result, parsed: given, compact = false }: { result: string; parsed?: DbtResult | null; compact?: boolean }) {
+  const parsed = given === undefined ? parseDbtResult(result) : given
   if (!parsed) return <Pre text={result} maxHeight={compact ? 220 : 520} />
   const { targetSchema, exitCode, output, runResults, failures, timedOut, timeoutNotice } = parsed
   const maxHeight = compact ? 220 : 480
@@ -166,7 +166,11 @@ export function DbtResultView({ result, compact = false }: { result: string; com
       <div className="flex flex-wrap items-center gap-2">
         <ExitChip exitCode={exitCode} timedOut={timedOut} />
         {targetSchema && (
-          <span className="chip chip-na mono" data-testid="dbt-target-schema" title="Per-run scratch schema">
+          <span
+            className="chip chip-na mono max-w-full overflow-hidden text-ellipsis"
+            data-testid="dbt-target-schema"
+            title={`Per-run scratch schema: ${targetSchema}`}
+          >
             schema: {targetSchema}
           </span>
         )}
