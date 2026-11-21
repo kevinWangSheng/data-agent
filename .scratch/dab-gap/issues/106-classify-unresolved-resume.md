@@ -198,3 +198,8 @@ Not fixed, with reasons:
 **给主会话（push 后）**：PR #115 的新提交要等 Codex GitHub app 出审查；没出的话评论 `@codex review`。
 
 **合入（2026-11-21，主会话）**：Codex 对 88a298d 无意见，CI 绿；人审快照差异后批准合入（"if is mergeable, just merge"）。PR #115 squash 合入。
+
+**spec 验证第 2 步（2026-11-21，主会话）**：跑法 `runs/v105/par.py`，服务器 69a7e2b（含 104–106），no-context、默认 effort；7 个运行全部 exit 0，$3.14，2 个 trial 没做完；合并 `runs/v105-merged`，算分 `runs/v105-score`（本机有 `run.log`）。对照是第 1 步的 default 组（2bc3f0e，同题同次数）。
+- agnews 4 道题 × 3：**4/12**，对照 6/12（query1 3/3 对 3/3，query2 0/3 对 1/3，query3 0/3 对 0/3，query4 1/3 对 2/3）。单看 106 这组低于对照。
+- 新参数的使用（事件文件里的字符串计数，推断）：12 次都用了多列 `text_column`；`allow_unresolved` 只有 1 次（query4 run2）；`resume_from` 0 次。
+- 105 和 106 合起来 28/54，对照 25/54。

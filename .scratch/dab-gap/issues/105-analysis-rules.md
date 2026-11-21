@@ -99,3 +99,6 @@ Not fixed:
 - Standards axis: no hard violations. `NOTICE` already covers "modified as noted at the top of each file". Not fixed: the concern that 8.6 ("names copied as stored") is close to answer-format guidance, because spec rule 6 asks for it verbatim ("答案里出现的名字从数据里原样取"). Also not fixed: the overlap between 8.2 and section 7, a minor judgement call.
 
 **合入（2026-11-21，主会话）**：PR #114 → 10cccc6，CI 绿，Codex GitHub app 无意见。效果验证照 spec "验证"第 2 步。
+
+**spec 验证第 2 步（2026-11-21，主会话）**：跑法 `runs/v105/par.py`，服务器 69a7e2b（含 104–106），no-context、默认 effort；7 个运行全部 exit 0，$3.14，2 个 trial 没做完；合并 `runs/v105-merged`，算分 `runs/v105-score`（本机有 `run.log`）。对照是第 1 步的 default 组（2bc3f0e，同题同次数）。
+- 105 的 14 道题 × 3：**24/42**，对照 19/42。DEPS_DEV_V1 4/6（对照 2/6）、crmarenapro 9/12（7/12）、stockmarket 7/9（6/9）、GITHUB_REPOS 2/6（2/6）、PATENTS 2/6（2/6）、PANCANCER_ATLAS 0/3（0/3）。不低于对照，过。
