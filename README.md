@@ -10,6 +10,8 @@ Anthropic-compatible endpoint. Everything below was measured with `deepseek-flas
 **Online version: <https://kevinwangsheng.github.io/data-agent/>**. It replays real runs step by
 step and shows the evaluation results. It is read-only and cannot start a run.
 
+![Web UI demo: step-by-step run replay with sandbox_exec and dbt_execute panels, plus multi-turn chat with a network toggle](docs/assets/demo.gif)
+
 ## Results
 
 | Benchmark | Score | Runs | API cost | Submission |
@@ -205,8 +207,8 @@ in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
   specific to a query or dataset, but the 0.7588 is not a blind score; 0.7421 is.
 - Two DataAgentBench questions require the agent's text classification to match the dataset's own
   labels exactly; they failed in every run.
-- Data sources are DuckDB, Postgres and dbt projects. There is no clarifying question to the user
-  and no memory across runs yet. The web UI is for one user on one machine: it has no login.
+- Data sources are DuckDB, Postgres and dbt projects. There is no memory across runs yet. The web UI
+  is for one user on one machine: it has no login.
 
 ## How it was built
 
