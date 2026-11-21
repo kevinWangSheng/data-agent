@@ -1130,16 +1130,33 @@ async def test_dab_resumes_from_a_result_id(
         listed = await call_local(
             server, "query_database", {"db_name": "prices_db", "sql": "SELECT 1 AS x"}
         )
-        bad = await call_tool(
-            server, "classify_text", base | {"resume_from": listed.splitlines()[-1].split()[2][:-1]}
-        )
+        plain = listed.splitlines()[-1].split()[2][:-1]
+        bad = await call_tool(server, "classify_text", base | {"resume_from": plain})
     # Without allow_unresolved the cello's mark is outside the categories: not retried.
     assert sent(model) == [TEXTS[FOG]]
     assert "19 labeled with a category." in text
     assert "Resumed from query_1: 1 rows sent to the model" in text
     assert "Label table: [result id: query_2;" in text
     assert bad.is_error
-    assert "is not a label table" in text_of(bad)
+    assert f"there is no label table {plain!r} from classify_text" in text_of(bad)
+
+
+async def test_dab_resumes_only_from_a_table_this_tool_made(
+    fake: FakeModel, tmp_path: Path
+) -> None:
+    """A query result shaped like a label table is not one: as on the product server, only a
+    table classify_text stored can be resumed."""
+    root = make_dab(tmp_path / "dab")
+    add_notes(root)
+    server = local_dab(root, tmp_path / "workspace")
+    sql = "SELECT id, 'sport' AS label, 'labeled' AS outcome, NULL AS model_label FROM notes"
+    listed = await call_local(server, "query_database", {"db_name": "prices_db", "sql": sql})
+    lookalike = listed.splitlines()[-1].split()[2][:-1]
+    base = classify_args("SELECT id, body FROM notes") | {"db_name": "prices_db"}
+    outcome = await call_tool(server, "classify_text", base | {"resume_from": lookalike})
+    assert outcome.is_error
+    assert f"there is no label table {lookalike!r} from classify_text" in text_of(outcome)
+    assert fake.requests == []
 
 
 # --- the real model (make test-integration; the main session runs it) ---------------------------

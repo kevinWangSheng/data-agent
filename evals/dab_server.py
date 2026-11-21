@@ -424,6 +424,10 @@ def build_server(
         with results.lock:
             return sql_explain(db_name, dialect)(sql)
 
+    # The result ids classify_text stored: only these can be resumed (a query result shaped
+    # like a label table is not one).
+    label_ids: set[str] = set()
+
     @server.tool(
         name=classify.TOOL,
         description=classify.description(
@@ -447,7 +451,7 @@ def build_server(
     ) -> str:
         allowed = classify.check_categories(categories)
         with results.lock:
-            found = results.data.results.get(resume_from)
+            found = results.data.results.get(resume_from) if resume_from in label_ids else None
         resume = classify.resume_of(resume_from, found, retry_unresolved)
         setup = classify.setup_from_env(os.environ)
         db_type = checkable(db_name)
@@ -466,7 +470,9 @@ def build_server(
             rows, key_column, text_column, allowed, instructions, setup, allow_unresolved, resume
         )
         with results.lock:
-            stored = results.keep(QueryResult(labeled.columns, labeled.rows))
+            result_id = results.data.add(QueryResult(labeled.columns, labeled.rows))
+            label_ids.add(result_id)
+            stored = results.data.note(result_id)
         return classify.report(labeled, stored)
 
     return server

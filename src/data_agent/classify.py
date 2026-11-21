@@ -76,14 +76,14 @@ sentiment, kind) and matching keywords would only approximate it.
 {limit} rows per call: more is an error and nothing is classified. `instructions` (optional) \
 says how to choose between the categories.
 
-`text_column` may be a list of columns: each row's text is then every non-empty one of them, \
-each line starting with the column's name ("title: ..."). `allow_unresolved` (default false) \
-lets the model answer `{mark}` for a text it cannot place in a category; such a row gets the \
-outcome `unresolved` and no category. `resume_from` takes {resumed}: this call then fetches \
+`text_column` may be a list of columns: with more than one, each row's text is every non-empty one \
+of them, each line starting with the column's name ("title: ..."). `allow_unresolved` (default \
+false) lets the model answer `{mark}` for a text it cannot place in a category; such a row gets \
+the outcome `unresolved` and no category. `resume_from` takes {resumed}: this call then fetches \
 the same query's rows (give the same `sql`, `key_column` and `text_column`) and sends the model \
-only the rows that table left `failed` or `no_label`, plus those it does not have (left out \
-when the budget was reached); with `retry_unresolved` its `unresolved` rows too. Every other row \
-is kept as it was, and the merged table is stored as a new one.
+only the rows that table left `failed` or `no_label`, plus those it does not have (left out when \
+the budget was reached); with `retry_unresolved` its `unresolved` rows too. Every other row is \
+kept as it was. The merged table is stored as a new one and holds only this query's rows.
 
 Returns the number of rows per category; the rows that got no category, by reason (a label \
 outside the categories, no label in the reply, a failed model call, an empty text, or the \
