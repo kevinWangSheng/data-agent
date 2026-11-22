@@ -284,7 +284,7 @@ function DabDatasets({ dab }: { dab: Dab }) {
     <Section
       id="dab"
       title="DataAgentBench by dataset"
-      note="Pass@1 per dataset for the scored output and its baseline. Per-query trajectories are not on this site; all of them are in the release."
+      note="Pass@1 per dataset for the scored output and its baseline. Per-query trajectories are not on this site; the scored run's are in the release."
     >
       <div className="tbl-wrap">
         <table className="tbl">
