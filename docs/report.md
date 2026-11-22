@@ -2,21 +2,22 @@
 
 This report backs the numbers in the [README](../README.md): what was run, what each result does
 and does not show, what it cost, and why the failed tasks failed. Everything was measured with
-`deepseek-flash`; the last run finished on 2026-11-15. The run-by-run record, in Chinese, is
+`deepseek-flash`; the last run finished on 2026-11-22. The run-by-run record, in Chinese, is
 [`docs/adr/0008-change-acceptance.md`](adr/0008-change-acceptance.md).
 
 ## Summary
 
 - **data-eng-bench** (103 dbt tasks × 3 trials): 64.1% ± 1.6 accuracy with the `no-verifiers`
   config, for $15.16.
-- **DataAgentBench** (54 queries × 5 trials): 0.7588 Pass@1 with Skills on, against 0.7218 for the
-  baseline. The blind score, before a round of fixes made after reading failures, was 0.7421
-  against 0.7012.
+- **DataAgentBench** (54 queries × 5 trials): the blind run scored 0.7421 Pass@1 with Skills on,
+  against 0.7012 for the baseline; this is the submitted score. Two later rounds of general changes,
+  made after looking at this benchmark's results, reached 0.7588 and 0.7639, while the baseline rose
+  to 0.7614. They count as a tuned prompt by the leaderboard's definition and are not submitted.
 - **Ablation**: on 30 held-out tasks, no paired difference between configs is significant. The data
   cannot say which layer helps.
 - **Verifier**: the verifier layer roughly doubled the cost per successful task and did not raise
   accuracy in any measurement, so the recommended config leaves it off.
-- **Cost**: all formal evaluation runs together cost about $81. Development-set iteration before
+- **Cost**: all formal evaluation runs together cost about $106. Development-set iteration before
   that cost about ¥541.
 - **Failures**: on dbt tasks the largest fixable causes were in the tools and the harness, not in
   the model's reasoning. On DataAgentBench, 23 of the 60 failures in the first run came from the
@@ -32,7 +33,7 @@ and does not show, what it cost, and why the failed tasks failed. Everything was
 | dbt benchmark | data-eng-bench, run in containers through Harbor, graded by the benchmark's scripts |
 | Query benchmark | DataAgentBench, its 54 leaderboard queries on 12 datasets, graded by its `validate.py` scripts, with the benchmark's official hints |
 | Comparison | paired bootstrap over tasks, 95% interval; accuracy is reported ± its standard error, computed by the benchmark's scoring functions |
-| Cost | billed price, read from each run's event log; off-peak hours bill at half the list price. The full data-eng-bench run and both DataAgentBench runs were entirely off-peak; about 16% of the held-out run's event files started at peak |
+| Cost | billed price, read from each run's event log; off-peak hours bill at half the list price. The full data-eng-bench run and the first two full DataAgentBench runs were entirely off-peak; about 16% of the held-out run's event files started at peak |
 
 A trial is one run of one task. Other terms used below:
 
@@ -77,8 +78,8 @@ data-eng-bench has 103 tasks. They were split before development started:
 The development set is harder than the benchmark as a whole, so scores on the two sets are not
 comparable with each other.
 
-DataAgentBench has no such split. Its results were not used to change the agent, with one
-exception described under [DataAgentBench failures](#dataagentbench-failures).
+DataAgentBench has no such split. Its results were not used to change the agent, with two
+exceptions described under [DataAgentBench failures](#dataagentbench-failures).
 
 ## Ablation
 
@@ -178,19 +179,28 @@ the held-out table above.
 54 queries × 5 trials × 2 configs, 540 trials per run. Pass@1 is the benchmark's metric, averaged
 over datasets.
 
-| | First run (`b7c6071`) | Rerun after fixes (`cc8cdef`) |
-|---|---|---|
-| Skills on (`no-context`) | 0.7421 (210/270) | 0.7588 (212/270) |
-| Skills off (`baseline`) | 0.7012 (206/270) | 0.7218 (205/270) |
-| Difference | +4.09 points, +1.18 to +6.88, significant | +3.70 points, −1.51 to +9.07, not significant |
+| | Blind run (`b7c6071`) | First exception (`cc8cdef`) | Second exception (`69a7e2b`) |
+|---|---|---|---|
+| Skills on (`no-context`) | 0.7421 (210/270) | 0.7588 (212/270) | 0.7639 (209/270) |
+| Skills off (`baseline`) | 0.7012 (206/270) | 0.7218 (205/270) | 0.7614 (213/270) |
+| Difference | +4.09 points, +1.18 to +6.88, significant | +3.70 points, −1.51 to +9.07, not significant | +0.25 points, −6.93 to +7.62, not significant |
 
-Skills on scored about 4 points higher in both runs; the difference was significant in the first
-run only. The two runs used different code, so they are not repeats of one measurement.
+Skills on scored higher in all three runs, but the gap shrank to almost nothing in the third,
+where the baseline gained 4 points; only the first difference is significant. The runs used
+different code, so they are not repeats of one measurement.
 
-The first run is the blind score. The rerun followed three general fixes made after reading the
-first run's failures, so 0.7588 is not blind. The submission says so.
+Only the blind run is submitted, marked "Tuned prompt: no". The leaderboard marks a prompt as tuned
+when it is "built from a close study of DAB's task conventions (domain rules, parsing and
+interpretation choices, and expected answer shapes)". The two later rounds name no query or
+dataset, but they were built after reading this benchmark's failures (answer shapes) and other
+submissions' notes on it (parsing and interpretation), so they meet that definition. Submitted as
+tuned, 0.7639 would rank 25th of 26 tuned entries; the blind run ranks 9th of 32 untuned ones
+(leaderboard as of 2026-11-22).
 
-Per dataset in the rerun (baseline → Skills on): DEPS_DEV_V1 0.20 → 0.50, GITHUB_REPOS 0.60 → 0.60,
+Per dataset in the first exception (baseline → Skills on) are below; the second exception's are
+in the [ADR](adr/0008-change-acceptance.md).
+
+DEPS_DEV_V1 0.20 → 0.50, GITHUB_REPOS 0.60 → 0.60,
 PANCANCER_ATLAS 0.67 → 0.67, PATENTS 0.60 → 0.47, agnews 0.25 → 0.40, bookreview 0.93 → 1.00,
 crmarenapro 0.82 → 0.83, googlelocal 1.00 → 0.95, music_brainz_20k 1.00 → 1.00, stockindex
 0.93 → 1.00, stockmarket 0.72 → 0.72, yelp 0.94 → 0.97.
@@ -206,8 +216,10 @@ that the leaderboard does not score.
 | data-eng-bench, all tasks | 309 | $15.16 | $0.049 |
 | DataAgentBench trial run and first run | 34 + 540 | $10.88 | $0.019 |
 | DataAgentBench fix round: experiments and three small validations | | about $5.26 | |
-| DataAgentBench rerun | 540 | $13.57 | $0.025 |
-| **Formal evaluation total** | | **about $81.1** | |
+| DataAgentBench rerun after the first exception | 540 | $13.57 | $0.025 |
+| DataAgentBench second exception: effort comparison and validation | 194 | $10.66 | $0.055 |
+| DataAgentBench rerun after the second exception | 540 | $14.04 | $0.026 |
+| **Formal evaluation total** | | **about $105.8** | |
 
 Development-set iteration, from the first runs to the choice of the default config, cost about
 ¥541 against a stop line that was raised three times, from ¥300 to ¥600. Each raise was a recorded
@@ -325,7 +337,27 @@ that may be variance), 1 against the new tool, and 3 are variance or undetermine
 Two conclusions follow. The answer-format rule did what it was meant to and also removed passes
 that were never correct answers; on GITHUB_REPOS 2 and crmarenapro 12 the number of truly correct
 answers did not fall. And it caused one real regression, PATENTS 2, where "only what was asked" was
-read as "only the top entries". No further fix round was run.
+read as "only the top entries".
+
+**The second exception.** The leaderboard placed 0.7588 31st of 56, below the median, while two
+other submissions with the same model scored 0.9230 and 0.8114. Their public notes showed that most
+of the larger gap came from per-dataset and per-query instructions, which this project does not
+write. A human approved a second exception limited to three general changes, written without
+copying either submission's text:
+
+- A run-level reasoning-effort option. Against the default, `max` passed fewer of the weak queries
+  (24 of 60 against 31) at 1.65 times the cost, so the rerun kept the default.
+- General analysis rules in the SQL skill: keep ties in a top N, read qualifiers such as "at least"
+  and which event a time window applies to, normalize join keys and check the match rate, parse
+  numbers and lists out of text, choose between code and label columns, recompute by a second path.
+- `classify_text` can leave a row unresolved instead of forcing a label, resume from an earlier
+  result to relabel only the missing rows, and read several text columns.
+
+On the weak queries the changes passed 28 of 54 trials, against 25 for the same queries on the code before them.
+In the full rerun Skills on rose only 0.51 points and passed 3 fewer trials, within run-to-run
+variation, and the baseline rose 4 points; the drops were not read. Two trials broke on
+infrastructure (the benchmark's tool server failed to start, cause not found) and were rerun once.
+No further round is planned.
 
 Not checked: the baseline config's drops on the same queries, whose trajectories are only on the
 server; and DEPS_DEV_V1 2, googlelocal 3 and yelp 4, which need the per-trial verdicts to settle.
@@ -340,8 +372,8 @@ server; and DEPS_DEV_V1 2, googlelocal 3 and yelp 4, which need the per-trial ve
   little about what they would do if used.
 - **Verifier.** It did not raise accuracy at its cost. Its second version computes its facts but
   still raises false alarms, and it sometimes re-verified every model after a small change.
-- **DataAgentBench score.** 0.7588 followed fixes made after seeing that benchmark's failures;
-  0.7421 is the blind score. The grader matches substrings on many queries, so a score can rise by
+- **DataAgentBench score.** 0.7588 and 0.7639 followed changes made after seeing that benchmark's
+  results; 0.7421 is the blind score and the one submitted. The grader matches substrings on many queries, so a score can rise by
   hedging, and part of the difference between the two runs is hedged passes that went away.
 - **Text classification.** Queries that need classification to match a dataset's own labels
   exactly fail, and long classification runs can still fill the context.
@@ -364,6 +396,6 @@ server; and DEPS_DEV_V1 2, googlelocal 3 and yelp 4, which need the per-trial ve
 | Tool and harness latency audit | [`docs/research/2026-11-05-foundation-latency-audit.md`](research/2026-11-05-foundation-latency-audit.md) |
 | Tickets with review findings and real-run output | [`.scratch/`](../.scratch/) |
 | data-eng-bench trajectories, 309 trials | Harbor Hub, linked from [PR #20](https://github.com/Snowflake-Labs/data-eng-bench/pull/20) |
-| DataAgentBench trajectories, 270 trials | [release `dab-submission-2026-11-15`](https://github.com/kevinWangSheng/data-agent/releases/tag/dab-submission-2026-11-15) |
+| DataAgentBench trajectories of the submitted blind run, 270 trials | [release `dab-submission-2026-11-13`](https://github.com/kevinWangSheng/data-agent/releases/tag/dab-submission-2026-11-13) |
 
 Run outputs under `runs/` are not in git; the held-out set's per-task results stay on the server.

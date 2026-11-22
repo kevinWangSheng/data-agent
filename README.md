@@ -17,7 +17,7 @@ step and shows the evaluation results. It is read-only and cannot start a run.
 | Benchmark | Score | Runs | API cost | Submission |
 |---|---|---|---|---|
 | [data-eng-bench](https://github.com/Snowflake-Labs/data-eng-bench) (103 dbt tasks) | 64.1% ± 1.6 accuracy, pass@3 0.748 | 103 tasks × 3 | $15.16 | [PR #20](https://github.com/Snowflake-Labs/data-eng-bench/pull/20), open |
-| [DataAgentBench](https://github.com/ucbepic/DataAgentBench) (54 queries, 12 datasets) | 0.7588 Pass@1, with the benchmark's official hints | 54 queries × 5 | $7.07 | [PR #144](https://github.com/ucbepic/DataAgentBench/pull/144), open |
+| [DataAgentBench](https://github.com/ucbepic/DataAgentBench) (54 queries, 12 datasets) | 0.7421 Pass@1 (blind run), with the benchmark's official hints | 54 queries × 5 | $5.16 | [PR #144](https://github.com/ucbepic/DataAgentBench/pull/144), open |
 
 Both scores are local runs graded by each benchmark's own scripts. Both submissions are waiting for
 the maintainers, so neither number is on a leaderboard yet. A run of one task is called a trial
@@ -26,12 +26,13 @@ below.
 - **data-eng-bench**: run with the `no-verifiers` config (see below). By difficulty, easy 100% (3 tasks), medium 70.9%, hard 57.8%, very hard 45.8%.
   The 309 trials and their trajectories are public on Harbor Hub.
 - **DataAgentBench**: run with Skills on, using the benchmark's own tool server (its database
-  tools and a Python sandbox) instead of the tools described below. The first run of all 54 queries
-  scored 0.7421. After reading its failures I made three
-  general fixes (answer format, a visible turn budget, a text-classification tool) and reran
-  everything, which gave 0.7588. The submission states this. The cost is for the submitted config;
-  the rerun with its baseline cost $13.57. The 270 trajectories are in the
-  [release](https://github.com/kevinWangSheng/data-agent/releases/tag/dab-submission-2026-11-15).
+  tools and a Python sandbox) instead of the tools described below. The submitted score is the
+  blind run, made before any DataAgentBench result had been seen. Two later rounds of general
+  changes, made after looking at this benchmark's failures and at other submissions' notes, scored
+  0.7588 and 0.7639. By the leaderboard's definition those rounds count as a tuned prompt, so they
+  are reported here and in the [evaluation report](docs/report.md) but not submitted. The cost is
+  for the submitted config. The 270 trajectories are in the
+  [release](https://github.com/kevinWangSheng/data-agent/releases/tag/dab-submission-2026-11-13).
 
 ## Quickstart
 
@@ -172,9 +173,10 @@ What the data does support:
 - The verifier layer roughly doubles the cost per successful task (on the development set, $0.147
   against $0.072 without it) and did not raise accuracy in any measurement. The recommended config
   is therefore `no-verifiers`, and the data-eng-bench submission was run with it.
-- On DataAgentBench, Skills on scored above the baseline both times all 54 queries were run: +4.09
-  points the first time (interval +1.18 to +6.88) and +3.70 the second (interval −1.51 to +9.07,
-  which crosses zero). The verifier and context tools play no part there.
+- On DataAgentBench, Skills on scored above the baseline in all three full runs, but the gap
+  shrank: +4.09 points the first time (interval +1.18 to +6.88), +3.70 the second (−1.51 to
+  +9.07) and +0.25 the third (−6.93 to +7.62); only the first is significant. The verifier and
+  context tools play no part there.
 
 The held-out tasks were sampled in advance, and their per-task failures were never used during
 development. Skills were only changed from failures on the development set.
@@ -203,8 +205,9 @@ in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
 - Measured with one model. The numbers, and which layers are worth their cost, may differ on another.
 - The ablation is too small to separate the layers (see above).
 - The context tools were rarely called on dbt tasks, so their measured effect there says little.
-- The DataAgentBench fixes were made after seeing failures on that benchmark. They contain nothing
-  specific to a query or dataset, but the 0.7588 is not a blind score; 0.7421 is.
+- The two DataAgentBench rounds after the blind run were made after seeing that benchmark's
+  failures. They contain nothing specific to a query or dataset, but 0.7588 and 0.7639 are not
+  blind scores; 0.7421 is, and it is the one submitted.
 - Two DataAgentBench questions require the agent's text classification to match the dataset's own
   labels exactly; they failed in every run.
 - Data sources are DuckDB, Postgres and dbt projects. There is no memory across runs yet. The web UI
