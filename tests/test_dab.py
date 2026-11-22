@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -745,6 +746,75 @@ async def test_the_server_runs_code_in_dabs_image_without_the_network(
     assert any(f"source={SKILLS.resolve()},target=/skills,readonly" in m for m in mounts)
 
 
+# --- the tool server's stderr file (ticket 107) -------------------------------------------------
+
+
+STAGE_LINE = r"dab_server (?P<stage>.+): (?P<seconds>\d+\.\d{3})s"
+
+
+def start_server(root: Path, tmp_path: Path, pythonpath: str | None = None) -> Path:
+    """Start the server as the SDK does, with nothing on its stdin (it exits once started), and
+    return its stderr file."""
+    stderr_log = tmp_path / dab.SERVER_STDERR
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    config = root / "query_toyset" / "db_config.yaml"
+    args = dab.server_args(
+        root, config, tmp_path / "tools.jsonl", workspace, RUN_ID, SKILLS, stderr_log=stderr_log
+    )
+    env = {**os.environ, **dab.server_env()}
+    if pythonpath is not None:
+        env["PYTHONPATH"] = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
+    subprocess.run(
+        [sys.executable, *args],
+        env=env,
+        cwd=workspace,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=60,
+    )
+    return stderr_log
+
+
+def test_an_import_error_after_the_redirect_is_in_the_stderr_file(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    # A package that shadows `mcp` makes the server's own imports fail.
+    shadow = tmp_path / "shadow"
+    (shadow / "mcp").mkdir(parents=True)
+    (shadow / "mcp" / "__init__.py").write_text("raise ImportError('mcp is broken here')\n")
+    text = start_server(dab_root, tmp_path, pythonpath=str(shadow)).read_text()
+    assert "Traceback (most recent call last)" in text
+    assert "ImportError: mcp is broken here" in text
+
+
+def test_a_failure_in_main_is_in_the_stderr_file(tmp_path: Path) -> None:
+    # No DAB checkout: `scaffold` cannot import DAB's tools.
+    root = tmp_path / "no-dab"
+    (root / "query_toyset").mkdir(parents=True)
+    (root / "query_toyset" / "db_config.yaml").write_text("{}")
+    text = start_server(root, tmp_path).read_text()
+    assert "Traceback (most recent call last)" in text
+    assert "serving stdio" not in text
+
+
+async def test_a_started_server_writes_each_start_up_stage_with_its_seconds(
+    dab_root: Path, tmp_path: Path
+) -> None:
+    stderr_log = tmp_path / dab.SERVER_STDERR
+    async with dab_server(dab_root, tmp_path / "tools.jsonl", "--stderr-log", str(stderr_log)):
+        lines = stderr_log.read_text().splitlines()
+    stages = [m for line in lines if (m := re.fullmatch(STAGE_LINE, line))]
+    names = [m["stage"] for m in stages]
+    assert names[0].startswith("started")
+    assert {"imported", "tools built", "sandbox built"} <= set(names)
+    assert names[-1] == "serving stdio"
+    # The stage lines come first, in order: nothing of the server's start-up is out of them.
+    assert lines[: len(stages)] == [m.string for m in stages]
+    seconds = [float(m["seconds"]) for m in stages]
+    assert seconds == sorted(seconds)
+
+
 # --- loading a query and sizing its data --------------------------------------------------------
 
 
@@ -1289,6 +1359,64 @@ async def test_a_dab_server_that_failed_to_start_is_an_infra_error(
     assert json.loads((out / "submission.json").read_text()) == []
     events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
     assert any(e["type"] == "error" and e["source"] == "mcp" for e in events)
+
+
+def server_stderr_log(options: Any) -> Path:
+    args = options.mcp_servers["data"]["args"]
+    return Path(args[args.index("--stderr-log") + 1])
+
+
+async def test_the_server_writes_its_stderr_into_the_trial_directory(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    [seen] = await run_dab(monkeypatch, dab_root, out, runs=1)
+    trial = dab.run_dir(out, "toyset", "1", 0)
+    assert server_stderr_log(seen["options"]) == (trial / dab.SERVER_STDERR).resolve()
+
+
+async def test_a_failed_server_start_points_the_error_at_its_stderr_file(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    lines = [f"dab_server stage {i}: {i}.000s" for i in range(30)]
+    lines.append("RuntimeError: cannot reach postgresql://u:pw@db.internal.example/x")
+
+    async def server_down(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        server_stderr_log(options).write_text("\n".join(lines) + "\n")
+        servers = [{"name": "data", "status": "failed"}]
+        yield SystemMessage(subtype="init", data={"mcp_servers": servers, "tools": []})
+        yield result("The database is unavailable.")
+
+    monkeypatch.setattr(dab, "query", server_down)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    env = {**ENV, "PG_HOST": "db.internal.example"}
+    await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, env)
+    events = read_events(dab.run_dir(out, "toyset", "1", 0) / "events.jsonl")
+    [error] = [e for e in events if e["type"] == "error" and e["source"] == "mcp"]
+    assert error["error"] == "DAB tool server failed"
+    # Relative to the trial directory, where events.jsonl is.
+    assert error["stderr_log"] == dab.SERVER_STDERR
+    tail = error["stderr_tail"]
+    assert tail[-1] == "RuntimeError: cannot reach postgresql://u:pw@[REDACTED]/x"
+    assert tail[:-1] == lines[-len(tail) : -1]
+    assert 0 < len(tail) < len(lines)
+
+
+async def test_secrets_in_the_server_stderr_file_are_masked_after_the_session(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    async def leaky_server(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        server_stderr_log(options).write_text("dsn postgresql://u:pw@db.internal.example/x\n")
+        yield result("done")
+
+    monkeypatch.setattr(dab, "query", leaky_server)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    env = {**ENV, "PG_HOST": "db.internal.example"}
+    await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, env)
+    text = (dab.run_dir(out, "toyset", "1", 0) / dab.SERVER_STDERR).read_text()
+    assert text == "dsn postgresql://u:pw@[REDACTED]/x\n"
 
 
 async def test_databases_are_loaded_before_the_session_and_dropped_after(
