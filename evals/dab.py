@@ -73,6 +73,7 @@ from data_agent.agent import (
     tool_ledger,
 )
 from data_agent.events import REDACTED, EventLog, known_secrets
+from data_agent.events import mask as mask_event_text
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT, RunConfig, load_config
 from data_agent.sandbox import SKILLS_MOUNT, SandboxRun, docker_lifecycle
 from evals import spend
@@ -90,6 +91,10 @@ DAB_SECRET_ENV = ("PG_HOST", "PG_PASSWORD", "MONGO_URI", "MYSQL_HOST", "MYSQL_PA
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 EXEC_IMAGE = "python-data:3.12"  # sandbox_exec runs code in DAB's image, as its ExecTool did
 SQL_WORKFLOW = "sql-workflow"
+# The tool server's stderr, next to DAB's tool log in the trial directory (ticket 107): the SDK
+# keeps a stdio server's stderr to itself, so a server that failed to start left no trace.
+SERVER_STDERR = "dab_server_stderr.log"
+STDERR_TAIL_LINES = 20
 DIALECT_SKILLS = {"duckdb": "duckdb-sql", "sqlite": "sqlite-sql", "postgres": "postgres-sql"}
 
 TASK_PROMPT = (
@@ -259,10 +264,18 @@ def drop_databases(dab_root: Path, dab_query: DabQuery, log: Path, secrets: list
 
 
 def server_args(
-    dab_root: Path, db_config: Path, log: Path, workspace: Path, run_id: str, skills_dir: Path
+    dab_root: Path,
+    db_config: Path,
+    log: Path,
+    workspace: Path,
+    run_id: str,
+    skills_dir: Path,
+    *,
+    stderr_log: Path | None = None,
 ) -> list[str]:
     """The tool server's arguments: its sandbox container is named after `run_id`, mounts
-    `skills_dir` and has no network (`evals.dab_server`)."""
+    `skills_dir` and has no network (`evals.dab_server`); its stderr goes to `stderr_log`, if
+    given."""
     return [
         *("-m", "evals.dab_server"),
         *("--dab-root", str(dab_root.resolve())),
@@ -272,6 +285,7 @@ def server_args(
         *("--run-id", run_id),
         *("--skills-dir", str(skills_dir.resolve())),
         *("--image", EXEC_IMAGE),
+        *(() if stderr_log is None else ("--stderr-log", str(stderr_log.resolve()))),
     ]
 
 
@@ -417,7 +431,13 @@ async def run_once(
         "type": "stdio",
         "command": sys.executable,
         "args": server_args(
-            dab_root, dab_query.db_config, tool_log, workspace, sandbox.run_id, config.skills_dir
+            dab_root,
+            dab_query.db_config,
+            tool_log,
+            workspace,
+            sandbox.run_id,
+            config.skills_dir,
+            stderr_log=directory / SERVER_STDERR,
         ),
         "env": server_env(),
     }
@@ -493,7 +513,12 @@ async def run_once(
                         if server_status != "connected":
                             server_up = False
                             log.emit(
-                                "error", source="mcp", error=f"DAB tool server {server_status}"
+                                "error",
+                                source="mcp",
+                                error=f"DAB tool server {server_status}",
+                                # Relative to the trial directory, as this trace is.
+                                stderr_log=SERVER_STDERR,
+                                stderr_tail=stderr_tail(directory / SERVER_STDERR, secrets_of(env)),
                             )
         except Exception as exc:
             if final is None:
@@ -542,10 +567,32 @@ def mask(text: str, secrets: list[str]) -> str:
 
 
 def mask_dab_logs(directory: Path, secrets: list[str]) -> None:
-    """DAB's tools log arguments and results unmasked; mask them once the session is over."""
+    """DAB's tools log arguments and results unmasked, and the tool server's stderr may quote a
+    connection string; mask them once the session is over."""
     for path in directory.glob("*.jsonl"):
         if path.name != "events.jsonl":
             path.write_text(mask(path.read_text(), secrets))
+    server_stderr = directory / SERVER_STDERR
+    if server_stderr.is_file():
+        server_stderr.write_text(mask_stderr(read_log(server_stderr), secrets))
+
+
+def mask_stderr(text: str, secrets: list[str]) -> str:
+    """The tool server's stderr is plain text, where a driver error may also quote the address
+    libpq resolved the host to, which no setting names (`data_agent.events.mask`)."""
+    return mask(mask_event_text(text, secrets), secrets)
+
+
+def read_log(path: Path) -> str:
+    """A log's text; bytes that are no UTF-8 (a subprocess may write any) are replaced."""
+    return path.read_bytes().decode(errors="replace")
+
+
+def stderr_tail(path: Path, secrets: list[str]) -> list[str]:
+    """The last lines of the tool server's stderr, masked; none when it wrote no file."""
+    if not path.is_file():
+        return []
+    return mask_stderr(read_log(path), secrets).splitlines()[-STDERR_TAIL_LINES:]
 
 
 def mcp_status(servers: Any) -> str:

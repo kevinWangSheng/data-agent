@@ -29,8 +29,45 @@ indexes on the tables it reads. Their SQL passes the gateway's check and goes to
 like any other query.
 
     python -m evals.dab_server --dab-root DAB --db-config DAB/query_x/db_config.yaml --log LOG \
-        --workspace WORKSPACE
+        --workspace WORKSPACE [--stderr-log FILE]
+
+With `--stderr-log` the server's stderr goes to FILE (the runner's trial directory, ticket 107):
+the SDK keeps a stdio server's stderr to itself. The redirect comes first, before any other import,
+so an import that fails, and any step of `main` that fails, leave their traceback there; each
+start-up stage writes a line with its seconds since then, the last one `serving stdio`. A failure of
+the interpreter itself, or of `evals/__init__.py` (run before this module), is not there.
 """
+
+# ruff: noqa: E402 (the stderr redirect comes before the other imports)
+import os as _os
+import sys as _sys
+import time as _time
+
+_STARTED = _time.monotonic()
+
+
+def _redirect_stderr(argv: list[str]) -> None:
+    """Point fd 2 at `--stderr-log`'s file, if given (stdlib only: nothing else is imported yet)."""
+    path = None
+    for i, arg in enumerate(argv):
+        if arg == "--stderr-log" and i + 1 < len(argv):
+            path = argv[i + 1]
+        elif arg.startswith("--stderr-log="):
+            path = arg.partition("=")[2]
+    if path:
+        fd = _os.open(path, _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND, 0o600)
+        _os.dup2(fd, 2)
+        _os.close(fd)
+
+
+def _stage(name: str) -> None:
+    """One start-up stage's line on stderr: its name and the seconds since the module started."""
+    print(f"dab_server {name}: {_time.monotonic() - _STARTED:.3f}s", file=_sys.stderr, flush=True)
+
+
+if __name__ == "__main__":
+    _redirect_stderr(_sys.argv)
+    _stage(f"started at {_time.strftime('%Y-%m-%dT%H:%M:%SZ', _time.gmtime())} pid {_os.getpid()}")
 
 import argparse
 import contextlib
@@ -57,6 +94,9 @@ from data_agent.mcp_server import register_sandbox_tool
 from data_agent.run_config import skills_path
 from data_agent.sandbox import DockerSandbox, QueryResults, Sandbox
 from evals.dab import EXEC_IMAGE, scaffold
+
+if __name__ == "__main__":
+    _stage("imported")
 
 # DAB db_type -> sqlglot dialect. MongoDB is the one type that is not SQL; any other type is
 # refused, since the gateway could not check it.
@@ -505,10 +545,17 @@ def main() -> None:
         help="the Skill directory the sandbox mounts read-only",
     )
     parser.add_argument("--image", default=EXEC_IMAGE, help="the sandbox container's image")
+    parser.add_argument(
+        "--stderr-log",
+        type=Path,
+        help="the file stderr goes to, from the module's first line (`_redirect_stderr`)",
+    )
     args = parser.parse_args()
     tools = scaffold(args.dab_root)
+    _stage("scaffolded")
     timeout = QueryTimeout(args.query_timeout)
     timeout.install()
+    _stage("query timeout installed")
     config = str(args.db_config)
     # The runner loads the Postgres and MongoDB dumps before the session and drops them after it
     # (`evals.dab.load_databases`): a large dump loads for longer than the SDK waits for this
@@ -520,12 +567,16 @@ def main() -> None:
     list_tool = tools.list_tool(
         log_path=args.log, name="list_db", db_config_path=config, check_load=False
     )
+    _stage("tools built")
     # Never the network: an evaluation stays offline (ADR-0010). The container starts on the
     # first command, and the runner removes it (`evals.dab.run_once`, `docker_lifecycle`).
     sandbox = DockerSandbox(
         args.workspace, args.skills_dir.resolve(), args.run_id, network=False, image=args.image
     )
-    build_server(query_tool, list_tool, sandbox, timeout).run("stdio")
+    _stage("sandbox built")
+    server = build_server(query_tool, list_tool, sandbox, timeout)
+    _stage("serving stdio")
+    server.run("stdio")
 
 
 if __name__ == "__main__":
