@@ -102,3 +102,5 @@ Not fixed:
 
 **spec 验证第 2 步（2026-11-21，主会话）**：跑法 `runs/v105/par.py`，服务器 69a7e2b（含 104–106），no-context、默认 effort；7 个运行全部 exit 0，$3.14，2 个 trial 没做完；合并 `runs/v105-merged`，算分 `runs/v105-score`（本机有 `run.log`）。对照是第 1 步的 default 组（2bc3f0e，同题同次数）。
 - 105 的 14 道题 × 3：**24/42**，对照 19/42。DEPS_DEV_V1 4/6（对照 2/6）、crmarenapro 9/12（7/12）、stockmarket 7/9（6/9）、GITHUB_REPOS 2/6（2/6）、PATENTS 2/6（2/6）、PANCANCER_ATLAS 0/3（0/3）。不低于对照，过。
+
+**后续：方言 Skill 里的 `ROW_NUMBER`（2026-11-22，人定 wontfix，不开工单）**：Review 1 "Not fixed" 第 1 条不改。理由：`duckdb-sql` 在 dbt 任务里也加载（`src/data_agent/agent.py:101-103`），而 `dbt-workflow` 规定 top N 正好 N 行、用 `ROW_NUMBER` 加确定的排序（`skills/dbt-workflow/SKILL.md:309-311`），把例子改成 `RANK` 会和它冲突；方言 Skill 的例子只演示 QUALIFY 和窗口过滤的写法，并列的语义由 `sql-workflow` 第 8.1 条（查数）和 `dbt-workflow`（dbt）分别规定；改 Skill 要做合并验收，要花模型钱；人已定不再针对 DAB 优化。重新考虑的条件：读轨迹发现查数任务照抄这个例子截掉了并列行而失败。
