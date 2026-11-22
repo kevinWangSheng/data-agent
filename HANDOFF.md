@@ -378,6 +378,15 @@
   - spec `.scratch/dab-gap/spec.md`，工单 104 effort 选项、105 `sql-workflow` 通用分析规则、106 `classify_text` 未定与重跑，互不依赖；都是 `needs-triage`，人说在新会话里审和派。派工前要先 push main（`-w` 从 `origin/main` 建 worktree）。
   - 验证顺序和花费在 spec "验证"一节：effort 对比约 $4–8（小额），全量 540 次约 $14–25（先问人）。新结果另开 DAB PR，#144 保留；Tuned prompt 怎么填提交时由人定（建议新结果填"是"）。
   - 没处理：`.claude/worktrees/` 下 4 个 11-18 的清理分支（cleanup-prune-features 等，基于 d146977，未合入，来源不明），待人定；根目录未跟踪的 `.playwright-mcp/`。
+- 2026-11-22：DAB 同模型差距这一轮做完（编排会话，人说"可以并行的并行，完成之后继续测试流程"）。**下一会话从这里开始。**
+  - 工单 104–106 都 `done`：104 effort 选项 PR #113（2bc3f0e），105 通用分析规则 PR #114（10cccc6），106 `classify_text` 未定、续跑、多列 PR #115（1044abf；Codex GitHub app 的一条 P2 属实，退回一轮后修好，复审无意见）。106 按人批准重新生成了 `tests/fixtures/chat/eval-unchanged.json`。代码在 69a7e2b。Codex CLI 在这个账号上不能用，`da-review` 由 fable 子 agent 代替。
+  - 集成测试：32 个失败都是本机没有 `DATA_AGENT_TEST_POSTGRES_URL`（环境缺，不是代码）；对话页面 e2e 的澄清用例偶发失败，在合入前后的提交上 A/B 各跑 6 次都 6/6 通过，记成偶发。
+  - spec 验证：第 1 步 `max` 24/60 对默认 31/60、花费 1.65 倍，留默认；第 2 步总体 28/54 对 25/54，过（agnews 那组 4/12 对 6/12，作为事实记录）。
+  - 第 3 步全量重跑（69a7e2b，默认 effort）：no-context 0.7639（209/270），baseline 0.7614（213/270）；第 18b 项是 0.7588、0.7218。差值 +0.25 分，不显著。实付约 $14.04。基础设施中断 2 次（DAB 工具服务器启动时报 `failed`，原因未确认），各重跑一个 trial。细节和逐题变化见 ADR-0008 Update 2026-11-22。
+  - 第 4 步：提交包 `runs/f19c-dab/`（本机和服务器）：`pkg/submission.json`、`data-agent-dab-traces.zip`（14 MB）、`PR.md`（三轮分数并排、每轮看过什么）；自查过了，crmarenapro query12 run3 在沙箱里找过原始数据集的缓存、没找到、答案没过，`PR.md` 照实写。**剩下的由人做**：定 Tuned prompt 一栏（`PR.md` 里留了注释）；建 release `dab-submission-2026-11-22`（tag 指向 69a7e2b）上传轨迹包，`PR.md` 里的链接按这个名字写的；在 DAB 开新 PR（引用 #144）。
+  - 已知限制：DAB 工具服务器偶发启动失败，stderr 没留，查原因要先让 `evals/dab.py` 留下工具服务器的 stderr；`runs/f18c/par.py` 对上次 exit 非 0 的任务不记日志就跳过；105 没做的项（duckdb、postgres 的 Skill 里仍用 `ROW_NUMBER`）；本机没有集成测试用的 Postgres。
+  - 没清理的：`.claude/worktrees/` 下 104–106 三个已合并的 worktree 和分支，以及 11-18 的 4 个清理分支（来源不明，待人定）；根目录未跟踪的 `.playwright-mcp/`。
+  - 服务器在 69a7e2b，没有任务在跑。余额 ¥87.08（2026-11-22 `da-remote check`）。
 
 ## 0. 一句话
 

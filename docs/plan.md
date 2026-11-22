@@ -325,6 +325,8 @@
 
    - 25 agent 工具补全：shell 和代码放进沙箱（`sandbox_exec`）、写只走 `dbt_execute`、`network` 开关（产品开、跑榜和评测关）、去掉内置 Bash 和命令守卫。ADR-0010，spec `.scratch/agent-tools/spec.md`（2026-11-17 人逐条确认 6 点）。和第 24 项并行，不等对话界面。
      - 工单 97–101：97 沙箱、98 网络开关可并行 → 99 `dbt_execute`（97）→ 100 去守卫、改提示词和 Skill、改规则（97–99；跑分验收在这里）→ 101 前端显示（100）。
+   - 26 DAB 同模型差距（ADR-0005 Update 2026-11-21 第二次例外）：spec `.scratch/dab-gap/spec.md`，工单 104 effort 选项、105 `sql-workflow` 通用分析规则、106 `classify_text` 未定与续跑，互不依赖；验证分四步（effort 对比 → 弱题验证 → 全量 540 次 → 新开 DAB 提交 PR）。
+     - 已完成（2026-11-22）：三张都合入（PR #113–#115），第 1 步留默认 effort，第 2 步过线；全量重跑在 69a7e2b 上跑完，no-context 0.7639、baseline 0.7614（第 18b 项是 0.7588、0.7218），见 ADR-0008 Update 2026-11-22。提交包 `runs/f19c-dab/` 做好，上传 release 和开 PR 由人做，Tuned prompt 一栏待人定。
 
 关键路径：1 → 7 → 11 → 13 → 13b → 15 → 16 → 17 → 19 / 20。界面这条线（5 → 10）不花模型钱，可以和评测并行。
 

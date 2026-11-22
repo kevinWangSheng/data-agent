@@ -303,3 +303,29 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
 - **读法**：工单 68 修好了瞄准的题（合计 +12 次），同时去掉了一批靠"备选答案含正确字符串"的通过，这部分不是真实能力下降；PATENTS query2 是它造成的真实退步。DAB 的评分脚本对多数题是子串匹配，写备选答案能提高通过率，新旧分数并排时要说明。
 - **未确认**：baseline 配置里 GITHUB_REPOS query2（4 → 2）、crmarenapro query12（5 → 0）的下降，轨迹只在服务器，推测是同一个机制；DEPS_DEV_V1 query2、googlelocal query3、yelp query4 要逐次官方判定才能定案。
 - 这一轮不再修（工单 68–72 规定只做一轮）；以上进报告的失败归因和已知限制。
+
+## Update 2026-11-22：第 18c 项（ADR-0005 第二次例外后的全量重跑）的结果
+
+- **运行**：2026-11-22 04:34Z 至 16:23Z，69a7e2b（含工单 104–106），默认 effort（不传 `--effort`，服务器上的 CLI 发 `high`），和第 18b 项同样的 12 个数据集、54 题 × 5 次 × 2 个配置，共 540 个 trial。跑法照第 18b 项（本机 `runs/f18c/par.py`，运行名 `f18c-<config>-<dataset>`）。内存峰值 5.9 / 7.9 GB（第 18b 项 3.6 GB）。
+- **基础设施中断 2 次**：no-context agnews query2 run1 和 baseline DEPS_DEV_V1 query2 run3，都是会话开始时 DAB 工具服务器报 `failed`（dab_load 之后约 35–42 秒），agent 没有任何库工具，`evals dab` exit 2。两次都照运行器的提示把 trial 挪到服务器 `runs/f18c-infra/`（轨迹和 run.log 留着），同名同参数重跑这一个 trial，重跑都 exit 0（属于本 ADR"运行本身无效时原样重跑"）。原因未确认：工具服务器的 stderr 没有留下，两次时内存都正常。
+- 调度器另有一处毛病：任务上次 exit 非 0 时，它不记日志就跳过（`runs/f18c/par.py` 派工时 `state == "failed"` 分支），baseline DEPS_DEV_V1 的重跑是手动起的。
+- 没做完的 trial（no-context）：5 个撞上下文长度上限，没有答案（agnews query3 run1、2、4，stockmarket query2 run2、3），没有一次用完轮数。baseline 的没查。
+- 按配置合并（服务器 `runs/f18c-merged-<config>`，各 270 条；同一 trial 重跑的条目以后一次为准，实际没有重复）后算分：`dab-score --runs 5 --strict`，exit 0（服务器 `runs/f18c-score`，本机有 `run.log`）。
+- **Pass@1（54 题，数据集宏平均，用了 hints），三次并排**：
+
+  | | 第 18 项（b7c6071，盲跑） | 第 18b 项（cc8cdef，第一次例外） | 第 18c 项（69a7e2b，第二次例外） |
+  |---|---|---|---|
+  | no-context | 0.7421（210/270） | 0.7588（212/270） | 0.7639（209/270） |
+  | baseline | 0.7012（206/270） | 0.7218（205/270） | 0.7614（213/270） |
+  | no-context − baseline | +4.09 分，显著 | +3.70 分，不显著 | +0.25 分，区间 −6.93 到 +7.62，不显著 |
+
+- 按数据集（baseline → no-context，第 18c 项）：DEPS_DEV_V1 0.60 → 0.50，GITHUB_REPOS 0.55 → 0.65，PANCANCER_ATLAS 0.53 → 0.67，PATENTS 0.53 → 0.67，agnews 0.45 → 0.40，bookreview 1.00 → 1.00，crmarenapro 0.83 → 0.78，googlelocal 0.95 → 1.00，music_brainz_20k 1.00 → 1.00，stockindex 0.87 → 0.93，stockmarket 0.88 → 0.68，yelp 0.94 → 0.89。
+- no-context 逐题通过次数的变化（第 18b → 18c，每题 5 次；没列的题不变）：
+  - 升：PATENTS query3 2 → 5，DEPS_DEV_V1 query1 1 → 2，GITHUB_REPOS query2 2 → 3，agnews query1 4 → 5，agnews query2 0 → 1，googlelocal query3 4 → 5。合计 +8。
+  - 降：agnews query4 4 → 2，yelp query1 5 → 3；DEPS_DEV_V1 query2、crmarenapro query3、query7、query12、stockindex query3、stockmarket query2、yelp query5 各降 1。合计 −11。
+- baseline（第 18b → 18c）：升 +17（DEPS_DEV_V1 query1 1 → 5、stockmarket query3 1 → 5、agnews query4 1 → 4 等），降 −9（PANCANCER_ATLAS query3 5 → 3、stockindex query1 5 → 3、yelp query4 5 → 3 等）。
+- 读法：no-context 宏平均 +0.51 分，通过次数反而少 3 次，在波动范围内；spec 第 2 步在弱题上的提升（105 那组 24/42 对 19/42）没有在全量里显出来。baseline 不加载 Skill，105 对它没有作用，它的 +3.96 分来自 104、106 或波动，没有拆分。两个配置的差距缩到 0.25 分。降分的题没有读轨迹，原因未确认。估计的 0.78–0.82（研究笔记 2026-11-21）没有达到。
+- 实付约 $14.04（baseline $6.90，no-context $7.14；agnews 两个配置共 $5.68），每个 trial $0.0260；不含挪走的 2 个中断 trial。
+- **正式评测累计实付**：约 $95.1（到第 18b 项约 $81.1，第 18c 项 $14.04；spec 第 1、2 步的验证运行另算，见工单 104–106）。
+- **提交包**（本机和服务器的 `runs/f19c-dab/`，旧包 `runs/f19b-dab/` 保留）：`pkg/submission.json`（no-context 的 270 条，和算分用的那份逐字节相同，sha256 前缀 87bfd3ddc70f8164）、`data-agent-dab-traces.zip`（14 MB，每个 trial 的 `events.jsonl` 和 `dab_tool_calls.jsonl`）、`PR.md`（三轮分数并排，写明每轮看过什么；Tuned prompt 一栏留空等人定）。scrub（69a7e2b）改了 355 个文件，密钥和 endpoint 0 处；剩的 `/home/corbax` 在 GITHUB_REPOS query2，是数据集里 SVG 文件的内容，和上次一样没有处理。
+- **对照 DAB 提交规则的自查**（`runs/f19c-dab/selfcheck/check.py`，同第 18b 项的脚本）：没有 trial 读 `ground_truth`、`validate.py`、`queries.json` 或别的提交文件（命中的 1 处是 agnews query4 run4 自己写的 `in_query.json`）。没有联网请求。crmarenapro query12 run3 在沙箱本地文件系统里找过原始数据集的缓存（`find / -iname "*crmarena*"`、`*huggingface*` 等），没找到，答案也没通过；按规则不构成泄漏，`PR.md` 里照实写。`classify_text` 调用 123 次，都在 agnews。
