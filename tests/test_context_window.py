@@ -73,31 +73,35 @@ def cli_env(built: ClaudeAgentOptions, monkeypatch: pytest.MonkeyPatch) -> dict[
     return seen
 
 
-def turns(tmp_path: Path) -> list[ConversationTurn | None]:
-    """A single run (every evaluation) and a conversation turn (the chat page)."""
-    return [None, ConversationTurn(tmp_path / "conversation", 1)]
+def turn(tmp_path: Path, chat: bool) -> ConversationTurn | None:
+    """A conversation turn (the chat page) when `chat`, else none (a single run, every
+    evaluation)."""
+    return ConversationTurn(tmp_path / "conversation", 1) if chat else None
 
 
-@pytest.mark.parametrize("chat", [False, True])
+CHAT = pytest.mark.parametrize("chat", [False, True], ids=["single-run", "conversation-turn"])
+
+
+@CHAT
 def test_every_run_sets_the_models_window_and_the_compaction_window(
     tmp_path: Path, chat: bool
 ) -> None:
-    built = options(tmp_path, turns(tmp_path)[chat])
+    built = options(tmp_path, turn(tmp_path, chat))
     assert {name: built.env.get(name) for name in WINDOW} == WINDOW
 
 
-@pytest.mark.parametrize("chat", [False, True])
+@CHAT
 def test_every_run_turns_auto_compaction_on_through_its_settings_flag(
     tmp_path: Path, chat: bool
 ) -> None:
-    built = options(tmp_path, turns(tmp_path)[chat])
+    built = options(tmp_path, turn(tmp_path, chat))
     assert built.settings is not None
     assert json.loads(built.settings) == {"autoCompactEnabled": True}
     argv = cli_args(built)
     assert json.loads(argv[argv.index("--settings") + 1]) == {"autoCompactEnabled": True}
 
 
-@pytest.mark.parametrize("chat", [False, True])
+@CHAT
 def test_what_the_shell_exported_does_not_change_the_window_or_turn_compaction_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chat: bool
 ) -> None:
@@ -108,6 +112,6 @@ def test_what_the_shell_exported_does_not_change_the_window_or_turn_compaction_o
         "DISABLE_COMPACT": "true",
     }.items():
         monkeypatch.setenv(name, value)
-    env = cli_env(options(tmp_path, turns(tmp_path)[chat]), monkeypatch)
+    env = cli_env(options(tmp_path, turn(tmp_path, chat)), monkeypatch)
     assert {name: env.get(name) for name in WINDOW} == WINDOW
     assert {name: env.get(name) for name in COMPACTION_OFF} == dict.fromkeys(COMPACTION_OFF, "")
