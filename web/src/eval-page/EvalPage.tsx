@@ -12,8 +12,8 @@ import { AblationChart } from './AblationChart'
 import { fmtBoardScore, fmtDabComparison, fmtDabCounts, fmtPass1, fmtPct, fmtPoints } from './scores'
 import { filterTrials, OUTCOMES, sortTrials, type Outcome, type TrialFilter } from './trials'
 
-/** Where DAB's trajectories are (README, "Results"); they are not on this site. */
-const DAB_RELEASE = 'https://github.com/kevinWangSheng/data-agent/releases/tag/dab-submission-2026-11-15'
+/** Where the submitted (blind) DAB run's trajectories are (README, "Results"); they are not on this site. */
+const DAB_RELEASE = 'https://github.com/kevinWangSheng/data-agent/releases/tag/dab-submission-2026-11-13'
 const ADR_0004 = 'https://github.com/kevinWangSheng/data-agent/blob/main/docs/adr/0004-ablation-holdout.md'
 
 /** Columns a phone-width screen drops, so the totals fit without scrolling sideways. */
@@ -284,7 +284,7 @@ function DabDatasets({ dab }: { dab: Dab }) {
     <Section
       id="dab"
       title="DataAgentBench by dataset"
-      note="Pass@1 per dataset for the scored output and its baseline. Per-query trajectories are not on this site; all of them are in the release."
+      note="Pass@1 per dataset for the scored output and its baseline. Per-query trajectories are not on this site; the scored run's are in the release."
     >
       <div className="tbl-wrap">
         <table className="tbl">
@@ -317,7 +317,7 @@ function DabDatasets({ dab }: { dab: Dab }) {
       </div>
       <p className="mt-2 text-[12.5px]">
         <a className="link text-[12.5px]" href={DAB_RELEASE}>
-          Trajectories of every DAB run (release, data-agent-dab-traces.zip) →
+          Trajectories of the submitted DAB run (release, data-agent-dab-traces.zip) →
         </a>
       </p>
     </Section>
