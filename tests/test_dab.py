@@ -1419,6 +1419,30 @@ async def test_secrets_in_the_server_stderr_file_are_masked_after_the_session(
     assert text == "dsn postgresql://u:pw@[REDACTED]/x\n"
 
 
+async def test_the_server_stderr_file_masks_the_address_libpq_resolved(
+    monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
+) -> None:
+    # libpq quotes the address it resolved PG_HOST to, which no setting names (da-review round 1).
+    failure = 'connection to server at "db.internal.example" (10.0.0.5), port 5432 failed'
+
+    async def server_down(*, prompt: str, options: Any) -> AsyncIterator[Any]:
+        server_stderr_log(options).write_text(failure + "\n")
+        servers = [{"name": "data", "status": "failed"}]
+        yield SystemMessage(subtype="init", data={"mcp_servers": servers, "tools": []})
+        yield result("The database is unavailable.")
+
+    monkeypatch.setattr(dab, "query", server_down)
+    query = dab.load_query(dab_root, "toyset", "1", hints=True)
+    out = tmp_path / "out"
+    env = {**ENV, "PG_HOST": "db.internal.example"}
+    await dab.run_query(dab_root, query, load_config(CONFIG), out, 1, env)
+    trial = dab.run_dir(out, "toyset", "1", 0)
+    masked = "connection to server at [REDACTED], port 5432 failed"
+    assert (trial / dab.SERVER_STDERR).read_text() == masked + "\n"
+    [error] = [e for e in read_events(trial / "events.jsonl") if e["type"] == "error"]
+    assert error["stderr_tail"] == [masked]
+
+
 async def test_databases_are_loaded_before_the_session_and_dropped_after(
     monkeypatch: pytest.MonkeyPatch, dab_root: Path, tmp_path: Path
 ) -> None:

@@ -73,6 +73,7 @@ from data_agent.agent import (
     tool_ledger,
 )
 from data_agent.events import REDACTED, EventLog, known_secrets
+from data_agent.events import mask as mask_text
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT, RunConfig, load_config
 from data_agent.sandbox import SKILLS_MOUNT, SandboxRun, docker_lifecycle
 from evals import spend
@@ -573,7 +574,13 @@ def mask_dab_logs(directory: Path, secrets: list[str]) -> None:
             path.write_text(mask(path.read_text(), secrets))
     server_stderr = directory / SERVER_STDERR
     if server_stderr.is_file():
-        server_stderr.write_text(mask(read_log(server_stderr), secrets))
+        server_stderr.write_text(mask_stderr(read_log(server_stderr), secrets))
+
+
+def mask_stderr(text: str, secrets: list[str]) -> str:
+    """The tool server's stderr is plain text, where a driver error may also quote the address
+    libpq resolved the host to, which no setting names (`data_agent.events.mask`)."""
+    return mask(mask_text(text, secrets), secrets)
 
 
 def read_log(path: Path) -> str:
@@ -585,7 +592,7 @@ def stderr_tail(path: Path, secrets: list[str]) -> list[str]:
     """The last lines of the tool server's stderr, masked; none when it wrote no file."""
     if not path.is_file():
         return []
-    return mask(read_log(path), secrets).splitlines()[-STDERR_TAIL_LINES:]
+    return mask_stderr(read_log(path), secrets).splitlines()[-STDERR_TAIL_LINES:]
 
 
 def mcp_status(servers: Any) -> str:
