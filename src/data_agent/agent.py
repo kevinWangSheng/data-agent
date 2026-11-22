@@ -1235,6 +1235,15 @@ class ModelSettings:
             # Subagents (the verifiers) run in the foreground. Launched in the background, they
             # end the main turn before their reports are in and split the run into several results.
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+            # Ticket 110: the CLI (2.1.301) does not know the model, assumes a 200,000-token
+            # window and stops the session at 177,000; DeepSeek documents 1M. Compaction runs at
+            # this window less 33,000 (367,000), digits only (2.1.301 refuses `400k`).
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
+            # Blank, so an exported one never turns compaction off: the CLI reads both as true
+            # only for "1", "true", "yes" or "on". `build_options` turns it on (`settings`).
+            "DISABLE_AUTO_COMPACT": "",
+            "DISABLE_COMPACT": "",
         }
 
 
@@ -1641,6 +1650,10 @@ def build_options(
         strict_mcp_config=True,
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.
         setting_sources=["user"],
+        # Ticket 110: auto-compaction on, whatever the machine's user settings say (the eval
+        # server's turn it off). `--settings` is the CLI's flagSettings, which it reads before
+        # userSettings and ~/.claude.json; only managed policy settings come first.
+        settings=json.dumps({"autoCompactEnabled": True}),
         skills=[],
         max_turns=max_turns,
         max_budget_usd=(
