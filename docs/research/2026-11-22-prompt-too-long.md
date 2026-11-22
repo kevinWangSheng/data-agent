@@ -1,6 +1,6 @@
 # trial 为什么撞上 "Prompt is too long"，压缩为什么从没触发（工单 109）
 
-日期：2026-11-22。只诊断，不改 `src/`、`evals/`、`skills/`。没有调用模型，花费 $0。
+日期：2026-11-22。只诊断，不改 `src/`、`evals/`、`skills/`。没有调用评测模型（data-agent 的模型调用为 0，花费 $0）。
 
 ## 结论
 
@@ -51,6 +51,26 @@ dbt 按配置（开发集、留出集、data-eng-bench 的 `f17` 都在内，共
 | baseline | 12 | 373 | 0 | 0 |
 | no-context | 4 | 181 | 0 | 0 |
 | no-skill | 4 | 181 | 0 | 0 |
+
+dbt 按运行（方括号里是配置，等号后是事件文件数；每一项的 `blocking_limit` 和 "Prompt is too long" 都是 0。`f16-h*` 和 `f17` 含留出集，只有这些汇总数字）：
+
+```text
+accept-1[full]=91 accept-2[baseline]=91 accept-2[full]=91 board-smoke[no-verifiers]=1 deb21b[baseline]=1
+deb21b[full]=1 deb22[baseline]=1 deb22[full]=1 dev-3[baseline]=90 dev-3[full]=90 dev-3[no-context]=90
+dev-3[no-skill]=90 dev-3[no-verifiers]=90 f16-h1[baseline]=31 f16-h1[full]=31 f16-h1[no-context]=31
+f16-h1[no-skill]=31 f16-h1[no-verifiers]=31 f16-h2[baseline]=30 f16-h2[full]=30 f16-h2[no-context]=30
+f16-h2[no-skill]=30 f16-h2[no-verifiers]=30 f16-h3[baseline]=30 f16-h3[full]=30 f16-h3[no-context]=30
+f16-h3[no-skill]=30 f16-h3[no-verifiers]=30 f17[no-verifiers]=310 smoke-main-6583ded[full]=2
+smoke-main-91d554a[full]=2 smoke17[full]=1 t100-d51-board-sample[no-verifiers]=19 t100-d51-dev-full[full]=91
+t100-d51-harbor-smoke[full]=2 t100-deb[full]=2 t100-deb2[full]=2 t100-deb3[full]=2 t27-smoke[baseline]=2
+t27-smoke[full]=2 t28-dev[baseline]=2 t28-dev[full]=2 t32-real[full]=2 t32-screen2[full]=19 t33-screen[full]=7
+t38-real[full]=2 t39-real[full]=2 t40-real[full]=2 t41-screen[full]=10 t42-screen[full]=13 t45-real[full]=2
+t46-real[full]=2 t46-real2[full]=2 t47-screen[full]=16 t47-screen2[full]=16 t47-screen3[full]=16
+t48-real[full]=2 t49-screen[full]=4 t51-real[full]=2 t52-real[full]=2 t53-real2[full]=2 t54-real[full]=2
+t54-real2[full]=2 t55-real[full]=2 t55-real2[full]=2 t56-real[full]=2 u1-full-rest[baseline]=27
+u1-full-rest[full]=28 u1-full-rest[no-verifiers]=26 u1-target[baseline]=17 u1-target[full]=18
+u1-target[no-verifiers]=16 u2-rest[baseline]=51 u2-rest[full]=51 u2-rest[no-verifiers]=51
+```
 
 DAB 有命中的运行（模型都是 `deepseek-flash`，CLI 都是 2.1.301）：
 
@@ -138,11 +158,13 @@ function RU(e){let n=MHr(e);if(n!==void 0)return Man(e)??n.believed;if(Bk(e))ret
 function Sf(e,n){let r=kze(e);if(!r)return Hg(e,n);return r.tokens+Hg(e.slice(r.anchorIndex+1),n)}
 ```
 
-最近一次接口返回的 usage，加上之后新增消息按"字符数 ÷ `bytesPerToken`"的估算。`bytesPerToken` 对不在名单里的模型是 3（`uh`，偏移 198267112），所以新增的工具结果按 3 个字符 1 token 算，偏保守。
+最近一次接口返回的 usage，加上之后新增消息按"字符数 ÷ `bytesPerToken`"的估算。`bytesPerToken` 对不在名单里的模型是 3（`uh`，偏移 198267112），所以新增的消息按 3 个字符 1 token 算。这只是估算，可能偏高也可能偏低：§2.2 里有 2 个会话被接受的请求实际达到 177,000 以上（最大 180,212），说明发出前 CLI 的估算值低于 177,000，至少低估了 3,000。所以 177,000 是 CLI 估算值的线，不是实际请求大小的硬上限。
+
+式子里减去的 `Tn`（`O1r` 里是 `h`）是一个扣减项，从 `P1r` 的参数名 `snipTokensFreed` 看是裁剪历史释放的 token；它在我们的运行里是多少**未确认**，§2.2 的核对按 0 算。
 
 ### 2.2 失败前最后一次请求的大小（已核实，来自 CLI transcript）
 
-服务器的 `/root/.claude/projects/` 下有 2,002 个目录，都是 DAB trial 的工作目录。脚本读每个 transcript 里主线程 assistant 消息的 `usage`（按消息 id 去重），输入合计 = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`。
+服务器的 `/root/.claude/projects/` 下有 2,002 个目录，都是 DAB trial 的工作目录；里面有主线程 assistant 消息的 transcript 文件共 2,004 个（一个目录可以有不止一个会话文件，下面按文件数）。脚本读每个 transcript 里主线程 assistant 消息的 `usage`（按消息 id 去重），输入合计 = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`。
 
 ```bash
 scripts/da-remote exec -- python3 -c "$(cat transcripts.py)"
@@ -188,7 +210,7 @@ last input+output: min 163484 median 177480 max 192277
 
 **我们自己的数据**（已核实）：105,102 次接口调用里，DeepSeek 接受过的最大请求是 180,212 输入 token；没有一次被接口以"过长"拒绝（`prompt_too_long` 0 次）。
 
-**判断**：文档写的是 1M，对 `deepseek-flash` 适用（表里那一行跨两列）。Anthropic 兼容接口是否同样给到 1M，文档没有单独写，180k 以上我们没有数据，这一段**未实测**。按工单的停止条件，这一点不需要花钱实测就能给出方案：方案里把自动压缩留作兜底，接口如果在 1M 之前拒绝，CLI 会收到真正的 `prompt_too_long` 并走被动压缩（§5 的风险 2）。
+**判断**：文档写的是 1M，对 `deepseek-flash` 适用（表里那一行跨两列）。Anthropic 兼容接口是否同样给到 1M，文档没有单独写，180k 以上我们没有数据，这一段**未实测**。按工单的停止条件，这一点不需要花钱实测就能给出方案：方案里把自动压缩留作兜底，接口如果在 1M 之前拒绝，会怎样见 §5 的风险 2。
 
 ## 4. 为什么从没压缩（问题 4）
 
@@ -207,7 +229,7 @@ settings.json:"autoCompactEnabled": false
 
 **(b) 这个设置对我们的运行生效**（已核实）：`src/data_agent/agent.py:1643` 是 `setting_sources=["user"]`，评测不设 `CLAUDE_CONFIG_DIR`，所以 CLI 读 `/root/.claude/settings.json`。
 
-**(c) CLI 里这个开关管什么**（偏移 199628926、199160294）：
+**(c) CLI 里这个开关管什么**（`ih`/`zp` 在偏移 199628926，`ks` 在偏移 199160294）：
 
 ```js
 function ih(){return Boolean(Fe(process.env.DISABLE_COMPACT)||a.DISABLE_AUTO_COMPACT)}
@@ -222,7 +244,7 @@ function zp(){if(ih())return!1;return ks("autoCompactEnabled",!0).value}
 - 被动压缩（接口报过长后再压）也不跑。`vdo`（偏移 206889582）的条件里有 `zp()&&CL()`。
 - 拦截照常。§2.1(a) 里 `gi=zp()&&CL()` 为假，`eu` 为假，进入 `blocked` 判断；`!I&&gi&&ja(...)` 这个放行分支也因为 `gi` 为假而走不到。
 
-**(d) 如果压缩开着会怎样**（源码推断，没有运行验证）：对不认识的模型，窗口来源是 `unknown-model`、窗口 200,000（`dio`，偏移 205197495：`zp()&&!a.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT&&fqt(e,b)`）。估算值到 167,000 就压缩，早于 177,000 的拦截线。也就是说，默认设置下这 46 次不会以 `blocking_limit` 结束，而是被压缩一次后继续。
+**(d) 如果压缩开着会怎样**（源码推断，没有运行验证）：对不认识的模型，窗口来源是 `unknown-model`、窗口 200,000（`dio`，偏移 205197495：`zp()&&!a.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT&&fqt(e,b)`）。估算值到 167,000 就压缩，早于 177,000 的拦截线。也就是说，默认设置下这 46 次（含副本；去重 37 次）不会以 `blocking_limit` 结束，而是被压缩一次后继续。
 
 **(e) 文档和源码一致**。https://code.claude.com/docs/en/model-config （"Default auto-compact thresholds"；这一段来自 web-fetch 的摘要，不是逐字核对过的原文）："Sessions on a model ID Claude Code doesn't recognize, such as an LLM gateway alias, compact at the context window Claude Code assumes for the ID"。同页 "Pin models for third-party deployments"（摘要）："Before v2.1.323, Claude Code assumed 200K by default, so on those versions append `[1m]` to the ID if the model accepts 1M." 我们是 2.1.301，在 2.1.323 之前，和源码里的 `CXe=200000` 一致。工单 Context 里"不认识的模型名按 1M 上下文算"说的是 2.1.323 及以后的版本，对我们的版本不成立。
 
@@ -240,11 +262,11 @@ function zp(){if(ih())return!1;return ks("autoCompactEnabled",!0).value}
 
 依据：
 
-- `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 对我们生效的路径是 §2.1(d) 的 `RU`：模型不认识、变量大于 0、`xv(e)` 为真（名字不以 `claude-` 开头，偏移 198277672）时直接返回它。这条路径不看 `zp()`，所以**单是这一个变量就能消掉这 46 次拦截**，哪怕压缩仍然关着。文档（https://code.claude.com/docs/en/env-vars ，摘要）："Override the context window size Claude Code assumes for the active model... Use this when routing to a model through `ANTHROPIC_BASE_URL` whose context window does not match the built-in size for its name"。
+- `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 对我们生效的路径是 §2.1(d) 的 `RU`：模型不认识、变量大于 0、`xv(e)` 为真（名字不以 `claude-` 开头，偏移 198277672）时直接返回它。这条路径不看 `zp()`，所以**单是这一个变量就能消掉这些拦截**（事件里 46 次，去掉副本 37 次），哪怕压缩仍然关着。文档（https://code.claude.com/docs/en/env-vars ，摘要）："Override the context window size Claude Code assumes for the active model... Use this when routing to a model through `ANTHROPIC_BASE_URL` whose context window does not match the built-in size for its name"。
 - `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 的原文（同页，逐字）："Set the auto-compact window, which is how full the context gets before compaction, to a token count of `100000` or more. Suffixed values such as `200k` require v2.1.304 or later." 我们是 2.1.301，**必须写纯数字**，不能写 `400k`。源码（`TS`，偏移 205196840）：取值范围 100,000–1,000,000，再和模型窗口取小。它只在压缩开着时有用。
-- 400,000 这个数是建议，不是结论：2,004 个会话里单次请求最大值的 P99 是 172,293，超过 150,000 的有 72 个（3.6%）。窗口放到 400,000，现有 trial 在 50 轮上限内基本碰不到压缩，压缩只兜住失控的会话。
+- 400,000 这个数是建议，不是结论：2,004 个会话里单次请求最大值的 P99 是 172,293，超过 150,000 的有 72 个（3.6%）。窗口放到 400,000，现有 trial 在 `max_turns: 50`（DAB 运行的 `version` 事件里的值）之内基本碰不到压缩，压缩只兜住失控的会话。
 
-预期效果：这 46 个 trial 不再以 `blocking_limit` 结束，会继续跑到给出答案、`max_turns` 或预算上限。**它们会不会答对，不知道**；现在这些 trial 的答案栏是报错文字，必然算错。
+预期效果：这 37 个 trial（事件里含副本 46 个）不再以 `blocking_limit` 结束，会继续跑到给出答案、`max_turns` 或预算上限。**它们会不会答对，不知道**；现在这些 trial 的答案栏是报错文字，必然算错。
 
 代价：这些 trial 会多跑若干轮，每轮带 17 万以上的上下文。按 DeepSeek 价格页，`deepseek-flash` 缓存命中每百万 token $0.003–$0.006，未命中 $0.15–$0.3；上下文大部分命中缓存，单个 trial 多出的钱在几美分量级（推断，没有实测）。
 
@@ -258,7 +280,7 @@ function zp(){if(ih())return!1;return ks("autoCompactEnabled",!0).value}
 ### 5.3 风险
 
 1. **压缩后丢任务细节。** 压缩用 `deepseek-flash` 把历史写成摘要，表名、已经查到的中间结果、题目里的约束都可能丢。窗口设到 400,000 就是为了让它尽量不触发。dbt 任务的影响：dbt trial 现在一次都没撞线，容器里的设置和是否压缩过都未确认；`sdk_env()` 是 DAB 和 dbt 共用的，改它会同时改 dbt 的窗口。dbt 的会话如果现在在 167,000 处被默默压缩过，改完之后会变成不压缩，行为会变，要在验收里看。
-2. **DeepSeek 在 1M 之前就拒绝。** Anthropic 兼容接口的上限文档没有单独写。那时 CLI 收到真正的过长错误，走被动压缩（要求压缩开着，所以方案里一起打开）；压缩也失败时以 `prompt_too_long` 结束，不比现在差。
+2. **DeepSeek 在 1M 之前就拒绝。** Anthropic 兼容接口的上限文档没有单独写。那时 CLI 如果把这个错误识别成过长错误，会走被动压缩（要求压缩开着，所以方案里一起打开），压缩也失败时以 `prompt_too_long` 结束，不比现在差。**CLI 能不能识别 DeepSeek 的报错未确认**：它按报错文字匹配（`_ue`/`QKe`，偏移 205217401，要求以 "Prompt is too long" 开头或含 `prompt is too long … N tokens > M`），DeepSeek 的报错文字我们没有见过；认不出来时会以 `api_error` 或 `model_error` 结束。
 3. **上下文长了之后模型变差或变慢。** 17 万 token 以上的会话，`deepseek-flash` 的表现没有数据。这些 trial 多数是在反复读大段文本（agnews 的例子里，一半上下文是 8,000 多字符一条的工具结果），继续跑未必收敛，可能只是把 `blocking_limit` 换成 `max_turns`。
 4. **依赖服务器环境。** 压缩开关在仓库外面，换一台机器或重装就可能变。更稳的做法是让运行自己声明这个设置（SDK 的 `settings` 选项优先级高于用户设置，`ks` 按来源优先级查找），但那是改 `ClaudeAgentOptions`，不是只改 `sdk_env`，而且 SDK 模式下来源的实际顺序没有验证，留给修复工单定。
 5. **会改变已发布分数的口径。** `f19c-dab` 是已提交的结果，里面 5 个 trial 因此算错。修复后重跑的分数不能和它直接比，要写明。
@@ -266,13 +288,13 @@ function zp(){if(ih())return!1;return ks("autoCompactEnabled",!0).value}
 ### 5.4 什么证据会推翻这个方案
 
 - 加了 `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000` 之后，同一批题仍然出现 `blocking_limit`：说明 §2.1(d) 的路径读错了（例如 `UBt()` 那个账户锁存把窗口压回 200,000，偏移 198278323 的 `Zf`；我们不用 Anthropic 账户，推断它为假，没有验证）。
-- 出现 `terminal_reason: prompt_too_long`、带 HTTP 状态码：说明 DeepSeek 的 Anthropic 接口上限低于 1M，窗口要按实际拒绝点下调。
+- 出现 `terminal_reason: prompt_too_long`，或者大上下文的 trial 以 `api_error` / `model_error` 结束且带 400 状态码（两种都要数，见风险 2）：说明 DeepSeek 的 Anthropic 接口上限低于 1M，窗口要按实际拒绝点下调。
 - 这批 trial 修复后正确率没有变化、只是从撞线变成跑满轮数：说明问题主要不在窗口，而在 agent 反复读大段文本的行为，该查的是工具返回的大小和 Skill 的读法。
 
 ### 5.5 验收时要看的（给修复工单）
 
 - 事件流现在不记录压缩（§1）。要判断修复后有没有压缩、压了几次，得让事件流记下压缩边界消息，或者读 transcript。
-- 用 §1、§2 的两个脚本对重跑结果再数一遍：`blocking_limit` 应为 0，`with_compaction` 和单次请求最大值的分布要一起报。
+- 按 §1、§2 的统计方法对重跑结果再数一遍（脚本按工单 Authority 留在 scratchpad 没有提交，方法在两节开头写明，重写不难）：`blocking_limit` 应为 0，`with_compaction` 和单次请求最大值的分布要一起报。
 
 ## 6. 没有查清的
 
