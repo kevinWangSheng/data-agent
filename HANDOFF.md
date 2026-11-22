@@ -384,7 +384,7 @@
   - spec 验证：第 1 步 `max` 24/60 对默认 31/60、花费 1.65 倍，留默认；第 2 步总体 28/54 对 25/54，过（agnews 那组 4/12 对 6/12，作为事实记录）。
   - 第 3 步全量重跑（69a7e2b，默认 effort）：no-context 0.7639（209/270），baseline 0.7614（213/270）；第 18b 项是 0.7588、0.7218。差值 +0.25 分，不显著。实付约 $14.04。基础设施中断 2 次（DAB 工具服务器启动时报 `failed`，原因未确认），各重跑一个 trial。细节和逐题变化见 ADR-0008 Update 2026-11-22。
   - 第 4 步：提交包 `runs/f19c-dab/`（本机和服务器）：`pkg/submission.json`、`data-agent-dab-traces.zip`（14 MB）、`PR.md`（三轮分数并排、每轮看过什么）；自查过了，crmarenapro query12 run3 在沙箱里找过原始数据集的缓存、没找到、答案没过，`PR.md` 照实写。**人定（2026-11-22）不提交这个包**：两次例外都算 Tuned（ADR-0005 Update 2026-11-22），榜上只留盲跑。#144 改成盲跑 0.7421、标否；材料已备好，**剩下的由人做**：建 release `dab-submission-2026-11-13`（tag b7c6071）传 `runs/f19-dab/data-agent-dab-traces.zip`；push `runs/f19-dab/dab-fork`（fork 分支 `data-agent-deepseek-flash` 的 clone）里的本地提交 d36cc71（换答案文件）；`gh pr edit 144` 换标题和说明（`runs/f19-dab/PR-144.md`）。之后 README 的 DAB 分数要改成盲跑 0.7421 为主、三轮并排。
-  - 已知限制：DAB 工具服务器偶发启动失败，stderr 没留，查原因要先让 `evals/dab.py` 留下工具服务器的 stderr；`runs/f18c/par.py` 对上次 exit 非 0 的任务不记日志就跳过；105 没做的项（duckdb、postgres 的 Skill 里仍用 `ROW_NUMBER`）；本机没有集成测试用的 Postgres。
+  - 已知限制：DAB 工具服务器偶发启动失败，stderr 没留，查原因要先让 `evals/dab.py` 留下工具服务器的 stderr；`runs/f18c/par.py` 对上次 exit 非 0 的任务不记日志就跳过；105 没做的项（duckdb、postgres 的 Skill 里仍用 `ROW_NUMBER`，人 2026-11-22 定 wontfix，见工单 105 Comments）；DAB 工具服务器 stderr 由工单 107 留证据；本机没有集成测试用的 Postgres。
   - 没清理的：`.claude/worktrees/` 下 104–106 三个已合并的 worktree 和分支，以及 11-18 的 4 个清理分支（来源不明，待人定）；根目录未跟踪的 `.playwright-mcp/`。
   - 服务器在 69a7e2b，没有任务在跑。余额 ¥87.08（2026-11-22 `da-remote check`）。
 - 2026-11-22 收尾（编排会话结束）。**下一会话从这里开始。**
