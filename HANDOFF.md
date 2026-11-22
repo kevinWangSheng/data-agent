@@ -383,10 +383,18 @@
   - 集成测试：32 个失败都是本机没有 `DATA_AGENT_TEST_POSTGRES_URL`（环境缺，不是代码）；对话页面 e2e 的澄清用例偶发失败，在合入前后的提交上 A/B 各跑 6 次都 6/6 通过，记成偶发。
   - spec 验证：第 1 步 `max` 24/60 对默认 31/60、花费 1.65 倍，留默认；第 2 步总体 28/54 对 25/54，过（agnews 那组 4/12 对 6/12，作为事实记录）。
   - 第 3 步全量重跑（69a7e2b，默认 effort）：no-context 0.7639（209/270），baseline 0.7614（213/270）；第 18b 项是 0.7588、0.7218。差值 +0.25 分，不显著。实付约 $14.04。基础设施中断 2 次（DAB 工具服务器启动时报 `failed`，原因未确认），各重跑一个 trial。细节和逐题变化见 ADR-0008 Update 2026-11-22。
-  - 第 4 步：提交包 `runs/f19c-dab/`（本机和服务器）：`pkg/submission.json`、`data-agent-dab-traces.zip`（14 MB）、`PR.md`（三轮分数并排、每轮看过什么）；自查过了，crmarenapro query12 run3 在沙箱里找过原始数据集的缓存、没找到、答案没过，`PR.md` 照实写。**人定（2026-11-22）不提交这个包**：两次例外都算 Tuned（ADR-0005 Update 2026-11-22），榜上只留盲跑。#144 改成盲跑 0.7421、标否；材料已备好，**剩下的由人做**：建 release `dab-submission-2026-11-13`（tag b7c6071）传 `runs/f19-dab/data-agent-dab-traces.zip`；push 本会话 scratchpad 里 fork 分支的本地提交 d36cc71（换答案文件）；`gh pr edit 144` 换标题和说明（`runs/f19-dab/PR-144.md`）。之后 README 的 DAB 分数要改成盲跑 0.7421 为主、三轮并排。
+  - 第 4 步：提交包 `runs/f19c-dab/`（本机和服务器）：`pkg/submission.json`、`data-agent-dab-traces.zip`（14 MB）、`PR.md`（三轮分数并排、每轮看过什么）；自查过了，crmarenapro query12 run3 在沙箱里找过原始数据集的缓存、没找到、答案没过，`PR.md` 照实写。**人定（2026-11-22）不提交这个包**：两次例外都算 Tuned（ADR-0005 Update 2026-11-22），榜上只留盲跑。#144 改成盲跑 0.7421、标否；材料已备好，**剩下的由人做**：建 release `dab-submission-2026-11-13`（tag b7c6071）传 `runs/f19-dab/data-agent-dab-traces.zip`；push `runs/f19-dab/dab-fork`（fork 分支 `data-agent-deepseek-flash` 的 clone）里的本地提交 d36cc71（换答案文件）；`gh pr edit 144` 换标题和说明（`runs/f19-dab/PR-144.md`）。之后 README 的 DAB 分数要改成盲跑 0.7421 为主、三轮并排。
   - 已知限制：DAB 工具服务器偶发启动失败，stderr 没留，查原因要先让 `evals/dab.py` 留下工具服务器的 stderr；`runs/f18c/par.py` 对上次 exit 非 0 的任务不记日志就跳过；105 没做的项（duckdb、postgres 的 Skill 里仍用 `ROW_NUMBER`）；本机没有集成测试用的 Postgres。
   - 没清理的：`.claude/worktrees/` 下 104–106 三个已合并的 worktree 和分支，以及 11-18 的 4 个清理分支（来源不明，待人定）；根目录未跟踪的 `.playwright-mcp/`。
   - 服务器在 69a7e2b，没有任务在跑。余额 ¥87.08（2026-11-22 `da-remote check`）。
+- 2026-11-22 收尾（编排会话结束）。**下一会话从这里开始。**
+  - **先做（人做，或人明确让会话代做）**：#144 换成盲跑的三步还没执行（2026-11-22 查：release 不存在，fork 分支仍是 e6d5b07，#144 标题仍是 75.88%）。命令：
+    1. `gh release create dab-submission-2026-11-13 runs/f19-dab/data-agent-dab-traces.zip -R kevinWangSheng/data-agent --target b7c60710d61a923d01b367768913463dc2c6b619 --title "DataAgentBench submission traces (2026-11-13, blind run)" --notes "Traces of the blind run (commit b7c6071) submitted in ucbepic/DataAgentBench#144."`
+    2. `git -C runs/f19-dab/dab-fork push origin data-agent-deepseek-flash`
+    3. `gh pr edit 144 -R ucbepic/DataAgentBench --title "[Leaderboard] data-agent (DeepSeek deepseek-flash): 74.21% local Pass@1" --body-file runs/f19-dab/PR-144.md`
+    - 旧 release `dab-submission-2026-11-15` 换完后没有链接指向它，#144 合入后可删。
+  - 之后的建议顺序（编排会话的建议，人已同意不再针对 DAB 优化）：README 的 DAB 分数改成盲跑 0.7421 为主、三轮并排；查 DAB 工具服务器偶发启动失败（先让 `evals/dab.py` 留下工具服务器的 stderr，不花模型钱）；上下文管理（每轮都有撞上下文上限没答案的 trial，验证放在 data-eng-bench 或开发集，不只看 DAB）；报告补三轮分数和失败归因。
+  - 服务器在 69a7e2b，没有任务在跑；本机没有后台任务。余额 ¥87.08。
 
 ## 0. 一句话
 
