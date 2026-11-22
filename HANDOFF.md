@@ -383,7 +383,7 @@
   - 集成测试：32 个失败都是本机没有 `DATA_AGENT_TEST_POSTGRES_URL`（环境缺，不是代码）；对话页面 e2e 的澄清用例偶发失败，在合入前后的提交上 A/B 各跑 6 次都 6/6 通过，记成偶发。
   - spec 验证：第 1 步 `max` 24/60 对默认 31/60、花费 1.65 倍，留默认；第 2 步总体 28/54 对 25/54，过（agnews 那组 4/12 对 6/12，作为事实记录）。
   - 第 3 步全量重跑（69a7e2b，默认 effort）：no-context 0.7639（209/270），baseline 0.7614（213/270）；第 18b 项是 0.7588、0.7218。差值 +0.25 分，不显著。实付约 $14.04。基础设施中断 2 次（DAB 工具服务器启动时报 `failed`，原因未确认），各重跑一个 trial。细节和逐题变化见 ADR-0008 Update 2026-11-22。
-  - 第 4 步：提交包 `runs/f19c-dab/`（本机和服务器）：`pkg/submission.json`、`data-agent-dab-traces.zip`（14 MB）、`PR.md`（三轮分数并排、每轮看过什么）；自查过了，crmarenapro query12 run3 在沙箱里找过原始数据集的缓存、没找到、答案没过，`PR.md` 照实写。**剩下的由人做**：定 Tuned prompt 一栏（`PR.md` 里留了注释）；建 release `dab-submission-2026-11-22`（tag 指向 69a7e2b）上传轨迹包，`PR.md` 里的链接按这个名字写的；在 DAB 开新 PR（引用 #144）。
+  - 第 4 步：提交包 `runs/f19c-dab/`（本机和服务器）：`pkg/submission.json`、`data-agent-dab-traces.zip`（14 MB）、`PR.md`（三轮分数并排、每轮看过什么）；自查过了，crmarenapro query12 run3 在沙箱里找过原始数据集的缓存、没找到、答案没过，`PR.md` 照实写。**人定（2026-11-22）不提交这个包**：两次例外都算 Tuned（ADR-0005 Update 2026-11-22），榜上只留盲跑。#144 改成盲跑 0.7421、标否；材料已备好，**剩下的由人做**：建 release `dab-submission-2026-11-13`（tag b7c6071）传 `runs/f19-dab/data-agent-dab-traces.zip`；push 本会话 scratchpad 里 fork 分支的本地提交 d36cc71（换答案文件）；`gh pr edit 144` 换标题和说明（`runs/f19-dab/PR-144.md`）。之后 README 的 DAB 分数要改成盲跑 0.7421 为主、三轮并排。
   - 已知限制：DAB 工具服务器偶发启动失败，stderr 没留，查原因要先让 `evals/dab.py` 留下工具服务器的 stderr；`runs/f18c/par.py` 对上次 exit 非 0 的任务不记日志就跳过；105 没做的项（duckdb、postgres 的 Skill 里仍用 `ROW_NUMBER`）；本机没有集成测试用的 Postgres。
   - 没清理的：`.claude/worktrees/` 下 104–106 三个已合并的 worktree 和分支，以及 11-18 的 4 个清理分支（来源不明，待人定）；根目录未跟踪的 `.playwright-mcp/`。
   - 服务器在 69a7e2b，没有任务在跑。余额 ¥87.08（2026-11-22 `da-remote check`）。

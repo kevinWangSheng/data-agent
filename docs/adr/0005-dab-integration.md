@@ -69,3 +69,11 @@ plan §10 第 4 项定过"DAB 结果不能用来改 Skill"，因为 DAB 没有�
 不做：Stela 的策略复盘（提示词没公开）；DUO 的数据集说明和按题说明。
 
 这一轮之后，DAB 分数离盲测更远：提交和报告并列写出盲跑 0.7421、第一次例外后 0.7588 和这一轮的结果，并写明每一轮看过什么。榜单 Tuned prompt 一栏怎么填，提交前由人定。
+
+## Update 2026-11-22：榜单只报盲跑
+
+人定（2026-11-22）：对照上游 README 的定义（Tuned prompt ✓ = "the up-front prompt is DAB-specific, built from a close study of DAB's task conventions (domain rules, parsing and interpretation choices, and expected answer shapes)"），两次例外的结果都算 Tuned：内容通用，但改动来自看 DAB 的失败（答案形状）和别家的 DAB 契约（解析与理解）。最接近的先例 Stela（提示通用、skill 来自 DAB 失败复盘）标了 ✓。
+
+- 榜单只交盲跑 0.7421（b7c6071），标 Tuned prompt = 否：#144 的答案换成盲跑，说明里写明原因。未调组 32 条里排第 9（2026-11-22 榜单）。
+- 第一次例外 0.7588、第二次例外 0.7639 不上榜；标 ✓ 时 0.7639 在 tuned 组 26 条里排第 25。三轮分数并排写进报告和 README，写明每轮看过什么。
+- 不为在 tuned 组往上爬而做 DAB 专属调优（数据集说明、按题说明、对着评分脚本校准）：违反本 ADR，DAB 没有留出集。
