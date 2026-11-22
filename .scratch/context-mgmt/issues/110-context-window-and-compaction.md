@@ -1,10 +1,10 @@
 # 110 — 按 1M 窗口跑，并在仓库内打开自动压缩
 
-Status: ready-for-agent
+Status: done
 Blocked by: 109（研究笔记随 PR #117 合入 main 后才派：`-w` 从 `origin/main` 建 worktree）
 Spec: 无（人 2026-11-22 定，见"已和用户定下的"）
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 110-context-window-and-compaction)
+Branch: worktree-110-context-window-and-compaction
 
 ## Goal
 
@@ -71,13 +71,27 @@ Status 改 `ready-for-human`，Comment 写明试了什么、哪里失败、分�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 1
+- Model spend: billed ≈ $2.17 (cost_usd ≈ $4.33), main-session real runs
+- Outcome: accepted, merged (PR #118)
 - Human review minutes: —
 
 ## Comments
 
 - 2026-11-22（对齐会话）：范围和 4 条 grilling 由人确认（见"已和用户定下的"）。压缩探针的做法从"临时把窗口压到 100000"细化成"用继承变量把压缩点降到 177k 以下"：`sdk_env` 的值盖过继承变量，不改代码就压不低窗口；目的不变（证明 `--settings` 打开了压缩）。派工（109 合入后）：
   `claude -p -w 110-context-window-and-compaction --model opus --permission-mode auto "/implement /Users/shenghuikevin/dev/AI/data-agent/.scratch/context-mgmt/issues/110-context-window-and-compaction.md"`
+- 2026-11-22 (ticket agent, claude-opus-5-5): branch worktree-110-context-window-and-compaction, commits 7c75e73 (fix), 91973e0 (review fix in tests).
+  - Change: `sdk_env()` sets CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000, CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000, DISABLE_AUTO_COMPACT="", DISABLE_COMPACT=""; `build_options()` passes settings='{"autoCompactEnabled": true}' (→ `--settings`). New tests/test_context_window.py, 6 tests (env, parsed settings, `--settings` in argv, single run and chat turn; shell-exported vars cannot change the spawned env); all 6 failed before the fix. No existing test changed (tests/test_postgres.py:175 builds its expectation from sdk_env()).
+  - CLI 2.1.301 source: (1) `ks()` scans sources last→first over ["userSettings","projectSettings","localSettings","flagSettings","policySettings"]; `--settings` = flagSettings, outranks user settings; ~/.claude.json read only if no source sets the key → stop condition does not apply. (2) `ih()=Boolean(Fe(DISABLE_COMPACT)||DISABLE_AUTO_COMPACT)`, `Fe` true only for "1"/"true"/"yes"/"on" → "" is off; SDK keeps empty values. (3) window source "env" = 400,000; effective 400,000 − min(32,000, 20,000) = 380,000; trigger 380,000 − 13,000 = 367,000; source `env` compacts proactively. (4) Probe variable CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (parseFloat from process env, not set by sdk_env, inherited): 0–100 → trigger min(floor(380,000 × pct/100), 367,000); 25 → 95,000. Forked side requests ignore it.
+  - make check: ruff/format ok, basedpyright 0 errors, pytest 2583 passed / 2 skipped / 77 deselected, web 320 passed.
+  - da-review main: no actionable defects. eng:code-review main: Standards no hard violations; fixed `turns()[chat]` bool index (91973e0); not fixed: 1M hardcoded for one model (human Q2: all runs), copied `cli_args()` helper (per-module helpers; move to conftest on a third copy), kept spawn-intercept helper (only way to see the merged env). Spec: all unit items covered, nothing outside Authority.
+  - Known risks: a Claude settings `env` block setting DISABLE_AUTO_COMPACT or CLAUDE_CODE_MAX_CONTEXT_TOKENS might override ours (precedence not checked; server settings.json today has only autoCompactEnabled and theme); dbt never hit the limit, container settings not inspectable, dbt now compacts at 367k; summaries by deepseek-flash may lose task detail.
+- 2026-11-22 (main session): PR #118 opened. Server set up at 91973e0. Started 110-agnews (agnews q3 × 5, budget $1.5), 110-stock (stockmarket q2 × 5, $1.5), 110-dbt (cohort-retention-matrix full × 1, $1; first start lost to an SSH drop, restarted). Batch start epoch 1795380975. Probe (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=25, agnews q3 × 1, $0.5) runs alone afterwards.
+- 2026-11-22 (main session): real runs, server at 91973e0, no-context, default effort. Stats via the ticket agent's `runs/110/stats.py` (terminal_reason from event files; per-request input = input + cache_read + cache_creation from CLI transcripts modified after the start epoch; compactions = `compact_boundary`).
+  - agnews q3 × 5 + stockmarket q2 × 5 (`runs/110-agnews` 4 trials, then the per-run budget guard stopped at 80% of $1.5 → missing trial run as `runs/110-agnews5` × 1; `runs/110-stock` 5 trials): terminal_reason `completed` 10/10, **0 `blocking_limit`**; batch 1 `sessions=9 compactions=0 sessions_with_call_over_177000=1 max_call_input=197059` (top 5 per-session max 148970, 162846, 163991, 168202, 197059); agnews5 `max_call_input=139288`. Over 177,000 at least once: **yes** (197,059). Billed: agnews $1.2183, stock $0.3015, agnews5 $0.2712.
+  - Compaction probe (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=25`, agnews q3 × 1, `runs/110-probe`, exit 0): `sessions=1 compactions=1 max_call_input=85372` → `--settings` overrides the server's `autoCompactEnabled: false`. cost_usd $0.54.
+  - dbt smoke (`runs/110-dbt`, cohort-retention-matrix full × 1): exit 0, "Readiness: clean", billed $0.1046.
+  - Exceeding the per-run $1.5 guard on agnews was handled by running the missing trial separately; total stays under the ticket's $5 cap.
+  - PR #118: CI green; Codex GitHub app on 91973e0: no findings (`has_any_findings: false`). Squash-merged.
+  - Not in this ticket (to decide separately): rerun DAB full or resubmit; per-trial cost rises with longer contexts (agnews ≈ $0.30/trial billed here).
