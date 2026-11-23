@@ -21,6 +21,7 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BufferedIOBase
 from typing import Any
 
 from data_agent.events import REDACTED, mask
@@ -49,7 +50,8 @@ TOKEN_RENAMES = {
     "cache_creation_tokens": "gen_ai.usage.cache_creation_tokens",
 }
 USAGE_PREFIXES = ("gen_ai.usage.", "llm.token_count.")
-# Both tiers: attributes dropped by name. `anthropic.custom_base_url` is the model endpoint.
+# Both tiers: attributes dropped by name. `anthropic.custom_base_url` would name the model
+# endpoint (spec "本地中转"); CLI 2.1.330 sends it as a boolean (captured).
 DROPPED = frozenset({"anthropic.custom_base_url"})
 # Both tiers: values shaped like a credential, masked wherever they appear in a string. The same
 # shapes as `evals.scrub.KEY_SHAPE`: sk- keys, bearer tokens, JWTs, GitHub tokens, AWS key ids.
@@ -94,6 +96,7 @@ HELD_OUT_ALLOWLIST = frozenset(
         "span.type",
     }
 )
+SCALARS = frozenset({"string_value", "bool_value", "int_value", "double_value"})
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -110,6 +113,8 @@ CLI_PATH = "/v1/traces"
 LANGFUSE_OTLP_PATH = "/api/public/otel/v1/traces"
 # How long one forward waits for Langfuse; `stop` gives up on it sooner (`drain_timeout_s`).
 FORWARD_TIMEOUT_S = 30.0
+# How long the relay waits on a CLI connection that has not sent its whole request.
+READ_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -174,17 +179,26 @@ def _rewrite_message(message: Any, tier: TraceTier, ids: AnonIds, secrets: Seque
     def attrs(kvs: Any) -> None:
         _rewrite_attributes(kvs, tier, ids, clean)
 
+    held_out = tier == "structure"
+    if held_out:
+        # Fields newer than this opentelemetry-proto would otherwise go out as they came.
+        message.DiscardUnknownFields()
     for resource_spans in message.resource_spans:
         attrs(resource_spans.resource.attributes)
         for scope_spans in resource_spans.scope_spans:
             attrs(scope_spans.scope.attributes)
             for span in scope_spans.spans:
+                span.name = clean(span.name)
                 attrs(span.attributes)
                 for event in span.events:
+                    event.name = clean(event.name)
                     attrs(event.attributes)
                 for link in span.links:
                     attrs(link.attributes)
-                if tier == "structure":
+                    if held_out:
+                        link.trace_state = ""
+                if held_out:
+                    span.trace_state = ""
                     span.status.message = ""
                 else:
                     span.status.message = clean(span.status.message)
@@ -203,9 +217,13 @@ def _rewrite_attributes(
             dropped.append(index)
             continue
         if tier == "structure":
-            if key in ANONYMIZED_IDS and kv.value.WhichOneof("value") == "string_value":
+            kind = kv.value.WhichOneof("value")
+            if key in ANONYMIZED_IDS and kind == "string_value":
                 kv.value.string_value = ids(kv.value.string_value)
-            elif key not in HELD_OUT_ALLOWLIST and not key.startswith(USAGE_PREFIXES):
+            elif (
+                key not in HELD_OUT_ALLOWLIST and not key.startswith(USAGE_PREFIXES)
+            ) or kind not in SCALARS:
+                # An allowlisted name holding a list, a map or bytes is not the field it names.
                 dropped.append(index)
                 continue
         _clean_value(kv.value, clean)
@@ -223,6 +241,32 @@ def _clean_value(value: Any, clean: Callable[[str], str]) -> None:
     elif kind == "kvlist_value":
         for kv in value.kvlist_value.values:
             _clean_value(kv.value, clean)
+
+
+def _read_chunked(stream: BufferedIOBase) -> bytes:
+    """A `Transfer-Encoding: chunked` body (RFC 9112 §7.1), trailers skipped."""
+    chunks: list[bytes] = []
+    while True:
+        size = int(stream.readline().split(b";")[0].strip(), 16)
+        if size == 0:
+            break
+        chunks.append(stream.read(size))
+        stream.readline()
+    while stream.readline().strip():
+        pass
+    return b"".join(chunks)
+
+
+def _take_backlog(server: ThreadingHTTPServer) -> None:
+    """Accepts the connections already waiting once `serve_forever` has stopped: the CLI's last
+    batch can arrive just before `stop`. Each handler sets its own timeout on its socket."""
+    server.socket.setblocking(False)
+    while True:
+        try:
+            request, client_address = server.get_request()
+        except OSError:
+            return
+        server.process_request(request, client_address)
 
 
 def _span_counts(message: Any) -> tuple[int, int]:
@@ -260,7 +304,9 @@ class TraceRelay:
         self._ids = AnonIds()
         self._server: ThreadingHTTPServer | None = None
         self._done = threading.Condition()
-        self._in_flight = 0
+        # Connections accepted and not yet closed; among them, requests read and not yet settled.
+        self._open: set[object] = set()
+        self._taken: set[object] = set()
         self._spans = 0
         self._llm_requests = 0
         self._errors: list[ExportError] = []
@@ -271,11 +317,24 @@ class TraceRelay:
         relay = self
 
         class Handler(BaseHTTPRequestHandler):
+            # A connection that sends nothing, or less than it said, is let go after this.
+            timeout = READ_TIMEOUT_S
+
             def do_POST(self) -> None:
                 if self.path.split("?")[0] != CLI_PATH:
                     self.reply(404)
                     return
-                relay._take(self.headers.get, self.rfile.read, self.reply)
+                relay._take(self.request, self.body, self.reply)
+
+            def body(self) -> bytes:
+                """The request body, unchunked and unzipped."""
+                if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+                    body = _read_chunked(self.rfile)
+                else:
+                    body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
+                    body = gzip.decompress(body)
+                return body
 
             def do_GET(self) -> None:
                 self.reply(405)
@@ -297,14 +356,14 @@ class TraceRelay:
                 pass
 
         class Server(ThreadingHTTPServer):
-            """Counts a request as taken once accepted, before `shutdown` can return, and as done
-            when its handler's thread ends."""
+            """Counts a connection as open once accepted, before `shutdown` can return, and as
+            closed when its handler's thread ends."""
 
             daemon_threads = True
 
             def process_request(self, request: Any, client_address: Any) -> None:
                 with relay._done:
-                    relay._in_flight += 1
+                    relay._open.add(request)
                 super().process_request(request, client_address)
 
             def process_request_thread(self, request: Any, client_address: Any) -> None:
@@ -312,7 +371,8 @@ class TraceRelay:
                     super().process_request_thread(request, client_address)
                 finally:
                     with relay._done:
-                        relay._in_flight -= 1
+                        relay._open.discard(request)
+                        relay._taken.discard(request)
                         relay._done.notify_all()
 
         self._server = Server(("127.0.0.1", 0), Handler)
@@ -326,35 +386,33 @@ class TraceRelay:
         server, self._server = self._server, None
         if server is not None:
             server.shutdown()
+            _take_backlog(server)
         with self._done:
-            self._done.wait_for(lambda: self._in_flight == 0, timeout=self._drain_timeout_s)
-            # A forward still waiting on Langfuse when time is up got no response: dropped.
-            abandoned = [ExportError(CONNECTION_ERROR, None)] * self._in_flight
+            self._done.wait_for(lambda: not self._open, timeout=self._drain_timeout_s)
+            # A request still waiting on Langfuse when time is up got no response: dropped.
+            abandoned = [ExportError(CONNECTION_ERROR, None)] * len(self._taken)
+            self._taken.clear()
             report = RelayReport(self._spans, self._llm_requests, (*self._errors, *abandoned))
         if server is not None:
             server.server_close()
         return report
 
     def _take(
-        self,
-        header: Callable[[str], str | None],
-        read: Callable[[int], bytes],
-        reply: Callable[[int], None],
+        self, request: object, body: Callable[[], bytes], reply: Callable[[int], None]
     ) -> None:
-        """One CLI request: answered at once (the CLI does not wait on Langfuse), then forwarded,
-        rewritten, on the handler's thread."""
+        """One CLI request (`request` is its connection): answered at once (the CLI does not wait
+        on Langfuse), then forwarded, rewritten, on the handler's thread."""
+        with self._done:
+            self._taken.add(request)
         try:
-            body = read(int(header("Content-Length") or 0))
-            if (header("Content-Encoding") or "").lower() == "gzip":
-                body = gzip.decompress(body)
-            message = _parse(body)
+            message = _parse(body())
             _rewrite_message(message, self._tier, self._ids, self._secrets)
         except Exception:
             reply(400)
-            self._record(ExportError(PARSE_ERROR, None))
+            self._record(request, ExportError(PARSE_ERROR, None))
             return
         reply(200)
-        self._record(self._forward(message), _span_counts(message))
+        self._record(request, self._forward(message), _span_counts(message))
 
     def _forward(self, message: Any) -> ExportError | None:
         try:
@@ -370,8 +428,14 @@ class TraceRelay:
             return ExportError(CONNECTION_ERROR, None)
         return None if 200 <= status < 300 else ExportError(HTTP_ERROR, status)
 
-    def _record(self, error: ExportError | None, counts: tuple[int, int] = (0, 0)) -> None:
+    def _record(
+        self, request: object, error: ExportError | None, counts: tuple[int, int] = (0, 0)
+    ) -> None:
+        """Settles a taken request, once: a request `stop` counted as dropped stays so."""
         with self._done:
+            if request not in self._taken:
+                return
+            self._taken.discard(request)
             if error is not None:
                 self._errors.append(error)
             else:

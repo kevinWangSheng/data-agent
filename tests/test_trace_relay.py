@@ -4,12 +4,15 @@ of one with none (`structure-*`), with the machine's details replaced (its READM
 tests (tests/acceptance/test_observability_relay.py) run on ticket 111's hand-made request."""
 
 import gzip
+import socket
 import threading
+import time
 import urllib.request
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -18,10 +21,12 @@ from data_agent.trace_relay import (
     CONNECTION_ERROR,
     HELD_OUT_ALLOWLIST,
     HTTP_ERROR,
+    READ_TIMEOUT_S,
     TOKEN_RENAMES,
     USAGE_PREFIXES,
     AnonIds,
     ExportError,
+    RelayReport,
     TraceRelay,
     rewrite,
 )
@@ -339,3 +344,93 @@ def test_a_redirect_or_an_unusable_address_is_reported_not_followed(
     assert report.errors == (error,)
     assert (report.forwarded_spans, report.forwarded_llm_requests) == (0, 0)
     assert not [b for b in langfuse.bodies if b.startswith(b"GET ")]
+
+
+def raw_post(endpoint: str, body: bytes, chunked: bool = False) -> socket.socket:
+    """Sends a whole POST on a raw socket and leaves it open, unanswered."""
+    url = urlsplit(endpoint)
+    sock = socket.create_connection((url.hostname, url.port))
+    framing = (
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        + b"".join(b"%x\r\n%s\r\n" % (len(part), part) for part in (body[:100], body[100:]) if part)
+        + b"0\r\n\r\n"
+        if chunked
+        else b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+    )
+    sock.sendall(b"POST /v1/traces HTTP/1.1\r\nHost: x\r\n" + framing)
+    return sock
+
+
+def test_requests_sent_just_before_stop_are_all_forwarded() -> None:
+    langfuse = Langfuse()
+    relay = TraceRelay(langfuse.settings, "full")
+    body = requests("full")[0].SerializeToString()
+    n = len(spans([parse(body)]))
+    try:
+        endpoint = relay.start()
+        socks = [raw_post(endpoint, body) for _ in range(8)]
+        report = relay.stop()
+    finally:
+        langfuse.close()
+    for sock in socks:
+        sock.close()
+    assert (report.forwarded_spans, report.errors) == (8 * n, ())
+    assert len(langfuse.bodies) == 8
+
+
+def test_a_chunked_request_is_read_whole() -> None:
+    langfuse = Langfuse()
+    relay = TraceRelay(langfuse.settings, "full")
+    body = requests("full")[0].SerializeToString()
+    try:
+        sock = raw_post(relay.start(), body, chunked=True)
+        assert sock.recv(64).startswith(b"HTTP/1.0 200")
+        report = relay.stop()
+    finally:
+        langfuse.close()
+    sock.close()
+    assert report.forwarded_spans == len(spans([parse(body)])) and report.errors == ()
+
+
+def test_an_idle_connection_neither_holds_stop_nor_counts_as_an_error() -> None:
+    langfuse = Langfuse()
+    relay = TraceRelay(langfuse.settings, "full", drain_timeout_s=30)
+    try:
+        url = urlsplit(relay.start())
+        idle = socket.create_connection((url.hostname, url.port))
+        started = time.monotonic()
+        report = relay.stop()
+    finally:
+        langfuse.close()
+    idle.close()
+    assert time.monotonic() - started < READ_TIMEOUT_S + 2
+    assert report == RelayReport(0, 0, ())
+
+
+def test_the_held_out_tier_lets_out_no_trace_state_unknown_field_or_nested_value() -> None:
+    [message, *_] = requests("structure")
+    span = spans([message])[0]
+    span.trace_state = "vendor=secret-state"
+    kv = span.attributes.add()
+    kv.key = "model"
+    nested = kv.value.kvlist_value.values.add()
+    nested.key = "hidden"
+    nested.value.string_value = "nested-content"
+    # Field 99 of Span, unknown to this opentelemetry-proto: tag (99 << 3 | 2), length, bytes.
+    span.MergeFromString(b"\x9a\x06\x0eunknown-secret")
+    out = rewrite(message.SerializeToString(), tier="structure", ids=AnonIds(), secrets=())
+    for gone in (b"secret-state", b"nested-content", b"unknown-secret"):
+        assert gone not in out, gone
+    kept = rewrite(message.SerializeToString(), tier="full", ids=AnonIds(), secrets=())
+    assert b"unknown-secret" in kept and b"nested-content" in kept
+
+
+def test_a_known_secret_in_a_span_or_event_name_is_masked() -> None:
+    [message, *_] = requests("full")
+    span = spans([message])[0]
+    span.name = "run known-value-2"
+    span.events.add().name = "event known-value-2"
+    out = rewrite(
+        message.SerializeToString(), tier="full", ids=AnonIds(), secrets=("known-value-2",)
+    )
+    assert b"known-value-2" not in out and b"run [REDACTED]" in out
