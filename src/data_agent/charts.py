@@ -10,7 +10,7 @@ and returns the chart's definition with the data the web UI draws (.scratch/char
 import math
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, TypeGuard
 
 from pydantic import BaseModel
 
@@ -43,7 +43,7 @@ class ChartError(Exception):
     """A chart the result cannot give; the message says what to change."""
 
 
-def is_number(value: object) -> bool:
+def is_number(value: object) -> TypeGuard[int | float | Decimal]:
     return isinstance(value, int | float | Decimal) and not isinstance(value, bool)
 
 
@@ -97,7 +97,7 @@ def chart_payload(
     # JSON has no infinity or NaN, so a chart holding one could not be read.
     for column in dict.fromkeys(keep):
         values = (row[index[column]] for row in result.rows)
-        if any(is_number(v) and not math.isfinite(v) for v in values):  # pyright: ignore[reportArgumentType]
+        if any(is_number(v) and not math.isfinite(v) for v in values):
             raise ChartError(
                 f"{column} has values that are not finite (infinity or NaN, as from a division "
                 "by zero); filter them out or make them NULL in the SQL"
