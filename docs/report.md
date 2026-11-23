@@ -125,6 +125,24 @@ the lowest config, which a rarely used layer does not explain. I have no evidenc
 No paired difference is significant here either: full − baseline +1.1 (−11.1 to +13.3),
 full − no-verifiers −1.1 (−7.8 to +5.6), no-verifiers − baseline +2.2 (−8.9 to +14.4).
 
+Pairing the same 270 trials task by task (read on 2026-11-23) finds no kind of task that the layers
+systematically lose. Against baseline, full wins 4 tasks, loses 5 and ties 21; no-verifiers wins 4,
+loses 4 and ties 22. By kind, the layers are ahead on the 7 fix-an-existing-project tasks (full
+16/21, no-verifiers 17/21, baseline 14/21) and level on the 23 build-new-models tasks (44, 44 and
+45 of 69). Two tasks are lost by both configs by two or more of three trials:
+
+- `dbt-rfm-customer-segmentation` (1/3 and 1/3 against 3/3): 4 of the 6 trials built the metrics
+  from the customers table with an inner join, which dropped 5 customers who have orders but no
+  customer row. This is a repeatable mechanism, but it was seen on this one task.
+- `tier-migration-analysis` (0/3 and 0/3 against 2/3): all 6 trials, and one baseline trial, counted
+  distinct customers where the grader counts rows, an ambiguity in the task statement. In one full
+  trial the verifier's finding changed a correct count into the wrong one.
+
+Two tasks are 6.7% of the set, below the 10% at which a general fix round would have been
+considered, and the two mechanisms differ. The largest wins (`dbt-customer-cross-sell-insights`
+and `dbt-test-orders-filter`, both 3/3 against 0/3) hold without the verifier, so they do not come
+from it; what in the Skills or tools causes them was not traced.
+
 The verifier costs twice as much per success and takes about 150 seconds longer per trial, and it
 did not score higher on either set. That is why `no-verifiers` is the recommended config and the
 one used for the data-eng-bench submission. This is a cost decision. The data does not show the
@@ -207,6 +225,17 @@ crmarenapro 0.82 → 0.83, googlelocal 1.00 → 0.95, music_brainz_20k 1.00 → 
 
 Only the 54 leaderboard queries were run. The benchmark clone holds 50 more on five newer datasets
 that the leaderboard does not score.
+
+### Postgres and dbt outside the benchmarks
+
+dbt Labs' `jaffle_shop` on a local Postgres, 7 cases in the format of SignalPilot's e2e eval set:
+3 questions whose numbers are checked within a tolerance, 2 dbt changes checked for the rebuilt
+model's row count, grain, columns and column sums, and 2 requests to write to the data directly,
+which must leave it unchanged. Run on commit `71a5bcc` (2026-11-23), after the sandbox and
+`dbt_execute` changes, with the `full` config (the runner's default): 7/7 passed for $0.137. The
+read-only gateway refused statements in both negative cases and in one question case. The earlier
+result, also 7/7, was from commit `47808bd` before those changes. The command is `python -m evals jaffle`; the cases
+are in [`evals/jaffle_shop/eval.json`](../evals/jaffle_shop/eval.json).
 
 ## Cost
 
@@ -380,6 +409,18 @@ server; and DEPS_DEV_V1 2, googlelocal 3 and yelp 4, which need the per-trial ve
 - **Offline checks.** On agnews, some trials tried to download the original labels. The sandbox has
   no network and every attempt failed. In the first run none of the Skills-on trials that tried
   passed; in the rerun no Skills-on trial tried.
+- **dbt tasks against the baseline.** The layers are not significantly above the baseline on
+  data-eng-bench: on the held-out set no-verifiers − baseline is +5.6 (−3.3 to +15.6). The per-task
+  pairing on the development set found no kind of task to fix in general, so this is reported as
+  measured, not pursued.
+- **Larger context window on dbt tasks.** The 1M window and automatic compaction (ticket 110) were
+  added after every full run. On the development set's three longest dbt tasks, 3 trials each on
+  `71a5bcc`, every trial completed and the score was 5/9 against 6/9 at `b7c6071` (3/3, 2/3, 0/3
+  against 2/3, 3/3, 1/3), within trial-to-trial variation, at a similar cost (per-task means $0.116 to $0.225 per
+  trial). None of the 270 development-set trials at `b7c6071` had reached the old context limit, and
+  the mean request in the new trials stayed under 74,000 tokens, far below the 367,000 at which
+  compaction starts, so the change is not expected to matter on dbt tasks. Whether compaction ran is
+  not confirmed: the CLI transcripts stay in the trial container.
 - **No baseline for the full data-eng-bench run**, and no comparison against other submitters here:
   they used different models at different prices.
 - **Infrastructure.** Three concurrent trials fill the server's 8 GB; one trial in the full run was

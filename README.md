@@ -33,6 +33,10 @@ below.
   are reported here and in the [evaluation report](docs/report.md) but not submitted. The cost is
   for the submitted config. The 270 trajectories are in the
   [release](https://github.com/kevinWangSheng/data-agent/releases/tag/dab-submission-2026-11-13).
+- **Your own Postgres and dbt project**: on dbt Labs' `jaffle_shop` with a local Postgres, 7 cases
+  (3 questions, 2 dbt changes, 2 direct-write requests that must be refused) passed 7/7 on commit
+  `71a5bcc` for $0.14 (`python -m evals jaffle`; details in the
+  [evaluation report](docs/report.md#postgres-and-dbt-outside-the-benchmarks)).
 
 ## Quickstart
 

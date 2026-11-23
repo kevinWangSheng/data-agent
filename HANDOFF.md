@@ -1,6 +1,6 @@
 # HANDOFF — 通用 data agent 求职项目
 
-> **当前状态（2026-11-23）：一期主线做完，进入收尾。下一会话从这里开始。**
+> **当前状态（2026-11-23）：一期做完，收尾的 1–4 项也做完；下一步是第 5 项的讨论。**
 >
 > 先读：`AGENTS.md`；`docs/plan.md` §10（一期各项和结果）；`docs/report.md`（分数、消融、失败归因）。
 > 2026-11-01 到 11-22 的逐日进度记录已从本文件移出，原文见 `git show 9493448:HANDOFF.md`；各项结论以 ADR（尤其 ADR-0004、0005、0008 的各个 Update）、工单 Comments 和 plan §10 为准。
@@ -13,7 +13,7 @@
   - data-eng-bench：Snowflake-Labs/data-eng-bench #20，64.1% ± 1.6（ea740b5，no-verifiers，103 × 3）。
 - **分数对应的代码版本**：README 和报告里的每个分数都标了 commit。DAB 在沙箱改造（工单 97–101）之后跑过一次全量（69a7e2b，0.7639，两次例外算 Tuned，不提交）；data-eng-bench 全量是改造前的 ea740b5，改造后的证据是工单 100 的跑分验收（开发集 full × 3 不低于 main，小样本不低于上次正式成绩）。110（1M 窗口、自动压缩）之后没跑过全量。
 - **在线版**：`https://kevinwangsheng.github.io/data-agent/`，main 每次 push 由 Pages 工作流重新构建。
-- **服务器**：在 3ca3c01，没有任务在跑。模型余额 ¥72.47（2026-11-23 `da-remote check`）。
+- **服务器**：在 71a5bcc，没有任务在跑。模型余额 ¥60.34（2026-11-23 收尾运行后 `da-remote check`）。
 
 ## 已定的规则（这一阶段新加的）
 
@@ -29,16 +29,20 @@
 |---|---|
 | DAB、data-eng-bench 超过裸基线（plan §4：配对 bootstrap 区间不含 0） | DAB 过（+4.09，+1.18 到 +6.88）。data-eng-bench 留出集没过：no-verifiers − baseline +5.6（−3.3 到 +15.6），full − baseline +1.1；103 题上 baseline 没跑过 |
 | 消融拆出各层贡献 | 没过：5 个配置差值都不显著（报告"读不出方向"）；澄清层消融在二期；"失败归因自改进"成了开发流程，不是可开关的层。不补，照实报告 |
-| 接任意 Postgres + dbt | jaffle-shop 7/7 是工单 08（47808bd）的证据，沙箱、`dbt_execute`、110 之后没重跑；README、报告里没写 |
+| 接任意 Postgres + dbt | 过：jaffle-shop 7/7（71a5bcc，full，$0.137，2026-11-23），写进 README Results 和报告 |
 
-2026-11-23 讨论的结论：已跑过的全量都不重跑。103 题 baseline 不跑（混了调过 Skill 的开发集，估算还是不显著，未实测）。再开一轮优化也不建议：要显著需拉开约 10 分，前几轮修复都在波动范围内。唯一保留的判断入口是下面第 1 项。
+2026-11-23 讨论的结论：已跑过的全量都不重跑。103 题 baseline 不跑（混了调过 Skill 的开发集，估算还是不显著，未实测）。再开一轮优化也不建议：要显著需拉开约 10 分，前几轮修复都在波动范围内。唯一保留的判断入口（开发集配对分析）已做，没过开修复轮的线，data-eng-bench 和消融两条照实报告。
 
-### 下一批（新会话从这里开始）
+### 收尾的 1–4 项（2026-11-23 做完）
 
-1. **开发集配对分析（$0，先做）**：用 b7c6071 开发集已有的 full、no-verifiers、baseline 各 30 × 3，逐题配对，看我们的层在哪类题上赢、哪类题上系统性输给 baseline。派子 agent 读数据，只出汇总和分类；不碰留出集逐题细节（ADR-0004）。若某类系统性输掉且占比 >10%，才讨论开一轮针对这类的通用修复；否则 dbt 这条照实收尾。
-2. **jaffle-shop 在当前 main 重跑**（约 $0.1，小额默认放行）：`python -m evals jaffle`（7 个用例），结果写进 README 或报告，补第三条验收线的证据。
-3. **110 在 dbt 题上初筛**（约 $1–2，小额）：开发集挑 3 道轨迹最长的 dbt 题 × 3，看压缩是否触发、准确率是否掉、单价。110 只在 DAB 两题验过；dbt 共用 `build_options`（`agent.py:1241`、`:1656`）但没真实跑过。
-4. **收尾文档**：按 1–3 的结果改 plan §1 / §10 和本文件的验收线状态（"已测、未达成、照实报告"或修复后的结果），报告 Limitations 补一句 dbt 侧结论。
+结果写在 plan §10 "2026-11-23 下一批的结果"、报告 Development set 一节和 Limitations、README Results。
+1. 开发集配对分析：两个配置都系统性输给 baseline 的只有 2 题（6.7%），机制不同（rfm 内连接丢客户、tier-migration 题面歧义），不开修复轮。本机明细 `runs/dev-paired/summary.md`（不进 git）。
+2. jaffle-shop：7/7，71a5bcc。本机 `runs/jaffle-main/`。
+3. 110 在 dbt 上初筛：5/9 对 b7c6071 的 6/9，在波动内，单价持平；dbt trial 的上下文远没到压缩点，110 在 dbt 上不起作用。本机和服务器 `runs/t110-dbt-b/`（第一次运行在本机 `runs/t110-dbt-b.first/`）。
+4. 收尾文档：本次提交。
+
+### 下一步（新会话从这里开始）
+
 5. **之后再讨论（一次一个主题）**：项目终点（二期要不要做、做什么，先看 JD 覆盖的 Memory、多 Agent 协作）→ 冻结后再做展示：求职材料 → 报告和 README 中文版 → 视频 → 博客（给视频引流，没准备好就推迟）。根目录 `.playwright-mcp/` 待人定。
 - 11-18 的 4 个清理分支（`cleanup-prune-features`、`test-cleanup`、`cleanup-prune-tests`、`cleanup-speed`）和 `chore/glossary-rename` 已由人定删除（2026-11-23，未合入；内容见 `6adb612`、`e84a615`、`0447ec4` 等提交，可能被 gc 回收）。
 - **一期外的功能候选**（各 spec 的 Out of Scope，要做先在对齐会话讨论）：答案里出图表；查数任务读 dbt 模型说明当业务语义（现在只有验证者读 `target/manifest.json`）；在对话里做 dbt；对话总花费上限。其余（Memory、登录多用户、公网部署、MongoDB 连接器、Langfuse、LiveSQLBench、澄清层消融等）价值低或偏平台。
