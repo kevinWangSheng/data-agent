@@ -27,6 +27,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NoReturn
+from urllib.parse import urlsplit
 
 from claude_agent_sdk.types import McpHttpServerConfig, McpServerConfig, McpStdioServerConfig
 
@@ -34,6 +35,9 @@ from claude_agent_sdk.types import McpHttpServerConfig, McpServerConfig, McpStdi
 RESERVED_NAME = "data"
 PREFIX = "DATA_AGENT_MCP_"
 NAME = re.compile(r"[A-Za-z0-9_-]+")
+# The CLI splits `mcp__<server>__<tool>` on `__`: a server named `data_` or `data__x` would have
+# its tools read as tools of `data` (allowed whole, `mcp__data`), `a__b` as tools of `a`.
+NAME_SEPARATOR_RISK = re.compile(r"__|^_|_$")
 VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REFERENCE = re.compile(r"\$\{([^}]*)\}")
 WILDCARD = "*"
@@ -137,18 +141,44 @@ class ExternalServers:
         return [{"name": s.name, "allowed_tools": list(s.allowed_tools)} for s in self.servers]
 
     def secrets(self) -> list[str]:
-        """What the event log masks: the referenced variables' values and the expanded strings
-        that hold them. Literal values are not secrets."""
+        """What the event log masks: the referenced variables' values, the expanded strings
+        that hold them, and of a value that is a URL its password and its dotted host (a
+        server's error may quote them alone). Literal values are not secrets."""
         found: list[str] = []
         for server in self.servers:
-            found += server.variables.values()
+            values = list(server.variables.values())
+            found += values
+            for value in values:
+                password, host = url_parts(value)
+                found += [password, host if "." in host or ":" in host else ""]
             expanded = (*server.headers.values(), *server.env.values())
-            found += [v for v in expanded if any(s in v for s in server.variables.values())]
+            found += [v for v in expanded if any(s in v for s in values)]
         return sorted({value for value in found if value})
+
+    def names(self) -> list[str]:
+        """Single-label URL hosts (`mongo`, `db-1`), masked only as whole words
+        (`events.mask`), as the Postgres URL's are."""
+        found = {
+            url_parts(value)[1] for server in self.servers for value in server.variables.values()
+        }
+        return sorted(host for host in found if host and "." not in host and ":" not in host)
+
+
+def url_parts(value: str) -> tuple[str, str]:
+    """The password and host of a `scheme://` URL; empty strings otherwise."""
+    if "://" not in value:
+        return "", ""
+    try:
+        parts = urlsplit(value)
+        return parts.password or "", parts.hostname or ""
+    except ValueError:
+        return "", ""
 
 
 def launch_args(path: Path, name: str) -> list[str]:
-    return ["-m", "data_agent", LAUNCH_COMMAND, "--mcp-servers", str(path), "--server", name]
+    # -P: the CLI starts servers in the agent's workspace; a module planted there must not be
+    # imported by the wrapper, which still holds the CLI's whole environment.
+    return ["-P", "-m", "data_agent", LAUNCH_COMMAND, "--mcp-servers", str(path), "--server", name]
 
 
 def load(path: Path, env: Mapping[str, str]) -> ExternalServers:
@@ -197,7 +227,16 @@ def check_server(name: str, spec: Mapping[str, Any], env: Mapping[str, str]) -> 
         raise McpConfigError(f"{where}: the name '{RESERVED_NAME}' is data-agent's own server")
     if not NAME.fullmatch(name):
         raise McpConfigError(f"{where}: a name has only letters, digits, '-' and '_'")
+    if NAME_SEPARATOR_RISK.search(name):
+        raise McpConfigError(
+            f"{where}: a name may not hold '__' or start or end with '_' (tool names are "
+            "mcp__<server>__<tool>)"
+        )
+    if "type" not in spec and "url" in spec:
+        raise McpConfigError(f'{where}: a server with a url needs "type": "http"')
     kind = spec.get("type", "stdio")
+    if not isinstance(kind, str):
+        raise McpConfigError(f"{where}: type must be a string (stdio or http)")
     if kind == "sse":
         raise McpConfigError(f"{where}: type 'sse' is not supported (only stdio and http)")
     if kind not in FIELDS:
@@ -224,8 +263,10 @@ def check_server(name: str, spec: Mapping[str, Any], env: Mapping[str, str]) -> 
     args = spec.get("args", [])
     if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
         raise McpConfigError(f"{where}: args must be a list of strings")
-    for arg in args:
+    for arg in (command, *args):
         no_reference(where, "args", arg)
+        if "\0" in arg:
+            raise McpConfigError(f"{where}: command and args may not hold a NUL character")
     server_env = expanded_map(where, "env", spec.get("env", {}), env, variables)
     return ExternalServer(
         name,
@@ -285,6 +326,8 @@ def expanded_map(
         if not isinstance(template, str):
             raise McpConfigError(f"{where}: {key} '{name}' must be a string")
         no_reference(where, f"{key} name", name)
+        if not name or "=" in name or "\0" in name or "\0" in template:
+            raise McpConfigError(f"{where}: {key} name {name!r} is not usable (empty, '=' or NUL)")
         expanded[name] = expand(f"{where}: {key} '{name}'", template, env, variables)
     return expanded
 

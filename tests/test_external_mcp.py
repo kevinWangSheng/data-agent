@@ -165,7 +165,10 @@ def test_the_sdk_config_has_no_allowed_tools_and_no_stdio_values(tmp_path: Path)
     assert mongo == {
         "type": "stdio",
         "command": sys.executable,
-        "args": ["-m", "data_agent", "mcp-launch", "--mcp-servers", str(path), "--server", "mongo"],
+        "args": [
+            *("-P", "-m", "data_agent", "mcp-launch"),
+            *("--mcp-servers", str(path), "--server", "mongo"),
+        ],
     }
     # The value reaches the wrapper through the CLI's environment, never its argv.
     assert loaded.env() == {"DATA_AGENT_MCP_TOKEN": TOKEN}
@@ -188,16 +191,96 @@ def test_secrets_are_the_referenced_values_only(tmp_path: Path) -> None:
     assert set(loaded.secrets()) == {TOKEN, f"Bearer {TOKEN}"}
 
 
-def test_nothing_is_logged_with_an_expanded_value(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+def test_a_run_logs_no_expanded_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """The whole `data-agent run`, stopped at the SDK transport, with every logger at DEBUG."""
+    import duckdb
+    from claude_agent_sdk import CLIConnectionError
+    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+
+    from data_agent import cli
+
+    started: list[object] = []
+
+    async def connect(self: SubprocessCLITransport) -> None:
+        started.append(self)
+        raise CLIConnectionError("stopped before the CLI")
+
+    monkeypatch.setattr(SubprocessCLITransport, "connect", connect)
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "unused-" + "Kp30")
+    monkeypatch.setenv("DATA_AGENT_MCP_TOKEN", TOKEN)
     caplog.set_level(logging.DEBUG)
-    loaded = load(write(tmp_path, {"mongo": stdio(), "remote": http()}), ENV)
-    loaded.sdk_servers()
-    loaded.summary()
-    with pytest.raises(McpConfigError):
-        load(write(tmp_path, {"remote": http(allowedTools="find")}), ENV)
-    assert TOKEN not in caplog.text
+    db = tmp_path / "shop.duckdb"
+    duckdb.connect(str(db)).execute("CREATE TABLE orders (id INTEGER)").close()
+    (tmp_path / "work").mkdir()
+    config = write(tmp_path, {"mongo": stdio(), "remote": http()})
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                *("run", "--task", "How many orders?", "--type", "query"),
+                *("--workspace", str(tmp_path / "work"), "--duckdb", str(db)),
+                *("--config", "no-context", "--events-dir", str(tmp_path / "events")),
+                *("--sandbox", "local", "--mcp-servers", str(config)),
+            ]
+        )
+    out = capsys.readouterr()
+    assert started, "the run never reached the session"
+    assert caplog.records, "nothing was logged, so nothing was checked"
+    for text in (caplog.text, out.out, out.err):
+        assert TOKEN not in text
+
+
+def test_a_url_value_has_its_password_and_host_masked(tmp_path: Path) -> None:
+    password = "pw-" + "Ld83"
+    env = {**ENV, "DATA_AGENT_MCP_TOKEN": f"mongodb://reader:{password}@db.example:27017/x"}
+    loaded = load(write(tmp_path, {"mongo": stdio()}), env)
+    assert {password, "db.example"} <= set(loaded.secrets())
+    single = {**ENV, "DATA_AGENT_MCP_TOKEN": "mongodb://mongo-1:27017/x"}
+    assert load(write(tmp_path, {"mongo": stdio()}), single).names() == ["mongo-1"]
+
+
+@pytest.mark.parametrize("name", ["data_", "data__x", "a__b", "_lead"])
+def test_a_name_the_cli_would_split_wrongly_is_refused(tmp_path: Path, name: str) -> None:
+    """`mcp__data___find` reads as server `data`, whose tools are allowed whole."""
+    assert f"'{name}'" in refused(tmp_path, {name: stdio()})
+
+
+@pytest.mark.parametrize("kind", [["http"], {}, 3], ids=["list", "object", "number"])
+def test_a_type_that_is_not_a_string_is_refused(tmp_path: Path, kind: Any) -> None:
+    assert "'remote'" in refused(tmp_path, {"remote": http(type=kind)})
+
+
+def test_a_url_without_a_type_asks_for_http(tmp_path: Path) -> None:
+    server = http()
+    del server["type"]
+    assert '"type": "http"' in refused(tmp_path, {"remote": server})
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        pytest.param(stdio(env={"": "x"}), id="empty-env-name"),
+        pytest.param(stdio(env={"A=B": "x"}), id="equals-in-env-name"),
+        pytest.param(stdio(env={"A": "x\0y"}), id="nul-in-env-value"),
+        pytest.param(stdio(args=["a\0b"]), id="nul-in-arg"),
+    ],
+)
+def test_an_environment_or_argument_exec_would_reject_is_refused(
+    tmp_path: Path, server: dict[str, Any]
+) -> None:
+    """Caught before the session, not as a traceback in the wrapper the CLI started."""
+    assert "'remote'" in refused(tmp_path, {"remote": server})
+
+
+def test_a_path_holding_a_reference_is_refused(tmp_path: Path) -> None:
+    directory = tmp_path / "${HOME}"
+    directory.mkdir()
+    with pytest.raises(McpConfigError, match="path"):
+        load(write(directory, {"mongo": stdio()}), ENV)
 
 
 # --- The wrapper ---------------------------------------------------------------------------
@@ -276,3 +359,17 @@ def test_data_agent_web_refuses_a_bad_config_before_serving(
     err = capsys.readouterr().err
     assert "'remote'" in err and "DATA_AGENT_MCP_TOKEN" in err
     assert served == []
+
+
+def test_the_wrapper_exits_127_for_a_command_it_cannot_start(tmp_path: Path) -> None:
+    path = write(tmp_path, {"gone": stdio(command="no-such-command-116")})
+    proc = subprocess.run(
+        [sys.executable, *external_mcp.launch_args(path, "gone")],
+        env=ENV | {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == external_mcp.EXIT_NOT_FOUND
+    assert proc.stdout == ""
+    assert "'gone'" in proc.stderr

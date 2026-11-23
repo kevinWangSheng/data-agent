@@ -143,7 +143,10 @@ agent may call in `allowedTools`.
 - Credentials: write `${DATA_AGENT_MCP_<NAME>}` in `env` or `headers` values, and set the variable
   in the environment. `data-agent` expands only variables with that prefix, and only in those two
   places. An unset variable, another prefix, or `${...}` anywhere else stops the run. The server
-  name `data` is reserved, and a name may use only letters, digits, `-` and `_`.
+  name `data` is reserved. A name may use only letters, digits, `-` and `_`, may not contain `__`,
+  and may not start or end with `_`. The event file masks every referenced variable's value
+  everywhere it appears, so reference only secrets this way. Write plain settings such as `"true"`
+  as literals.
 - Each stdio server is started through `data-agent mcp-launch`. It starts from a clean environment
   (`PATH`, `HOME`, `LANG` and a few other basic variables) plus the server's own `env`. The server
   never sees the model key, database URLs or Langfuse keys. If your Docker needs `DOCKER_HOST`, add

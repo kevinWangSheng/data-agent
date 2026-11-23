@@ -2145,6 +2145,7 @@ async def run(
         names += url_names(env[variable])
     if external_mcp is not None:
         secrets += external_mcp.secrets()
+        names += external_mcp.names()
     verified = uses_verifiers(task.type, config)
     sandbox_run = None if sandbox is None else SandboxRun.of_run(sandbox, events_dir, network)
     dbt_run = (
