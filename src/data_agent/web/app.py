@@ -66,6 +66,7 @@ def create_app(
     data_sources: Sequence[DataSource],
     start_run: StartRun,
     ui_dir: Path = UI_DIR,
+    mcp_servers: Path | None = None,
 ) -> FastAPI:
     """The app serving the runs under `runs_dir` (one subdirectory per run, named by run id, holding
     its event file), starting new runs through `start_run`, and serving the built web UI from
