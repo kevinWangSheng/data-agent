@@ -94,3 +94,4 @@ Status 改 `ready-for-human`，Comment 写明查到哪一步、卡在哪里、�
   - 未查清：服务器 `autoCompactEnabled: false` 是谁在 2026-10-20 写的；dbt 容器内的 Claude 设置；180k–1M 之间 DeepSeek 是否都接受。
   - 范围外发现：dbt 事件里 240 次 `api_error`，未查。
 - 2026-11-22（主会话）：PR #117 CI 绿；Codex GitHub app 审查 `b555cd0`，无意见（`has_any_findings: false`）。已 squash 合并。修复另开工单 110。
+- 2026-11-23（主会话）：范围外发现"dbt 事件里 240 次 `api_error`"已查（服务器只读，按 `runs/**/agent/events/*.jsonl` 的 result 事件统计）：240 次全部出自 10-22 的 `runs/dev-3`（该运行共 450 个 trial），`api_error_status` 全是 402，报错文字 "API Error: 402 Insufficient Balance"，即那次运行中途模型余额用完。之后的运行里 0 次。不是 bug，不开工单。

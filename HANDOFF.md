@@ -1,401 +1,57 @@
 # HANDOFF — 通用 data agent 求职项目
 
-> **2026-11-01 交接：分成两个会话，各管一摊。**
-> - **编排会话**（主会话）：只按 plan §10 的依赖推进。负责派工单（`claude -p -w`）、把工单会话的结果抄进工单、开 PR、核对审查意见、合并、在服务器上跑评测。它是唯一做这些事的会话。不讨论"怎么构建"。
-> - **对齐会话**：只讨论还没定的话题，一次一个，只写人确认过的 spec、工单、ADR 和文档。不派工、不合并、不碰服务器。每次提交前先 `git pull --rebase`，写好的工单交给编排会话去派。
-> - 两个会话都从干净的上下文开始。2026-11-01 的旧会话已经停下，它的结论都写在 ADR、plan、工单和本文件里。
+> **当前状态（2026-11-23）：一期主线做完，进入收尾。下一会话从这里开始。**
 >
-> 先读：`AGENTS.md`；`docs/plan.md` §10（一期剩余项和它们的依赖）；ADR-0008 Update 2026-11-01（分别初筛、合并验收，旧版用 dev-3）。
->
-> **默认放行规则**（plan §10）：
-> - 小额运行直接跑，跑完汇报：单题真实运行、初筛、回归、开发集 30 题的合并验收。
-> - 大规模评测先和人确认范围和花费：全部题目、超过 30 题、留出集消融、全量、DAB 正式评测。
-> - 开发集迭代累计实际花费到 ¥420 就止损（2026-11-03 人从 ¥300 提到 ¥420，已充值；ADR-0008 Update 2026-11-03）。
-> - 实现一律派到工单会话（`claude -p -w`），主会话只做编排。
-> - Codex 不可用时（`da-review` 报 at capacity、GitHub app 重试一次仍失败），换模型审查用 Fable 5.1 子 agent 代替（只读、按 Codex 的格式报问题，结果照 Codex 意见处理，工单 Comments 注明『Codex 不可用，Fable 审查』）。人 2026-11-05 定。
->
-> **编排会话进度（2026-11-02 更新）：**
-> - 已合并、`done`：工单 34（PR #32）、35（PR #33）、32（PR #31，初筛 16/18）、33（PR #34，初筛 6/6）、36（PR #35，imdb 从 96 分钟降到 8 分钟）。
-> - plan §10 第 9 项 DAB 试跑已完成（`runs/dabtrial2-*`，commit 56d5127）：34 次全部 exit 0；Pass@1（17 个数据集 × query1 × 1 次）baseline 10/17、no-context 8/17，样本太小，不作结论；实际价共 $1.59，约 $0.05/次；内存峰值约 1.7 GB。第一遍 `runs/dabtrial-*` 中途 Mongo 容器停了，9 次 infra_error，重启后重跑没复现。
-> - 第 13 项合并验收 `accept-1` 跑完（commit e9facce，30 题 × 3，full，实际价 $8.90，全在闲时）：
->   - ADR-0008 三条都过：总分 52/90 → 60/90（+8.9 分）；目标题（工单 32、33 的 8 题）15/24 → 20/24；回归集 12 题全 3/3。`evals accept` 判 `rerun-old`（dev-3 没有运行记录），按 ADR-0008 Update 一次性豁免，算通过。
->   - 回归集：dev-3 full 与 accept-1 都 3/3 的 12 题，存于 `runs/accept-1/accept/regression.json`（另一会话也写了同样内容的 `evals/regression.json`，未提交）。
->   - **最终消融前检查没过**：accept-1 full 60/90 低于 dev-3 baseline 62/90（−2.2 分，任务级配对 bootstrap 95% 区间 −11.1 到 +6.7，不显著）。
->   - 开发集迭代累计实际花费约 ¥271，离 ¥300 止损线约剩 ¥29，不够 13b 的一次重跑（约 ¥65）。
-> - 工单 37 合入（PR #36，de30bf3）：服务器 `t37-real` imdb query1 1/1，真实 DAB 能跑 EXPLAIN 和 `to_regclass`；计划显示 imdb 慢在相关 EXISTS 子查询逐行全表扫 `movie_keyword`，不是 `regexp_replace` 连接。agent 没主动调 `explain_query`。
-> - **人已决定（2026-11-03）**：止损线从 ¥300 提到 ¥420，已充值。跑第 13b 项：在当前 origin/main（含工单 37）上开发集 30 题 × 3，full 与 baseline 一起跑（`runs/accept-2`），尽量放在 DeepSeek 闲时；跑完用 `evals accept` 判 full 对 accept-1 full（ADR-0008 三条，回归集 `evals/regression.json`）和 full 对 baseline。full 高于 baseline 才建议冻结进第 15 项；持平或略低就用 `evals diverge` 读分歧题交人定；明显更低就停下。冻结由人决定。回归集已提交为 `evals/regression.json`。
-> - **13b `accept-2` 跑完（2026-11-04，commit 0b5597d，与 de30bf3 代码相同）**：full 56/90，baseline 62/90。实际价 $15.74（约 ¥115；115 个事件文件在闲时，67 个跨进高峰）。开发集迭代累计约 ¥386，离 ¥420 约剩 ¥34。
->   - full 对 accept-1 full：`evals accept` 判 fail：总分 60→56，目标题 20/24→17/24；回归集 cart-abandonment、pos-operations 各 2/3，要补跑。
->   - full 对 baseline：−6.7 分（区间 −16.7 到 +4.4，不显著），属于情况 b。baseline 两轮都是 62；full 三轮是 52、60、56。
->   - 分歧题读完：`runs/accept-2/reading/summary.md`。full 输的四类原因：① `dictionary_search` 没有查询超时，挂满 1800s，后面常跟着 DuckDB 文件锁（只有 full 有这个工具，accept-2 有 5 个 trial 挂住、4 个输）；② 验证者看到了问题，却放行，或者主 agent 不理会它报的 FAIL；③ spec 把误读固化下来（division-by-zero 三次都一样）；④ 题面和评分器不一致（marketing-attribution 一直 0/3）。full 稳定赢的只有 test-orders-filter（Skill 规则）。
->   - **等人决定**：修一轮还是冻结。没有自动冻结，也没有进第 15 项。
-> - ~~等人决定~~（已决定，见上）：编排会话建议把止损线提到约 ¥420，在合入 37 后的 main 上一起跑 full 和 baseline（各 30 × 3，约 ¥130），同时完成 13b 和 full ≥ baseline 检查；仍低于 baseline 就不再修，如实记录，交给留出集消融。不提线的话，跳过 13b，把 2 分差距记为已知风险。
-> - 余额：accept-1 开跑前 ¥123.92，跑后约 ¥59（未直接核实）。正式评测前要充值。
->
-> **对齐会话的话题（按 plan §10，一次一个）：**
-> - 第 5 项网页界面。从 `docs/research/2026-11-01-upstream-web-ui.md` 开始，先定三点：
->   - SignalPilot 其实没用 assistant-ui；
->   - 可复制的组件清单；
->   - Memory 和澄清是否进一期（澄清需要 agent 先加事件）。
-> - ~~工单 37 triage~~：2026-11-02 完成，`ready-for-agent`；范围扩成基础工具层给数据库事实（ADR-0003 Update 2026-11-02），合入后重跑合并验收（plan §10 第 13b 项）。
-> - 之后的话题：第 15 项正式评测总花费（等合并验收和 DAB 试跑的实测）；第 19–23 项交付（报告、README、转公开）。
-> - 新发现，待对齐会话定是否开工单（2026-11-02）：
->   - `dab-score` 每个数据集只有 1 道题时，区间退化成一个点并标"significant"（试跑输出 "-11.76 points (95% CI -11.76 to -11.76; significant)"），应改成报"题数不够估计区间"。正式评测（全部题）不受影响。
->   - DAB 的 Mongo 容器在试跑中途停止，原因查不到：`da-remote` 看不到容器退出状态，容器也没有重启策略。
->   - DAB clone 现在有 104 道题（§5 写的是 54），第 15 项花费估算按 104 算。
-> - **accept-2 根因审查（2026-11-04，对齐会话）**：读完全部 180 个 trial，按工具、验证层、harness 三块和上游对照。完整报告（带 file:line 和实测数）在 `runs/accept-2/reading/design-audit/`，**只在本机，不进 git**；结论以本节为准。
->   - 三类共同根因：
->     - 抄了上游接口，丢了上游控制规模的设计（输出上限、预建字典、表目录缓存、改动前快照），在约 2400 个模型的 dbt 库上就挂住、输出超长或变慢；
->     - 能算出来的事实（主键 NULL 和重复、改动前后的差异）交给了模型判断；
->     - 本地测试环境和容器不一样（依赖、工作目录、dbt 增量解析）。
->   - 问题清单（按对评测的影响排序）：
->     1. `dictionary_search` 挂满 1800s：调用时遍历所有表的所有文本列现扫，没有总时限（`src/data_agent/context_tools.py:219-235`）；工具是同步函数，在线程里跑，客户端放弃后服务端仍在读库，之后 `dbt run` 报 "Conflicting lock"（取消有没有传到服务端未确认）。ktx@49a4ae6 是在 scan 阶段预建采样字典，搜索时只读字典（`packages/cli/src/context/scan/data-dictionary.ts:9-34`、`sl/dictionary-search.ts`）。full 有 5 个 trial 挂住，只过 1 个；同题的其他 trial 过 16/18；约占 6.7 分差距的一半。
->     2. 验证层花费大、信号弱：
->        - 全部 PASS 的 trial 成功率 63%，full 整体是 62%；34 个失败 trial 里只有 10 个收到过 FAIL；验证器占 full 运行时间的 1/3，花费约占 35–55%（估算，未确认）。
->        - CHECK 5/6 拿主 agent 自己的说法当"原样"，会让 agent 删掉原有过滤条件（division-by-zero），或驳回本来正确的推导（inventory-turnover）。
->        - 主键 NULL 由模型判断，曾给 256 行 NULL 判 PASS（pos-operations）。
->        - 派单消息带着主 agent 自己的假设；FAIL 只靠提示词约束；Skill 和系统提示词对 FAIL 之后怎么做说法不一致。
->        - 上游 SignalPilot 的 benchmark 版有 `prebuild_state.md` 和主键、NULL 子检查，我们没带。
->     3. 输出超长，模型读不到：
->        - `list_tables` 一次返回 66.5 万字符，两种配置共 125/180 个 trial 遇到，210 次调用只拿回报错。SignalPilot 是最多 200 张表、约 3.6 万字符，有 `schema=` 和 `columns=false`，结尾说明还有多少没显示（`signalpilot/gateway/gateway/mcp/tools/schema/catalog.py:204` 起）。
->        - scan 输出 758KB，模型只看到 2KB 预览，Skill 却要求 "Read the ENTIRE output"。
->        - `query_database` 只限行数、不限字符数。
->        - Claude Code 把超长输出存成文件，workspace 守卫又不让读（41 次）。
->     4. 表目录不缓存：每次调用都重读 `information_schema`，每条语句新开一个 DuckDB 连接；`describe_table` 中位数 14 秒、最慢 81 秒；验证工具累计约 49 个工具小时。SignalPilot 缓存 300 秒。
->     5. 工作目录和 dbt 解析：守卫不许 `cd`，profile 里的相对路径 `../database` 在 97/180 个 trial 里失效，agent 只好改 `profiles.yml`；镜像用 `--target dev` 构建，`vars_hash` 里含 target，所以每个 trial 第一次跑 dbt 都完整重新解析，要 60–75 秒，validate 的 60 秒上限超时 18/91 次（本地复现过）。
->     6. 守卫误拦：dbt_utils 自带的样例 `.env` 让整个 dbt 项目目录不能 Grep（205 次）；`echo $DB_TYPE` 在 180 个 trial 里全被拦，103 道题里有 94 道要求这样做。拦截共 757 次，和得分的相关很弱，代价主要是间接的。
->     7. 运行时缺 `pytz`：只通过开发依赖（dbt）装进来，容器安装用 `--no-dev`（`evals/harbor_agent.py:153`），带时区的时间戳列查询会报错，共 38 次，pos-operations 占 26 次。
->     8. 同一轮的多个 MCP 调用串行执行（21 个调用耗时 340 秒），原因未确认，可能和工具没标 `readOnlyHint` 有关。
->   - 修 agent 救不回来的（记成已知限制，按 ADR-0005 不追）：6 道两种配置都 0 分的题里，5 道主要卡在题面和评分器不一致，分别是 cohort-retention、cltv-forecasting、inventory-turnover、fifo-inventory-cogs、promotional-lift；fifo 的 DuckDB 期望值看起来自相矛盾，参考解答本地跑不了，未确认。tier-migration 主要是 agent 自己用了 `count(distinct)`。marketing-attribution 同理，之前已经定过不修。
->   - 分类：
->     - 已经可以定、上游有先例：7、3（`list_tables` 和 `query_database` 的输出上限）、4、6 的 Grep 规则。
->     - 要先讨论：1（照 ktx 预建字典，还是从 full 里拿掉）、5 和 6 的 `echo` 白名单（会改 command_guard 的安全边界）、3 的 scan 输出摘要（要改 Skill）、2（验证层重新设计，ADR 级别）。
->     - 先查清原因：8；1 里取消有没有传到服务端。
->   - 建议顺序：1 → 3 → 4 → 5/6/7 → 2 → 8。3 到 7 对 baseline 也有影响，修完 full 和 baseline 要一起重跑才能比较。
->   - **人已决定（2026-11-04）**：修一轮，这是最后一轮。规则写进 ADR-0008 Update 2026-11-04，`dictionary_search` 的设计写进 ADR-0003 Update 2026-11-04，plan §10 第 14b、14c 项。要点：
->     - 确定性修复只用单元测试加单题真实运行验证；改变行为的工单只跑目标题 × 3，对照 accept-2 full。
->     - 全部合入后做冒烟测试；开发集 30 题的统一评估（full、no-verifiers、baseline）必须由人确认再跑。
->     - 止损线 ¥500。
->   - 工单 38–43 已写，人已确认，`ready-for-agent`，main 已 push（2026-11-04）。**编排会话从这里接手**：
->     - 立即可派（互不依赖，可以并行）：38 `pytz`、39 表目录缓存、40 守卫与工作目录、43 串行诊断。
->     - 39 合入后再派：41 输出上限、42 `dictionary_search`。两张都改 `mcp_server.py`，第二张合入前要处理冲突。
->     - 派工：`claude -p -w NN-<slug> --permission-mode auto "/implement <工单绝对路径>"`，流程照 AGENTS.md。
->     - 验证：38、39、40 是确定性修复，主会话在服务器上跑工单里写的单题真实运行。41、42 的初筛由主会话跑，只跑目标题 × 3，放在 DeepSeek 闲时，对照 accept-2 full。
->     - 43 只交研究笔记，修不修由人定。
->     - 38–43 和验证层的工单都合入后，跑冒烟测试（ADR-0008 Update 2026-11-04）。开发集 30 题的统一评估要先问人，不能直接跑。
->     - 止损线 ¥500，现在累计约 ¥386。
->   - 验证层（问题 2）已对齐（2026-11-04）：ADR-0009、spec `.scratch/verifier-v2/spec.md`，工单 `.scratch/verifier-v2/issues/44–47`，都是 `ready-for-agent`。
->     - 44 验收测试 → 45 快照和 4 个工具（还依赖 phase1 的 39）→ 46 harness 钩子 → 47 提示词、Skill 第 8 步和配置。
->     - **44 合入前要人审验收测试**（plan 第 86 行）：编排会话派 44，PR 由人确认后再合入。
->     - 45、46 是确定性修复，跑单元测试，加主会话的单题真实运行。
->     - 47 跑初筛：5 道目标题 × 3，成功次数 ≥8/15，验证器墙钟时间中位数 ≤155 秒。
->     - 派单改写已在本地实测可行：`updatedInput` 是整体替换，要带上全部字段。
->
-> **编排会话进度（2026-11-04 晚更新，工单 38–47）：**
-> - `done`，已合入 main：38 `pytz`（PR #37；服务器 pos-operations full 1/1，容器装了 pytz，无报错）、39 表目录缓存（PR #39；cross-sell full 1/1，`describe_table` 中位数 8.45 s，验证工具 5–8 s，accept-2 是 14 s 和 27–85 s）、40 守卫与工作目录（PR #41，Codex P1 退回一轮后修好；daily-cohorts full 1/1，`echo $DB_TYPE` 放行、validate 38 s 通过；但 agent 仍用 `--project-dir` 改 `profiles.yml`，因为 `agent.py:130` 系统提示词和 `SKILL.md:373` 还这样教，待对齐会话定）、42 `dictionary_search` 预建字典（PR #43；初筛 `t42-screen` 11/12，无 1800 s 挂住、无 "Conflicting lock"，建字典 13–18 s 覆盖 803 张表；挂掉的 1 条是 SQL 口径问题，agent 对 `order_id` 做了 `trim()` 而评分器没有，验证者没看出，属验证层 v2 要解的第 ② 类）、43 串行诊断（PR #38；根因是 Claude Code 只并行执行带 `readOnlyHint` 的 MCP 工具，我们 11 个工具都没标；修法草稿在笔记 §4，修不修由人定，建议和 42 一起或之后）。
-> - `in-review`，**等人决定**：
->   - 41 输出上限（PR #42，CI 绿，与 main 无冲突）。初筛 `t41-screen` 9/9 成功、"Output has been saved to" 0 次，但按字面没过两条：① "exceeds maximum allowed tokens" 2 次，都是内置 Read 读 dbt 的 `target/run_results.json`（1 MB 单行 JSON），不是 41 约束的工具；② 停止条件"scan 的 5 节本身超过 20,000 字符"在真实项目上成立，前四节占 19,930，AVAILABLE MACROS 被切进报告文件（9/9 一致）。编排会话建议接受合入并记已知限制，Read `target/*.json` 另开小工单；不同意就按字面退回。Codex 另一条 P1（`query_database` 前 50 行不受字符预算约束）按工单约定记为设计取舍，不退回。
->   - 44 验证层 v2 验收测试（PR #40，CI 绿）。**按 plan 第 86 行必须人审后才合入。** Codex 两条 P2（seed 超 5 MB、缩进 CHECK 行的负例）都不在 Testing Decisions 里，交人定；工单 Comments 里有 6 条接口决定待确认，第 6 条（`seam_support.VERIFIER_TOOLS` 断言会在 45 拿掉 `verify_model_values` 时变红：扩 45 的 Authority 一行，或主会话改 `seam_support`）要在派 45 前定。
-> - 待派：45（等 44 合入；39 已 done）→ 46 → 47。47 的初筛 5 题 × 3。全部合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
-> - 花费：本轮服务器运行实际价约 $2.9（约 ¥21，全在闲时），开发集累计约 ¥407，止损线 ¥500。
-> - 工具提示：`~/.local/bin/da-remote` 是旧版，ablate 只取回汇总；用仓库里的 `scripts/da-remote pull`（dev 集整份取回）。覆盖安装副本被人拒过一次，直接跑 `scripts/da-remote` 即可。工单会话 source 不了模型 env 文件，真实运行由主会话做。派工输出在 `runs/dispatch/`。
->
-> **编排会话进度（2026-11-05 更新）：**
-> - 人决定接受合入：41 输出上限（PR #42 → f03d694，已知限制：Read `target/run_results.json` 超长、scan 五节超预算切掉 AVAILABLE MACROS）；44 验证层 v2 验收测试（PR #40 → 3bc82c8，人审通过；Codex 两条 P2 不补，记已知限制）。合入后 main `make check` 1580 passed、40 xfailed。
-> - 44 第 6 条的处理：45 的 Authority 加了一行，允许它在拿掉 `verify_model_values` 的同一提交里更新 `tests/acceptance/seam_support.py` 的 `VERIFIER_TOOLS`。
-> - **2026-11-05 晚：45、48、49 都已 `done` 合入 main**：49（PR #44 → d16aff5；初筛 daily-cohorts 3/3，`profiles.yml` 0 次改动，Read `target/*.json` 0 次）；48（PR #45 → d7b31da；cross-sell 1/1，同一轮 MCP 调用结束时间聚集，批内结束跨度比 0.32 对 accept-2 的 0.66–0.70）；45（PR #46 → 00959ec；cart-abandonment 1/1，`contract_check`、`grain_facts` 被调用；Fable 审查退回 2 轮：Postgres FULL JOIN、yaml_lite 静默 `{}`、按 schema 拒绝、CAST 类型，全部修完；余下 P3 记已知限制，见工单）。
-> - Codex 全天不可用（本地 6 次 at capacity，app 每个 PR 3 次 unknown error），三张都用 Fable 5.1 子 agent 审查代替（规则见上）。
-> - **46 harness 钩子 `done`**（PR #47 → 3c61284；Fable 审查退回 2 轮：`CHECK n - Title` 格式、删模型后一直拦、乱序报告配错指纹，全部修完；补充提交让 `evals/process.py`、`atif.py` 兼容 checks 映射；t46-real 1/1、t46-real2 1/1 且跑出 FAIL→修→再验→PASS 闭环）。
-> - **等人定**：集成测试 `test_updated_input_replaces_the_prompt_end_to_end`（44 的验收测试）两次都失败在"子 agent 原样回显"的断言上，替换本身已证实生效（输出无 `ORIGINAL-123`，内容来自改写 prompt）。建议改断言为"原 prompt 消失 + 任务文件内容或路径出现"；或保留 `xfail` 记已知限制。详见工单 46 Comments。
-> - 47 已派（`claude -p -w 47-verifier-prompt-skill-config`，输出 `runs/dispatch/47-verifier-prompt-skill-config.txt`）；初筛 5 题 × 3，成功 ≥8/15，验证器墙钟中位数 ≤155 s。合入后冒烟测试；**开发集 30 题的统一评估必须先问人**。
-> - 对齐会话待定的小项：49 的 Fable 审查三条 P3（`validate_project.py:200` 上游文案 "Fix profiles.yml" 与提示词相抵；validate 超时封顶 300 的措辞；提示词里 "them" 指代）；45 的 `verify_values` 死代码等 47 拿掉 value-verifier 时清理。
-> - 花费：今天服务器运行实际价约 $1.0（t49-screen $0.36、t48-real $0.38、t45-real $0.25，都在高峰），开发集累计约 ¥414，止损线 ¥500。
-> - 人确认（2026-11-05）与 45 并行开两张工单，都已 `ready-for-agent` 并派出：48 MCP 工具标 `readOnlyHint`（43 笔记 §4，确定性修复，真实运行 cross-sell × 1）；49 提示词和 Skill 不再教改 `profiles.yml`、validate 写 300 s、Skill 加『不 Read `target/*.json`』（改行为，初筛 daily-cohorts × 3 对照 accept-2 full）。48 与 45 都改 `verifier_tools.py`，后合入的解决冲突；49 与 47 都改 SKILL.md，49 先合。
-> - **工单 47 初筛 `t47-screen` 跑完（2026-11-05，8bde360，$2.10）**：通过率 11/15（accept-2 7/15），验证器墙钟中位数 317 s，第二条线 ≤155 s 没过（基线 311 s）。时间 65% 在 `compare_by_key`（171 次，单次 p50 141 s，9 次撞 150 s 超时）；pos-operations 两个 trial 撞 Harbor 4000 s agent 超时，主 agent 自己调了 41–44 次 `compare_by_key`。详细数在工单 47 Comments。
-> - **工单 50（另一会话，2026-11-05）**：`compare_by_key` 两个根因（参考 SQL 嵌入后优化器计划极差；每次调用重复遍历项目），PR #49 已由该会话 squash 合入 main（595ebc5），工单 50 `done`（2283778）。
-> - **47 的下一步**：50 合入后在新 main 上跑 47 的过线初筛（5 题 × 3 full，约 ¥18），≥8/15 且验证器墙钟中位数 ≤155 s 才合 PR #48（0126941，CI 绿）。然后冒烟（14c），再由人确认统一评估。
-> - **基础问题清单（人 2026-11-05 决定：新开会话先集中处理，再继续评测）**，都有 `runs/t47-screen` 的实测做依据：
->   1. `compare_by_key` 慢：工单 50 在修，合入后用 t47-screen 的轨迹复测（单次 p50 141 s → 目标 ≤5 s）。
->   2. Harbor 4000 s agent 总超时：验证器跑到一半被掐，trial 没有 `verifier_end`；要么超时值和验证器预算对齐，要么 Stop 规则在剩余时间不够时不再派验证器。
->   3. 主 agent 把 `compare_by_key`、`grain_facts` 当常规检查用（pos-operations 派验证器前 41–44 次），花的是主 agent 的时间；Skill 第 8 步和 VERIFIERS_PROMPT 要定主 agent 自己调这两个工具的边界。
->   4. `grain_facts` 服务器上中位数 92 s（本地快），原因没查清（工单 50 记为待定）。
->   5. 网关 150 s 查询超时和验证工具的关系：工具内部一条语句超时就整次失败，验证器会重试同样的参考 SQL（9 次超时集中在 cross-sell）。
->   6. 评测指标缺 p95/p99：`ablate` 报告只有总分和中位数；要加每 trial 墙钟、工具调用次数、验证器墙钟的 p50/p90/p95/p99 和超时计数，这样过线判定不用手算（本次是主会话用脚本从事件文件算的）。
->   7. 集成测试 `test_updated_input_replaces_the_prompt_end_to_end` 的断言（原提示消失 + 任务文件内容出现，或保留 xfail）待人定。
->   8. 对齐会话记的小项：`dab-score` 单题时区间退化成一个点；DAB Mongo 容器中途停止没有重启策略；工单 49 的三个 P3（`validate_project.py:200` 文案、超时夹到 300 s 的措辞、"them" 指代）。
->
-> **基础问题取证完成（2026-11-05，对齐会话；详见 `docs/research/2026-11-05-foundation-latency-audit.md`，脚本在本机 `runs/t47-screen/foundation-audit/`）。** 上面清单的结论：1 已由工单 50 修；2 → 下面 #2；3 → #4；4 是排队假象（→ #3）；5 在工单 50 后基本消失，剩下的并入 #2；6 → #1；7、8 不变。改正两条：pos-operations 是 **3/3** 撞 4000 s；LQFt7xL 派前 0 次自查，"41–44 次"不普遍。
-> - 根因与修法（都还没写工单）：
->   - **#1 计时口径**：`tool_end` 按批到达，并行调用的 p95/p99 全是假象（Glob p99 74 s，不重叠调用 0.4 s）。修法：PostToolUse 的 `duration_ms` 写 `tool_timing` 事件、补 `parent_tool_use_id`、`evals/process.py` 出 p50/p90/p95/p99 和超时数。确定性，$0。
->   - **#2 截止时间**：agent 不知道 deadline，超时后进程没被杀、和评分同时跑，超时的 trial 不记花费。修法（Cline 先例）：kwarg `agent_timeout_sec`；剩不到 1000 s 不派验证器且 Stop 放行；到 3850 s 自己停并写 `result(deadline)`。改 harness 行为。
->   - **#3 v2 工具缓存**：grain_facts 单次约 3.7 s（服务器），78 s 是一批调用抢 GIL 排队；每次都重新解析快照 YML、遍历工作区。修法：快照 YML 按进程缓存、`model_files` 按目录 mtime 缓存，本地 21 个一批 4.5 s → 0.6 s。确定性，$0。
->   - **#4 删主 agent 例行自查**：工单 47 分支 `SKILL.md:258-275` 要求每个模型自己跑 compare_by_key，参考 SQL 写两遍。改成只在没有验证器、复现 FAIL、粒度类 NEEDS_INFO 时自己调。
->   - **#5 dbt 固定开销**：`scan_project.py:576-590` 每个缺 SQL 的模型都重新解析全部 yml（scan 74 s → 约 8 s）；SDK env 加 `DBT_TARGET=dev` 避免每个 trial 第一次完整重新解析（推翻工单 40 的"避免不了"，本机验证，服务器未验证）；Skill 加"不来回切 `--vars`"。
->   - **#6 守卫与提示**：15/15 个 trial 第一步就被拦。提示词一句（单独 echo，看目录用 Glob/Read）；排除型 glob 按 ripgrep 语义识别；拒绝提示写出具体原因；`TASK_FILE_NOTE` 写明用 Read。安全边界不变。
->   - **#7 资源**：并发 4（配置）≠ plan 的 3；容器内 DuckDB threads=2、memory_limit ≈ 6.25 GiB/实例，临时文件不限。修法：并发 3、`connect_duckdb` 设 memory_limit 约 2 GB、temp 上限约 4 GB；先跑服务器只读检查（命令在笔记 §7）。CPU 争用只 +19%，不是主因。
-> - 建议顺序：#1 → #3、#5 → #2、#6、#7 → #4 → 在新 main 上跑工单 47 的过线初筛（5 题 × 3，约 ¥18），一次看出全部效果。
-> - **等人决定**（下一个对齐/编排会话先问）：见本文件"待决策"一节。
->
-> **人已决定（2026-11-05）**：
-> - ① 范围：#1–#7 全部算进这一轮，要写 ADR-0008 Update。
-> - ② #4 作为工单 47 的特批第 3 轮退回，在 PR #48 里改。
-> - ③ 47 的过线初筛等 #1、#3、#4 合入后再跑。
-> - ④ 工单由对齐会话和人逐项讨论后写，从 #1 开始；编排会话同时用 `da-remote` 跑 #7 的服务器只读检查。
-> - 下面第 4–7 条仍待定，在对应话题讨论时再定。
->
-> **2026-11-05 grilling 对齐完成（Q1–Q20 人都答 yes），工单已写好，编排会话从这里接手：**
-> - ADR-0008 Update 2026-11-05、plan §10 第 14b 项已更新。工单在 `.scratch/foundation/issues/`：
->   - `ready-for-agent`，现在可以并行派：51 计时与分位数、52 v2 工具缓存、53 dbt 固定开销、55 守卫与提示，以及工单 47 的第 3 轮退回（Status 已改回 `ready-for-agent`，在原分支 `worktree-47-verifier-prompt-skill-config` 上修）。
->   - 54 截止时间：`ready-for-agent`，`Blocked by: 51`，51 合入后再派。
->   - 56 并发与 DuckDB 资源：`needs-info`。编排会话先用 `da-remote` 跑工单里写的服务器只读检查，结果贴进工单，再由人定 DuckDB 上限的数值。
-> - 冲突：51 和 54 都改 `agent.py`（54 排在 51 后面）；55 也改 `agent.py`（只动 `DBT_PROMPT`、`TASK_FILE_NOTE`）；53 和 47 都改 `SKILL.md`，后合入的解决冲突。
-> - 真实运行（主会话跑，都是小额，按默认放行规则不用再批）：51 receivables × 1；52 pos-operations × 1（排在 51 合入后，看 `duration_ms`）；53 receivables × 1；54 pos-operations × 1（`--ak agent_timeout_sec=1500`）；55 daily-cohorts × 1。
-> - 47 的过线初筛（5 题 × 3，约 ¥18）在 51、52 和 47 第 3 轮退回都合入后，在新 main 上跑；过线标准不变。之后全部工单合入、冒烟，统一评估仍须人确认。
-> - 第 4–6 条待决策已在 grilling 里定了（见工单 54、53、56）。
-> - **人已定（2026-11-05）**：集成测试 `test_updated_input_replaces_the_prompt_end_to_end`（`tests/acceptance/test_verifier_v2.py:778`）的断言改成"`ORIGINAL-123` 不出现，并且任务文件的内容或路径至少出现一个"（选项 A），不保留 `xfail`。人授权改这个验收测试；编排会话做这处小改动，source 模型 env 跑一次这个集成测试，结果记到工单 46 Comments。
-> - 仍待人定：工单 56 的 DuckDB `memory_limit`、`max_temp_directory_size` 数值（等服务器只读检查结果）。
->
-> **编排会话进度（2026-11-06 更新）：**
-> - 冒烟 `smoke-main-6583ded`（main 6583ded，dbt-fix-daily-cohorts full × 1）：exit 0，1/1，trial 墙钟 293 s，$0.10（闲时），内存峰值 1.9 GB。
-> - 57 重派范围 `done`（PR #55 → 40d77ad；Codex app 无意见）。compare_by_key 不加缓存：非首次调用 model_diff 占 26–28% < 30%（首次 54–68%，服务器未测）。
-> - 47 退回第 4 轮修完，合并 57 后的 main（b693d9a），过线初筛 `t47-screen3`：成功 12/15，验证器墙钟中位数 337 s（≤155 s 未过），$1.89，0 次超时。人决定照建议合入：PR #48 → 006927a，47 `done`，已知限制和交对齐会话的三项（派单写进事件、FAIL 循环怎么收场、可选的硬拦探查）见工单 47 Comments 末尾。
-> - 下一步：14c 冒烟要等 14b 全部合入，**56 仍是 `needs-info`**：它的服务器只读检查要在 trial 容器里执行 `docker inspect/exec/stats`，`scripts/da-remote` 没有 exec 子命令，做不了；要么给 da-remote 加只读检查的子命令（另开小工单），要么人在服务器上手动跑。之后由人定 DuckDB 上限数值，56 才能派。开发集 30 题统一评估仍须人确认。
->
-> **待决策（原列表，第 1–3 条已按上面决定）：**
-> 1. **范围**：ADR-0008 Update 2026-11-04 定的是"修一轮，这是最后一轮"。#1–#7 算不算这一轮？算的话要写 ADR-0008 Update；不算，就只修影响过线的 #3、#4，其余记成已知限制。建议算进来：都是 $0 的确定性修复或提示词改动，不加评测花费。
-> 2. **#4 的去向**：工单 47 的两轮退回已用完。建议特批第 3 轮退回，在 PR #48 里删例行自查再跑过线初筛；另一种做法是 47 照原样合入，再开新工单。
-> 3. **工单 47 过线初筛的时机**：建议等 #1（计时）和 #3、#4 合入后再跑，一次判两条线并拿到准确的 p95；现在就在新 main 上跑，能单独看出工单 50 的效果，但要再花一次 ¥18。
-> 4. **#2 的参数和放法**：剩 1000 s 停派验证器、3850 s 自停，这两个数是从 t47-screen 的分布推的；自停算正常结束（不报 `AgentTimeoutError`）。
-> 5. **#5 `DBT_TARGET=dev` 放哪**：它是对 data-eng-bench 镜像构建方式的适配。建议放 `evals/harbor_agent.py`（评测适配层），不放 agent 本体和 Skill，以符合 ADR-0005。
-> 6. **#7 DuckDB 内存上限**：2 GB 可能让个别查询更多地写临时文件、变慢；要先看服务器只读检查的结果再定具体数值。
-> 7. 原有未决项：集成测试 `test_updated_input_replaces_the_prompt_end_to_end` 的断言（第 7 项）；开发集 30 题统一评估必须先问人；花费累计约 ¥414 / ¥500。
-> - **会话分工**：#1–#7 都还没有工单。按 11-01 的分工，工单由对齐会话和人逐项讨论后再写（一次一个，从 #1 开始），编排会话才能派。编排会话现在能做的只有：用 `da-remote` 跑 #7 的服务器只读检查；把工单 47 的状态和 PR #48 保持在当前位置。
->
-> **统一评估前的例外一轮（2026-11-06，对齐会话，grilling 人都答 yes）**：ADR-0008 Update 2026-11-06、plan §10 第 14b 项。
-> - 工单 59–64 在 `.scratch/foundation/issues/`，都是 `ready-for-agent`，互不阻塞，可以并行派：59 派单事件、60 项目宏不算依赖未知、61 DAB Mongo `--noscripting` 和重启策略、62 `dab-score` 单题区间、63 验证器 CHECK 6 / Step 4 / 报告、64 争议收场和硬拦。冲突：59、64 都改 `hooks.py`；60、64 都改 `stop.py`；后合入的解决。
-> - 关键证据：pos 每次重派都是 21 个模型，原因是主 agent 写的宏让 refs 变成"未知"（60）；pos CHECK 3 是假阳性，screen3 没有循环到截止（64）；division-by-zero 是主 agent 删掉 status 过滤、验证器把推论当依据（63）；Mongo 是 krama 的 `$where` 让 JS 引擎 SIGILL 崩溃（61）。
-> - 59–64 全部合入后，在新 main 上合跑一次初筛：5 题 × 3，full，约 ¥18。三条同时满足才过：成功 ≥12/15、验证器墙钟中位数 <337 s、pos 重派列表少于 21 个模型。不过线就停下交人，不再有退回轮。之后 14c 冒烟，再由人确认统一评估。
-> - 61 合入后，主会话在服务器空闲时重建 `da-dab-mongo`（人已批准；数据卷保留），再跑 krama query1 × 1。61 只需在第 18 项 DAB 正式评测前完成。
-> - 56 照常推进，不等这一轮。
-> - **补充（同日，grilling Q1–Q7，人都答 yes）**：ADR-0008 Update 2026-11-06 的"补充"。上面那条"合跑一次初筛"作废，改为：
->   - 新工单 65（评测按配置合并多个 job）、66（`profiles.yml` 提示词、SKILL.md 里已删的 `verify_model_values`、过时注释；等 59、64 合入后派）。
->   - 59–66 全部合入后，main 固定在一个提交上，跑统一评估第 1 段：三个 OUT，full 5 道目标题 × 3、full 其余 25 × 1、baseline 30 × 1，共 70 个 trial，约 ¥44。闸门：机械指标和 accept-2 比、63/64 的三条线、子 agent 只读失败和异常的 trial；只修代码造成的新失败类型，最多重跑一次第 1 段。
->   - 闸门过了、人确认后跑第 2 段：full 25 × 2、baseline 30 × 2、no-verifiers 30 × 3，约 ¥125；用 65 按配置合并成每题 3 次。
->   - 止损线 ¥600。56 已完成（PR #57）。
->   - 独立检查（同日）后又定：新工单 67（`process.py` 统计闸门指标，等 59、64）；闸门口径、合并冲突处理、第 1 段已批准，见 ADR-0008 补充的"闸门的口径"。所以是 59–67 全部合入后才跑第 1 段。
->   - 编排注意：服务器操作只用仓库里的 `scripts/da-remote`（PATH 上的是旧版）；62 重算和第 1 段前先 `scripts/da-remote setup <固定提交>`；61 的 Mongo 重建不能和第 1 段同时跑；离线取证用主 checkout 的 `runs/` 绝对路径；Claude 登录 11-11 到 11-14 之间过期，第 2 段前要人重新登录。
->   - 执行在**新的编排会话**里做（对齐会话的上下文不再适合）：派 59–66、抄结果、PR、审查、合并、61/62 的服务器步骤、两段评测。
->
-> **编排会话进度（2026-11-07）：59–67 全部合入，第 1 段跑完，闸门有一条线没过；人决定暂停，先审评测流程和状态，之后开新会话再跑。第 2 段没有开跑。**
-> - 合入（squash）：59 #58 6380aa0、61 #59 1f65e68、65 #60 7afc7c6、63 #61 b49d12d、62 #62 0ff63da、60 #64 4628e58、64 #65 7549361（#63 退回 1 轮后 rebase 成新分支，#63 关闭）、66 #66 d8eb6a9、67 #67 b7c6071（`gh pr merge` 报 502 但已落到 main，PR 手动关闭）。工单记录在 3aa2fb1。Codex 意见：60 的 P2（宏的参数名让宏不透明）属实但偏保守，没修；67 的 P2 不属实。
-> - 服务器：61 合入后重建了 `da-dab-mongo`（`--noscripting`、`unless-stopped`，数据卷保留）；krama query1 no-context（`runs/t61-krama`）exit 0，Mongo 10/10 次调用成功，但 trial 本身在 71 轮后 "Prompt is too long" 没做完，留给 DAB 正式评测。62 合入后按 `runs/dabtrial2-score/run.log` 第 1 行重算（`runs/t62-rescore`）：−11.76 分，每个数据集只有 1 题，没有区间。
-> - **第 1 段**：服务器固定在 b7c6071，跑了两个 OUT：`runs/u1-target`（5 道目标题 × 3）、`runs/u1-full-rest`（其余 25 题 × 1），每个 OUT 都跑 full 和 baseline。花费 $3.38 + $3.11 = $6.49（约 ¥47，全在闲时）。开发集累计约 ¥461 / ¥600。余额 ¥98.63，不够第 2 段（约 ¥125）。
->   - **和 ADR 计划不一样的地方**：`ablate` 要求 `--config` 里必须有 full（参照配置），单独的 `u1-baseline`（baseline 30 × 1）没法跑（exit 2，$0）。所以 baseline 放进上面两个 OUT（复用已经跑完的 full job）。这样 5 道目标题的 baseline 是 × 3，不是 × 1。第 2 段的 baseline 应该改成其余 25 题 × 2，合并后仍然每题每配置 3 次，总数还是 270。
->   - 闸门数据（脚本 `runs/u1-gate/gate.py`，结果 `gate.json`、`rows.json`、`gate-out.txt`；驱动脚本和日志也在这个目录）：
->     - infra_error 0。目标题 14/15（≥12 ✅）；验证器墙钟中位数 305 s（<337 ✅）；**pos 重派少于 21 个模型 ❌**：每次派单的模型数依次是 7cGbUhG [21,6,5]、NvPFUAo [21,17,3,1,21]、p8TpFk3 [21,21,21]。
->     - 目标题和 accept-2 full 比都没掉分：division-by-zero 2/3（原 0/3）、pos 3/3（2/3）、cross-sell 3/3（2/3）、web-session 3/3（2/3）、receivables 3/3（1/3）。回归集没有异常。总成功数：full 28/40，baseline 26/40。
->     - 机械指标（每 trial 平均，括号里是 accept-2 按同样题目组合加权的值）：full 守卫拒绝 2.83（4.90；去掉 54 的截止拒绝和 64 的查询拦截后 2.68）、超长输出 0（1.70）、`ended_with_unresolved` 0（0）、`ended_unverified` 0.05（0）；baseline 守卫拒绝 2.80（3.73）、超长输出 0（0.56）。
->     - **口径问题，待人定**：ADR 把 `ended_with_unresolved`、`ended_unverified` 算作"有 accept-2 数据"的指标，可 accept-2 的代码（0b5597d）根本不发这两个事件（工单 54 才加）。accept-2 的 0 是没有数据，不是真的 0。`ended_unverified` 的 2 个 trial 都是 pos：派单列表太大，撞了截止拒绝，结果都成功。
->   - **pos 列表是 21 个模型的两个原因**（子 agent 读的，派单事件的 `source` 已核实）：
->     1. p8TpFk3：主 agent 写的 `pos_helpers.sql` 里，宏体内有 `ref('stg_pos__*')`。工单 60 的规则把这种宏判成不透明，19 个模型的 refs 变成未知，所以每次都全量重派（`source=again`）。修法候选：解析宏体里的 `ref()`。
->     2. NvPFUAo 最后一次：工单 64 把之前的 FAIL 判成争议以后，`redispatch_models` 是空的，于是 `hooks.py:196` 退回全量（`source=fallback_all`），没理主 agent 点名的 7 个模型。那次跑了 745 s，但确实找到一个真问题，主 agent 也修了。另外，`carries_counter_evidence` 只看第 1 次以后的派单提示有没有文字（未确认是否过宽）。
->   - 失败和异常的 trial（两个 sonnet 子 agent 读完，记录在 `runs/u1-gate/reading-full.md`、`reading-baseline.md`）：没有 59–67 造成的新失败类型。full 12 个失败都是模型波动，或 accept-2 已有的失败类型。tzXXxtE 例外：工单 47 的 CHECK 4 把并列排名判成 FAIL，主 agent 因此删光了窗口函数，评分器偏偏要窗口函数。4 次争议都正当，没有放过真错误。4 次查询拦截都按设计工作。baseline cross-sell 从 accept-2 的 3/3 降到 0/3，没找到代码原因，p≈0.05，可能是波动。小问题：一个模型在 duckdb 和 snowflake 两个项目里都有时，`verifier_dispatch.models` 会把它列两次。
-> - **下一步（等人审完流程再开新编排会话）**：人要决定 pos 这条线怎么处理。选项：把两个原因记成已知限制，在 b7c6071 上跑第 2 段，累计约 ¥586；或者先修再重跑第 1 段，约 ¥47，累计约 ¥633，要提高止损线。另外还要定上面的口径问题和第 2 段 baseline 的题目范围。第 2 段前要充值，并重新登录 Claude（11-11 到 11-14 之间过期）。
-> - 本地还留着已合并的 worktree 和分支，没清理。
+> 先读：`AGENTS.md`；`docs/plan.md` §10（一期各项和结果）；`docs/report.md`（分数、消融、失败归因）。
+> 2026-11-01 到 11-22 的逐日进度记录已从本文件移出，原文见 `git show 9493448:HANDOFF.md`；各项结论以 ADR（尤其 ADR-0004、0005、0008 的各个 Update）、工单 Comments 和 plan §10 为准。
 
-> **服务器同一时间只跑一批**：Harbor 和 DAB 不能同时跑，内存不够。
->
-> 以下第 0–10 节是 2026-09-20 的历史记录。
+## 现状
 
-写于 2026-09-20。给下一个会话（新目录、新 agent）用。本文件是会话结论的可移植记录，不是规范；规范由后续 `CONTEXT.md` / ADR / spec 承接。
+- **plan §10 第 1–26 项**都已完成（第 23 项博客可选，没做）。工单全部 `done`，最后一批是 107、108、110（2026-11-22）。没有 `ready-for-agent` 的工单。
+- **榜单提交**（都 open，对方没有评论）：
+  - DAB：ucbepic/DataAgentBench #144，盲跑 0.7421（b7c6071），Tuned prompt 标否；轨迹在 release `dab-submission-2026-11-13`。换成盲跑的三步已做完（fork 分支在 d36cc71）。#144 合入后可删旧 release `dab-submission-2026-11-15`。
+  - data-eng-bench：Snowflake-Labs/data-eng-bench #20，64.1% ± 1.6（ea740b5，no-verifiers，103 × 3）。
+- **分数对应的代码版本**：README 和报告里的每个分数都标了 commit。DAB 在沙箱改造（工单 97–101）之后跑过一次全量（69a7e2b，0.7639，两次例外算 Tuned，不提交）；data-eng-bench 全量是改造前的 ea740b5，改造后的证据是工单 100 的跑分验收（开发集 full × 3 不低于 main，小样本不低于上次正式成绩）。110（1M 窗口、自动压缩）之后没跑过全量。
+- **在线版**：`https://kevinwangsheng.github.io/data-agent/`，main 每次 push 由 Pages 工作流重新构建。
+- **服务器**：在 3ca3c01，没有任务在跑。模型余额 ¥72.47（2026-11-23 `da-remote check`）。
 
-> **编排会话进度（2026-11-08）：eval-readiness 01–05 全部合入（PR #68–#72）；第 2 段跑完，三配置选择做完，人定产品默认配置为 no-verifiers。**
-> - **redispatch 诊断**（第 2 段前，$0，`runs/u1-gate/reading-redispatch.md`）：04 规则标出的另外 8 个 trial 都不是选模型的代码缺陷，没有 `fallback_all`，都是 1–7 个模型的小集合在改动或争议后重验。指标对小集合过度计数（首次只派 1 个模型时"集合相同"恒真，占 23 次中的 16 次）。已知限制仍是 pos 的两条（宏里 `ref()` → 依赖未知；`again` 为空 → `fallback_all`）。
-> - **第 2 段**（服务器 b7c6071，驱动 `runs/u2-gate/stage2.sh`，日志 `stage2.log`）：u1-target 加 no-verifiers 5×3、u1-full-rest 加 no-verifiers 25×1、新 OUT u2-rest 其余 25 题 × 2 跑 full/baseline/no-verifiers；共 190 个 trial，全部 exit 0，infra 0，全在闲时（周末全天闲时，`evals/spend.py:32-34`）。实际价 $10.93（约 ¥80），开发集累计约 ¥541 / ¥600。第一次启动脚本缺 `startrun` 函数，没起任何运行、$0（`stage2-failed-start.log`）。
-> - **合并结果**（30 题 × 3，`runs/u2-gate/report/<config>/`，`runs/u2-gate/select/selection.md`）：
->   - full 66.7% ± 2.5（60/90），实际价 $8.83，每次成功实付 $0.147，trial 墙钟 p50 555 s，效率闸门不过（26 条告警、45 次全量重派）。
->   - baseline 65.6% ± 2.2（59/90），$3.57，每次成功实付 $0.061，317 s。
->   - no-verifiers 67.8% ± 2.5（61/90），$4.42，每次成功实付 $0.072，405 s。
->   - 配对比较都不显著：full−baseline +1.1 [−11.1, +13.3]；full−no-verifiers −1.1 [−7.8, +5.6]；no-verifiers−baseline +2.2 [−8.9, +14.4]。
->   - ADR-0008 最终消融前检查（full 点估计不低于 baseline）：66.7 ≥ 65.6，过。
-> - **人定（2026-11-08）**：产品默认配置为 no-verifiers。
-> - 下一步：plan §10 第 15 项，算正式评测（16 留出集 6 配置消融、17 data-eng-bench 全量、18 DAB 正式评测）的总花费，和人确认；16、17、18 各自开跑前都要人确认。
->
-> **编排会话进度（2026-11-08 晚）：第 15 项和人对齐完成，正式评测由人另开的运行会话执行。**
-> - 依据：对齐会话 data-agent-ea 的审计、Codex 的只读决策审查，主会话核实过代码。人逐项确认：
->   - 留出集 5 配置消融（删 full-old-skill）；
->   - 全量：拼接方案同日作废（b7c6071 的 trial 上不了榜），改为工单 leaderboard-run 01 加登记处数据集的运行方式，再全新跑 103 × 3 no-verifiers；
->   - 16、18 在 b7c6071 上跑，17 在 leaderboard-run 01 合入后的 commit 上跑，修复排到 DAB 之后；
->   - DAB 只跑榜单 54 题，先小试跑；
->   - 正式评测单独批 ¥700。
->   - 详见 ADR-0004、ADR-0008 Update 2026-11-08 和 plan §10 第 15–18 项。
-> - 编排会话只做开跑前的准备：每批的 manifest、运行手册、环境核对、补传测试的方案。网页界面等评测开跑后再讨论。
-> - 人已刷新 Claude 登录（2026-11-08）。
+## 已定的规则（这一阶段新加的）
 
-- 2026-11-09：第 17 项的准备做完。
-  - 登记处 v1.0 是修复前发布的（上游只在 git 里修了 `dbt-cart-abandonment-recovery` 的评分，没重新发布），榜单只认 v1.0。人定接受差异、照样上榜，报告另给 102 题准确率。
-  - 工单 leaderboard-run 01 合入（PR #73，aa70175）：`evals board` 从登记处取题、拆批、基础镜像自动 tag、job 配置写 agent 名（榜单 CI 的 `matching_agent`）、报告和 pull 对留出集只给汇总。服务器 1 题真实冒烟 $0.056，字段都对。
-  - 运行手册第 17 项已补命令，题单在 `runs/f17-batches/`。服务器已回到 b7c6071，等运行会话开第 16 项。
-  - 已知限制加 2 条（ADR-0008）：`ablate --model` 不生效；v1.0 与 a3278ad 的差异。
+- 优化不再每轮跑全量（人 2026-11-23 定）：修复按 ADR-0008 只做单元测试、单题真实运行或目标题 × 3 初筛；开发集统一评估、DAB 全量、data-eng-bench 全量只在里程碑跑一次，且先经人批准。
+- 不再针对 DAB 优化，榜上只留盲跑（ADR-0005 Update 2026-11-22）。
+- 不再开"读 trace 再修"的一轮（2026-11-23 评估）：剩下的失败大头是题面和评分器不一致（ADR-0005 不允许针对题目写 Skill）和模型波动；前几轮修复准确率都在波动范围内（报告 Failure attribution）。重新考虑的条件：读到占比大（如 >10%）的新通用失败类型，或 DAB 改为可以提交新结果。
 
-- 2026-11-12：第 16、17 项跑完（结果和已知限制 10–13 见 ADR-0008 Update 2026-11-12）。
-  - 16：450 个 trial，实付 $36.22，5 个配置差值都不显著，no-verifiers 71.1% 最高。scrub 误报修在 PR #74、#75（冻结例外，只改 `evals/scrub.py`）。
-  - 17：在 ea740b5 上跑，103 × 3 准确率 64.1% ± 1.6（102 题 64.7%），实付 $15.16。报告 `runs/f17/reports/20261112T155019.560470Z/`；留出题的 trial 在服务器 `runs/f17`。
-  - 服务器停在 ea740b5，没有在跑的批次。`da-remote check` 0 failure，余额 ¥56.70（约 $7.77），第 18 项正式评测前要充值。
-  - 下一步：第 18 项 DAB 开跑前要人确认。先 `da-remote setup b7c6071`，跑 34 个 trial 的小试跑，测单价和串行墙钟。第 19 项上传、开上游 PR 由人做。
+## 剩下的事
 
-- 2026-11-13：第 18 项跑完（结果、自查和已知限制 14 见 ADR-0008 Update 2026-11-13）。
-  - 小试跑 34 个 trial，实付 $0.88。正式评测 540 个 trial（b7c6071，12 个数据集、54 题 × 5 次 × 2 个配置），全部 exit 0，0 个 infra 错误，实付 $10.00，全在闲时。
-  - Pass@1（54 题，用了 hints）：no-context 0.7421，baseline 0.7012，差值 +4.09 分（95% 区间 +1.18 到 +6.88，显著）。
-  - 运行方式：本机 `runs/f18/par.py` 经 `da-remote` 同时调度 4 个数据集，每个（配置、数据集）一个 `--out`；合并在服务器 `runs/f18-merged-<config>`，算分在 `runs/f18-score`（本机有 `run.log` 和 `report.json`）。
-  - 正式评测累计实付 $62.26，预算 ¥700。2026-11-14 余额 ¥84.04。
-- 2026-11-14：第 19 项的准备（编排会话做；上传和开 PR 由人做）。
-  - data-eng-bench：服务器 `runs/f17/jobs/` 下 3 个 Harbor job，共 309 个 trial（103 题 × 3），每个都有 `trajectory.json`，job 配置 `timeout_multiplier` 为空、agent 名 `data-agent`、模型 `deepseek/deepseek-flash`；`evals board` 每批结束时已 scrub。人要做：把 3 个 job 上传 Harbor Hub（公开），再在 data-eng-bench 的 `leaderboard/` 里 `uv run lb submit <3 个 job 链接>`（`SUBMIT.md`）。
-  - DAB：提交包在本机和服务器的 `runs/f19-dab/`：`pkg/submission.json`（no-context 的 270 条，和算分用的那份逐字节相同）、`data-agent-dab-traces.zip`（270 个 trial 的 `events.jsonl`、`dab_tool_calls.jsonl`、`execute_python_artifacts.jsonl`，32 MB，不含 workspace）、`PR.md`（提交说明草稿）。上游先例（DAB PR #111、#113）：PR 里只放答案 JSON，轨迹给外部压缩包链接。
-  - DAB 轨迹的 scrub（ea740b5）改了 562 个文件（IP 105 处、home 路径 7944 处，密钥和 endpoint 0 处），exit 1：剩 8 处 `/home/corbax`，都在 GITHUB_REPOS query2，是数据集里一个 SVG 文件的内容，不是本机或服务器的路径，没有处理。
-  - 服务器停在 ea740b5（跑 scrub 用），没有在跑的批次。
-  - 等人定：DAB 轨迹压缩包放哪里（PR 附件上限 25 MB，放不下；可以放本仓库的 GitHub Release）；榜单上显示的 agent 名和组织名。已知限制 14 不加规则（人 2026-11-14 定）；agnews 低分的原因见 ADR-0008 Update 2026-11-13；"建议不修"已作废，见下一条。GitHub 仓库 `kevinWangSheng/data-agent` 现在已经是 PUBLIC（2026-11-14 `gh repo view` 核实），plan 第 22 项还写着待做。
-- 2026-11-14：DAB 修复一轮（plan §10 第 18b 项；ADR-0005 Update 2026-11-14，人批准的一次例外）。**下一会话从这里接着做。**
-  - 已定：三处通用修复，工单在 `.scratch/dab-fixes/issues/`。68 答案写法、69 轮数预算可见、70 语义分类工具。诊断分类、100 轮实验、验证过线标准都在 ADR-0005 的 Update 里。
-  - 68 已合入（PR #76，6a3b53b），工单 done。
-  - 69、70 已在 2026-11-14 约 10:20Z 派出（`claude -p --model opus -w 69-turn-budget-visible` / `-w 70-classify-text-tool`），是上一个编排会话的后台任务。会话的最终回复写到上个会话的 scratchpad：`/private/tmp/claude-501/-Users-shenghuikevin-dev-AI-data-agent/9a31b246-4266-4c4d-b81b-799200078164/scratchpad/t69.out`、`t70.out`。文件为空说明还没结束，或者会话随上个会话一起被终止了：看 `git worktree list` 里两个分支有没有提交、工单的 `Status:`，没做完就在原分支重派。
-  - 每张工单接下来由主会话做：把最终回复抄进工单；在工单分支上做真实运行（本地，`set -a && . ~/.config/data-agent/env && set +a` 后 `uv run data-agent run ...`；68 用的是由 `tests/fixtures/shop.sql` 建的 DuckDB）；push、开 PR、等 CI 和 Codex 的 PR 审查、`gh pr merge --squash`；工单改 done 并提交。69、70 和 68 改了同两个提示，后合的解决冲突。
-    - 69 的真实运行：用低上限的临时配置，核对提醒进了模型上下文、"剩 3 轮"之后正好 3 轮结束、各只出现一次。
-    - 70 的真实运行：跑新加的集成测试，再跑一道用到分类的查询题；量每千行实付成本，定行数上限的最终值（暂定 20,000）。
-    - 69 可能交回（查不清 CLI 的轮数口径），70 可能交回（工具花费没法计入预算）；交回就告诉人，不自己绕过。
-  - 三张都合入后：服务器更新到新 main，做小范围验证（no-context，约 21 次，不到 $1，小额默认放行，跑完汇报）。题目和过线标准见 ADR-0005 Update；任何一条不过就停下交给人。
-  - 过线后：全量重跑 540 次（约 $10）开跑前要人确认，可能要先充值（2026-11-14 余额 ¥84.04）。跑法照第 18 项（`runs/f18/par.py`，SSH 调用间隔至少 16 秒）。跑完重新算分、重做 `runs/f19-dab/` 的提交包和 `PR.md`（写明修复是看过本榜失败后做的、修复前的分数），新旧结果并排写进 ADR-0008。
-  - 等人定：DAB 榜单 Tuned prompt 一栏怎么填（提交前对照榜单定义）。data-eng-bench 的提交不受这一轮影响，人现在就可以交。
-  - 100 轮实验的临时配置已从服务器删掉；服务器 checkout 在 ea740b5，没有运行在跑。
-- 2026-11-14 晚：69、70 合入，小范围验证没过线，**停在这里等人定**。
-  - 69 合入（PR #77，c1f5503；退回 1 轮改提醒措辞），70 合入（PR #78，2486759）；工单都 `done`，真实运行的记录在工单 Comments。main 在 300c86f 之后。
-  - 服务器在 c1f5503。小范围验证 `runs/v18c-no-context-<dataset>`（本机已 pull），算分在服务器 `runs/v18c-score-<dataset>`。21 次，实付 $2.14（agnews 一项 $1.63，触发了该批 80% 预算停止线）。
-  - 68：PATENTS 第 3 题 1/3、googlelocal 第 2 题 3/3、DEPS_DEV_V1 第 1 题 1/3，合计 5/9，标准是至少 6/9，**差 1 次**。
-  - 69：music_brainz_20k 第 3 题 3/3、crmarenapro 第 7 题 1/3，6 次都有答案，**过线**。
-  - 70：agnews 第 2 题 0/3（工具被调用，有答案）；第 4 题 3 次都在 `classify_text` 里撞单次运行 $1 预算，没有答案，**不过线**。
-    - 根因（本机复现过）：deepseek-flash 在这个端点默认开思考。50 条新闻一批，思考 3,700–4,900 个输出 token，答案只要约 220 个；思考有时用光 8,192 的输出上限，回复里没有 JSON，那一批就记成 failed（20–50% 的批次）。请求体加 `thinking: {"type": "disabled"}` 后同一批只输出 221 个 token。
-    - 合入前主会话量的每千行成本（$0.014–$0.095）用的是自写短文本，模型几乎不思考，对真实文本偏低约 20 倍。
-  - 等人定：70 怎么修（建议分类调用关掉思考，开后续工单）；68 差 1 次怎么处理；之后要不要重做小范围验证。全量重跑 540 次没有开始。
-- 2026-11-14 深夜：71 合入，回归和复验做完，**agnews 第 4 题仍有空答案，等人定**。上一条的"等人定"已由人答复（按建议修、挑已通过的题测稳定性）。
-  - 71（`classify_text` 的模型调用关掉思考，截断单独报错）合入：PR #79，30b1021，工单 `done`。实测 1,000 行新闻样式文本 $0.018、每行约 6 个输出 token、全部有标签；`ROW_LIMIT` 维持 20,000。服务器在 30b1021。
-  - 稳定性回归（c1f5503，no-context，修复前 5/5 的 10 道题各 1 次，`runs/v18r-*`、`v18s-*` 在服务器）：10/10 通过，实付约 $0.16。
-  - 复验（30b1021，no-context，`runs/v18t-no-context-{agnews,bookreview,yelp}`，本机已 pull；实付 $1.55，其中 agnews $1.52）：
-    - agnews 第 1 题 3/3（修复前 5/5），第 2 题 2/3（修复前 0/5），第 4 题 1/3（修复前 1/5）。bookreview 第 1 题 2/2、yelp 第 1 题 2/2，都没调分类工具。
-    - 第 4 题另 2 次仍然撞单次运行 $1 预算、没有答案。工具本身正常（每次调用的行全部有标签，20,000 行约 $0.24）；agent 把整个语料按 20,000 行一批全分类了，没有先筛到 2015 年的 6,696 篇。通过的那次先筛再分类，花 $0.49。
-  - 失败轨迹的归类（只读 agent 读的，逐次官方判定只在服务器）：PATENTS 第 3 题 2 次、DEPS_DEV_V1 第 1 题 1 次、crmarenapro 第 7 题 2 次都是推理或取数错误，不是答案写法；DEPS_DEV_V1 另 1 次原因未确认。agnews 第 2 题要求恰好 16/111，数据集自带标签有噪声。
-  - 等人定：agnews 第 4 题的空答案要不要再修（建议：工具返回里写明本次运行已花和预算，属于事实，不写针对题目的内容；或记成已知限制）；68 的 5/9 是否接受；全量重跑 540 次是否开始（没有开始；余额要先查，agnews 这类题单次可到 $1）。
-- 2026-11-15 凌晨：72 合入，第三次复验做完，**这一轮的修复到此为止；全量重跑由人在新会话里决定**。上一条的"等人定"：人把前两项交给独立上下文的 agent 定（Fable，只读），并说全量重跑等基础都做完再定、不在当时的会话里开始。
-  - 68 的 5/9：接受，不再开工单。九次答案写法都符合要求；失败里三次是内容错误，一次（DEPS_DEV_V1 第 1 题 run2）是残留的写法失败。详见工单 68 Comments。
-  - 72（PR #80，cc8cdef）：根因是 agent 以为预算是 $83（交给 SDK 的兜底上限按价格比放大成 $83.33，CLI 当作预算提醒发给模型），真实预算 $1 不在上下文里。修法：`classify_text` 的描述写明真实预算，每次返回最后一行写明本次运行已花和预算。
-  - 第三次复验（cc8cdef，no-context，`runs/v18u-no-context-*`，agnews 已 pull；实付约 $0.90，其中 agnews $0.77）：
-    - 十道原本 5/5 的题各 1 次：10/10。
-    - agnews 第 4 题：没有一次撞预算（花费 $0.75、$0.28、$0.39；上一轮 3 次里 2 次撞预算）。通过 0/3：两次答 North America（标准答案 Africa），一次（run0）上下文写满（"Prompt is too long"，`blocking_limit`），没有答案。
-    - agnews 第 2 题：1/3（17/111、15/111、16/111）。
-  - 轨迹诊断（两个 sonnet agent，结论是推断）：答错和预算文字无关。第 4 题四次运行（含上一轮通过的那次）方法基本相同，Africa 和 North America 在 6,696 篇里只差 2–7 篇，谁领先取决于提示措辞和模型波动；run0 第一遍其实得到 Africa 领先 2 篇，认为不可靠而反复重分，把上下文写满。第 2 题只有恰好 16/111 才判过，单次分类得到 14–17。思考里同时出现 $1.0 和 $83，agent 能分清哪个是真的。
-  - 已知限制（不再修，工单 72 规定只做一轮）：agnews 第 2、4 题要求的分类精度高于这个模型分类的稳定性；第 4 题仍可能因反复验证写满上下文而没有答案。ADR 的 70 过线标准"第 4 题没有空答案"严格说仍未满足，但原因已从预算换成上下文长度。
-  - **下一步（人 2026-11-15 说清上下文后在新会话里跑）**：全量重跑 540 次（两个配置 × 54 题 × 5 次），在 cc8cdef 上。开跑前在新会话里由人确认一次，并先做两件事：
-    - 查余额并充值：上次查是 ¥53.87，之后又花了约 $0.90；全量估 $12–18（上次约 $10；agnews 40 次用分类工具，单次 $0.03–$0.75，多出约 $5）。
-    - 命令形状照 `runs/f18/par.py`；服务器 checkout 已在 cc8cdef，没有任务在跑。跑的过程中不要动服务器的 checkout。
-    - 主会话的预估（推算，不是测量）：no-context 的 Pass@1 从 74.2%（210/270）到约 80%（区间 77–82%，约 218–222/270）；baseline 从 70.1%（206/270）到约 76%，把握更低。报告里新旧并排，并写明"题目或评分脚本的问题"那 23 次的归因（不修的理由：只能靠题目专属内容才能过，ADR-0005 不允许）。
-- 2026-11-15：第 18b 项全量重跑跑完（人在新会话里确认后开跑；结果见 ADR-0008 Update 2026-11-15）。人定用新结果提交（2026-11-15）；提交包已重做，**剩下的由人做：上传和开 PR**。
-  - cc8cdef，540 个 trial，24 个运行全部 exit 0，实付 $13.57，全在周末闲时。调度 `runs/f18b/par.py`（agnews 批次预算按每个 trial $0.5），日志 `runs/f18b/par-formal.log`；合并在服务器 `runs/f18b-merged-<config>`，算分在 `runs/f18b-score`（本机只有 `run.log`，`da-remote pull` 不带回 `report.json`）。
-  - Pass@1：no-context 0.7421 → 0.7588（210 → 212/270），baseline 0.7012 → 0.7218（206 → 205/270）；no-context − baseline 从 +4.09（显著）变成 +3.70（区间 −1.51 到 +9.07，不显著）。
-  - 修复瞄准的题变好（no-context 合计 +12 次），其他 9 道题零散下降（合计 −10 次），原因没有读轨迹，未确认；GITHUB_REPOS query2 两个配置都是 4 → 2。
-  - 新提交包在本机和服务器的 `runs/f19b-dab/`：`pkg/submission.json`、`data-agent-dab-traces.zip`（28 MB）、`PR.md`；自查通过（没有取榜外数据的尝试，没有读答案文件），细节见 ADR-0008 Update 2026-11-15。旧包 `runs/f19-dab/` 保留。
-  - **DAB 已提交（2026-11-15，人让编排会话代交）**：PR https://github.com/ucbepic/DataAgentBench/pull/144 ，分支在 fork `kevinWangSheng/DataAgentBench` 的 `data-agent-deepseek-flash`，文件 `leaderboard_submissions/data-agent_deepseek-flash_n5.json`。人定：Tuned prompt 报 no 并附修复说明；显示名 `data-agent (DeepSeek deepseek-flash)`；轨迹放本仓库的 release `dab-submission-2026-11-15`（tag 指向 cc8cdef）。上游在 6ad9d68 之后只改过 README 和榜单数据。之后要看 PR 上维护者的验证结果。
-  - **data-eng-bench 已提交（2026-11-15，人让编排会话代交）**：PR https://github.com/Snowflake-Labs/data-eng-bench/pull/20 （base `master`），分支在 fork `kevinWangSheng/data-eng-bench` 的 `submission/2026-11-12-deepseek-deepseek-flash-none-data-agent`；含提交文件和 `display-names.json` 里 `data-agent`、`deepseek/deepseek-flash` 两条显示名（照 PR #10 的先例）。
-    - 人在服务器上登录了 Harbor（账号 kevinWangSheng，Hub 上的归属显示为 Shawn）。`runs/f17/jobs/` 的 3 个 job 共 309 个 trial 已公开上传：Hub job `c48c4770-5f30-4895-8562-777e04fe5ea4`、`cbf09bac-f91b-4137-a93e-86d3b921f3cc`、`43974998-79e4-4eef-80f0-1fb69c3aa7cd`。上传日志在服务器 `runs/f19-deb/upload.log`（含留出题的逐题得分，不要整份打印；编排会话等上传时打印过一次末尾 40 行，没有使用）。
-    - `lb filter`、`lb metadata` 在服务器的 `/root/da-benchmarks/deb-submit`（上游 master 74d4bcd 的另一份 clone，评测用的 a3278ad 没动）里跑，因为本机 Harbor 没登录；PR 从本机手工开。
-    - 开 PR 时静态检查的评论还没出现，只有一个 security-bot 检查在 pending。之后要看：静态检查的结果（红了就改同一个文件再 push）、晋升后的 bot PR、维护者的 `/judge` 和 `/apply`。
-  - 没做的：降分的 9 道题没有诊断（这一轮不再修，读出来也只进已知限制）。
-  - 服务器在 cc8cdef，没有任务在跑。余额 ¥151.26（2026-11-15 `da-remote check`）。
-- 2026-11-15 收尾：评测和上榜提交这条线做完了。**下一会话从这里开始。**
-  - 两个 PR 都是 open，等对方处理：DAB #144 还没有评论；data-eng-bench #20 的静态检查结果还没出。有回复时要核对并回应（data-eng-bench 报红就改同一个文件再 push；原 PR 被机器人 PR 取代后关闭是正常流程）。
-  - 一期剩下的（plan §10）：21 README（仓库已公开但根目录没有 README）、20 报告、5/10 网页界面（还没讨论，只有 `docs/research/2026-11-01-upstream-web-ui.md`）、23 博客（可选）。编排会话的建议（人还没定）：先 README 第一版，再报告，网页界面最后并先讨论要不要做。这些都是"怎么构建"的内容，先和人逐项对齐再落文件。
-  - 报告的失败归因要用到、还没做的：第 18b 项里降分的 9 道题没有读轨迹（先看 GITHUB_REPOS query2）。
-  - 留下没清理的东西：本机 6 个已合并工单的 worktree 和分支；服务器 `/root/da-benchmarks/deb-submit`（提交用的 clone）和 Harbor 登录状态；人账号下的两个 fork（`kevinWangSheng/DataAgentBench`、`kevinWangSheng/data-eng-bench`，PR 还开着时不能删）。
-  - 服务器在 cc8cdef，没有任务在跑。余额 ¥151.26（2026-11-15）。
-- 2026-11-15 晚：README 第一版写完并提交（plan §10 第 21 项）。**下一会话从这里开始。**
-  - `README.md`（英文，197 行）和 `docs/assets/architecture.svg`（手写的架构图，自带深色底；人嫌 mermaid 难看后换的）。人已看过，说没有问题。
-  - 写法：主会话直接写；sonnet 子 agent 读了 SignalPilot、ktx、nao、dash、harbor 的 README 结构；写完由无上下文的 Opus 子 agent 冷读并逐条核对，约 46 条陈述里改了 14 处（轮数提醒只在查数任务、查数任务没有 shell、许可段落按 `NOTICE` 列三个上游、合入 PR 是 77 个等）。
-  - 快速上手的命令真跑过一次（`tests/fixtures/shop.sql` 建的 DuckDB，no-verifiers，22 秒、13 轮、$0.007，答案 Gold 710.00），README 贴的是这次的输出。
-  - README 里的表述选择（人已看过）：DAB 写明 0.7588 不是盲跑分数、盲跑是 0.7421；消融写"数据说不出哪层有用"；no-verifiers 叫"推荐配置"（CLI 的 `--config` 是必填）；没放榜上别人的分数。
-  - README 还没做的：中文版（语言问题人没答，先只有英文）；dbt 用法只有一句参数说明，没有真跑过的例子；没有动图（等网页界面）；两个 PR 合入后要把 "open" 和"还没上榜"改掉。
-  - 一期剩下的：20 报告（先补第 18b 项降分 9 道题的轨迹阅读）、5/10 网页界面（还没讨论）、23 博客（可选）；跟进 DAB #144 和 data-eng-bench #20（2026-11-15 晚查：都 open，没有评论；#20 的 security-bot 和 codeowners 检查已过，榜单静态检查的评论还没出）。
-  - 没清理的东西同上一条（6 个已合并工单的 worktree 和旧分支、服务器的提交用 clone、两个 fork）。
-- 2026-11-15 夜：第 18b 项降分 9 道题的轨迹读完（ADR-0008 Update 2026-11-15 的补充；记录在本机 `runs/f18b/reading/`）。**下一会话从这里开始。**
-  - 结论：no-context 降的 10 次里约 6 次和工单 68 有关（多数是"备选答案里带正确字符串、被子串匹配放过"的通过消失；PATENTS query2 是真实退步），1 次是工单 70（agnews query1 分类时选错列），3 次是波动或定不了。工单 69 无关。
-  - 没查的：baseline 配置的下降（轨迹只在服务器）；三道定不了的题要服务器上的逐次官方判定。
-  - 第 20 项报告的输入齐了，报告还没开始：没有 spec 和工单，形式和章节要先和人对齐（一次一个主题）。编排会话的建议（人还没定）：独立的英文 `docs/report.md`，README 链接过去；和网页界面评测页的内容重叠，先做哪个要人定。
-  - 其余不变：5/10 网页界面没讨论；README 的中文版和动图；两个榜单 PR 等对方；没清理的 worktree、服务器 clone、fork。
-- 2026-11-15 深夜：第 20 项报告第一版写完并提交（`docs/report.md`，英文，README 的"Reproducing the evaluations"一节链接过去）。**下一会话从这里开始。**
-  - 人说可以直接开工；做法照 README 的先例：主会话直接写，无上下文的 Opus 子 agent 冷读并对照来源核对（约 200 条陈述，改了 17 处：agnews 属于第三类失败而不是第一类、开发集日期、过程指标是第 1 段 full 的 40 个 trial、补上 dev-3 full 显著低于 baseline、"fixed"改成"修复瞄准的类别"等）。人还没读过成稿。
-  - 报告里标了未确认的：baseline 配置在 DAB 重跑里的下降；DEPS_DEV_V1 query2、googlelocal query3、yelp query4 的归因；no-context 在留出集最低的原因；统一评估第 2 段的失败没读。
-  - 博客（23）：人问过，定为现在不写，等网页界面有了动图或视频再写（和 README 动图一起）。
-  - 一期剩下的：5/10 网页界面（还没讨论，是剩下最长的一条，下一步从 `docs/research/2026-11-01-upstream-web-ui.md` 待定的三点开始）；README 和报告的中文版待人定；跟进两个榜单 PR；没清理的东西同前。
-  - 小事：README 第 145 行"three trials at a time"对 DAB 不准确（DAB 是 4 个数据集并行），报告里已写准，README 没改。
-- 2026-11-15（再晚）：网页界面的基础决定做完（grilling Q1–Q29，人逐条确认），写在 plan §2 的"网页界面的基础决定"和 §5 的"界面""数据存储"。**下一会话从这里开始：派三个样板。** 人要求在新的干净上下文里派，本会话没有派，也没有准备数据。
-  - 要点：一期做界面，主要给不安装的面试官看，自己部署的人基本能用；三个页面（运行页、历史列表、评测页）；在线版是纯静态站点、只读；Vite + React 19 + Tailwind 4 单页应用，本地后端 FastAPI + SSE、启动 `data-agent run` 子进程；不用 Next.js、`@assistant-ui/react`、SQLite；时间线自己写；澄清、Memory、多轮追问、图表不进这一版。
-  - 核实过的事实：Next.js 静态导出不支持没有 `generateStaticParams()` 的动态路由（官方文档）；SignalPilot 时间线那组组件 69 个文件约 12,600 行、耦合深；事件文件里没有任务原文、类型和数据源。
-  - 下一会话要做的，按顺序：
-    1. 准备三个样板共用的数据，放在仓库外或 `runs/` 下（不进 git），全部过 `evals scrub`：
-       - 短的查数运行：照 README 快速上手重跑一次（约 $0.007，小额放行）。
-       - 长的 dbt 运行：`runs/t46-real2/jobs/full/dbt-receivables-aging-buckets__6CDbS3r/agent/events/`（142 次工具调用、61 条 SQL、3 次验证者，FAIL → 修 → PASS）。
-       - 一条失败的开发集运行：从 `runs/u1-gate/reading-full.md` 里挑一条读过原因的，事件文件路径在 `runs/u1-gate/rows.json` 的 `events` 字段。
-       - 每条附一个说明文件：任务原文（dbt 题在 `~/dev/AI/data-agent-refs/data-eng-bench` 的题目目录）、类型、数据源名字；失败的那条再附失败原因。
-    2. 派三个互相独立的 Opus 子 agent（`model: opus`），每个一个方向：A 分阶段时间线（单栏纵向，步骤归并成阶段，顶部固定运行概况）；B 三栏追踪查看器（左大纲和缩略时间轴、中间步骤详情、右边答案、验证结论和花费）；C 摘要优先（先列关键时刻，每个可展开到完整日志）。
-       - 每个只做运行页回放和在线版第一屏；纯前端、读静态文件；必须满足 plan §2 的"UI/UX 硬约束"，深浅色都要有。
-       - 任务说明直接引用 plan §2、§5 和事件字段（`src/data_agent/events.py`）；各自在独立目录或 worktree 里做，代码用完即弃，不进 main，不走工单流程。
-    3. 三个都做完后，主会话把每个跑起来，用无头浏览器对同样的画面截图（第一屏、长运行概览、展开一次验证、展开一条 SQL 和结果表，深浅色各一套），做成一个对比页，附对照硬约束的核对结果和推荐；人来选，可以混选。
-    4. 选定后 `/to-spec`（测试接缝由人确认）、拆工单。
-  - 没定、留到 spec 的：静态站点托管在哪；评测页的具体图表；第 4 条"网关拦写操作"的精选运行要不要。README 和报告的中文版仍待人定。
-- 2026-11-15（样板）：人改主意，三个样板在同一会话里派了、做完了，**人选定 B（三栏追踪查看器）**，记在 plan §2"样板"。**下一步：`/to-spec`（测试接缝由人确认），再 `/to-tickets`。**
-  - 样板和数据在本机 `runs/web-prototypes/`（不进 git）：`BRIEF.md`、`data/runs/` 三条运行、`a/` `b/` `c/` 三个样板、`compare/index.html` 对比页。B 的启动：在 `b/` 下 `pnpm preview`，端口 5182。
-  - 上一条说的长运行 `runs/t46-real2` 没用上：它早于工单 47、59–64，没有 `verifier_dispatch` 和 `tool_timing` 事件。实际用的三条：README 快速上手重跑的查数运行；`runs/u1-full-rest/jobs/full/dbt-cart-abandonment-recovery__dSJJ5j9`（122 次调用，FAIL → PASS）；`runs/u1-target/jobs/full/dbt-fix-division-by-zero__tzXXxtE`（270 次调用，评分失败）。
-  - Q30–Q37 已由人确认（plan §2"样板"），Q38–Q41 也已确认；spec 在 `.scratch/web-ui/spec.md`，Status 是 ready-for-agent。**下一步：`/to-tickets`**，第一张工单是三处接缝的验收测试，人审过才合并。
-  - 核实范围：三个样板 `pnpm build` 通过是各 agent 报告的；主会话只看过 24 张截图（没有页面报错、没有横向溢出），没有实测回放、键盘操作和手机布局。
-- 2026-11-15（工单）：网页界面的 spec 和 10 张工单写完并推送，73、74 已派出。**下一会话从这里开始。**
-  - spec：`.scratch/web-ui/spec.md`（ready-for-agent，Q1–Q41 都已由人确认；事件新字段的名字写在"事件：新增和补充的字段"的表里）。工单：`.scratch/web-ui/issues/73`–`82`。
-  - 依赖：73（验收测试）和 74（事件补字段）没有依赖；75（视图模型）、77（后端读）、80（导出）等 73；76 等 75；78 等 77；79 等 76、78；81 等 76、80；82 等 74、81。
-  - **已派出（2026-11-15，本会话后台启动）**：`claude -p -w 73-web-acceptance-tests` 和 `claude -p -w 74-event-fields`，都是 `--model opus --permission-mode auto`，输出在 `runs/dispatch/73-web-acceptance-tests.txt`、`runs/dispatch/74-event-fields.txt`。人随后说要清上下文、在新会话里接着做；本会话没有等它们跑完，也没有停它们。
-  - 新会话先核对这两个的状态：看两个输出文件是否写完、工单的 `Status:` 和 `Branch:`、`git worktree list`。跑完了就照 AGENTS.md 第 6、7 步处理；中途断了就在原分支上重新派同一条命令。
-  - **73 要人审过才合并**：把它定的视图模型类型、后端入口签名、测试清单整理给人看。74 做完后主会话真跑一次 README 快速上手的查数运行核对新字段，再走审查和 PR。
-  - 82 里由主会话做的对外操作：重跑或重选 3 条精选运行、跑导出、把数据包传到 release、在仓库设置里开启 Pages。
-  - 三个样板的预览服务都已停。76 要对照样板 B 时在 `runs/web-prototypes/b/` 下 `pnpm preview`（端口 5182）。
-- 2026-11-17（对齐会话）：agent 工具补全（plan §10 第 25 项）的 6 点由人逐条确认，写成 ADR-0010、spec `.scratch/agent-tools/spec.md` 和工单 97–101。**下一会话（编排）从这里开始：派 97、98。**
-  - 起因：查数任务不能跑代码，dbt 任务的 Bash 只能跑 dbt，任何运行都不能联网。查过上游，没有一家把 Bash 限成只跑 dbt（命令守卫是工单 04 自己加的）。人要求照上游做，不要拿旧规则去套。
-  - 定下的：shell 和代码走 `sandbox_exec`（产品用 Docker，Harbor 用 local）；沙箱里没有凭据和库文件；写只走 `dbt_execute`（照 SignalPilot），产品里写到临时 schema `da_run_<run id>`，用完保留不清理（照 SignalPilot）；`--network` 是运行级选项，网页后端默认开，评测入口都不开；去掉内置 Bash 和 `command_guard.py`。
-  - 已实测：WebSearch、WebFetch 走 DeepSeek 端点（`deepseek-flash`）都能用（spec "`network` 开关"一节）。
-  - 依赖：97、98 可以并行，也可以和对话界面的工单并行；99 等 97；100 等 97–99（AGENTS.md、CODING_STANDARDS.md、CONTEXT.md 的规则在 100 改，跑分验收也在 100）；101 是前端，等 100。
-  - 本机 Docker 是 colima，现在是停着的；97、99 的集成测试前要先 `colima start`。
-  - 无上下文的 Opus 子 agent 冷读过 spec 和工单，报了 11 条，主会话对照代码核实后都改进了 spec 和工单：对话入口 `conversations.py`、DAB 走进程内 `build_options`、运行编号和由运行进程删容器、Skill 目录挂载、`--dbt-target`、网页 dbt 运行的库文件移出 workspace、`NOTICE`、联网开关放进 101。
-  - 工单 100 要重新生成 `tests/fixtures/chat/eval-unchanged.json`，这个快照按规矩不能改；预计改 60–100 行（共 568 行）。人 2026-11-17 批准覆盖（照快照测试的通行做法，旧版本在 git 历史里），差异在 PR 里由人审。
+- **等人定**：报告和 README 的中文版；博客和视频（视频原定等对话界面，现在可以录）；求职材料（简历、面试讲法，计划里没覆盖）；4 个 11-18 清理分支和 `chore/glossary-rename` 的去留（见下）；最后要不要跑一次全量（不跑也可以，报告标了 commit）。
+- **本地留着、等人定的分支**（2026-11-23 审过，都没合入，都和现在的 main 有冲突或已过时）：
+  - `cleanup-prune-features`（8 个提交，−6,031 行）：删 `evals attribute`、`evals accept` 和回归集、`evals select`、full-old-skill 配置和冻结的 Skill 副本、value verifier 死代码。和 main 冲突 2 处（ADR-0008、`tests/test_dbt_skills.py`）。`docs/setup.md:68,78` 和 plan 第 299 行还在讲 `evals select`、`evals accept`，删了要同步文档；报告里复现配置选择的命令会只在旧 commit 上有效。
+  - `test-cleanup`（合并了 `cleanup-prune-tests` 和 `cleanup-speed`，−2,634 行）：删 v1 验证工具 `check_model_schema`、`audit_model_sources`，引擎里网关不用的方言代码，MCP、scrub、Harbor 测试改进程内，`make check` 加 pytest-xdist。和 main 冲突 3 处（`tests/test_dbt_skills.py`、`test_network_option.py`、`test_packaging.py`）。
+  - `cleanup-prune-tests`、`cleanup-speed`：是 `test-cleanup` 的组成部分。
+  - `chore/glossary-rename`（10-26，1 个提交）：把 `CONTEXT.md` 改名 `GLOSSARY.md`。main 一直用 `CONTEXT.md`（AGENTS.md、`docs/agents/domain.md`），这条已过时。
+  - 都基于 d146977（11-18），main 之后又有 38 个提交。要保留的话，各开一张工单在新 main 上重做，不直接合旧分支。
+- **一期外的功能候选**（各 spec 的 Out of Scope，要做先在对齐会话讨论）：答案里出图表；查数任务读 dbt 模型说明当业务语义（现在只有验证者读 `target/manifest.json`）；在对话里做 dbt；对话总花费上限。其余（Memory、登录多用户、公网部署、MongoDB 连接器、Langfuse、LiveSQLBench、澄清层消融等）价值低或偏平台。
 
-- 2026-11-21：DAB 同模型差距（plan §10 之后的新一轮）。**下一会话从这里开始。**
-  - 现状：一期工单全部 `done`（到 103，PR #112）；本 HANDOFF 和 plan §10 自 11-17 起没更新，88–103 的结果看各工单 Comments。
-  - 榜单：DAB 0.7588 第 31/56，低于全榜中位数 0.7820；同模型 `deepseek-flash` 的 DUO 0.9230、Stela 0.8114。data-eng-bench 的 Hub 榜单 0 行，没有对比点。两个榜单 PR（DAB #144、data-eng-bench #20）仍 open、没有评论。
-  - 取证：`docs/research/2026-11-21-dab-same-model-gap.md`（f0a1130）。人批准 ADR-0005 第二次例外（Update 2026-11-21）。
-  - spec `.scratch/dab-gap/spec.md`，工单 104 effort 选项、105 `sql-workflow` 通用分析规则、106 `classify_text` 未定与重跑，互不依赖；都是 `needs-triage`，人说在新会话里审和派。派工前要先 push main（`-w` 从 `origin/main` 建 worktree）。
-  - 验证顺序和花费在 spec "验证"一节：effort 对比约 $4–8（小额），全量 540 次约 $14–25（先问人）。新结果另开 DAB PR，#144 保留；Tuned prompt 怎么填提交时由人定（建议新结果填"是"）。
-  - 没处理：`.claude/worktrees/` 下 4 个 11-18 的清理分支（cleanup-prune-features 等，基于 d146977，未合入，来源不明），待人定；根目录未跟踪的 `.playwright-mcp/`。
-- 2026-11-22：DAB 同模型差距这一轮做完（编排会话，人说"可以并行的并行，完成之后继续测试流程"）。**下一会话从这里开始。**
-  - 工单 104–106 都 `done`：104 effort 选项 PR #113（2bc3f0e），105 通用分析规则 PR #114（10cccc6），106 `classify_text` 未定、续跑、多列 PR #115（1044abf；Codex GitHub app 的一条 P2 属实，退回一轮后修好，复审无意见）。106 按人批准重新生成了 `tests/fixtures/chat/eval-unchanged.json`。代码在 69a7e2b。Codex CLI 在这个账号上不能用，`da-review` 由 fable 子 agent 代替。
-  - 集成测试：32 个失败都是本机没有 `DATA_AGENT_TEST_POSTGRES_URL`（环境缺，不是代码）；对话页面 e2e 的澄清用例偶发失败，在合入前后的提交上 A/B 各跑 6 次都 6/6 通过，记成偶发。
-  - spec 验证：第 1 步 `max` 24/60 对默认 31/60、花费 1.65 倍，留默认；第 2 步总体 28/54 对 25/54，过（agnews 那组 4/12 对 6/12，作为事实记录）。
-  - 第 3 步全量重跑（69a7e2b，默认 effort）：no-context 0.7639（209/270），baseline 0.7614（213/270）；第 18b 项是 0.7588、0.7218。差值 +0.25 分，不显著。实付约 $14.04。基础设施中断 2 次（DAB 工具服务器启动时报 `failed`，原因未确认），各重跑一个 trial。细节和逐题变化见 ADR-0008 Update 2026-11-22。
-  - 第 4 步：提交包 `runs/f19c-dab/`（本机和服务器）：`pkg/submission.json`、`data-agent-dab-traces.zip`（14 MB）、`PR.md`（三轮分数并排、每轮看过什么）；自查过了，crmarenapro query12 run3 在沙箱里找过原始数据集的缓存、没找到、答案没过，`PR.md` 照实写。**人定（2026-11-22）不提交这个包**：两次例外都算 Tuned（ADR-0005 Update 2026-11-22），榜上只留盲跑。#144 改成盲跑 0.7421、标否；材料已备好，**剩下的由人做**：建 release `dab-submission-2026-11-13`（tag b7c6071）传 `runs/f19-dab/data-agent-dab-traces.zip`；push `runs/f19-dab/dab-fork`（fork 分支 `data-agent-deepseek-flash` 的 clone）里的本地提交 d36cc71（换答案文件）；`gh pr edit 144` 换标题和说明（`runs/f19-dab/PR-144.md`）。之后 README 的 DAB 分数要改成盲跑 0.7421 为主、三轮并排。
-  - 已知限制：DAB 工具服务器偶发启动失败，stderr 没留，查原因要先让 `evals/dab.py` 留下工具服务器的 stderr；`runs/f18c/par.py` 对上次 exit 非 0 的任务不记日志就跳过；105 没做的项（duckdb、postgres 的 Skill 里仍用 `ROW_NUMBER`，人 2026-11-22 定 wontfix，见工单 105 Comments）；DAB 工具服务器 stderr 由工单 107 留证据；本机没有集成测试用的 Postgres。
-  - 没清理的：`.claude/worktrees/` 下 104–106 三个已合并的 worktree 和分支，以及 11-18 的 4 个清理分支（来源不明，待人定）；根目录未跟踪的 `.playwright-mcp/`。
-  - 服务器在 69a7e2b，没有任务在跑。余额 ¥87.08（2026-11-22 `da-remote check`）。
-- 2026-11-22 收尾（编排会话结束）。**下一会话从这里开始。**
-  - **先做（人做，或人明确让会话代做）**：#144 换成盲跑的三步还没执行（2026-11-22 查：release 不存在，fork 分支仍是 e6d5b07，#144 标题仍是 75.88%）。命令：
-    1. `gh release create dab-submission-2026-11-13 runs/f19-dab/data-agent-dab-traces.zip -R kevinWangSheng/data-agent --target b7c60710d61a923d01b367768913463dc2c6b619 --title "DataAgentBench submission traces (2026-11-13, blind run)" --notes "Traces of the blind run (commit b7c6071) submitted in ucbepic/DataAgentBench#144."`
-    2. `git -C runs/f19-dab/dab-fork push origin data-agent-deepseek-flash`
-    3. `gh pr edit 144 -R ucbepic/DataAgentBench --title "[Leaderboard] data-agent (DeepSeek deepseek-flash): 74.21% local Pass@1" --body-file runs/f19-dab/PR-144.md`
-    - 旧 release `dab-submission-2026-11-15` 换完后没有链接指向它，#144 合入后可删。
-  - 之后的建议顺序（编排会话的建议，人已同意不再针对 DAB 优化）：README 的 DAB 分数改成盲跑 0.7421 为主、三轮并排；查 DAB 工具服务器偶发启动失败（先让 `evals/dab.py` 留下工具服务器的 stderr，不花模型钱）；上下文管理（每轮都有撞上下文上限没答案的 trial，验证放在 data-eng-bench 或开发集，不只看 DAB）；报告补三轮分数和失败归因。
-    - 2026-11-22 对齐会话：下一批是工单 107（DAB 工具服务器 stderr，不花模型钱）和第 3 项上下文管理（每轮都有撞上下文上限没答案的 trial；还没 spec，先对齐；建议第一步只读轨迹诊断，不花模型钱）。duckdb/postgres Skill 的 ROW_NUMBER 人定 wontfix（工单 105 Comments）。
-  - 服务器在 69a7e2b，没有任务在跑；本机没有后台任务。余额 ¥87.08。
+## 已知限制
+
+- DAB 工具服务器偶发启动失败（全量 540 次里 2 次），原因未确认；107 之后每个 trial 留 `dab_server_stderr.log`，要等下次失败。服务器上启动约 7.4 s（导入 5.7 s）。这个文件也收 DAB `BaseTool` 的 INFO 日志，单 trial 约 172 KB。
+- 110 之后 trial 不再在 177k 被拦，轨迹变长，单次花费上升（agnews q3 标价 $0.43 → $0.60）。抽样：stockmarket q2 3/5 → 5/5，agnews q3 仍 0/5（都答完了但全错，分类口径问题，未读轨迹）。压缩摘要由 deepseek-flash 写，可能丢任务细节。
+- 服务器事件里 240 次 dbt `api_error` 全部出自 10-22 的 `dev-3`（共 450 个 trial），都是 `402 Insufficient Balance`，不是 bug。
+- 本机没有集成测试用的 Postgres（`DATA_AGENT_TEST_POSTGRES_URL`），`make test-integration` 有 32 个用例因环境缺失失败；对话页面 e2e 的澄清用例偶发失败。
+- `runs/f18c/par.py`（运行目录里的一次性脚本，不进 git）对上次 exit 非 0 的任务不记日志就跳过。
+- 根目录未跟踪的 `.playwright-mcp/`，待人定是否删除。
+
+## 操作提示
+
+- 派工：`claude -p -w NN-<slug> --model opus --permission-mode auto "/implement <工单绝对路径>"`，输出写 `runs/dispatch/`；派工前本地 main 不能有未 push 的提交。工单会话 source 不了模型 env 文件，真实运行由主会话用 `scripts/da-remote` 做（用仓库里的版本，不用 `~/.local/bin` 的旧版）。
+- `da-remote start` 不透传额外环境变量；要临时变量的运行用 `da-remote exec -- bash -c 'nohup env X=... ...'`（做法见工单 110 Comments）。连续多次 ssh 偶尔被断开，隔一会儿重试即可。
+- 审查：`da-review`（Codex CLI）在这个账号上不能用，用 fable 子 agent 代替（见 memory）；Codex GitHub app 能用，没出审查时评论 `@codex review`。前端工单不用 Codex，见 AGENTS.md。
+- 本机 Docker 是 colima，集成测试前先 `colima start`。
+- 已合并的 worktree 和分支在 2026-11-23 清理完：远端只剩 `main`，本地只剩上面那 5 个待定分支。
+
+---
+
+以下是立项时（2026-09）的背景，保留作参考；其中的榜单现状、对标数据是当时的快照，不代表现状。§6、§7、§9（当时的下一个决策点、待核实项、建议 skills）已经过时，已删除，原文见 git 历史。
 
 ## 0. 一句话
 
@@ -473,17 +129,6 @@
 
 Harbor = Terminal-Bench 团队的容器化 agent 评测框架（Apache-2.0，`uv tool install harbor`），同一份 agent 可复用于 LiveSQLBench-CLI 与 data-eng-bench。
 
-## 6. 下一个决策点
-
-**agent 骨架**：(a) Claude Agent SDK 做 CLI 形态，通过 Harbor 接榜；(b) 沿 SignalPilot 做成 Claude Code/Codex 插件（skills 只在宿主里生效）。影响：Harbor 需要自建 agent Docker 镜像；DAB 需要独立 scaffold。之后按决策点：写操作与 CRUD 的处理方式 → 三类任务 skill 的顺序 → 消融矩阵口径。
-
-## 7. 待核实 / 未确认
-
-- DAB、KramaBench 许可；DABstep 当前榜首；Spider2-DBT 条目日期；ADE-bench 精确题数。
-- SignalPilot benchmark 管线能否脱离其 Cloud 运行；插件 skills 在非 Claude Code 宿主的可移植性。
-- DAB 本地 PG17 + Mongo 8 的资源占用。
-- LiveSQLBench Large-v1（1000 列/库）是否纳入第二阶段。
-
 ## 8. 证据来源
 
 - Data Agent 全景调研（2026-09-07，含 Codex 换模型复核）：https://claude.ai/artifact/LTjfDy1iujQvwAo6hdgsiE
@@ -491,25 +136,9 @@ Harbor = Terminal-Bench 团队的容器化 agent 评测框架（Apache-2.0，`uv
 - DBA-Bench arXiv 2607.22165：Safe Pass 最佳 17.9% vs 人类 93.4%；仓库 https://github.com/TanJI-C/DBA-Bench "Coming Soon"。
 - 两路子调研原文（开源项目扫描 20 仓库；benchmark 扫描 13 项）在原会话中，结论已并入第 4、5 节。
 
-## 9. 建议下一会话调用的 skills
-
-- `eng:domain-modeling`：把第 3 节落成 `CONTEXT.md` + ADR（对标选择、agent 侧五块、评测组合、不做项）。
-- `thinking:grilling`（或 `/grill-with-docs` 若已加载）：只补第 6、7 节的漏，已锁定项不重问。
-- `thinking:research`：核第 7 节未确认项，尤其 Harbor 自定义 agent 镜像与 DAB scaffold。
-- `claude-api`：Claude Agent SDK 的用法与模型 ID（先读再写代码）。
-- `writing:writing-for-agents`：写 SKILL.md 与验证 agent 提示词时用。
-- `eng:tdd` / `code-review`：实现阶段。
-- 之后主流程：`/to-spec` → `/to-tickets` → `/implement`（若已加载）。
-
 ## 10. 协作方式（用户偏好）
 
 - 规划一个决策点一个决策点推进，先证据后结论；别顺从式复述，要带审视。
 - 决策阶段不写代码；口径、验收、分期确认后再执行。
 - 简短优先；"最佳实践"类问题直接给一个答案。
 - 读过 README ≠ 验证过；未核的一律标"未确认"。
-- 2026-11-22 晚（编排会话）：107、108、110 都 `done`。**下一会话从这里开始。**
-  - 108：PR #116 开工前已干净合入（只有 `EvalPage.tsx`），按停止条件只在 main 补记录（c6fdcda）。
-  - 110（PR #118 → d6b9d84）：1M 窗口、367k 自动压缩、`--settings` 打开压缩。真实运行：agnews q3 × 5、stockmarket q2 × 5 共 10/10 `completed`，0 `blocking_limit`，单次请求最大 197,059 token；压缩探针 1 次压缩；dbt 冒烟正常。实付约 $2.17。轨迹变长后单题花费上升（agnews 约 $0.30/次）。要不要重跑 DAB 全量或重新提交，另定。
-  - 107（PR #119 → 3ca3c01）：每个 DAB trial 留 `dab_server_stderr.log` 和启动阶段计时。服务器上启动 7.4 s（导入 5.7 s），本机约 1 s；偶发失败的原因要等下次失败的文件。已知限制：DAB `BaseTool` 的 INFO 日志也进这个文件，单 trial 约 172 KB。
-  - Codex GitHub app 对两个 PR 都无意见。服务器在 3ca3c01，没有任务在跑。余额约 ¥72（未直接核实，按 ¥87.08 减本轮约 $2.2）。
-  - 仍待人做：#144 换成盲跑的三步（见上面收尾节）。
