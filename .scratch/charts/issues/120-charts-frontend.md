@@ -1,6 +1,6 @@
 # 120 — 答案图表：前端（图表组件，接入对话页、运行页、在线站点和时间线）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —（119 只挡合并：spec 定组件可以先按事件样例开工）
 Spec: ../spec.md
 Claimed by: claude-code (Opus 5.5), worktree 120-charts-frontend
@@ -59,8 +59,8 @@ Branch: worktree-120-charts-frontend
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1
+- Attempts: 2
+- Review rounds: 2
 - Model spend: $0
 - Outcome: —
 
@@ -128,3 +128,98 @@ Branch: worktree-120-charts-frontend
   - 退回：有行但没有可画的东西时图是空框。`:247` 只在 `data.length === 0` 时显示"没有数据"提示；散点的系列值全是 NULL、饼图的值全是 0 时，只剩标题和空框。要把"没有可画的点"也算作空，配测试。
   - 退回：recharts 进了主包（约 805 kB → 1.27 MB，每个页面包括在线站点都变慢）。原来不改的理由不成立：`answer-charts.test.ts:145-160` 的 `expectChartsInAnswer` 只查 `data-testid="chart"` 外框、`data-chart-type` 和标题，这些由 `Frame` 渲染、不依赖 recharts。外框照常渲染，画图部分懒加载；验收测试照原样通过（只删过 `.fails`，其余一字不改）。如果懒加载后某个已合入的验收测试确实过不了，停下交回，写明是哪条、为什么。
   - 不修（记成已知限制）：图的 `role="img"` 外层盖住了 recharts 的键盘导航和图例文字（无障碍，小问题）；系列很多时图例挤占 260px 的图区、长类别标签被 recharts 默认隐藏、饼图超过 6 片颜色循环（契约 `i % 6` 定的）；`ScatterTip` 测试用的是手写的 tooltip payload（工单 agent 说用浏览器截图核过，未独立核实）。
+
+- 2026-11-23（退回后第 1 轮，工单 agent 最终回复，主会话照抄）：
+
+- 2026-11-23（工单 agent 最终回复，处理第 7 步 4 条退回；主会话照抄）：
+
+**修了什么**
+
+1. **数值轴刻度丢精度**（`741b1c6`）
+   - 小于 1000 的刻度照原值显示：0.0375、2.25、750。
+   - 1000 及以上用 compact，最多保留 12 位有效数字：2.25K、1.25M，不再出现 2.3K。
+   - 所有值先按 12 位有效数字取整，去掉浮点误差，所以 0.1+0.2 显示成 0.3。
+   - 覆盖 bar/line/area 的 y 轴和 scatter 的两个轴。实现在 `web/src/chart/plot.ts` 的 `tickText`。
+2. **x 为 NULL**（`741b1c6`）
+   - bar/line/area/pie 把 NULL 的 x 显示成 `(null)`，用在刻度、饼图图例和悬停卡片标题上（`withNullX`，`NULL_LABEL`）。
+   - 散点只画 x 和系列值都是数字的点（`scatterPoints`）。
+3. **有行但没有可画的东西**（`741b1c6`）
+   - 新函数 `nothingNote`：散点没有可画的点、饼图没有大于 0 的值、bar/line/area 所有系列值都是 NULL 时，显示一行说明，不画系列，也不出 svg。
+   - 三种说明文字分别是：
+     - "Nothing to draw: no row has both a numeric x and a value."
+     - "Nothing to draw: no slice has a value above 0."
+     - "Nothing to draw: every value is NULL."
+   - 全是 0 的柱图照常画（0 也是值）。
+   - 没有行时的说明照旧："No data to chart…"
+4. **recharts 移出主包**（`741b1c6`）
+   - 懒加载的边界放在 `AnswerCharts.tsx`：`lazy(() => import('./Chart'))`，`Chart.tsx` 本身仍是同步组件，验收测试直接测它，原样通过。
+   - 新文件 `ChartFrame.tsx`（外框、说明、占位）和 `plot.ts` 都不 import recharts。
+   - 画图部分还没加载完时，Suspense 显示外框、标题，加上说明或 260px 高的空框，所以图到了以后页面不跳。
+   - 服务端渲染输出的就是这个占位，`expectChartsInAnswer` 查的就是它。
+   - 主包：站点构建 index-*.js **821.71 kB**、本地构建 **817.29 kB**；退回前 1.27 MB，工单 120 之前约 805 kB。recharts 在单独的 374 kB 块里（BarChart-*.js，和评测页共用），另有 Chart-*.js 75 kB。
+   - 主包里搜 `recharts-` 结果是 0 次。
+   - 新开浏览器打开历史页，只请求 index、runtime、css 和字体，没有请求图表块；进运行页才加载 Chart-*.js 和 BarChart-*.js（这项网络核对在 `741b1c6` 上做的）。
+
+**审查修复**（`eng:code-review main` 第 2 轮后，`ddafef1`、`c1a714d`）
+- 悬停卡片的数字原来固定保留 2 位小数，0.0037 会显示成 0，0.012 显示成 0.01（Standards 和 Spec 两边都报了）。现在 ≥1 保留 2 位小数（46.67、1,234,567.89），<1 保留 4 位有效数字（0.0037、0.6667）。
+- 图表块加载失败（断网、在线站点重新部署后页面没刷新）时，原来整页会因为 lazy 抛错而卸载。现在加了 `ChartLoadBoundary`：每张图保留外框和标题，显示 "Could not load the chart: reload the page to try again."，页面其他部分不受影响。
+- 删掉了 `ChartPlaceholder` 没人用的 `size` 参数；格式化函数改名为 `withoutNoise`、`fullNumber`、`shortNumber`、`cardWhole`、`cardFraction`（原来叫 `exact` 的那个反而会取整）。
+
+**先红后绿**（红的输出都在 `runs/t120/`）
+- `red-r2-dom.txt`：10 个 jsdom 测试修复前失败，例如：
+  - `[ '0','0.8','1.5','2.3','3' ]` 不等于 `[ '0','0.75','1.5','2.25','3' ]`
+  - 饼图图例是 `[ 'East','n' ]`
+  - 柱图刻度只有 `[ 'East' ]`
+  - 三种"没有可画的东西"的情况缺说明
+- 大数值那条：`'2.3K'` 不等于 `'2.25K'`。
+- `red-r2-lazy.txt`：模拟 `./Chart` 加载失败后，`AnswerCharts` 修复前在 import 时就失败。
+- `red-r2-review.txt`：`valueText(0.0037)` 修复前是 `'0'`；46.67 和 0.6667 两条修复前失败；模拟加载失败的 dom 测试修复前失败。
+- 新测试放在 `Chart.dom.test.ts`（追加）、`Chart.test.ts`（`tickText`、`valueText` 表格），以及新文件 `AnswerCharts.test.ts`、`AnswerCharts.dom.test.ts`。
+
+**验证**
+- `make check`（`c1a714d`）：
+  - ruff All checks passed，398 files already formatted
+  - basedpyright 0 errors
+  - pytest 2613 passed / 97 xfailed
+  - web 29 files，417 passed | 10 expected fail（10 个是工单 117 的）
+  - exit=0；输出在 `runs/t120/make-check-r2c.txt`
+- 两个验收文件 42/42 通过，连跑 5 次都稳定。
+- `git diff e914322 -- web/src/chart/acceptance` 为空；相对 main 仍然只删了 23 处 `.fails`。
+- 站点构建：`SITE_DATA=$PWD/runs/t120/site pnpm --dir web build` 结果 "✓ built in 444ms"（`runs/t120/site-build-r2c.txt`）；导出目录沿用第 1 轮的 `runs/t120/site`。
+- 本地构建：`pnpm --dir web build:local`（`runs/t120/build-local-r2c.txt`）。
+
+**截图**（`runs/t120/r2/`，都是 `c1a714d` 的构建，用 Playwright 拍的；每一页用 DOM 查过：只有 1 个 `answer`，里面按顺序是 bar、line、area、scatter、pie，控制台没有错误）
+- 本地对话页：`chat-light.png`、`chat-dark.png`
+- 本地运行页（选中 `t-c3`，错误只在时间线和详情里）：`run-light.png`、`run-dark.png`
+- 在线站点（`vite preview`）：`site-chat-light.png`、`site-chat-dark.png`（录播对话，点了 Show all），`site-run-light.png`、`site-run-dark.png`
+- 边界情况（金样改出来的副本 `runs/t120/local/20261123T100200Z-edge01`，金样本身没动）：
+  - 整页：`edge-light.png`、`edge-dark.png`
+    - 比率柱图刻度 `0|0.015|0.03|0.045|0.06`，含 `(null)` 类别
+    - 堆叠面积图刻度 `0|0.75|1.5|2.25|3`
+  - 下半部分的单图：`edge-{light,dark}-3-area.png`、`-4-scatter.png`（"Nothing to draw" 说明）、`-5-pie.png`（`(null)` 扇区）
+- 悬停卡片：`tooltip-ratio.png`，显示 "Gold / Return rate 0.012"。
+- 图表块加载失败（用 `page.route` 拦掉 Chart-*.js）：`chunk-failed.png`，5 个外框都有说明，答案文字、时间线、结果表都还在。
+- `history-no-charts.png` 是 `741b1c6` 上拍的。
+
+**审查结果和不修的理由**
+- Standards：没有硬违规。
+- Spec：没有阻断问题。
+- 已修：见上面"审查修复"。
+- 不修：
+  - 字面值就是 `"(null)"` 的类别会和 NULL 合并显示：很少见，记成已知限制。
+  - 画图本身抛错时，也会显示"Could not load the chart"：错误边界不区分是加载失败还是画图出错，两种情况都保留外框，比白屏好。
+  - 给 `size` 的路径没有 `role="img"`：只有测试走这条路径。
+  - bar/line/area 三个分支、两张提示卡片的重复属性：理由同第 1 轮。
+  - `--k-chart`：第 1 轮已经在"偏离"里写明。
+  - 只给 bar/line/area 加"全是 NULL"的说明，超出了退回原文（原文只点名散点和饼图）：算同一类问题，规则一致，也有测试。
+
+**核对 119 时请一并看**
+- 如果真实返回值把 DECIMAL/NUMERIC 列写成字符串而不是数字，bar/line/area 会显示 "every value is NULL"，散点和饼图同样显示 "Nothing to draw"。118 的契约是"数字就是数字"，金样也是数字。
+- 第 1 轮提过的：`title` 或 series 的 `label` 缺了，图会被直接丢掉。
+
+**待人定**（新增，都按最保守的做法先做了）
+- NULL 的标签文字 `(null)`。
+- 三种"没有可画的东西"的说明文字，以及加载失败的说明文字。
+- 悬停数字的规则：≥1 保留 2 位小数，<1 保留 4 位有效数字。
+- 第 1 轮列的待人定照旧。
+- 第 1 轮"偏离"里"首屏包变大，没改"那条作废，主包已恢复到约 820 kB。
