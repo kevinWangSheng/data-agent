@@ -106,6 +106,8 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。
 
+`make test-integration` 只在本机手动跑（CI 和服务器都不跑）。其中的 Postgres 用例（`tests/test_postgres.py`、`tests/test_eval_jaffle.py`、`tests/test_db_facts.py`、`tests/test_verifier_v2_tools.py` 和接缝 B 的 Postgres 变体，2026-11 共 32 个）要环境变量 `DATA_AGENT_TEST_POSTGRES_URL` 指向一个本机临时库，没设就失败。要跑时用 colima 起一个临时容器：`postgres:17`，只绑 127.0.0.1，随机密码，跑完删容器；每个 worktree 用自己的库名或端口。
+
 ## 以后才要
 
 | # | 资源 | 用于 |
