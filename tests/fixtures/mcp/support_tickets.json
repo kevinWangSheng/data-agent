@@ -1,0 +1,16 @@
+[
+  {"ticket_id": "T-1001", "customer_id": "C0001", "subject": "Late delivery", "status": "closed", "opened_on": "2025-03-12"},
+  {"ticket_id": "T-1002", "customer_id": "C0004", "subject": "Wrong size", "status": "closed", "opened_on": "2025-06-05"},
+  {"ticket_id": "T-1003", "customer_id": "C0002", "subject": "Refund question", "status": "open", "opened_on": "2025-05-06"},
+  {"ticket_id": "T-1004", "customer_id": "C0004", "subject": "Damaged parcel", "status": "closed", "opened_on": "2025-06-10"},
+  {"ticket_id": "T-1005", "customer_id": "C0007", "subject": "Address change", "status": "closed", "opened_on": "2025-07-20"},
+  {"ticket_id": "T-1006", "customer_id": "C0001", "subject": "Missing item", "status": "closed", "opened_on": "2025-04-11"},
+  {"ticket_id": "T-1007", "customer_id": "C0004", "subject": "Return label", "status": "open", "opened_on": "2025-06-15"},
+  {"ticket_id": "T-1008", "customer_id": "C0010", "subject": "Login problem", "status": "closed", "opened_on": "2025-08-01"},
+  {"ticket_id": "T-1009", "customer_id": "C0004", "subject": "Refund delay", "status": "open", "opened_on": "2025-06-30"},
+  {"ticket_id": "T-1010", "customer_id": "C0002", "subject": "Invoice copy", "status": "closed", "opened_on": "2025-05-12"},
+  {"ticket_id": "T-1011", "customer_id": "C0011", "subject": "Gift wrap", "status": "closed", "opened_on": "2025-09-03"},
+  {"ticket_id": "T-1012", "customer_id": "C0001", "subject": "Late delivery", "status": "open", "opened_on": "2025-04-16"},
+  {"ticket_id": "T-1013", "customer_id": "C0007", "subject": "Coupon not applied", "status": "closed", "opened_on": "2025-07-25"},
+  {"ticket_id": "T-1014", "customer_id": "C0004", "subject": "Late delivery", "status": "closed", "opened_on": "2025-07-02"}
+]

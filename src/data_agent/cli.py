@@ -318,6 +318,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     run_cmd.add_argument("--sandbox", choices=BACKENDS, default="docker", help=SANDBOX_HELP)
     run_cmd.add_argument("--dbt-target", choices=TARGETS, default="task", help=DBT_TARGET_HELP)
+    run_cmd.add_argument(
+        "--mcp-servers",
+        type=Path,
+        help="JSON file of external MCP servers: Claude Code / Cursor `mcpServers`, plus an "
+        "`allowedTools` list per server (never on an evaluation run)",
+    )
 
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
     web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
@@ -326,6 +332,12 @@ def main(argv: list[str] | None = None) -> None:
         "--data-sources",
         type=Path,
         help="TOML file naming the data sources the run form offers (none without it)",
+    )
+    web.add_argument(
+        "--mcp-servers",
+        type=Path,
+        help="JSON file of external MCP servers for every run: Claude Code / Cursor "
+        "`mcpServers`, plus an `allowedTools` list per server",
     )
 
     args = parser.parse_args(argv)
