@@ -9,7 +9,7 @@
 
 - **plan §10 第 1–26 项**都已完成（第 23 项博客可选，没做）。工单全部 `done`，最后一批是 107、108、110（2026-11-22）。没有 `ready-for-agent` 的工单。
 - **榜单提交**（都 open，对方没有评论）：
-  - DAB：ucbepic/DataAgentBench #144，盲跑 0.7421（b7c6071），Tuned prompt 标否；轨迹在 release `dab-submission-2026-11-13`。换成盲跑的三步已做完（fork 分支在 d36cc71）。#144 合入后可删旧 release `dab-submission-2026-11-15`。
+  - DAB：ucbepic/DataAgentBench #144，盲跑 0.7421（b7c6071），Tuned prompt 标否；轨迹在 release `dab-submission-2026-11-13`。换成盲跑的三步已做完（fork 分支在 d36cc71）。旧 release `dab-submission-2026-11-15`（第一次例外那轮的轨迹）保留不删：#144、README、报告都不引用它，删了不可恢复也没收益（人 2026-11-23 定）。
   - data-eng-bench：Snowflake-Labs/data-eng-bench #20，64.1% ± 1.6（ea740b5，no-verifiers，103 × 3）。
 - **分数对应的代码版本**：README 和报告里的每个分数都标了 commit。DAB 在沙箱改造（工单 97–101）之后跑过一次全量（69a7e2b，0.7639，两次例外算 Tuned，不提交）；data-eng-bench 全量是改造前的 ea740b5，改造后的证据是工单 100 的跑分验收（开发集 full × 3 不低于 main，小样本不低于上次正式成绩）。110（1M 窗口、自动压缩）之后没跑过全量。
 - **在线版**：`https://kevinwangsheng.github.io/data-agent/`，main 每次 push 由 Pages 工作流重新构建。
@@ -43,7 +43,13 @@
 
 ### 下一步（新会话从这里开始）
 
-5. **之后再讨论（一次一个主题）**：项目终点（二期要不要做、做什么，先看 JD 覆盖的 Memory、多 Agent 协作）→ 冻结后再做展示：求职材料 → 报告和 README 中文版 → 视频 → 博客（给视频引流，没准备好就推迟）。根目录 `.playwright-mcp/` 待人定。
+5. **还没做、待人定的（2026-11-23 核对，一次讨论一个）**：
+   - 录视频：plan 定了第 24 项对话界面做完再录，24 已完成，视频没录。
+   - 博客（可选）：排在视频之后，给视频引流，没准备好就推迟。
+   - 报告和 README 中文版：做不做待人定。
+   - 求职材料：只排了顺序（冻结后做），内容没讨论。
+   - 根目录 `.playwright-mcp/`（浏览器工具的 92 个调试日志和截图，2.1 MB，11-15 到 11-17）：建议删掉并加进 `.gitignore`，待人点头。
+   - 项目终点（要不要再做新功能，先看 JD 覆盖的 Memory、多 Agent 协作）放在展示之前讨论。
 - 11-18 的 4 个清理分支（`cleanup-prune-features`、`test-cleanup`、`cleanup-prune-tests`、`cleanup-speed`）和 `chore/glossary-rename` 已由人定删除（2026-11-23，未合入；内容见 `6adb612`、`e84a615`、`0447ec4` 等提交，可能被 gc 回收）。
 - **一期外的功能候选**（各 spec 的 Out of Scope，要做先在对齐会话讨论）：答案里出图表；查数任务读 dbt 模型说明当业务语义（现在只有验证者读 `target/manifest.json`）；在对话里做 dbt；对话总花费上限。其余（Memory、登录多用户、公网部署、MongoDB 连接器、Langfuse、LiveSQLBench、澄清层消融等）价值低或偏平台。
 
@@ -52,16 +58,15 @@
 - DAB 工具服务器偶发启动失败（全量 540 次里 2 次），原因未确认；107 之后每个 trial 留 `dab_server_stderr.log`，要等下次失败。服务器上启动约 7.4 s（导入 5.7 s）。这个文件也收 DAB `BaseTool` 的 INFO 日志，单 trial 约 172 KB。
 - 110 之后 trial 不再在 177k 被拦，轨迹变长，单次花费上升（agnews q3 标价 $0.43 → $0.60）。抽样：stockmarket q2 3/5 → 5/5，agnews q3 仍 0/5（都答完了但全错，分类口径问题，未读轨迹）。压缩摘要由 deepseek-flash 写，可能丢任务细节。
 - 服务器事件里 240 次 dbt `api_error` 全部出自 10-22 的 `dev-3`（共 450 个 trial），都是 `402 Insufficient Balance`，不是 bug。
-- 本机没有集成测试用的 Postgres（`DATA_AGENT_TEST_POSTGRES_URL`），`make test-integration` 有 32 个用例因环境缺失失败；对话页面 e2e 的澄清用例偶发失败。
+- 对话页面 e2e（`make test-integration` 里，调真模型）的澄清用例偶发失败，原因未查；推测是模型输出波动，未确认。只记限制，不排修复。
 - `runs/f18c/par.py`（运行目录里的一次性脚本，不进 git）对上次 exit 非 0 的任务不记日志就跳过。
-- 根目录未跟踪的 `.playwright-mcp/`，待人定是否删除。
 
 ## 操作提示
 
 - 派工：`claude -p -w NN-<slug> --model opus --permission-mode auto "/implement <工单绝对路径>"`，输出写 `runs/dispatch/`；派工前本地 main 不能有未 push 的提交。工单会话 source 不了模型 env 文件，真实运行由主会话用 `scripts/da-remote` 做（用仓库里的版本，不用 `~/.local/bin` 的旧版）。
 - `da-remote start` 不透传额外环境变量；要临时变量的运行用 `da-remote exec -- bash -c 'nohup env X=... ...'`（做法见工单 110 Comments）。连续多次 ssh 偶尔被断开，隔一会儿重试即可。
 - 审查：`da-review`（Codex CLI）在这个账号上不能用，用 fable 子 agent 代替（见 memory）；Codex GitHub app 能用，没出审查时评论 `@codex review`。前端工单不用 Codex，见 AGENTS.md。
-- 本机 Docker 是 colima，集成测试前先 `colima start`。
+- 本机 Docker 是 colima，集成测试前先 `colima start`。集成测试设计为本机手动跑（CI 和服务器都不跑）；其中 32 个 Postgres 用例要 `DATA_AGENT_TEST_POSTGRES_URL` 指向一个本机临时库，没设就失败，不是代码问题。要跑时起一个临时 Postgres 容器再设这个变量（做法同 2026-11-23 的 jaffle 重跑：`docker run postgres:17`，绑 127.0.0.1，随机密码，跑完删容器）。
 - 已合并的 worktree 和分支在 2026-11-23 清理完：本地和远端都只剩 `main`。
 
 ---
