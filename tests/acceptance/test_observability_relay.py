@@ -336,7 +336,7 @@ def test_an_unparsable_request_is_reported_and_nothing_is_sent(langfuse: FakeLan
 
 @TICKET_113
 def test_stop_forwards_every_request_already_taken(langfuse: FakeLangfuse) -> None:
-    langfuse.delay_s = 0.3
+    langfuse.delay_s = 1.0
     relay = relay_for(langfuse.settings())
     endpoint = relay.start()
     bodies = [cli_request(langfuse.planted) for _ in range(3)]
