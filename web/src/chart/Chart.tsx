@@ -15,9 +15,12 @@
 //   `rgb(r, g, b)` literals (the palette test computes their contrast from the CSS text).
 // - `stacked` bars of a row stand on one another (one x); unstacked they stand side by side.
 // - With no rows it shows the title and a line saying there is no data, draws no series, and does
-//   not throw.
+//   not throw. So it does with rows but nothing to draw (./plot.ts `nothingNote`).
+//
+// The pages load this module (and recharts with it) lazily, through ./AnswerCharts.tsx; what they
+// need before it arrives is in ./ChartFrame.tsx and ./plot.ts.
 
-import type { JSX, ReactNode } from 'react'
+import type { JSX } from 'react'
 import {
   Area,
   AreaChart,
@@ -38,7 +41,9 @@ import {
   YAxis,
 } from 'recharts'
 
+import { CHART_HEIGHT, Frame, Note } from './ChartFrame'
 import { chartKind, type ChartPayload, type ChartRow, type ChartSpec } from './model'
+import { NULL_LABEL, nothingNote, POINT_SERIES, POINT_X, POINT_Y, scatterPoints, tickText, valueText, withNullX } from './plot'
 
 export type ChartProps = {
   payload: ChartPayload
@@ -46,19 +51,7 @@ export type ChartProps = {
   size?: { width: number; height: number }
 }
 
-/** Without `size`: the container's full width at this height. */
-export const CHART_HEIGHT = 260
-
 const seriesColour = (i: number) => `var(--chart-series-${(i % 6) + 1})`
-
-const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
-const exact = new Intl.NumberFormat('en', { maximumFractionDigits: 2 })
-
-/** A value axis tick: numbers short (12K). A category x (bar, line, area) is shown as the query
- *  result gives it, so a year stays 2021. */
-const tickText = (v: unknown) => (typeof v === 'number' ? compact.format(v) : String(v))
-/** A value on the hover card: numbers in full with thousands separators; NULL as a dash. */
-export const valueText = (v: unknown) => (typeof v === 'number' ? exact.format(v) : v === null || v === undefined ? '—' : String(v))
 
 const AXIS = { stroke: 'var(--line-2)', tick: { fill: 'var(--ink-3)', fontSize: 11 }, tickLine: false } as const
 const MARGIN = { top: 8, right: 12, bottom: 4, left: 0 }
@@ -78,7 +71,7 @@ function Tip({ active, payload, label, x }: { active?: boolean; payload?: readon
   const heading = x === null ? undefined : (label ?? payload[0]?.payload?.[x])
   return (
     <div className="pane px-2.5 py-1.5 shadow-md text-[11.5px]">
-      {heading !== undefined && <div className="text-ink-2 mb-0.5">{heading === null ? '—' : String(heading)}</div>}
+      {heading !== undefined && <div className="text-ink-2 mb-0.5">{heading === null ? NULL_LABEL : String(heading)}</div>}
       {payload.map((e, i) => (
         <div key={i} className="flex items-center gap-1.5">
           <span className="inline-block w-2 h-2 rounded-[2px]" style={{ background: e.color }} />
@@ -180,18 +173,7 @@ function cartesian(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element 
   )
 }
 
-// A scatter point's own keys, so no column name (even `y`) can clash with them. Its series' label
-// rides along: recharts names a scatter tooltip's entries by axis, not by series.
-const POINT_X = '__x'
-const POINT_Y = '__y'
-const POINT_SERIES = '__series'
-
-/** Each series' points: one per row whose series value is a number. */
-export function scatterPoints(chart: ChartSpec, data: ChartRow[]): Record<string, unknown>[][] {
-  return chart.series.map((s) => data.filter((r) => typeof r[s.column] === 'number').map((r) => ({ [POINT_X]: r[chart.x], [POINT_Y]: r[s.column], [POINT_SERIES]: s.label })))
-}
-
-/** scatter: x and every series are numbers (the server checks); one point per row with a value. */
+/** scatter: x and every series are numbers (the server checks); one point per row with both. */
 function scatter(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element {
   const { x, series } = chart
   const points = scatterPoints(chart, data)
@@ -233,24 +215,19 @@ function pie(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element {
   )
 }
 
-function Frame({ chart, children }: { chart: ChartSpec; children: ReactNode }) {
-  return (
-    <figure data-testid="chart" data-chart-type={chart.chart_type} className="pane m-0 px-3 py-2.5 min-w-0">
-      <figcaption className="text-[12.5px] font-semibold text-ink mb-1.5">{chart.title}</figcaption>
-      {children}
-    </figure>
-  )
-}
-
 export function Chart({ payload, size }: ChartProps): JSX.Element {
-  const { chart, data } = payload
-  if (data.length === 0)
+  const { chart } = payload
+  const note = nothingNote(payload)
+  if (note !== null)
     return (
       <Frame chart={chart}>
-        <div className="text-[12px] text-ink-3">No data to chart: the query returned no rows.</div>
+        <Note text={note} />
       </Frame>
     )
-  const draw = { cartesian, scatter, pie }[chartKind(chart.chart_type)]
+  const kind = chartKind(chart.chart_type)
+  const draw = { cartesian, scatter, pie }[kind]
+  // A category x (bar, line, area, pie) names its NULL; a scatter leaves out a point without x.
+  const data = kind === 'scatter' ? payload.data : withNullX(chart, payload.data)
   if (size) return <Frame chart={chart}>{draw(chart, data, size)}</Frame>
   return (
     <Frame chart={chart}>

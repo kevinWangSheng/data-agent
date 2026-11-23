@@ -6,10 +6,10 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, test } from 'vitest'
 
-import { AnswerCharts } from './AnswerCharts'
-import { CHART_HEIGHT, Chart, ScatterTip, scatterPoints, valueText } from './Chart'
+import { Chart, ScatterTip } from './Chart'
+import { CHART_HEIGHT } from './ChartFrame'
 import type { ChartPayload } from './model'
-import type { RunView } from '../run-view/model'
+import { scatterPoints, tickText, valueText } from './plot'
 
 const PAYLOAD: ChartPayload = {
   chart: { query_id: 'query_1', chart_type: 'line', x: 'month', series: [{ column: 'revenue', label: 'Revenue' }], stacked: false, title: 'Monthly revenue' },
@@ -49,13 +49,6 @@ describe('ScatterTip', () => {
   })
 })
 
-describe('AnswerCharts', () => {
-  test('a run without charts renders nothing', () => {
-    const view = { steps: [] } as unknown as RunView
-    expect(renderToStaticMarkup(createElement(AnswerCharts, { view }))).toBe('')
-  })
-})
-
 describe('valueText', () => {
   test.each([
     [1234567.891, '1,234,567.89'],
@@ -64,5 +57,21 @@ describe('valueText', () => {
     ['2024-01-01', '2024-01-01'],
   ] as const)('%s reads %s', (v, text) => {
     expect(valueText(v)).toBe(text)
+  })
+})
+
+describe('tickText', () => {
+  test.each([
+    [0, '0'],
+    [0.0375, '0.0375'],
+    [0.1 + 0.2, '0.3'],
+    [2.25, '2.25'],
+    [750, '750'],
+    [2250, '2.25K'],
+    [-1500, '-1.5K'],
+    [1_250_000, '1.25M'],
+    ['2021', '2021'],
+  ] as const)('%s reads %s', (v, text) => {
+    expect(tickText(v)).toBe(text)
   })
 })

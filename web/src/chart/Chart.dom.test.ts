@@ -88,3 +88,81 @@ describe('Chart', () => {
     expect(error.mock.calls.flat().join(' ')).not.toMatch(/same key/i)
   })
 })
+
+const yTicks = (c: HTMLElement) => [...c.querySelectorAll('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
+const xTicks = (c: HTMLElement) => [...c.querySelectorAll('.recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
+const one = (chart_type: ChartPayload['chart']['chart_type'], x: string, column: string, data: ChartPayload['data'], stacked = false): ChartPayload => ({
+  chart: { query_id: 'query_1', chart_type, x, series: [{ column, label: 'Value' }], stacked, title: `${chart_type} chart` },
+  data,
+})
+
+describe('Chart axis ticks', () => {
+  test('small ratios keep their digits: every tick distinct, none rounded to 0', async () => {
+    const c = await draw(one('bar', 'tier', 'rate', [{ tier: 'a', rate: 0.012 }, { tier: 'b', rate: 0.03 }, { tier: 'c', rate: 0.045 }]))
+    const ticks = yTicks(c)
+    expect(ticks.length).toBeGreaterThan(2)
+    expect(new Set(ticks).size).toBe(ticks.length)
+    expect(ticks.filter((t) => t === '0')).toHaveLength(1)
+  })
+
+  test('a stacked area up to 3 shows 0.75 and 2.25 as they are', async () => {
+    const payload: ChartPayload = {
+      chart: { query_id: 'query_1', chart_type: 'area', x: 'm', series: [{ column: 'a', label: 'A' }, { column: 'b', label: 'B' }], stacked: true, title: 'Stacked' },
+      data: [{ m: 'Jan', a: 1, b: 2 }, { m: 'Feb', a: 1.5, b: 1.5 }],
+    }
+    expect(yTicks(await draw(payload))).toEqual(['0', '0.75', '1.5', '2.25', '3'])
+  })
+
+  test('large values stay short without losing a nice tick (2.25K, not 2.3K)', async () => {
+    const ticks = yTicks(await draw(one('bar', 'k', 'v', [{ k: 'a', v: 1000 }, { k: 'b', v: 3000 }])))
+    expect(ticks).toEqual(['0', '750', '1.5K', '2.25K', '3K'])
+  })
+
+  test('scatter: both axes keep small ratios distinct', async () => {
+    const data = [0.012, 0.02, 0.031, 0.045].map((r, i) => ({ x: r, y: r * 2 + i * 0.001 }))
+    const c = await draw(one('scatter', 'x', 'y', data))
+    for (const ticks of [xTicks(c), yTicks(c)]) {
+      expect(ticks.length).toBeGreaterThan(2)
+      expect(new Set(ticks).size).toBe(ticks.length)
+    }
+  })
+})
+
+describe('Chart with a NULL x', () => {
+  test('bar: the NULL category gets its own tick, (null)', async () => {
+    const c = await draw(one('bar', 'region', 'n', [{ region: 'East', n: 3 }, { region: null, n: 2 }]))
+    expect(xTicks(c)).toEqual(['East', '(null)'])
+    expect(c.querySelectorAll('.recharts-bar-rectangle')).toHaveLength(2)
+  })
+
+  test('pie: the NULL slice is named (null), not by the series', async () => {
+    const c = await draw(one('pie', 'region', 'n', [{ region: 'East', n: 3 }, { region: null, n: 2 }]))
+    const names = [...c.querySelectorAll('.recharts-legend-item-text')].map((t) => t.textContent)
+    expect(names).toEqual(['East', '(null)'])
+  })
+
+  test('scatter: a point without a numeric x is not drawn', async () => {
+    const c = await draw(one('scatter', 'x', 'y', [{ x: 1, y: 2 }, { x: null, y: 3 }, { x: 2, y: 4 }]))
+    expect(c.querySelectorAll('.recharts-scatter-symbol')).toHaveLength(2)
+  })
+})
+
+describe('Chart with rows but nothing to draw', () => {
+  const nothing = (c: HTMLElement) => c.querySelector('[data-testid="chart"]')?.textContent ?? ''
+
+  test.each([
+    ['scatter, every series value NULL', one('scatter', 'x', 'y', [{ x: 1, y: null }, { x: 2, y: null }]), 'scatter'],
+    ['pie, every value 0', one('pie', 'k', 'v', [{ k: 'a', v: 0 }, { k: 'b', v: 0 }]), 'pie'],
+    ['line, every value NULL', one('line', 'm', 'v', [{ m: 'Jan', v: null }, { m: 'Feb', v: null }]), 'line'],
+  ] as const)('%s: a note, no series, no svg', async (_, payload, type) => {
+    const c = await draw(payload)
+    expect(nothing(c)).toContain('Nothing to draw')
+    expect(c.querySelectorAll(`.recharts-${type}`)).toHaveLength(0)
+    expect(c.querySelector('svg')).toBeNull()
+  })
+
+  test('bar of real zeros is still drawn', async () => {
+    const c = await draw(one('bar', 'k', 'v', [{ k: 'a', v: 0 }, { k: 'b', v: 0 }]))
+    expect(c.querySelectorAll('.recharts-bar')).toHaveLength(1)
+  })
+})
