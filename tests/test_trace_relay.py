@@ -418,8 +418,11 @@ def test_the_held_out_tier_lets_out_no_trace_state_unknown_field_or_nested_value
     nested.value.string_value = "nested-content"
     # Field 99 of Span, unknown to this opentelemetry-proto: tag (99 << 3 | 2), length, bytes.
     span.MergeFromString(b"\x9a\x06\x0eunknown-secret")
+    usage = span.attributes.add()
+    usage.key = "gen_ai.usage.future_note"
+    usage.value.string_value = "usage-text"
     out = rewrite(message.SerializeToString(), tier="structure", ids=AnonIds(), secrets=())
-    for gone in (b"secret-state", b"nested-content", b"unknown-secret"):
+    for gone in (b"secret-state", b"nested-content", b"unknown-secret", b"usage-text"):
         assert gone not in out, gone
     kept = rewrite(message.SerializeToString(), tier="full", ids=AnonIds(), secrets=())
     assert b"unknown-secret" in kept and b"nested-content" in kept

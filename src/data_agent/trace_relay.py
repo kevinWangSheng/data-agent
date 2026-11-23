@@ -96,7 +96,8 @@ HELD_OUT_ALLOWLIST = frozenset(
         "span.type",
     }
 )
-SCALARS = frozenset({"string_value", "bool_value", "int_value", "double_value"})
+NUMBERS = frozenset({"int_value", "double_value"})
+SCALARS = NUMBERS | {"string_value", "bool_value"}
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -220,10 +221,12 @@ def _rewrite_attributes(
             kind = kv.value.WhichOneof("value")
             if key in ANONYMIZED_IDS and kind == "string_value":
                 kv.value.string_value = ids(kv.value.string_value)
-            elif (
-                key not in HELD_OUT_ALLOWLIST and not key.startswith(USAGE_PREFIXES)
-            ) or kind not in SCALARS:
-                # An allowlisted name holding a list, a map or bytes is not the field it names.
+            elif not (
+                (key in HELD_OUT_ALLOWLIST and kind in SCALARS)
+                or (key.startswith(USAGE_PREFIXES) and kind in NUMBERS)
+            ):
+                # An allowlisted name holding a list, a map or bytes is not the field it names;
+                # a usage key holds a count.
                 dropped.append(index)
                 continue
         _clean_value(kv.value, clean)
