@@ -344,7 +344,7 @@
 - 2026-11-23 核对剩余事项（人定）：旧 release `dab-submission-2026-11-15` 保留不删（#144、README、报告都不引用它）；本机集成测试缺 Postgres 不算待办（集成测试设计为本机手动跑，要跑时起临时库，见 `docs/setup.md`）；对话页面 e2e 澄清用例偶发失败只记限制。还没做、待人定的：录视频（第 23 项，24 已完成）、博客（可选）、报告和 README 中文版、求职材料，见 `HANDOFF.md`"下一步"。
 - 2026-11-23 根目录 `.playwright-mcp/`（浏览器工具的调试日志、页面快照和截图，未跟踪）已删，加进 `.gitignore`（人定）。
 - 2026-11-23 项目终点讨论（人定）：不再分一期二期，要做的内容统一排序。
-  - 做：可观测性（Langfuse，spec `.scratch/observability/spec.md`，工单 111–114）→ 外部 MCP 接入（spec `.scratch/mcp/spec.md`，工单 115–117；对外暴露 MCP 不做）→ 答案图表（spec `.scratch/charts/spec.md`，工单 118–120）→ IM 入口（spec `.scratch/im/spec.md`，工单 121–124）→ 小范围自动改写 Skill（spec `.scratch/skill-improve/spec.md`，工单 125–126）→ LiveSQLBench（接入后全量要人批）。前三项可并行，改 agent 行为的做完再跑大评测。
+  - 做：可观测性（Langfuse，spec `.scratch/observability/spec.md`，工单 111–114）→ 外部 MCP 接入（spec `.scratch/mcp/spec.md`，工单 115–117；对外暴露 MCP 不做）→ 答案图表（spec `.scratch/charts/spec.md`，工单 118–120）→ IM 入口（spec `.scratch/im/spec.md`，工单 121–124）→ 小范围自动改写 Skill（spec `.scratch/skill-improve/spec.md`，工单 125–126）→ LiveSQLBench（spec `.scratch/livesqlbench/spec.md`，工单 127–129；Base-Lite 180 道 SELECT，开发 60 / 留出 120，留出集 2×2 消融，全量要人批）。前三项可并行，改 agent 行为的做完再跑大评测。
   - 放后面：Memory（以后讨论接哪个第三方组件，不自研）；视频、博客、中文版、求职材料最后做。
   - 不做：澄清层消融、平台类（登录多用户、公网部署、中文界面等）、CRUD、micro-VM、C 区补跑（第二个模型可再单独讨论）。
   - 取证：`docs/research/2026-11-23-*.md`（observability、otel-spike、langfuse-usage-mapping、sdk-upgrade-0.2.187、external-mcp、livesqlbench）。
