@@ -25,7 +25,7 @@ from typing import Any
 
 import duckdb
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError, ResultMessage
+from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from observability_support import (
     CONTENT_SWITCHES,
@@ -34,12 +34,13 @@ from observability_support import (
     RELAY_ENDPOINT,
     REPORT_WITH_ERRORS,
     SECRET_KEY,
+    ExportStandIns,
     FakeLangfuse,
     Forbidden,
     NoNetwork,
-    Traced,
     cli_env,
     read_events,
+    result_message,
     truthy_content_switches,
 )
 from opentelemetry import trace as otel_trace
@@ -81,25 +82,6 @@ EXPORT_SWITCHES = {
     "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
     "OTEL_TRACES_EXPORT_INTERVAL": "1000",
 }
-
-
-def result_message() -> ResultMessage:
-    return ResultMessage(
-        subtype="success",
-        duration_ms=1,
-        duration_api_ms=1,
-        is_error=False,
-        num_turns=1,
-        session_id="s",
-        usage={
-            "input_tokens": 3,
-            "cache_creation_input_tokens": 2,
-            "cache_read_input_tokens": 5,
-            "output_tokens": 7,
-        },
-        total_cost_usd=0.01,
-        result="42",
-    )
 
 
 class Session:
@@ -297,7 +279,7 @@ def test_the_run_commands_trace_tier_picks_the_sessions_tier(
     flags: tuple[str, ...],
     tier: TraceTier,
 ) -> None:
-    traced = Traced(monkeypatch)
+    traced = ExportStandIns(monkeypatch)
     for name, value in langfuse.env().items():
         monkeypatch.setenv(name, value)
     with pytest.raises(SystemExit):
@@ -321,7 +303,7 @@ async def traced_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     langfuse: FakeLangfuse,
-    traced: Traced,
+    traced: ExportStandIns,
     *,
     tier: TraceTier = "full",
     turn: ConversationTurn | None = None,
@@ -343,7 +325,7 @@ async def traced_run(
     return outcome, read_events(outcome.events_path), session, env
 
 
-def root_span(traced: Traced, before: int = 0) -> Any:
+def root_span(traced: ExportStandIns, before: int = 0) -> Any:
     """The one `data-agent.run` span exported since `before` spans had been, with no parent."""
     runs = [s for s in traced.finished()[before:] if s.name == "data-agent.run"]
     assert len(runs) == 1, [s.name for s in traced.finished()]
@@ -379,7 +361,7 @@ def assert_usage_and_cost(attributes: Any, result: dict[str, Any]) -> None:
 async def test_the_run_has_one_parent_span_named_tagged_and_priced_from_its_events(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
-    traced = Traced(monkeypatch)
+    traced = ExportStandIns(monkeypatch)
     # Not `full`, which is also the tier's name: the tag must be the config's.
     _, events, _, _ = await traced_run(monkeypatch, tmp_path, langfuse, traced, config="no-context")
     attributes = root_span(traced).attributes
@@ -399,7 +381,7 @@ async def test_the_run_has_one_parent_span_named_tagged_and_priced_from_its_even
 async def test_the_trace_event_names_the_parent_spans_trace_and_the_relays_counts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
-    traced = Traced(monkeypatch)
+    traced = ExportStandIns(monkeypatch)
     outcome, events, session, env = await traced_run(monkeypatch, tmp_path, langfuse, traced)
     trace_id = format(root_span(traced).context.trace_id, "032x")
     trace = one(events, "trace")
@@ -426,7 +408,7 @@ async def test_the_trace_event_names_the_parent_spans_trace_and_the_relays_count
 async def test_each_relay_error_is_one_trace_export_error_event_and_the_run_goes_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
-    traced = Traced(monkeypatch, REPORT_WITH_ERRORS)
+    traced = ExportStandIns(monkeypatch, REPORT_WITH_ERRORS)
     outcome, events, _, _ = await traced_run(monkeypatch, tmp_path, langfuse, traced)
     errors = [e for e in events if e["type"] == "trace_export_error"]
     assert [(e["error_type"], e["status"]) for e in errors] == [
@@ -444,7 +426,7 @@ async def test_each_relay_error_is_one_trace_export_error_event_and_the_run_goes
 async def test_a_conversations_turns_share_its_session_in_two_traces(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
-    traced = Traced(monkeypatch)
+    traced = ExportStandIns(monkeypatch)
     conversation = tmp_path / "conv-2f9b61"
     conversation.mkdir()
     trace_ids = []
@@ -462,7 +444,7 @@ async def test_a_conversations_turns_share_its_session_in_two_traces(
 async def test_each_single_run_is_a_session_of_its_own(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
-    traced = Traced(monkeypatch)
+    traced = ExportStandIns(monkeypatch)
     ids = []
     for _ in range(2):
         before = len(traced.finished())
@@ -475,7 +457,7 @@ async def test_each_single_run_is_a_session_of_its_own(
 async def test_the_held_out_tiers_parent_span_names_no_run_task_or_conversation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
-    traced = Traced(monkeypatch)
+    traced = ExportStandIns(monkeypatch)
     conversation = tmp_path / "conv-holdout-7c1d"
     conversation.mkdir()
     text = "Which customers churned after the March price change?"

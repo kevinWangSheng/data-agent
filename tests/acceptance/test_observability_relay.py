@@ -43,7 +43,7 @@ from urllib.parse import urlsplit
 
 import duckdb
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import ClaudeAgentOptions
 from observability_support import (
     OTLP_PATH,
     FakeLangfuse,
@@ -57,6 +57,7 @@ from observability_support import (
     post,
     read_events,
     refused_url,
+    result_message,
     span_count,
     spans,
 )
@@ -168,7 +169,7 @@ def test_the_dev_tier_keeps_every_attribute_but_the_tokens_names_and_the_secrets
         kept = {
             k: v
             for k, v in old.items()
-            if k not in (*TOKEN_KEYS, *SECRET_CARRIERS) and not planted.inside(v)
+            if k not in (*TOKEN_KEYS, *SECRET_CARRIERS) and not planted.carried_by(v)
         }
         new = after[where]
         assert {k: new.get(k) for k in kept} == kept, where
@@ -257,11 +258,22 @@ def test_the_held_out_tier_replaces_the_ids_consistently_within_a_run() -> None:
         for child in children:
             assert child["tool_use_id"] == new_id
     assert len({tool["tool_use_id"] for _, tool in tools}) == 4
+
     # The same AnonIds on a second request of the run gives the same ids; another run's differs.
-    assert run_rewrite(planted, "structure", ids) == first
-    other = parse_request(run_rewrite(planted, "structure", AnonIds()))
-    other_sessions = {attributes(s.attributes)["session.id"] for s in spans(other)}
-    assert other_sessions.isdisjoint(sessions)
+    def ids_of(body: bytes) -> list[tuple[str, Any]]:
+        return [
+            (key, attributes(s.attributes).get(key))
+            for s in spans(parse_request(body))
+            for key in ANONYMIZED
+            if key in attributes(s.attributes)
+        ]
+
+    again = ids_of(run_rewrite(planted, "structure", ids))
+    assert again == ids_of(first)
+    other = dict.fromkeys(
+        value for _, value in ids_of(run_rewrite(planted, "structure", AnonIds()))
+    )
+    assert set(other).isdisjoint(value for _, value in again)
 
 
 # --- forwarding (`TraceRelay`) ------------------------------------------------------------------
@@ -365,9 +377,13 @@ def test_stop_forwards_every_request_already_taken(langfuse: FakeLangfuse) -> No
     posts = [threading.Thread(target=post, args=(endpoint, body)) for body in bodies]
     for thread in posts:
         thread.start()
+    # Once Langfuse has all three and before it answers any (it waits 1 s): stop at once.
+    deadline = time.monotonic() + 5
+    while len(langfuse.ingested()) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    report = relay.stop()
     for thread in posts:
         thread.join(5)
-    report = relay.stop()
     received = langfuse.ingested()
     assert len(received) == 3
     counts = [span_count(seen.body) for seen in received]
@@ -409,17 +425,7 @@ def posting_query(body: bytes, seen: list[ClaudeAgentOptions]) -> Any:
         seen.append(options)
         endpoint = options.env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
         await asyncio.to_thread(post, endpoint, body)
-        yield ResultMessage(
-            subtype="success",
-            duration_ms=1,
-            duration_api_ms=1,
-            is_error=False,
-            num_turns=1,
-            session_id="s",
-            usage={"input_tokens": 3, "cache_read_input_tokens": 5, "output_tokens": 7},
-            total_cost_usd=0.01,
-            result="42",
-        )
+        yield result_message("42")
 
     return fake_query
 

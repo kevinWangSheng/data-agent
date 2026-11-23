@@ -50,6 +50,7 @@ OBSERVATIONS = FIXTURES / "observations.json"
 PROJECTS = FIXTURES / "projects.json"
 EVAL_MANIFEST = REPO_ROOT / "tests" / "fixtures" / "eval_manifest.json"
 
+# Spelled out, not imported from data_agent.tracing: the tests pin the names themselves.
 LANGFUSE_ENV: tuple[str, ...] = (
     "DATA_AGENT_LANGFUSE_PUBLIC_KEY",
     "DATA_AGENT_LANGFUSE_SECRET_KEY",
@@ -99,7 +100,7 @@ class Planted:
         """The model variables whose values `known_secrets` gives the relay."""
         return {"DATA_AGENT_API_KEY": self.known_secret, "DATA_AGENT_BASE_URL": self.endpoint}
 
-    def inside(self, value: object) -> bool:
+    def carried_by(self, value: object) -> bool:
         """Whether an attribute value holds one of the planted values."""
         return isinstance(value, str) and any(
             planted in value for planted in (self.secret_like, self.known_secret, self.endpoint)
@@ -416,7 +417,7 @@ class FakeRelay:
         return make, built
 
 
-class Traced:
+class ExportStandIns:
     """The stand-ins of a run with the export on: the relays built and the parent exporters."""
 
     def __init__(self, monkeypatch: Any, report: RelayReport | None = None) -> None:
@@ -443,6 +444,28 @@ REPORT_WITH_ERRORS = RelayReport(
     forwarded_llm_requests=2,
     errors=(ExportError("http_error", 500), ExportError("connection_error", None)),
 )
+
+
+def result_message(result: str = "42") -> Any:
+    """A session's successful end, with the usage the tests check the parent span against."""
+    from claude_agent_sdk import ResultMessage
+
+    return ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="s",
+        usage={
+            "input_tokens": 3,
+            "cache_creation_input_tokens": 2,
+            "cache_read_input_tokens": 5,
+            "output_tokens": 7,
+        },
+        total_cost_usd=0.01,
+        result=result,
+    )
 
 
 # --- the CLI's environment ----------------------------------------------------------------------

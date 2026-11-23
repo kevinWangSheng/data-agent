@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import ClaudeAgentOptions
 from harbor.environments.base import ExecResult
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import TaskConfig, TrialConfig
@@ -36,8 +36,9 @@ from observability_support import (
     CONTENT_SWITCHES,
     EVAL_MANIFEST,
     LANGFUSE_ENV,
+    ExportStandIns,
     FakeLangfuse,
-    Traced,
+    result_message,
 )
 
 from data_agent.run_config import load_config
@@ -165,12 +166,13 @@ async def test_harbor_picks_the_tier_by_the_tasks_split(
 async def test_harbor_exports_exactly_one_trial_per_task_and_job(
     tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
-    for job in ("job-full", "job-no-skill"):
+    for job, config in (("job-full", "full"), ("job-no-skill", "no-skill")):
         # Two tasks of one job, their trials interleaved, as Harbor runs them concurrently.
         envs: dict[str, list[dict[str, str]]] = {"dbt-alpha": [], "dbt-delta": []}
         for n in range(1, 4):
             for task in envs:
-                _, env = await run_trial(trial(tmp_path / job, task, n, trace=True))
+                adapter = trial(tmp_path / job, task, n, trace=True, run_config=config)
+                _, env = await run_trial(adapter)
                 envs[task].append(env)
         for task, task_envs in envs.items():
             exported = [env for env in task_envs if langfuse_vars(env)]
@@ -237,17 +239,7 @@ async def dab_sessions(
     async def fake_query(*, prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
         del prompt
         seen.append(options)
-        yield ResultMessage(
-            subtype="success",
-            duration_ms=1,
-            duration_api_ms=1,
-            is_error=False,
-            num_turns=1,
-            session_id="s",
-            usage={"input_tokens": 3, "cache_read_input_tokens": 5, "output_tokens": 7},
-            total_cost_usd=0.01,
-            result=f"answer {len(seen)}",
-        )
+        yield result_message(f"answer {len(seen)}")
 
     monkeypatch.setattr(dab, "query", fake_query)
     monkeypatch.setattr(dab, "git_commit", lambda: "c0ffee")
@@ -268,7 +260,7 @@ def otel_keys(options: ClaudeAgentOptions) -> list[str]:
 async def test_dab_exports_the_first_run_of_a_query_on_the_dev_tier_only_with_trace(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
-    traced = Traced(monkeypatch)
+    traced = ExportStandIns(monkeypatch)
     first, second = await dab_sessions(monkeypatch, tmp_path, langfuse, "traced", trace=True)
     assert {name: first.env.get(name) for name in CONTENT_SWITCHES} == dict.fromkeys(
         CONTENT_SWITCHES, "1"
