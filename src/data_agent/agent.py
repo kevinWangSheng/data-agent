@@ -75,6 +75,7 @@ from data_agent.sandbox import (
 )
 from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
+from data_agent.tracing import CliTrace, TraceTier
 from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
     AGENT_TOOL,
@@ -1527,6 +1528,7 @@ def build_options(
     network: bool = False,
     dbt: DbtRun | None = None,
     effort: Effort | None = None,
+    trace: CliTrace | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the workspace guard denies (`guard_recorder`). With `spend` (the
@@ -2069,6 +2071,7 @@ async def run(
     network: bool = False,
     dbt_target: Target = "task",
     effort: Effort | None = None,
+    trace_tier: TraceTier = "full",
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`

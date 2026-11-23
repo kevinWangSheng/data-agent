@@ -1,0 +1,1342 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "claude-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "2.1.330"
+            }
+          },
+          {
+            "key": "host.name",
+            "value": {
+              "stringValue": "placeholder-host"
+            }
+          },
+          {
+            "key": "host.arch",
+            "value": {
+              "stringValue": "placeholder-arch"
+            }
+          },
+          {
+            "key": "os.type",
+            "value": {
+              "stringValue": "darwin"
+            }
+          },
+          {
+            "key": "os.version",
+            "value": {
+              "stringValue": "0.0.0-placeholder"
+            }
+          },
+          {
+            "key": "claude_code.future_field",
+            "value": {
+              "stringValue": "future-resource"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "com.anthropic.claude_code.tracing",
+            "version": "2.1.330",
+            "attributes": [
+              {
+                "key": "scope.placeholder_attr",
+                "value": {
+                  "stringValue": "scope-value"
+                }
+              },
+              {
+                "key": "claude_code.future_field",
+                "value": {
+                  "stringValue": "future-scope"
+                }
+              }
+            ]
+          },
+          "spans": [
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAE=",
+              "parentSpanId": "CgoKCgoKCgo=",
+              "name": "claude_code.interaction",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000000000000000",
+              "endTimeUnixNano": "1795000020000000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "interaction"
+                  }
+                },
+                {
+                  "key": "parent.source",
+                  "value": {
+                    "stringValue": "env"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "conv-orig-5d1e"
+                  }
+                },
+                {
+                  "key": "user_prompt",
+                  "value": {
+                    "stringValue": "How many customers are in each membership tier?"
+                  }
+                },
+                {
+                  "key": "user_prompt_length",
+                  "value": {
+                    "intValue": "47"
+                  }
+                },
+                {
+                  "key": "claude_code.future_field",
+                  "value": {
+                    "stringValue": "future-span"
+                  }
+                },
+                {
+                  "key": "claude_code.env_echo",
+                  "value": {
+                    "stringValue": "@@KNOWN_SECRET@@"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1795000000000001000",
+                  "name": "interaction.placeholder_event",
+                  "attributes": [
+                    {
+                      "key": "event.placeholder_attr",
+                      "value": {
+                        "stringValue": "event-value"
+                      }
+                    },
+                    {
+                      "key": "claude_code.future_field",
+                      "value": {
+                        "stringValue": "future-event"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAI=",
+              "parentSpanId": "AAAAAAAAAAE=",
+              "name": "claude_code.llm_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000000100000000",
+              "endTimeUnixNano": "1795000001600000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "llm_request"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "deepseek-flash"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "deepseek-flash"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": "1201"
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": "302"
+                  }
+                },
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": "9003"
+                  }
+                },
+                {
+                  "key": "cache_creation_tokens",
+                  "value": {
+                    "intValue": "404"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1500"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "400"
+                  }
+                },
+                {
+                  "key": "first_content_ms",
+                  "value": {
+                    "intValue": "450"
+                  }
+                },
+                {
+                  "key": "stop_reason",
+                  "value": {
+                    "stringValue": "tool_use"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "stringValue": "tool_use"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "resp-orig-2"
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "req-orig-2"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "effort",
+                  "value": {
+                    "stringValue": "high"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "main-thread"
+                  }
+                },
+                {
+                  "key": "anthropic.custom_base_url",
+                  "value": {
+                    "stringValue": "@@MODEL_ENDPOINT@@"
+                  }
+                },
+                {
+                  "key": "llm_request.output",
+                  "value": {
+                    "stringValue": "I will count the customers by tier."
+                  }
+                },
+                {
+                  "key": "api_key_hint",
+                  "value": {
+                    "stringValue": "@@SECRET_LIKE@@"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAM=",
+              "parentSpanId": "AAAAAAAAAAE=",
+              "name": "claude_code.tool",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000002000000000",
+              "endTimeUnixNano": "1795000002800000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "mcp__data__query_database"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "mcp__data__query_database"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_q1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "toolu_orig_q1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "800"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "tool.input",
+                  "value": {
+                    "stringValue": "{\"sql\": \"SELECT tier, count(*) AS n FROM customers GROUP BY tier\"}"
+                  }
+                },
+                {
+                  "key": "mcp_server_name",
+                  "value": {
+                    "stringValue": "data"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAQ=",
+              "parentSpanId": "AAAAAAAAAAM=",
+              "name": "claude_code.tool.blocked_on_user",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000002001000000",
+              "endTimeUnixNano": "1795000002006000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool.blocked_on_user"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_q1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "5"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "accept"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAU=",
+              "parentSpanId": "AAAAAAAAAAM=",
+              "name": "claude_code.tool.execution",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000002010000000",
+              "endTimeUnixNano": "1795000002790000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool.execution"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_q1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "780"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "tool.output",
+                  "value": {
+                    "stringValue": "tier,n\nBronze,4\nGold,4\nSilver,3\nPlatinum,1"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1795000002010001000",
+                  "name": "tool.result_placeholder",
+                  "attributes": [
+                    {
+                      "key": "event.placeholder_attr",
+                      "value": {
+                        "stringValue": "result-event"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAY=",
+              "parentSpanId": "AAAAAAAAAAE=",
+              "name": "claude_code.tool",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000004000000000",
+              "endTimeUnixNano": "1795000004800000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Read"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "Read"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_r1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "toolu_orig_r1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "800"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "tool.input",
+                  "value": {
+                    "stringValue": "{\"file_path\": \"/workspace/notes.md\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAc=",
+              "parentSpanId": "AAAAAAAAAAY=",
+              "name": "claude_code.tool.blocked_on_user",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000004001000000",
+              "endTimeUnixNano": "1795000004006000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool.blocked_on_user"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_r1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "5"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "accept"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAg=",
+              "parentSpanId": "AAAAAAAAAAY=",
+              "name": "claude_code.tool.execution",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000004010000000",
+              "endTimeUnixNano": "1795000004790000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool.execution"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_r1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "780"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "tool.output",
+                  "value": {
+                    "stringValue": "notes: tiers are spelled inconsistently; api key @@SECRET_LIKE@@"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1795000004010001000",
+                  "name": "tool.result_placeholder",
+                  "attributes": [
+                    {
+                      "key": "event.placeholder_attr",
+                      "value": {
+                        "stringValue": "result-event"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAk=",
+              "parentSpanId": "AAAAAAAAAAE=",
+              "name": "claude_code.tool",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000006000000000",
+              "endTimeUnixNano": "1795000006800000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "mcp__weather__forecast"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "mcp__weather__forecast"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_w1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "toolu_orig_w1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "800"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "tool.input",
+                  "value": {
+                    "stringValue": "{\"city\": \"Lisbon\"}"
+                  }
+                },
+                {
+                  "key": "mcp_server_name",
+                  "value": {
+                    "stringValue": "weather"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAo=",
+              "parentSpanId": "AAAAAAAAAAk=",
+              "name": "claude_code.tool.blocked_on_user",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000006001000000",
+              "endTimeUnixNano": "1795000006006000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool.blocked_on_user"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_w1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "5"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "accept"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAs=",
+              "parentSpanId": "AAAAAAAAAAk=",
+              "name": "claude_code.tool.execution",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000006010000000",
+              "endTimeUnixNano": "1795000006790000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool.execution"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_w1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "780"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "tool.output",
+                  "value": {
+                    "stringValue": "Lisbon: sunny, 21 degrees"
+                  }
+                }
+              ],
+              "events": [
+                {
+                  "timeUnixNano": "1795000006010001000",
+                  "name": "tool.result_placeholder",
+                  "attributes": [
+                    {
+                      "key": "event.placeholder_attr",
+                      "value": {
+                        "stringValue": "result-event"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAAw=",
+              "parentSpanId": "AAAAAAAAAAE=",
+              "name": "claude_code.tool",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000008000000000",
+              "endTimeUnixNano": "1795000014000000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "tool"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "Agent"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "Agent"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "toolu_orig_a1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "toolu_orig_a1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "6000"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "tool.input",
+                  "value": {
+                    "stringValue": "{\"subagent_type\": \"model-verifier\", \"prompt\": \"Check the counts, db password @@KNOWN_SECRET@@\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAA0=",
+              "parentSpanId": "AAAAAAAAAAw=",
+              "name": "claude_code.llm_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000008100000000",
+              "endTimeUnixNano": "1795000009600000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "llm_request"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "deepseek-flash"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "deepseek-flash"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": "701"
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": "105"
+                  }
+                },
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": "5006"
+                  }
+                },
+                {
+                  "key": "cache_creation_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1500"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "400"
+                  }
+                },
+                {
+                  "key": "first_content_ms",
+                  "value": {
+                    "intValue": "450"
+                  }
+                },
+                {
+                  "key": "stop_reason",
+                  "value": {
+                    "stringValue": "tool_use"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "stringValue": "tool_use"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "resp-orig-13"
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "req-orig-13"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "effort",
+                  "value": {
+                    "stringValue": "high"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "main-thread"
+                  }
+                },
+                {
+                  "key": "anthropic.custom_base_url",
+                  "value": {
+                    "stringValue": "@@MODEL_ENDPOINT@@"
+                  }
+                },
+                {
+                  "key": "agent_id",
+                  "value": {
+                    "stringValue": "agent-orig-1"
+                  }
+                },
+                {
+                  "key": "parent_agent_id",
+                  "value": {
+                    "stringValue": "agent-orig-0"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "ERERESIiIiIzMzMzRERERA==",
+              "spanId": "AAAAAAAAAA4=",
+              "parentSpanId": "AAAAAAAAAAE=",
+              "name": "claude_code.llm_request",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1795000015000000000",
+              "endTimeUnixNano": "1795000016500000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sess-orig-7f3a"
+                  }
+                },
+                {
+                  "key": "user.id",
+                  "value": {
+                    "stringValue": "user-orig-9b2c"
+                  }
+                },
+                {
+                  "key": "terminal.type",
+                  "value": {
+                    "stringValue": "xterm-256color"
+                  }
+                },
+                {
+                  "key": "span.type",
+                  "value": {
+                    "stringValue": "llm_request"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "deepseek-flash"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "anthropic"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "deepseek-flash"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": "1502"
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": "203"
+                  }
+                },
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": "12007"
+                  }
+                },
+                {
+                  "key": "cache_creation_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1500"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "400"
+                  }
+                },
+                {
+                  "key": "first_content_ms",
+                  "value": {
+                    "intValue": "450"
+                  }
+                },
+                {
+                  "key": "stop_reason",
+                  "value": {
+                    "stringValue": "tool_use"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "stringValue": "tool_use"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "resp-orig-14"
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "req-orig-14"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "effort",
+                  "value": {
+                    "stringValue": "high"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "main-thread"
+                  }
+                },
+                {
+                  "key": "anthropic.custom_base_url",
+                  "value": {
+                    "stringValue": "@@MODEL_ENDPOINT@@"
+                  }
+                },
+                {
+                  "key": "llm_request.output",
+                  "value": {
+                    "stringValue": "Bronze 4, Gold 4, Silver 3, Platinum 1."
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

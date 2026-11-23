@@ -672,6 +672,7 @@ async def run_query(
     env: dict[str, str],
     budget: Decimal | None = None,
     effort: Effort | None = None,
+    trace: bool = False,
 ) -> int:
     """`runs` sessions on one query, one after another (DAB loads its Postgres and MongoDB
     databases per session under fixed names, so sessions on a dataset cannot overlap).
