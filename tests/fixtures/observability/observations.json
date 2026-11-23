@@ -17,7 +17,7 @@
           "skill_version": "skills-fixture-version"
         },
         "resourceAttributes": {
-          "service.name": "data-agent"
+          "service.name": "fixture-service"
         }
       },
       "usageDetails": { "input": 3405, "output": 610, "cache_read": 26016 },
