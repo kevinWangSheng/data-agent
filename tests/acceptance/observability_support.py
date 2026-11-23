@@ -30,6 +30,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -59,6 +60,15 @@ SECRET_KEY = "sk-lf-test-secret-0001"
 OTLP_PATH = "/api/public/otel/v1/traces"
 OBSERVATIONS_PATH = "/api/public/v2/observations"
 PROJECTS_PATH = "/api/public/projects"
+# The v2 observations' field groups other than `core` (always returned) and the keys of each
+# that the fixture holds (fern definition commons.yml `ObservationV2`).
+FIELD_GROUPS = {
+    "basic": ("name",),
+    "io": ("input", "output"),
+    "metadata": ("metadata",),
+    "model": ("model",),
+    "usage": ("usageDetails", "costDetails"),
+}
 
 
 # --- run-time secrets ---------------------------------------------------------------------------
@@ -88,6 +98,12 @@ class Planted:
     def model_env(self) -> dict[str, str]:
         """The model variables whose values `known_secrets` gives the relay."""
         return {"DATA_AGENT_API_KEY": self.known_secret, "DATA_AGENT_BASE_URL": self.endpoint}
+
+    def inside(self, value: object) -> bool:
+        """Whether an attribute value holds one of the planted values."""
+        return isinstance(value, str) and any(
+            planted in value for planted in (self.secret_like, self.known_secret, self.endpoint)
+        )
 
     def fill(self, text: str) -> str:
         return (
@@ -254,8 +270,16 @@ class FakeLangfuse:
                 elif seen.path == OBSERVATIONS_PATH:
                     trace_id = (seen.query.get("traceId") or [""])[0]
                     text = fake.planted.fill(OBSERVATIONS.read_text())
-                    body = text.replace("@@TRACE_ID@@", trace_id).encode()
-                    self._reply(200, body, "application/json")
+                    page = json.loads(text.replace("@@TRACE_ID@@", trace_id))
+                    groups = (seen.query.get("fields") or [""])[0].split(",")
+                    if groups != [""]:
+                        # Only the field groups asked for, as Langfuse answers (core always).
+                        for group, keys in FIELD_GROUPS.items():
+                            if group not in groups:
+                                for observation in page["data"]:
+                                    for key in keys:
+                                        observation.pop(key, None)
+                    self._reply(200, json.dumps(page).encode(), "application/json")
                 else:
                     self._reply(404, b"{}", "application/json")
 
@@ -278,12 +302,13 @@ def basic_auth(public_key: str = PUBLIC_KEY, secret_key: str = SECRET_KEY) -> st
     return "Basic " + base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
 
 
-def closed_port_url() -> str:
-    """A 127.0.0.1 address nothing listens on: a connection to it is refused."""
+@contextmanager
+def refused_url() -> Iterator[str]:
+    """A 127.0.0.1 address nothing listens on, held (bound, not listening) while the block runs so
+    no other server is given the port: a connection to it is refused."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    return f"http://127.0.0.1:{port}"
+        yield f"http://127.0.0.1:{sock.getsockname()[1]}"
 
 
 def post(url: str, body: bytes, method: str = "POST", timeout: float = 10) -> int | None:

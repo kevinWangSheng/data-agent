@@ -221,8 +221,10 @@ def assert_exports_to_the_relay(env: dict[str, str]) -> None:
     assert endpoint == RELAY_ENDPOINT  # the shell's is overridden
     assert {name: env.get(name) for name in EXPORT_SWITCHES} == EXPORT_SWITCHES
     for name, value in env.items():
-        for secret in (PUBLIC_KEY, SECRET_KEY, "Authorization"):
-            assert secret not in value, name
+        assert PUBLIC_KEY not in value and SECRET_KEY not in value, name
+        # Only the variables of ours and of OTel: an unrelated one of the machine may say anything.
+        if name.startswith(("OTEL_", "DATA_AGENT_", "CLAUDE_CODE_")):
+            assert "Authorization" not in value, name
 
 
 @TICKET_112
@@ -325,13 +327,14 @@ async def traced_run(
     turn: ConversationTurn | None = None,
     events_dir: Path | None = None,
     text: str = "How many customers are there?",
+    config: str = "full",
 ) -> tuple[Outcome, list[dict[str, Any]], Session, dict[str, str]]:
     session = Session()
     monkeypatch.setattr(agent, "query", session)
     env = {"DATA_AGENT_API_KEY": MODEL_KEY} | langfuse.env()
     outcome = await agent.run(
         query_task(tmp_path, text),
-        load_config("full"),
+        load_config(config),
         events_dir or tmp_path / "events",
         env,
         turn=turn,
@@ -377,13 +380,14 @@ async def test_the_run_has_one_parent_span_named_tagged_and_priced_from_its_even
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
     traced = Traced(monkeypatch)
-    _, events, _, _ = await traced_run(monkeypatch, tmp_path, langfuse, traced)
+    # Not `full`, which is also the tier's name: the tag must be the config's.
+    _, events, _, _ = await traced_run(monkeypatch, tmp_path, langfuse, traced, config="no-context")
     attributes = root_span(traced).attributes
     assert attributes["langfuse.trace.name"] == "data-agent.run"
     tags = attributes["langfuse.trace.tags"]
     assert isinstance(tags, tuple | list) and all(isinstance(tag, str) for tag in tags)
     version = one(events, "version")
-    assert {"query", "full", version["model"]} <= set(tags)
+    assert {"query", "no-context", version["model"]} <= set(tags)
     values = flat_values(attributes)
     assert version["skill_version"] in values
     assert version["git_commit"] in values

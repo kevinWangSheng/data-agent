@@ -101,8 +101,12 @@ def test_trace_check_prints_the_traces_structure_and_nothing_of_its_content(
     for observation in observations():
         assert observation["name"] in output
         assert observation["type"] in output
-        for attribute in observation["metadata"]:
-            assert attribute in output, attribute
+        # Langfuse keeps the OTel attributes it does not map under `metadata.attributes`
+        # (docs/research/2026-11-23-langfuse-usage-mapping.md §1); `resourceAttributes` is the
+        # fixture's guess for the resource's, unconfirmed.
+        for group in observation["metadata"].values():
+            for attribute in group:
+                assert attribute in output, attribute
     # Content, attribute values, the secret-like value and the secret key stay out.
     hidden = {SECRET_KEY, langfuse.planted.secret_like}
     for observation in observations():

@@ -52,11 +52,11 @@ from observability_support import (
     basic_auth,
     cli_request,
     cli_request_message,
-    closed_port_url,
     layers,
     parse_request,
     post,
     read_events,
+    refused_url,
     span_count,
     spans,
 )
@@ -163,7 +163,13 @@ def test_the_dev_tier_keeps_every_attribute_but_the_tokens_names_and_the_secrets
     body = run_rewrite(planted, "full")
     after = dict(layers(parse_request(body)))
     for where, old in layers(cli_request_message(planted)):
-        kept = {k: v for k, v in old.items() if k not in (*TOKEN_KEYS, *SECRET_CARRIERS)}
+        # A content attribute holding a planted secret (the Read tool's output, the Agent tool's
+        # input) may be masked or dropped; the content around it elsewhere stays.
+        kept = {
+            k: v
+            for k, v in old.items()
+            if k not in (*TOKEN_KEYS, *SECRET_CARRIERS) and not planted.inside(v)
+        }
         new = after[where]
         assert {k: new.get(k) for k in kept} == kept, where
     for content in CONTENT:
@@ -181,6 +187,11 @@ def test_the_held_out_tier_lets_only_the_allowlist_out() -> None:
     for where, attrs in layers(message):
         outside = {k for k in attrs if k not in ALLOWLIST and not k.startswith(USAGE_PREFIXES)}
         assert outside == set(), where
+    # What the allowlist names goes through as it was (the ids are anonymized, tested below).
+    after = dict(layers(message))
+    for where, old in layers(cli_request_message(planted)):
+        allowed = {k: v for k, v in old.items() if k in ALLOWLIST and k not in ANONYMIZED}
+        assert {k: after[where].get(k) for k in allowed} == allowed, where
     for gone in ("claude_code.future_field", "user_prompt", "user.id", "terminal.type"):
         assert gone.encode() not in body, gone
     for host_info in ("host.name", "placeholder-host", "os.version"):
@@ -234,13 +245,17 @@ def test_the_held_out_tier_replaces_the_ids_consistently_within_a_run() -> None:
     assert len(tools) == 4
     for span_id, tool in tools:
         children = [
-            a for sid, (_, a) in attrs.items() if by_span(message)[sid].parent_span_id == span_id
+            a
+            for sid, (name, a) in attrs.items()
+            if by_span(message)[sid].parent_span_id == span_id
+            and name in ("claude_code.tool.blocked_on_user", "claude_code.tool.execution")
         ]
         new_id = tool["tool_use_id"]
         assert tool["gen_ai.tool.call.id"] == new_id
+        # The Agent tool's children are the subagent's spans; every other tool has both.
+        assert len(children) == (0 if tool["tool_name"] == "Agent" else 2)
         for child in children:
-            if "tool_use_id" in child:
-                assert child["tool_use_id"] == new_id
+            assert child["tool_use_id"] == new_id
     assert len({tool["tool_use_id"] for _, tool in tools}) == 4
     # The same AnonIds on a second request of the run gives the same ids; another run's differs.
     assert run_rewrite(planted, "structure", ids) == first
@@ -317,7 +332,14 @@ def test_a_failed_forward_is_reported_not_raised(
     if case == "status-500":
         langfuse.status = 500
     else:
-        settings = LangfuseSettings(settings.public_key, settings.secret_key, closed_port_url())
+        with refused_url() as url:
+            settings = LangfuseSettings(settings.public_key, settings.secret_key, url)
+            relay = relay_for(settings)
+            post(relay.start(), cli_request(langfuse.planted))
+            report = relay.stop()
+        assert [(e.error_type, e.status) for e in report.errors] == [error]
+        assert (report.forwarded_spans, report.forwarded_llm_requests) == (0, 0)
+        return
     relay = relay_for(settings)
     post(relay.start(), cli_request(langfuse.planted))
     report = relay.stop()
@@ -366,9 +388,11 @@ def test_stop_gives_up_on_a_langfuse_that_never_answers(langfuse: FakeLangfuse) 
     deadline = time.monotonic() + 3
     while not langfuse.ingested() and time.monotonic() < deadline:
         time.sleep(0.05)
+    assert langfuse.ingested(), "the relay never forwarded"
     started = time.monotonic()
-    relay.stop()
+    report = relay.stop()
     assert time.monotonic() - started < 4
+    assert report.forwarded_spans == 0
     langfuse.release()
     sender.join(5)
 
@@ -407,7 +431,7 @@ async def run_with_relay(
 
     seen: list[ClaudeAgentOptions] = []
     monkeypatch.setattr(agent, "query", posting_query(cli_request(langfuse.planted), seen))
-    monkeypatch.setattr(tracing, "parent_exporter", lambda _settings: InMemorySpanExporter())
+    monkeypatch.setattr(tracing, "parent_exporter", lambda *_, **__: InMemorySpanExporter())
     db = tmp_path / "x.duckdb"
     duckdb.connect(str(db)).close()
     task = Task(text="How many customers?", type="query", workspace=tmp_path, duckdb=db)
@@ -466,8 +490,13 @@ def test_the_fixture_parses_into_the_spikes_tree() -> None:
     )
     body = cli_request(planted)
     assert planted.secret_like.encode() in body and planted.endpoint.encode() in body
-    for name, attrs in layers(message):
-        assert "claude_code.future_field" in attrs or name.startswith(("span", "event")), name
+    # An attribute a later CLI adds, on every kind of layer.
+    with_future = {
+        where.split()[0].split("[")[0]
+        for where, a in layers(message)
+        if "claude_code.future_field" in a
+    }
+    assert with_future == {"resource", "scope", "span", "event"}
     assert parse_request(body) == message
 
 
@@ -487,4 +516,5 @@ def test_the_fake_langfuse_records_and_answers(langfuse: FakeLangfuse) -> None:
     [first, _] = langfuse.ingested()
     assert first.body == body
     assert urlsplit(langfuse.base_url).hostname == "127.0.0.1"
-    assert post(closed_port_url() + OTLP_PATH, body, timeout=2) is None
+    with refused_url() as url:
+        assert post(url + OTLP_PATH, body, timeout=2) is None

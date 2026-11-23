@@ -12,8 +12,13 @@
       "input": null,
       "output": null,
       "metadata": {
-        "trace_tier": "full",
-        "skill_version": "skills-fixture-version"
+        "attributes": {
+          "trace_tier": "full",
+          "skill_version": "skills-fixture-version"
+        },
+        "resourceAttributes": {
+          "service.name": "data-agent"
+        }
       },
       "usageDetails": { "input": 3405, "output": 610, "cache_read": 26016 },
       "costDetails": { "total": 0.0123 }
@@ -30,8 +35,13 @@
       "input": "How many customers are in each membership tier?",
       "output": null,
       "metadata": {
-        "user_prompt": "How many customers are in each membership tier?",
-        "claude_code.env_echo": "@@SECRET_LIKE@@"
+        "attributes": {
+          "user_prompt": "How many customers are in each membership tier?",
+          "claude_code.env_echo": "@@SECRET_LIKE@@"
+        },
+        "resourceAttributes": {
+          "host.name": "placeholder-host"
+        }
       }
     },
     {
@@ -47,8 +57,10 @@
       "input": null,
       "output": "I will count the customers by tier.",
       "metadata": {
-        "ttft_ms": "400",
-        "stop_reason": "tool_use"
+        "attributes": {
+          "ttft_ms": "400",
+          "stop_reason": "tool_use_fixture"
+        }
       },
       "usageDetails": { "input": 1201, "output": 302, "cache_read": 9003 },
       "costDetails": {}
@@ -65,8 +77,10 @@
       "input": "{\"sql\": \"SELECT tier, count(*) AS n FROM customers GROUP BY tier\"}",
       "output": "tier,n\nBronze,4\nGold,4\nSilver,3\nPlatinum,1",
       "metadata": {
-        "tool_name": "mcp__data__query_database",
-        "mcp_server_name": "data"
+        "attributes": {
+          "tool_name": "mcp__data__query_database",
+          "mcp_server_name": "data"
+        }
       }
     }
   ],

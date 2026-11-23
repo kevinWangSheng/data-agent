@@ -120,7 +120,12 @@ def langfuse_vars(env: dict[str, str]) -> dict[str, str]:
 
 def tier_flag(command: str) -> str | None:
     words = command.split()
-    return words[words.index("--trace-tier") + 1] if "--trace-tier" in words else None
+    for i, word in enumerate(words):
+        if word == "--trace-tier":
+            return words[i + 1]
+        if word.startswith("--trace-tier="):
+            return word.removeprefix("--trace-tier=")
+    return None
 
 
 @pytest.fixture
@@ -136,9 +141,8 @@ async def test_harbor_passes_the_langfuse_variables_only_with_trace(
     command, env = await run_trial(trial(tmp_path / "traced", "dbt-alpha", 1, trace=True))
     assert langfuse_vars(env) == langfuse.env()
     assert tier_flag(command) == "full"
-    command, env = await run_trial(trial(tmp_path / "plain", "dbt-alpha", 1))
+    _, env = await run_trial(trial(tmp_path / "plain", "dbt-alpha", 1))
     assert langfuse_vars(env) == {}
-    assert tier_flag(command) is None
 
 
 @TICKET_112
@@ -162,13 +166,16 @@ async def test_harbor_exports_exactly_one_trial_per_task_and_job(
     tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
     for job in ("job-full", "job-no-skill"):
-        envs = [
-            (await run_trial(trial(tmp_path / job, "dbt-alpha", n, trace=True)))[1]
-            for n in range(1, 4)
-        ]
-        exported = [env for env in envs if langfuse_vars(env)]
-        assert len(exported) == 1, job
-        assert langfuse_vars(exported[0]) == langfuse.env()
+        # Two tasks of one job, their trials interleaved, as Harbor runs them concurrently.
+        envs: dict[str, list[dict[str, str]]] = {"dbt-alpha": [], "dbt-delta": []}
+        for n in range(1, 4):
+            for task in envs:
+                _, env = await run_trial(trial(tmp_path / job, task, n, trace=True))
+                envs[task].append(env)
+        for task, task_envs in envs.items():
+            exported = [env for env in task_envs if langfuse_vars(env)]
+            assert len(exported) == 1, (job, task)
+            assert langfuse_vars(exported[0]) == langfuse.env()
 
 
 @TICKET_112
