@@ -23,13 +23,8 @@
 
 ## 剩下的事
 
-- **等人定**：报告和 README 的中文版；博客和视频（视频原定等对话界面，现在可以录）；求职材料（简历、面试讲法，计划里没覆盖）；4 个 11-18 清理分支和 `chore/glossary-rename` 的去留（见下）；最后要不要跑一次全量（不跑也可以，报告标了 commit）。
-- **本地留着、等人定的分支**（2026-11-23 审过，都没合入，都和现在的 main 有冲突或已过时）：
-  - `cleanup-prune-features`（8 个提交，−6,031 行）：删 `evals attribute`、`evals accept` 和回归集、`evals select`、full-old-skill 配置和冻结的 Skill 副本、value verifier 死代码。和 main 冲突 2 处（ADR-0008、`tests/test_dbt_skills.py`）。`docs/setup.md:68,78` 和 plan 第 299 行还在讲 `evals select`、`evals accept`，删了要同步文档；报告里复现配置选择的命令会只在旧 commit 上有效。
-  - `test-cleanup`（合并了 `cleanup-prune-tests` 和 `cleanup-speed`，−2,634 行）：删 v1 验证工具 `check_model_schema`、`audit_model_sources`，引擎里网关不用的方言代码，MCP、scrub、Harbor 测试改进程内，`make check` 加 pytest-xdist。和 main 冲突 3 处（`tests/test_dbt_skills.py`、`test_network_option.py`、`test_packaging.py`）。
-  - `cleanup-prune-tests`、`cleanup-speed`：是 `test-cleanup` 的组成部分。
-  - `chore/glossary-rename`（10-26，1 个提交）：把 `CONTEXT.md` 改名 `GLOSSARY.md`。main 一直用 `CONTEXT.md`（AGENTS.md、`docs/agents/domain.md`），这条已过时。
-  - 都基于 d146977（11-18），main 之后又有 38 个提交。要保留的话，各开一张工单在新 main 上重做，不直接合旧分支。
+- **等人定**：报告和 README 的中文版；博客和视频（视频原定等对话界面，现在可以录）；求职材料（简历、面试讲法，计划里没覆盖）；最后要不要跑一次全量（不跑也可以，报告标了 commit）。
+- 11-18 的 4 个清理分支（`cleanup-prune-features`、`test-cleanup`、`cleanup-prune-tests`、`cleanup-speed`）和 `chore/glossary-rename` 已由人定删除（2026-11-23，未合入；内容见 `6adb612`、`e84a615`、`0447ec4` 等提交，可能被 gc 回收）。
 - **一期外的功能候选**（各 spec 的 Out of Scope，要做先在对齐会话讨论）：答案里出图表；查数任务读 dbt 模型说明当业务语义（现在只有验证者读 `target/manifest.json`）；在对话里做 dbt；对话总花费上限。其余（Memory、登录多用户、公网部署、MongoDB 连接器、Langfuse、LiveSQLBench、澄清层消融等）价值低或偏平台。
 
 ## 已知限制
@@ -47,7 +42,7 @@
 - `da-remote start` 不透传额外环境变量；要临时变量的运行用 `da-remote exec -- bash -c 'nohup env X=... ...'`（做法见工单 110 Comments）。连续多次 ssh 偶尔被断开，隔一会儿重试即可。
 - 审查：`da-review`（Codex CLI）在这个账号上不能用，用 fable 子 agent 代替（见 memory）；Codex GitHub app 能用，没出审查时评论 `@codex review`。前端工单不用 Codex，见 AGENTS.md。
 - 本机 Docker 是 colima，集成测试前先 `colima start`。
-- 已合并的 worktree 和分支在 2026-11-23 清理完：远端只剩 `main`，本地只剩上面那 5 个待定分支。
+- 已合并的 worktree 和分支在 2026-11-23 清理完：本地和远端都只剩 `main`。
 
 ---
 
