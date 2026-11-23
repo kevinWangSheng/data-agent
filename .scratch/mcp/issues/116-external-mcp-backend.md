@@ -1,10 +1,10 @@
 # 116 — 外部 MCP：后端（配置解析与校验、`${VAR}` 展开、放行清单、`--mcp-servers` 接线、stdio 包装、`version` 事件、文档）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 115（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus 5.5, worktree 116-external-mcp-backend)
+Branch: worktree-116-external-mcp-backend
 
 ## Goal
 
@@ -133,10 +133,99 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0
+- Outcome: — (pending the e2e run and merge)
 
 ## Comments
+
+- 2026-11-23（工单 agent 最终回复，主会话照抄）：
+
+**Real runs (no model, $0)**
+
+- **`make check`** (`runs/116/check-4.txt`): exit=0; `2684 passed, 2 skipped, 79 deselected, 75 xfailed`; basedpyright `0 errors`; web `322 passed | 52 expected fail`.
+- **Acceptance** (`runs/116/acceptance-v.txt`): `29 passed, 2 deselected`, 0 xfail, 0 skip. `--collect-only -m integration` lists the two e2e cases.
+- **Test diff**: `git diff main -- tests/acceptance tests/fixtures` is deletions only.
+  - 13 `-@TICKET_116`
+  - 4 × the 3-line `TICKET_116 = pytest.mark.xfail(...)` definition
+  - 3 blank lines, so ruff's import-order check passes; still deletions only
+  - `pytest` is still imported in all four files; the old docstrings are untouched.
+- **Scrub**: `evals scrub tests/fixtures/mcp` reports `changed 0 file(s) of 2`. Pre-commit "Detect hardcoded secrets" passed.
+- **MongoDB through the wrapper** (`runs/116/mongo-probe/`): MCP Python client, `mongodb/mongodb-mcp-server:3.3.0`, local `mongo:8.0`.
+  - Command used: `python3 -P -m data_agent mcp-launch --mcp-servers <abs>/mcp.json --server mongo`
+  - Result: `tools (18): aggregate … find … list-connections …`, `find is_error: False`, `Query on collection "tickets" resulted in 5 documents`.
+- **Bad configs:**
+  - `run`, sse server: `data-agent run: error: MCP server 'legacy': type 'sse' is not supported (only stdio and http)`, exit=2.
+  - `run`, wrong prefix: `MCP server 'github': headers 'Authorization': variable GITHUB_TOKEN does not start with DATA_AGENT_MCP_`, exit=2.
+  - Missing `allowedTools`: `warning: MCP server 'quiet' has no allowedTools; it is not mounted and none of its tools is allowed`.
+  - `web`: `data-agent web: error: MCP server 'github': headers 'Authorization': variable GITHUB_TOKEN does not start with DATA_AGENT_MCP_`, exit=2.
+
+**Does the CLI pass its own environment to stdio servers?** (取证笔记未确认项 8)
+
+Yes, all of it. I probed with SDK 0.2.168 / CLI 2.1.301, a dead model endpoint and a fake key (`runs/116/probe/`). A variable that existed only in the CLI's environment reached the server, and so did `ANTHROPIC_API_KEY` and `CLAUDE_CONFIG_DIR`. So the wrapper is required, not just defence in depth.
+
+**Reviews**
+
+Fable stood in for `da-review`, then `eng:code-review main` ran.
+
+Fixed:
+1. **Allow-list bypass** (Fable, high): server names containing `__`, or starting or ending with `_` (e.g. `data_`), are now refused. The CLI splits `mcp__<server>__<tool>` on `__`, so `mcp__data___x` would have counted as one of our own `data` tools.
+2. **Masking**: a URL-valued variable's password and host are now masked in events too.
+3. **Logging test**: it now runs the whole `run` path under `caplog` at DEBUG and checks that log records exist.
+4. **Crashes instead of exit 2**: a non-string `type`, or an env name that is empty, has `=`, or holds NUL, used to crash with a traceback. Now exit 2.
+5. **Missing tests** added: exit 127, `${` in the file path, a server with `url` and no `type` (clearer error).
+6. The wrapper now runs with `python -P`, so a module planted in the workspace is not imported.
+7. Cleanups: one host helper instead of two copies; dropped a needless `Sequence` round-trip; README now covers the stdio half of 待人定 1.
+
+Not fixed, with reasons:
+- **Our own `data` server's `python -m` in the workspace** (Fable #9): same shape as #6, but `agent.py:1569` is outside the three spots this ticket may change. Needs a follow-up ticket.
+- **Short variable values** are masked across the whole event file. Documented in the README instead: reference only secrets with `${}`.
+- **`${}` refused in `url`** is the 待人定 2 default.
+- **Unknown fields and `url`-without-`type` are refused.** Accepting them would mean silently dropping fields or overriding the spec's default of stdio. Changing this is one constant, `FIELDS`.
+- **The wrapper re-reads the file when the CLI starts the server.** Editing the file mid-run changes the stdio command. Documented in the README.
+- **Smells** (one record type for both transports, the `RESERVED_NAME` copy needed to avoid a circular import, `mcp_args` read across classes, the SDK-private import in a test): judgement calls, left as they are.
+- **Scope additions** the spec didn't ask for: the tool-name character check, the URL scheme check, the `${`-in-path refusal, URL-part masking, `-P`. All are small hardening steps, commented in the code.
+
+### 待人定
+
+1. **Credentials in the CLI's argv**
+   - http: as the tests require, expanded headers are in the `--mcp-config` argv. This is documented as a known limit.
+   - stdio: values reach the wrapper through the CLI's environment. The wrapper's arguments are only the absolute file path and the server name.
+   - The CLI does expand `${VAR}`, with any variable name, in `args` and `env`, for both the JSON-string and the file form of `--mcp-config`. I confirmed this by probe.
+   - Claude Code's docs (https://code.claude.com/docs/en/mcp, read 2026-11-23) cover expansion only for `.mcp.json`: `${VAR}` and `${VAR:-default}` in command, args, env, url and headers. They are silent on `--mcp-config`.
+   - Passing a file path instead of a dict doesn't help: the CLI expands the same way, and the acceptance tests read the options as a dict.
+   - Where to change it: `ExternalServers.sdk_servers` / `env`.
+2. **`${VAR}` in args, url or command**: refused, naming the server and field, exit 2. Because the CLI expands any variable there, passing them through would bypass the `DATA_AGENT_MCP_` rule. Values that themselves hold `${` are refused too. Where to change it: `no_reference`.
+3. **`data-agent web` checks the file at startup** (see the run above). To drop the check, remove the `external_servers(parser, mcp_servers)` call in `serve_web`.
+4. **`BASE_ENV`**: exactly the test's upper bound.
+   - `DOCKER_HOST` and proxy variables are left out; users add them to the server's `env`, as the README says.
+   - Possibly missing: `HTTP(S)_PROXY`/`NO_PROXY`, for stdio servers behind a proxy. That would need the test constant changed.
+5. **The `version` event** records only `name` and `allowed_tools`. Adding fields changes `summary()` only.
+- Also for you to confirm:
+  - `strict_mcp_config` stays `True` with an external config.
+  - The MongoDB integration test is two cases.
+  - A server without `allowedTools` is not mounted at all.
+  - A file in which no server has an allow list records `external_mcp_servers: []`.
+
+### For the main session to run
+
+**MongoDB e2e**, in worktree `116-external-mcp-backend`:
+1. `colima start`
+2. Check the sandbox image with `docker image inspect`, or run `make sandbox-image`.
+3. Run:
+```bash
+mkdir -p runs/116-e2e && set -a && . ~/.config/data-agent/env && set +a && \
+  uv run pytest tests/acceptance/test_mcp_e2e.py -m integration -v 2>&1 | tee runs/116-e2e/pytest.log
+```
+
+**GitHub**: first put `DATA_AGENT_MCP_GITHUB_TOKEN` in the env file. The config is already written at `runs/116-github/mcp-github.json`, using the official `/readonly` endpoint and the `Authorization: Bearer` header.
+```bash
+mkdir -p runs/116-github/work && uv run python -c "import duckdb; duckdb.connect('runs/116-github/shop.duckdb').execute(open('tests/fixtures/shop.sql').read())" && \
+set -a && . ~/.config/data-agent/env && set +a && \
+uv run data-agent run --type query --config full --duckdb runs/116-github/shop.duckdb \
+  --workspace runs/116-github/work --events-dir runs/116-github/events \
+  --mcp-servers runs/116-github/mcp-github.json \
+  --task "In the GitHub repository github/github-mcp-server, what is the title of issue #1, and is it open or closed?"
+```
+Check that the events contain a `tool_start` for an `mcp__github__` tool and that the answer matches issue #1.
