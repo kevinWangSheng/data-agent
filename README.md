@@ -200,7 +200,7 @@ uv run python -m evals dab --help      # DataAgentBench queries
 ```
 
 The runs above used one 6-core, 8 GB Linux server with Docker, three data-eng-bench trials at a time (DataAgentBench ran four datasets in parallel). All formal
-evaluation runs together cost about $81 in API fees. The full results, costs and failure attribution
+evaluation runs together cost about $106 in API fees. The full results, costs and failure attribution
 are in the [evaluation report](docs/report.md); the run-by-run record, including what went wrong, is
 in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
 
