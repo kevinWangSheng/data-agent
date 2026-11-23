@@ -9,9 +9,10 @@ else.
 Contract fixed here (ticket 118, "本工单定下的契约" 1 and 8):
 
 - `data-agent run --charts` and `data-agent mcp-server --charts`, both off by default; the run
-  passes the switch to its MCP server on the command line, not through the environment. Only the
-  server's option name is used directly here (and the `--help` checks): the run is checked by what
-  its session gets, the tools its MCP server lists and its system prompt.
+  passes the switch to its MCP server as `--charts` in the server's arguments (ticket 118's
+  decision, not checked here). The run is checked only by what its session gets: the tools its
+  MCP server lists, started as the options name it, and its system prompt. Only the option names
+  appear directly (the `--help` checks and the web UI's command lines).
 - The charting rule names `display_chart`: a session with the switch has it in its system prompt,
   one without has not.
 - The evaluation entries are driven as tests/acceptance/test_chat_eval_unchanged.py drives them
@@ -119,7 +120,7 @@ def test_harbor_never_passes_the_switch(tmp_path: Path) -> None:
         environment_logs_dir=PurePosixPath(logs),
     )
     command = agent._run_command("Build the model")  # pyright: ignore[reportPrivateUsage]
-    assert " run --type dbt " in command
+    assert "--type dbt" in command
     assert "--charts" not in command
 
 

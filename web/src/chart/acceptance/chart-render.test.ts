@@ -18,6 +18,7 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, test } from 'vitest'
 
+import { parseEventLines } from '../../data/source'
 import { Chart } from '../Chart'
 import type { ChartPayload, ChartType } from '../model'
 
@@ -26,13 +27,8 @@ import type { ChartPayload, ChartType } from '../model'
 const RUN = join(import.meta.dirname, '../../../../tests/fixtures/charts/run')
 const SIZE = { width: 640, height: 320 }
 
-type Event = { type: string; tool?: string; content?: unknown; is_error?: boolean }
-
-const payloads: ChartPayload[] = readFileSync(join(RUN, 'events.jsonl'), 'utf8')
-  .split('\n')
-  .filter((line) => line.trim())
-  .map((line) => JSON.parse(line) as Event)
-  .filter((e) => e.type === 'tool_end' && e.tool === 'mcp__data__display_chart' && !e.is_error)
+const payloads: ChartPayload[] = parseEventLines(readFileSync(join(RUN, 'events.jsonl'), 'utf8'))
+  .filter((e) => e.type === 'tool_end' && e.tool === 'mcp__data__display_chart' && e.is_error !== true)
   .map((e) => JSON.parse(e.content as string) as ChartPayload)
 
 function payloadOf(type: ChartType): ChartPayload {
@@ -98,6 +94,18 @@ describe('Chart', () => {
     expect(root.querySelectorAll('.recharts-bar-rectangle')).toHaveLength(payload.data.length * payload.chart.series.length)
   })
 
+  test.fails.each([true, false])('bar with stacked %s: the series of a row share an x only when stacked', async (stacked) => {
+    const base = payloadOf('bar')
+    const payload: ChartPayload = { ...base, chart: { ...base.chart, stacked } }
+    const layers = [...rootOf(await draw(payload)).querySelectorAll('.recharts-bar')]
+    expect(layers).toHaveLength(2)
+    const xs = layers.map((layer) => [...layer.querySelectorAll('.recharts-rectangle')].map((r) => Number(r.getAttribute('x'))))
+    expect(xs[0]).toHaveLength(payload.data.length)
+    xs.flat().forEach((x) => expect(Number.isFinite(x)).toBe(true))
+    if (stacked) expect(xs[1]).toEqual(xs[0])
+    else xs[0].forEach((x, row) => expect(xs[1][row]).not.toBe(x))
+  })
+
   test.fails('scatter: one symbol per row and series', async () => {
     const payload = payloadOf('scatter')
     const root = rootOf(await draw(payload))
@@ -149,5 +157,7 @@ describe('Chart', () => {
     const text = root.textContent ?? ''
     expect(text).toContain(payload.chart.title)
     expect(text.replace(payload.chart.title, '').trim()).not.toBe('')
+    // The note, not an empty chart: no series is drawn.
+    expect(root.querySelectorAll(`.recharts-${type}`)).toHaveLength(0)
   })
 })

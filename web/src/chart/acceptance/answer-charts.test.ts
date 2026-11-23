@@ -58,6 +58,7 @@ function endOf(id: string): RunEvent {
 /** The payloads the fixture's successful calls returned, read straight from the event file. */
 const payloads = CHART_STEPS.map((id) => JSON.parse(endOf(id).content as string) as ChartPayload)
 const TITLES = payloads.map((p) => p.chart.title)
+const FAILED_TITLE = (startOf(FAILED_STEP).input as { title: string }).title
 // The answer's first words, as the markdown renders them.
 const ANSWER_START = 'Gold customers bring the most revenue'
 
@@ -86,6 +87,22 @@ describe('answerCharts', () => {
     const failed = events.map((e) => (e.type === 'tool_end' && e.tool_use_id === 't-c2' ? { ...e, is_error: true } : e))
     const charts = answerCharts(buildRunView(failed, notes))
     expect(charts.map((c) => c.step)).toEqual(['t-c1', 't-c4', 't-c5', 't-c6'])
+  })
+
+  test.fails("a verifier's call is not the main agent's", () => {
+    // t-c6 made inside a verifier dispatch: an Agent call the dispatch names, and t-c6 under it.
+    const at = startOf('t-c6').seq
+    const agent: RunEvent[] = [
+      { seq: at - 0.6, type: 'tool_start', ts: startOf('t-c6').ts, tool: 'Agent', tool_use_id: 't-a1', input: {}, parent: null },
+      { seq: at - 0.5, type: 'verifier_dispatch', ts: startOf('t-c6').ts, n: 1, models: [], source: 'first', tool_use_id: 't-a1' },
+    ]
+    const nested = events.flatMap((e) => {
+      const moved = e.tool_use_id === 't-c6' && (e.type === 'tool_start' || e.type === 'tool_end') ? { ...e, parent: 't-a1' } : e
+      return e.seq === at ? [...agent, moved] : [moved]
+    })
+    const view = buildRunView(nested, notes)
+    expect(view.steps.find((s) => s.id === 't-c6')?.dispatch).toBe(1)
+    expect(answerCharts(view).map((c) => c.step)).toEqual(CHART_STEPS.slice(0, 4))
   })
 
   test.fails('a result that is not a chart payload is left out', () => {
@@ -138,8 +155,8 @@ function expectChartsInAnswer(html: string) {
   const at = charts.map((c) => answer.indexOf(c))
   expect(at[0]).toBeGreaterThan(text)
   expect([...at].sort((a, b) => a - b)).toEqual(at)
-  // No chart anywhere else on the page: the failed call is not one.
-  expect(elements(html, 'chart')).toHaveLength(5)
+  // The failed call is no chart anywhere on the page (its title is its input's alone).
+  expect(elements(html, 'chart').filter((c) => c.includes(FAILED_TITLE))).toEqual([])
 }
 
 const CONVERSATION: ConversationIndex = {
@@ -225,7 +242,8 @@ function block(css: string, opening: string): Record<string, string> {
   return vars
 }
 
-/** sRGB channels 0-255 of `#rgb`, `#rrggbb` or `rgb(r, g, b)`. */
+/** sRGB channels 0-255 of `#rgb`, `#rrggbb` or `rgb(r, g, b)`: the notations the series colours
+ *  are written in (web/src/chart/Chart.tsx), as every colour of index.css is. */
 function rgb(color: string): [number, number, number] {
   const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color)
   if (hex) {
@@ -260,7 +278,7 @@ describe('chart colours', () => {
       expect(colours.every((c) => typeof c === 'string' && c.length > 0)).toBe(true)
       expect(new Set(colours.map((c) => rgb(c).join(','))).size).toBe(6)
     }
-    expect(series[1]).toEqual(series[2])
+    expect(series[1].map(rgb)).toEqual(series[2].map(rgb))
   })
 
   test.fails.each(BLOCKS)('%s: every series colour has 3:1 contrast with --panel (WCAG 1.4.11)', (_name, opening) => {

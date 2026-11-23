@@ -163,6 +163,26 @@ async def test_without_a_sandbox_each_query_gets_the_next_id(empty_duckdb: list[
     assert text_of(first).splitlines()[:4] == ["one", "---", "1", "(1 rows)"]
 
 
+async def test_with_a_sandbox_each_query_gets_one_id_the_chart_tool_reads(
+    empty_duckdb: list[str], tmp_path: Path
+) -> None:
+    """The web UI's runs: --charts beside --sandbox. One id line per result, one numbering for
+    both tools."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = ["--sandbox", "local", "--workspace", str(workspace)]
+    async with mcp_server(*empty_duckdb, *sandbox) as session:
+        first = await call(session, "query_database", {"sql": "SELECT 'a' AS k, 1 AS v"})
+        second = await call(session, "query_database", {"sql": "SELECT 'b' AS k, 2 AS v"})
+        drawn = await chart(session, bar("query_2", "k", "v"))
+    for result, expected in ((first, "query_1"), (second, "query_2")):
+        text = text_of(result)
+        assert not result.is_error, text
+        assert result_id(text) == expected
+        assert text.count("[result id:") == 1, text
+    assert drawn["data"] == [{"k": "b", "v": 2}]
+
+
 @pytest.fixture
 def two_sources(tmp_path: Path) -> list[str]:
     import duckdb  # pyright: ignore[reportMissingImports]
@@ -318,8 +338,10 @@ async def test_a_chart_the_type_cannot_show_is_refused(
     async with mcp_server(*empty_duckdb) as session:
         await query(session, SALES)
         await chart_error(session, arguments)
-        # The same columns are fine as a plain bar chart: the type made it fail.
-        await chart(session, {**arguments, "chart_type": "bar", "stacked": False})
+        # The control changes one thing: unstacked when stacking was the fault, otherwise the
+        # same columns as a plain bar chart.
+        control = {"stacked": False} if arguments.get("stacked") else {"chart_type": "bar"}
+        await chart(session, {**arguments, **control})
 
 
 async def test_more_than_500_points_are_refused_and_500_pass(empty_duckdb: list[str]) -> None:
@@ -385,10 +407,10 @@ CASES: list[Any] = [
             "chart_type": "area",
             "x": "month",
             "series": [{"column": "orders", "label": "Orders"}],
-            "stacked": False,
+            "stacked": True,
             "title": "Orders",
         },
-        {"series": [{"column": "orders", "label": "Orders"}], "stacked": False},
+        {"series": [{"column": "orders", "label": "Orders"}], "stacked": True},
         [
             {"month": "2024-01-01", "orders": 12},
             {"month": "2024-02-01", "orders": 15},
@@ -466,7 +488,7 @@ def fixture_calls() -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
 
 async def test_the_fixture_run_replays_on_a_real_server(empty_duckdb: list[str]) -> None:
     calls = fixture_calls()
-    charts = [call for call in calls if call[0] == "display_chart"]
+    charts = [entry for entry in calls if entry[0] == "display_chart"]
     assert len(charts) == 6
     async with mcp_server(*empty_duckdb) as session:
         for tool, arguments, end in calls:
