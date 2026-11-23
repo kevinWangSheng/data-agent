@@ -23,7 +23,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NoReturn
@@ -150,7 +150,7 @@ class ExternalServers:
             found += values
             for value in values:
                 password, host = url_parts(value)
-                found += [password, host if "." in host or ":" in host else ""]
+                found += [password, host if dotted(host) else ""]
             expanded = (*server.headers.values(), *server.env.values())
             found += [v for v in expanded if any(s in v for s in values)]
         return sorted({value for value in found if value})
@@ -161,7 +161,12 @@ class ExternalServers:
         found = {
             url_parts(value)[1] for server in self.servers for value in server.variables.values()
         }
-        return sorted(host for host in found if host and "." not in host and ":" not in host)
+        return sorted(host for host in found if host and not dotted(host))
+
+
+def dotted(host: str) -> bool:
+    """A domain name or address, masked anywhere; a single-label host is masked as a word."""
+    return "." in host or ":" in host
 
 
 def url_parts(value: str) -> tuple[str, str]:
@@ -380,9 +385,8 @@ def launch(path: Path, name: str, env: Mapping[str, str]) -> NoReturn:
     except McpConfigError as exc:
         print(f"data-agent {LAUNCH_COMMAND}: error: {exc}", file=sys.stderr)
         sys.exit(EXIT_CONFIG_ERROR)
-    argv: Sequence[str] = [server.command, *server.args]
     try:
-        os.execvpe(server.command, list(argv), launch_env(server, env))
+        os.execvpe(server.command, [server.command, *server.args], launch_env(server, env))
     except OSError as exc:
         print(
             f"data-agent {LAUNCH_COMMAND}: error: MCP server '{name}': cannot start "

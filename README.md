@@ -271,7 +271,9 @@ in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
 - External MCP servers (`--mcp-servers`) have no confirmation before a write tool runs. Their stdio
   processes run on the host, with network access that `--network` does not control. An http
   server's expanded headers reach the Claude Code CLI as part of its `--mcp-config` argument, so
-  other local users who can list this machine's processes can see them.
+  other local users who can list this machine's processes can see them. stdio servers' values do not reach any
+  argv: they reach the wrapper through the CLI's environment. The wrapper reads the file again when
+  the CLI starts the server, so an edit made to the file during a run takes effect at that point.
 
 ## How it was built
 
