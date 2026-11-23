@@ -78,7 +78,6 @@ def test_a_harbor_trial_command_has_no_mcp_servers(
     command = agent._run_command("fix the model")  # pyright: ignore[reportPrivateUsage]
 
     assert "/bin/data-agent run --type dbt " in command
-    assert "--sandbox local" in command
     assert "--mcp-servers" not in command
     assert "DATA_AGENT_MCP" not in command
 

@@ -121,10 +121,9 @@ def run_with(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     servers: dict[str, Any],
-    name: str = "run",
 ) -> CliRun:
-    config = write_config(tmp_path / "config" / f"{name}.mcp.json", servers)
-    argv, events_dir = run_args(tmp_path / name, mcp_servers=config)
+    config = write_config(tmp_path / "config" / "mcp.json", servers)
+    argv, events_dir = run_args(tmp_path / "run", mcp_servers=config)
     return run_cli(capsys, argv, events_dir)
 
 

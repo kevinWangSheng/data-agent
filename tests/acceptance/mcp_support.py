@@ -124,7 +124,6 @@ def run_args(
     database: Sequence[str] | None = None,
     mcp_servers: Path | None = None,
     config: str = "full",
-    extra: Sequence[str] = (),
 ) -> tuple[list[str], Path]:
     """A query run's arguments under `root` (its own workspace and events dir), on a fresh copy of
     the shop DuckDB unless `database` names another; with `--mcp-servers` when given."""
@@ -139,7 +138,6 @@ def run_args(
         *("--workspace", str(workspace), *database),
         *("--config", config, "--events-dir", str(events_dir)),
         *("--sandbox", "local"),
-        *extra,
         *(("--mcp-servers", str(mcp_servers)) if mcp_servers is not None else ()),
     ]
     return argv, events_dir
@@ -222,7 +220,7 @@ def external_servers(version: Mapping[str, Any]) -> list[dict[str, Any]]:
     return servers
 
 
-def names(text: str, word: str) -> bool:
+def mentions(text: str, word: str) -> bool:
     """Whether `text` names `word` on its own: not as part of `--data-sources` or `data-agent`
     (the usage line argparse prints names both)."""
     return re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", text) is not None
@@ -231,7 +229,7 @@ def names(text: str, word: str) -> bool:
 def assert_refused_before_session(run: CliRun, capture: Capture, *words: str) -> None:
     """A config error: stderr names each of `words`, no session started, exit code 2."""
     for word in words:
-        assert names(run.stderr, word), f"stderr does not name {word!r}: {run.stderr!r}"
+        assert mentions(run.stderr, word), f"stderr does not name {word!r}: {run.stderr!r}"
     assert capture.sessions == [], "a session started despite the config error"
     assert run.code == EXIT_CONFIG_ERROR, f"exit code {run.code!r}, expected 2"
 
