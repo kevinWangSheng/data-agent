@@ -189,3 +189,5 @@ uv run data-agent run --type query --config full --charts --sandbox docker \
 grep -c display_chart runs/119-real/events-2/events.jsonl   # expect 0
 ```
 For run 1, check that `tool_end.content` is `{"chart":…,"data":…}` with no `{"result":…}` wrapper, and that the data matches the query rows.
+
+- 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查完成，无意见。合并前：真实运行（`runs/batch2/live-checks.sh`）和"待人定"交人定。

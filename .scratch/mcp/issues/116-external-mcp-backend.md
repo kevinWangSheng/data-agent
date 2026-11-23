@@ -229,3 +229,5 @@ uv run data-agent run --type query --config full --duckdb runs/116-github/shop.d
   --task "In the GitHub repository github/github-mcp-server, what is the title of issue #1, and is it open or closed?"
 ```
 Check that the events contain a `tool_start` for an `mcp__github__` tool and that the answer matches issue #1.
+
+- 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查完成，无意见。合并前：真实运行（`runs/batch2/live-checks.sh`）和"待人定"交人定。

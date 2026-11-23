@@ -1,6 +1,6 @@
 # 112 — 可观测性后端：开关、CLI 导出变量、父 span、`trace` 事件、评测入口、`trace-check`、SDK 升级
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 111（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-23
@@ -301,3 +301,7 @@ The fake model endpoint on port 18912 will stop the same way when its limit is r
 The fake model endpoint on port 18912 has now also stopped at its background time limit. It was only for test 1, the probe on which switch carries model output, and the export-off run, and all three had already finished, so no result is affected.
 
 To re-run any of those, start it again with `uv run python runs/112/fake_model_server.py 18912 runs/112/m1/requests.jsonl runs/112/m1/otlp`.
+
+- 2026-11-23（主会话，第 7 步）：PR #125 CI 绿。Codex GitHub app 1 条意见，主会话对照代码核实属实：
+  - 退回：父 span 导出失败不报。`tracing.py:303,314` 用 `SimpleSpanProcessor`，它吞掉 exporter 的异常、不看导出结果；`_finish`（`:367` `self._span.end()`）之后照常写 `trace` 事件。Langfuse 拒收或超时时，父 span（会话 id、答案、总 usage 和 cost）静默丢失，事件里没有任何错误。要显式拿到父 span 的导出结果（例如直接调 exporter 的 `export()` 看 `SpanExportResult`，或包一层记下失败），失败时写一条 `trace_export_error`（只有错误类型和 HTTP 状态码，和中转同一口径），run 照常结束。配一个修复前会失败的测试（假 Langfuse 对父 span 返回 500 / 连接被拒）。
+  - 派修复要等主会话的真实运行（`runs/batch2/live-checks.sh` 在本工单 worktree 里跑 jaffle 和实测 2、3）结束，不在运行中改 worktree。
