@@ -182,6 +182,20 @@ the conversation already says which one is meant, answer and state the reading y
 your assumptions. Never ask a question in plain text.
 """
 
+# The charting rule (ticket 119, .scratch/charts/spec.md "画图规则", after the "Chart Rules" of
+# nao's system prompt, apps/backend/src/components/ai/system-prompt.tsx), in a `--charts` run
+# only: no evaluation passes the switch.
+CHARTS_PROMPT = """
+You can show charts in your answer with `display_chart`. It draws the rows of one query_database \
+result by the id at the end of that result (`query_id`); only the ids of this run's queries are \
+valid (in a conversation, this turn's), so query again rather than cite an earlier turn's id. \
+Chart only to compare categories, show a trend over time, or show how a whole splits into parts \
+or how values are spread, and only when the result has enough points to show it. Do not chart a \
+single number or a result of two or three rows. Show at most one or two charts in an answer. \
+The text answer must be complete without the charts: they only add to it, so never write "see \
+the chart" in place of a result.
+"""
+
 # The final-answer rule of query tasks, shared with the DAB runner's task prompt (ticket 68):
 # correct answers were hard to read when another column sat between a name and its value, a name
 # was cut short, or a table of other candidates stood beside the answer (ADR-0005 Update
@@ -210,6 +224,15 @@ DOCKER_PATHS_RULE = (
 )
 
 
+# What a query run with `--charts` says in place of SANDBOX_RULE (ticket 119): a chart is
+# display_chart's, not a plot made in the sandbox. SANDBOX_RULE stays as it is for every other
+# run, the DAB prompt included.
+CHARTS_SANDBOX_RULE = """\
+When query results need computing or combining, do it in `sandbox_exec` and pass it the results \
+with `data_files`. Show a chart with `display_chart`, not by plotting in `sandbox_exec`.
+"""
+
+
 def docker_paths_note(sandbox: Backend | None) -> str:
     return DOCKER_PATHS_RULE if sandbox == "docker" else ""
 
@@ -230,6 +253,8 @@ Workspace (your working directory): {workspace}
 """
     + ANSWER_RULE
 )
+# The query prompt of a run with `--charts`.
+CHARTS_QUERY_PROMPT = QUERY_PROMPT.replace(SANDBOX_RULE, CHARTS_SANDBOX_RULE)
 
 # The query prompts' turn line (ticket 69); TurnBudget reminds the agent as the turns run out.
 TURN_LIMIT = (
@@ -1320,10 +1345,15 @@ def database_line(task: Task) -> str:
 
 
 def system_prompt(
-    task: Task, config: RunConfig, chat: bool = False, skills_root: str | None = None
+    task: Task,
+    config: RunConfig,
+    chat: bool = False,
+    skills_root: str | None = None,
+    charts: bool = False,
 ) -> str:
     """`chat`: a conversation turn, which may ask the user (`CLARIFICATION_PROMPT`).
-    `skills_root`: where sandbox commands see the Skill directory (`load_skills`)."""
+    `skills_root`: where sandbox commands see the Skill directory (`load_skills`). `charts`: a
+    run with display_chart (`CHARTS_PROMPT`)."""
     base = DBT_SYSTEM_PROMPT if task.type == "dbt" else SYSTEM_PROMPT
     names = injected_skills(task.type, config, task.dialects)
     prompt = base.format(server=MCP_SERVER)
@@ -1335,6 +1365,8 @@ def system_prompt(
         prompt += VERIFIERS_PROMPT
     if chat:
         prompt += CLARIFICATION_PROMPT
+    if charts:
+        prompt += CHARTS_PROMPT
     return prompt
 
 
@@ -1529,6 +1561,7 @@ def build_options(
     dbt: DbtRun | None = None,
     effort: Effort | None = None,
     trace: CliTrace | None = None,
+    charts: bool = False,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the workspace guard denies (`guard_recorder`). With `spend` (the
@@ -1554,7 +1587,9 @@ def build_options(
     `network` (ticket 98) loads WebSearch and WebFetch; without it, as on every evaluation, they
     are denied. Bash is denied on every run (ADR-0010). With the docker backend the Skills name
     their scripts as the container sees them (`SKILLS_MOUNT`). `effort` (ticket 104) is the
-    session's reasoning effort; None leaves it to the CLI (`EFFORTS`), as before."""
+    session's reasoning effort; None leaves it to the CLI (`EFFORTS`), as before. `charts`
+    (ticket 119) has the server serve display_chart, which `mcp__data` allows, and adds the
+    charting rule to the system prompt."""
     if task.type == "dbt":
         max_turns, budget = config.max_turns["dbt"], None
     else:
@@ -1577,6 +1612,7 @@ def build_options(
             ),
             *(sandbox.server_args() if sandbox else ()),
             *(dbt.server_args() if dbt else ()),
+            *(("--charts",) if charts else ()),
         ],
     }
     tools = BUILTIN_TOOLS
@@ -1639,6 +1675,7 @@ def build_options(
             config,
             chat=turn is not None,
             skills_root=SKILLS_MOUNT if sandbox and sandbox.backend == "docker" else None,
+            charts=charts,
         ),
         cwd=str(task.workspace.resolve()),
         tools=tools,
@@ -2072,6 +2109,7 @@ async def run(
     dbt_target: Target = "task",
     effort: Effort | None = None,
     trace_tier: TraceTier = "full",
+    charts: bool = False,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
@@ -2084,7 +2122,9 @@ async def run(
     agent the web tools (`build_options`) and the docker sandbox the network. A dbt run with
     `sandbox` also gets dbt_execute, writing to `dbt_target` (`DbtRun.of_run`: `scratch` keeps
     its profile in `<events_dir>/profiles/`, which must be outside the workspace). `effort`
-    (ticket 104) is the session's reasoning effort, recorded in the `version` event when given."""
+    (ticket 104) is the session's reasoning effort, recorded in the `version` event when given.
+    `charts` (ticket 119) gives the agent display_chart and the charting rule (`build_options`)
+    and, in a query run, `CHARTS_SANDBOX_RULE` in place of SANDBOX_RULE."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -2185,7 +2225,8 @@ async def run(
         )
         source_names = tuple(source.name for source in task.databases)
         budget = None if task.type == "dbt" else TurnBudget(config.max_turns[task.type])
-        prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
+        query_prompt = CHARTS_QUERY_PROMPT if charts else QUERY_PROMPT
+        prompt = (DBT_PROMPT if task.type == "dbt" else query_prompt).format(
             server=MCP_SERVER,
             turn_limit=TURN_LIMIT.format(max_turns=budget.max_turns) if budget else "",
             database=database_line(task),
@@ -2227,6 +2268,7 @@ async def run(
                 network=network,
                 dbt=dbt_run,
                 effort=effort,
+                charts=charts,
             )
             open_calls: dict[str, str] = {}
             session_id: str | None = None

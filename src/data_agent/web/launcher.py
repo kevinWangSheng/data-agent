@@ -166,6 +166,8 @@ class Launcher:
                 *("--sandbox", SANDBOX),
                 *(("--dbt-target", "scratch") if task_type == "dbt" else ()),
                 *(("--network",) if network else ()),
+                # Every run from the form may chart its answer (charts spec "开关"), dbt too.
+                "--charts",
             ]
             return args, workspace
 

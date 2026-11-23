@@ -49,6 +49,15 @@ SERVER_SANDBOX_HELP = (
     "(docker) or directly on this machine (local). Use local only inside an isolated container, "
     "such as a Harbor task. Without this option the server has no sandbox_exec"
 )
+# `--charts` (ticket 119, .scratch/charts/spec.md "开关"): off on every evaluation.
+CHARTS_HELP = (
+    "the agent may show charts of its query results in the answer (display_chart and the "
+    "charting rule); the web UI's runs pass it"
+)
+SERVER_CHARTS_HELP = (
+    "serve display_chart, and give every query_database result an id it can chart. Without "
+    "this option the server has no display_chart"
+)
 
 # `--dbt-target` (ticket 99, spec "`dbt_execute`").
 DBT_TARGET_HELP = (
@@ -192,7 +201,9 @@ def serve_sources(
             parser.error(f"dictionary file not found: {path}")
         dictionaries[name] = Dictionary.load(Path(path))
     gateways = {source.name: source_gateway(source, os.environ) for source in sources}
-    build_multi_server(gateways, config, args.workspace, dictionaries, sandbox).run("stdio")
+    build_multi_server(
+        gateways, config, args.workspace, dictionaries, sandbox, charts=args.charts
+    ).run("stdio")
 
 
 def file_task(parser: argparse.ArgumentParser, args: argparse.Namespace, text: str) -> Task:
@@ -264,6 +275,7 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         help="with --dbt-target scratch: the directory outside the workspace its profile goes to",
     )
+    serve.add_argument("--charts", action="store_true", help=SERVER_CHARTS_HELP)
 
     run_cmd = commands.add_parser("run", help="run the agent on one task")
     task_arg = run_cmd.add_mutually_exclusive_group(required=True)
@@ -324,6 +336,7 @@ def main(argv: list[str] | None = None) -> None:
         help="JSON file of external MCP servers: Claude Code / Cursor `mcpServers`, plus an "
         "`allowedTools` list per server (never on an evaluation run)",
     )
+    run_cmd.add_argument("--charts", action="store_true", help=CHARTS_HELP)
 
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
     web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
@@ -374,7 +387,14 @@ def main(argv: list[str] | None = None) -> None:
         # Without the file (the server run on its own) build_server builds the dictionary.
         dictionary = Dictionary.load(args.dictionary) if args.dictionary is not None else None
         build_server(
-            gateway, config, args.workspace, not args.no_verifier_tools, dictionary, sandbox, dbt
+            gateway,
+            config,
+            args.workspace,
+            not args.no_verifier_tools,
+            dictionary,
+            sandbox,
+            dbt,
+            charts=args.charts,
         ).run("stdio")
         return
 
@@ -417,6 +437,7 @@ def main(argv: list[str] | None = None) -> None:
                 network=args.network,
                 dbt_target=args.dbt_target,
                 effort=args.effort,
+                charts=args.charts,
             )
         )
     except ConfigError as exc:

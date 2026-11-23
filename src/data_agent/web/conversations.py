@@ -141,6 +141,7 @@ class Conversations:
                 *("--chat", "--conversation-dir", str(directory), "--turn", str(number)),
                 *("--sandbox", SANDBOX),
                 *(("--network",) if network else ()),
+                "--charts",
             ]
             if resume is not None:
                 args += ["--resume", resume]

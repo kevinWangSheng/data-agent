@@ -39,11 +39,6 @@ from typing import Any
 import pytest
 from seam_support import DATA_AGENT, FIXTURES
 
-TICKET_119 = pytest.mark.xfail(
-    strict=True, reason="ticket 119: mcp-server --charts and display_chart are not built yet"
-)
-pytestmark = TICKET_119
-
 RUN = FIXTURES / "charts" / "run"
 # The web UI's pattern for the line (web/src/run-view/model.ts, RESULT_ID_NOTE).
 RESULT_ID_NOTE = r"^\[result id: [^\]]+\]$"
