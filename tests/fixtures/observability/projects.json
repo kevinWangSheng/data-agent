@@ -1,0 +1,10 @@
+{
+  "data": [
+    {
+      "id": "project-fixture-0001",
+      "name": "data-agent",
+      "organization": { "id": "org-fixture-0001", "name": "fixture org" },
+      "metadata": {}
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "data": [
+    {
+      "id": "obs-0001",
+      "traceId": "@@TRACE_ID@@",
+      "projectId": "project-fixture-0001",
+      "parentObservationId": null,
+      "type": "SPAN",
+      "name": "data-agent.run",
+      "startTime": "2026-11-23T10:00:00.000Z",
+      "endTime": "2026-11-23T10:00:20.000Z",
+      "input": null,
+      "output": null,
+      "metadata": {
+        "trace_tier": "full",
+        "skill_version": "skills-fixture-version"
+      },
+      "usageDetails": { "input": 3405, "output": 610, "cache_read": 26016 },
+      "costDetails": { "total": 0.0123 }
+    },
+    {
+      "id": "obs-0002",
+      "traceId": "@@TRACE_ID@@",
+      "projectId": "project-fixture-0001",
+      "parentObservationId": "obs-0001",
+      "type": "AGENT",
+      "name": "claude_code.interaction",
+      "startTime": "2026-11-23T10:00:00.100Z",
+      "endTime": "2026-11-23T10:00:19.900Z",
+      "input": "How many customers are in each membership tier?",
+      "output": null,
+      "metadata": {
+        "user_prompt": "How many customers are in each membership tier?",
+        "claude_code.env_echo": "@@SECRET_LIKE@@"
+      }
+    },
+    {
+      "id": "obs-0003",
+      "traceId": "@@TRACE_ID@@",
+      "projectId": "project-fixture-0001",
+      "parentObservationId": "obs-0002",
+      "type": "GENERATION",
+      "name": "claude_code.llm_request",
+      "startTime": "2026-11-23T10:00:00.200Z",
+      "endTime": "2026-11-23T10:00:01.700Z",
+      "model": "deepseek-flash",
+      "input": null,
+      "output": "I will count the customers by tier.",
+      "metadata": {
+        "ttft_ms": "400",
+        "stop_reason": "tool_use"
+      },
+      "usageDetails": { "input": 1201, "output": 302, "cache_read": 9003 },
+      "costDetails": {}
+    },
+    {
+      "id": "obs-0004",
+      "traceId": "@@TRACE_ID@@",
+      "projectId": "project-fixture-0001",
+      "parentObservationId": "obs-0002",
+      "type": "TOOL",
+      "name": "claude_code.tool",
+      "startTime": "2026-11-23T10:00:02.000Z",
+      "endTime": "2026-11-23T10:00:02.800Z",
+      "input": "{\"sql\": \"SELECT tier, count(*) AS n FROM customers GROUP BY tier\"}",
+      "output": "tier,n\nBronze,4\nGold,4\nSilver,3\nPlatinum,1",
+      "metadata": {
+        "tool_name": "mcp__data__query_database",
+        "mcp_server_name": "data"
+      }
+    }
+  ],
+  "meta": {}
+}

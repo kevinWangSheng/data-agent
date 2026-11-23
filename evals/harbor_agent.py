@@ -87,6 +87,9 @@ DISCONNECTED = re.compile(
 )
 # The variables `data-agent run` reads its model from (agent.ModelSettings).
 MODEL_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_BASE_URL", "DATA_AGENT_MODEL")
+# The eval split (dev / holdout), which picks a traced trial's tier (observability spec "覆盖范围").
+# Read from this module when the adapter runs, so a test points it at a stand-in manifest.
+MANIFEST = REPO_ROOT / "evals" / "manifest.json"
 # data-eng-bench builds its image with `dbt ... --target dev` (base-image/Dockerfile:64), and the
 # target is part of dbt's partial-parse key: a dbt call without `--target` re-parsed the whole
 # project on each trial's first call. DBT_TARGET is dbt's environment variable for `--target`;
@@ -203,6 +206,9 @@ class DataAgentOptions(InstalledAgentOptions):
         gt=0,
         description="The trial's time limit in seconds; data-agent stops itself before it.",
     )
+    # Harbor's `--ak trace=true` (`evals ablate/board --trace`): export the trial's trace to
+    # Langfuse, one trial per task (observability spec "覆盖范围").
+    trace: bool = Field(default=False, description="Export this task's first trial to Langfuse.")
 
     @field_validator("run_config")
     @classmethod
