@@ -166,7 +166,7 @@ def test_every_web_run_gets_the_config_path_and_no_expanded_value(mounted: Web, 
 def test_without_a_config_no_web_run_gets_mcp_servers(plain: Web, route: str) -> None:
     args = ROUTES[route](plain)
     assert "--type" in args
-    assert "--mcp-servers" not in args
+    assert not [arg for arg in args if arg == "--mcp-servers" or arg.startswith("--mcp-servers=")]
 
 
 # --- `data-agent web --mcp-servers` ----------------------------------------------------------
@@ -187,6 +187,8 @@ def serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: Sequence[str])
         seen.append(dict(bound.arguments))
         return object()
 
+    # Set, so a `data-agent web` that checks the config when it starts finds it valid.
+    monkeypatch.setenv("DATA_AGENT_MCP_GITHUB_TOKEN", GITHUB_TOKEN)
     monkeypatch.setattr(web_app, "create_app", fake_create_app)
     monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
     runs_dir = tmp_path / "runs"

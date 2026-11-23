@@ -39,6 +39,7 @@ import re
 import secrets
 import subprocess
 import time
+import warnings
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -58,6 +59,8 @@ TICKET_116 = pytest.mark.xfail(
 
 MCP_IMAGE = "mongodb/mongodb-mcp-server:3.3.0"
 MONGO_IMAGE = "mongo:8.0"
+# Labels the MCP server containers a run starts, so teardown finds the ones a killed run left.
+LABEL = "data-agent-test"
 QUERY_TOOLS = ["find", "aggregate", "count", "list-collections", "collection-schema"]
 ALLOWED = [*QUERY_TOOLS, "list-connections"]
 START_TIMEOUT = 90
@@ -72,7 +75,8 @@ JOIN_TASK = (
     "customer id and the total."
 )
 INSERT_TASK = (
-    "Insert one new document into the `tickets` collection of the MongoDB database `support`: "
+    "First tell me how many documents the `tickets` collection of the MongoDB database `support` "
+    "holds. Then insert one new document into that collection: "
     'ticket_id "T-2001", customer_id "C0012", subject "Test ticket", status "open", '
     'opened_on "2025-10-01".'
 )
@@ -99,6 +103,9 @@ class Mongo:
 
     def eval(self, script: str) -> str:
         return docker("exec", self.container, "mongosh", "--quiet", "support", "--eval", script)
+
+    def collections(self) -> list[str]:
+        return sorted(json.loads(self.eval("EJSON.stringify(db.getCollectionNames())")))
 
     def tickets(self) -> list[dict[str, Any]]:
         out = self.eval(
@@ -136,8 +143,26 @@ def mongo() -> Iterator[Mongo]:
         docker("pull", MCP_IMAGE, timeout=600)
         yield demo
     finally:
-        subprocess.run(["docker", "rm", "-f", demo.container], capture_output=True, timeout=60)
-        subprocess.run(["docker", "network", "rm", demo.network], capture_output=True, timeout=60)
+        # The mongo container, and any MCP server container a killed or timed-out run left
+        # behind (the config labels them), selected by this test's own label only.
+        listed = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"label={LABEL}={demo.network}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        leftovers = listed.stdout.split()
+        subprocess.run(
+            ["docker", "rm", "-f", demo.container, *leftovers], capture_output=True, timeout=60
+        )
+        removed = subprocess.run(
+            ["docker", "network", "rm", demo.network], capture_output=True, text=True, timeout=60
+        )
+        if removed.returncode != 0:
+            warnings.warn(
+                f"docker network {demo.network} not removed: {removed.stderr.strip()}",
+                stacklevel=1,
+            )
 
 
 def mongo_config(path: Path, demo: Mongo, read_only: bool) -> Path:
@@ -149,6 +174,7 @@ def mongo_config(path: Path, demo: Mongo, read_only: bool) -> Path:
                 "command": "docker",
                 "args": [
                     *("run", "--rm", "-i", "--network", demo.network),
+                    *("--label", f"{LABEL}={demo.network}"),
                     *("-e", "MDB_MCP_CONNECTION_STRING", "-e", "MDB_MCP_READ_ONLY"),
                     *("-e", "MDB_MCP_TELEMETRY", MCP_IMAGE),
                 ],
@@ -184,9 +210,15 @@ def run_agent(
         text=True,
         timeout=RUN_TIMEOUT,
     )
+    # A run that never reached the model is the environment's failure, not the feature's: it
+    # must not hide as the expected failure.
     files = list(events_dir.glob("*.jsonl"))
-    assert len(files) == 1, f"expected one event file, found {files}: {proc.stderr}"
+    if len(files) != 1:
+        raise RuntimeError(f"the run wrote {len(files)} event files: {proc.stderr}")
     events = [json.loads(line) for line in files[0].read_text().splitlines() if line.strip()]
+    results = [e for e in events if e["type"] == "result"]
+    if not results or not results[-1].get("output_tokens"):
+        raise RuntimeError(f"the model never answered: {proc.stderr}")
     return proc, events, db
 
 
@@ -244,7 +276,7 @@ def test_a_question_across_mongodb_and_duckdb_is_answered_with_the_external_tool
 def test_a_write_the_allow_list_leaves_out_is_refused_and_the_collection_is_unchanged(
     tmp_path: Path, mongo: Mongo
 ) -> None:
-    before = mongo.tickets()
+    before, collections = mongo.tickets(), mongo.collections()
     proc, events, _ = run_agent(tmp_path, mongo, INSERT_TASK, read_only=False)
 
     # The server was there: refusing the write is not a run without it.
@@ -260,3 +292,5 @@ def test_a_write_the_allow_list_leaves_out_is_refused_and_the_collection_is_unch
     writes = [tool for tool in succeeded(events) if tool not in allowed]
     assert writes == [], f"a tool outside the allow list succeeded: {writes}"
     assert mongo.tickets() == before
+    # Nor written anywhere else (an allowed `aggregate` with `$out` would be a write).
+    assert mongo.collections() == collections
