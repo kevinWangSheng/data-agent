@@ -1,10 +1,10 @@
 # 111 — 可观测性：验收测试（开关、CLI 环境变量、中转规则与转发、父 span、评测入口、trace-check、网页链接）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (ticket agent)
+Branch: worktree-111-observability-acceptance-tests
 
 ## Goal
 
@@ -161,11 +161,10 @@ spec "Testing Decisions" 列的每一组验收测试都写好，落在约定的�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0
+- Outcome: in-review. The tests, stubs, fixtures and dev dependencies are committed. The human review gates the merge.
 
 ## Comments
 
@@ -179,3 +178,130 @@ spec "Testing Decisions" 列的每一组验收测试都写好，落在约定的�
   - jaffle-shop 的题不在 `evals/manifest.json` 里，照字面规则走留出集档；spec 又把它算作可发往 Cloud 的公开演示数据。本工单不测 jaffle-shop。
   - Harbor 下"第 1 个 trial"怎么认：建议适配器在 job 目录里原子地占一个按题名命名的文件（`O_EXCL`），谁先占到谁导出。代价：`harbor job resume` 重跑出错的 trial 时，这题就不会再导出。测试只断言"恰好一个"。
   - 留出集档 resource 上的 `service.name`、`service.version` 不在 spec 的白名单里，测试照字面会删掉它们；要留的话，合并前在 spec 里加上。
+
+- 2026-11-23（工单 agent 最终回复，主会话照抄）：
+
+**Step 3: the real run** (`uv run pytest tests/acceptance/test_observability_*.py -v`, output in `runs/111/acceptance-v-final.txt`): 62 cases.
+- **11 PASSED, unmarked:** the 7 "export off" cases, the no-network self-check, and 3 self-checks (the fixture parses, it holds no secret or endpoint, the fake Langfuse answers).
+- **51 XFAIL:** 0 XPASS, 0 skipped.
+- **Web** (`pnpm exec vitest run …/trace-link.test.ts`): 3 expected fail.
+
+**Why each group fails today** (`--runxfail`, `runs/111/runxfail-final.txt`). None of them fails on fixture parsing, the fake server or an import.
+
+| Group | Failure today |
+|---|---|
+| `from_env` | `NotImplementedError: ticket 112` (14 cases) |
+| CLI variables | the endpoint the CLI gets is `''`: the shell's value is not overridden and there is no relay endpoint |
+| `--trace-tier` | argparse `unrecognized arguments` |
+| Parent span | no `data-agent.run` span (`AssertionError: []`); the error case gets `assert [] == [('http_error', 500), …]` |
+| Rules and forwarding | `NotImplementedError: ticket 113` (15 cases) |
+| End to end | no `trace` event |
+| Harbor | the container env has no Langfuse variables (`assert {} == {'DATA_AGENT_…'}`) |
+| ablate / board | `SystemExit: 2`, because `--trace` is unknown |
+| DAB | the content switches are `None` instead of `'1'` |
+| `trace-check` | `invalid choice: 'trace-check'` |
+| Web | `traceLink` throws "not implemented" |
+
+**Reference implementation.** A throwaway one is on the local branch `ref-111-throwaway`. It was committed with `--no-verify`, is never to be merged or pushed, and you can delete it. With it, `--runxfail` gives 62/62 passed, three runs in a row, and vitest gives 3/3 with `.fails` removed.
+
+**Negative checks.** Each sabotages the reference in one way; each one fails at least one test:
+- `anthropic.custom_base_url` is kept.
+- `claude_code.future_field` gets through on the held-out tier.
+- The held-out tier drops allowlisted attributes.
+- Secrets are removed only by attribute name, with no scan of the values.
+- The ids are not made anonymous.
+- `stop()` does not wait for forwarding to finish.
+- The shell's endpoint is not overridden.
+- The shell's `OTEL_LOG_RAW_API_BODIES=1` stays on in the held-out tier.
+- The held-out parent span carries the run id.
+- The span is not active when the session starts.
+- The relay is built with the export off. This is the unmarked guard; 7 cases fail.
+- Every trial of a task exports, or only one task per job does.
+- ablate adds `trace=true` without `--trace`.
+- A held-out task gets the dev tier.
+- DAB exports every run.
+- `trace-check` prints attribute values.
+- `traceLink` returns a link when there is no `trace` event.
+
+The first version of the "no drain" check passed even with draining removed, so it proved nothing. I tightened that test.
+
+**Scrub and secret scan.** `evals scrub` on a copy of `tests/fixtures/observability/`: 0 files changed, 0 redactions of any kind. Pre-commit (gitleaks and the rest) passed on every commit. The secret-like value, the known secret and the model endpoint are put into the fixtures at test time, not stored in them.
+
+**Dependencies.** `pyproject.toml` adds `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http` and `opentelemetry-proto`, all `==1.45.1`, to the `dev` group. The `uv.lock` diff only adds packages:
+- `googleapis-common-protos`
+- `opentelemetry-exporter-http-transport`
+- `opentelemetry-exporter-otlp-common`
+- `opentelemetry-exporter-otlp-proto-common`
+- `opentelemetry-exporter-otlp-proto-http`
+- `opentelemetry-proto`
+- `opentelemetry-sdk`
+- `opentelemetry-semantic-conventions`
+
+`opentelemetry-api` is still 1.45.1 and `protobuf` still 6.33.6. The output of `uv export --frozen --no-dev --no-emit-project` is identical to the branch's starting point. `claude-agent-sdk` and `tests/test_harbor_agent.py` are unchanged.
+
+**Langfuse sources** (read 2026-11-23, cited in the test docstrings):
+- `langfuse.trace.tags` is `string[]`; the endpoint is `/api/public/otel/v1/traces`, with Basic auth and `x-langfuse-ingestion-version: 4` (langfuse.com/integrations/native/opentelemetry).
+- `GET /api/public/v2/observations` returns `{"data": [ObservationV2], "meta"}`, from the fern definitions `observations.yml` and `commons.yml`.
+- `GET /api/public/projects` returns `{"data": [{id, name, organization, metadata}]}`, from `projects.yml`.
+- I found no official source for the trace URL format in the UI. The tests only check that the URL starts with `BASE_URL` and contains the trace id.
+
+**Review 1** (a read-only Fable subagent in place of `da-review`, which this account can't run): 13 findings.
+- Fixed:
+  - The observations fixture now nests attributes under `metadata.attributes`, and the fake answers only the `fields` groups asked for.
+  - Allowlisted attributes must keep their values on the held-out tier.
+  - Tool-span pairing is now required.
+  - Secrets are planted inside content strings.
+  - The tag test uses a config whose name is not `full`.
+  - The refused port is held for the whole test.
+  - The hang test asserts that the relay forwarded something.
+  - The `parent_exporter` stand-in takes any arguments.
+  - The self-check requires the future attribute on every kind of layer.
+  - The fixture's host fields are now placeholders.
+- The "exactly one trial" check is now per task: two tasks per job.
+- `tier_flag` is no longer pinned when tracing is off.
+- Not fixed, with reason: the `Authorization` check now covers only `OTEL_*`, `DATA_AGENT_*` and `CLAUDE_CODE_*` variables. Any unrelated variable on a developer or CI machine could contain that word. The public and secret keys are still checked in every variable.
+
+**Review 2** (`eng:code-review main`):
+- Fixed:
+  - The drain test calls `stop()` as soon as Langfuse has the requests, before it answers.
+  - "A new `AnonIds` gives different ids" now covers all four id kinds.
+  - Comparing ids replaces comparing bytes, which depended on protobuf serialization order.
+  - The second job really uses `run_config=no-skill`.
+  - `result_message` is shared instead of copied three times.
+  - Names: `ExportStandIns`, `Planted.carried_by`.
+  - A comment says why `LANGFUSE_ENV` is spelled out in the tests.
+- Not fixed, with reasons:
+  - The `langfuse` fixture is still defined in 4 test files. Authority doesn't include a `conftest.py`, and importing fixtures from a module trips ruff F401/F811; each copy is 4 lines.
+  - `trace-check` value checks still skip strings shorter than 6 characters. Values like `"data"` match parts of span names.
+  - Whether `error_type` should be a `Literal` is left for you to decide, as part of the contract.
+
+Each review led to one fix round; the reference was re-checked after both.
+
+**Contract for you to review** (all as the ticket specified, unless noted):
+- `tracing.py`:
+  - `TraceTier = Literal["full", "structure"]`, `TRACE_TIERS`, `LANGFUSE_ENV`.
+  - `LangfuseSettings(public_key, secret_key, base_url)` with `from_env(env) -> LangfuseSettings | None`.
+  - `CliTrace(endpoint, tier)`.
+  - `parent_exporter(settings) -> SpanExporter`. OpenTelemetry is imported only under `TYPE_CHECKING`.
+- `trace_relay.py`:
+  - `ExportError(error_type, status)`.
+  - `RelayReport(forwarded_spans, forwarded_llm_requests, errors)`.
+  - `AnonIds()`.
+  - `rewrite(body, *, tier, ids, secrets) -> bytes`.
+  - `TraceRelay(langfuse, tier, secrets=(), drain_timeout_s=10.0)`, with `start() -> str` and `stop() -> RelayReport`.
+- Signatures only: `build_options(…, trace: CliTrace | None = None)`, `run(…, trace_tier: TraceTier = "full")`, `DataAgentOptions.trace: bool = False`, `harbor_agent.MANIFEST`, `dab.run_query(…, trace: bool = False)`.
+- `web/src/run-view/trace.ts`: `TraceLink = { traceId, url }` and `traceLink(events) -> TraceLink | null`.
+- Decided in this ticket:
+  - `error_type` takes three values: `http_error`, `connection_error`, `parse_error`.
+  - `drain_timeout_s` is a constructor argument. Context item 7 wrote `stop(drain_timeout_s=1)`; I followed item 3.
+  - The parent span's attribute is named `trace_tier`.
+  - `langfuse.trace.tags` must be a sequence of strings, not one string.
+  - The fixture's placeholder attribute names are listed in the docstring of `test_observability_relay.py`.
+
+**Open items for you to decide:**
+- **Single-run `langfuse.session.id`:** I recommend the event file's name without `.jsonl`. It is unique per run, and Harbor's `--events-dir` is always `events`. The reference uses it; the tests only require it to be non-empty and different between two runs.
+- **Inherited `OTEL_*` with the export off:** whether to clear them too. The tests only check `options.env`.
+- **jaffle-shop:** it is not in the manifest, so by the rule it gets the held-out tier, yet it is public demo data. It is not tested.
+- **Picking Harbor's "first trial":** I suggest an `O_EXCL` claim file per task in the job directory; the reference does this. The cost is that a `harbor job resume` that reruns a failed trial won't export that task again. The tests check "exactly one".
+- **`service.name` / `service.version`:** they are not in the held-out allowlist, so the tests expect them removed. To keep them, add them to the spec before merging.
+- **Langfuse's `metadata.resourceAttributes`:** the fixture uses this name as a guess; it is unconfirmed. Real responses should be checked in the acceptance run.

@@ -1,10 +1,10 @@
 # 118 — 答案图表：验收测试（MCP server、开关、前端，全部不调模型）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 118-charts-acceptance-tests)
+Branch: worktree-118-charts-acceptance-tests
 
 ## Goal
 
@@ -227,11 +227,10 @@ spec "Testing Decisions"（`.scratch/charts/spec.md:80-87`）列的验收测试�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 1 (Fable in place of `da-review`, plus `eng:code-review`; one round of fixes)
+- Model spend: $0 (no data-agent model calls)
+- Outcome: —
 
 ## Comments
 
@@ -247,3 +246,160 @@ spec "Testing Decisions"（`.scratch/charts/spec.md:80-87`）列的验收测试�
     1. `SANDBOX_RULE`（`agent.py:197-200`）要求"plotting"在 `sandbox_exec` 里做，和带 `--charts` 时的画图规则冲突。这条规则也在 DAB 提示词里（`evals/dab.py:111`），评测提示词不能动。119 要定带 `--charts` 时怎么处理，比如只在查数提示词里换一句。
     2. 网页表单起的 dbt 运行带不带 `--charts`：spec `:20` 没区分。测试只要求查数运行和对话带，dbt 不测，由 119 定并写进 Comments。
     3. 除 `query_database` 外，哪些工具也分配 id（spec `:26`），由 119 列出。
+
+- 2026-11-23（工单 agent 最终回复，主会话照抄）：
+
+**What was added**
+- `tests/acceptance/test_charts_server.py`: 21 tests, all marked to fail until ticket 119.
+- `tests/acceptance/test_charts_switch.py`:
+  - 5 guard tests with no mark, which pass now;
+  - 3 tests marked for ticket 119.
+- `tests/fixtures/charts/run/`: `events.jsonl` and `meta.json`.
+- `web/src/chart/model.ts` and `web/src/chart/Chart.tsx`: types and stubs that throw "not implemented".
+- `web/src/chart/acceptance/chart-render.test.ts` (jsdom) and `answer-charts.test.ts` (node): 42 tests, all `test.fails` until ticket 120.
+- `web/package.json` and the lockfile: only `jsdom` and its own dependencies (vitest's peer line updates with it).
+- Nothing under `src/` or `evals/` changed.
+
+**Test runs**
+- `make check`: exit 0.
+  - ruff: "All checks passed!"; 371 files already formatted.
+  - basedpyright: 0 errors, 0 warnings.
+  - pytest: `2595 passed, 2 skipped, 77 deselected, 24 xfailed`.
+  - web: `Tests 320 passed | 42 expected fail (362)`.
+- The two backend acceptance files alone (`pytest … -v`): `5 passed, 24 xfailed`, nothing skipped. The guards are:
+  - a run without the switch has no chart tool and no rule;
+  - Harbor never passes the switch;
+  - the Harbor run has no chart tool and no rule;
+  - the DAB session has no chart tool and no rule;
+  - a server without the switch or a sandbox adds no id line.
+- The two web files alone (`pnpm exec vitest run src/chart`): `42 expected fail (42)`.
+
+**Why each expected-fail test fails today** (backend run with `--runxfail`, web run with `.fails` stripped)
+- `test_charts_server.py`: 21 × `AssertionError: ticket 119: mcp-server has no --charts yet`.
+- `test_charts_switch.py`:
+  - `ticket 119: run has no --charts yet`;
+  - 2 × `assert '--charts' in ['--task=Revenue by month', '--type', 'query', …]`.
+- `chart-render.test.ts`: `Error: Chart: not implemented (ticket 120)`.
+- `answer-charts.test.ts`:
+  - 5 × `answerCharts: not implemented (ticket 120)`;
+  - the chat page and recorded conversation fail with `expected [] to deeply equal ['bar','line','area',…]`, meaning 0 charts in the answer area;
+  - the run pages fail with `expected [] to have a length of 1` (no answer element yet);
+  - the timeline test fails with `expected 'schema' to be 'chart'`;
+  - the palette tests fail with `--chart-series-1: expected undefined to be defined`.
+- The run page renders on the server without crashing.
+
+**Reference implementations and reverse checks**
+- I wrote temporary reference implementations for both backend and frontend; they were not committed and are reverted.
+- They are saved in `runs/ref118/` (`backend.patch`, `web.patch`, `web-ref/`), which git does not track.
+- With the reference in place and the marks removed, every test passes: backend 29/29, web 42/42. Replaying the fixture against the reference server gives exactly the recorded `display_chart` results.
+- Backend: each of these 11 deliberate breakages turns at least one test red:
+  - point limit moved to 502;
+  - DECIMAL written as text;
+  - missing default label;
+  - `run --charts` on by default, which reaches the Harbor run;
+  - Harbor's command passing `--charts`;
+  - DAB's prompt naming `display_chart`;
+  - an id line without `--charts`;
+  - `stacked` allowed on `line`;
+  - `stacked` allowed only on `bar`;
+  - next to a sandbox, the chart tool keeping its own result store;
+  - `line` refused even unstacked.
+- Frontend: each of these 10 turns at least one test red:
+  - a failed call going into the answer;
+  - charts drawn outside the run page's answer block;
+  - a light-theme colour below 3:1 contrast;
+  - the two dark blocks disagreeing;
+  - colours not wrapping after six;
+  - only the first series drawn;
+  - rows counted as data points;
+  - `stacked` ignored on bars;
+  - a verifier's call going into the answer;
+  - an empty chart drawing series instead of a note.
+- With recharts animation turned on, 6 render tests fail in jsdom. So "draws without animation" is now written into the `Chart.tsx` contract.
+
+**Scrub:** `python -m evals scrub tests/fixtures/charts` gives `changed 0 file(s) of 2; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0`.
+
+**Reviews**
+
+The Fable read-only review stood in for `da-review`, then `eng:code-review main` ran its Standards and Spec checks.
+
+Fixed in `739aa58`:
+- added a test of `--charts` together with `--sandbox local` (one id line per result, and the chart tool reads them);
+- stacked `area` now succeeds in one test;
+- the control call in the `stacked-*` refusal tests now changes only `stacked`;
+- added a test that a verifier's `display_chart` call stays out of the answer (contract 7);
+- added a geometry check that stacked versus side-by-side bars differ;
+- the empty-data test now also requires that no series is drawn;
+- the animation and colour-notation requirements are written into the `Chart.tsx` contract;
+- the dark-block colours are compared by value, not as strings;
+- the Harbor guard no longer matches the brittle `" run --type dbt "` text;
+- the switch file's docstring no longer reads as if it tests something it doesn't;
+- `chart-render` reads the fixture with the existing `parseEventLines`;
+- a loop variable no longer shadows `call`;
+- the check "exactly 5 charts on the whole page" became "the failed call is no chart anywhere", so ticket 120 may show charts in the timeline.
+
+Not fixed, with reasons:
+- The five chart types are listed three times. Each test file pins the contract on its own.
+- `AnswerChart.kind`, `.series` and `.rows` can be derived from the payload. They are frozen in contract 7.
+- The helper `has_charts` also asserts that the tool and the rule agree. Its docstring says so, and contract 8 asks for that pairing.
+- Copied MCP stdio helpers and `Recorder`: the ticket forbids editing the existing test files they come from.
+- "Not through the environment" (contract 1) is not enforced. The contract says to check results only.
+
+**Left for 119 and the human (unchanged from when the ticket was written)**
+- `SANDBOX_RULE` (telling the agent to do plotting in the sandbox) conflicts with the charting rule.
+- Whether web dbt runs get `--charts`.
+- Which tools other than `query_database` allocate ids.
+
+**Confirmation for the main session before merging 119:** run one web conversation turn with `--charts` and a chart-worthy question. Then check the run's `tool_end` events for `mcp__data__display_chart`, for example:
+
+```
+grep '"mcp__data__display_chart"' runs/<run-id>/events.jsonl | grep tool_end
+```
+
+`content` must be the dict's own compact JSON, `{"chart":{…},"data":[…]}`, not wrapped in `{"result":…}`, and shaped like the fixture. If it differs, return 119; don't change the fixture.
+
+## Contracts fixed in tests, fixture and types (for human review)
+1. **The switch:**
+   - `data-agent run --charts` and `data-agent mcp-server --charts`, both `store_true`, off by default, also accepted with `--source`.
+   - The run is judged only by the tools its MCP server lists and its `system_prompt`.
+   - The web run form's query runs and conversation turns pass `--charts`.
+   - The Harbor command, the Harbor run and DAB have no `display_chart` in their tools or prompt.
+2. **Query ids:** with `--charts`, with or without a sandbox, every successful `query_database` result ends with exactly one id line:
+   - it matches the frontend's pattern `^\[result id: [^\]]+\]$`;
+   - it starts with `[result id: query_N`, followed by `;` or `]`;
+   - ids run `query_1`, `query_2`, …, one numbering across databases;
+   - with neither `--charts` nor a sandbox there is no id line, and the last line stays `(N rows)`.
+3. **`display_chart` parameters** (checked by meaning, with `$ref` and `anyOf` resolved):
+   - exactly `query_id`, `chart_type` (enum of the five types), `x`, `series` (array, `minItems` 1, items `{column, label?}`), `stacked` (boolean, default false) and `title`;
+   - required: `query_id`, `chart_type`, `x`, `series`, `title`;
+   - no `database` parameter with several databases;
+   - `readOnlyHint: true`.
+4. **Check failures** are MCP error results (`is_error`) with no traceback:
+   - an unknown id: the text names it;
+   - a missing x or series column: the text lists every column of the result;
+   - a non-numeric series column: the text names it;
+   - `scatter` with a non-numeric x;
+   - `pie` with 2 series;
+   - `pie` with negative values;
+   - more than 500 points: 251×2 is refused and the text has `500`, while 250×2 passes;
+   - `stacked` on `line`, `scatter` or `pie`.
+5. **Success:** the result is a dict.
+   - `chart` holds the checked arguments, with `label` defaulting to the column name and `stacked` to false.
+   - `data` has one object per row, with only the x and series keys, in the query's order.
+   - Numbers (Decimal too) are JSON numbers, DATE values are ISO text, and NULL is `null`.
+6. **Fixture:**
+   - three queries covering DATE, DECIMAL, INTEGER, DOUBLE and text columns;
+   - six `display_chart` calls: bar (stacked, 2 series), line, one error (a missing column), area, scatter, pie, all with distinct titles;
+   - then the answer and the result;
+   - content is compact JSON, as in the real recordings;
+   - it replays against a real `mcp-server --charts`.
+7. **Frontend interface:**
+   - `ChartType`, `ChartSeries`, `ChartSpec`, `ChartRow`, `ChartPayload`.
+   - `AnswerChart {step, seq (seq of the tool_start), payload, kind, series, rows}`. `answerCharts` keeps only the main agent's successful calls, in order, leaving out errors, open calls, unparseable results and verifier calls. `seq` was undefined in the ticket; this is my choice.
+   - `Chart({payload, size?})`: root with `data-testid="chart"` and `data-chart-type`, showing the title, and rendering under server-side rendering too. Fixed size when `size` is given. No animation. Colours `var(--chart-series-{i%6+1})`, pie slices by index. Stacked bars of one row share an x. Empty data shows the title and a note and draws no series.
+   - Charts sit inside `[data-testid="answer"]`, after the answer text, in call order, on the chat page, the run page and both site views.
+   - `toolKind('mcp__data__display_chart')` is `'chart'`.
+   - The palette: `--chart-series-1` to `--chart-series-6` in all three theme blocks, as `#hex` or `rgb(r, g, b)` literals, distinct within a block, equal across the two dark blocks, and at least 3:1 against `--panel`.
+8. **Charting rule:** it names `display_chart`. The prompt has the rule exactly when the tool is present, and has neither without the switch or on the evaluation entries.
+
+Two constraints go beyond the ticket's wording and are worth a decision when you review: the palette must be written as `#hex` or `rgb(r, g, b)` (no `oklch()` or `hsl()`), and the chart draws without animation.

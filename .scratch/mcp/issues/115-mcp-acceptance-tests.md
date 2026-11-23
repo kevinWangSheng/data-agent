@@ -1,10 +1,10 @@
 # 115 — 外部 MCP：验收测试（配置翻译、stdio 包装、入口、网页显示；MongoDB 真模型用例）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code opus-5.5 (worktree 115-mcp-acceptance-tests)
+Branch: worktree-115-mcp-acceptance-tests
 
 ## Goal
 
@@ -198,10 +198,131 @@ spec "Testing Decisions" 列的每条行为都有验收测试，写在约定的�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 2 (Fable stand-in for `da-review`, then `eng:code-review`)
+- Model spend: $0
+- Outcome: —
 
 ## Comments
+
+- 2026-11-23（工单 agent 最终回复，主会话照抄）：
+
+**`make check` (HEAD fcfe404):** rc=0. ruff, format and basedpyright clean (0 errors). pytest: `2597 passed, 2 skipped, 79 deselected, 22 xfailed`. web: `Test Files 21 passed`, `Tests 322 passed | 7 expected fail`.
+
+**`uv run pytest tests/acceptance/test_mcp_*.py -v`:** 7 PASSED, 22 XFAIL, 2 deselected (the e2e tests, which carry the `integration` mark). Nothing is skipped and nothing XPASSes.
+- **`test_mcp_config.py`**, all XFAIL (17):
+  - `run_mounts_stdio_and_http_servers_from_the_file`
+  - `a_bad_server_is_refused…`: sse, unknown-type, reserved-name, dot, space, slash
+  - `a_server_without_an_allow_list…`: missing, empty
+  - `variables_are_expanded_into_http_headers`
+  - `a_bad_variable_is_refused…`: unset-in-headers, unset-in-env, other-prefix, model-key
+  - `expanded_values_stay_out_of_events_output_and_the_stdio_command_line`
+  - `allowed_tools_become_mcp_names_and_nothing_else_changes`
+  - `the_version_event_names_the_servers_and_their_allow_lists_only`
+- **`test_mcp_launch.py`:**
+  - XFAIL ×2: `a_stdio_server_starts_in_a_clean_environment…`, once with `--postgres-env` and once with `--data-sources`.
+  - PASSED: `the_empty_environment_baseline_is_small…` (guard).
+- **`test_mcp_web.py`:**
+  - XFAIL: `every_web_run_gets_the_config_path…` for form and turn; `data_agent_web_hands_the_config_file_to_create_app`.
+  - PASSED: `without_a_config_no_web_run_gets_mcp_servers` for form and turn; `data_agent_web_without_the_option_gives_create_app_none`.
+- **`test_mcp_eval_unchanged.py`:** PASSED ×3 (run, Harbor, DAB).
+- **`test_mcp_e2e.py`:** `--collect-only -m integration` lists both cases; `make check` deselects them.
+
+**`pnpm --dir web test`, `external-tools.test.ts`:** 2 passed, 7 expected fail.
+
+**Real failure reasons today (`--runxfail`):** all 22 fail with `AssertionError`; none fail with KeyError, ValueError or RuntimeError.
+- config: `assert {'data'} == {'data', 'github', 'local', 'mongo'}`
+- refusals: `stderr does not name 'legacy': 'error: the agent SDK failed before the run ended…'`
+- missing allow list: `no warning naming it`
+- version event: `no external_mcp_servers in ['cli_version', 'config', …]`
+- launch: `no server 'mongo' in mcp_servers: ['data']`
+- web: `--mcp-servers not in the arguments: ['--task=Count orders', …, '--network']`
+- web CLI: `create_app got no mcp_servers`
+- frontend with `.fails` removed: `shortTool` returns the full name, and `toolKind` is not `'external'`.
+
+**Reference implementation:**
+- I wrote a throwaway one in `/tmp/115-ref/` and applied it uncommitted:
+  - a new `external_mcp.py` (parsing, `${VAR}` expansion, allow list, `mcp-launch` wrapper)
+  - wiring in `cli`, `agent.run` and `build_options`, `launcher`, `conversations`, `app`
+  - an `'external'` kind in `tools.ts`
+- With it, all 29 backend tests pass under `--runxfail`, and the frontend file with `.fails` removed gives 9/9 passed.
+- I then reverted it with `git apply -R`. `git status --short` is empty, and `git diff main -- src/` shows only `cli.py` (+12, the two `add_argument`) and `app.py` (+1, the parameter).
+
+**Reverse checks** (one mutation at a time on top of the reference implementation):
+
+| Mutation | Tests that failed |
+|---|---|
+| Wrapper passes the whole parent environment | both launch tests |
+| `["*"]` becomes `mcp__*` | `allowed_tools_become_mcp_names…` |
+| `version` event also records the server config, env values included | `the_version_event…` |
+| Conversation turn omits `--mcp-servers` | `every_web_run…[turn]` (form still passes) |
+| `build_options` mounts `mcp__demo__*` by default | `run_without_mcp_servers…` and the DAB guard |
+| `shortTool` turns `mcp__data__` into `data · …` | guard `keeps its short name`: Expected `"query_database"`, Received `"data · query_database"` |
+
+**Scrub:** `uv run python -m evals scrub tests/fixtures/mcp` prints `changed 0 file(s) of 2; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0`. Pre-commit, including the secret scan, passed on all 3 commits.
+
+**Empty-environment baseline:**
+- Linux (`python:3.12-slim`, `env -i python print_env.py`): `{"LC_CTYPE"}`. A clean exec with `PATH`, `HOME`, `LANG` and the config env shows only those keys.
+- macOS: `{"__CF_USER_TEXT_ENCODING", "LC_CTYPE"}`.
+- Neither produces a false alarm.
+
+**mongodb-mcp-server, verified with the `mcp` Python client against a mongo container on its own docker network (no model):**
+- **Image:** `mongodb/mongodb-mcp-server:3.3.0`, digest `sha256:277bde43…`. The mongo image is `mongo:8.0`.
+- **Read-only (`MDB_MCP_READ_ONLY=true`), 18 tools:** `aggregate aggregate-db collection-indexes collection-schema collection-storage-size connect count db-stats disconnect explain export find list-collections list-connections list-databases list-knowledge-sources mongodb-logs search-knowledge`.
+- **`MDB_MCP_READ_ONLY=false`, 27 tools:** adds `create-collection create-index delete-many drop-collection drop-database drop-index insert-many rename-collection update-many`. So `false` really does turn read-only off.
+- **`connectionId`:** in 3.3.0 the query tools take one (`"preconfigured"` per their schema). The e2e allow list therefore adds `list-connections` to the ticket's five tools.
+- **Network reach:** `find` with `{"connectionId":"preconfigured","database":"support","collection":"tickets","filter":{"customer_id":"C0004"}}` returned "5 documents", so `docker run --network <net>` reaches mongo by container name.
+- **Telemetry:** the server sends it by default, so the e2e config sets `MDB_MCP_TELEMETRY=disabled`.
+- **`DOCKER_HOST`:** not set on this machine (colima context under `~/.docker`), so the wrapper keeping `HOME` is enough.
+
+**MongoDB case answers:**
+1. **Join question:** C0004 (5 tickets, next is 3) has orders totalling **202.50**. Query: `SELECT sum(amount) FROM raw.orders WHERE upper(replace(trim(customer_ref),'-','')) = 'C0004'`; the ticket count comes from `support_tickets.json`.
+2. **Insert:** the task first asks for the document count, **14** (`db.tickets.countDocuments()`), so an allowed query call is part of the task. It then asks for one insert. The test checks the documents and the collection list are unchanged. It does not check the count in the answer.
+
+**Contract items 1–7** are written in the test docstrings: 1, 3, 4, 5 in `test_mcp_config.py`; 1, 2 in `test_mcp_web.py`; 6 in `test_mcp_launch.py`; 7 in `external-tools.test.ts`.
+1. `run` and `web` both take `--mcp-servers FILE`.
+2. `create_app(..., mcp_servers=None)`. When given, form runs and every conversation turn get `--mcp-servers <path as given>`.
+3. A config error exits 2 before any session starts, with stderr naming the server (and the variable for `${VAR}` errors). A missing or empty `allowedTools` gives a stderr line containing `warning` and the server name.
+4. `version.external_mcp_servers` is `[{"name", "allowed_tools"}]`, in file order, with `["*"]` kept as is. It is absent without `--mcp-servers`.
+5. Option shape:
+   - `mcp_servers` keys are `data` plus the config's server names.
+   - http servers keep their expanded headers.
+   - a stdio server's command is the wrapper, with no expanded value in `command` or `args`.
+   - `allowed_tools` is the original list plus `mcp__<s>__<t>` or `mcp__<s>__*`, original entries in order.
+   - `tools` and `disallowed_tools` are unchanged; `dontAsk`; `strict_mcp_config=True`.
+6. A stdio server's environment keys are a subset of `BASE_ENV` ∪ the config env keys ∪ the empty-environment baseline. `PATH` is present. stdout echoes stdin exactly.
+7. `toolKind` returns `'external'`, and `shortTool` returns `"mongo · find"`.
+
+**"spec 里的解读" 1–7,** written as in the ticket:
+1. The SDK puts headers into the CLI's `--mcp-config` argv; that argv is not asserted (open for the human).
+2. `${VAR}` inside `args`, `url` or `command` is not tested.
+3. `strict_mcp_config` stays `True`, to be confirmed.
+4. MongoDB has two e2e cases; you can drop the second.
+5. Only the kind id `'external'` is pinned; the label text is 117's.
+6. Whether `web` validates the config at startup is not tested; the web CLI test sets the token so either choice passes.
+7. `BASE_ENV = {PATH, HOME, LANG, LC_ALL, LC_CTYPE, TMPDIR, USER, LOGNAME, SHELL, TERM, TZ}`, to be confirmed.
+
+**Choices beyond the ticket, for the human review:**
+- `list-connections` is in the e2e allow list.
+- e2e sets telemetry off.
+- e2e labels the MCP server containers so teardown removes any a killed run left.
+- The launch test runs with `--config no-context`, so nothing tries the fake Postgres URL before the session.
+
+**Reviews:**
+- **Step 5a, Fable read-only reviewer** (standing in for `da-review`). Fixed in 1073e95:
+  - the web CLI test now sets the token its config references;
+  - e2e case 2 asks for a read first;
+  - an e2e run that writes no event file, or whose model never answered, raises RuntimeError instead of hiding as XFAIL;
+  - leftover MCP containers are removed by label, and a failed network removal warns;
+  - the "no `--mcp-servers`" guard also catches the `--mcp-servers=PATH` form;
+  - e2e case 2 also checks the collection list, to catch `aggregate`+`$out`.
+- **Not fixed:**
+  - The reserved-name refusal only needs stderr to contain the standalone word "data". Requiring the name quoted would pin the message wording, which the contract leaves to 116; the exit-2 and no-session checks still hold.
+  - `started.argv != original` is weak. Only noted: the environment assertions carry the real check.
+- **Step 5b, `eng:code-review main`.**
+  - Standards found no hard violations. Fixed in fcfe404: the unused `extra` and `name` parameters are gone and `names()` is now `mentions()`. Left as is: the per-file `TICKET_116` definitions, the AGENTS.md pattern.
+  - Spec found nothing missing. Fixed: the Harbor guard no longer pins `--sandbox local`. Not fixed: the same reserved-name point as above.
+
+**Hand-off to the main session:**
+- Run `colima start`, then `uv run pytest tests/acceptance/test_mcp_e2e.py -m integration --runxfail -v`. Both cases should fail with "the agent called no mcp__mongo__ tool" (case 1) or "the version event names no external server" (case 2), not with a RuntimeError from docker or the model.
+- Local `main` has moved past this branch's base. The branch sits on 0caef46 while `main` is at 6c9387b, so a rebase may be needed before the PR.
