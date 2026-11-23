@@ -8,6 +8,7 @@
 import { Check, ChevronDown, ChevronRight, Clock, MessageSquareReply, X } from 'lucide-react'
 import { useState } from 'react'
 
+import { AnswerCharts } from '../chart/AnswerCharts'
 import type { Clarification, Steer, TurnView } from '../chat-view/model'
 import { ChatCode } from '../code/chat-code'
 import { Md } from '../code/markdown'
@@ -61,6 +62,7 @@ export function Turn({ turn, readOnly = false, answerable, onPick, runHref, onGo
         <div data-testid="answer" className="flex flex-col gap-2">
           <Md>{turn.run.answer.text}</Md>
           {turn.run.answer.table && <DataTable table={turn.run.answer.table} max={50} />}
+          <AnswerCharts view={turn.run} />
         </div>
       )}
       {turn.status === 'cancelled' && <div className="text-[12.5px] text-ink-3">{readOnly ? 'Cancelled.' : 'Cancelled. The next message starts a new turn.'}</div>}

@@ -1,8 +1,10 @@
-// The right pane: the outcome, the numbers, the answer and its table, the verdicts, the task and
-// the config. The answer comes before the task, so it is on the first screen.
+// The right pane: the outcome, the numbers, the answer with its charts and its table, the
+// verdicts, the task and the config. The answer comes before the task, so it is on the first
+// screen.
 
 import { useState, type ReactNode } from 'react'
 
+import { AnswerCharts } from '../chart/AnswerCharts'
 import { Md } from '../code/markdown'
 import { fmtCost, fmtDur, fmtTokens } from '../format'
 import type { RunNotes, RunView } from '../run-view/model'
@@ -134,9 +136,12 @@ export function Side({
         }
       >
         {answer ? (
-          <Clipped height={150} label="show all">
-            <Md>{answer.text}</Md>
-          </Clipped>
+          <div data-testid="answer" className="flex flex-col gap-2">
+            <Clipped height={150} label="show all">
+              <Md>{answer.text}</Md>
+            </Clipped>
+            <AnswerCharts view={view} />
+          </div>
         ) : (
           <div className="text-[12px] text-ink-3">{status === 'running' ? 'Not written yet.' : 'No final answer in this run.'}</div>
         )}

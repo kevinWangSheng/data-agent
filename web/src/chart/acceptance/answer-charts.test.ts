@@ -65,7 +65,7 @@ const ANSWER_START = 'Gold customers bring the most revenue'
 // --- which calls are charts ----------------------------------------------------------------
 
 describe('answerCharts', () => {
-  test.fails("the main agent's successful display_chart calls, in call order", () => {
+  test("the main agent's successful display_chart calls, in call order", () => {
     const charts = answerCharts(buildRunView(events, notes))
     expect(charts.map((c) => c.step)).toEqual(CHART_STEPS)
     expect(charts.map((c) => c.seq)).toEqual(CHART_STEPS.map((id) => startOf(id).seq))
@@ -77,19 +77,19 @@ describe('answerCharts', () => {
     expect(charts.map((c) => c.step)).not.toContain(FAILED_STEP)
   })
 
-  test.fails('a call still open is not a chart yet', () => {
+  test('a call still open is not a chart yet', () => {
     const openSeq = endOf('t-c4').seq
     const charts = answerCharts(buildRunView(events.filter((e) => e.seq < openSeq), notes))
     expect(charts.map((c) => c.step)).toEqual(['t-c1', 't-c2'])
   })
 
-  test.fails('a call that failed is left out, even when its result reads as a chart', () => {
+  test('a call that failed is left out, even when its result reads as a chart', () => {
     const failed = events.map((e) => (e.type === 'tool_end' && e.tool_use_id === 't-c2' ? { ...e, is_error: true } : e))
     const charts = answerCharts(buildRunView(failed, notes))
     expect(charts.map((c) => c.step)).toEqual(['t-c1', 't-c4', 't-c5', 't-c6'])
   })
 
-  test.fails("a verifier's call is not the main agent's", () => {
+  test("a verifier's call is not the main agent's", () => {
     // t-c6 made inside a verifier dispatch: an Agent call the dispatch names, and t-c6 under it.
     const at = startOf('t-c6').seq
     const agent: RunEvent[] = [
@@ -105,7 +105,7 @@ describe('answerCharts', () => {
     expect(answerCharts(view).map((c) => c.step)).toEqual(CHART_STEPS.slice(0, 4))
   })
 
-  test.fails('a result that is not a chart payload is left out', () => {
+  test('a result that is not a chart payload is left out', () => {
     const broken = events.map((e) => (e.type === 'tool_end' && e.tool_use_id === 't-c1' ? { ...e, content: 'not json' } : e))
     const charts = answerCharts(buildRunView(broken, notes))
     expect(charts.map((c) => c.step)).toEqual(CHART_STEPS.slice(1))
@@ -186,7 +186,7 @@ const site = staticSource('/data/', fakeFetch(siteFiles()))
 const noop = () => {}
 
 describe('the answer area', () => {
-  test.fails('the chat page shows the charts in the answer, after its text', () => {
+  test('the chat page shows the charts in the answer, after its text', () => {
     const view = buildConversationView(CONVERSATION, { [RUN_ID]: { events, notes } })
     const html = renderToStaticMarkup(
       createElement(Transcript, { view, title: 'Charts', stick: { current: true }, runHref: (id: string) => id, onGo: noop, footer: null }),
@@ -194,20 +194,20 @@ describe('the answer area', () => {
     expectChartsInAnswer(html)
   })
 
-  test.fails('the run page shows the charts in the answer, after its text', () => {
+  test('the run page shows the charts in the answer, after its text', () => {
     const html = renderToStaticMarkup(
       createElement(RunPage, { run: { events, notes }, route: { id: RUN_ID, step: null, filter: 'all' }, navigate: noop }),
     )
     expectChartsInAnswer(html)
   })
 
-  test.fails("the online site's recorded conversation shows them the same way", async () => {
+  test("the online site's recorded conversation shows them the same way", async () => {
     const recording = await site.recording(CONVERSATION.id)
     const html = renderToStaticMarkup(createElement(RecordedConversation, { recording, autoplay: false, runHref: (id: string) => id, onGo: noop }))
     expectChartsInAnswer(html)
   })
 
-  test.fails("the online site's run page shows them the same way", async () => {
+  test("the online site's run page shows them the same way", async () => {
     const run = await site.loadRun(RUN_ID)
     const html = renderToStaticMarkup(createElement(RunPage, { run, route: { id: RUN_ID, step: null, filter: 'all' }, navigate: noop }))
     expectChartsInAnswer(html)
@@ -217,7 +217,7 @@ describe('the answer area', () => {
 // --- the timeline ---------------------------------------------------------------------------
 
 describe('the timeline', () => {
-  test.fails('a display_chart call is a chart step', () => {
+  test('a display_chart call is a chart step', () => {
     // `toBe`, not `===`: 'chart' is not a ToolKind until ticket 120 adds it.
     expect(toolKind('mcp__data__display_chart')).toBe('chart')
   })
@@ -272,7 +272,7 @@ function contrast(a: string, b: string): number {
 describe('chart colours', () => {
   const css = readFileSync(CSS, 'utf8')
 
-  test.fails('each theme block defines six series colours, distinct, and both dark blocks agree', () => {
+  test('each theme block defines six series colours, distinct, and both dark blocks agree', () => {
     const series = BLOCKS.map(([, opening]) => SERIES_VARS.map((v) => block(css, opening)[v]))
     for (const colours of series) {
       expect(colours.every((c) => typeof c === 'string' && c.length > 0)).toBe(true)
@@ -281,7 +281,7 @@ describe('chart colours', () => {
     expect(series[1].map(rgb)).toEqual(series[2].map(rgb))
   })
 
-  test.fails.each(BLOCKS)('%s: every series colour has 3:1 contrast with --panel (WCAG 1.4.11)', (_name, opening) => {
+  test.each(BLOCKS)('%s: every series colour has 3:1 contrast with --panel (WCAG 1.4.11)', (_name, opening) => {
     const vars = block(css, opening)
     for (const v of SERIES_VARS) {
       expect(vars[v], v).toBeDefined()

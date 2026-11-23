@@ -53,6 +53,45 @@ export type AnswerChart = {
  *  order. A call that failed, is still open, or whose result is not a chart payload is left out
  *  (the timeline still shows it). A verifier's call is not the main agent's. */
 export function answerCharts(view: RunView): AnswerChart[] {
-  void view
-  throw new Error('answerCharts: not implemented (ticket 120)')
+  const charts: AnswerChart[] = []
+  for (const step of view.steps) {
+    if (step.tool !== DISPLAY_CHART || step.dispatch !== null || step.isError || step.result === null) continue
+    const payload = chartPayload(step.result)
+    if (!payload) continue
+    const type = payload.chart.chart_type
+    charts.push({
+      step: step.id,
+      seq: step.seq,
+      payload,
+      kind: type === 'scatter' || type === 'pie' ? type : 'cartesian',
+      series: payload.chart.series.length,
+      rows: payload.data.length,
+    })
+  }
+  return charts.sort((a, b) => a.seq - b.seq)
+}
+
+export const DISPLAY_CHART = 'mcp__data__display_chart'
+
+const CHART_TYPES: readonly string[] = ['bar', 'line', 'area', 'scatter', 'pie']
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** The payload a `display_chart` result holds, or null when the text is not one: not JSON, or not
+ *  the shape the component draws (a known chart type, an x column, series with columns, rows). */
+export function chartPayload(text: string): ChartPayload | null {
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!isObject(value) || !isObject(value.chart) || !Array.isArray(value.data)) return null
+  const { chart, data } = value
+  if (typeof chart.chart_type !== 'string' || !CHART_TYPES.includes(chart.chart_type)) return null
+  if (typeof chart.x !== 'string' || typeof chart.title !== 'string') return null
+  if (!Array.isArray(chart.series) || chart.series.length === 0) return null
+  if (!chart.series.every((s) => isObject(s) && typeof s.column === 'string' && typeof s.label === 'string')) return null
+  if (!data.every(isObject)) return null
+  return value as ChartPayload
 }

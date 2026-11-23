@@ -1,7 +1,7 @@
 // What kind of tool a step called, for its tag and colour. Names from src/data_agent/mcp_server.py,
 // verifier_tools.py and the built-in tools the agent is given.
 
-export type ToolKind = 'sql' | 'context' | 'schema' | 'check' | 'file' | 'edit' | 'shell' | 'sandbox' | 'dbt' | 'agent' | 'other'
+export type ToolKind = 'sql' | 'context' | 'schema' | 'check' | 'file' | 'edit' | 'shell' | 'sandbox' | 'dbt' | 'agent' | 'chart' | 'other'
 
 const DATA = 'mcp__data__'
 const SQL = new Set(['query_database', 'query_labels', 'explain_query', 'classify_text'])
@@ -29,6 +29,7 @@ export function toolKind(tool: string): ToolKind {
     if (CHECK.has(name)) return 'check'
     if (name === 'sandbox_exec') return 'sandbox'
     if (name === 'dbt_execute') return 'dbt'
+    if (name === 'display_chart') return 'chart'
     return 'schema'
   }
   if (tool === 'Read' || tool === 'Glob' || tool === 'Grep') return 'file'
@@ -49,6 +50,7 @@ export const KIND_TAG: Record<ToolKind, string> = {
   sandbox: 'SBX',
   dbt: 'DBT',
   agent: 'AGT',
+  chart: 'CHRT',
   other: 'TOOL',
 }
 
@@ -63,5 +65,6 @@ export const KIND_NAME: Record<ToolKind, string> = {
   sandbox: 'Sandbox shell',
   dbt: 'dbt execution',
   agent: 'Subagent dispatch',
+  chart: 'Answer chart',
   other: 'Tool',
 }
