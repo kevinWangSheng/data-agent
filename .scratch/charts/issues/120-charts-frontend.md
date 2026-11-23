@@ -1,6 +1,6 @@
 # 120 — 答案图表：前端（图表组件，接入对话页、运行页、在线站点和时间线）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: —（119 只挡合并：spec 定组件可以先按事件样例开工）
 Spec: ../spec.md
 Claimed by: claude-code (Opus 5.5), worktree 120-charts-frontend
@@ -121,3 +121,10 @@ Branch: worktree-120-charts-frontend
 - 时间线标签 `CHRT`：标签宽 34px，五个字母的 `CHART` 放不下。名字 `Answer chart`，颜色浅色 `#93408a`、暗色 `#e08ad3`。
 - 详情面板只显示参数和原始结果，不画图。
 - 系列色：浅色 `#2a78d6 #d95926 #13936a #b07800 #cc4f7e #008300`，暗色 `#3987e5 #d95926 #199e70 #c98500 #d55181 #0ca30c`（两个暗色块一样）。都用 dataviz 的校验脚本对 `--panel` 检查过，五项全过，包括 3:1 对比度和色盲区分。
+
+- 2026-11-23（主会话，第 7 步：上下文干净的 Opus 子 agent 只读审 PR #123，主会话逐条对照代码核实）：
+  - 退回：数值轴刻度丢精度。`web/src/chart/Chart.tsx:54` 的 `compact`（`notation: 'compact'`、`maximumFractionDigits: 1`）用在 bar/line/area 的 y 轴和 scatter 两轴（`:59`、`:116`、`:201-202`）。0.012–0.045 的比率，刻度显示成 `0,0,0,0,0.1`；最大值 3 的堆叠面积图，0.75、2.25 显示成 0.8、2.3。比率、占比是常见查询结果。要按刻度步长或值域定小数位（或只在 |v| ≥ 1000 时用 compact），配先红后绿的测试。
+  - 退回：x 列为 NULL 时显示错误。`ChartRow` 契约允许 NULL。饼图 `nameKey={chart.x}`（`:227`）遇 null 名字落成系列列名；柱图丢掉 null 的类别刻度；`scatterPoints`（`:190-192`）只过滤系列值是数字，不过滤 x，null x 的点没画出来。要给 null 一个显式标签（如 `(null)`），散点要求 x 也是数字，配测试。
+  - 退回：有行但没有可画的东西时图是空框。`:247` 只在 `data.length === 0` 时显示"没有数据"提示；散点的系列值全是 NULL、饼图的值全是 0 时，只剩标题和空框。要把"没有可画的点"也算作空，配测试。
+  - 退回：recharts 进了主包（约 805 kB → 1.27 MB，每个页面包括在线站点都变慢）。原来不改的理由不成立：`answer-charts.test.ts:145-160` 的 `expectChartsInAnswer` 只查 `data-testid="chart"` 外框、`data-chart-type` 和标题，这些由 `Frame` 渲染、不依赖 recharts。外框照常渲染，画图部分懒加载；验收测试照原样通过（只删过 `.fails`，其余一字不改）。如果懒加载后某个已合入的验收测试确实过不了，停下交回，写明是哪条、为什么。
+  - 不修（记成已知限制）：图的 `role="img"` 外层盖住了 recharts 的键盘导航和图例文字（无障碍，小问题）；系列很多时图例挤占 260px 的图区、长类别标签被 recharts 默认隐藏、饼图超过 6 片颜色循环（契约 `i % 6` 定的）；`ScatterTip` 测试用的是手写的 tooltip payload（工单 agent 说用浏览器截图核过，未独立核实）。
