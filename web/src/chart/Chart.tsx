@@ -54,7 +54,8 @@ const seriesColour = (i: number) => `var(--chart-series-${(i % 6) + 1})`
 const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
 const exact = new Intl.NumberFormat('en', { maximumFractionDigits: 2 })
 
-/** An axis tick: numbers short (12K), anything else as the query result shows it. */
+/** A value axis tick: numbers short (12K). A category x (bar, line, area) is shown as the query
+ *  result gives it, so a year stays 2021. */
 const tickText = (v: unknown) => (typeof v === 'number' ? compact.format(v) : String(v))
 /** A value on the hover card: numbers in full with thousands separators; NULL as a dash. */
 export const valueText = (v: unknown) => (typeof v === 'number' ? exact.format(v) : v === null || v === undefined ? '—' : String(v))
@@ -69,14 +70,15 @@ const legend = () => <Legend key="legend" iconSize={9} itemSorter={null} formatt
 type Dims = { width?: number; height?: number }
 type TipEntry = { name?: unknown; value?: unknown; color?: string; payload?: Record<string, unknown> }
 
-/** The hover card: the row's x, then each series' value beside its colour. A pie's card has no
+/** The hover card: the row's x as the query result gives it, then each series' value beside its
+ *  colour. A pie's card has no
  *  heading (`x` null): its one entry already names the slice. */
 function Tip({ active, payload, label, x }: { active?: boolean; payload?: readonly TipEntry[]; label?: unknown; x: string | null }) {
   if (!active || !payload?.length) return null
   const heading = x === null ? undefined : (label ?? payload[0]?.payload?.[x])
   return (
     <div className="pane px-2.5 py-1.5 shadow-md text-[11.5px]">
-      {heading !== undefined && <div className="text-ink-2 mb-0.5">{valueText(heading)}</div>}
+      {heading !== undefined && <div className="text-ink-2 mb-0.5">{heading === null ? '—' : String(heading)}</div>}
       {payload.map((e, i) => (
         <div key={i} className="flex items-center gap-1.5">
           <span className="inline-block w-2 h-2 rounded-[2px]" style={{ background: e.color }} />
@@ -89,7 +91,7 @@ function Tip({ active, payload, label, x }: { active?: boolean; payload?: readon
 }
 
 /** A scatter point's card: its x and its series' value, both by name. */
-function ScatterTip({ active, payload, x }: { active?: boolean; payload?: readonly TipEntry[]; x: string }) {
+export function ScatterTip({ active, payload, x }: { active?: boolean; payload?: readonly TipEntry[]; x: string }) {
   const first = payload?.[0]
   const point = first?.payload
   if (!active || !first || !point) return null
@@ -99,7 +101,7 @@ function ScatterTip({ active, payload, x }: { active?: boolean; payload?: readon
         {x} <span className="mono text-ink">{valueText(point[POINT_X])}</span>
       </div>
       <div className="text-ink-2">
-        {String(first.name ?? '')} <span className="mono text-ink">{valueText(point[POINT_Y])}</span>
+        {String(point[POINT_SERIES] ?? '')} <span className="mono text-ink">{valueText(point[POINT_Y])}</span>
       </div>
     </div>
   )
@@ -110,7 +112,7 @@ function cartesian(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element 
   const { x, series, stacked } = chart
   const common = [
     grid(),
-    <XAxis key="x" dataKey={x} {...AXIS} tickFormatter={tickText} />,
+    <XAxis key="x" dataKey={x} {...AXIS} tickFormatter={String} />,
     <YAxis key="y" width={48} {...AXIS} tickFormatter={tickText} />,
     <Tooltip
       key="tip"
@@ -178,13 +180,21 @@ function cartesian(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element 
   )
 }
 
-// A scatter point's own keys, so no column name (even `y`) can clash with them.
+// A scatter point's own keys, so no column name (even `y`) can clash with them. Its series' label
+// rides along: recharts names a scatter tooltip's entries by axis, not by series.
 const POINT_X = '__x'
 const POINT_Y = '__y'
+const POINT_SERIES = '__series'
+
+/** Each series' points: one per row whose series value is a number. */
+export function scatterPoints(chart: ChartSpec, data: ChartRow[]): Record<string, unknown>[][] {
+  return chart.series.map((s) => data.filter((r) => typeof r[s.column] === 'number').map((r) => ({ [POINT_X]: r[chart.x], [POINT_Y]: r[s.column], [POINT_SERIES]: s.label })))
+}
 
 /** scatter: x and every series are numbers (the server checks); one point per row with a value. */
 function scatter(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element {
   const { x, series } = chart
+  const points = scatterPoints(chart, data)
   return (
     <ScatterChart {...dims} margin={MARGIN} accessibilityLayer>
       {grid()}
@@ -196,7 +206,7 @@ function scatter(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element {
         <Scatter
           key={`${i}-${s.column}`}
           name={s.label}
-          data={data.filter((r) => typeof r[s.column] === 'number').map((r) => ({ [POINT_X]: r[x], [POINT_Y]: r[s.column] }))}
+          data={points[i]}
           fill={seriesColour(i)}
           stroke="var(--panel)"
           strokeWidth={1.5}

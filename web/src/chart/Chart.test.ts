@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, test } from 'vitest'
 
 import { AnswerCharts } from './AnswerCharts'
-import { CHART_HEIGHT, Chart, valueText } from './Chart'
+import { CHART_HEIGHT, Chart, ScatterTip, scatterPoints, valueText } from './Chart'
 import type { ChartPayload } from './model'
 import type { RunView } from '../run-view/model'
 
@@ -32,6 +32,20 @@ describe('Chart without size', () => {
     const html = renderToStaticMarkup(createElement(Chart, { payload: { ...PAYLOAD, data: [] } }))
     expect(html).toContain('No data to chart')
     expect(html).not.toContain(`height:${CHART_HEIGHT}px`)
+  })
+})
+
+describe('ScatterTip', () => {
+  test("names the point's series, not the axis recharts names each entry by", () => {
+    const point = scatterPoints({ ...PAYLOAD.chart, chart_type: 'scatter', x: 'items', series: [{ column: 'amount', label: 'Order amount' }] }, [{ items: 3, amount: 52 }])[0][0]
+    // What recharts 3 hands a scatter tooltip: one entry per axis, each named by the axis.
+    const payload = [
+      { name: 'items', value: 3, payload: point },
+      { name: 'items', value: 52, payload: point },
+    ]
+    const html = renderToStaticMarkup(createElement(ScatterTip, { active: true, payload, x: 'items' }))
+    expect(html).toContain('Order amount')
+    expect(html).toContain('52')
   })
 })
 

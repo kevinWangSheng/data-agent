@@ -50,6 +50,20 @@ describe('Chart', () => {
     expect(new Set(xs).size).toBe(3)
   })
 
+  test('bar: a numeric x (a year) is a category shown as the query result gives it', async () => {
+    const payload: ChartPayload = {
+      chart: { query_id: 'query_1', chart_type: 'bar', x: 'year', series: [{ column: 'n', label: 'Orders' }], stacked: false, title: 'By year' },
+      data: [
+        { year: 2021, n: 3 },
+        { year: 2022, n: 5 },
+        { year: 2023, n: 4 },
+      ],
+    }
+    const container = await draw(payload)
+    const ticks = [...container.querySelectorAll('.recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-value')].map((t) => t.textContent)
+    expect(ticks).toEqual(['2021', '2022', '2023'])
+  })
+
   test('bar: one column drawn as two series draws both, without duplicate keys', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const payload: ChartPayload = {
