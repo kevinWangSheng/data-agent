@@ -7,8 +7,8 @@ import { chartKind, type ChartPayload, type ChartRow, type ChartSpec } from './m
 /** A NULL x: its category's tick, its slice's name, its hover card's heading. */
 export const NULL_LABEL = '(null)'
 
-// Up to 12 significant digits: enough for every tick recharts picks (0.0375, 2.25K) and every value
-// a query returns, short of float noise (0.1 + 0.2 = 0.30000000000000004).
+// Up to 12 significant digits: enough for every tick recharts picks (0.0375, 2.25K), short of the
+// float noise of its arithmetic (0.1 + 0.2 = 0.30000000000000004).
 const withoutNoise = (v: number) => Number(v.toPrecision(12))
 const fullNumber = new Intl.NumberFormat('en', { maximumFractionDigits: 20 })
 const shortNumber = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 12 })
@@ -17,9 +17,13 @@ const shortNumber = new Intl.NumberFormat('en', { notation: 'compact', maximumSi
 export const tickText = (v: unknown) =>
   typeof v !== 'number' ? String(v) : Math.abs(v) >= 1000 ? shortNumber.format(withoutNoise(v)) : fullNumber.format(withoutNoise(v))
 
-/** A value on the hover card: numbers in full with thousands separators (0.0037, 1,234,567.891);
- *  NULL as a dash. */
-export const valueText = (v: unknown) => (typeof v === 'number' ? fullNumber.format(withoutNoise(v)) : v === null || v === undefined ? '—' : String(v))
+const cardWhole = new Intl.NumberFormat('en', { maximumFractionDigits: 2 })
+const cardFraction = new Intl.NumberFormat('en', { maximumSignificantDigits: 4 })
+/** A value on the hover card, with thousands separators: from 1 on to 2 decimals (46.67,
+ *  1,234,567.89); below 1 to 4 significant digits, so a small rate keeps its digits (0.0037,
+ *  0.6667); NULL as a dash. */
+export const valueText = (v: unknown) =>
+  typeof v === 'number' ? (Math.abs(v) >= 1 ? cardWhole : cardFraction).format(v) : v === null || v === undefined ? '—' : String(v)
 
 /** The rows with a NULL x named NULL_LABEL, for the charts whose x is a category (bar, line, area,
  *  pie): recharts would drop the category, or name the slice by the series. */
