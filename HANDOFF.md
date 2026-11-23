@@ -48,7 +48,6 @@
    - 博客（可选）：排在视频之后，给视频引流，没准备好就推迟。
    - 报告和 README 中文版：做不做待人定。
    - 求职材料：只排了顺序（冻结后做），内容没讨论。
-   - 根目录 `.playwright-mcp/`（浏览器工具的 92 个调试日志和截图，2.1 MB，11-15 到 11-17）：建议删掉并加进 `.gitignore`，待人点头。
    - 项目终点（要不要再做新功能，先看 JD 覆盖的 Memory、多 Agent 协作）放在展示之前讨论。
 - 11-18 的 4 个清理分支（`cleanup-prune-features`、`test-cleanup`、`cleanup-prune-tests`、`cleanup-speed`）和 `chore/glossary-rename` 已由人定删除（2026-11-23，未合入；内容见 `6adb612`、`e84a615`、`0447ec4` 等提交，可能被 gc 回收）。
 - **一期外的功能候选**（各 spec 的 Out of Scope，要做先在对齐会话讨论）：答案里出图表；查数任务读 dbt 模型说明当业务语义（现在只有验证者读 `target/manifest.json`）；在对话里做 dbt；对话总花费上限。其余（Memory、登录多用户、公网部署、MongoDB 连接器、Langfuse、LiveSQLBench、澄清层消融等）价值低或偏平台。

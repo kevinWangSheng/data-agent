@@ -36,3 +36,6 @@ jobs/
 !tests/fixtures/*.duckdb
 
 .DS_Store
+
+# Playwright MCP browser-tool debug output (console logs, page snapshots, screenshots)
+.playwright-mcp/
