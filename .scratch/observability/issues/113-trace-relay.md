@@ -201,3 +201,5 @@ Spec：没有缺失，也没有超范围。
 3. **`ExportError.error_type` 保持 `str`**：三个取值写成了模块常量 `HTTP_ERROR`、`CONNECTION_ERROR`、`PARSE_ERROR`。要改成 `Literal` 会动 111 的契约。
 4. **白名单加了 `anthropic.mcp.server.name`**：理由是 spec 允许"MCP 服务器名"，这是它在 CLI 里的真名。不同意就从 `HELD_OUT_ALLOWLIST` 删掉这一行。
 5. **`interaction.duration_ms` 被删**：照白名单的字面做的。要保留就在 `HELD_OUT_ALLOWLIST` 里加一行。
+
+- 2026-11-23（主会话）：PR #124 CI 绿；Codex GitHub app 审查完成，无意见。合并前先把"待人定"5 条交人定（和 112 的一起问）。
