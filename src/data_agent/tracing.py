@@ -7,6 +7,7 @@ export: with the export off, a run imports none of the SDK or its exporter.
 """
 
 import base64
+import http.client
 import json
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -95,6 +96,11 @@ class LangfuseSettings:
         return {"Authorization": f"Basic {pair}"}
 
 
+def langfuse_keys(env: Mapping[str, str]) -> list[str]:
+    """The Langfuse key values `env` holds, set or not as a pair: what the event file masks."""
+    return [env[name] for name in LANGFUSE_ENV[:2] if env.get(name)]
+
+
 @dataclass(frozen=True)
 class CliTrace:
     """What `build_options` needs to have the Claude Code CLI export its spans: the local relay's
@@ -108,13 +114,16 @@ class CliTrace:
 def cli_env(trace: CliTrace | None, inherited: Mapping[str, str]) -> dict[str, str]:
     """The CLI's export variables for `trace`, over the SDK's merge of `inherited` (the process
     environment) and the options' env: every inherited `OTEL_*` and `CLI_BLANKED_ENV` is blanked,
-    so a shell's own destination, headers or content switch never applies, and so are the Langfuse
-    keys, which the CLI never gets (the relay adds them). Without a trace, nothing."""
+    so a shell's own destination, headers or content switch never applies. The Langfuse keys are
+    blanked with or without a trace: the CLI and its tool servers never get them (the relay adds
+    them). Without a trace, no export variable is set."""
+    keys: dict[str, str] = dict.fromkeys(LANGFUSE_ENV, "")
     if trace is None:
-        return {}
+        return keys
     blanked = [name for name in inherited if name.startswith("OTEL_")]
     return (
-        dict.fromkeys([*blanked, *CLI_BLANKED_ENV, *LANGFUSE_ENV], "")
+        dict.fromkeys([*blanked, *CLI_BLANKED_ENV], "")
+        | keys
         | CLI_EXPORT_ENV
         | {CLI_ENDPOINT_ENV: trace.endpoint}
         | dict.fromkeys(CONTENT_SWITCHES[trace.tier], "1")
@@ -141,7 +150,7 @@ def project_id(settings: LangfuseSettings) -> str | None:
         with urllib.request.urlopen(request, timeout=PROJECTS_TIMEOUT_S) as response:
             data = json.loads(response.read())["data"]
         found = data[0]["id"]
-    except (OSError, ValueError, LookupError, TypeError):
+    except (OSError, ValueError, LookupError, TypeError, http.client.HTTPException):
         return None
     return found if isinstance(found, str) and found else None
 
@@ -176,7 +185,19 @@ class RunFacts:
     turn: int | None = None
 
 
-def parent_attributes(tier: TraceTier, facts: RunFacts, secrets: Sequence[str]) -> Attributes:
+@dataclass(frozen=True)
+class Masks:
+    """What the parent span's content is masked with, as the event file is (`events.mask`):
+    secrets anywhere, names (a database's single-label hosts) as whole words only."""
+
+    secrets: Sequence[str] = ()
+    names: Sequence[str] = ()
+
+    def __call__(self, text: str) -> str:
+        return mask(text, self.secrets, self.names)
+
+
+def parent_attributes(tier: TraceTier, facts: RunFacts, masks: Masks) -> Attributes:
     """The parent span's attributes at the start. The held-out tier names no run, task or
     conversation: only the config, the model, the task type and the tier."""
     attributes: Attributes = {
@@ -194,7 +215,7 @@ def parent_attributes(tier: TraceTier, facts: RunFacts, secrets: Sequence[str]) 
         "run_id": facts.run_id,
         "skill_version": facts.skill_version,
         "git_commit": facts.git_commit,
-        "langfuse.observation.input": mask(facts.task, secrets),
+        "langfuse.observation.input": masks(facts.task),
     }
     if facts.conversation is not None and facts.turn is not None:
         attributes |= {"conversation": facts.conversation, "turn": facts.turn}
@@ -202,24 +223,22 @@ def parent_attributes(tier: TraceTier, facts: RunFacts, secrets: Sequence[str]) 
 
 
 def result_attributes(
-    tier: TraceTier, result: Mapping[str, Any], answer: str | None, secrets: Sequence[str]
+    tier: TraceTier, result: Mapping[str, Any], answer: str | None, masks: Masks
 ) -> Attributes:
     """The parent span's attributes at the end: the `result` event's tokens and `cost_usd`, the
-    report's own figures. The dev tier also gets the run's answer, the one place the model's
-    answer reaches Langfuse (`CONTENT_SWITCHES`)."""
+    report's own figures (no cost when the result has none). The dev tier also gets the run's
+    answer, the one place the model's answer reaches Langfuse (`CONTENT_SWITCHES`)."""
     usage = {
         "input": int(result.get("uncached_input_tokens") or 0),
         "cache_read": int(result.get("cached_input_tokens") or 0),
         "output": int(result.get("output_tokens") or 0),
     }
-    attributes: Attributes = {
-        "langfuse.observation.usage_details": json.dumps(usage),
-        "langfuse.observation.cost_details": json.dumps(
-            {"total": float(result.get("cost_usd") or 0.0)}
-        ),
-    }
+    attributes: Attributes = {"langfuse.observation.usage_details": json.dumps(usage)}
+    cost = result.get("cost_usd")
+    if cost is not None:
+        attributes["langfuse.observation.cost_details"] = json.dumps({"total": float(cost)})
     if tier == "full" and answer:
-        attributes["langfuse.observation.output"] = mask(answer, secrets)
+        attributes["langfuse.observation.output"] = masks(answer)
     return attributes
 
 
@@ -229,17 +248,26 @@ class RunExport:
     as a context manager: `start` before the session, `active()` around it, `finish` once the CLI
     has exited; leaving the block stops whatever is still running, on any path.
 
+    A failed export never fails the run (spec "出错不影响运行"): `start` returns None and
+    `finish` an `error` event instead, the failure in `failure`. The relay gets the run's
+    secrets; the parent span is masked with them and with `names` (`Masks`).
+
     The relay and the exporter are looked up on their modules here, so a test's stand-ins
     apply."""
 
-    def __init__(self, settings: LangfuseSettings, tier: TraceTier, secrets: Sequence[str]):
-        from data_agent import trace_relay
-
+    def __init__(
+        self,
+        settings: LangfuseSettings,
+        tier: TraceTier,
+        secrets: Sequence[str],
+        names: Sequence[str] = (),
+    ):
         self.settings = settings
         self.tier: TraceTier = tier
         self.secrets = tuple(secrets)
-        self.relay: TraceRelay = trace_relay.TraceRelay(settings, tier, self.secrets)
-        self._started = False
+        self.masks = Masks(self.secrets, tuple(names))
+        self.relay: TraceRelay | None = None
+        self.failure: str | None = None
         self._report: RelayReport | None = None
         self._provider: TracerProvider | None = None
         self._span: Span | None = None
@@ -256,47 +284,87 @@ class RunExport:
     ) -> None:
         self._close()
 
-    def start(self, facts: RunFacts) -> CliTrace:
+    def start(self, facts: RunFacts) -> CliTrace | None:
         """Opens the relay and starts the parent span; the CLI is to export to the trace this
-        returns. Blocks for Langfuse's project id (`PROJECTS_TIMEOUT_S` at most)."""
+        returns, and to take `context_env()`. Blocks for Langfuse's project id
+        (`PROJECTS_TIMEOUT_S` at most). None when any of it failed (`failure` says what): the
+        run goes on without the export."""
+        try:
+            return self._start(facts)
+        except Exception as exc:
+            self._failed(exc)
+            self._close()
+            return None
+
+    def _start(self, facts: RunFacts) -> CliTrace:
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
+        from data_agent import trace_relay
+
+        self.relay = trace_relay.TraceRelay(self.settings, self.tier, self.secrets)
         endpoint = self.relay.start()
-        self._started = True
         # Given outright, so no OTEL_* variable of the process changes the resource or sampling.
         provider = TracerProvider(
             resource=Resource({"service.name": SERVICE_NAME}), sampler=ALWAYS_ON
         )
         provider.add_span_processor(SimpleSpanProcessor(parent_exporter(self.settings)))
         self._provider = provider
-        attributes = parent_attributes(self.tier, facts, self.secrets)
+        attributes = parent_attributes(self.tier, facts, self.masks)
         self._span = cast(
             "Span", provider.get_tracer("data_agent").start_span(SPAN_NAME, attributes=attributes)
         )
+        if not self._span.get_span_context().is_valid:
+            # OTEL_SDK_DISABLED in the process: the provider hands out a no-op tracer.
+            raise RuntimeError("OpenTelemetry is disabled in this process (OTEL_SDK_DISABLED)")
         self._project = project_id(self.settings)
         return CliTrace(endpoint=endpoint, tier=self.tier)
 
+    def context_env(self) -> dict[str, str]:
+        """The parent span as the CLI's `TRACEPARENT`, for the options' env, which wins over what
+        the SDK would inject: the SDK injects through the process's propagators, which an
+        inherited `OTEL_PROPAGATORS` may have turned off, and then keeps an inherited
+        `TRACEPARENT`. A blank `TRACESTATE`, so no inherited one pairs with it."""
+        assert self._span is not None, "RunExport.start comes first"
+        context = self._span.get_span_context()
+        traceparent = f"00-{context.trace_id:032x}-{context.span_id:016x}-01"
+        return {"TRACEPARENT": traceparent, "TRACESTATE": ""}
+
     def active(self) -> Any:
-        """A context manager making the parent span the current one: the SDK hands it to the CLI
-        it starts inside (`TRACEPARENT`), so the CLI's spans are its children."""
+        """A context manager making the parent span the current one while the SDK starts the
+        CLI. An exception passing through is not recorded on the span: its message and stack
+        would reach Langfuse past the held-out tier's allowlist."""
         from opentelemetry import trace
 
         assert self._span is not None, "RunExport.start comes first"
-        return trace.use_span(self._span, end_on_exit=False)
+        return trace.use_span(
+            self._span, end_on_exit=False, record_exception=False, set_status_on_exception=False
+        )
 
     def finish(
         self, result: Mapping[str, Any], answer: str | None
     ) -> list[tuple[str, dict[str, Any]]]:
         """Stops the relay (the CLI has exited), ends and sends the parent span; returns the
-        events to write: one `trace_export_error` per batch the relay dropped, then `trace`."""
+        events to write: one `trace_export_error` per batch the relay dropped, then `trace`.
+        When that fails, one `error` event (`source: trace`) instead."""
+        try:
+            return self._finish(result, answer)
+        except Exception as exc:
+            self._failed(exc)
+            self._close()
+            return [("error", {"source": "trace", "error": self.failure})]
+
+    def _finish(
+        self, result: Mapping[str, Any], answer: str | None
+    ) -> list[tuple[str, dict[str, Any]]]:
         assert self._span is not None, "RunExport.start comes first"
         report = self._stop_relay()
-        self._span.set_attributes(result_attributes(self.tier, result, answer, self.secrets))
+        self._span.set_attributes(result_attributes(self.tier, result, answer, self.masks))
         trace_id = format(self._span.get_span_context().trace_id, "032x")
-        self._close()
+        self._span.end()
+        self._shutdown()
         events: list[tuple[str, dict[str, Any]]] = [
             ("trace_export_error", {"error_type": error.error_type, "status": error.status})
             for error in report.errors
@@ -314,19 +382,32 @@ class RunExport:
         )
         return events
 
+    def _failed(self, exc: Exception) -> None:
+        if self.failure is None:
+            self.failure = f"the trace export failed ({type(exc).__name__}: {exc})"
+
     def _stop_relay(self) -> "RelayReport":
         from data_agent.trace_relay import RelayReport
 
         if self._report is None:
-            self._report = self.relay.stop() if self._started else RelayReport(0, 0, ())
+            self._report = RelayReport(0, 0, ())
+            if self.relay is not None:
+                self._report = self.relay.stop()
         return self._report
 
     def _close(self) -> None:
-        try:
-            self._stop_relay()
-        finally:
-            if self._span is not None and self._span.is_recording():
-                self._span.end()
-            if self._provider is not None:
-                self._provider.shutdown()
-                self._provider = None
+        """Stops whatever still runs; never raises (a failure goes to `failure`)."""
+        for step in (self._stop_relay, self._end_span, self._shutdown):
+            try:
+                step()
+            except Exception as exc:
+                self._failed(exc)
+
+    def _end_span(self) -> None:
+        if self._span is not None and self._span.is_recording():
+            self._span.end()
+
+    def _shutdown(self) -> None:
+        if self._provider is not None:
+            provider, self._provider = self._provider, None
+            provider.shutdown()

@@ -75,7 +75,14 @@ from data_agent.sandbox import (
 )
 from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
-from data_agent.tracing import CliTrace, LangfuseSettings, RunExport, RunFacts, TraceTier
+from data_agent.tracing import (
+    CliTrace,
+    LangfuseSettings,
+    RunExport,
+    RunFacts,
+    TraceTier,
+    langfuse_keys,
+)
 from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
     AGENT_TOOL,
@@ -2144,8 +2151,8 @@ async def run(
     for variable in task.postgres_envs:
         secrets += url_secrets(env[variable])
         names += url_names(env[variable])
-    if langfuse is not None:
-        secrets += [langfuse.public_key, langfuse.secret_key]
+    # Masked whether or not the export is on: a shell may hold them without the address.
+    secrets += langfuse_keys(env)
     verified = uses_verifiers(task.type, config)
     sandbox_run = None if sandbox is None else SandboxRun.of_run(sandbox, events_dir, network)
     dbt_run = (
@@ -2167,7 +2174,7 @@ async def run(
     saving = saved_task(task.text, task.workspace) if verified else nullcontext()
     snapshotting = taken_snapshot(task.workspace) if verified else nullcontext()
     exporting = (
-        nullcontext() if langfuse is None else RunExport(langfuse, trace_tier, [*secrets, *names])
+        nullcontext() if langfuse is None else RunExport(langfuse, trace_tier, secrets, names)
     )
     commit = git_commit()
     skills = skill_version(config.skills_dir) if config.skill else "none"
@@ -2220,6 +2227,9 @@ async def run(
             )
             # Off the event loop: it waits for Langfuse's project id.
             cli_trace = await asyncio.to_thread(export.start, facts)
+            if cli_trace is None:
+                log.emit("error", source="trace", error=export.failure)
+                export = None
         source_names = tuple(source.name for source in task.databases)
         budget = None if task.type == "dbt" else TurnBudget(config.max_turns[task.type])
         prompt = (DBT_PROMPT if task.type == "dbt" else QUERY_PROMPT).format(
@@ -2266,6 +2276,8 @@ async def run(
                 effort=effort,
                 trace=cli_trace,
             )
+            if export is not None:
+                options = dataclasses.replace(options, env=options.env | export.context_env())
             open_calls: dict[str, str] = {}
             session_id: str | None = None
             over_limit: TurnLimitPassed | None = None

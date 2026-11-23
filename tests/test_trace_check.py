@@ -151,3 +151,13 @@ def test_a_run_without_a_trace_event_fails_before_asking_langfuse(
     with pytest.raises(CheckFailed, match="no trace event"):
         trace_check.check(str(events(tmp_path / "run.jsonl", trace=False)), langfuse.env())
     assert langfuse.queries == []
+
+
+def test_a_trace_without_observations_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No observations (not ingested yet, or another project's keys) is no pass."""
+    monkeypatch.setattr(trace_check, "observations", lambda *_: iter(()))
+    env: dict[str, str] = dict(zip(LANGFUSE_ENV, ("pk", "sk", "http://127.0.0.1:9"), strict=True))
+    with pytest.raises(CheckFailed, match="no observations"):
+        trace_check.check(str(events(tmp_path / "run.jsonl")), env)

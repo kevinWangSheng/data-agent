@@ -8,6 +8,7 @@ has usage and cost, and the names of its metadata attributes. No attribute value
 output, no key.
 """
 
+import http.client
 import json
 import sys
 import urllib.error
@@ -77,7 +78,7 @@ def observations(settings: LangfuseSettings, trace: str) -> Iterator[dict[str, A
                 page = json.loads(response.read())
         except urllib.error.HTTPError as exc:
             raise CheckFailed(f"Langfuse answered HTTP {exc.code} for the observations") from None
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, http.client.HTTPException) as exc:
             raise CheckFailed(
                 f"cannot read the observations from Langfuse: {type(exc).__name__}"
             ) from None
@@ -140,7 +141,11 @@ def check(target: str, env: Mapping[str, str], runs_dir: Path = RUNS_DIR) -> lis
             "DATA_AGENT_LANGFUSE_BASE_URL to read the trace back"
         )
     trace = trace_id(find_events(target, runs_dir))
-    return structure(trace, list(observations(settings, trace)))
+    found = list(observations(settings, trace))
+    if not found:
+        # Not a pass: Langfuse may not have ingested it yet, or the keys are another project's.
+        raise CheckFailed(f"Langfuse has no observations of trace {trace} (yet?)")
+    return structure(trace, found)
 
 
 def main(target: str, env: Mapping[str, str]) -> int:

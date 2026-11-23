@@ -77,7 +77,7 @@ from data_agent.events import REDACTED, EventLog, known_secrets
 from data_agent.events import mask as mask_event_text
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT, RunConfig, load_config
 from data_agent.sandbox import SKILLS_MOUNT, SandboxRun, docker_lifecycle
-from data_agent.tracing import LangfuseSettings, RunExport, RunFacts
+from data_agent.tracing import LangfuseSettings, RunExport, RunFacts, langfuse_keys
 from evals import spend
 from evals.walk import walk_files
 
@@ -423,9 +423,7 @@ async def run_once(
     """
     settings = ModelSettings.from_env(env)
     langfuse = LangfuseSettings.from_env(env) if trace else None
-    secrets = secrets_of(env)
-    if langfuse is not None:
-        secrets = [*secrets, langfuse.public_key, langfuse.secret_key]
+    secrets = [*secrets_of(env), *langfuse_keys(env)]
     directory = run_dir(out, dab_query.dataset, dab_query.query_id, run)
     directory.mkdir(parents=True)  # FileExistsError: a finished run's trace is never overwritten
     workspace = directory / "workspace"
@@ -487,6 +485,9 @@ async def run_once(
                 task=dab_query.question,
             )
             cli_trace = await asyncio.to_thread(export.start, facts)
+            if cli_trace is None:
+                log.emit("error", source="trace", error=export.failure)
+                export = None
         options = replace(
             build_options(
                 task,
@@ -502,6 +503,8 @@ async def run_once(
             system_prompt=system_prompt(dab_query, config),
             mcp_servers={MCP_SERVER: server},
         )
+        if export is not None:
+            options = replace(options, env=options.env | export.context_env())
         log.emit(
             "version",
             git_commit=commit,
