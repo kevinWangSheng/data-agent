@@ -20,7 +20,7 @@ from mcp.types import CallToolResult, TextContent
 
 from data_agent import agent
 from data_agent.agent import Task
-from data_agent.charts import ChartError, ChartSeries, chart_payload
+from data_agent.charts import ChartError, ChartSeries, ChartType, chart_payload
 from data_agent.gateway import DuckDBGateway, QueryResult
 from data_agent.mcp_server import build_server
 from data_agent.run_config import load_config
@@ -143,6 +143,42 @@ def test_decimals_are_numbers_and_dates_are_iso_text() -> None:
     data = payload()["data"]
     assert data == [{"day": "2024-01-01", "amount": 1.5}, {"day": "2024-01-02", "amount": -2.0}]
     assert all(type(row["amount"]) is float for row in data)
+
+
+@pytest.mark.parametrize(
+    "value", [float("inf"), float("-inf"), float("nan"), Decimal("NaN"), Decimal("Infinity")]
+)
+@pytest.mark.parametrize("chart_type", ["bar", "pie"])
+def test_a_value_that_is_not_finite_is_refused(value: object, chart_type: ChartType) -> None:
+    """Review round 1: JSON has no inf or NaN, so the web UI could not read the chart; a
+    Decimal NaN also broke the pie's negative check."""
+    result = QueryResult(["k", "v"], [("a", 1.0), ("b", value)])
+    with pytest.raises(ChartError, match="v has values that are not finite"):
+        chart_payload(
+            {"query_1": result}, "query_1", chart_type, "k", [ChartSeries(column="v")], "t"
+        )
+
+
+def test_a_numeric_x_that_is_not_finite_is_refused() -> None:
+    result = QueryResult(["n", "v"], [(float("inf"), 1), (2.0, 3)])
+    with pytest.raises(ChartError, match="n has values that are not finite"):
+        chart_payload({"query_1": result}, "query_1", "bar", "n", [ChartSeries(column="v")], "t")
+
+
+def test_a_column_name_the_result_repeats_is_refused() -> None:
+    """Review round 1: `SELECT a.x, b.x` keeps two columns named x; the chart must not pick one."""
+    result = QueryResult(["k", "v", "v"], [("a", 1, "t")])
+    with pytest.raises(ChartError, match=r"v is more than one column of query_1.*alias"):
+        chart_payload({"query_1": result}, "query_1", "bar", "k", [ChartSeries(column="v")], "t")
+    # A repeated column the chart does not use is fine.
+    ok = QueryResult(["k", "n", "z", "z"], [("a", 1, 2, 3)])
+    data = chart_payload({"query_1": ok}, "query_1", "bar", "k", [ChartSeries(column="n")], "t")
+    assert data["data"] == [{"k": "a", "n": 1}]
+
+
+def test_a_series_column_given_twice_is_refused() -> None:
+    with pytest.raises(ChartError, match=r"amount.*once"):
+        payload(series=[ChartSeries(column="amount"), ChartSeries(column="amount")])
 
 
 def test_with_no_query_yet_the_error_says_so() -> None:

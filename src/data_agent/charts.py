@@ -7,6 +7,7 @@ and returns the chart's definition with the data the web UI draws (.scratch/char
 "`display_chart` 工具"). Written after nao's design, no code copied.
 """
 
+import math
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any, Literal
@@ -67,7 +68,8 @@ def chart_payload(
 ) -> dict[str, Any]:
     """`{"chart": the checked arguments, defaults filled in, "data": one object per row of the
     result, keyed by `x` and the series columns, in the result's order}`; ChartError when a
-    check fails (the spec's list, in its order)."""
+    check fails: the spec's list, in its order, plus a column name the result repeats, a
+    series column given twice and a value JSON cannot hold (infinity, NaN)."""
     result = results.get(query_id)
     if result is None:
         known = ", ".join(results) or "none yet"
@@ -77,10 +79,28 @@ def chart_payload(
         )
     columns = list(result.columns)
     index = {column: i for i, column in enumerate(columns)}
-    for column in (x, *(s.column for s in series)):
+    keep = [x, *(s.column for s in series)]
+    for column in keep:
         if column not in index:
             raise ChartError(
                 f"column {column} is not in {query_id}; its columns: {', '.join(columns)}"
+            )
+        if columns.count(column) > 1:
+            raise ChartError(
+                f"{column} is more than one column of {query_id}; give each an alias in the SQL "
+                "(AS) and query again"
+            )
+    drawn = [s.column for s in series]
+    for column in drawn:
+        if drawn.count(column) > 1:
+            raise ChartError(f"series column {column} is given twice; give each column once")
+    # JSON has no infinity or NaN, so a chart holding one could not be read.
+    for column in dict.fromkeys(keep):
+        values = (row[index[column]] for row in result.rows)
+        if any(is_number(v) and not math.isfinite(v) for v in values):  # pyright: ignore[reportArgumentType]
+            raise ChartError(
+                f"{column} has values that are not finite (infinity or NaN, as from a division "
+                "by zero); filter them out or make them NULL in the SQL"
             )
 
     def numeric(column: str) -> bool:
@@ -109,7 +129,6 @@ def chart_payload(
         )
     if stacked and chart_type not in STACKABLE:
         raise ChartError(f"stacked goes with {' or '.join(STACKABLE)} charts, not {chart_type}")
-    keep = [x, *(s.column for s in series)]
     return {
         "chart": {
             "query_id": query_id,
