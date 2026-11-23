@@ -329,3 +329,4 @@ spec "Testing Decisions" 列的每条行为都有验收测试，写在约定的�
 
 - 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查（`@codex review` 触发）完成，无意见。等人审验收测试后合并。
 - 2026-11-23（主会话）：人选"先合并，待定项留给后端工单"；PR #121 squash 合入 main。待定项转进后端工单的"待人定"。
+- 2026-11-23（人在主 checkout 真跑）：`uv run pytest tests/acceptance/test_mcp_e2e.py -m integration -v` → `2 xfailed in 320.88s`。标记是 `xfail(strict=True, raises=AssertionError)`，docker 或模型的 RuntimeError 会变成失败而不是 xfail，所以两例都走到了断言（功能未做），夹具本身可用。
