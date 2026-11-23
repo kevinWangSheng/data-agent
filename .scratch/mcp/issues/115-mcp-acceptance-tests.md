@@ -326,3 +326,5 @@ spec "Testing Decisions" 列的每条行为都有验收测试，写在约定的�
 **Hand-off to the main session:**
 - Run `colima start`, then `uv run pytest tests/acceptance/test_mcp_e2e.py -m integration --runxfail -v`. Both cases should fail with "the agent called no mcp__mongo__ tool" (case 1) or "the version event names no external server" (case 2), not with a RuntimeError from docker or the model.
 - Local `main` has moved past this branch's base. The branch sits on 0caef46 while `main` is at 6c9387b, so a rebase may be needed before the PR.
+
+- 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查（`@codex review` 触发）完成，无意见。等人审验收测试后合并。

@@ -305,3 +305,5 @@ Each review led to one fix round; the reference was re-checked after both.
 - **Picking Harbor's "first trial":** I suggest an `O_EXCL` claim file per task in the job directory; the reference does this. The cost is that a `harbor job resume` that reruns a failed trial won't export that task again. The tests check "exactly one".
 - **`service.name` / `service.version`:** they are not in the held-out allowlist, so the tests expect them removed. To keep them, add them to the spec before merging.
 - **Langfuse's `metadata.resourceAttributes`:** the fixture uses this name as a guess; it is unconfirmed. Real responses should be checked in the acceptance run.
+
+- 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查（`@codex review` 触发）完成，无意见。等人审验收测试后合并。

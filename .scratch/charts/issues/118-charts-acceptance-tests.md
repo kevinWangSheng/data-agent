@@ -403,3 +403,5 @@ grep '"mcp__data__display_chart"' runs/<run-id>/events.jsonl | grep tool_end
 8. **Charting rule:** it names `display_chart`. The prompt has the rule exactly when the tool is present, and has neither without the switch or on the evaluation entries.
 
 Two constraints go beyond the ticket's wording and are worth a decision when you review: the palette must be written as `#hex` or `rgb(r, g, b)` (no `oklch()` or `hsl()`), and the chart draws without animation.
+
+- 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查（`@codex review` 触发）完成，无意见。等人审验收测试后合并。
