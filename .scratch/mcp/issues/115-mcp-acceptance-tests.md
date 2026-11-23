@@ -1,6 +1,6 @@
 # 115 — 外部 MCP：验收测试（配置翻译、stdio 包装、入口、网页显示；MongoDB 真模型用例）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-code opus-5.5 (worktree 115-mcp-acceptance-tests)
@@ -201,7 +201,7 @@ spec "Testing Decisions" 列的每条行为都有验收测试，写在约定的�
 - Attempts: 1
 - Review rounds: 2 (Fable stand-in for `da-review`, then `eng:code-review`)
 - Model spend: $0
-- Outcome: —
+- Outcome: accepted
 
 ## Comments
 
@@ -328,3 +328,4 @@ spec "Testing Decisions" 列的每条行为都有验收测试，写在约定的�
 - Local `main` has moved past this branch's base. The branch sits on 0caef46 while `main` is at 6c9387b, so a rebase may be needed before the PR.
 
 - 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查（`@codex review` 触发）完成，无意见。等人审验收测试后合并。
+- 2026-11-23（主会话）：人选"先合并，待定项留给后端工单"；PR #121 squash 合入 main。待定项转进后端工单的"待人定"。

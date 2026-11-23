@@ -1,6 +1,6 @@
 # 118 — 答案图表：验收测试（MCP server、开关、前端，全部不调模型）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 118-charts-acceptance-tests)
@@ -230,7 +230,7 @@ spec "Testing Decisions"（`.scratch/charts/spec.md:80-87`）列的验收测试�
 - Attempts: 1
 - Review rounds: 1 (Fable in place of `da-review`, plus `eng:code-review`; one round of fixes)
 - Model spend: $0 (no data-agent model calls)
-- Outcome: —
+- Outcome: accepted
 
 ## Comments
 
@@ -405,3 +405,4 @@ grep '"mcp__data__display_chart"' runs/<run-id>/events.jsonl | grep tool_end
 Two constraints go beyond the ticket's wording and are worth a decision when you review: the palette must be written as `#hex` or `rgb(r, g, b)` (no `oklch()` or `hsl()`), and the chart draws without animation.
 
 - 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查（`@codex review` 触发）完成，无意见。等人审验收测试后合并。
+- 2026-11-23（主会话）：人选"先合并，待定项留给后端工单"；PR #122 squash 合入 main。待定项转进后端工单的"待人定"。

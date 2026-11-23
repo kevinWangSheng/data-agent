@@ -1,6 +1,6 @@
 # 111 — 可观测性：验收测试（开关、CLI 环境变量、中转规则与转发、父 span、评测入口、trace-check、网页链接）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (ticket agent)
@@ -164,7 +164,7 @@ spec "Testing Decisions" 列的每一组验收测试都写好，落在约定的�
 - Attempts: 1
 - Review rounds: 2
 - Model spend: $0
-- Outcome: in-review. The tests, stubs, fixtures and dev dependencies are committed. The human review gates the merge.
+- Outcome: accepted
 
 ## Comments
 
@@ -307,3 +307,4 @@ Each review led to one fix round; the reference was re-checked after both.
 - **Langfuse's `metadata.resourceAttributes`:** the fixture uses this name as a guess; it is unconfirmed. Real responses should be checked in the acceptance run.
 
 - 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查（`@codex review` 触发）完成，无意见。等人审验收测试后合并。
+- 2026-11-23（主会话）：人选"先合并，待定项留给后端工单"；PR #120 squash 合入 main。待定项转进后端工单的"待人定"。
