@@ -1,10 +1,10 @@
 # 120 — 答案图表：前端（图表组件，接入对话页、运行页、在线站点和时间线）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —（119 只挡合并：spec 定组件可以先按事件样例开工）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (Opus 5.5), worktree 120-charts-frontend
+Branch: worktree-120-charts-frontend
 
 ## Goal
 
@@ -59,10 +59,65 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: —
 
 ## Comments
+
+- 2026-11-23（工单 agent 最终回复，主会话照抄）：
+
+**做了什么**
+- **图表组件** `web/src/chart/Chart.tsx`：画 5 种图，直角坐标（bar/line/area）、scatter、pie 三条代码路径。
+  - 不开动画；系列 i 用 `var(--chart-series-{i%6+1})`，饼图按扇区取色。
+  - 2 个以上系列才有图例（饼图总有），图例文字用正文色，按系列顺序排。
+  - 悬停提示照 `AblationChart` 的样式。
+  - 没有数据时显示标题和 "No data to chart: the query returned no rows."，不画系列。
+  - 不给 `size` 时，图在 260px 高的盒子里用 `ResponsiveContainer` 占满容器宽度。
+- **挑图** `answerCharts` 和 `chartPayload`（`web/src/chart/model.ts`）：校验返回值的形状，不合格的不进答案区，并按 `tool_start` 的 seq 排序。
+- **页面**：新加 `AnswerCharts.tsx`，接进 `Turn.tsx` 和 `Side.tsx`。运行页加了 `data-testid="answer"`，图在 `Clipped` 外面。
+- **时间线**：`tools.ts` 加了 `'chart'` 类别（标签 `CHRT`，名字 `Answer chart`）。`index.css` 三个主题块都加了 `--k-chart` 和 `--chart-series-1..6`。
+- **验收测试**：两个文件只删了 23 处 `.fails`，逐行比对过，其余没动。
+
+**验证**
+- `pnpm --dir web test`：Test Files 27 passed，389 passed | 10 expected fail（这 10 个是工单 117 的）。两个验收文件 42/42 ✓。
+- `make check`（e914322）：ruff 通过，398 files already formatted，basedpyright 0 errors，pytest 2613 passed / 97 xfailed，web 389 passed，exit=0。输出在 `runs/t120/make-check-final.txt`。
+- 普通构建 `pnpm --dir web build` 通过（`runs/t120/build-plain.txt`）。
+- 站点构建：
+  - 先导出：`uv run python -m evals export --manifest evals/manifest.json --out runs/t120/site --run runs/t120/featured/20261123T100100Z-c4a27f --conversation runs/t120/local/conversations/20261123T100000Z-ch4rt5`，结果 "export: 2 run(s), 1 conversation(s)"。
+  - 再构建：`SITE_DATA=$PWD/runs/t120/site pnpm --dir web build`，结果 "✓ built in 522ms"（`runs/t120/site-build.txt`）。
+  - 导出不接受重复的 run id，所以金样同时当录播对话的那一轮和精选运行时，精选运行用的是改了 id 的副本。
+- 截图在 `runs/t120/`，都是最终提交上用真实浏览器拍的。每一页都用 DOM 查过：只有 1 个 `answer`，里面按顺序是 bar、line、area、scatter、pie；没有 `t-c3` 的图，`t-c3` 的错误只在时间线和详情里。
+  - 本地对话页：`chat-light.png`、`chat-dark.png`
+  - 本地运行页（选中 `t-c3`）：`run-light.png`、`run-dark.png`
+  - 在线站点：`site-chat-light.png`（录播对话）、`site-run-dark.png`（运行页）
+  - 悬停提示：`tooltip-bar.png`、`tooltip-pie.png`、`tooltip-scatter.png`
+  - 详情面板里成功的图表步骤：`run-detail-chart-step.png`
+
+**审查**（`eng:code-review main`，一轮；前端工单不跑 da-review）
+- Standards 没有硬违规，Spec 没有阻断问题。
+- 已修（提交 9b72d6e）：
+  - x 列名正好叫 `y` 时，散点图所有点都画在一条竖线上；补了先红后绿的测试。
+  - 同一列画成两个系列时 React key 重复；补了测试。
+  - 两处按图类型分三种的判断合成一个 `chartKind`；`CHART_TYPES` 和 `ChartType` 绑定；去掉没人用的导出。
+  - 堆叠柱子不再只给最上一段圆角；饼图悬停提示不再把扇区名写两遍。
+- 审查后自查又修了两个（提交 e914322，各补了先红后绿的测试）：
+  - x 是数字的类别轴（比如年份）刻度显示成 `2K|2K|2K`，现在照原值显示 2021。
+  - 散点图悬停提示第二行写的是 x 轴名而不是系列名，现在显示 "Order amount 52"。
+- 不修的和理由：
+  - 提示卡片外壳重复了 3 处、bar/line/area 三个分支有重复属性：每个分支的属性不同，合并不划算。
+  - 没有文字答案的运行不显示图：图放在答案区，没有答案就没有答案区，这是最保守的做法。
+
+**偏离、已知问题和要核对的事**
+- `--k-chart` 越出了 Authority：它那行只写了加 `--chart-series-*`，但 Context 的契约要求"`--k-chart` 颜色（三个主题块都加）"，我照契约加了。
+- 首屏包变大：recharts 原来只在评测页的懒加载包里（390 kB），现在进了主包，主包从约 805 kB 变成 1.27 MB。改成懒加载会让服务端渲染的验收测试拿不到图，所以没改。超过 500 kB 的构建警告原来就有。
+- 核对 119 时请顺便看：真实返回值里 `title` 或 series 的 `label` 缺了，图会被直接丢掉，不报错。金样里两者都有。
+- 对话页的顺序是文字、结果表、图（都在文字下面）；运行页的结果表在答案块外面。
+
+**待人定**（都按最保守的做法先做了）
+- 图高 260px、宽度跟着容器。
+- 图例和悬停提示照 `AblationChart` 的样式。
+- 时间线标签 `CHRT`：标签宽 34px，五个字母的 `CHART` 放不下。名字 `Answer chart`，颜色浅色 `#93408a`、暗色 `#e08ad3`。
+- 详情面板只显示参数和原始结果，不画图。
+- 系列色：浅色 `#2a78d6 #d95926 #13936a #b07800 #cc4f7e #008300`，暗色 `#3987e5 #d95926 #199e70 #c98500 #d55181 #0ca30c`（两个暗色块一样）。都用 dataviz 的校验脚本对 `--panel` 检查过，五项全过，包括 3:1 对比度和色盲区分。
