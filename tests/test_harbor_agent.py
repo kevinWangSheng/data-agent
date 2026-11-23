@@ -623,7 +623,7 @@ def test_install_puts_the_locked_agent_in_its_own_virtualenv(
     asyncio.run(agent.install(recorded))  # type: ignore[arg-type]
     wheel = next(path for path in seen if path.endswith(".whl"))
     requirements = seen[next(path for path in seen if path.endswith("requirements.txt"))]
-    assert "claude-agent-sdk==0.2.168" in requirements
+    assert "claude-agent-sdk==0.2.187" in requirements
     assert "--hash=sha256:" in requirements
     assert "dbt-core" not in requirements  # the image's dbt, not ours (plan §5)
     script = "\n".join(recorded.commands)

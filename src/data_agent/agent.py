@@ -430,11 +430,13 @@ def transcript_usage(path: Path) -> dict[str, Tokens]:
     """The model calls in a subagent's transcript (the CLI's `subagents/agent-<id>.jsonl`), by
     message id.
 
-    The format is the CLI's own and undocumented (CLI 2.1.301; a real sample is
-    tests/fixtures/subagent_transcript.jsonl): one JSON object per line; a model call is one
-    `"type": "assistant"` line per content block, each with `message.id` and `message.usage`, the
-    last with the call's final usage and its `message.stop_reason` (the earlier ones have no
-    output yet and a null stop_reason).
+    The format is the CLI's own and undocumented (a real sample is
+    tests/fixtures/subagent_transcript.jsonl, written by CLI 2.1.301): one JSON object per line; a
+    model call is one `"type": "assistant"` line per content block, each with `message.id` and
+    `message.usage`, the last with the call's final usage and its `message.stop_reason`. Up to
+    2.1.306 the earlier lines had no output yet and a null stop_reason; from 2.1.307 every line
+    carries the final usage and stop reason (docs/research/2026-11-23-sdk-upgrade-0.2.187.md §2.3).
+    Taking each call's last line reads both the same.
     """
     try:
         lines = path.read_text().splitlines()
@@ -1236,9 +1238,11 @@ class ModelSettings:
             # Subagents (the verifiers) run in the foreground. Launched in the background, they
             # end the main turn before their reports are in and split the run into several results.
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-            # Ticket 110: the CLI (2.1.301) does not know the model, assumes a 200,000-token
-            # window and stops the session at 177,000; DeepSeek documents 1M. Compaction runs at
-            # this window less 33,000 (367,000), digits only (2.1.301 refuses `400k`).
+            # Ticket 110: the CLI does not know the model; 2.1.301 assumed a 200,000-token
+            # window and stopped the session at 177,000, and from 2.1.323 an unknown model's
+            # default is 1M. DeepSeek documents 1M, so the window is set either way. Compaction
+            # runs at this window less 33,000 (367,000). Digits work on every version (2.1.301
+            # refused `400k`; 2.1.304 and later also take the suffix).
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
             "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
             # Blank, so an exported one never turns compaction off: the CLI reads both as true
