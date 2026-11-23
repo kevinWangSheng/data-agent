@@ -4,12 +4,13 @@
 //
 // The drawing (./Chart.tsx, with recharts) loads lazily, so a page without charts never fetches
 // recharts; until it arrives each chart shows its frame, title, and its note or an empty box of the
-// drawing's height (./ChartFrame.tsx). On the server, the markup is that placeholder.
+// drawing's height (./ChartFrame.tsx). On the server, the markup is that placeholder. If it fails to
+// load, each chart keeps its frame with a note.
 
 import { lazy, Suspense, useMemo } from 'react'
 
 import type { RunView } from '../run-view/model'
-import { ChartPlaceholder } from './ChartFrame'
+import { ChartLoadBoundary, ChartPlaceholder } from './ChartFrame'
 import { answerCharts } from './model'
 
 const Chart = lazy(() => import('./Chart').then((m) => ({ default: m.Chart })))
@@ -20,9 +21,11 @@ export function AnswerCharts({ view }: { view: RunView }) {
   return (
     <div className="flex flex-col gap-2">
       {charts.map((c) => (
-        <Suspense key={c.step} fallback={<ChartPlaceholder payload={c.payload} />}>
-          <Chart payload={c.payload} />
-        </Suspense>
+        <ChartLoadBoundary key={c.step} chart={c.payload.chart}>
+          <Suspense fallback={<ChartPlaceholder payload={c.payload} />}>
+            <Chart payload={c.payload} />
+          </Suspense>
+        </ChartLoadBoundary>
       ))}
     </div>
   )

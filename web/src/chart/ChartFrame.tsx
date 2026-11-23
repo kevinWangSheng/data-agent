@@ -3,7 +3,7 @@
 // (./plot.ts `nothingNote`), or the box the drawing will fill once the recharts chunk has arrived
 // (./AnswerCharts.tsx).
 
-import type { JSX, ReactNode } from 'react'
+import { Component, type JSX, type ReactNode } from 'react'
 
 import type { ChartPayload, ChartSpec } from './model'
 import { nothingNote } from './plot'
@@ -25,12 +25,31 @@ export function Note({ text }: { text: string }): JSX.Element {
 }
 
 /** The chart until its drawing loads: the frame, and its note or an empty box of the drawing's
- *  size, so nothing moves when the drawing arrives. */
-export function ChartPlaceholder({ payload, size }: { payload: ChartPayload; size?: { width: number; height: number } }): JSX.Element {
+ *  height, so nothing moves when the drawing arrives. */
+export function ChartPlaceholder({ payload }: { payload: ChartPayload }): JSX.Element {
   const note = nothingNote(payload)
   return (
     <Frame chart={payload.chart}>
-      {note !== null ? <Note text={note} /> : <div className="w-full" style={size ?? { height: CHART_HEIGHT }} />}
+      {note !== null ? <Note text={note} /> : <div className="w-full" style={{ height: CHART_HEIGHT }} />}
     </Frame>
   )
+}
+
+/** When the drawing fails to load (offline, or a page left open across a deploy), the chart keeps
+ *  its frame and says so, and the page around it stays. */
+export class ChartLoadBoundary extends Component<{ chart: ChartSpec; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  render(): ReactNode {
+    if (!this.state.failed) return this.props.children
+    return (
+      <Frame chart={this.props.chart}>
+        <Note text="Could not load the chart: reload the page to try again." />
+      </Frame>
+    )
+  }
 }

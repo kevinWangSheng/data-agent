@@ -7,18 +7,19 @@ import { chartKind, type ChartPayload, type ChartRow, type ChartSpec } from './m
 /** A NULL x: its category's tick, its slice's name, its hover card's heading. */
 export const NULL_LABEL = '(null)'
 
-// Up to 12 significant digits: enough for every tick recharts picks (0.0375, 2.25K), short of the
-// float noise of its arithmetic (0.30000000000000004).
-const clean = (v: number) => Number(v.toPrecision(12))
-const plain = new Intl.NumberFormat('en', { maximumFractionDigits: 20 })
-const short = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 12 })
+// Up to 12 significant digits: enough for every tick recharts picks (0.0375, 2.25K) and every value
+// a query returns, short of float noise (0.1 + 0.2 = 0.30000000000000004).
+const withoutNoise = (v: number) => Number(v.toPrecision(12))
+const fullNumber = new Intl.NumberFormat('en', { maximumFractionDigits: 20 })
+const shortNumber = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 12 })
 
 /** A value axis tick, as exact as the tick: 0.0375, 2.25, 750; from 1000 on short (2.25K, 1.5M). */
-export const tickText = (v: unknown) => (typeof v !== 'number' ? String(v) : Math.abs(v) >= 1000 ? short.format(clean(v)) : plain.format(clean(v)))
+export const tickText = (v: unknown) =>
+  typeof v !== 'number' ? String(v) : Math.abs(v) >= 1000 ? shortNumber.format(withoutNoise(v)) : fullNumber.format(withoutNoise(v))
 
-const exact = new Intl.NumberFormat('en', { maximumFractionDigits: 2 })
-/** A value on the hover card: numbers in full with thousands separators; NULL as a dash. */
-export const valueText = (v: unknown) => (typeof v === 'number' ? exact.format(v) : v === null || v === undefined ? '—' : String(v))
+/** A value on the hover card: numbers in full with thousands separators (0.0037, 1,234,567.891);
+ *  NULL as a dash. */
+export const valueText = (v: unknown) => (typeof v === 'number' ? fullNumber.format(withoutNoise(v)) : v === null || v === undefined ? '—' : String(v))
 
 /** The rows with a NULL x named NULL_LABEL, for the charts whose x is a category (bar, line, area,
  *  pie): recharts would drop the category, or name the slice by the series. */
