@@ -6,6 +6,9 @@
 - `docs/research/2026-11-23-otel-spike.md`：A（CLI 自带 OTel）对比 B（openinference）的真实运行
 - `docs/research/2026-11-23-langfuse-usage-mapping.md`：Langfuse 认哪些属性、免费档额度、TRACEPARENT 注入
 - `docs/research/2026-11-23-sdk-upgrade-0.2.187.md`：SDK 0.2.168 → 0.2.187 对 8 处已实测行为的影响
+- `docs/research/2026-11-23-trace-content-defaults.md`：trace 内容业界默认记不记（Update 2026-11-23 的依据）
+
+**Update 2026-11-23（MCP grilling 的 Q8，人定）**：原 Q4 的"数据行脱敏、只保留 SQL"改为开发集档**完整记录**：prompt、模型输出、所有工具（含外部 MCP 工具）的入参和输出、查询结果都导出，只去掉凭据和模型端点地址。依据：Langfuse 自己的 SDK 和 OpenInference 默认全记；OTel GenAI 规范默认不记是针对不知道数据去向的埋点库，我们是用户显式配置自己的 Langfuse 项目。和 nao 的差别：nao 遮掉 3 个读数据工具的 SQL 和结果，我们不遮。留出集档不变。下文已按此改写。
 
 ## Problem Statement
 
@@ -17,7 +20,7 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 - **外面挂一个我们自己的父 span `data-agent.run`**：带运行 id、对话 id、任务类型、配置、模型，和 `result` 事件里的总 usage、总花费。SDK 在有活动 span 时自动把 `TRACEPARENT` 传给 CLI，CLI 的 span 挂到它下面。
 - **CLI 的 span 先进本地中转**：data-agent 进程在 `127.0.0.1` 上收 CLI 的 OTLP 请求，按档过滤、改名、匿名化，再带上密钥转发给 Langfuse。CLI 拿不到 Langfuse 密钥。
 - **默认关**：三个 `DATA_AGENT_LANGFUSE_*` 变量都设了才导出；评测还要显式 `--trace`。
-- **两档**：开发集档（保留过程和 SQL，去掉数据行）；留出集档（只放行白名单里的结构字段，id 匿名）。
+- **两档**：开发集档（完整记录，只去掉凭据和模型端点地址）；留出集档（只放行白名单里的结构字段，id 匿名）。
 - SDK 升到 0.2.187（CLI 2.1.330），并入本 feature。
 
 ## Implementation Decisions
@@ -64,7 +67,7 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 - `OTEL_TRACES_EXPORTER=otlp`，`OTEL_METRICS_EXPORTER=none`，`OTEL_LOGS_EXPORTER=none`
 - `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`，`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:<中转端口>/v1/traces`
 - `OTEL_TRACES_EXPORT_INTERVAL=1000`（文档建议短任务调到 1000，退出时 flush 的超时很短）
-- 开发集档：`OTEL_LOG_TOOL_DETAILS=1`（工具入参，即 SQL）；不设 `OTEL_LOG_TOOL_CONTENT`、`OTEL_LOG_USER_PROMPTS`、`OTEL_LOG_RAW_API_BODIES`
+- 开发集档：`OTEL_LOG_USER_PROMPTS=1`、`OTEL_LOG_TOOL_DETAILS=1`、`OTEL_LOG_TOOL_CONTENT=1`；模型输出由哪个开关带出（`OTEL_LOG_RAW_API_BODIES` 或其他）实现时核实，要能在 Langfuse 里看到模型回答。超长内容按 CLI 默认在 60 KB 截断（`CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH`）
 - 留出集档：四个内容开关都不设
 
 传给 CLI 的 env 里不能有 Langfuse 的公钥和私钥，也不能有 `Authorization` 头。shell 里继承来的 `OTEL_*` 变量一律被覆盖，不能让外部设置改变导出目的地（照工单 104 对 `CLAUDE_CODE_EFFORT_LEVEL` 的处理）。
@@ -76,7 +79,7 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 - 规则（两档共用）：
   - token 改名：`input_tokens` → `gen_ai.usage.input_tokens`，`output_tokens` → `gen_ai.usage.output_tokens`，`cache_read_tokens`、`cache_creation_tokens` 映射到 Langfuse 认的缓存字段（Langfuse 认 `gen_ai.usage.*`、`llm.token_count.*`，见 usage-mapping 笔记 §1；缓存字段的确切名字实现时核实）。
   - 删掉 `anthropic.custom_base_url`（模型端点地址）和任何凭据样的值。
-- 开发集档：再删掉工具输出（`OTEL_LOG_TOOL_CONTENT` 那一类属性，以防 shell 环境把它打开了）。
+- 开发集档：不再删内容，只做两档共用的规则（改名、删凭据样的值和模型端点地址）。
 - 留出集档：
   - 属性按**白名单**放行：span 名、类型、层级、起止时间、`duration_ms`、`ttft_ms`、`first_content_ms`、token 数、`stop_reason`、`success`、`attempt`、`effort`、工具名（`tool_name`、`gen_ai.tool.name`、MCP 服务器名）、模型名（`model`、`gen_ai.request.model`）、`span.type`。其余属性一律删掉，包括 `user_prompt`、`user_prompt_length`、工具参数、`llm_request.context`、`user.id`、`terminal.type`、主机和系统信息。CLI 以后新增的属性默认发不出去。
   - `session.id`、`gen_ai.conversation.id`、`tool_use_id`、`gen_ai.tool.call.id` 换成这次运行随机生成的匿名 id（同一次运行内保持一致，能看出配对，看不出是哪一题）。
@@ -121,10 +124,10 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 单元测试不调模型、不联网：Langfuse 用本地假 HTTP 服务器替身，CLI 发来的 span 用试验里抓到的真实 OTLP 请求做夹具（113 先抓一份，去掉内容后提交）。
 
 - **开关**：三个变量缺任何一个都是关闭；关闭时 `build_options` 的 env 里没有 `OTEL_*`、`CLAUDE_CODE_ENABLE_TELEMETRY`，不开端口，不建 exporter；用禁止建连接的替身证明没有网络请求。
-- **CLI 环境变量**：打开时 endpoint 指向 `127.0.0.1`；env 里没有公钥、私钥、`Authorization`；开发集档有 `OTEL_LOG_TOOL_DETAILS=1`，没有另外三个内容开关；留出集档四个都没有；shell 里预设的 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 被覆盖。
+- **CLI 环境变量**：打开时 endpoint 指向 `127.0.0.1`；env 里没有公钥、私钥、`Authorization`；开发集档打开内容开关（prompt、工具入参、工具输出、模型输出）；留出集档一个内容开关都没有；shell 里预设的 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 被覆盖。
 - **中转规则**（输入夹具，断言输出）：
   - token 属性被改名为 Langfuse 认的名字；`anthropic.custom_base_url` 被删
-  - 开发集档：SQL（工具入参）保留，工具输出被删
+  - 开发集档：prompt、SQL、工具输出、外部 MCP 工具的入参和输出都保留；夹具里放一个形如密钥的值和模型端点地址，它们被删
   - 留出集档：输出里每个属性名都在白名单里；夹具里加一个"CLI 将来新增的属性"，它被删掉；`user_prompt` 被删；会话 id、对话 id、`tool_use_id` 被换成匿名 id，同一次运行内一致，两次运行不同
 - **中转转发**：假 Langfuse 收到的请求带正确的 Basic 认证和 `x-langfuse-ingestion-version: 4`；假 Langfuse 返回 500、连接被拒、收到无法解析的请求时，`run` 照常结束，事件里有 `trace_export_error`；CLI 退出后已收到的请求都转发完，`trace` 事件里的计数等于转发数。
 - **父 span**：用内存 exporter，断言名字、session id、tag、`usage_details`、`cost_details` 取自 `result` 事件；留出集档的父 span 没有运行 id、题目 id、对话 id。
@@ -137,7 +140,7 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 新能力，不套 ADR-0008 的"目标题必须涨"，只要求不退步，且下面几条都在真实运行里看到：
 
 - 一次真实的 dbt 运行（`full` 配置，会调用验证子 agent）：用 `trace-check` 看到父 span → CLI 的 interaction → 每次请求的 GENERATION（usage 有值）和工具 span，**验证子 agent 的请求挂在这棵树里**；`trace` 事件里转发的 `llm_request` 数等于这次运行的模型请求数（试验里 6 轮只收到 4 个，要查清是计法不同还是丢失）。
-- 一次查询运行在开发集档、一次在留出集档（用 `--trace-tier structure` 手动指定，用仓库夹具，不用真的留出题）：`trace-check` 显示开发集档有 SQL、没有数据行；留出集档只有白名单字段、id 是匿名的。
+- 一次查询运行在开发集档、一次在留出集档（用 `--trace-tier structure` 手动指定，用仓库夹具，不用真的留出题）：`trace-check` 显示开发集档有 prompt、SQL、查询结果和模型回答，没有凭据；留出集档只有白名单字段、id 是匿名的。
 - 网页对话里问两轮：Langfuse 里同一个 session 下有两条 trace，运行页的链接能打开对应 trace。
 - 导出关闭时跑一次，事件文件里没有 `trace` 事件，没有任何对 Langfuse 的请求。
 - SDK 升级回归（Q7）：`make check`；jaffle-shop 7 题不低于 7/7（`71a5bcc` 的结果）；开发集 3 题初筛（`evals board`，服务器，小额运行）在波动范围内；3 项实测有结论。
@@ -153,7 +156,7 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 
 ## Further Notes
 
-- 上游：nao 的开关和脱敏（`nao/apps/backend/src/instrumentation.ts`、`apps/backend/src/utils/langfuse-redaction.ts`）是进程内的 span 处理器；我们的 span 由 CLI 子进程发出，所以多了一个本地接收端，规则的思路照 nao。SignalPilot、dash 没有 LLM trace 接入。
+- 上游：nao 的开关和脱敏（`nao/apps/backend/src/instrumentation.ts`、`apps/backend/src/utils/langfuse-redaction.ts`）是进程内的 span 处理器；我们的 span 由 CLI 子进程发出，所以多了一个本地接收端，开关的做法照 nao；内容上 nao 遮掉读数据工具的 SQL 和结果，我们按 Update 2026-11-23 不遮。SignalPilot、dash 没有 LLM trace 接入。
 - 已知限制：traces 在 CLI 里还是 beta，属性名可能随 CLI 版本变；留出集档靠白名单，CLI 改名后被删的字段要人看到才会补回白名单，不会泄漏。
 - Langfuse Cloud 免费档超额后是拒收还是限流，官方没写（未确认）；超额只影响导出，不影响运行。
 - 试验 worktree `../data-agent-spike-otel`（分支 `spike/otel`）留到 112、113 合入后再删。
