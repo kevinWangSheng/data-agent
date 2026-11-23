@@ -1,0 +1,10 @@
+{
+  "id": "20261123T100000Z-c4a27s",
+  "title": "Shop: revenue by tier, channel and month",
+  "task": "How does revenue split by customer tier and channel, and how did it move month by month?",
+  "task_type": "query",
+  "data_source": "shop",
+  "grade": null,
+  "failure_reason": null,
+  "featured": true
+}
