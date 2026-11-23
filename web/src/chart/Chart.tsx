@@ -38,7 +38,7 @@ import {
   YAxis,
 } from 'recharts'
 
-import type { ChartPayload, ChartRow, ChartSpec } from './model'
+import { chartKind, type ChartPayload, type ChartRow, type ChartSpec } from './model'
 
 export type ChartProps = {
   payload: ChartPayload
@@ -49,7 +49,7 @@ export type ChartProps = {
 /** Without `size`: the container's full width at this height. */
 export const CHART_HEIGHT = 260
 
-export const seriesColour = (i: number) => `var(--chart-series-${(i % 6) + 1})`
+const seriesColour = (i: number) => `var(--chart-series-${(i % 6) + 1})`
 
 const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
 const exact = new Intl.NumberFormat('en', { maximumFractionDigits: 2 })
@@ -69,10 +69,11 @@ const legend = () => <Legend key="legend" iconSize={9} itemSorter={null} formatt
 type Dims = { width?: number; height?: number }
 type TipEntry = { name?: unknown; value?: unknown; color?: string; payload?: Record<string, unknown> }
 
-/** The hover card: the row's x, then each series' value beside its colour. */
-function Tip({ active, payload, label, x }: { active?: boolean; payload?: readonly TipEntry[]; label?: unknown; x: string }) {
+/** The hover card: the row's x, then each series' value beside its colour. A pie's card has no
+ *  heading (`x` null): its one entry already names the slice. */
+function Tip({ active, payload, label, x }: { active?: boolean; payload?: readonly TipEntry[]; label?: unknown; x: string | null }) {
   if (!active || !payload?.length) return null
-  const heading = label ?? payload[0]?.payload?.[x]
+  const heading = x === null ? undefined : (label ?? payload[0]?.payload?.[x])
   return (
     <div className="pane px-2.5 py-1.5 shadow-md text-[11.5px]">
       {heading !== undefined && <div className="text-ink-2 mb-0.5">{valueText(heading)}</div>}
@@ -95,10 +96,10 @@ function ScatterTip({ active, payload, x }: { active?: boolean; payload?: readon
   return (
     <div className="pane px-2.5 py-1.5 shadow-md text-[11.5px]">
       <div className="text-ink-2">
-        {x} <span className="mono text-ink">{valueText(point[x])}</span>
+        {x} <span className="mono text-ink">{valueText(point[POINT_X])}</span>
       </div>
       <div className="text-ink-2">
-        {String(first.name ?? '')} <span className="mono text-ink">{valueText(point.y)}</span>
+        {String(first.name ?? '')} <span className="mono text-ink">{valueText(point[POINT_Y])}</span>
       </div>
     </div>
   )
@@ -126,13 +127,13 @@ function cartesian(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element 
         {common}
         {series.map((s, i) => (
           <Bar
-            key={s.column}
+            key={`${i}-${s.column}`}
             dataKey={s.column}
             name={s.label}
             fill={seriesColour(i)}
             stackId={stackId}
             maxBarSize={48}
-            radius={!stacked || i === series.length - 1 ? [4, 4, 0, 0] : 0}
+            radius={stacked ? 0 : [4, 4, 0, 0]}
             isAnimationActive={false}
           />
         ))}
@@ -144,7 +145,7 @@ function cartesian(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element 
         {common}
         {series.map((s, i) => (
           <Line
-            key={s.column}
+            key={`${i}-${s.column}`}
             dataKey={s.column}
             name={s.label}
             stroke={seriesColour(i)}
@@ -161,7 +162,7 @@ function cartesian(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element 
       {common}
       {series.map((s, i) => (
         <Area
-          key={s.column}
+          key={`${i}-${s.column}`}
           dataKey={s.column}
           name={s.label}
           stroke={seriesColour(i)}
@@ -177,21 +178,25 @@ function cartesian(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element 
   )
 }
 
+// A scatter point's own keys, so no column name (even `y`) can clash with them.
+const POINT_X = '__x'
+const POINT_Y = '__y'
+
 /** scatter: x and every series are numbers (the server checks); one point per row with a value. */
 function scatter(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element {
   const { x, series } = chart
   return (
     <ScatterChart {...dims} margin={MARGIN} accessibilityLayer>
       {grid()}
-      <XAxis dataKey={x} type="number" name={x} domain={['auto', 'auto']} {...AXIS} tickFormatter={tickText} />
-      <YAxis dataKey="y" type="number" width={48} domain={['auto', 'auto']} {...AXIS} tickFormatter={tickText} />
+      <XAxis dataKey={POINT_X} type="number" name={x} domain={['auto', 'auto']} {...AXIS} tickFormatter={tickText} />
+      <YAxis dataKey={POINT_Y} type="number" width={48} domain={['auto', 'auto']} {...AXIS} tickFormatter={tickText} />
       <Tooltip cursor={{ stroke: 'var(--line-2)', strokeDasharray: '3 3' }} content={<ScatterTip x={x} />} isAnimationActive={false} />
       {series.length > 1 ? legend() : null}
       {series.map((s, i) => (
         <Scatter
-          key={s.column}
+          key={`${i}-${s.column}`}
           name={s.label}
-          data={data.filter((r) => typeof r[s.column] === 'number').map((r) => ({ [x]: r[x], y: r[s.column] }))}
+          data={data.filter((r) => typeof r[s.column] === 'number').map((r) => ({ [POINT_X]: r[x], [POINT_Y]: r[s.column] }))}
           fill={seriesColour(i)}
           stroke="var(--panel)"
           strokeWidth={1.5}
@@ -207,7 +212,7 @@ function pie(chart: ChartSpec, data: ChartRow[], dims: Dims): JSX.Element {
   const [s] = chart.series
   return (
     <PieChart {...dims} accessibilityLayer>
-      <Tooltip content={<Tip x={chart.x} />} isAnimationActive={false} />
+      <Tooltip content={<Tip x={null} />} isAnimationActive={false} />
       {legend()}
       <Pie data={data} dataKey={s.column} nameKey={chart.x} name={s.label} outerRadius="80%" stroke="var(--panel)" strokeWidth={2} isAnimationActive={false}>
         {data.map((_, i) => (
@@ -235,7 +240,7 @@ export function Chart({ payload, size }: ChartProps): JSX.Element {
         <div className="text-[12px] text-ink-3">No data to chart: the query returned no rows.</div>
       </Frame>
     )
-  const draw = chart.chart_type === 'pie' ? pie : chart.chart_type === 'scatter' ? scatter : cartesian
+  const draw = { cartesian, scatter, pie }[chartKind(chart.chart_type)]
   if (size) return <Frame chart={chart}>{draw(chart, data, size)}</Frame>
   return (
     <Frame chart={chart}>

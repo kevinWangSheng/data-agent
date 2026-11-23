@@ -63,7 +63,7 @@ export function answerCharts(view: RunView): AnswerChart[] {
       step: step.id,
       seq: step.seq,
       payload,
-      kind: type === 'scatter' || type === 'pie' ? type : 'cartesian',
+      kind: chartKind(type),
       series: payload.chart.series.length,
       rows: payload.data.length,
     })
@@ -71,9 +71,12 @@ export function answerCharts(view: RunView): AnswerChart[] {
   return charts.sort((a, b) => a.seq - b.seq)
 }
 
-export const DISPLAY_CHART = 'mcp__data__display_chart'
+const DISPLAY_CHART = 'mcp__data__display_chart'
 
-const CHART_TYPES: readonly string[] = ['bar', 'line', 'area', 'scatter', 'pie']
+const CHART_TYPES = ['bar', 'line', 'area', 'scatter', 'pie'] as const satisfies readonly ChartType[]
+
+/** Which of the component's three code paths draws a chart type. */
+export const chartKind = (type: ChartType): AnswerChart['kind'] => (type === 'scatter' || type === 'pie' ? type : 'cartesian')
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -88,7 +91,7 @@ export function chartPayload(text: string): ChartPayload | null {
   }
   if (!isObject(value) || !isObject(value.chart) || !Array.isArray(value.data)) return null
   const { chart, data } = value
-  if (typeof chart.chart_type !== 'string' || !CHART_TYPES.includes(chart.chart_type)) return null
+  if (typeof chart.chart_type !== 'string' || !(CHART_TYPES as readonly string[]).includes(chart.chart_type)) return null
   if (typeof chart.x !== 'string' || typeof chart.title !== 'string') return null
   if (!Array.isArray(chart.series) || chart.series.length === 0) return null
   if (!chart.series.every((s) => isObject(s) && typeof s.column === 'string' && typeof s.label === 'string')) return null
