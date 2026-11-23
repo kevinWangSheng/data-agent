@@ -54,9 +54,11 @@ from harbor.agents.installed.base import (
 from harbor.agents.options import InstalledAgentOptions
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext, ModelUsage
+from harbor.models.trial.config import TrialConfig
 from pydantic import Field, field_validator
 
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT
+from data_agent.tracing import LANGFUSE_ENV, TraceTier
 from evals.atif import convert, usage
 from evals.wheels import PROBE, Platform, download, wheelhouse
 
@@ -90,6 +92,9 @@ MODEL_ENV = ("DATA_AGENT_API_KEY", "DATA_AGENT_BASE_URL", "DATA_AGENT_MODEL")
 # The eval split (dev / holdout), which picks a traced trial's tier (observability spec "覆盖范围").
 # Read from this module when the adapter runs, so a test points it at a stand-in manifest.
 MANIFEST = REPO_ROOT / "evals" / "manifest.json"
+# The file a traced trial creates in its job directory to claim its task's one export: a plain
+# file, since `harbor job resume` deletes the job's directories that hold no result.json.
+TRACE_CLAIM = ".data-agent-trace-"
 # data-eng-bench builds its image with `dbt ... --target dev` (base-image/Dockerfile:64), and the
 # target is part of dbt's partial-parse key: a dbt call without `--target` re-parsed the whole
 # project on each trial's first call. DBT_TARGET is dbt's environment variable for `--target`;
@@ -117,6 +122,40 @@ _build_lock = threading.Lock()
 _built: tuple[Path, Path] | None = None
 _uv_lock = threading.Lock()
 _uv_archives: dict[str, Path] = {}
+
+
+def task_name(trial_dir: Path) -> str | None:
+    """The trial's task as the manifest names it, from the `config.json` Harbor writes before the
+    agent runs; a registry task's `<org>/<task>` loses its org. None when it cannot be read."""
+    try:
+        config = TrialConfig.model_validate_json((trial_dir / "config.json").read_text())
+        name = config.task.get_task_id().get_name()
+    except (OSError, ValueError):  # pydantic's ValidationError is a ValueError
+        return None
+    return name.rsplit("/", 1)[-1] or None
+
+
+def split_tier(task: str | None, manifest: Path) -> TraceTier:
+    """The export's tier by the task's split (observability spec "覆盖范围"): `full` for a dev
+    task, `structure` for a held-out one, one not in the manifest, or a manifest that cannot be
+    read (as `da-remote pull` errs on the safe side)."""
+    try:
+        dev = json.loads(manifest.read_text())["dev"]
+    except (OSError, ValueError, LookupError, TypeError):
+        return "structure"
+    return "full" if task is not None and isinstance(dev, list) and task in dev else "structure"
+
+
+def claim_trace(job_dir: Path, task: str) -> bool:
+    """Whether this trial is the first of `task` in the job to ask: the claim file is created
+    atomically (`O_EXCL`), so of trials running at once exactly one gets it. A trial `harbor job
+    resume` reruns finds the claim taken and exports nothing."""
+    try:
+        fd = os.open(job_dir / f"{TRACE_CLAIM}{task}", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
 
 
 def status_error(status: int | None) -> type[NonZeroAgentExitCodeError] | None:
@@ -308,7 +347,21 @@ class DataAgent(BaseInstalledAgent):
             env["DATA_AGENT_MODEL"] = self._parsed_model_name
         return env
 
-    def _run_command(self, instruction: str) -> str:
+    def _trace(self) -> tuple[TraceTier | None, dict[str, str]]:
+        """With `trace`: the tier of the trial's task, and the Langfuse variables when the host has
+        all three and this trial claims its task's export (`claim_trace`); without, nothing."""
+        assert isinstance(self.options, DataAgentOptions)
+        if not self.options.trace:
+            return None, {}
+        trial_dir = self.logs_dir.parent
+        task = task_name(trial_dir)
+        tier = split_tier(task, MANIFEST)
+        env = {name: value for name in LANGFUSE_ENV if (value := self._get_env(name))}
+        if len(env) < len(LANGFUSE_ENV) or task is None or not claim_trace(trial_dir.parent, task):
+            return tier, {}
+        return tier, env
+
+    def _run_command(self, instruction: str, trace_tier: TraceTier | None = None) -> str:
         assert isinstance(self.options, DataAgentOptions)
         logs = self.environment_logs_dir
         return (
@@ -328,7 +381,9 @@ class DataAgent(BaseInstalledAgent):
             f"--events-dir {shlex.quote(str(logs / self.EVENTS_DIR))} "
             f"--agent-timeout-sec {shlex.quote(str(self.options.agent_timeout_sec))} "
             f"--task {shlex.quote(instruction)} "
-            f"2>&1 | tee {shlex.quote(str(logs / self.OUTPUT_FILE))}; "
+            # Given on every traced trial, so a held-out task never falls to the default `full`.
+            + (f"--trace-tier {trace_tier} " if trace_tier else "")
+            + f"2>&1 | tee {shlex.quote(str(logs / self.OUTPUT_FILE))}; "
             # Exit 1 is an agent that did not finish: the verifier scores it like any attempt.
             'rc=$?; if [ "$rc" -eq 1 ]; then exit 0; fi; exit "$rc"'
         )
@@ -347,11 +402,12 @@ class DataAgent(BaseInstalledAgent):
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
         self.instruction = instruction
+        tier, trace_env = self._trace()
         try:
             await self.exec_as_agent(
                 environment,
-                command=self._run_command(instruction),
-                env=self._model_env() | DBT_ENV,
+                command=self._run_command(instruction, tier),
+                env=self._model_env() | DBT_ENV | trace_env,
             )
         except NonZeroAgentExitCodeError as exc:
             result = await self._last_result(environment)

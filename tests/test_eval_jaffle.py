@@ -217,6 +217,7 @@ def test_case_failures_are_recorded_without_credentials(
         out=tmp_path / "out",
         config="full",
         case=["q2_repeat_customers"],
+        trace=False,
     )
     assert jaffle.run(args) == 1
     summary = (tmp_path / "out" / "summary.json").read_text()
@@ -254,6 +255,64 @@ def test_rerun_replaces_the_case_directory(tmp_path: Path) -> None:
     assert second == first
     assert (second / "models" / "orders.sql").read_text() == "select 1"
     assert not (case_dir / "events").exists()
+
+
+LANGFUSE = {
+    "DATA_AGENT_LANGFUSE_PUBLIC_KEY": "pk-lf-jaffle",
+    "DATA_AGENT_LANGFUSE_SECRET_KEY": "sk-lf-jaffle",
+    "DATA_AGENT_LANGFUSE_BASE_URL": "https://langfuse.example",
+}
+
+
+class AgentStarted(Exception):
+    """Raised in place of the case's `data-agent run`, once its command and env are recorded."""
+
+
+def agent_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, trace: bool) -> tuple[Any, Any]:
+    """The `data-agent run` of a case (ticket 112), its dbt setup and database stood in for, with
+    the three Langfuse variables in the shell."""
+    monkeypatch.setenv("DA_TEST_URL", "postgresql://u:pw@127.0.0.1:5432/shop")
+    for name, value in LANGFUSE.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(jaffle, "reset_schemas", lambda _: None)
+    monkeypatch.setattr(jaffle, "dbt", lambda *_: None)
+    seen: dict[str, Any] = {}
+
+    def started(command: list[str], env: dict[str, str], **_: object) -> None:
+        seen.update(command=command, env=env)
+        raise AgentStarted
+
+    monkeypatch.setattr(jaffle.subprocess, "run", started)
+    project = tmp_path / "project"
+    project.mkdir()
+    case = {"id": "q1", "kind": "query", "prompt": "prompts/q1.md", "checks": []}
+    with pytest.raises(AgentStarted):
+        jaffle.run_case(case, project, tmp_path / "out", "DA_TEST_URL", "full", 0.0, trace)
+    return seen["command"], seen["env"]
+
+
+def test_without_trace_a_case_exports_nothing_whatever_the_shell_has(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    command, env = agent_run(monkeypatch, tmp_path, trace=False)
+    assert not set(LANGFUSE) & set(env)
+    assert "--trace-tier" not in command
+
+
+def test_with_trace_a_case_exports_on_the_held_out_tier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    command, env = agent_run(monkeypatch, tmp_path, trace=True)
+    assert {name: env.get(name) for name in LANGFUSE} == LANGFUSE
+    assert command[command.index("--trace-tier") + 1] == jaffle.TRACE_TIER == "structure"
+
+
+def test_the_jaffle_command_takes_trace() -> None:
+    from evals.__main__ import build_parser
+
+    base = ["jaffle", "--postgres-env", "V", "--out", "o"]
+    assert build_parser().parse_args([*base, "--trace"]).trace is True
+    assert build_parser().parse_args(base).trace is False
 
 
 @pytest.mark.integration

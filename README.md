@@ -113,6 +113,39 @@ leave the machine through its code or a web request. Runs from the page always u
 sandbox, and a dbt run writes only to a schema of its own (`da_run_<run id>`), never the project's
 production schemas.
 
+### Traces in Langfuse (optional)
+
+Each run can also be exported as a trace to [Langfuse](https://langfuse.com/). The trace shows every
+model request (tokens, cost, time to first token), the tool calls and the verifier subagent as one
+tree. Set all three variables; with any of them missing nothing is exported, no port is opened and
+no request is made:
+
+```bash
+export DATA_AGENT_LANGFUSE_PUBLIC_KEY=pk-lf-...
+export DATA_AGENT_LANGFUSE_SECRET_KEY=sk-lf-...
+export DATA_AGENT_LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
+uv run data-agent run ...                          # the event file gets a `trace` event with the link
+uv run data-agent trace-check runs/x/run-....jsonl # the trace's structure as Langfuse received it
+```
+
+Langfuse Cloud and a self-hosted Langfuse differ only in `DATA_AGENT_LANGFUSE_BASE_URL`; to host
+your own, see Langfuse's [Docker Compose guide](https://langfuse.com/self-hosting/deployment/docker-compose).
+The Claude Code CLI's spans go first to a relay inside the run's process on `127.0.0.1`, which adds
+the keys and forwards them: the CLI never sees the keys.
+
+There are two tiers (`data-agent run --trace-tier`):
+
+- `full` (the default, also for the web UI): everything is recorded (prompts, SQL, tool output,
+  query results, the answer), except credentials and the model endpoint. Send to Langfuse Cloud only
+  runs on public demo data (jaffle-shop, this repo's fixtures, public benchmarks).
+- `structure`: only an allowlist of structure fields (span names, timings, token counts, tool and
+  model names), with anonymous ids.
+
+Evaluation commands (`evals ablate`, `evals board`, `evals dab`, `evals jaffle`) export only with
+`--trace`, and only the first trial of each task. data-eng-bench picks the tier by the task's split
+in `evals/manifest.json`: dev tasks `full`, everything else `structure`. DataAgentBench, which has
+no held-out split, uses `full`; jaffle-shop, which is not in the manifest, uses `structure`.
+
 ## How it works
 
 ![Architecture: a task goes to the main agent; Skills, context tools and a verifier are switchable layers; the database is reached only through data tools and a read-only gateway; the dbt project is the only write path; every run writes an event log](docs/assets/architecture.svg)

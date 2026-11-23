@@ -33,7 +33,8 @@ import os
 import subprocess
 import sys
 import time
-from contextlib import aclosing
+import uuid
+from contextlib import aclosing, nullcontext
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -76,6 +77,7 @@ from data_agent.events import REDACTED, EventLog, known_secrets
 from data_agent.events import mask as mask_event_text
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT, RunConfig, load_config
 from data_agent.sandbox import SKILLS_MOUNT, SandboxRun, docker_lifecycle
+from data_agent.tracing import LangfuseSettings, RunExport, RunFacts
 from evals import spend
 from evals.walk import walk_files
 
@@ -410,13 +412,20 @@ async def run_once(
     run: int,
     env: dict[str, str],
     effort: Effort | None = None,
+    trace: bool = False,
 ) -> tuple[str, str]:
     """One agent session on the query. Returns its answer and how it ended.
 
     Mirrors `data_agent.agent.run` (same options, version header and events) with DAB's task
-    prompt and DAB's tools in place of the DuckDB server.
+    prompt and DAB's tools in place of the DuckDB server. With `trace` and the three Langfuse
+    variables in `env`, the session is exported as `data-agent run` exports one, on the dev tier:
+    DAB has no held-out split, and its trajectories may be read (ADR-0005).
     """
     settings = ModelSettings.from_env(env)
+    langfuse = LangfuseSettings.from_env(env) if trace else None
+    secrets = secrets_of(env)
+    if langfuse is not None:
+        secrets = [*secrets, langfuse.public_key, langfuse.secret_key]
     directory = run_dir(out, dab_query.dataset, dab_query.query_id, run)
     directory.mkdir(parents=True)  # FileExistsError: a finished run's trace is never overwritten
     workspace = directory / "workspace"
@@ -449,24 +458,54 @@ async def run_once(
     final: ResultMessage | None = None
     # The same price-table cap as `data-agent run`; the session's turns follow `budget`.
     cap = spend_cap(settings.model, config.max_budget_usd)
+    exporting = nullcontext() if langfuse is None else RunExport(langfuse, "full", secrets)
+    commit = git_commit()
+    skills = skill_version(config.skills_dir) if config.skill else "none"
     with (
         # Removes the containers of killed runs first, and this run's at its end: the SDK kills
         # the tool server when the session ends, before it could.
         docker_lifecycle(sandbox.run_id),
         tool_ledger(cap, workspace),  # the spend of classify_text's model calls (ticket 70)
-        EventLog(directory / "events.jsonl", secrets=secrets_of(env)) as log,
+        EventLog(directory / "events.jsonl", secrets=secrets) as log,
+        exporting as export,
     ):
+        cli_trace = None
+        if export is not None:
+            # Every DAB run's event file is `events.jsonl`: the run's id names the query and run,
+            # and a random part keeps two experiments' sessions apart.
+            run_id = (
+                f"dab-{dab_query.dataset}-query{dab_query.query_id}-run{run}-{uuid.uuid4().hex[:8]}"
+            )
+            facts = RunFacts(
+                run_id=run_id,
+                session=run_id,
+                task_type=task.type,
+                config=config.name,
+                model=settings.model,
+                skill_version=skills,
+                git_commit=commit,
+                task=dab_query.question,
+            )
+            cli_trace = await asyncio.to_thread(export.start, facts)
         options = replace(
             build_options(
-                task, config, settings, stderr, log.emit, cap, turn_budget=budget, effort=effort
+                task,
+                config,
+                settings,
+                stderr,
+                log.emit,
+                cap,
+                turn_budget=budget,
+                effort=effort,
+                trace=cli_trace,
             ),
             system_prompt=system_prompt(dab_query, config),
             mcp_servers={MCP_SERVER: server},
         )
         log.emit(
             "version",
-            git_commit=git_commit(),
-            skill_version=skill_version(config.skills_dir) if config.skill else "none",
+            git_commit=commit,
+            skill_version=skills,
             config=config.name,
             layers=config.layers(),
             model=settings.model,
@@ -497,37 +536,46 @@ async def run_once(
         log.emit("dab_load", seconds=round(seconds, 1))
         tools: dict[str, str] = {}
         server_up = True
-        try:
-            stream = query(prompt=task_prompt(dab_query, workspace, turns), options=options)
-            async with aclosing(capped(stream, cap)) as messages:
-                async for message in messages:
-                    if isinstance(message, ResultMessage):
-                        final = message
-                        continue
-                    budget.observe(message)
-                    record_message(log, message, tools)
-                    if isinstance(message, SystemMessage) and message.subtype == "init":
-                        # Without DAB's tools the agent can only say the data is unreachable;
-                        # that is an outage, not an answer.
-                        server_status = mcp_status(message.data.get("mcp_servers"))
-                        if server_status != "connected":
-                            server_up = False
-                            log.emit(
-                                "error",
-                                source="mcp",
-                                error=f"DAB tool server {server_status}",
-                                # Relative to the trial directory, as this trace is.
-                                stderr_log=SERVER_STDERR,
-                                stderr_tail=stderr_tail(directory / SERVER_STDERR, secrets_of(env)),
-                            )
-        except Exception as exc:
-            if final is None:
-                log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
-        finally:  # also when the run is interrupted
-            drop_databases(dab_root, dab_query, tool_log, secrets_of(env))
-            mask_dab_logs(directory, secrets_of(env))
+        # The parent span is current while the SDK starts the CLI (`agent.run`).
+        with nullcontext() if export is None else export.active():
+            try:
+                stream = query(prompt=task_prompt(dab_query, workspace, turns), options=options)
+                async with aclosing(capped(stream, cap)) as messages:
+                    async for message in messages:
+                        if isinstance(message, ResultMessage):
+                            final = message
+                            continue
+                        budget.observe(message)
+                        record_message(log, message, tools)
+                        if isinstance(message, SystemMessage) and message.subtype == "init":
+                            # Without DAB's tools the agent can only say the data is unreachable;
+                            # that is an outage, not an answer.
+                            server_status = mcp_status(message.data.get("mcp_servers"))
+                            if server_status != "connected":
+                                server_up = False
+                                log.emit(
+                                    "error",
+                                    source="mcp",
+                                    error=f"DAB tool server {server_status}",
+                                    # Relative to the trial directory, as this trace is.
+                                    stderr_log=SERVER_STDERR,
+                                    stderr_tail=stderr_tail(
+                                        directory / SERVER_STDERR, secrets_of(env)
+                                    ),
+                                )
+            except Exception as exc:
+                if final is None:
+                    log.emit("error", source="sdk", error=str(exc), stderr_tail=stderr[-20:])
+            finally:  # also when the run is interrupted
+                drop_databases(dab_root, dab_query, tool_log, secrets_of(env))
+                mask_dab_logs(directory, secrets_of(env))
         stopped = cap.result_fields() if cap is not None and cap.stopped else None
-        log.emit("result", **(stopped or ended_by_sdk(final, settings.model, cap)))
+        fields = stopped or ended_by_sdk(final, settings.model, cap)
+        if export is not None:
+            answer = (final.result or None) if final is not None and stopped is None else None
+            for kind, values in await asyncio.to_thread(export.finish, fields, answer):
+                log.emit(kind, **values)
+        log.emit("result", **fields)
     if stopped is not None and server_up:
         return "", "unfinished"
     if (
@@ -725,7 +773,11 @@ async def run_query(
             continue
         if budget is not None and spent(out) >= budget * spend.STOP_FRACTION:
             raise BudgetReached(f"spend under {out} reached {spend.STOP_PERCENT} of ${budget}")
-        answer, status = await run_once(dab_root, dab_query, config, out, run, env, effort=effort)
+        # Only the first run of the query is exported (observability spec "覆盖范围").
+        traced = trace and run == 0
+        answer, status = await run_once(
+            dab_root, dab_query, config, out, run, env, effort=effort, trace=traced
+        )
         print(f"{dab_query.dataset} query{dab_query.query_id} run{run}: {status}")
         if status == "infra_error":
             infra_errors += 1
@@ -759,6 +811,12 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     )
     parser.add_argument(
         "--budget", help="stop once billed spend under --out reaches 80%% of this (USD)"
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="with DATA_AGENT_LANGFUSE_* set: export each query's first run to Langfuse "
+        "(the full tier)",
     )
     parser.set_defaults(run=run_cli)
 
@@ -818,6 +876,7 @@ def run_cli(args: argparse.Namespace) -> int:
                     env,
                     budget,
                     effort=args.effort,
+                    trace=args.trace,
                 )
             )
     except BudgetReached as exc:
