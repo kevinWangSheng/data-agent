@@ -72,7 +72,6 @@ from data_agent.tracing import LangfuseSettings, TraceTier
 TICKET_112 = pytest.mark.xfail(
     strict=True, reason="ticket 112: run starts the relay and writes its report"
 )
-TICKET_113 = pytest.mark.xfail(strict=True, reason="ticket 113: the local relay")
 
 TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
 USAGE_PREFIXES = ("gen_ai.usage.", "llm.token_count.")
@@ -134,7 +133,6 @@ def by_span(message: Any) -> dict[bytes, Any]:
 # --- the rules (`rewrite`) ----------------------------------------------------------------------
 
 
-@TICKET_113
 @TIERS
 def test_token_counts_get_the_names_langfuse_reads_and_the_endpoint_attribute_goes(
     tier: TraceTier,
@@ -158,7 +156,6 @@ def test_token_counts_get_the_names_langfuse_reads_and_the_endpoint_attribute_go
         assert "anthropic.custom_base_url" not in new
 
 
-@TICKET_113
 def test_the_dev_tier_keeps_every_attribute_but_the_tokens_names_and_the_secrets() -> None:
     planted = Planted.new()
     body = run_rewrite(planted, "full")
@@ -178,7 +175,6 @@ def test_the_dev_tier_keeps_every_attribute_but_the_tokens_names_and_the_secrets
     assert leaked(planted, body) == []
 
 
-@TICKET_113
 def test_the_held_out_tier_lets_only_the_allowlist_out() -> None:
     planted = Planted.new()
     body = run_rewrite(planted, "structure")
@@ -202,7 +198,6 @@ def test_the_held_out_tier_lets_only_the_allowlist_out() -> None:
     assert leaked(planted, body) == []
 
 
-@TICKET_113
 @TIERS
 def test_both_tiers_keep_the_spans_their_ids_tree_and_times(tier: TraceTier) -> None:
     planted = Planted.new()
@@ -225,7 +220,6 @@ def test_both_tiers_keep_the_spans_their_ids_tree_and_times(tier: TraceTier) -> 
     assert shape(parse_request(run_rewrite(planted, tier))) == before
 
 
-@TICKET_113
 def test_the_held_out_tier_replaces_the_ids_consistently_within_a_run() -> None:
     planted = Planted.new()
     ids = AnonIds()
@@ -292,7 +286,6 @@ def relay_for(
     return TraceRelay(settings, tier, secrets=(), drain_timeout_s=drain_timeout_s)
 
 
-@TICKET_113
 @TIERS
 def test_the_relay_forwards_the_rewritten_request_with_langfuses_headers(
     langfuse: FakeLangfuse, tier: TraceTier
@@ -316,7 +309,6 @@ def test_the_relay_forwards_the_rewritten_request_with_langfuses_headers(
     assert (report.forwarded_spans, report.forwarded_llm_requests, report.errors) == (14, 3, ())
 
 
-@TICKET_113
 def test_the_relay_takes_only_post_v1_traces(langfuse: FakeLangfuse) -> None:
     relay = relay_for(langfuse.settings())
     endpoint = relay.start()
@@ -332,7 +324,6 @@ def test_the_relay_takes_only_post_v1_traces(langfuse: FakeLangfuse) -> None:
     assert report.forwarded_spans == 14
 
 
-@TICKET_113
 @pytest.mark.parametrize(
     ("case", "error"),
     [("status-500", ("http_error", 500)), ("refused", ("connection_error", None))],
@@ -359,7 +350,6 @@ def test_a_failed_forward_is_reported_not_raised(
     assert (report.forwarded_spans, report.forwarded_llm_requests) == (0, 0)
 
 
-@TICKET_113
 def test_an_unparsable_request_is_reported_and_nothing_is_sent(langfuse: FakeLangfuse) -> None:
     relay = relay_for(langfuse.settings())
     post(relay.start(), b"\xff\x00 this is no ExportTraceServiceRequest \xff")
@@ -368,7 +358,6 @@ def test_an_unparsable_request_is_reported_and_nothing_is_sent(langfuse: FakeLan
     assert langfuse.ingested() == []
 
 
-@TICKET_113
 def test_stop_forwards_every_request_already_taken(langfuse: FakeLangfuse) -> None:
     langfuse.delay_s = 1.0
     relay = relay_for(langfuse.settings())
@@ -392,7 +381,6 @@ def test_stop_forwards_every_request_already_taken(langfuse: FakeLangfuse) -> No
     assert report.errors == ()
 
 
-@TICKET_113
 def test_stop_gives_up_on_a_langfuse_that_never_answers(langfuse: FakeLangfuse) -> None:
     langfuse.hang = True
     relay = relay_for(langfuse.settings(), drain_timeout_s=1)
@@ -448,7 +436,6 @@ async def run_with_relay(
 
 
 @TICKET_112
-@TICKET_113
 async def test_the_trace_event_counts_what_langfuse_received(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
@@ -463,7 +450,6 @@ async def test_the_trace_event_counts_what_langfuse_received(
 
 
 @TICKET_112
-@TICKET_113
 async def test_a_langfuse_error_leaves_the_run_to_finish_with_an_error_event(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
