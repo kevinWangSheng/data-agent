@@ -11,6 +11,7 @@ import http.client
 import json
 import urllib.request
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -332,7 +333,7 @@ class RunExport:
         traceparent = f"00-{context.trace_id:032x}-{context.span_id:016x}-01"
         return {"TRACEPARENT": traceparent, "TRACESTATE": ""}
 
-    def active(self) -> Any:
+    def active(self) -> AbstractContextManager[object]:
         """A context manager making the parent span the current one while the SDK starts the
         CLI. An exception passing through is not recorded on the span: its message and stack
         would reach Langfuse past the held-out tier's allowlist."""

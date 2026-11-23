@@ -51,7 +51,7 @@ GATEWAY_BLOCK = "blocked by the read-only gateway"
 RUN_TIMEOUT = 1800
 # The tier of a traced case (`--trace`, ticket 112). jaffle-shop is in no split of
 # evals/manifest.json, so it takes the held-out tier like any task the manifest does not name;
-# the spec also counts it as public demo data, so `full` would do too (left to the human).
+# the spec also counts it as public demo data, so `full` is the other reading.
 TRACE_TIER: TraceTier = "structure"
 DBT_TIMEOUT = 600
 PROFILE = """\

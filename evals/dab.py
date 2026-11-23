@@ -423,7 +423,7 @@ async def run_once(
     """
     settings = ModelSettings.from_env(env)
     langfuse = LangfuseSettings.from_env(env) if trace else None
-    secrets = [*secrets_of(env), *langfuse_keys(env)]
+    secrets = secrets_of(env)
     directory = run_dir(out, dab_query.dataset, dab_query.query_id, run)
     directory.mkdir(parents=True)  # FileExistsError: a finished run's trace is never overwritten
     workspace = directory / "workspace"
@@ -467,6 +467,28 @@ async def run_once(
         EventLog(directory / "events.jsonl", secrets=secrets) as log,
         exporting as export,
     ):
+        log.emit(
+            "version",
+            git_commit=commit,
+            skill_version=skills,
+            config=config.name,
+            layers=config.layers(),
+            model=settings.model,
+            sdk_version=claude_agent_sdk.__version__,
+            cli_version=__cli_version__,
+            # As `data-agent run` (ticket 104): only when given.
+            **({} if effort is None else {"effort": effort}),
+            dab={
+                "commit": dab_commit(dab_root),
+                "dataset": dab_query.dataset,
+                "query": dab_query.query_id,
+                "run": run,
+                "hints": dab_query.hints,
+                "large": is_large(dab_query),
+                "max_turns": turns,
+                "skills": skill_names(dab_query, config) if config.skill else [],
+            },
+        )
         cli_trace = None
         if export is not None:
             # Every DAB run's event file is `events.jsonl`: the run's id names the query and run,
@@ -505,28 +527,6 @@ async def run_once(
         )
         if export is not None:
             options = replace(options, env=options.env | export.context_env())
-        log.emit(
-            "version",
-            git_commit=commit,
-            skill_version=skills,
-            config=config.name,
-            layers=config.layers(),
-            model=settings.model,
-            sdk_version=claude_agent_sdk.__version__,
-            cli_version=__cli_version__,
-            # As `data-agent run` (ticket 104): only when given.
-            **({} if effort is None else {"effort": effort}),
-            dab={
-                "commit": dab_commit(dab_root),
-                "dataset": dab_query.dataset,
-                "query": dab_query.query_id,
-                "run": run,
-                "hints": dab_query.hints,
-                "large": is_large(dab_query),
-                "max_turns": turns,
-                "skills": skill_names(dab_query, config) if config.skill else [],
-            },
-        )
         try:
             seconds = load_databases(dab_root, dab_query, tool_log, secrets_of(env))
         except Exception as exc:
@@ -604,6 +604,8 @@ def secrets_of(env: dict[str, str]) -> list[str]:
     if host := urlsplit(env.get("MONGO_URI", "")).hostname:
         values.append(host)
     values = [v for v in values if v and v not in LOOPBACK]
+    # The Langfuse keys too: a shell may hold them, traced or not (ticket 112).
+    values += langfuse_keys(env)
     return sorted(set(known_secrets(env)) | set(values), key=len, reverse=True)
 
 
