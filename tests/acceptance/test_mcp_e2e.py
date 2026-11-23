@@ -53,9 +53,6 @@ from seam_support import DATA_AGENT, build_shop_duckdb, duckdb_rows
 
 pytestmark = pytest.mark.integration
 
-TICKET_116 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 116: external MCP is not wired yet"
-)
 
 MCP_IMAGE = "mongodb/mongodb-mcp-server:3.3.0"
 MONGO_IMAGE = "mongo:8.0"
@@ -256,7 +253,6 @@ def expected_join_answer(db: Path) -> tuple[str, Decimal]:
     return top, total
 
 
-@TICKET_116
 def test_a_question_across_mongodb_and_duckdb_is_answered_with_the_external_tools(
     tmp_path: Path, mongo: Mongo
 ) -> None:
@@ -272,7 +268,6 @@ def test_a_question_across_mongodb_and_duckdb_is_answered_with_the_external_tool
     assert customer in proc.stdout
 
 
-@TICKET_116
 def test_a_write_the_allow_list_leaves_out_is_refused_and_the_collection_is_unchanged(
     tmp_path: Path, mongo: Mongo
 ) -> None:

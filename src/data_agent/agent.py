@@ -57,6 +57,7 @@ from data_agent import verifier_v2
 from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.dbt_execute import DbtExecuteError, DbtRun, Target, check_outside
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
+from data_agent.external_mcp import ExternalServers
 from data_agent.gateway import (
     BLOCKED_PREFIX,
     TIMEOUT_SECONDS,
@@ -1529,6 +1530,7 @@ def build_options(
     dbt: DbtRun | None = None,
     effort: Effort | None = None,
     trace: CliTrace | None = None,
+    external_mcp: ExternalServers | None = None,
 ) -> ClaudeAgentOptions:
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the workspace guard denies (`guard_recorder`). With `spend` (the
@@ -1554,7 +1556,9 @@ def build_options(
     `network` (ticket 98) loads WebSearch and WebFetch; without it, as on every evaluation, they
     are denied. Bash is denied on every run (ADR-0010). With the docker backend the Skills name
     their scripts as the container sees them (`SKILLS_MOUNT`). `effort` (ticket 104) is the
-    session's reasoning effort; None leaves it to the CLI (`EFFORTS`), as before."""
+    session's reasoning effort; None leaves it to the CLI (`EFFORTS`), as before.
+    `external_mcp` (ticket 116, `data-agent run --mcp-servers`) adds the user's servers and the
+    tools their allow lists name; without it, as on every evaluation, the session has only ours."""
     if task.type == "dbt":
         max_turns, budget = config.max_turns["dbt"], None
     else:
@@ -1629,10 +1633,15 @@ def build_options(
         server_env |= settings.tool_env() | {LEDGER_ENV: str(spend.ledger.directory)}
     session_env = {} if turn is None else {"CLAUDE_CONFIG_DIR": str(turn.config_dir)}
     effort_env = {} if effort is None else {EFFORT_ENV: effort}
+    # The variables the stdio wrapper reads (`external_mcp.launch`); first, so none can override
+    # a setting below.
+    external_env = {} if external_mcp is None else external_mcp.env()
+    external_servers = {} if external_mcp is None else external_mcp.sdk_servers()
+    external_tools = [] if external_mcp is None else external_mcp.allowed_tools()
     return ClaudeAgentOptions(
         model=settings.model,
         effort=effort,
-        env=settings.sdk_env() | server_env | session_env | effort_env,
+        env=external_env | settings.sdk_env() | server_env | session_env | effort_env,
         resume=None if turn is None else turn.resume,
         system_prompt=system_prompt(
             task,
@@ -1642,13 +1651,13 @@ def build_options(
         ),
         cwd=str(task.workspace.resolve()),
         tools=tools,
-        allowed_tools=[*tools, f"mcp__{MCP_SERVER}"],
+        allowed_tools=[*tools, f"mcp__{MCP_SERVER}", *external_tools],
         disallowed_tools=denied,
         # Anything not allowed above is denied rather than prompted for.
         permission_mode="dontAsk",
         hooks=all_hooks,
         agents=agents,
-        mcp_servers={MCP_SERVER: server},
+        mcp_servers={MCP_SERVER: server, **external_servers},
         strict_mcp_config=True,
         # ADR-0001: user settings only, never this repo's .claude/; Skills come from the prompt.
         setting_sources=["user"],
@@ -2072,6 +2081,7 @@ async def run(
     dbt_target: Target = "task",
     effort: Effort | None = None,
     trace_tier: TraceTier = "full",
+    external_mcp: ExternalServers | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
@@ -2084,7 +2094,9 @@ async def run(
     agent the web tools (`build_options`) and the docker sandbox the network. A dbt run with
     `sandbox` also gets dbt_execute, writing to `dbt_target` (`DbtRun.of_run`: `scratch` keeps
     its profile in `<events_dir>/profiles/`, which must be outside the workspace). `effort`
-    (ticket 104) is the session's reasoning effort, recorded in the `version` event when given."""
+    (ticket 104) is the session's reasoning effort, recorded in the `version` event when given.
+    `external_mcp` (ticket 116) mounts the user's MCP servers (`build_options`); the `version`
+    event names them and their allow lists, and the event log masks the values they expand."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -2131,6 +2143,8 @@ async def run(
     for variable in task.postgres_envs:
         secrets += url_secrets(env[variable])
         names += url_names(env[variable])
+    if external_mcp is not None:
+        secrets += external_mcp.secrets()
     verified = uses_verifiers(task.type, config)
     sandbox_run = None if sandbox is None else SandboxRun.of_run(sandbox, events_dir, network)
     dbt_run = (
@@ -2170,6 +2184,8 @@ async def run(
             cli_version=__cli_version__,
             # Only when given: a run without it records what it did before ticket 104.
             **({} if effort is None else {"effort": effort}),
+            # Likewise only with --mcp-servers (ticket 116): names and allow lists, no values.
+            **({} if external_mcp is None else {"external_mcp_servers": external_mcp.summary()}),
         )
         conversation = (
             {} if turn is None else {"conversation": turn.conversation, "turn": turn.number}
@@ -2227,6 +2243,7 @@ async def run(
                 network=network,
                 dbt=dbt_run,
                 effort=effort,
+                external_mcp=external_mcp,
             )
             open_calls: dict[str, str] = {}
             session_id: str | None = None

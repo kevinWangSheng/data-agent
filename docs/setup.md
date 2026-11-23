@@ -108,6 +108,84 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
 `make test-integration` 只在本机手动跑（CI 和服务器都不跑）。其中的 Postgres 用例（`tests/test_postgres.py`、`tests/test_eval_jaffle.py`、`tests/test_db_facts.py`、`tests/test_verifier_v2_tools.py` 和接缝 B 的 Postgres 变体，2026-11 共 32 个）要环境变量 `DATA_AGENT_TEST_POSTGRES_URL` 指向一个本机临时库，没设就失败。要跑时用 colima 起一个临时容器：`postgres:17`，只绑 127.0.0.1，随机密码，跑完删容器；每个 worktree 用自己的库名或端口。
 
+## 外部 MCP server（工单 116）
+
+用法、校验规则和风险见 README 的 "External MCP servers"。配置文件放在仓库外，示例里只写 `${DATA_AGENT_MCP_*}` 引用，不写任何真实值。变量的值写进 `~/.config/data-agent/env`，运行前加载：`set -a && . ~/.config/data-agent/env && set +a`。
+
+### MongoDB（stdio，本机 docker）
+
+1. `colima start`，然后 `docker info` 能通。MongoDB MCP 的镜像钉在 `mongodb/mongodb-mcp-server:3.3.0`，用 `docker pull mongodb/mongodb-mcp-server:3.3.0` 预先拉好，这样第一次运行不用等下载。
+2. 演示库：起一个只挂在自建 docker 网络上的 mongo 容器，再把 `tests/fixtures/mcp/support_tickets.json` 导进 `support.tickets`：
+
+   ```bash
+   docker network create da-mcp-demo
+   docker run -d --rm --name da-mcp-mongo --network da-mcp-demo mongo:8.0
+   docker exec da-mcp-mongo mongosh --quiet support --eval "db.tickets.insertMany($(cat tests/fixtures/mcp/support_tickets.json))"
+   ```
+
+3. 连接串写进 env 文件：`DATA_AGENT_MCP_MONGO_URL=mongodb://da-mcp-mongo:27017/support`。MCP server 也跑在 `da-mcp-demo` 网络上，所以按容器名就能连到 mongo。
+4. 配置（例如 `~/.config/data-agent/mcp-mongo.json`）：
+
+   ```json
+   {
+     "mcpServers": {
+       "mongo": {
+         "type": "stdio",
+         "command": "docker",
+         "args": ["run", "--rm", "-i", "--network", "da-mcp-demo",
+                  "-e", "MDB_MCP_CONNECTION_STRING", "-e", "MDB_MCP_READ_ONLY", "-e", "MDB_MCP_TELEMETRY",
+                  "mongodb/mongodb-mcp-server:3.3.0"],
+         "env": {
+           "MDB_MCP_CONNECTION_STRING": "${DATA_AGENT_MCP_MONGO_URL}",
+           "MDB_MCP_READ_ONLY": "true",
+           "MDB_MCP_TELEMETRY": "disabled"
+         },
+         "allowedTools": ["find", "aggregate", "count", "list-collections", "collection-schema", "list-connections"]
+       }
+     }
+   }
+   ```
+
+   - `MDB_MCP_READ_ONLY=true` 时只注册 18 个只读工具；设成 `false` 会多出 `insert-many` 等写入工具。
+   - 3.3.0 的查询工具要传 `connectionId`，所以清单里要有 `list-connections`。
+   - 这个 server 默认发遥测，`MDB_MCP_TELEMETRY=disabled` 把它关掉。
+   - 以上三条都在工单 115 用 MCP 客户端实测过。
+   - 用 `DOCKER_HOST` 找 daemon 的机器，要在 `env` 里加 `"DOCKER_HOST": "..."`，因为包装命令不带这个变量。colima 靠 `~/.docker` 下的 context 找 daemon，不需要它。
+5. 运行：`uv run data-agent run --type query --config full --duckdb shop.duckdb --workspace work --events-dir events --mcp-servers ~/.config/data-agent/mcp-mongo.json --task "..."`。
+6. 用完清理：`docker rm -f da-mcp-mongo && docker network rm da-mcp-demo`。
+
+### GitHub（http，只读）
+
+1. 在 GitHub 上建一个只读的 fine-grained personal access token，权限只给公开仓库的读取。把它写进 env 文件：`DATA_AGENT_MCP_GITHUB_TOKEN=...`。
+2. 配置（例如 `~/.config/data-agent/mcp-github.json`）：
+
+   ```json
+   {
+     "mcpServers": {
+       "github": {
+         "type": "http",
+         "url": "https://api.githubcopilot.com/mcp/readonly",
+         "headers": {"Authorization": "Bearer ${DATA_AGENT_MCP_GITHUB_TOKEN}"},
+         "allowedTools": ["*"]
+       }
+     }
+   }
+   ```
+
+   依据是 GitHub 官方文档（2026-11-23 访问）：
+   - [`docs/remote-server.md`](https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md)：远程地址是 `https://api.githubcopilot.com/mcp/`，"Add `/readonly` to the end of any URL to restrict the tools in the toolset to only those that enable read access"。也可以改用请求头 `X-MCP-Readonly`、`X-MCP-Toolsets`（例如 `"issues"`）。
+   - [README](https://github.com/github/github-mcp-server) 的 "Using a GitHub PAT"：PAT 用请求头 `"Authorization": "Bearer <PAT>"` 传。
+
+   用 `/readonly` 端点时 `["*"]` 也只包括读工具。要更窄，就列出具体工具名（官方示例里有 `issue_read`、`get_file_contents`）。完整工具清单本工单没有核实（未确认）。
+3. 运行示例：`uv run data-agent run --type query --config full --duckdb shop.duckdb --workspace work --events-dir events --mcp-servers ~/.config/data-agent/mcp-github.json --task "..."`。
+
+### 已知限制
+
+- 写入类工具没有调用前确认：列进清单就能直接调用。
+- stdio server 跑在宿主机上，不在沙箱里，网络也不受 `--network` 控制。
+- 外部工具的入参和输出会进事件文件；打开 trace 导出时还会进用户自己的 Langfuse。
+- 凭据进 argv：SDK 0.2.168 把 `mcp_servers` 整个序列化成 CLI 的 `--mcp-config` 参数，所以 http server 展开后的请求头在 CLI 的命令行里，本机能列进程的用户看得到。stdio server 的值不在 argv 里：它们经 CLI 的环境传给包装命令，包装再从配置文件读出自己的 `env`。
+
 ## 以后才要
 
 | # | 资源 | 用于 |
