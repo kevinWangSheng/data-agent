@@ -343,6 +343,11 @@
   - 110 在 dbt 上初筛（71a5bcc，no-verifiers，开发集轨迹最长的 3 题 × 3，`evals board`，实付 $1.68，含冒烟和一次镜像构建竞争的重跑）：5/9，b7c6071 是 6/9，都在波动内；9 次都 completed，单价持平。b7c6071 的 270 次没有一次被拦，新跑的平均请求不到 74k，远低于 367k 压缩点，所以 110 在 dbt 上不起作用；压缩是否发生未确认（transcript 在容器里）。写进报告 Limitations。
 - 2026-11-23 核对剩余事项（人定）：旧 release `dab-submission-2026-11-15` 保留不删（#144、README、报告都不引用它）；本机集成测试缺 Postgres 不算待办（集成测试设计为本机手动跑，要跑时起临时库，见 `docs/setup.md`）；对话页面 e2e 澄清用例偶发失败只记限制。还没做、待人定的：录视频（第 23 项，24 已完成）、博客（可选）、报告和 README 中文版、求职材料，见 `HANDOFF.md`"下一步"。
 - 2026-11-23 根目录 `.playwright-mcp/`（浏览器工具的调试日志、页面快照和截图，未跟踪）已删，加进 `.gitignore`（人定）。
+- 2026-11-23 项目终点讨论（人定）：不再分一期二期，要做的内容统一排序。
+  - 做：可观测性（Langfuse，spec `.scratch/observability/spec.md`，工单 111–114）→ 通用 MCP 接入 → 答案图表 → 小范围自动改写 Skill → LiveSQLBench（接入后全量要人批）。前三项可并行，改 agent 行为的做完再跑大评测。
+  - 放后面：Memory（以后讨论接哪个第三方组件，不自研）；视频、博客、中文版、求职材料最后做。
+  - 不做：澄清层消融、平台类（登录多用户、公网部署、中文界面等）、CRUD、micro-VM、C 区补跑（第二个模型可再单独讨论）。
+  - 取证：`docs/research/2026-11-23-*.md`（observability、otel-spike、langfuse-usage-mapping、sdk-upgrade-0.2.187、external-mcp、livesqlbench）。
 
 关键路径：1 → 7 → 11 → 13 → 13b → 15 → 16 → 17 → 19 / 20。界面这条线（5 → 10）不花模型钱，可以和评测并行。
 
