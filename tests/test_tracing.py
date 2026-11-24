@@ -172,10 +172,13 @@ def test_the_dev_tier_parent_carries_the_task_and_answer_masked() -> None:
     assert start["langfuse.observation.input"] == "How many customers? key [REDACTED]"
     assert end["langfuse.observation.output"] == "42, says [REDACTED]"
     assert start["langfuse.session.id"] == FACTS.session
-    assert json.loads(str(end["langfuse.observation.usage_details"])) == {
-        "input": 5,
-        "cache_read": 5,
-        "output": 7,
+    # The GENERATIONs carry the tokens; the parent only the run's total, as metadata, so
+    # Langfuse's token sum counts each once (ticket 121).
+    assert "langfuse.observation.usage_details" not in end
+    assert json.loads(str(end["langfuse.observation.metadata.usage_total"])) == {
+        "uncached_input_tokens": 5,
+        "cached_input_tokens": 5,
+        "output_tokens": 7,
     }
     assert json.loads(str(end["langfuse.observation.cost_details"])) == {"total": 0.25}
 
@@ -191,7 +194,10 @@ def test_the_held_out_tier_parent_holds_only_the_spec_list() -> None:
         "config",
         "model",
     }
-    assert set(end) == {"langfuse.observation.usage_details", "langfuse.observation.cost_details"}
+    assert set(end) == {
+        "langfuse.observation.metadata.usage_total",
+        "langfuse.observation.cost_details",
+    }
 
 
 def test_a_conversation_turn_names_its_conversation_on_the_dev_tier() -> None:
@@ -456,6 +462,7 @@ class Scripted:
 
     options: list[Any] = field(default_factory=list)
     error: BaseException | None = None
+    messages: list[Any] = field(default_factory=list)
 
     async def __call__(self, *, prompt: str, options: Any, **_: Any) -> Any:
         from claude_agent_sdk import ResultMessage
@@ -464,6 +471,8 @@ class Scripted:
         self.options.append(options)
         if self.error is not None:
             raise self.error
+        for message in self.messages:
+            yield message
         yield ResultMessage(
             subtype="success",
             duration_ms=1,
@@ -478,7 +487,11 @@ class Scripted:
 
 
 async def traced_run(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, relay: Any = None
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    relay: Any = None,
+    messages: list[Any] | None = None,
+    tier: tracing.TraceTier = "full",
 ) -> tuple[Any, list[dict[str, Any]], Scripted, Any]:
     """`agent.run` with the export on: the relay a stand-in, the parent span in memory."""
     import duckdb
@@ -489,7 +502,7 @@ async def traced_run(
     from data_agent.run_config import load_config
 
     exporter = InMemorySpanExporter()
-    session = Scripted()
+    session = Scripted(messages=messages or [])
     monkeypatch.setattr(agent, "query", session)
     monkeypatch.setattr(trace_relay, "TraceRelay", relay or StandInRelay)
     monkeypatch.setattr(tracing, "parent_exporter", lambda _: exporter)
@@ -500,9 +513,128 @@ async def traced_run(
     env = {"DATA_AGENT_API_KEY": "sk-test"} | dict(
         zip(tracing.LANGFUSE_ENV, ("pk-lf-1", "sk-lf-1", "http://127.0.0.1:9"), strict=True)
     )
-    outcome = await agent.run(task, load_config("no-context"), tmp_path / "events", env)
+    outcome = await agent.run(
+        task, load_config("no-context"), tmp_path / "events", env, trace_tier=tier
+    )
     events = [json.loads(line) for line in outcome.events_path.read_text().splitlines()]
     return outcome, events, session, exporter
+
+
+# --- the run's own content on the dev tier (ticket 121) -----------------------------------------
+
+
+def conversation() -> list[Any]:
+    """A run's messages: the agent's text and a query whose SQL holds the run's model key
+    (`traced_run`'s `sk-test`), a verifier's text, thinking, and the agent's answer."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ThinkingBlock, ToolUseBlock
+
+    from data_agent.agent import QUERY_TOOL
+
+    return [
+        AssistantMessage(
+            content=[
+                TextBlock(text="Counting the customers."),
+                ToolUseBlock(
+                    id="toolu_q1",
+                    name=QUERY_TOOL,
+                    input={"sql": "SELECT count(*) FROM customers WHERE note = 'sk-test'"},
+                ),
+            ],
+            model="m",
+        ),
+        AssistantMessage(
+            content=[TextBlock(text="The count checks out.")],
+            model="m",
+            parent_tool_use_id="toolu_v1",
+        ),
+        AssistantMessage(
+            content=[
+                ThinkingBlock(thinking="private reasoning", signature="sig"),
+                TextBlock(text="There are 42."),
+            ],
+            model="m",
+        ),
+    ]
+
+
+MASKED_INPUT = {"sql": "SELECT count(*) FROM customers WHERE note = '[REDACTED]'"}
+
+
+class ClaimingRelay(StandInRelay):
+    """A relay the CLI's `claude_code.tool` span reached after the `tool_start` event: it claims
+    the call's input when it stops, as `_rewrite_message` would on the span's batch."""
+
+    tool_inputs: trace_relay.ToolInputs | None = None
+    claimed: str | None = None
+
+    def stop(self) -> RelayReport:
+        assert self.tool_inputs is not None
+        self.claimed = self.tool_inputs.claim("toolu_q1")
+        return super().stop()
+
+
+def children(exporter: Any) -> list[Any]:
+    spans = exporter.get_finished_spans()
+    [run] = [s for s in spans if s.name == "data-agent.run"]
+    found = [s for s in spans if s is not run]
+    assert all(s.parent.span_id == run.context.span_id for s in found)
+    assert all(s.context.trace_id == run.context.trace_id for s in found)
+    return sorted(found, key=lambda s: (s.start_time, s.attributes["sequence"]))
+
+
+async def test_the_dev_tier_has_each_assistant_text_in_order_under_the_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    built: list[ClaimingRelay] = []
+
+    def relay(*args: Any) -> ClaimingRelay:
+        built.append(ClaimingRelay(*args))
+        return built[-1]
+
+    outcome, events, _, exporter = await traced_run(monkeypatch, tmp_path, relay, conversation())
+    assert outcome.finished
+    texts = [s for s in children(exporter) if s.name == "assistant.message"]
+    assert [s.attributes["langfuse.observation.output"] for s in texts] == [
+        "Counting the customers.",
+        "The count checks out.",
+        "There are 42.",
+    ]
+    assert [s.attributes.get("parent") for s in texts] == [None, "toolu_v1", None]
+    assert b"private reasoning" not in json.dumps([dict(s.attributes) for s in texts]).encode()
+    # The `text` events name their subagent, as `tool_start` does.
+    assert [e.get("parent") for e in events if e["type"] == "text"] == [None, "toolu_v1", None]
+    # The span that came after the event took the input: no observation of its own.
+    [claiming] = built
+    assert claiming.claimed is not None and json.loads(claiming.claimed) == MASKED_INPUT
+    assert not [s for s in children(exporter) if s.name == "tool.input"]
+
+
+async def test_a_tool_input_no_span_took_is_an_observation_of_its_own(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The CLI's span reached the relay before the `tool_start` event (or never did): `finish`
+    sends the input as `tool.input` with the call's `tool_use_id`."""
+    _, _, _, exporter = await traced_run(monkeypatch, tmp_path, messages=conversation())
+    [observed] = [s for s in children(exporter) if s.name == "tool.input"]
+    assert observed.attributes["tool_use_id"] == "toolu_q1"
+    assert json.loads(observed.attributes["langfuse.observation.input"]) == MASKED_INPUT
+
+
+async def test_the_held_out_tier_sends_no_input_and_no_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    built: list[StandInRelay] = []
+
+    def relay(*args: Any) -> StandInRelay:
+        built.append(StandInRelay(*args))
+        return built[-1]
+
+    _, _, _, exporter = await traced_run(
+        monkeypatch, tmp_path, relay, conversation(), tier="structure"
+    )
+    assert [s.name for s in exporter.get_finished_spans()] == ["data-agent.run"]
+    [held_out] = built
+    assert getattr(held_out, "tool_inputs", None) is None
 
 
 async def test_the_cli_gets_the_parent_span_whatever_the_processs_propagators(

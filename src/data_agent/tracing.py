@@ -9,20 +9,21 @@ export: with the export off, a run imports none of the SDK or its exporter.
 import base64
 import http.client
 import json
+import time
 import urllib.request
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
-from data_agent.events import mask
+from data_agent.events import REDACTED, mask
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan, Span, TracerProvider
     from opentelemetry.sdk.trace.export import SpanExporter
 
-    from data_agent.trace_relay import ExportError, RelayReport, TraceRelay
+    from data_agent.trace_relay import ExportError, RelayReport, ToolInputs, TraceRelay
 
 # The two tiers (spec "覆盖范围"): `full`, the dev tier, records everything but credentials and the
 # model endpoint; `structure`, the held-out tier, lets only allowlisted structure through.
@@ -160,8 +161,8 @@ class ParentExporter:
             session=Session(),
         )
 
-    def send(self, span: "ReadableSpan") -> "ExportError | None":
-        """Exports `span`; what went wrong, as the relay reports a batch: `http_error` when the
+    def send(self, spans: Sequence["ReadableSpan"]) -> "ExportError | None":
+        """Exports `spans`; what went wrong, as the relay reports a batch: `http_error` when the
         last attempt's answer was not 2xx (a 3xx too: the exporter counts it as success but
         follows no redirect, so the span never arrived), `connection_error` when it got no
         answer. Every other failure without an answer (the exporter refusing to encode or
@@ -171,7 +172,7 @@ class ParentExporter:
         from data_agent.trace_relay import ExportError
 
         self.last_status = None
-        sent = self._otlp.export([span]) is SpanExportResult.SUCCESS
+        sent = self._otlp.export(spans) is SpanExportResult.SUCCESS
         status = self.last_status
         if status is not None and not 200 <= status < 300:
             return ExportError("http_error", status)
@@ -211,6 +212,34 @@ def trace_url(settings: LangfuseSettings, trace_id: str, project: str | None) ->
 
 
 type Attributes = dict[str, str | int | float | Sequence[str]]
+
+# The run's token total on the parent span: metadata, not `langfuse.observation.usage_details`,
+# which Langfuse would add to the CLI's GENERATIONs' own and count every token twice (human,
+# 2026-11-23, ticket 121). The keys are the `result` event's.
+USAGE_TOTAL = "langfuse.observation.metadata.usage_total"
+USAGE_TOTAL_KEYS = ("uncached_input_tokens", "cached_input_tokens", "output_tokens")
+# The dev tier's observations from the run's own events, under the parent span (ticket 121):
+# each of the model's texts, and a tool call's input no CLI span took (`RunExport._children`).
+TEXT_SPAN = "assistant.message"
+INPUT_SPAN = "tool.input"
+
+
+class Emitter(Protocol):
+    """What takes a run's events: `events.EventLog`, or one `RunExport.observing` wraps."""
+
+    def emit(self, type: str, **fields: Any) -> None: ...
+
+
+class ObservedLog:
+    """`log`, whose every event `export` also observes, after it is written."""
+
+    def __init__(self, log: Emitter, export: "RunExport") -> None:
+        self._log = log
+        self._export = export
+
+    def emit(self, type: str, **fields: Any) -> None:
+        self._log.emit(type, **fields)
+        self._export.observe(type, fields)
 
 
 @dataclass(frozen=True)
@@ -270,15 +299,12 @@ def parent_attributes(tier: TraceTier, facts: RunFacts, masks: Masks) -> Attribu
 def result_attributes(
     tier: TraceTier, result: Mapping[str, Any], answer: str | None, masks: Masks
 ) -> Attributes:
-    """The parent span's attributes at the end: the `result` event's tokens and `cost_usd`, the
-    report's own figures (no cost when the result has none). The dev tier also gets the run's
-    answer, the one place the model's answer reaches Langfuse (`CONTENT_SWITCHES`)."""
-    usage = {
-        "input": int(result.get("uncached_input_tokens") or 0),
-        "cache_read": int(result.get("cached_input_tokens") or 0),
-        "output": int(result.get("output_tokens") or 0),
-    }
-    attributes: Attributes = {"langfuse.observation.usage_details": json.dumps(usage)}
+    """The parent span's attributes at the end: the `result` event's `cost_usd`, the report's own
+    figure (no cost when the result has none), and its token counts as metadata (`USAGE_TOTAL`).
+    The dev tier also gets the run's answer, the final one of the model's messages
+    (`assistant_messages` holds them all)."""
+    usage = {key: int(result.get(key) or 0) for key in USAGE_TOTAL_KEYS}
+    attributes: Attributes = {USAGE_TOTAL: json.dumps(usage)}
     cost = result.get("cost_usd")
     if cost is not None:
         attributes["langfuse.observation.cost_details"] = json.dumps({"total": float(cost)})
@@ -320,6 +346,12 @@ class RunExport:
         self._exporter: SpanExporter | ParentExporter | None = None
         self._span: Span | None = None
         self._project: str | None = None
+        # The dev tier's content from the run's own events (`observe`): the tool calls' inputs,
+        # which the relay puts on the CLI's tool spans, and the model's texts, `(time_ns,
+        # sequence, text, parent)`, which `finish` sends under the parent span.
+        self._inputs: ToolInputs | None = None
+        self._texts: list[tuple[int, int, str, str | None]] = []
+        self._sequence = 0
 
     def __enter__(self) -> "RunExport":
         return self
@@ -352,6 +384,9 @@ class RunExport:
         from data_agent import trace_relay
 
         self.relay = trace_relay.TraceRelay(self.settings, self.tier, self.secrets)
+        if self.tier == "full":
+            self._inputs = trace_relay.ToolInputs()
+            self.relay.tool_inputs = self._inputs
         endpoint = self.relay.start()
         # Given outright, so no OTEL_* variable of the process changes the resource or sampling.
         # No span processor: `_end_span` exports the parent span itself, to see the result (a
@@ -392,6 +427,51 @@ class RunExport:
             self._span, end_on_exit=False, record_exception=False, set_status_on_exception=False
         )
 
+    def observing(self, log: "Emitter") -> "Emitter":
+        """`log`, with each event also given to `observe` on the dev tier; `log` itself on the
+        held-out tier, which sends none of the content."""
+        return log if self.tier == "structure" else ObservedLog(log, self)
+
+    def observe(self, kind: str, fields: Mapping[str, Any]) -> None:
+        """One of the run's events, on the dev tier (ticket 121): a `tool_start`'s input goes to
+        the relay for the call's `claude_code.tool` span, a `text` to `finish`'s
+        `assistant.message` observations; both masked here (`Masks` and the relay's secret
+        shapes), the input as JSON. `thinking` is left out. Never raises: a failure goes to
+        `failure` and leaves the run alone."""
+        if self.tier != "full" or self._span is None or not self._span.is_recording():
+            return
+        try:
+            self._observe(kind, fields)
+        except Exception as exc:
+            self._failed(exc)
+
+    def _observe(self, kind: str, fields: Mapping[str, Any]) -> None:
+        now = time.time_ns()
+        if kind == "tool_start" and self._inputs is not None:
+            call = fields.get("tool_use_id")
+            if isinstance(call, str):
+                text = json.dumps(self._clean(fields.get("input")), ensure_ascii=False)
+                self._inputs.put(call, text, now)
+        elif kind == "text":
+            parent = fields.get("parent")
+            self._sequence += 1
+            text = self._clean(str(fields.get("text") or ""))
+            self._texts.append((now, self._sequence, text, parent if parent else None))
+
+    def _clean(self, value: Any) -> Any:
+        """`value` with every string masked, leaf by leaf, before any JSON escapes a secret."""
+        from data_agent.trace_relay import SECRET_SHAPE
+
+        if isinstance(value, str):
+            return SECRET_SHAPE.sub(REDACTED, self.masks(value))
+        if isinstance(value, Mapping):
+            return {str(k): self._clean(v) for k, v in cast(Mapping[Any, Any], value).items()}
+        if isinstance(value, list | tuple):
+            return [self._clean(item) for item in cast(Sequence[Any], value)]
+        if value is None or isinstance(value, bool | int | float):
+            return value
+        return self._clean(str(value))
+
     def finish(
         self, result: Mapping[str, Any], answer: str | None
     ) -> list[tuple[str, dict[str, Any]]]:
@@ -411,9 +491,10 @@ class RunExport:
     ) -> list[tuple[str, dict[str, Any]]]:
         assert self._span is not None, "RunExport.start comes first"
         report = self._stop_relay()
+        children = self._children()
         self._span.set_attributes(result_attributes(self.tier, result, answer, self.masks))
         trace_id = format(self._span.get_span_context().trace_id, "032x")
-        parent_error = self._end_span()
+        parent_error = self._end_span(children)
         self._shutdown()
         errors = [*report.errors, *([parent_error] if parent_error else [])]
         events: list[tuple[str, dict[str, Any]]] = [
@@ -432,6 +513,39 @@ class RunExport:
             )
         )
         return events
+
+    def _children(self) -> list["ReadableSpan"]:
+        """The dev tier's observations under the parent span, ended at their events' times: one
+        `assistant.message` per text (a verifier's names its `parent`), and one `tool.input` per
+        input no CLI span took (the span reached the relay before the event did, or never), with
+        the call's `tool_use_id`. Each has a `sequence`, the events' order, should two share a
+        time. The relay has stopped, so nothing claims an input any more."""
+        from opentelemetry import trace
+
+        assert self._span is not None and self._provider is not None
+        tracer = self._provider.get_tracer("data_agent")
+        context = trace.set_span_in_context(self._span)
+        unclaimed = [] if self._inputs is None else self._inputs.unclaimed()
+        planned: list[tuple[int, str, Attributes]] = []
+        for at, sequence, text, parent in self._texts:
+            attributes: Attributes = {"langfuse.observation.output": text, "sequence": sequence}
+            if parent is not None:
+                attributes["parent"] = parent
+            planned.append((at, TEXT_SPAN, attributes))
+        for call, text, at in unclaimed:
+            self._sequence += 1
+            attributes = {
+                "tool_use_id": call,
+                "langfuse.observation.input": text,
+                "sequence": self._sequence,
+            }
+            planned.append((at, INPUT_SPAN, attributes))
+        children: list[ReadableSpan] = []
+        for at, name, attributes in planned:
+            span = tracer.start_span(name, context=context, attributes=attributes, start_time=at)
+            span.end(end_time=at)
+            children.append(cast("ReadableSpan", span))
+        return children
 
     def _failed(self, exc: Exception) -> None:
         if self.failure is None:
@@ -454,9 +568,9 @@ class RunExport:
             except Exception as exc:
                 self._failed(exc)
 
-    def _end_span(self) -> "ExportError | None":
-        """Ends the parent span and sends it, once; what went wrong (`ParentExporter.send`). A
-        test's stand-in exporter says only success or failure."""
+    def _end_span(self, children: Sequence["ReadableSpan"] = ()) -> "ExportError | None":
+        """Ends the parent span and sends it with `children`, once; what went wrong
+        (`ParentExporter.send`). A test's stand-in exporter says only success or failure."""
         from opentelemetry.sdk.trace.export import SpanExportResult
 
         from data_agent.trace_relay import ExportError
@@ -466,9 +580,10 @@ class RunExport:
         self._span.end()
         exporter = self._exporter
         assert exporter is not None, "the exporter comes with the span"
+        spans = [*children, cast("ReadableSpan", self._span)]
         if isinstance(exporter, ParentExporter):
-            return exporter.send(self._span)
-        if exporter.export([self._span]) is SpanExportResult.SUCCESS:
+            return exporter.send(spans)
+        if exporter.export(spans) is SpanExportResult.SUCCESS:
             return None
         return ExportError("connection_error", None)
 
