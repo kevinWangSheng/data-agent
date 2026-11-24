@@ -1,6 +1,6 @@
 # 131 — IM 入口：公共部分（接口、会话映射、澄清、进度、取消、排版、权限、配置、出错）、Slack 实现、`--im`、文档
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 130（done）
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-24
@@ -278,3 +278,5 @@ Branch: worktree-131-im-common-and-slack
    - bot token 错时 `auth.test` 失败、不重试，要重启服务；app token 错时 slack_sdk 每 10 秒重试一次。
 
 - 2026-11-24（主会话）item 6 的做法（各适配器持有自己平台的条目，写盘时在模块级锁下重读、保留其他平台条目再整体替换）接受：达到"不让各平台整份覆盖彼此"，有测试；构造函数签名由人审过的契约定，取不到共用对象。
+
+- 2026-11-24（主会话）退回第 1 轮：原因——PR #136 上 Codex GitHub app 的 P2 属实（主会话对照 `5013c61` 核实）：在线程里打字回答澄清时（`src/data_agent/im/adapter.py:267` 的 `send_turn`），这个对话还开着的 `self.questions` 条目和它的按钮没有收掉；之后再点旧按钮仍过 `handle_press` 的检查（`:279-281`），会把第二个、可能矛盾的选项发出去。在原分支上修：打字回答被接受后，收掉这个对话所有还开着的问题、编辑掉它们的按钮（平台能编辑时）；`send()` 被拒（`Refused`）时保留问题。加回归测试：打字回答之后点旧按钮，`send()` 不再被调用、回复"问题已关闭"；被拒时问题仍开着。修完跑 `make check` 和 `da-review main`。
