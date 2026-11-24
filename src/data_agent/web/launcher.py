@@ -178,6 +178,8 @@ class Launcher:
                 *(("--dbt-target", "scratch") if task_type == "dbt" else ()),
                 *(("--network",) if network else ()),
                 *self.mcp_args,
+                # Every run from the form may chart its answer (charts spec "开关"), dbt too.
+                "--charts",
             ]
             return args, workspace
 

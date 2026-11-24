@@ -142,6 +142,7 @@ class Conversations:
                 *("--sandbox", SANDBOX),
                 *(("--network",) if network else ()),
                 *self.launcher.mcp_args,
+                "--charts",
             ]
             if resume is not None:
                 args += ["--resume", resume]

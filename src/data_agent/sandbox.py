@@ -434,11 +434,15 @@ OUTPUTS_DIR = "outputs"
 
 class QueryResults:
     """The run's successful query_database results by id (`query_1`, `query_2`, ...), for
-    `data_files`. One numbering across the server's databases."""
+    sandbox_exec's `data_files` and display_chart's `query_id` (ticket 119). One numbering across
+    the server's databases. `data_files` and `charts` say which of the two tools the server
+    serves, so the id line names only those."""
 
-    def __init__(self) -> None:
+    def __init__(self, data_files: bool = True, charts: bool = False) -> None:
         self.results: dict[str, QueryResult] = {}
         self.numbers = itertools.count(1)
+        self.data_files = data_files
+        self.charts = charts
 
     def add(self, result: QueryResult) -> str:
         result_id = f"query_{next(self.numbers)}"
@@ -448,10 +452,15 @@ class QueryResults:
     def note(self, result_id: str) -> str:
         """The line query_database adds to a result's text."""
         rows = len(self.results[result_id].rows)
-        return (
-            f"[result id: {result_id}; list it in sandbox_exec's data_files to read all {rows} "
-            f"rows as {DATA_DIR}/{result_id}.csv]"
-        )
+        uses: list[str] = []
+        if self.data_files:
+            uses.append(
+                f"list it in sandbox_exec's data_files to read all {rows} rows as "
+                f"{DATA_DIR}/{result_id}.csv"
+            )
+        if self.charts:
+            uses.append("give it to display_chart as query_id to chart it")
+        return f"[result id: {result_id}; {', or '.join(uses)}]"
 
     def picked(self, ids: Sequence[str]) -> dict[str, QueryResult]:
         unknown = [result_id for result_id in ids if result_id not in self.results]

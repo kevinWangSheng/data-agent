@@ -40,10 +40,6 @@ from evals.harbor_agent import DataAgent
 
 __all__ = ["captured"]
 
-TICKET_119 = pytest.mark.xfail(
-    strict=True, reason="ticket 119: the --charts switch is not built yet"
-)
-
 CHART_TOOL = "display_chart"
 
 
@@ -163,7 +159,6 @@ async def test_a_server_without_the_switch_or_a_sandbox_adds_no_id_line(tmp_path
 # --- the switch on (ticket 119) ----------------------------------------------------------------
 
 
-@TICKET_119
 def test_a_run_with_the_switch_has_the_chart_tool_and_the_rule(
     tmp_path: Path, captured: list[Captured]
 ) -> None:
@@ -206,7 +201,6 @@ def web(tmp_path: Path) -> Iterator[tuple[Launcher, Conversations, Recorder]]:
             process.wait(timeout=30)
 
 
-@TICKET_119
 def test_a_query_run_from_the_run_form_has_the_switch(
     web: tuple[Launcher, Conversations, Recorder],
 ) -> None:
@@ -216,7 +210,6 @@ def test_a_query_run_from_the_run_form_has_the_switch(
     assert "--charts" in args
 
 
-@TICKET_119
 def test_a_conversation_turn_has_the_switch(
     web: tuple[Launcher, Conversations, Recorder],
 ) -> None:

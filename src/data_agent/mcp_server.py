@@ -12,10 +12,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import Annotated, Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import Field
 
+from data_agent.charts import DESCRIPTION as CHART_DESCRIPTION
+from data_agent.charts import ChartError, ChartSeries, ChartType, chart_payload
 from data_agent.classify import (
     check_categories,
     classify,
@@ -240,6 +244,7 @@ def build_server(
     dictionary: Dictionary | None = None,
     sandbox: Sandbox | None = None,
     dbt: DbtExecutor | None = None,
+    charts: bool = False,
 ) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
     `config` turns that layer on, so a run with it off cannot see them; `verifier_tools=False`
@@ -249,9 +254,10 @@ def build_server(
     a server with that layer on and no dictionary builds one now, before it serves. With one
     database the tools take no `database` argument (`database_tools`). With `sandbox` the server
     also serves sandbox_exec (`register_sandbox_tool`); without it the tools are as before. With
-    `dbt` (a dbt run with a sandbox) it serves dbt_execute too (`register_dbt_tool`)."""
+    `dbt` (a dbt run with a sandbox) it serves dbt_execute too (`register_dbt_tool`). With
+    `charts` (ticket 119) it serves display_chart (`register_chart_tool`)."""
     dictionaries = {"": dictionary} if dictionary is not None else {}
-    server, databases = data_server({"": gateway}, config, workspace, dictionaries, sandbox)
+    server, databases = data_server({"": gateway}, config, workspace, dictionaries, sandbox, charts)
     if config.verifiers and verifier_tools:
         db = databases[""]
         register_verifier_tools(server, db.run, db.catalog, workspace, gateway.dialect)
@@ -266,13 +272,14 @@ def build_multi_server(
     workspace: Path | None = None,
     dictionaries: Mapping[str, Dictionary] | None = None,
     sandbox: Sandbox | None = None,
+    charts: bool = False,
 ) -> MCPServer:
     """A server over several databases by name (ticket 89): every query and context tool takes
     a required `database` argument, one of the names, and works on that database alone; each
     database has its own catalog, facts, dictionary and label tables. As `build_server`
     otherwise, with a dictionary built now for a database `dictionaries` has none for. No
     verifier tools: they check dbt runs, which have one database."""
-    server, _ = data_server(gateways, config, workspace, dictionaries or {}, sandbox)
+    server, _ = data_server(gateways, config, workspace, dictionaries or {}, sandbox, charts)
     return server
 
 
@@ -282,19 +289,30 @@ def data_server(
     workspace: Path | None,
     dictionaries: Mapping[str, Dictionary],
     sandbox: Sandbox | None,
+    charts: bool = False,
 ) -> tuple[MCPServer, dict[str, Database]]:
     """The base tools and, when `config` turns that layer on, the context tools, over `gateways`
     by name (`database_tools`); a database `dictionaries` has no dictionary for gets one built
     now. The label tables of all the databases share one numbering. The clarification tool is
     served in conversation mode only (spec decision 8), which `data-agent run --chat` switches
-    on through the environment (`CHAT_ENV`). With `sandbox`, sandbox_exec too."""
+    on through the environment (`CHAT_ENV`). With `sandbox`, sandbox_exec too; with `charts`,
+    display_chart. Either one keeps every query_database result under an id, one store for
+    both tools."""
     server = MCPServer("data-agent")
     numbers = itertools.count(1)
     databases = {
         name: open_database(gateway, LabelTables(workspace, numbers))
         for name, gateway in gateways.items()
     }
-    results = None if sandbox is None else register_sandbox_tool(server, sandbox)
+    results = (
+        QueryResults(data_files=sandbox is not None, charts=charts)
+        if sandbox is not None or charts
+        else None
+    )
+    if sandbox is not None:
+        register_sandbox_tool(server, sandbox, results)
+    if charts and results is not None:
+        register_chart_tool(server, results)
     register_base_tools(server, databases, workspace, results)
     if os.environ.get(CHAT_ENV) == "1":
         register_clarification_tool(server)
@@ -326,11 +344,14 @@ def register_clarification_tool(server: MCPServer) -> None:
         return CLARIFICATION_SENT
 
 
-def register_sandbox_tool(server: MCPServer, sandbox: Sandbox) -> QueryResults:
+def register_sandbox_tool(
+    server: MCPServer, sandbox: Sandbox, results: QueryResults | None = None
+) -> QueryResults:
     """sandbox_exec (ticket 97, after SignalPilot's `sandbox_exec` and nao's
     `execute_sandboxed_code` `data_files`). One tool for the run, so no `database` argument.
-    Returns the store of query results its `data_files` reads, which query_database fills."""
-    results = QueryResults()
+    Returns the store of query results its `data_files` reads, which query_database fills: the
+    one given, or a new one."""
+    results = QueryResults() if results is None else results
 
     @server.tool(name="sandbox_exec", annotations=SANDBOX, description=tool_description(sandbox))
     def sandbox_exec(
@@ -344,6 +365,25 @@ def register_sandbox_tool(server: MCPServer, sandbox: Sandbox) -> QueryResults:
             raise ToolError(str(exc)) from exc
 
     return results
+
+
+def register_chart_tool(server: MCPServer, results: QueryResults) -> None:
+    """display_chart (ticket 119, after nao's `display_chart`), over the query results in
+    `results`. One tool for the run, so no `database` argument; it only reads a stored result."""
+
+    @server.tool(name="display_chart", annotations=READ_ONLY, description=CHART_DESCRIPTION)
+    def display_chart(
+        query_id: str,
+        chart_type: ChartType,
+        x: str,
+        series: Annotated[list[ChartSeries], Field(min_length=1)],
+        title: str,
+        stacked: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            return chart_payload(results.results, query_id, chart_type, x, series, title, stacked)
+        except ChartError as exc:
+            raise ToolError(str(exc)) from exc
 
 
 def register_dbt_tool(server: MCPServer, executor: DbtExecutor) -> None:
@@ -381,8 +421,9 @@ def register_base_tools(
     results: QueryResults | None = None,
 ) -> None:
     """The tools every config serves, over `databases` by name (`database_tools`). With
-    `results` (a run with a sandbox) each successful query_database result is kept there and its
-    text ends with the result's id, for sandbox_exec's `data_files`."""
+    `results` (a run with a sandbox or charts) each successful query_database result is kept
+    there and its text ends with the result's id, for sandbox_exec's `data_files` and
+    display_chart's `query_id`."""
     tool = database_tools(server, databases)
     # classify_text's label tables by name, with the database's store that holds them.
     label_tables: dict[str, tuple[LabelTables, QueryResult]] = {}
