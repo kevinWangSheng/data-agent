@@ -2152,3 +2152,24 @@ def test_reference_no_verifiers_compares_each_config_with_it(
     assert contributions["baseline"]["layer"] == "both layers (Skill and context tools)"
     markdown = (report_dirs(out)[0] / "ablation.md").read_text()
     assert "no-verifiers minus the config without it" in markdown
+
+
+def test_an_ablation_of_trials_without_gold_answers_says_it_is_no_score(
+    monkeypatch: pytest.MonkeyPatch, mixed: Path, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(report_module, "no_gold_answer", lambda trial: True)
+    out = tmp_path / "out"
+    tasks = lsb_tasks(tmp_path / "lsb-tasks", False, LSB_DEV)
+    extra = ("--split", "dev", "--config", "full", "--trials", "1")
+    assert lsb_run(monkeypatch, FakeHarbor(), mixed, out, tasks, *extra) == 0
+    assert table(out)["no_gold_answer_trials"] == len(LSB_DEV)
+    assert "**Not scored**: 2 trial(s)" in (report_dirs(out)[0] / "ablation.md").read_text()
+
+
+def test_an_ablation_with_gold_answers_carries_no_such_mark(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    assert run(monkeypatch, FakeHarbor(), manifest, out, "--config", "full") == 0
+    assert "no_gold_answer_trials" not in table(out)
+    assert "Not scored" not in (report_dirs(out)[0] / "ablation.md").read_text()

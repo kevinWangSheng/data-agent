@@ -502,3 +502,39 @@ def test_check_reports_data_images_and_tasks(
     printed = capsys.readouterr().out
     assert "ok    LiveSQLBench database images: 18 of 18" in printed
     assert "no gold answers" in printed
+
+
+class Column:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class FakeCursor:
+    """psycopg 3's view of `SELECT 1; SELECT 2`: the first result set until `nextset()`."""
+
+    def __init__(self, sets: list[tuple[list[str], list[tuple[Any, ...]]] | None]) -> None:
+        self.sets = sets
+        self.at = 0
+
+    @property
+    def description(self) -> list[Column] | None:
+        found = self.sets[self.at]
+        return None if found is None else [Column(n) for n in found[0]]
+
+    def nextset(self) -> bool | None:
+        if self.at + 1 < len(self.sets):
+            self.at += 1
+            return True
+        return None
+
+    def fetchmany(self, size: int) -> list[tuple[Any, ...]]:
+        found = self.sets[self.at]
+        assert found is not None
+        return found[1][:size]
+
+
+def test_a_multi_statement_entry_is_scored_by_its_last_result() -> None:
+    """Upstream's psycopg2 returns the last statement's rows; psycopg 3 starts at the first."""
+    cur = FakeCursor([(["a"], [(1,)]), None, (["b"], [(2,), (3,)])])
+    assert livesqlbench_verifier.last_result(cur) == Result(columns=("b",), rows=((2,), (3,)))
+    assert livesqlbench_verifier.last_result(FakeCursor([None])) == Result(columns=(), rows=())

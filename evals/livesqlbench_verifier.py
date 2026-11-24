@@ -361,6 +361,18 @@ def read_prediction(path: Path) -> tuple[str, list[str]]:
     return "ok", [str(s) for s in sqls]  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
 
 
+def last_result(cur: Any) -> Result:
+    """The rows of the last statement a cursor ran, at most MAX_ROWS. An entry of a SQL list may
+    hold several statements; psycopg 3 starts at the first one's result, where upstream's psycopg2
+    keeps the last, so the cursor moves on to its last result set first."""
+    while cur.nextset():
+        pass
+    if cur.description is None:
+        return Result(columns=(), rows=())
+    columns = tuple(str(c.name) for c in cur.description)
+    return Result(columns=columns, rows=tuple(cur.fetchmany(MAX_ROWS)))
+
+
 class PostgresExecute:
     """The real `Execute`: on first use, a fresh `<db>_process_1` cloned from the image's
     `<db>_template` with the verifier's (write) role, as upstream `template/tests/evaluator.py`
@@ -423,11 +435,7 @@ class PostgresExecute:
                         self.conn.rollback()
                         raise
                     self.conn.commit()
-                    if cur.description is None:
-                        result = Result(columns=(), rows=())
-                        continue
-                    columns = tuple(str(c.name) for c in cur.description)
-                    result = Result(columns=columns, rows=tuple(cur.fetchmany(MAX_ROWS)))
+                    result = last_result(cur)
             return result
         except psycopg.Error as exc:
             raise ExecutionError(str(exc)) from exc

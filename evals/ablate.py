@@ -841,6 +841,9 @@ def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]
         "contributions": contributions,
         "readiness": readiness.summary(args.out),
     }
+    # Trials whose verifier had no gold answer (evals.report): their 0 is no score.
+    if unscored := sum(int(row.get("no_gold_answer_trials") or 0) for row in rows):
+        table["no_gold_answer_trials"] = unscored
     (reports / "ablation.json").write_text(json.dumps(table, indent=2) + "\n")
     (reports / "ablation.md").write_text(markdown(table))
     return reports
@@ -858,6 +861,13 @@ def markdown(table: dict[str, Any]) -> str:
         + "trials | cost (USD) | input tokens (uncached / cached) | output tokens |",
         "|---|---:|---:|" + "---:|" * len(passes) + "---:|---:|---:|---:|",
     ]
+    if unscored := table.get("no_gold_answer_trials"):
+        lines[1:1] = [
+            "",
+            f"**Not scored**: {unscored} trial(s) ran without a gold answer (tasks generated "
+            "before the answers were in hand), so their 0 is no score: the accuracies and the "
+            "contributions below say nothing about the agent; the costs and tokens hold.",
+        ]
     for row in rows:
         lines.append(
             f"| {row['config']} | {row['accuracy']:.1f} | {row['accuracy_stderr']:.1f} | "
