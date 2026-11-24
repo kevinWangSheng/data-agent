@@ -15,6 +15,7 @@ from evals import (
     dab_score,
     diverge,
     export,
+    improve,
     jaffle,
     scrub,
     selection,
@@ -127,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         diverge,
         selection,
         export,
+        improve,
     )
     for module in modules:
         module.add_parser(commands)
