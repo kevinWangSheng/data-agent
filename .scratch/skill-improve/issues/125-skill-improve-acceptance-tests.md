@@ -1,10 +1,10 @@
 # 125 — 小范围自动改写 Skill：验收测试（输入范围、候选生成、分支与提交、初筛、判定、预算；全部不调模型）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 125-skill-improve-acceptance-tests)
+Branch: worktree-125-skill-improve-acceptance-tests
 
 ## Goal
 
@@ -215,10 +215,93 @@ spec "Testing Decisions"（`.scratch/skill-improve/spec.md` 的 "## Testing Deci
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0 (no data-agent model calls)
+- Outcome: 27 acceptance tests, all xfail; reference implementation 27/27; 22/22 mutants caught; `make check` green
 - Human review minutes: —
 
 ## Comments
+
+- 2026-11-24（工单 agent 最终回复，主会话照抄）：
+
+**What's on the branch** (`worktree-125-skill-improve-acceptance-tests`, 4 commits: 391c1ac, 013c8ac, 52b49f2, a441ce1)
+- New files only, all on the Authority "May edit" list:
+  - `evals/improve.py`: the shell. Types, constants and the `improve` signature; the body raises `NotImplementedError("ticket 126")`. Contract 1–10 is in the module docstring.
+  - `tests/acceptance/skill_improve_support.py`
+  - `tests/acceptance/test_skill_improve.py`
+  - `tests/fixtures/skill_improve/`
+- `src/`, existing `evals/` files, `__main__.py` and `Makefile` are untouched.
+
+**Evidence**
+- **`make check`**: exit 0. Python: `2850 passed, 2 skipped, 79 deselected, 27 xfailed in 616.69s`, the same 2850 passed / 2 skipped as the baseline. basedpyright `0 errors`; web `Tests 442 passed`.
+- **`uv run pytest tests/acceptance/test_skill_improve*.py -v`**: all 27 are XFAIL, with no XPASS and no skips. One per required case; the parametrized tests expand to 2 each:
+  - holdout trials excluded; DAB run refused; unknown Skill version refused; two input jobs merged;
+  - byte-exact edit applied [replace / insert_after]; anchor not matched [other-words / whitespace-only];
+  - net +10 lines makes a candidate; net +11 is discarded; edit outside `skills/` [README.md / skills/../README.md];
+  - 30-task cap [29+1 screened / 30+1 discarded]; one candidate per Skill passage; top 3 groups only;
+  - one commit on the input commit, `skills/` only; branch on origin when its screening starts; screening arguments and `--budget`;
+  - pass gets a draft PR; fail loses its remote branch; regression task rerun alone; old version too old → undecided; rerun blocked by the task cap or budget → undecided [task-cap / budget]; mixed verdicts in one round; budget stop.
+- **`--runxfail`**: every group (input, candidate generation, branches, screening, verdicts, budget, rerun blocked) fails with the same line: `E AssertionError: ticket 126: improve is not implemented yet`. Every fixture is built before the `improve` call, and every negative assertion comes after a positive one.
+- **Reference implementation** (under the gitignored `runs/ref125/`, never committed; it includes an `accept.py` screening mode `evaluate_screening`): with it in place all **27 passed**.
+- **Reverse checks**: 22 mutants, each fails at least one test.
+  - The ticket's list: holdout task reaches the judge prompt; whitespace-folded match applied; net 10 rejected; edit outside `skills/`; top 4 taken; two commits on a branch; no push before screening; failed remote branch kept; one regression task dropped; PR opened on fail; noise note missing; screening continues over budget.
+  - Extra: outside file in the commit, duplicate passage, "added lines" instead of net, listed cost instead of billed, jobs-only spend, setup on main, rerun of all tasks, branching from HEAD, setup before push, rerun ignoring the cap.
+  - After each run, `git status --short` was clean.
+- **No real `gh`, `da-remote` or network, and no branches here**:
+  - Fake `da-remote` and `gh` come first on `PATH`; judges are injected fakes.
+  - Git runs in a temporary repo whose origin is a local bare repo. Every `GIT_*` variable is removed, `GIT_CONFIG_GLOBAL` and `HOME` point at temp, `GH_CONFIG_DIR` is temp, and `DA_REMOTE_HOST=fake-host.invalid`.
+  - The working directory is a temporary non-repo directory. The fixture checks after each test that this repository's `skill-improve/*` branches are unchanged.
+  - Afterwards `git branch --list 'skill-improve/*'` printed nothing (count 0). I ran it from the worktree, which shares refs with the main checkout; the tool refuses `-C` into the main checkout.
+- **Scrub**: `uv run python -m evals scrub` on a copy of `tests/fixtures/skill_improve/` gave `changed 0 file(s) of 7; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0`, and `diff -r` shows no differences.
+
+**Contract for human review** (in the `evals/improve.py` docstring, the tests and the fixtures)
+1. **Entry**: `improve(jobs, *, repo, manifest, regression, out_dir, attribution_judge, edit_judge, skills, today, remote_tasks_dir, remote_manifest, tasks_dir=None, budget_usd=25, poll_seconds=60, secrets=())`, async, returns an `ImproveReport`. `jobs` are several job directories merged like `load_jobs`. `skills` has the shape of `skill_sets()`. `git`, `da-remote` and `gh` are called by bare name from `PATH`, with `repo` as the working directory.
+2. **Groups and choice**: the key is (FM label, `skill`, `skill_quote`); size is the number of failed trials. Ties break by FM label, then Skill, then quote. A lower group quoting a passage already taken is dropped as `same-passage`. The top 3 become candidates 1–3; the rest are `not-selected`.
+3. **Edit reply**: `{"file","op":"replace|insert_after","anchor","text"}`. The anchor must match the file's bytes at the input commit exactly once.
+   - Discard codes: `bad-reply`, `no-match`, `ambiguous-match`, `outside-skills` (absolute path, `..`, or not under `skills/`).
+   - The edit prompt carries the group's suggestions; the fake judge answers by them.
+4. **Net lines**: new line count minus old line count; at most 10. 10 makes a candidate, 11 is `net-lines`.
+5. **Tasks**: targets (sorted), then the regression tasks not among them, in file order. More than 30 is `too-many-tasks`; exactly 30 is screened.
+6. **Branches**:
+   - `skill-improve/<YYYY-MM-DD>-<n>`: one commit whose parent is the input run's `git_commit`, changing only `skills/`.
+   - The branch is pushed right before its screening. After any verdict other than pass, the remote branch is deleted.
+   - Only `skill-improve/` refs are pushed or deleted.
+7. **Screening**:
+   - Steps: `git push`, `da-remote setup <full commit hash>`, then `start improve-<date>-<n> -- ablate …`. `ablate` gets `--tasks-dir`, `--manifest`, `--out runs/<name>`, `--split dev --config full --trials 3`, one `--task` per task, and `--budget` = what is left, rounded down to the cent.
+   - Then poll `status` until `<name>: finished, exit N`, and `pull` into `<repo>/runs/<name>/`.
+   - The `--tasks-dir`, `--manifest` and `--out` options are added because `ablate` requires them.
+8. **After the verdict**:
+   - pass → `gh pr create --draft --base main --head <branch> --body-file …`; the body includes the noise note word for word.
+   - fail → `rejected`.
+   - rerun-regression → one rerun of only the listed tasks; if the 30-task cap or the budget doesn't allow it, the candidate is `undecided` and its remote branch is deleted.
+   - rerun-old → `undecided` (未判定).
+9. **Spend** = the judges' costs plus `evals spend` billing over each pulled run directory, which includes the off-peak half rate and the smoke trial.
+   - Checked before every screening, reruns included.
+   - Stop condition: spend over $25, or less than a cent left for `--budget`.
+   - `stopped_at` names the candidate; it and the ones after it are `not-screened`. `report.md` names it on its "stopped" line.
+10. **Input**: a directory without `<trial>/result.json` (such as a DAB run) is refused with `InputRefused`, as is a job on a Skill version `skills` doesn't have. Both happen before any judge call, branch or screening. Holdout trials are only counted (`skipped_non_dev_trials`).
+
+Choices beyond the spec, for you to decide:
+- A discarded candidate is not replaced by the next group down.
+- A failed candidate's local branch is kept.
+
+**Reviews** (2 fix rounds)
+- **`da-review main`** found 2 issues, both fixed in 52b49f2:
+  - The fake `setup` accepted any commit. It now refuses one origin doesn't have, as the real one does, and screenings check what the server was actually at.
+  - `main` stayed at the input commit. It now advances, with a Skill change, past the input commit.
+- **`eng:code-review main`**, fixed in a441ce1:
+  - Standards: missing return type; duplicated branch listing, start predicate and body-file read; `Any`-typed callback; a hard-coded fixture alias.
+  - Spec: rerun cap and budget were untested (new test added); contract 9's boundary contradicted "超过"; the report didn't have to name the stop; the fail test didn't check for "fail"; the PR body check didn't include the diff.
+- Not fixed, with reasons:
+  - `skill_improve_support.py` is about 690 lines. The Authority names a single support file, and the fake executables have to stay standard-library imports inside it.
+  - `remote_tasks_dir` and `remote_manifest` are two plain path strings, not worth a type of their own.
+  - The PR body's screening results and spend aren't asserted. Their format isn't fixed, and the required test bullet asks only for the noise note.
+
+
+  - 最终核对（agent 的补充回复）：
+
+- **`ref3.txt`**: with the reference implementation in place, `27 passed in 59.20s`.
+- **`mutants3.txt`**: all 22 mutants make at least one test fail. They range from `holdout` (1 test fails) to `no_push` (19 fail).
+- **`check3.txt`**: `make check exit=0`, with `2850 passed, 2 skipped, 79 deselected, 27 xfailed`, basedpyright `0 errors`, and web `442 passed`.
+- Since then the worktree is clean (`git status --short` prints nothing), there are no `skill-improve/*` branches, and the branch head is a441ce1. The next step belongs to the main session: copy the Comments, Ledger and `Status: in-review` from the previous message into the ticket, then push and open the PR.
