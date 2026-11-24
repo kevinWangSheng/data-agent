@@ -498,6 +498,23 @@ def test_the_dev_tier_puts_a_tool_calls_input_on_its_tool_span_masked() -> None:
     assert inputs.unclaimed() == [("toolu_not_in_this_run", json.dumps({"sql": "SELECT 2"}), 2)]
 
 
+def test_a_tool_span_with_its_own_input_keeps_it_and_claims_the_call() -> None:
+    """Should a CLI export the input itself, the span keeps it and `finish` sends no copy."""
+    message = message_of(CAPTURED / "full-req002.json")
+    [tool] = [s for s in spans([message]) if s.name == "claude_code.tool"]
+    kv = tool.attributes.add()
+    kv.key = "langfuse.observation.input"
+    kv.value.string_value = "the CLI's own"
+    inputs = ToolInputs()
+    inputs.put(QUERY_CALL, json.dumps({"sql": "SELECT 1"}), 1)
+    out = rewrite(
+        message.SerializeToString(), tier="full", ids=AnonIds(), secrets=(), inputs=inputs
+    )
+    found = [kv.value.string_value for s in spans([parse(out)]) for kv in s.attributes]
+    assert found.count("the CLI's own") == 1 and json.dumps({"sql": "SELECT 1"}) not in found
+    assert inputs.unclaimed() == []
+
+
 def test_the_held_out_tier_puts_no_input_on_any_span() -> None:
     message = message_of(CAPTURED / "structure-req001.json")
     calls = [a["tool_use_id"] for a in tool_spans([message]).values()]

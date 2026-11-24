@@ -620,6 +620,19 @@ async def test_a_tool_input_no_span_took_is_an_observation_of_its_own(
     assert json.loads(observed.attributes["langfuse.observation.input"]) == MASKED_INPUT
 
 
+async def test_children_that_fail_to_build_still_leave_the_parent_span(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def broken(self: RunExport) -> list[Any]:
+        raise RuntimeError("a child broke")
+
+    monkeypatch.setattr(RunExport, "_children", broken)
+    outcome, events, _, exporter = await traced_run(monkeypatch, tmp_path, messages=conversation())
+    assert outcome.finished
+    assert [s.name for s in exporter.get_finished_spans()] == ["data-agent.run"]
+    assert [e["type"] for e in events][-2:] == ["trace", "result"]
+
+
 async def test_the_held_out_tier_sends_no_input_and_no_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

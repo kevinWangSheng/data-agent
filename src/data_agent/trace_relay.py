@@ -231,7 +231,7 @@ def _rewrite_message(
     inputs: ToolInputs | None = None,
 ) -> None:
     def clean(text: str) -> str:
-        return SECRET_SHAPE.sub(REDACTED, mask(text, secrets))
+        return mask_shapes(mask(text, secrets))
 
     def attrs(kvs: Any) -> None:
         _rewrite_attributes(kvs, tier, ids, clean)
@@ -264,14 +264,20 @@ def _rewrite_message(
                     span.status.message = clean(span.status.message)
 
 
+def mask_shapes(text: str) -> str:
+    """`text` with every credential-shaped value (`SECRET_SHAPE`) masked."""
+    return SECRET_SHAPE.sub(REDACTED, text)
+
+
 def _add_input(span: Any, inputs: ToolInputs) -> None:
-    """The call's input as the span's Langfuse input, when `inputs` has it and the span has none."""
+    """The call's input as the span's Langfuse input, when `inputs` has it. A span that already
+    has one keeps it, and the call counts as claimed: `finish` sends no second copy."""
     found = {kv.key: kv.value for kv in span.attributes}
     call = found.get("tool_use_id")
-    if call is None or INPUT_ATTRIBUTE in found:
+    if call is None:
         return
     text = inputs.claim(call.string_value)
-    if text is not None:
+    if text is not None and INPUT_ATTRIBUTE not in found:
         kv = span.attributes.add()
         kv.key = INPUT_ATTRIBUTE
         kv.value.string_value = text

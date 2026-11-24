@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
-from data_agent.events import REDACTED, mask
+from data_agent.events import mask
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan, Span, TracerProvider
@@ -301,8 +301,8 @@ def result_attributes(
 ) -> Attributes:
     """The parent span's attributes at the end: the `result` event's `cost_usd`, the report's own
     figure (no cost when the result has none), and its token counts as metadata (`USAGE_TOTAL`).
-    The dev tier also gets the run's answer, the final one of the model's messages
-    (`assistant_messages` holds them all)."""
+    The dev tier also gets the run's answer, the final one of the model's messages (each is an
+    `assistant.message` observation, `RunExport._children`)."""
     usage = {key: int(result.get(key) or 0) for key in USAGE_TOTAL_KEYS}
     attributes: Attributes = {USAGE_TOTAL: json.dumps(usage)}
     cost = result.get("cost_usd")
@@ -460,10 +460,10 @@ class RunExport:
 
     def _clean(self, value: Any) -> Any:
         """`value` with every string masked, leaf by leaf, before any JSON escapes a secret."""
-        from data_agent.trace_relay import SECRET_SHAPE
+        from data_agent.trace_relay import mask_shapes
 
         if isinstance(value, str):
-            return SECRET_SHAPE.sub(REDACTED, self.masks(value))
+            return mask_shapes(self.masks(value))
         if isinstance(value, Mapping):
             return {str(k): self._clean(v) for k, v in cast(Mapping[Any, Any], value).items()}
         if isinstance(value, list | tuple):
@@ -491,7 +491,12 @@ class RunExport:
     ) -> list[tuple[str, dict[str, Any]]]:
         assert self._span is not None, "RunExport.start comes first"
         report = self._stop_relay()
-        children = self._children()
+        try:
+            children = self._children()
+        except Exception as exc:
+            # The run's own span still goes: losing the texts is no reason to lose the trace.
+            self._failed(exc)
+            children = []
         self._span.set_attributes(result_attributes(self.tier, result, answer, self.masks))
         trace_id = format(self._span.get_span_context().trace_id, "032x")
         parent_error = self._end_span(children)
