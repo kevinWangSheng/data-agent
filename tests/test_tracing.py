@@ -12,9 +12,11 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -869,8 +871,6 @@ class SlowRelay(StandInRelay):
     """A relay that takes a while to drain, as the real one waits up to its timeout."""
 
     def stop(self) -> RelayReport:
-        import time
-
         time.sleep(0.05)
         return super().stop()
 
@@ -878,8 +878,6 @@ class SlowRelay(StandInRelay):
 async def test_the_result_records_the_runs_end_before_the_export_waits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from datetime import datetime
-
     _, events, _, _ = await traced_run(monkeypatch, tmp_path, SlowRelay, conversation())
     result = events[-1]
     assert result["type"] == "result"

@@ -9,6 +9,7 @@ import dataclasses
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -88,8 +89,6 @@ async def test_without_a_trace_the_result_still_records_the_runs_end(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Ticket 122: `ended_ts` is there whether or not the trace export ran."""
-    from datetime import datetime
-
     _, events = await run_with(monkeypatch, tmp_path, scripted(result()))
     *_, answer, end = events
     assert (answer["type"], end["type"]) == ("answer", "result")

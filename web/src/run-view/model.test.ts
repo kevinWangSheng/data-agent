@@ -493,7 +493,7 @@ describe('agent tools (ticket 101)', () => {
 
 describe('export events', () => {
   // After the CLI exits the backend (src/data_agent/agent.py) writes `answer`, then the trace export
-  // (src/data_agent/tracing.py RunExport.finish: stop the relay, wait for it to drain, up to 10 s)
+  // (src/data_agent/tracing.py RunExport.finish: stop the relay, wait for it to drain, up to its timeout)
   // writes `trace_export_error`s and `trace`, and `result` comes last. `result.ended_ts` is the
   // run's end, taken before the export; older files lack it.
   const at = (s: number) => `2026-11-15T09:${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}+00:00`
