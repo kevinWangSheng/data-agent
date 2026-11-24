@@ -41,10 +41,6 @@ from data_agent import cli
 from data_agent.web import app as web_app
 from data_agent.web.app import DataSource, create_app
 
-TICKET_116 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 116: external MCP is not wired yet"
-)
-
 FAKE_CHAT_RUN = FIXTURES / "chat" / "fake_chat_run.py"
 FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders", "config": "full"}
 # In the server's environment: it must never reach a run's command line.
@@ -154,7 +150,6 @@ def start_turn(web: Web) -> list[str]:
 ROUTES = {"form": submit_form, "turn": start_turn}
 
 
-@TICKET_116
 @pytest.mark.parametrize("route", list(ROUTES))
 def test_every_web_run_gets_the_config_path_and_no_expanded_value(mounted: Web, route: str) -> None:
     args = ROUTES[route](mounted)
@@ -198,7 +193,6 @@ def serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: Sequence[str])
     return seen[0]
 
 
-@TICKET_116
 def test_data_agent_web_hands_the_config_file_to_create_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

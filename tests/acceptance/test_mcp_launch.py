@@ -59,10 +59,6 @@ from mcp_support import (
 )
 from seam_support import build_shop_duckdb
 
-TICKET_116 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 116: external MCP is not wired yet"
-)
-
 BASE_ENV = frozenset(
     {
         "PATH",
@@ -165,7 +161,6 @@ def database_args(kind: str, root: Path) -> list[str]:
     return ["--data-sources", str(sources)]
 
 
-@TICKET_116
 @pytest.mark.parametrize("database", ["postgres-env", "data-sources"])
 def test_a_stdio_server_starts_in_a_clean_environment_with_its_config_env(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str], database: str
