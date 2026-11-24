@@ -1,0 +1,66 @@
+{
+  "_about": "Judge replies by failure marker. A failed trial's trace carries its marker; the fake attribution judge answers a prompt with the reply of the marker in it, the fake edit judge one with the edit of the marker whose quote is in it.",
+  "attribution": {
+    "alpha": {
+      "failure_mode": "FM3",
+      "evidence": "#2 the query read a table the schema did not describe",
+      "skill": "sql-workflow",
+      "skill_quote": "Read the schema before writing a query.",
+      "suggestion": "Before the first query, list the candidate tables and say which one holds the asked-for rows."
+    },
+    "beta": {
+      "failure_mode": "FM1",
+      "evidence": "#2 the run kept exploring and never wrote an answer",
+      "skill": "sql-workflow",
+      "skill_quote": "Stop exploring after 3-5 tool calls.",
+      "suggestion": "After the exploration limit, write a first answer and refine it."
+    },
+    "beta-fm4": {
+      "failure_mode": "FM4",
+      "evidence": "#2 the formula was wrong after a long exploration",
+      "skill": "sql-workflow",
+      "skill_quote": "Stop exploring after 3-5 tool calls.",
+      "suggestion": "Once exploring stops, restate the formula before running it."
+    },
+    "gamma": {
+      "failure_mode": "FM4",
+      "evidence": "#2 a join multiplied the rows",
+      "skill": "sql-workflow",
+      "skill_quote": "Check the row count of every join result.",
+      "suggestion": "Compare the row count before and after each join and explain any change."
+    },
+    "delta": {
+      "failure_mode": "FM2",
+      "evidence": "#2 one query could not answer a two-part question",
+      "skill": "sql-workflow",
+      "skill_quote": "Prefer one query per question.",
+      "suggestion": "Split a question with several parts into one query per part."
+    }
+  },
+  "edits": {
+    "alpha": {
+      "file": "skills/sql-workflow/SKILL.md",
+      "op": "replace",
+      "anchor": "1. Read the schema before writing a query.\n",
+      "text": "1. Read the schema before writing a query, and name the table that holds the asked-for rows.\n"
+    },
+    "beta": {
+      "file": "skills/sql-workflow/SKILL.md",
+      "op": "insert_after",
+      "anchor": "2. Stop exploring after 3-5 tool calls.\n",
+      "text": "   Then write a first answer and refine it.\n"
+    },
+    "gamma": {
+      "file": "skills/sql-workflow/SKILL.md",
+      "op": "replace",
+      "anchor": "3. Check the row count of every join result.\n",
+      "text": "3. Check the row count before and after every join; explain any change.\n"
+    },
+    "delta": {
+      "file": "skills/sql-workflow/SKILL.md",
+      "op": "replace",
+      "anchor": "4. Prefer one query per question.\n",
+      "text": "4. Prefer one query per part of the question.\n"
+    }
+  }
+}
