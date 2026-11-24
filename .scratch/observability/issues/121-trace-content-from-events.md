@@ -1,10 +1,10 @@
 # 121 — 开发集档 trace 补上 SQL 和模型文字（从我们自己的事件里取）
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 121-trace-content-from-events)
+Branch: worktree-121-trace-content-from-events
 
 ## Goal
 
