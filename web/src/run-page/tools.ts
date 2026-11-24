@@ -5,7 +5,8 @@ export type ToolKind = 'sql' | 'context' | 'schema' | 'check' | 'file' | 'edit' 
 
 const DATA = 'mcp__data__'
 // `mcp__<server>__<tool>` from any other MCP server the run was given (`--mcp-servers`). Server
-// names never contain `__` (src/data_agent/external_mcp.py), so the first `__` ends the server.
+// names never contain `__` (src/data_agent/external_mcp.py), so the first `__` ends the server. It
+// matches `mcp__data__` too: check it after `DATA`.
 const EXTERNAL = /^mcp__(.+?)__(.+)$/
 const SQL = new Set(['query_database', 'query_labels', 'explain_query', 'classify_text'])
 const CONTEXT = new Set(['discover', 'hydrate', 'dictionary_search'])
