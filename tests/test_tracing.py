@@ -8,6 +8,7 @@ No network beyond 127.0.0.1: Langfuse is a small recording HTTP server.
 import base64
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -30,10 +31,12 @@ ENDPOINT = "http://127.0.0.1:40001/v1/traces"
 @dataclass
 class Recorder:
     """A Langfuse on 127.0.0.1: records every request; projects answer `projects` (None: 500),
-    the OTLP ingestion `post_status`."""
+    the OTLP ingestion `post_status`, or first the answers in `post_answers` (None: the
+    connection dropped without an answer)."""
 
     projects: Any = field(default_factory=lambda: {"data": [{"id": "proj-1"}]})
     post_status: int = 200
+    post_answers: list[int | None] = field(default_factory=list)
     seen: list[tuple[str, str, dict[str, str], bytes]] = field(default_factory=list)
     server: ThreadingHTTPServer | None = None
 
@@ -71,7 +74,13 @@ class Recorder:
                     self._answer(200, json.dumps(recorder.projects).encode())
 
             def do_POST(self) -> None:
-                self._answer(recorder.post_status, b"")
+                answers = recorder.post_answers
+                answer = answers.pop(0) if answers else recorder.post_status
+                if answer is None:
+                    self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                    self.close_connection = True
+                    return
+                self._answer(answer, b"")
 
             def log_message(self, format: str, *args: Any) -> None:
                 pass
@@ -307,11 +316,28 @@ def test_a_parent_span_langfuse_never_answers_is_a_connection_error(
 ) -> None:
     monkeypatch.setattr(trace_relay, "TraceRelay", StandInRelay)
     monkeypatch.setattr(tracing, "PARENT_TIMEOUT_S", 0.5)
-    with RunExport(LangfuseSettings("pk", "sk", "http://127.0.0.1:9"), "full", []) as export:
+    with socket.socket() as closed:  # a port nothing listens on
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+    with RunExport(LangfuseSettings("pk", "sk", f"http://127.0.0.1:{port}"), "full", []) as export:
         assert export.start(FACTS) is not None
         events = export.finish(RESULT, "42")
     assert ("trace_export_error", {"error_type": "connection_error", "status": None}) in events
     assert events[-1][0] == "trace"
+
+
+def test_a_parent_span_whose_last_attempt_got_no_answer_is_a_connection_error(
+    monkeypatch: pytest.MonkeyPatch, langfuse: Recorder
+) -> None:
+    """A 503 is retried; the error is the last attempt's, not the last answer's."""
+    monkeypatch.setattr(trace_relay, "TraceRelay", StandInRelay)
+    monkeypatch.setattr(tracing, "PARENT_TIMEOUT_S", 3.0)
+    langfuse.post_answers = [503] + [None] * 10
+    with RunExport(langfuse.settings(), "full", []) as export:
+        assert export.start(FACTS) is not None
+        events = export.finish(RESULT, "42")
+    assert [s[0] for s in langfuse.seen].count("POST") == 1  # the dropped ones record nothing
+    assert ("trace_export_error", {"error_type": "connection_error", "status": None}) in events
 
 
 def test_a_run_that_breaks_still_stops_the_relay_and_ends_the_span(

@@ -20,7 +20,7 @@ from data_agent.events import mask
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan, Span, TracerProvider
-    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+    from opentelemetry.sdk.trace.export import SpanExporter
 
     from data_agent.trace_relay import ExportError, RelayReport, TraceRelay
 
@@ -132,33 +132,50 @@ def cli_env(trace: CliTrace | None, inherited: Mapping[str, str]) -> dict[str, s
 
 
 class ParentExporter:
-    """The exporter of the run's parent span: Langfuse's OTLP endpoint at `settings.base_url`,
-    keeping the HTTP status of each response to the last `export` in `statuses` (the
-    exporter's own result says only success or failure)."""
+    """The exporter of the run's parent span: Langfuse's OTLP endpoint at `settings.base_url`.
+    `send` says what went wrong, which the OTLP exporter's own result does not (only success or
+    failure), by keeping the HTTP status of each attempt, retries included."""
 
     def __init__(self, settings: LangfuseSettings):
         # requests comes with the exporter: its public `session` parameter is a requests.Session.
         import requests
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-        self.statuses: list[int] = []
+        self.last_status: int | None = None
+        exporter = self
 
-        def record(response: requests.Response, *args: object, **kwargs: object) -> None:
-            del args, kwargs
-            self.statuses.append(response.status_code)
+        class Session(requests.Session):
+            """Each attempt starts with no status, so one that got no answer leaves none."""
 
-        session = requests.Session()
-        session.hooks["response"].append(record)
+            def send(self, request: requests.PreparedRequest, **kwargs: Any) -> requests.Response:
+                exporter.last_status = None
+                response = super().send(request, **kwargs)
+                exporter.last_status = response.status_code
+                return response
+
         self._otlp = OTLPSpanExporter(
             endpoint=settings.base_url + OTLP_PATH,
             headers=settings.headers() | {"x-langfuse-ingestion-version": INGESTION_VERSION},
             timeout=PARENT_TIMEOUT_S,
-            session=session,
+            session=Session(),
         )
 
-    def export(self, spans: Sequence["ReadableSpan"]) -> "SpanExportResult":
-        self.statuses.clear()
-        return self._otlp.export(spans)
+    def send(self, span: "ReadableSpan") -> "ExportError | None":
+        """Exports `span`; what went wrong, as the relay reports a batch: `http_error` when the
+        last attempt's answer was not 2xx (a 3xx too: the exporter counts it as success but
+        follows no redirect, so the span never arrived), `connection_error` when it got no
+        answer. Every other failure without an answer (the exporter refusing to encode or
+        send) is reported as `connection_error` as well."""
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        from data_agent.trace_relay import ExportError
+
+        self.last_status = None
+        sent = self._otlp.export([span]) is SpanExportResult.SUCCESS
+        status = self.last_status
+        if status is not None and not 200 <= status < 300:
+            return ExportError("http_error", status)
+        return None if sent else ExportError("connection_error", None)
 
     def shutdown(self) -> None:
         self._otlp.shutdown()
@@ -166,7 +183,7 @@ class ParentExporter:
 
 def parent_exporter(settings: LangfuseSettings) -> "SpanExporter | ParentExporter":
     """The exporter of the run's parent span. `run` looks it up on this module on every call, so
-    a test puts an in-memory exporter in its place."""
+    a test puts an in-memory exporter in its place (hence `SpanExporter`)."""
     return ParentExporter(settings)
 
 
@@ -438,11 +455,8 @@ class RunExport:
                 self._failed(exc)
 
     def _end_span(self) -> "ExportError | None":
-        """Ends the parent span and sends it, once; what went wrong when Langfuse answered with
-        an error status (`http_error`) or not at all (`connection_error`), as the relay reports
-        a batch. A 3xx is an error too: the exporter counts it as success but follows no
-        redirect, so the span never arrived. Every other failure without an answer (the
-        exporter refusing to encode or send) is reported as `connection_error`."""
+        """Ends the parent span and sends it, once; what went wrong (`ParentExporter.send`). A
+        test's stand-in exporter says only success or failure."""
         from opentelemetry.sdk.trace.export import SpanExportResult
 
         from data_agent.trace_relay import ExportError
@@ -450,14 +464,13 @@ class RunExport:
         if self._span is None or not self._span.is_recording():
             return None
         self._span.end()
-        assert self._exporter is not None, "the exporter comes with the span"
         exporter = self._exporter
-        sent = exporter.export([self._span]) is SpanExportResult.SUCCESS
-        statuses = exporter.statuses if isinstance(exporter, ParentExporter) else []
-        status = statuses[-1] if statuses else None
-        if status is not None and not 200 <= status < 300:
-            return ExportError("http_error", status)
-        return None if sent else ExportError("connection_error", None)
+        assert exporter is not None, "the exporter comes with the span"
+        if isinstance(exporter, ParentExporter):
+            return exporter.send(self._span)
+        if exporter.export([self._span]) is SpanExportResult.SUCCESS:
+            return None
+        return ExportError("connection_error", None)
 
     def _shutdown(self) -> None:
         if self._exporter is not None:
