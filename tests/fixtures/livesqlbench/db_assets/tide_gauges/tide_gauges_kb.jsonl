@@ -1,0 +1,1 @@
+{"id": 0, "knowledge": "Daily High-Water Mark", "description": "The highest level a station read on one calendar day.", "definition": "max(level_cm) per station per day", "type": "calculation_knowledge", "children_knowledge": -1}

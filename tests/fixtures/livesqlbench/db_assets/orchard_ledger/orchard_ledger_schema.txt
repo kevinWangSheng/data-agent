@@ -1,0 +1,22 @@
+CREATE TABLE blocks (
+    block_code text PRIMARY KEY,
+    planted_year integer,
+    replanted boolean
+);
+
+First 2 rows:
+block_code  planted_year  replanted
+B-01        2011          False
+B-02        2015          True
+
+CREATE TABLE harvest (
+    harvest_id integer PRIMARY KEY,
+    block_code text REFERENCES blocks (block_code),
+    season integer,
+    weight_kg numeric
+);
+
+First 2 rows:
+harvest_id  block_code  season  weight_kg
+1           B-01        2025    1820.5
+2           B-02        2025    944.0
