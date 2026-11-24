@@ -162,7 +162,18 @@ def test_the_dev_tier_keeps_every_attribute_but_the_tokens_names_and_the_secrets
         kept = {
             k: v
             for k, v in old.items()
-            if k not in (*TOKEN_KEYS, *SECRET_CARRIERS) and not planted.carried_by(v)
+            if k
+            not in (
+                *TOKEN_KEYS,
+                *SECRET_CARRIERS,
+                # Ticket 121 (human, 2026-11-24): the dev tier drops these too.
+                "user.id",
+                "host.name",
+                "host.arch",
+                "os.type",
+                "os.version",
+            )
+            and not planted.carried_by(v)
         }
         new = after[where]
         assert {k: new.get(k) for k in kept} == kept, where

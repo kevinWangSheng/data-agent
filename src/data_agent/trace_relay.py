@@ -53,6 +53,10 @@ USAGE_PREFIXES = ("gen_ai.usage.", "llm.token_count.")
 # Both tiers: attributes dropped by name. `anthropic.custom_base_url` would name the model
 # endpoint (spec "本地中转"); CLI 2.1.330 sends it as a boolean (captured).
 DROPPED = frozenset({"anthropic.custom_base_url"})
+# The dev tier: what names the machine, dropped on every layer, the resource's included (human,
+# 2026-11-24, ticket 121). A name ending in "." stands for every name it starts. The held-out
+# tier drops them anyway (they are outside its allowlist). `terminal.type` stays, for now.
+MACHINE_ATTRIBUTES = ("user.id", "host.", "os.")
 # Both tiers: values shaped like a credential, masked wherever they appear in a string. The same
 # shapes as `evals.scrub.KEY_SHAPE`: sk- keys, bearer tokens, JWTs, GitHub tokens, AWS key ids.
 # Not after a name character, except one ending a JSON escape: tool output is often JSON in a
@@ -96,6 +100,10 @@ HELD_OUT_ALLOWLIST = frozenset(
         "span.type",
     }
 )
+# The dev tier: the CLI's span of one tool call, which carries the call's `tool_use_id` (CLI
+# 2.1.330, captured), and the attribute Langfuse shows as an observation's input.
+TOOL_SPAN = "claude_code.tool"
+INPUT_ATTRIBUTE = "langfuse.observation.input"
 NUMBERS = frozenset({"int_value", "double_value"})
 SCALARS = NUMBERS | {"string_value", "bool_value"}
 
@@ -155,11 +163,53 @@ class AnonIds:
             return self._ids[original]
 
 
-def rewrite(body: bytes, *, tier: TraceTier, ids: AnonIds, secrets: Sequence[str]) -> bytes:
+class ToolInputs:
+    """The dev tier's tool-call inputs, by `tool_use_id`, from the run's own `tool_start` events:
+    the CLI exports none (runs/otel-capture/scrubbed/README.md, CLI 2.1.330). `RunExport` puts
+    each one in, already masked, as JSON; the relay claims it for the call's `claude_code.tool`
+    span. One the relay never claimed (the span came before the event, or never came) is
+    `unclaimed`, which `RunExport.finish` sends as an observation of its own."""
+
+    def __init__(self) -> None:
+        self._inputs: dict[str, tuple[str, int]] = {}
+        self._claimed: set[str] = set()
+        self._lock = threading.Lock()
+
+    def put(self, tool_use_id: str, text: str, time_ns: int) -> None:
+        with self._lock:
+            self._inputs[tool_use_id] = (text, time_ns)
+
+    def claim(self, tool_use_id: str) -> str | None:
+        with self._lock:
+            found = self._inputs.get(tool_use_id)
+            if found is None:
+                return None
+            self._claimed.add(tool_use_id)
+            return found[0]
+
+    def unclaimed(self) -> list[tuple[str, str, int]]:
+        """`(tool_use_id, input, time_ns)` of each input no span took, in the order put."""
+        with self._lock:
+            return [
+                (call, text, time_ns)
+                for call, (text, time_ns) in self._inputs.items()
+                if call not in self._claimed
+            ]
+
+
+def rewrite(
+    body: bytes,
+    *,
+    tier: TraceTier,
+    ids: AnonIds,
+    secrets: Sequence[str],
+    inputs: ToolInputs | None = None,
+) -> bytes:
     """A serialized `ExportTraceServiceRequest` rewritten by `tier`'s rules. `secrets` are the
-    run's known secret values (`events.known_secrets`), which never leave in the output."""
+    run's known secret values (`events.known_secrets`), which never leave in the output. On the
+    dev tier, a `claude_code.tool` span whose call `inputs` holds gets it as its input."""
     message = _parse(body)
-    _rewrite_message(message, tier, ids, secrets)
+    _rewrite_message(message, tier, ids, secrets, inputs)
     return message.SerializeToString()
 
 
@@ -173,9 +223,15 @@ def _parse(body: bytes) -> Any:
     return message
 
 
-def _rewrite_message(message: Any, tier: TraceTier, ids: AnonIds, secrets: Sequence[str]) -> None:
+def _rewrite_message(
+    message: Any,
+    tier: TraceTier,
+    ids: AnonIds,
+    secrets: Sequence[str],
+    inputs: ToolInputs | None = None,
+) -> None:
     def clean(text: str) -> str:
-        return SECRET_SHAPE.sub(REDACTED, mask(text, secrets))
+        return mask_shapes(mask(text, secrets))
 
     def attrs(kvs: Any) -> None:
         _rewrite_attributes(kvs, tier, ids, clean)
@@ -189,6 +245,9 @@ def _rewrite_message(message: Any, tier: TraceTier, ids: AnonIds, secrets: Seque
         for scope_spans in resource_spans.scope_spans:
             attrs(scope_spans.scope.attributes)
             for span in scope_spans.spans:
+                if not held_out and inputs is not None and span.name == TOOL_SPAN:
+                    # Before the attributes are cleaned, which masks the input once more.
+                    _add_input(span, inputs)
                 span.name = clean(span.name)
                 attrs(span.attributes)
                 for event in span.events:
@@ -205,6 +264,25 @@ def _rewrite_message(message: Any, tier: TraceTier, ids: AnonIds, secrets: Seque
                     span.status.message = clean(span.status.message)
 
 
+def mask_shapes(text: str) -> str:
+    """`text` with every credential-shaped value (`SECRET_SHAPE`) masked."""
+    return SECRET_SHAPE.sub(REDACTED, text)
+
+
+def _add_input(span: Any, inputs: ToolInputs) -> None:
+    """The call's input as the span's Langfuse input, when `inputs` has it. A span that already
+    has one keeps it, and the call counts as claimed: `finish` sends no second copy."""
+    found = {kv.key: kv.value for kv in span.attributes}
+    call = found.get("tool_use_id")
+    if call is None:
+        return
+    text = inputs.claim(call.string_value)
+    if text is not None and INPUT_ATTRIBUTE not in found:
+        kv = span.attributes.add()
+        kv.key = INPUT_ATTRIBUTE
+        kv.value.string_value = text
+
+
 def _rewrite_attributes(
     kvs: Any, tier: TraceTier, ids: AnonIds, clean: Callable[[str], str]
 ) -> None:
@@ -214,7 +292,7 @@ def _rewrite_attributes(
         original: str = kv.key
         key = TOKEN_RENAMES.get(original, original)
         kv.key = key
-        if key in DROPPED:
+        if key in DROPPED or _names_machine(key):
             dropped.append(index)
             continue
         if tier == "structure":
@@ -232,6 +310,12 @@ def _rewrite_attributes(
         _clean_value(kv.value, clean)
     for index in reversed(dropped):
         del kvs[index]
+
+
+def _names_machine(key: str) -> bool:
+    return any(
+        key.startswith(name) if name.endswith(".") else key == name for name in MACHINE_ATTRIBUTES
+    )
 
 
 def _clean_value(value: Any, clean: Callable[[str], str]) -> None:
@@ -305,6 +389,8 @@ class TraceRelay:
         self._secrets = tuple(secrets)
         self._drain_timeout_s = drain_timeout_s
         self._ids = AnonIds()
+        # The dev tier's tool-call inputs; `RunExport` sets it once the run has one to give.
+        self.tool_inputs: ToolInputs | None = None
         self._server: ThreadingHTTPServer | None = None
         self._done = threading.Condition()
         # Connections accepted and not yet closed; among them, requests read and not yet settled.
@@ -409,7 +495,7 @@ class TraceRelay:
             self._taken.add(request)
         try:
             message = _parse(body())
-            _rewrite_message(message, self._tier, self._ids, self._secrets)
+            _rewrite_message(message, self._tier, self._ids, self._secrets, self.tool_inputs)
         except Exception:
             reply(400)
             self._record(request, ExportError(PARSE_ERROR, None))

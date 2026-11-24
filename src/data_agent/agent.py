@@ -78,6 +78,7 @@ from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
 from data_agent.tracing import (
     CliTrace,
+    Emitter,
     LangfuseSettings,
     RunExport,
     RunFacts,
@@ -1807,7 +1808,7 @@ def rejected_by(
 
 
 def record_message(
-    log: EventLog,
+    log: Emitter,
     message: Any,
     tools: dict[str, str],
     guarded: Container[str] = (),
@@ -1833,9 +1834,9 @@ def record_message(
             log.emit("error", source="model", error=message.error)
         for block in message.content:
             if isinstance(block, TextBlock):
-                log.emit("text", text=block.text)
+                log.emit("text", text=block.text, parent=message.parent_tool_use_id)
             elif isinstance(block, ThinkingBlock):
-                log.emit("thinking", text=block.thinking)
+                log.emit("thinking", text=block.thinking, parent=message.parent_tool_use_id)
             elif isinstance(block, ToolUseBlock):
                 tools[block.id] = block.name
                 log.emit(
@@ -2338,6 +2339,8 @@ async def run(
             )
             if export is not None:
                 options = dataclasses.replace(options, env=options.env | export.context_env())
+            # The dev tier's export also takes the session's events (ticket 121).
+            recorder = log if export is None else export.observing(log)
             open_calls: dict[str, str] = {}
             session_id: str | None = None
             over_limit: TurnLimitPassed | None = None
@@ -2373,7 +2376,9 @@ async def run(
                                     else:
                                         if budget is not None:
                                             budget.observe(message)
-                                        record_message(log, message, tools, guarded, source_names)
+                                        record_message(
+                                            recorder, message, tools, guarded, source_names
+                                        )
                                         track_open_calls(message, open_calls)
                         except TurnLimitPassed as exc:
                             over_limit = exc

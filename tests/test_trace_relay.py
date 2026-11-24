@@ -4,6 +4,7 @@ of one with none (`structure-*`), with the machine's details replaced (its READM
 tests (tests/acceptance/test_observability_relay.py) run on ticket 111's hand-made request."""
 
 import gzip
+import json
 import socket
 import threading
 import time
@@ -27,6 +28,7 @@ from data_agent.trace_relay import (
     AnonIds,
     ExportError,
     RelayReport,
+    ToolInputs,
     TraceRelay,
     rewrite,
 )
@@ -154,13 +156,31 @@ def test_the_dev_tier_keeps_the_captured_content() -> None:
     before, after = requests("full"), rewritten("full", "full")
     dropped = {*TOKEN_RENAMES, "anthropic.custom_base_url"}
     for (where, old), (_, new) in zip(layers(before), layers(after), strict=True):
-        assert {k: v for k, v in old.items() if k not in dropped} == {
+        assert {k: v for k, v in old.items() if k not in dropped and not names_machine(k)} == {
             k: v for k, v in new.items() if not k.startswith(USAGE_PREFIXES)
         }, where
     found = dict(layers(after))
     assert found["claude_code.interaction"]["user_prompt"].startswith("Task type: query")
     outputs = [a["output"] for where, a in layers(after) if where == "event tool.output"]
     assert len(outputs) == 6 and all(outputs)
+
+
+def names_machine(key: str) -> bool:
+    """`user.id`, `host.*` or `os.*`: what the dev tier drops (human, 2026-11-24, ticket 121)."""
+    return key == "user.id" or key.startswith(("host.", "os."))
+
+
+@pytest.mark.parametrize("prefix", ["full", "structure"])
+def test_the_dev_tier_names_no_machine_on_any_layer(prefix: str) -> None:
+    before = [k for _, a in layers(requests(prefix)) for k in a if names_machine(k)]
+    # The captured run carries them on the resource and on every span.
+    assert {"user.id", "host.arch", "os.type", "os.version"} <= set(before)
+    after = rewritten(prefix, "full")
+    assert [(where, k) for where, a in layers(after) for k in a if names_machine(k)] == []
+    found = dict(layers(after))
+    # What sits beside them stays: the terminal (out of this ticket's scope) and the service.
+    assert found["claude_code.tool"]["terminal.type"] == "Orca"
+    assert found["resource"]["service.name"]
 
 
 @pytest.mark.parametrize("prefix", ["full", "structure"])
@@ -437,3 +457,80 @@ def test_a_known_secret_in_a_span_or_event_name_is_masked() -> None:
         message.SerializeToString(), tier="full", ids=AnonIds(), secrets=("known-value-2",)
     )
     assert b"known-value-2" not in out and b"run [REDACTED]" in out
+
+
+# --- the tool calls' inputs (ticket 121) --------------------------------------------------------
+
+QUERY_CALL = "call_00_ijxia9nc1ynowUqX4bg23505"  # full-req002's `query_database` call
+
+
+def tool_spans(messages: list[Any]) -> dict[str, dict[str, Any]]:
+    """The `claude_code.tool` spans' attributes by their `tool_use_id`."""
+    found = [attrs(s.attributes) for s in spans(messages) if s.name == "claude_code.tool"]
+    return {a["tool_use_id"]: a for a in found}
+
+
+def test_the_dev_tier_puts_a_tool_calls_input_on_its_tool_span_masked() -> None:
+    inputs = ToolInputs()
+    sql = "SELECT 'known-value-3', 'sk-" + "b2" * 15 + "' FROM customers"
+    inputs.put(QUERY_CALL, json.dumps({"sql": sql}), 1)
+    inputs.put("toolu_not_in_this_run", json.dumps({"sql": "SELECT 2"}), 2)
+    ids = AnonIds()
+    out = [
+        parse(
+            rewrite(
+                m.SerializeToString(),
+                tier="full",
+                ids=ids,
+                secrets=("known-value-3",),
+                inputs=inputs,
+            )
+        )
+        for m in requests("full")
+    ]
+    tools = tool_spans(out)
+    assert len(tools) == 6
+    shown = json.loads(tools[QUERY_CALL]["langfuse.observation.input"])
+    assert shown == {"sql": "SELECT '[REDACTED]', '[REDACTED]' FROM customers"}
+    others = [a for call, a in tools.items() if call != QUERY_CALL]
+    assert others and all("langfuse.observation.input" not in a for a in others)
+    # The call whose span has not come is left for `RunExport.finish`.
+    assert inputs.unclaimed() == [("toolu_not_in_this_run", json.dumps({"sql": "SELECT 2"}), 2)]
+
+
+def test_a_tool_span_with_its_own_input_keeps_it_and_claims_the_call() -> None:
+    """Should a CLI export the input itself, the span keeps it and `finish` sends no copy."""
+    message = message_of(CAPTURED / "full-req002.json")
+    [tool] = [s for s in spans([message]) if s.name == "claude_code.tool"]
+    kv = tool.attributes.add()
+    kv.key = "langfuse.observation.input"
+    kv.value.string_value = "the CLI's own"
+    inputs = ToolInputs()
+    inputs.put(QUERY_CALL, json.dumps({"sql": "SELECT 1"}), 1)
+    out = rewrite(
+        message.SerializeToString(), tier="full", ids=AnonIds(), secrets=(), inputs=inputs
+    )
+    found = [kv.value.string_value for s in spans([parse(out)]) for kv in s.attributes]
+    assert found.count("the CLI's own") == 1 and json.dumps({"sql": "SELECT 1"}) not in found
+    assert inputs.unclaimed() == []
+
+
+def test_the_held_out_tier_puts_no_input_on_any_span() -> None:
+    message = message_of(CAPTURED / "structure-req001.json")
+    calls = [a["tool_use_id"] for a in tool_spans([message]).values()]
+    assert calls
+    inputs = ToolInputs()
+    for number, call in enumerate(calls):
+        inputs.put(call, json.dumps({"sql": "SELECT held_out_marker"}), number)
+    out = rewrite(
+        message.SerializeToString(), tier="structure", ids=AnonIds(), secrets=(), inputs=inputs
+    )
+    assert b"held_out_marker" not in out and b"langfuse.observation" not in out
+    for where, found in layers([parse(out)]):
+        outside = {
+            k
+            for k in found
+            if k not in HELD_OUT_ALLOWLIST | ANONYMIZED_IDS and not k.startswith(USAGE_PREFIXES)
+        }
+        assert outside == set(), where
+    assert len(inputs.unclaimed()) == len(calls)
