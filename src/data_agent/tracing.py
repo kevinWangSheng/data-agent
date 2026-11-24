@@ -440,7 +440,9 @@ class RunExport:
     def _end_span(self) -> "ExportError | None":
         """Ends the parent span and sends it, once; what went wrong when Langfuse answered with
         an error status (`http_error`) or not at all (`connection_error`), as the relay reports
-        a batch."""
+        a batch. A 3xx is an error too: the exporter counts it as success but follows no
+        redirect, so the span never arrived. Every other failure without an answer (the
+        exporter refusing to encode or send) is reported as `connection_error`."""
         from opentelemetry.sdk.trace.export import SpanExportResult
 
         from data_agent.trace_relay import ExportError
@@ -449,12 +451,13 @@ class RunExport:
             return None
         self._span.end()
         assert self._exporter is not None, "the exporter comes with the span"
-        if self._exporter.export([self._span]) is SpanExportResult.SUCCESS:
-            return None
         exporter = self._exporter
+        sent = exporter.export([self._span]) is SpanExportResult.SUCCESS
         statuses = exporter.statuses if isinstance(exporter, ParentExporter) else []
         status = statuses[-1] if statuses else None
-        return ExportError("http_error" if status is not None else "connection_error", status)
+        if status is not None and not 200 <= status < 300:
+            return ExportError("http_error", status)
+        return None if sent else ExportError("connection_error", None)
 
     def _shutdown(self) -> None:
         if self._exporter is not None:

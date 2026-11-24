@@ -288,6 +288,20 @@ def test_a_parent_span_langfuse_rejects_is_a_trace_export_error(
     assert export.failure is None
 
 
+def test_a_parent_span_langfuse_redirects_is_an_http_error(
+    monkeypatch: pytest.MonkeyPatch, langfuse: Recorder
+) -> None:
+    """The exporter takes any 2xx-3xx as success and follows no redirect: a 302 (an http:// base
+    URL bounced to https, a proxy's login page) never delivered the span."""
+    monkeypatch.setattr(trace_relay, "TraceRelay", StandInRelay)
+    langfuse.post_status = 302
+    with RunExport(langfuse.settings(), "full", []) as export:
+        assert export.start(FACTS) is not None
+        events = export.finish(RESULT, "42")
+    assert ("trace_export_error", {"error_type": "http_error", "status": 302}) in events
+    assert events[-1][0] == "trace"
+
+
 def test_a_parent_span_langfuse_never_answers_is_a_connection_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
