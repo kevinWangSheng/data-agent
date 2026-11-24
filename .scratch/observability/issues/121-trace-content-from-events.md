@@ -29,7 +29,7 @@ Branch: worktree-121-trace-content-from-events
 - 中转在本进程里（`trace_relay.py` `TraceRelay`，`rewrite`/`_rewrite_message` 改写每个批次），由 `tracing.RunExport` 启动；`RunExport` 拿到 run 的 secrets，事件流也在本进程（`agent.py` 的 `run`）。
 - 做法（照这个方向，细节自己定，写成一处能改）：
   1. **工具入参**：开发集档下，`RunExport` 把每个 `tool_start` 的 `input`（按 `tool_use_id`）交给中转；中转转发 `claude_code.tool` span 时，按它的 `tool_use_id` 填 `langfuse.observation.input`（JSON 字符串，经 `Masks` 遮掉 secrets）。span 比对应事件先到时的处理（等一小段、或在 `finish` 时补一个带同一 `tool_use_id` 的观测）自己定，写进最终回复。
-  2. **模型文字**：开发集档下，模型每条 assistant 消息的文字（事件里的 `text`；`thinking` 带不带列进"待人定"，默认不带）作为父 span 下的子观测（GENERATION 或 SPAN 自己定，名字如 `assistant.message`，按时间排），不尝试对到 CLI 的 `llm_request` 上；验证子 agent 的消息（`parent` 不为空）挂在同一层，带上 `parent` 便于区分。现在的 `text` 事件不带 `parent`（`agent.py:1836`），按 Authority 那一行补上。
+  2. **模型文字**：开发集档下，模型每条 assistant 消息的文字（事件里的 `text`；`thinking` 不带，人 2026-11-24 定）作为父 span 下的子观测（GENERATION 或 SPAN 自己定，名字如 `assistant.message`，按时间排），不尝试对到 CLI 的 `llm_request` 上；验证子 agent 的消息（`parent` 不为空）挂在同一层，带上 `parent` 便于区分。现在的 `text` 事件不带 `parent`（`agent.py:1836`），按 Authority 那一行补上。
   3. 留出集档：上面两条都不做，单元测试钉住（白名单之外的属性、`langfuse.observation.input/output` 一个都不出现）。
 - 开发集档已有的东西保持：父 span 的 output 仍是最终答案；`tool.output` span 事件照旧转发。
 - 导出关闭时不做任何事（不缓存事件）。
