@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import threading
+import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -620,6 +621,81 @@ async def test_a_tool_input_no_span_took_is_an_observation_of_its_own(
     assert json.loads(observed.attributes["langfuse.observation.input"]) == MASKED_INPUT
 
 
+CAPTURED_TOOL = REPO_ROOT / "tests" / "fixtures" / "observability" / "captured" / "full-req002.json"
+CAPTURED_CALL = "call_00_ijxia9nc1ynowUqX4bg23505"  # its `query_database` call
+
+
+def posted_spans(langfuse: Recorder) -> list[tuple[str, dict[str, str]]]:
+    """Every span Langfuse got (relay and parent exporter post to the same path): name and
+    string attributes."""
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+        ExportTraceServiceRequest,  # pyright: ignore[reportAttributeAccessIssue]
+    )
+
+    found: list[tuple[str, dict[str, str]]] = []
+    for method, path, _, body in langfuse.seen:
+        if (method, path) != ("POST", tracing.OTLP_PATH):
+            continue
+        request = ExportTraceServiceRequest()
+        request.ParseFromString(body)
+        found += [
+            (span.name, {kv.key: kv.value.string_value for kv in span.attributes})
+            for resource_spans in request.resource_spans
+            for scope_spans in resource_spans.scope_spans
+            for span in scope_spans.spans
+        ]
+    return found
+
+
+@pytest.mark.parametrize("span_first", [False, True], ids=["event-first", "span-first"])
+def test_the_real_relay_puts_the_input_on_the_tool_span_or_finish_sends_it(
+    langfuse: Recorder, span_first: bool
+) -> None:
+    """Through the real `TraceRelay`: the input reaches the CLI's tool span when the event came
+    first, else `finish` sends it as `tool.input` with the same `tool_use_id`."""
+    from google.protobuf.json_format import Parse
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+        ExportTraceServiceRequest,  # pyright: ignore[reportAttributeAccessIssue]
+    )
+
+    body = Parse(CAPTURED_TOOL.read_text(), ExportTraceServiceRequest()).SerializeToString()
+    sql = {"sql": "SELECT 1 -- sk-planted-0002"}
+    with RunExport(langfuse.settings(), "full", ["sk-planted-0002"]) as export:
+        trace = export.start(FACTS)
+        assert trace is not None
+
+        def post() -> None:
+            request = urllib.request.Request(
+                trace.endpoint,
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/x-protobuf"},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert response.status == 200
+
+        def observe() -> None:
+            export.observe("tool_start", {"tool_use_id": CAPTURED_CALL, "input": sql})
+
+        for step in (post, observe) if span_first else (observe, post):
+            step()
+        events = export.finish(RESULT, "42")
+    assert events[-1][0] == "trace" and export.failure is None
+    found = posted_spans(langfuse)
+    [tool] = [a for name, a in found if name == "claude_code.tool"]
+    inputs = [a for name, a in found if name == "tool.input"]
+    masked = {"sql": "SELECT 1 -- [REDACTED]"}
+    if span_first:
+        assert "langfuse.observation.input" not in tool
+        [observed] = inputs
+        assert observed["tool_use_id"] == CAPTURED_CALL
+        assert json.loads(observed["langfuse.observation.input"]) == masked
+    else:
+        assert json.loads(tool["langfuse.observation.input"]) == masked
+        assert inputs == []
+    assert b"sk-planted-0002" not in b"".join(s[3] for s in langfuse.seen)
+
+
 async def test_children_that_fail_to_build_still_leave_the_parent_span(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -630,7 +706,9 @@ async def test_children_that_fail_to_build_still_leave_the_parent_span(
     outcome, events, _, exporter = await traced_run(monkeypatch, tmp_path, messages=conversation())
     assert outcome.finished
     assert [s.name for s in exporter.get_finished_spans()] == ["data-agent.run"]
-    assert [e["type"] for e in events][-2:] == ["trace", "result"]
+    assert [e["type"] for e in events][-3:] == ["error", "trace", "result"]
+    error = events[-3]
+    assert error["source"] == "trace" and "a child broke" in error["error"]
 
 
 async def test_the_held_out_tier_sends_no_input_and_no_text(

@@ -73,9 +73,6 @@ TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creat
 USAGE_PREFIXES = ("gen_ai.usage.", "llm.token_count.")
 # Attributes holding a secret or the endpoint: dropped or masked, either is fine.
 SECRET_CARRIERS = ("anthropic.custom_base_url", "api_key_hint", "claude_code.env_echo")
-# What names the machine, which the dev tier drops too (human, 2026-11-24, ticket 121): `user.id`
-# and the fixture's `host.*` and `os.*`.
-MACHINE_ATTRIBUTES = ("user.id", "host.name", "host.arch", "os.type", "os.version")
 ANONYMIZED = ("session.id", "gen_ai.conversation.id", "tool_use_id", "gen_ai.tool.call.id")
 # The held-out tier's allowlist (spec "本地中转"), with the anonymized ids and the placeholder name
 # of the MCP server's attribute; token counts go by prefix.
@@ -165,7 +162,17 @@ def test_the_dev_tier_keeps_every_attribute_but_the_tokens_names_and_the_secrets
         kept = {
             k: v
             for k, v in old.items()
-            if k not in (*TOKEN_KEYS, *SECRET_CARRIERS, *MACHINE_ATTRIBUTES)
+            if k
+            not in (
+                *TOKEN_KEYS,
+                *SECRET_CARRIERS,
+                # Ticket 121 (human, 2026-11-24): the dev tier drops these too.
+                "user.id",
+                "host.name",
+                "host.arch",
+                "os.type",
+                "os.version",
+            )
             and not planted.carried_by(v)
         }
         new = after[where]

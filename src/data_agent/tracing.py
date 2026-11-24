@@ -352,6 +352,7 @@ class RunExport:
         self._inputs: ToolInputs | None = None
         self._texts: list[tuple[int, int, str, str | None]] = []
         self._sequence = 0
+        self._content_failure: str | None = None
 
     def __enter__(self) -> "RunExport":
         return self
@@ -436,14 +437,22 @@ class RunExport:
         """One of the run's events, on the dev tier (ticket 121): a `tool_start`'s input goes to
         the relay for the call's `claude_code.tool` span, a `text` to `finish`'s
         `assistant.message` observations; both masked here (`Masks` and the relay's secret
-        shapes), the input as JSON. `thinking` is left out. Never raises: a failure goes to
-        `failure` and leaves the run alone."""
+        shapes), the input as JSON. `thinking` is left out. Never raises: a failure is one
+        `error` event from `finish` and leaves the run alone."""
         if self.tier != "full" or self._span is None or not self._span.is_recording():
             return
         try:
             self._observe(kind, fields)
         except Exception as exc:
-            self._failed(exc)
+            self._content_failed(exc)
+
+    def _content_failed(self, exc: Exception) -> None:
+        """The first failure taking the dev tier's content: `finish` writes it as an `error`
+        event; the run and the rest of its trace go on."""
+        if self._content_failure is None:
+            self._content_failure = (
+                f"the trace's tool inputs or texts were not all sent ({type(exc).__name__}: {exc})"
+            )
 
     def _observe(self, kind: str, fields: Mapping[str, Any]) -> None:
         now = time.time_ns()
@@ -495,7 +504,7 @@ class RunExport:
             children = self._children()
         except Exception as exc:
             # The run's own span still goes: losing the texts is no reason to lose the trace.
-            self._failed(exc)
+            self._content_failed(exc)
             children = []
         self._span.set_attributes(result_attributes(self.tier, result, answer, self.masks))
         trace_id = format(self._span.get_span_context().trace_id, "032x")
@@ -506,6 +515,8 @@ class RunExport:
             ("trace_export_error", {"error_type": error.error_type, "status": error.status})
             for error in errors
         ]
+        if self._content_failure is not None:
+            events.append(("error", {"source": "trace", "error": self._content_failure}))
         events.append(
             (
                 "trace",
