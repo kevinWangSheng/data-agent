@@ -231,3 +231,4 @@ uv run data-agent run --type query --config full --duckdb runs/116-github/shop.d
 Check that the events contain a `tool_start` for an `mcp__github__` tool and that the answer matches issue #1.
 
 - 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查完成，无意见。合并前：真实运行（`runs/batch2/live-checks.sh`）和"待人定"交人定。
+- 2026-11-23（主会话，真实运行）：`uv run pytest tests/acceptance/test_mcp_e2e.py -m integration -v` 第一次 1 failed 1 error，原因是本机 colima 的 docker 数据盘满（mongo 启动报 `No space left on device`），不是代码问题；清掉悬空镜像后重跑 `2 passed in 40.86s`（`runs/batch2/116-e2e.log`）。

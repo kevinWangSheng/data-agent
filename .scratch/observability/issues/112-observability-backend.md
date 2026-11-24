@@ -305,3 +305,7 @@ To re-run any of those, start it again with `uv run python runs/112/fake_model_s
 - 2026-11-23（主会话，第 7 步）：PR #125 CI 绿。Codex GitHub app 1 条意见，主会话对照代码核实属实：
   - 退回：父 span 导出失败不报。`tracing.py:303,314` 用 `SimpleSpanProcessor`，它吞掉 exporter 的异常、不看导出结果；`_finish`（`:367` `self._span.end()`）之后照常写 `trace` 事件。Langfuse 拒收或超时时，父 span（会话 id、答案、总 usage 和 cost）静默丢失，事件里没有任何错误。要显式拿到父 span 的导出结果（例如直接调 exporter 的 `export()` 看 `SpanExportResult`，或包一层记下失败），失败时写一条 `trace_export_error`（只有错误类型和 HTTP 状态码，和中转同一口径），run 照常结束。配一个修复前会失败的测试（假 Langfuse 对父 span 返回 500 / 连接被拒）。
   - 派修复要等主会话的真实运行（`runs/batch2/live-checks.sh` 在本工单 worktree 里跑 jaffle 和实测 2、3）结束，不在运行中改 worktree。
+- 2026-11-23（主会话，真实运行，`runs/batch2/live-checks.sh`，本分支 d69448b，Langfuse 变量未设）：
+  - jaffle 7 题 7/7 通过，$0.0926。
+  - 实测 2（fork 子 agent 默认开，`--case b1_monthly_revenue`）：通过，$0.0230。事件里 `verifier_dispatch`→`verifier_start`→`verifier_end`（turns 6、tool_calls 9、checks 全 PASS、hit_max_turns false）都在 `answer`、`result` 之前；无 `error` 事件；`result.cost_basis=price_table`，`errors: []`。验证子 agent 照常在前台跑完，不需要 `CLAUDE_CODE_FORK_SUBAGENT=0`。`subagents/agent-*.jsonl` 在本次运行的临时配置目录里，运行后已清掉，没直接看到文件；`verifier_end` 的 turns/tool_calls 来自它，说明读到了。
+  - 实测 3（steer）：中途插话得到 2 个 ResultMessage，各自 `num_turns=1`，`user_message_uuid` 分别为 P、S（`user_message_uuids` 各一个），第二轮含 BANANA；`--replay` 结果一致。
