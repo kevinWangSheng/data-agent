@@ -5,6 +5,7 @@ calls, or a real client pointed at a closed port on the loopback address."""
 import asyncio
 import json
 import logging
+import random
 import socket
 from pathlib import Path
 from typing import Any, cast
@@ -456,3 +457,25 @@ async def no_message(_: Incoming) -> None:
 
 async def no_press(_: Press) -> None:
     pass
+
+
+def test_a_code_line_longer_than_a_section_is_cut_in_the_line() -> None:
+    """Not cut only after the opening fence, again and again (which would never end)."""
+    texts = section_texts("```\n" + "&" * 600 + "\n```")
+    assert len(texts) == 2
+    assert all(len(text) <= SECTION_CHARS for text in texts)
+    for text in texts:
+        assert text.startswith("```\n")
+        assert text.endswith("\n```")
+        assert "&" not in text.replace("&amp;", "")
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_sections_end_and_hold_the_limit_on_mixed_text(seed: int) -> None:
+    rng = random.Random(seed)
+    words = ["```", "&", "<b>", "[a link](https://example.com/x)", "word", "\n", "&" * 300]
+    text = "".join(rng.choice(words) + rng.choice(["", " ", "\n"]) for _ in range(400))
+    texts = section_texts(text[: LIMITS.max_chars])
+    assert all(len(text) <= SECTION_CHARS for text in texts)
+    for text in texts:
+        assert sum(line == "```" for line in text.split("\n")) % 2 == 0 or text is texts[-1]

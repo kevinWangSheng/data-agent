@@ -267,7 +267,12 @@ def sections(text: str) -> list[str]:
     pieces: list[str] = []
     while len(text) > SECTION_CHARS:
         room = SECTION_CHARS - len(closing)
-        cut = text.rfind("\n", 0, room) + 1 or safe_cut(text, room)
+        # A piece takes something past an opening fence, which the next piece would open again.
+        first = text.split("\n", 1)[0]
+        head = len(first) + 1 if is_fence(first) else 0
+        cut = text.rfind("\n", 0, room) + 1
+        if cut <= head:
+            cut = safe_cut(text, room, head)
         piece, text = text[:cut], text[cut:]
         if sum(is_fence(line) for line in piece.split("\n")) % 2:
             piece = piece.removesuffix("\n") + closing
@@ -276,9 +281,9 @@ def sections(text: str) -> list[str]:
     return [*pieces, text]
 
 
-def safe_cut(text: str, room: int) -> int:
+def safe_cut(text: str, room: int, head: int) -> int:
     """Where to cut a line longer than `room`: at `room`, or before an escape or a link that
-    `room` would cut in two (unless that leaves nothing before the cut)."""
+    `room` would cut in two, unless that leaves nothing past `head` before the cut."""
     cut = room
     amp = text.rfind("&", max(0, cut - ESCAPE_CHARS + 1), cut)
     if amp != -1 and ";" not in text[amp:cut]:
@@ -286,7 +291,7 @@ def safe_cut(text: str, room: int) -> int:
     opening = text.rfind("<", 0, cut)
     if opening > text.rfind(">", 0, cut):
         cut = opening
-    return cut or room
+    return cut if cut > head else room
 
 
 def to_mrkdwn(markdown: str) -> str:
