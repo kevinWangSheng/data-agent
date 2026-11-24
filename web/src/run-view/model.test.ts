@@ -553,7 +553,7 @@ describe('export events', () => {
   })
 
   test("rowOf gives the duration the backend's row gives for the same events", () => {
-    // tests/test_web_read.py: the same events give duration_ms 15000 with ended_ts, 25000 without.
+    // tests/test_web_runs_duration.py: the same events give duration_ms 15000 with ended_ts, 25000 without.
     const events = (ended?: number): RunEvent[] => [
       { ...version({}), ts: at(0) },
       { seq: 1, type: 'answer', ts: at(15), text: '42' },
