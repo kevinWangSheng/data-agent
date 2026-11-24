@@ -43,7 +43,6 @@ from livesqlbench_support import (
     agent_visible,
     generate,
     leaks,
-    main_env,
     new_agent,
     query_records,
     run_trial,
@@ -70,12 +69,7 @@ def test_the_write_credential_reaches_the_verifier_only(tmp_path: Path) -> None:
     for task_dir in generated.tasks:
         config = Task(task_dir).config
         assert WRITE_PASSWORD in config.verifier.env.values(), "the verifier has no credential"
-        seen = {
-            **agent_visible(task_dir),
-            "[environment] env": json.dumps(config.environment.env),
-            "compose main environment": json.dumps(main_env(task_dir)),
-        }
-        assert leaks(seen, CREDENTIALS) == []
+        assert leaks(agent_visible(task_dir), CREDENTIALS) == []
 
 
 @TICKET_128

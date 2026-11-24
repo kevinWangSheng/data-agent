@@ -131,13 +131,15 @@ def read(path: Path) -> str:
 
 
 def agent_visible(task_dir: Path) -> dict[str, str]:
-    """What the agent can see of a task, by relative path: the instruction and every file under
-    `environment/` (its image, its compose services and what they mount, `db_assets` among
-    them). `tests/` (the verifier's, uploaded after the agent) and `solution/` (the oracle's)
-    are left out; so is `task.toml`, whose agent-side settings are checked as parsed values."""
+    """What the agent can see of a task: the instruction and every file under `environment/` (its
+    image, its compose services and what they mount, `db_assets` among them), by relative path,
+    plus its container's variables (`agent_container_env`) under the key `container env`.
+    `tests/` (the verifier's, uploaded after the agent) and `solution/` (the oracle's) are left
+    out, and of `task.toml` only `[environment] env` reaches the agent."""
     seen = {"instruction.md": read(task_dir / "instruction.md")}
     for path in files_under(task_dir / "environment"):
         seen[str(path.relative_to(task_dir))] = read(path)
+    seen["container env"] = json.dumps(agent_container_env(task_dir))
     return seen
 
 
