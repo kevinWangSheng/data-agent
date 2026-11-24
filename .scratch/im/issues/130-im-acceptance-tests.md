@@ -1,10 +1,10 @@
 # 130 — IM 入口：验收测试（会话映射、触发、澄清、进度、插话与取消、排版、配置、出错；全部不连平台、不调模型）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (worktree 130-im-acceptance-tests)
+Branch: worktree-130-im-acceptance-tests
 
 ## Goal
 
@@ -206,10 +206,128 @@ spec "Testing Decisions"（`.scratch/im/spec.md:102-114`，含 2026-11-24 的更
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 2 (Codex 1 finding fixed; eng:code-review judgement calls fixed or answered above)
+- Model spend: $0
+- Outcome: —
 
 ## Comments
+
+- 2026-11-24（工单 agent 最终回复，主会话照抄）：
+
+**Scope.** `git diff main...HEAD --stat` shows 17 files, 2194 insertions:
+- `src/data_agent/im/` (7 stub files);
+- `src/data_agent/cli.py`, where the only change is the `--im` `add_argument` (`type=Path`, help says TOML);
+- `tests/acceptance/im_support.py` and 8 `test_im_*.py` files.
+
+`pyproject.toml`, `uv.lock` and `src/data_agent/web/` are untouched. No platform library is imported. There is no `tests/fixtures/im/` directory: the configs are written into `tmp_path`, so the scrub command does not apply. Pre-commit, including the secret scan, passed on all 4 commits.
+
+**`make check`** on `05a212e`: ruff "All checks passed!"; basedpyright "0 errors, 0 warnings, 0 notes"; pytest "2851 passed, 2 skipped, 79 deselected, 59 xfailed in 772.42s"; web "Test Files 30 passed (30), Tests 442 passed (442)"; exit=0.
+
+**`pytest tests/acceptance/test_im_*.py -v`**: "1 passed, 59 xfailed", 0 XPASS, 0 skipped. The one PASSED test is the guard `test_data_agent_web_without_im_starts_no_adapter`. Every other test, across all 8 files, is XFAIL.
+
+**`--runxfail` failure reasons per group:**
+
+| Group | Tests | Reason |
+|---|---|---|
+| sessions | 5 | `NotImplementedError: ticket 131` |
+| triggers | 6 | `NotImplementedError: ticket 131` |
+| clarification | 5 | `NotImplementedError: ticket 131` |
+| progress | 5 | `NotImplementedError: ticket 131` |
+| steer/cancel | 9 | `NotImplementedError: ticket 131` |
+| format | 9 | `NotImplementedError: ticket 131` |
+| config | 11 | `NotImplementedError: ticket 131` |
+| config | 1 | `assert 0 == 1` (`service.start` was never called) |
+| config | 1 | `AssertionError: the run inherits the server's whole environment` (`Popen` got no `env=`) |
+| errors | 7 | `NotImplementedError: ticket 131` |
+
+None of the failures is a fixture or stand-in error.
+
+**Reference implementation and reverse checks.** The reference implementation is not committed; it lives in git-ignored `runs/im130/ref/` and is swapped in by `runs/im130/swap.sh`. `git status --short src/` is clean afterwards. With it in place, `--runxfail` gives "60 passed". Each injected bug makes these tests fail:
+
+| Injected bug | Tests that fail |
+|---|---|
+| outsider's message is sent | both outsider trigger tests |
+| group message without @ gets an answer | `only_a_mention…`, `group_without_threads…` |
+| thread map lost on restart | `the_thread_map_survives_a_restart…` |
+| full option text on the buttons | `numbered_options_with_number_buttons` |
+| no throttle | `edits_wait_out_the_platforms_interval` |
+| a split part over the limit | `paragraph_over_the_limit…` |
+| failed `display_chart` counted in N | `charts_are_counted…`, `answer_with_charts_says_how_many` |
+| table not cut to fit one message | `table_too_long_for_one_message…` |
+| token written to the log | `no_token_value_reaches…` |
+| text `stop` sent as a message | the 3 `word_stop` cases, `stop_with_no_turn_running` |
+| whole environment passed to the run | `a_run_starts_without_the_im_tokens` |
+| `PATH` dropped from the run's environment | `a_run_starts_without_the_im_tokens` |
+| any `DATA_AGENT_` prefix accepted (incl. `DATA_AGENT_API_KEY`) | `model-key-as-token`, `other-platforms-prefix`, the no-token test |
+| one generic failure reply, no run id | all errors tests except "stopped and crashed read differently" |
+
+**Reviews (2 fix rounds):**
+- **`da-review main` (Codex).** One finding, fixed: spec `:49` also cuts a table that doesn't fit in one message. `tables_to_code` gained a `limit`, and a `format_answer` test was added.
+- **`eng:code-review main`.** No hard violations and no blocking spec gaps. Fixed:
+  - the support-module docstring now says that only the `expect_*` helpers assert;
+  - one comprehension became `next()`;
+  - a test was renamed from "too wide" to "too long";
+  - the `start` stand-in is bound to its real signature;
+  - the status after a clarification turn and after Stop is now tested;
+  - the "nothing running" reply is checked to land in its thread.
+- **Fixed after a last self-review:**
+  - the retry after a refused send used the same text as the refused message, so that assertion was always true;
+  - the steer test no longer forbids acknowledging a steer (the spec says nothing about it);
+  - `service.py` now says the `data-agent[im]` libraries are checked inside `start`, so ticket 131 cannot break the two `--im` CLI tests.
+- **Not fixed, with reasons:**
+  - the repeated clock-advance-and-poll lines: a shared helper is left out to keep each test explicit;
+  - `Incoming` and `Press` repeat the same fields, and `platform` is a plain string: that is how the human-reviewed contract shapes them;
+  - `typing` has no test: the spec lists it and the "Testing Decisions" section doesn't test it;
+  - `FakePlatform.press` always presses as a group message: no test needs a press in a direct chat;
+  - `"0.25" in text` fixes the cost to at least two decimals: that is data, not wording.
+
+**Contract 1–9, for human review:**
+
+1. **Platform interface** (`im/platform.py`).
+   - `Incoming(platform, chat_id, thread_id: str | None, user_id: str, direct: bool, mentioned: bool, text, new_conversation=False)`. The private-or-group field is `direct: bool`.
+   - Buttons and messages: `Button(label, value ≤64 B ASCII)`, `Outgoing(text, buttons)`, and `Press(platform, chat_id, thread_id, user_id, direct, message_id, value)` for a button press.
+   - The platform declares `Capabilities(edit, buttons, typing)` and `Limits(max_chars, edit_interval)`.
+   - `Platform` protocol: `name`, `capabilities`, `limits`, and the async methods `start(on_message, on_press)`, `stop`, `send(chat_id, thread_id, Outgoing) -> id`, `edit(chat_id, message_id, Outgoing)` and `typing`.
+   - The platform implementation, not the adapter, does these: resolves `thread_id` (Slack: the message `ts`; Discord: the id of the thread it makes; Telegram: None), takes the mention out of the text, maps `/new` to `new_conversation`, converts Markdown, and gives user ids as strings.
+2. **Common entry point** (`im/adapter.py`).
+   - `Adapter(platform, conversations: ConversationsLike, runs: RunsDir, allowed_users, clock=time.monotonic)`, async, with `start()`, `on_message()`, `on_press()`, `poll()` (one pass) and `run()` (the loop, `POLL_SECONDS = 0.5`).
+   - The adapter never sleeps; handlers finish their platform calls before returning; conversation calls go to a worker thread.
+3. **Thread map.** The key is (platform, chat_id, thread_id). It is stored in `<runs-dir>/im/threads.json` (`IM_DIR`, `THREADS_FILE`), replaced whole on each change and read back at start.
+4. **Config** (`im/config.py`).
+   - `load_config(path, environ) -> dict[str, PlatformConfig]` raises `ImConfigError(ValueError)` naming the platform.
+   - `PlatformConfig(platform, allowed_users: frozenset[str], token_envs, tokens)`, where `tokens` is hidden from `repr`. `TOKEN_KEYS` and `PREFIXES` give `DATA_AGENT_<PLATFORM>_`.
+5. **Format** (`im/format.py`). `split_message(text, limit)`, `tables_to_code(text, max_rows=TABLE_ROWS=20, limit=None)`, `chart_count(events)` and `format_answer(text, events, limit)`.
+6. **Progress** (`im/progress.py`). `status_text(events, ended=None)`. Duration runs from the first event's `ts` to `result.ended_ts`, or `result.ts` without it.
+7. **Start entry.** `data_agent.im.service.start(app, configs)` is called by `serve_web` after `create_app` and looked up at call time. The extra is checked inside `start`.
+8. **Run environment.** `config.run_env(environ, configs)` is given to `Popen` as `env=` and drops only the token variables the file names.
+9. **Behaviour details fixed here:**
+   - **Busy, or any other refusal:** a reply with `Refused.detail`. A conversation already created stays mapped and is reused by the next message in the thread.
+   - **End states:**
+     - success: "done" with duration and cost, Stop button removed;
+     - after a clarification: waiting for the answer, which reads differently from an answered turn, and nothing more is sent;
+     - failed `result`: a reply naming the cause, with the run id;
+     - no `result`: "stopped" for `cancelled`, "failed" for `failure`, with the run id;
+     - after Stop: the status changes and the button is removed.
+   - **Language and step labels:** English, with steps grouped like the web UI's `toolKind`, plus verifying, thinking and writing the answer.
+   - **`stop`:** `text.strip().casefold() == "stop"` after the mention is removed. "stop the query" is an ordinary message. With nothing running, the bot replies that nothing is running.
+   - **Allowed list:** applies to messages, steers, `stop`, `/new` and button presses. An outsider gets one reply with their user id in a direct chat and nothing at all in a group.
+   - **Config edges:** an unknown platform table and a file with no table are both errors. `--im` without `--data-sources` is accepted, and each turn then gets the 400 refusal as a reply.
+   - **Splitting:**
+     - between paragraphs;
+     - a paragraph over the limit is split by lines, then by characters;
+     - a code block that fits in one message is never split, and a longer one is re-fenced in each part;
+     - a table keeps 20 rows, or fewer to fit one message, and the total is given.
+   - **N (number of charts):** counted like the web UI's `answerCharts`.
+   - **Decided beyond the item-9 list (please confirm):**
+     - a group without threads (Telegram) needs the @ every time;
+     - a platform without edits gets no status message, only the answer;
+     - a steer sends no new status message, and whether the bot acknowledges a steer is left open;
+     - `/new` with text starts the next conversation with that text;
+     - unknown keys in a table are refused;
+     - tokens of platforms the file doesn't name stay in the run's environment;
+     - `Adapter.run` and `POLL_SECONDS` are fixed;
+     - whether the last status edit waits out the throttle interval is left open.
+   - **Unverified (`未确认`):** the API-error `result` uses `subtype: "success", is_error: true`. No repo fixture has a real `api_error` result to confirm it; the adapter decides by `terminal_reason`, so the test does not depend on it.
+
+No real run was made: per the ticket, the per-platform real runs belong to 131–133.
