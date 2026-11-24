@@ -299,12 +299,9 @@ Choices beyond the spec, for you to decide:
   - The PR body's screening results and spend aren't asserted. Their format isn't fixed, and the required test bullet asks only for the noise note.
 
 
-Status: in-review
-
-I've already read those three files and the final reply above is based on them, so it stands as written.
+  - 最终核对（agent 的补充回复）：
 
 - **`ref3.txt`**: with the reference implementation in place, `27 passed in 59.20s`.
 - **`mutants3.txt`**: all 22 mutants make at least one test fail. They range from `holdout` (1 test fails) to `no_push` (19 fail).
 - **`check3.txt`**: `make check exit=0`, with `2850 passed, 2 skipped, 79 deselected, 27 xfailed`, basedpyright `0 errors`, and web `442 passed`.
-
-Since then the worktree is clean (`git status --short` prints nothing), there are no `skill-improve/*` branches, and the branch head is a441ce1. The next step belongs to the main session: copy the Comments, Ledger and `Status: in-review` from the previous message into the ticket, then push and open the PR.
+- Since then the worktree is clean (`git status --short` prints nothing), there are no `skill-improve/*` branches, and the branch head is a441ce1. The next step belongs to the main session: copy the Comments, Ledger and `Status: in-review` from the previous message into the ticket, then push and open the PR.
