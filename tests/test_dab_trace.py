@@ -6,10 +6,10 @@ The DAB checkout is built as tests/acceptance/test_observability_evals.py builds
 import json
 import shutil
 import sqlite3
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, cast
 
 import pytest
 from claude_agent_sdk import (
@@ -23,7 +23,7 @@ from claude_agent_sdk import (
 from data_agent import trace_relay
 from data_agent.events import EventLog
 from data_agent.run_config import load_config
-from data_agent.tracing import LANGFUSE_ENV, CliTrace
+from data_agent.tracing import LANGFUSE_ENV, CliTrace, ObservedLog, RunExport
 from evals import dab
 
 FAKE_DAB = Path(__file__).resolve().parent / "fixtures" / "fake_dab"
@@ -118,17 +118,18 @@ def one_step_session() -> Callable[..., AsyncIterator[Any]]:
     return fake_query
 
 
+def event_types(out: Path) -> list[str]:
+    [events_file] = out.rglob("events.jsonl")
+    return [json.loads(line)["type"] for line in events_file.read_text().splitlines()]
+
+
 class FakeExport:
-    """Stands in for `RunExport`: keeps the log `observing` wraps and the events its emitter
-    gets, which the real one hands to `observe`."""
+    """Stands in for `RunExport`: wraps the log in the real `ObservedLog` and keeps the log it
+    wrapped and the events that reach `observe`."""
 
-    made: ClassVar[list["FakeExport"]] = []
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
+    def __init__(self) -> None:
         self.wrapped: Any = None
         self.observed: list[tuple[str, dict[str, Any]]] = []
-        FakeExport.made.append(self)
 
     def __enter__(self) -> "FakeExport":
         return self
@@ -146,16 +147,12 @@ class FakeExport:
     def active(self) -> Any:
         return nullcontext()
 
-    def observing(self, log: Any) -> Any:
+    def observing(self, log: Any) -> ObservedLog:
         self.wrapped = log
-        observed = self.observed
+        return ObservedLog(log, cast(RunExport, self))
 
-        class Observed:
-            def emit(self, kind: str, **fields: Any) -> None:
-                log.emit(kind, **fields)
-                observed.append((kind, fields))
-
-        return Observed()
+    def observe(self, kind: str, fields: Mapping[str, Any]) -> None:
+        self.observed.append((kind, dict(fields)))
 
     def finish(self, fields: Any, answer: Any) -> list[tuple[str, dict[str, Any]]]:
         del fields, answer
@@ -165,21 +162,31 @@ class FakeExport:
 async def test_a_traced_run_gives_the_export_tool_inputs_and_texts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    FakeExport.made = []
+    made: list[FakeExport] = []
+
+    def make_export(*args: Any, **kwargs: Any) -> FakeExport:
+        del args, kwargs
+        made.append(FakeExport())
+        return made[-1]
+
     monkeypatch.setattr(dab, "query", one_step_session())
     monkeypatch.setattr(dab, "git_commit", lambda: "c0ffee")
-    monkeypatch.setattr(dab, "RunExport", FakeExport)
+    monkeypatch.setattr(dab, "RunExport", make_export)
     root = make_dab(tmp_path / "dab")
     query = dab.load_query(root, "toyset", "1", hints=False)
     await dab.run_query(
         root, query, load_config("no-context"), tmp_path / "out", 1, TRACED_ENV, trace=True
     )
-    [export] = FakeExport.made
+    [export] = made
     assert isinstance(export.wrapped, EventLog)
-    observed = dict(export.observed)
-    assert observed["text"]["text"] == "Looking at prices first."
-    assert observed["tool_start"]["tool_use_id"] == "call-1"
-    assert observed["tool_start"]["input"] == {"sql": "SELECT 1"}
+    texts = [fields for kind, fields in export.observed if kind == "text"]
+    starts = [fields for kind, fields in export.observed if kind == "tool_start"]
+    assert [fields["text"] for fields in texts] == ["Looking at prices first."]
+    assert [(fields["tool_use_id"], fields["input"]) for fields in starts] == [
+        ("call-1", {"sql": "SELECT 1"})
+    ]
+    # The event file still gets them too.
+    assert {"text", "tool_start"} <= set(event_types(tmp_path / "out"))
 
 
 async def test_an_untraced_run_records_messages_into_its_event_log(
@@ -201,3 +208,4 @@ async def test_an_untraced_run_records_messages_into_its_event_log(
         root, query, load_config("no-context"), tmp_path / "out", 1, {"DATA_AGENT_API_KEY": "k"}
     )
     assert recorders and all(type(log) is EventLog for log in recorders)
+    assert {"text", "tool_start"} <= set(event_types(tmp_path / "out"))
