@@ -84,6 +84,19 @@ async def test_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert events[-1]["cached_input_tokens"] == 5
 
 
+async def test_without_a_trace_the_result_still_records_the_runs_end(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ticket 122: `ended_ts` is there whether or not the trace export ran."""
+    from datetime import datetime
+
+    _, events = await run_with(monkeypatch, tmp_path, scripted(result()))
+    *_, answer, end = events
+    assert (answer["type"], end["type"]) == ("answer", "result")
+    ended = datetime.fromisoformat(end["ended_ts"])
+    assert datetime.fromisoformat(answer["ts"]) <= ended <= datetime.fromisoformat(end["ts"])
+
+
 MILLION_TOKENS = {
     "input_tokens": 600_000,
     "cache_creation_input_tokens": 400_000,

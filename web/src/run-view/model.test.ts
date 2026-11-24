@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, test } from 'vitest'
 
+import { rowOf } from '../data/source'
 import { replayClock, revealedAt } from '../run-page/replay'
 import { buildRunView, eventTimes, type RunEvent } from './model'
 import { traceLink } from './trace'
@@ -493,91 +494,73 @@ describe('agent tools (ticket 101)', () => {
 describe('export events', () => {
   // After the CLI exits the backend (src/data_agent/agent.py) writes `answer`, then the trace export
   // (src/data_agent/tracing.py RunExport.finish: stop the relay, wait for it to drain, up to 10 s)
-  // writes `trace_export_error`s and `trace`, or one `error` with `source: "trace"`; `result` comes
-  // last. Old made-up data has
-  // `trace` after `result`.
-  const at = (s: number) => `2026-11-15T09:00:${String(s).padStart(2, '0')}+00:00`
+  // writes `trace_export_error`s and `trace`, and `result` comes last. `result.ended_ts` is the
+  // run's end, taken before the export; older files lack it.
+  const at = (s: number) => `2026-11-15T09:${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}+00:00`
   const url = 'https://langfuse.example/trace/abc'
   const start: RunEvent[] = [
     { ...version({}), ts: at(0) },
     { seq: 1, type: 'task', ts: at(1), task: 'How many customers?', task_type: 'query' },
     { seq: 2, type: 'answer', ts: at(15), text: '42', sql_tool_use_id: null },
   ]
-  const answerMs = 15_000
+  const endMs = 16_000
   const trace = (seq: number, s: number): RunEvent => ({ seq, type: 'trace', ts: at(s), trace_id: 'abc', url })
-  const exportError = (seq: number, s: number): RunEvent => ({ seq, type: 'trace_export_error', ts: at(s), error: 'timeout' })
-  const traceError = (seq: number, s: number): RunEvent => ({ seq, type: 'error', ts: at(s), source: 'trace', error: 'boom' })
-  const result = (seq: number, s: number): RunEvent => ({ seq, type: 'result', ts: at(s), subtype: 'success', is_error: false })
-  const realOrder = [...start, trace(3, 25), result(4, 25)]
+  const result = (seq: number, s: number, ended?: number): RunEvent => ({
+    seq,
+    type: 'result',
+    ts: at(s),
+    subtype: 'success',
+    is_error: false,
+    ...(ended === undefined ? {} : { ended_ts: at(ended) }),
+  })
+  const traced = [...start, trace(3, 26), result(4, 26, 16)]
 
-  test('real order: answer, trace (+10 s), result: the wall time ends at the answer', () => {
-    expect(buildRunView(realOrder).summary.durationMs).toBe(answerMs)
+  test('answer, trace (+10 s), result: the wall time ends at the result ended_ts', () => {
+    expect(buildRunView(traced).summary.durationMs).toBe(endMs)
   })
 
-  test('real order with a trace_export_error before the trace: the wall time ends at the answer', () => {
-    const events = [...start, exportError(3, 24), trace(4, 25), result(5, 25)]
-    expect(buildRunView(events).summary.durationMs).toBe(answerMs)
-  })
-
-  test('failed export: answer, error (source: trace, +10 s), result: the wall time ends at the answer', () => {
-    const events = [...start, traceError(3, 25), result(4, 25)]
-    expect(buildRunView(events).summary.durationMs).toBe(answerMs)
-  })
-
-  test('an error from another source is part of the run', () => {
-    const other: RunEvent = { ...traceError(3, 25), source: 'spend' }
-    expect(buildRunView([...start, other, result(4, 25)]).summary.durationMs).toBe(25_000)
-  })
-
-  test('an export that failed to start (error, source: trace, after task) is part of the run', () => {
-    // src/data_agent/agent.py writes it when `export.start` fails; there is no export at the end then.
-    const events = [...start.slice(0, 2), traceError(2, 2), { ...start[2], seq: 3 }, result(4, 17)]
-    expect(buildRunView(events).summary.durationMs).toBe(17_000)
-    expect(eventTimes(events)).toEqual([0, 1000, 2000, answerMs, 17_000])
-  })
-
-  test('old order: result, trace (+10 s): the wall time ends at the result', () => {
-    const events = [...start, result(3, 17), trace(4, 27)]
-    expect(buildRunView(events).summary.durationMs).toBe(17_000)
-  })
-
-  test('in replay the trace and the result still come, no later than the run end, with the link at the end', () => {
-    const orders: [RunEvent[], number][] = [
-      [realOrder, answerMs],
-      [[...start, result(3, 17), trace(4, 27)], 17_000],
+  test('a run stopped at its deadline mid tool call: the wall time runs to ended_ts', () => {
+    // No event is written when the deadline stops the run (src/data_agent/agent.py), so the last
+    // event before the export is the tool call's start, minutes before the run ended.
+    const events: RunEvent[] = [
+      ...start.slice(0, 2),
+      { seq: 2, type: 'tool_start', ts: at(5), tool_use_id: 't1', tool: 'mcp__data__query', input: { sql: 'select 1' } },
+      trace(3, 310),
+      result(4, 310, 300),
     ]
-    for (const [events, end] of orders) {
-      const times = eventTimes(events)
-      expect(times).toHaveLength(events.length)
-      for (const ms of times) expect(ms).not.toBeNull()
-      expect(Math.max(...(times as number[]))).toBe(end)
-      const clock = replayClock(times, false)
-      const shown = events.slice(0, revealedAt(clock, clock.at(-1) ?? 0))
-      expect(shown.map((e) => e.type)).toEqual(events.map((e) => e.type))
-      expect(traceLink(shown)).toEqual({ traceId: 'abc', url })
-    }
+    expect(buildRunView(events).summary.durationMs).toBe(300_000)
+    expect(eventTimes(events)).toEqual([0, 1000, 5000, 300_000, 300_000])
   })
 
-  test('without export events, the wall time and replay times are as before', () => {
-    const events = [...start, result(3, 17)]
-    expect(buildRunView(events).summary.durationMs).toBe(17_000)
-    expect(eventTimes(events)).toEqual([0, 1000, answerMs, 17_000])
+  test('in replay the trace and the result still come, no later than ended_ts, with the link at the end', () => {
+    const times = eventTimes(traced)
+    expect(times).toEqual([0, 1000, 15_000, endMs, endMs])
+    const clock = replayClock(times, false)
+    const shown = traced.slice(0, revealedAt(clock, clock.at(-1) ?? 0))
+    expect(shown.map((e) => e.type)).toEqual(traced.map((e) => e.type))
+    expect(traceLink(shown)).toEqual({ traceId: 'abc', url })
   })
 
-  test('a running run (no result yet) still ends at its last event', () => {
-    expect(buildRunView(start).summary.durationMs).toBe(answerMs)
-    expect(eventTimes(start)).toEqual([0, 1000, answerMs])
+  test('an older file without ended_ts ends at its last event, as before', () => {
+    const events = [...start, trace(3, 26), result(4, 26)]
+    expect(buildRunView(events).summary.durationMs).toBe(26_000)
+    expect(eventTimes(events)).toEqual([0, 1000, 15_000, 26_000, 26_000])
   })
 
-  test('a run-end event without ts: the wall time is 0 as before', () => {
-    const noTs = (events: RunEvent[], i: number) => events.map((e, j) => (j === i ? withoutTs(e) : e))
-    const withoutTs = ({ ts: _ts, ...rest }: RunEvent): RunEvent => rest as RunEvent
-    const plain = noTs([...start, result(3, 17)], 3)
-    expect(buildRunView(plain).summary.durationMs).toBe(0)
-    expect(eventTimes(plain)).toEqual([0, 1000, answerMs, null])
-    // With export events the run ends at the answer; without its time the export adds no wait in replay.
-    const exported = noTs(realOrder, 2)
-    expect(buildRunView(exported).summary.durationMs).toBe(0)
-    expect(eventTimes(exported)).toEqual([0, 1000, null, null, null])
+  test('a running run (no result yet) ends at its last event, as before', () => {
+    expect(buildRunView(start).summary.durationMs).toBe(15_000)
+    expect(eventTimes(start)).toEqual([0, 1000, 15_000])
+  })
+
+  test("rowOf gives the duration the backend's row gives for the same events", () => {
+    // tests/test_web_read.py: the same events give duration_ms 15000 with ended_ts, 25000 without.
+    const events = (ended?: number): RunEvent[] => [
+      { ...version({}), ts: at(0) },
+      { seq: 1, type: 'answer', ts: at(15), text: '42' },
+      trace(2, 25),
+      result(3, 25, ended),
+    ]
+    expect(rowOf('traced', { notes: {}, events: events(15) }).duration_ms).toBe(15_000)
+    expect(rowOf('traced', { notes: {}, events: events() }).duration_ms).toBe(25_000)
   })
 })
