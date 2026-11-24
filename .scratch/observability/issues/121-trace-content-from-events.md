@@ -1,6 +1,6 @@
 # 121 — 开发集档 trace 补上 SQL 和模型文字（从我们自己的事件里取）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 121-trace-content-from-events)
@@ -67,7 +67,7 @@ Branch: worktree-121-trace-content-from-events
 - Attempts: 1
 - Review rounds: 2 + 退回 1 轮（`da-review` ×3，`eng:code-review` ×1）
 - Model spend: $0 (no model calls)
-- Outcome: —
+- Outcome: accepted (returned 1)
 
 ## Comments
 
@@ -163,3 +163,5 @@ The fix is a one-line change at `src/data_agent/tracing.py:477`, plus a regressi
   - `data-agent trace-check`：26 个观测。`query_database` ×5 和 `list_tables` ×1 都是 `input: yes`；`assistant.message` ×1（事件里 `text` 也是 1 条），`output: yes`；`data-agent.run` 是 `usage: none  cost: yes`，metadata 里有 `usage_total`（`cached_input_tokens, output_tokens, uncached_input_tokens`）；全部观测的属性名里 `user.id`、`host.*`、`os.*` 出现 0 次。
   - 没看的：Langfuse 界面里 SQL 原文和遮罩的实际值（trace-check 只打印有没有值）；`metadata.usage_total` 在界面里是 JSON 还是字符串。
   - 后续：`evals dab --trace` 的入参和文字另开工单 134。
+
+- 2026-11-24（主会话）合并：PR #131 squash 合入 main（`1afec70`）。CI 两次都过；Codex GitHub app 在 `2f75051` 上 👍（无意见）。

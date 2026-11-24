@@ -1,7 +1,7 @@
 # 134 — `evals dab --trace` 的开发集档 trace 也带工具入参和模型文字
 
 Status: ready-for-agent
-Blocked by: 121
+Blocked by: 121 (done)
 Spec: ../spec.md
 Claimed by: —
 Branch: —

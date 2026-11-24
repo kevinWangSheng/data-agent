@@ -1,7 +1,7 @@
 # 122 — 运行页墙钟和回放时间线不算 trace 导出的时间
 
 Status: ready-for-agent
-Blocked by: 121
+Blocked by: 121 (done)
 Spec: ../spec.md
 Claimed by: claude (opus 5.5)
 Branch: worktree-122-wall-time-excludes-trace
