@@ -1,6 +1,6 @@
 # 122 — 运行页墙钟和回放时间线不算 trace 导出的时间
 
-Status: in-review
+Status: done
 Blocked by: 121 (done)
 Spec: ../spec.md
 Claimed by: claude (opus 5.5)
@@ -66,7 +66,7 @@ Branch: worktree-122-wall-time-excludes-trace
 - Attempts: 3
 - Review rounds: 3
 - Model spend: $0
-- Outcome: in review (round 3: `result.ended_ts`; backend and web)
+- Outcome: accepted (returned 2)
 
 ## Comments
 
@@ -205,3 +205,5 @@ Branch: worktree-122-wall-time-excludes-trace
   - **Leftovers:** `build:local` rewrote `src/data_agent/web/static/`, which git ignores. The evidence scripts, logs and screenshot are in `runs/t122/`. The server on port 8824 is stopped.
 
 - 2026-11-24（主会话）真实运行，122 分支 `641c711`，worktree 里 `runs/122real-641c711/`（不进 git）：`data-agent run --type query --config full --sandbox local --trace-tier full`，shop.sql 夹具，同 121 的问题。exit 0，花费 $0.0073。事件末尾 `text, answer, trace, result`；相对第一个事件：`answer` 25.128 s，`result.ended_ts` 25.128 s，`trace` 27.600 s，`result.ts` 27.600 s。即这次真实导出等待 2.47 s，`ended_ts` 落在导出之前、紧跟 `answer`。
+
+- 2026-11-24（主会话）合并：PR #130 squash 合入 main（`fc4b296`）。CI 两次都过；Codex GitHub app 审了 `641c711`："Didn't find any major issues"。
