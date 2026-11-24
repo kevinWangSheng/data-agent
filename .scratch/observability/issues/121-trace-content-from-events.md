@@ -1,6 +1,6 @@
 # 121 — 开发集档 trace 补上 SQL 和模型文字（从我们自己的事件里取）
 
-Status: in-progress
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 121-trace-content-from-events)
@@ -64,10 +64,83 @@ Branch: worktree-121-trace-content-from-events
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 2 (`da-review` ×2, `eng:code-review` ×1)
+- Model spend: $0 (no model calls)
+- Outcome: —
 
 ## Comments
+
+- 2026-11-24（工单 agent 最终回复，主会话照抄）：
+
+**Stopped after the second review round with one finding still open.** Codex's second round (`runs/121/da-review-2.txt`) reports a P2, confirmed by reading the code:
+- **The defect:** `RunExport._clean` (`src/data_agent/tracing.py:476-477`) masks the values of a tool input but keeps its JSON object keys as they are.
+- **Why it leaks:** the fallback `tool.input` observation goes straight to Langfuse through `ParentExporter`. It never passes the relay's second masking pass, so a known secret used as a key reaches Langfuse.
+- **Suggested fix:** use `self._clean(str(k))` for the keys, plus a regression test that puts a secret in a key and takes the fallback path (no CLI span takes the input).
+
+**What was built:**
+- **Tool inputs:** with `--trace-tier full`, the run hands each `tool_start` input, masked and serialized as JSON, to the relay (`trace_relay.ToolInputs`). The relay sets it as `langfuse.observation.input` on the `claude_code.tool` span with the same `tool_use_id`.
+- **Span before event:** if no span takes an input (the CLI's span reached the relay before the event did, or never arrived), `finish` sends a `tool.input` observation under the run's span with the same `tool_use_id`. It sits beside the CLI's tool span, not inside it.
+- **Model text:** each `text` event becomes an `assistant.message` child of the run's span. Each child has a `sequence` attribute so order survives equal timestamps, and a verifier's message carries `parent`.
+- **Event fields:** `text` and `thinking` events now carry `parent` (`agent.py`).
+- **Machine attributes:** the dev tier drops `user.id`, `host.*` and `os.*` on every layer. The list is a single constant, `MACHINE_ATTRIBUTES`.
+- **Parent span tokens:** the run's span no longer sets `usage_details`. The token total goes in `langfuse.observation.metadata.usage_total`, with the `result` event's keys, on both tiers; cost is unchanged.
+- **trace-check:** it now asks Langfuse for `io` and prints `input: yes/no  output: yes/no` for each observation, never the values.
+- **Failures:** if handling the tool inputs or texts fails, `finish` writes an `error` event (`source: trace`), and the run's span is still sent.
+- **Held-out tier:** none of this applies there, and tests pin it.
+
+**Checks:**
+- `make check` exit 0: 2861 passed, 2 skipped, web 442 passed (`runs/121/check-3.txt`).
+- `uv run pytest tests/acceptance/test_observability_*.py -v`: 62 passed (`runs/121/acceptance.txt`, before the review rounds). The focused set after round 2 (observability acceptance plus `test_tracing` / `test_trace_relay` / `test_trace_check`): 125 passed.
+- The real-relay test fails in the event-before-span case if the line that hands the inputs to the relay is removed.
+
+**Acceptance-test edits (both within the ticket's authorization):**
+- `assert_usage_and_cost`: only the parent span's usage assertion changed; the cost assertion is unchanged.
+- The dev-tier relay test: only `user.id`, `host.name`, `host.arch`, `os.type` and `os.version` were added, inline in its exclusion set.
+
+**Reviews:**
+- **Codex round 1, P2: `evals dab --trace` is not wired, so DAB traces get no inputs or text.** Not fixed: `evals/dab.py` is outside the Authority. Proposed follow-up ticket: in `evals/dab.py:552`, pass `export.observing(log)` to `record_message`, with a test.
+- **`eng:code-review`:** nothing blocking.
+  - Fixed in b4b3cb0: the stale docstring; a failure while building children no longer drops the run's span; one shared `mask_shapes` function; a span that already has an input now claims the call, so no duplicate is sent.
+  - Fixed in e3fcbb1: a test with the real relay in both arrival orders; failures now become an `error` event; the inline names in the acceptance test.
+  - Not fixed, with reasons:
+    - Separate exact-name and prefix sets for machine attributes: the ticket asks for one constant.
+    - Passing the inputs through the relay's constructor: the acceptance stand-in `FakeRelay`'s constructor signature is fixed, so the run sets an attribute instead.
+- **Codex round 2, P2:** the key-masking gap above, not fixed (round limit).
+
+**Known limit:** if the relay claims an input for a batch that Langfuse then rejects, or that `stop` abandons, that input is lost and no fallback is sent.
+
+**待人定:**
+1. Whether `thinking` should be sent too; by default it is not.
+2. Whether to fix the key-masking gap on this branch as a third round, or in a new ticket.
+
+**Real run (for the main session; Langfuse variables and the model env set):**
+
+```bash
+uv run python -c "import duckdb; c=duckdb.connect('runs/121/shop.duckdb'); c.execute(open('tests/fixtures/shop.sql').read())"
+mkdir -p runs/121/ws
+uv run data-agent run --task "How many customers are in each membership tier?" --type query \
+  --workspace runs/121/ws --duckdb runs/121/shop.duckdb --config full \
+  --events-dir runs/121/events --trace-tier full --sandbox local
+uv run data-agent trace-check runs/121/events/<run>.jsonl
+```
+
+What to look for:
+- `claude_code.tool` (`query_database`) shows `input: yes`; in the Langfuse UI the SQL is visible and masked.
+- `assistant.message` observations appear under `data-agent.run`, in event order.
+- No `user.id`, `host.*` or `os.*` anywhere, including the resource attributes.
+- `data-agent.run` shows no usage but shows cost.
+- Not yet verified:
+  - Whether Langfuse shows `metadata.usage_total` as parsed JSON or as a plain string.
+  - Whether the v2 observations API accepts `io` in `fields`. If it answers an error, trace-check fails.
+
+
+Nothing has changed since my last report. `runs/121/check-3.txt` passed: exit 0, pytest 2861 passed and 2 skipped, web 442 passed.
+
+Ticket 121 is still at `Status: ready-for-human`. Codex's second review found that a secret used as a JSON key in a tool input could reach Langfuse unmasked. I haven't fixed it, because both allowed fix rounds are used.
+
+The fix is a one-line change at `src/data_agent/tracing.py:477`, plus a regression test. The open decision is whether to run a third round on this branch for that fix, or move it to a new ticket.
+
+- 2026-11-24（主会话）退回：原因——Codex 第 2 轮的 P2 属实（主会话对照代码核实）：`RunExport._clean`（`src/data_agent/tracing.py:476-477`）遮值不遮键，`tool.input` 回退观测不经过中转的二次遮罩，秘密做 JSON 键时会原样到 Langfuse。在原分支上修：键也过 `self._clean(str(k))`（或同等做法），加回归测试（秘密放在键里、走回退路径）；再跑 `make check` 和一次 `da-review main` 确认。
+  - 待人定 1（`thinking`）已由人 2026-11-24 定：不带，维持现状。
+  - Codex 第 1 轮 P2（`evals dab --trace` 没接上，DAB trace 没有入参和文字）不在本工单 Authority 内，主会话另开后续工单，本轮不做。
