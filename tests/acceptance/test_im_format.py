@@ -9,7 +9,8 @@ The contract (data_agent.im.format, human-reviewed; its docstring has the rules)
   by a blank line giving the text again; a paragraph over the limit split between lines (or
   characters); a code block that fits in one message never split.
 - `tables_to_code`: a pipe table as a fenced code block; past `TABLE_ROWS` data rows the first
-  `TABLE_ROWS` are kept and a line after the block gives the total.
+  `TABLE_ROWS` are kept and a line after the block gives the total. In `format_answer`, a table
+  that would not fit in one message keeps as many rows as fit, and the total is given too.
 - `chart_count`: the charts the web UI's answer shows: the main agent's successful
   `display_chart` calls whose result parses as a chart. The charts fixture
   (tests/fixtures/charts/run/events.jsonl, read only) has 6 calls, 5 of them successful.
@@ -128,6 +129,26 @@ def test_a_long_table_is_cut_and_its_total_given() -> None:
     kept = re.findall(r"item-r(\d{3})", inside)
     assert kept == [f"{number:03d}" for number in range(1, TABLE_ROWS + 1)]
     assert re.search(r"(?<!\d)137(?!\d)", outside_fences(converted))
+
+
+@TICKET_131
+def test_a_table_too_wide_for_one_message_is_cut_to_fit_and_its_total_given() -> None:
+    lines = ["| item | description | amount |", "|---|---|---|"]
+    lines += [
+        f"| item-r{number:03d} | a long description of the item | {number * 3}.5 |"
+        for number in range(1, 13)
+    ]
+    if len("\n".join(lines)) <= MAX_CHARS:
+        raise RuntimeError("the table fits in one message")
+    parts = format_answer("The items:\n\n" + "\n".join(lines), [], MAX_CHARS)
+    assert all(len(part) <= MAX_CHARS for part in parts)
+    assert all(part.count(FENCE) % 2 == 0 for part in parts), "a code block is split"
+    with_rows = [part for part in parts if "item-r" in part]
+    assert len(with_rows) == 1, "the table's rows are in more than one message"
+    kept = re.findall(r"item-r(\d{3})", inside_fences(with_rows[0]))
+    assert 1 <= len(kept) < 12
+    assert kept == [f"{number:03d}" for number in range(1, len(kept) + 1)]
+    assert re.search(r"(?<!\d)12(?!\d)", outside_fences("\n".join(parts)))
 
 
 def chart_call(tool_use_id: str, parent: str | None, content: str) -> list[dict[str, Any]]:

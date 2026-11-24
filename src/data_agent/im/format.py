@@ -8,13 +8,15 @@
   not is split between lines, each part fenced again.
 - `tables_to_code`: a Markdown pipe table becomes a fenced code block of its rows, columns
   padded to line up. A table of more than `TABLE_ROWS` data rows keeps its header and its first
-  `TABLE_ROWS` rows, and a line after the block gives the total number of rows.
+  `TABLE_ROWS` rows, and a line after the block gives the total number of rows. Given a `limit`,
+  a table whose block and that line would not fit in one message keeps fewer rows, as many as
+  fit, and the line gives the total too.
 - `chart_count`: the charts the web UI's answer shows (`answerCharts`,
   web/src/chart/model.ts): `display_chart` calls of the main agent (`parent` null) whose
   `tool_end` is no error and whose content parses as a chart (`chart` with `chart_type`, `x`,
   `title` and `series`, and a `data` list).
-- `format_answer`: tables as code, then, when `chart_count` is not 0, a closing line saying the
-  answer has that many charts to see in the web UI, then split.
+- `format_answer`: tables as code (within `limit`), then, when `chart_count` is not 0, a closing
+  line saying the answer has that many charts to see in the web UI, then split.
 """
 
 from collections.abc import Iterable, Mapping
@@ -28,7 +30,7 @@ def split_message(text: str, limit: int) -> list[str]:
     raise NotImplementedError("ticket 131")
 
 
-def tables_to_code(text: str, max_rows: int = TABLE_ROWS) -> str:
+def tables_to_code(text: str, max_rows: int = TABLE_ROWS, limit: int | None = None) -> str:
     raise NotImplementedError("ticket 131")
 
 
