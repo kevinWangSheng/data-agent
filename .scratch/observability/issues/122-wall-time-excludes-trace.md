@@ -1,7 +1,7 @@
 # 122 — 运行页墙钟和回放时间线不算 trace 导出的时间
 
-Status: in-review
-Blocked by: —
+Status: ready-for-agent
+Blocked by: 121
 Spec: ../spec.md
 Claimed by: claude (opus 5.5)
 Branch: worktree-122-wall-time-excludes-trace
@@ -12,28 +12,40 @@ Branch: worktree-122-wall-time-excludes-trace
 
 ## Authority
 
-- May edit: `web/src/run-view/model.ts`、同目录的单元测试（新加或改非验收测试）
-- Must not edit: `web/src/**/acceptance/`（已合入的验收测试）、后端 `src/`、其他工单的文件、`.claude/`、`CODING_STANDARDS.md`
+- 人 2026-11-24 定：扩到后端（PR #130 第 7 步审查发现只改网页会把截止时间到点的运行少算几分钟，见 Comments）。
+- May edit:
+  - `src/data_agent/agent.py`：只改写 `result` 的那一处（`:2418-2430`，`export.finish` 前后）
+  - `evals/dab.py`：只改写 `result` 的那一处（`:575-581`）
+  - `src/data_agent/web/runs.py`：`duration_ms` 的算法（`:173`）
+  - `web/src/run-view/model.ts`
+  - 对应的单元测试（`tests/test_agent*.py`、`tests/test_dab*.py`、`tests/test_web_runs*.py` 或新文件，`web/src/run-view/model.test.ts`）
+- Must not edit: `tests/acceptance/`、`web/src/**/acceptance/`（已合入的验收测试）、其他工单的文件、`.claude/`、`CODING_STANDARDS.md`
 - Server access: none
 - Spend cap: none
 
 ## Context
 
 - 工单 114 发现的遗漏（`.scratch/observability/issues/114-langfuse-link.md` Comments "Follow-up"），人 2026-11-23 定"开工单修"。
-- 现状：`summarize`（`web/src/run-view/model.ts:517`，`const end = events.at(-1)`）取最后一个事件作运行结束；`eventTimes`（`:316`）给回放每个事件算时间。
-- 后端写事件的真实顺序（主会话 2026-11-24 对照代码核实，原版本照 114 的造数写成 `trace` 在 `result` 之后，是错的）：CLI 退出后先写 `answer`，再调 `export.finish`（`src/data_agent/agent.py:2418-2423`；停中转、等排空，`drain_timeout_s` 默认 10 s，`src/data_agent/trace_relay.py:295`），写出 `trace_export_error`（0 到多条）和 `trace`，失败时改为一条 `error`（`source: "trace"`，`src/data_agent/tracing.py:395-407`），最后才写 `result`。所以 `result` 的 `ts` 已经包含导出等待；后端这个顺序是有意的（`result` 是读者认的文件末尾，`web/runs.py`），不改。
-- 做法（只改 `model.ts`）：导出类事件 = `trace`、`trace_export_error`、`source` 为 `"trace"` 的 `error`，写成一个常量集合或判断函数。运行里有导出类事件时，运行结束取第一个导出类事件之前那个事件的时间（导出开始的时刻）；没有时照旧取最后一个事件。墙钟用这个结束时刻；回放里导出类事件和其后的 `result` 照常出现（114 的链接靠 `trace` 显示），时间钳到运行结束。也要兼容旧造数里 `trace` 在 `result` 之后的顺序。
-- 运行还在跑（没有 `result`）时的行为不变。
-- 对话页每轮的时长如果也用同一个函数，一并生效；不另改对话页组件。
+- 后端写事件的真实顺序（主会话 2026-11-24 对照代码核实）：
+  - `agent.py`：CLI 退出后写 `answer`（`:2404`），再 `export.finish`（`:2418-2423`；停中转、等排空，`drain_timeout_s` 默认 10 s，`trace_relay.py:295`），写出 `trace_export_error`（0 到多条）和 `trace`，`finish` 失败时改为一条 `error`（`source: "trace"`，`tracing.py:395-407`），最后写 `result`（`:2424`）。`export.start` 失败时那条 `error`（`source: "trace"`）紧跟在 `task` 之后（`:2286-2289`）。
+  - `evals/dab.py:577-581` 同样是先 `export.finish` 再写 `result`。
+  - 截止时间到点、花费上限、轮数上限停下时，停下那一刻不写事件（`agent.py:2391-2399`），只有 `result` 带停下原因。所以"导出前最后一个事件"不是运行结束时刻（第 2 轮的做法在截止时间的运行上会少算整段未完成的工具调用，PR #130 审查）。
+  - `src/data_agent/web/runs.py:173` 历史页的 `duration_ms` 用 `result.ts`，也包含导出等待；静态站的 `rowOf`（`web/src/data/source.ts:162-171`）取 `buildRunView` 的 `durationMs`，两边要一致。
+- 做法：
+  1. 后端：`result` 事件加一个字段 `ended_ts`（和 `ts` 同格式，`events.py:93` 的 `datetime.now(UTC).isoformat()`），在 `export.finish` 之前取；没有导出时也写（就是写 `result` 前的时刻）。两个写 `result` 的地方都加。只加字段，`result` 其余字段和事件顺序不变。
+  2. `runs.py`：`duration_ms` 用 `result.ended_ts`，没有时退回 `result.ts`。
+  3. `model.ts`：有 `result.ended_ts` 时，墙钟到它为止，回放里晚于它的事件时间钳到它（`trace` 和 `result` 照常出现，114 的链接靠 `trace` 显示）；没有这个字段的旧文件，行为和 main 一致（取最后一个事件）。第 2 轮"导出前那个事件"的推断去掉。
+- 运行还在跑（没有 `result`）时的行为不变。对话页每轮的时长用同一个函数，一并生效；不另改对话页组件。
 
 ## Acceptance
 
-- [ ] 单元测试（修复前会失败）：真实顺序 `… answer, trace(+10 s), result(+10 s)`，`durationMs` 等于到 `answer` 为止的时长
-- [ ] 单元测试：真实顺序里多一条 `trace_export_error`；以及失败路径 `answer, error(source: trace, +10 s), result`，墙钟同样不含等待
-- [ ] 单元测试：旧顺序 `result, trace(+10 s)` 同样不拉长墙钟
-- [ ] 单元测试：回放里 `trace` 和 `result` 仍然出现，时间不晚于运行结束，114 的链接在回放到终点时出现
-- [ ] 单元测试：没有导出类事件的运行、还在跑（没有 `result`）的运行、运行结束那个事件没有 `ts` 时，行为和改前一致
-- [ ] 已合入的验收测试（含 `web/src/run-view/acceptance/trace-link.test.ts`）一字不改、全部通过
+- [ ] 单元测试（修复前会失败）：`agent.py` 的运行在开导出时，`result.ended_ts` 早于导出类事件的 `ts`、早于 `result.ts`；不开导出时也有 `ended_ts`
+- [ ] 单元测试：`evals/dab.py` 写的 `result` 同样带 `ended_ts`
+- [ ] 单元测试：`runs.py` 的 `duration_ms` 用 `ended_ts`；没有时用 `result.ts`
+- [ ] 单元测试（修复前会失败）：`… answer, trace(+10 s), result(+10 s, ended_ts = answer 之后)`，`durationMs` 到 `ended_ts`；截止时间停下的运行（`tool_start` 之后很久才 `ended_ts`）墙钟到 `ended_ts`，不少算
+- [ ] 单元测试：回放里 `trace` 和 `result` 仍然出现，时间不晚于 `ended_ts`，114 的链接在回放到终点时出现
+- [ ] 单元测试：没有 `ended_ts` 的旧文件、还在跑的运行，行为和 main 一致；同一份事件，`rowOf` 和 `runs.py` 给出的时长一致
+- [ ] 已合入的验收测试一字不改、全部通过
 - [ ] `make check` passes
 
 ## Evidence required
@@ -130,3 +142,5 @@ Branch: worktree-122-wall-time-excludes-trace
     - On the chat page, the roughly 10 s export wait moves into the gap before the next turn. At 1x with idle gaps not skipped, replay still waits there. The ticket only covers each turn's duration.
     - If the export fails to start and the CLI then writes nothing before `result` (`version, task, error(trace), result`), the run still ends at `task`. That needs both failures at once.
   - **Leftovers:** `build:local` rewrote `src/data_agent/web/static/`, which git ignores. The evidence scripts and logs are in `runs/t122/`.
+
+- 2026-11-24（主会话）退回第 2 轮：原因——PR #130 第 7 步审查（Opus 子 agent，只读）的第 1 条属实（主会话对照 `agent.py:2391-2399` 核实）：截止时间等停下时不写事件，"导出前那个事件"会把墙钟少算几分钟，比 main 更糟；第 2 条也属实：历史页 `runs.py:173` 仍含导出等待。根因是事件文件不记运行结束时刻，只改网页修不了；这是主会话第 1 次退回改写工单时选错了做法（agent 第 1 轮已建议改后端）。人 2026-11-24 定扩到后端，Authority、Context、Acceptance 已改。等 121 合入后在原分支上接着做（先把 main 合进来）；改了后端，第 5 步要跑 `da-review`，第 7 步等 Codex GitHub app。PR #130 不关，在同一分支上继续推。审查的 3 条小问题（结束事件没有 `ts`、回放中 export-start `error` 让时间回退、测试注释断行）随新做法一并消失或顺手修。
