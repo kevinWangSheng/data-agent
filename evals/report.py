@@ -22,11 +22,18 @@ from evals.harbor import (
     task_id,
     version_header,
 )
+from evals.livesqlbench import BENCHMARK as LSB_BENCHMARK
+from evals.livesqlbench import TASK_PREFIX as LSB_TASK_PREFIX
+from evals.livesqlbench_verifier import DIAGNOSTICS_FILE
 from evals.metrics import PASS_AT_KS, compute_metrics, compute_pass_at_k, is_success
 from evals.process import job_metrics
 
 # The repo's own manifest: on the server, the real one (evals.ablate checks a dev run the same way).
 REPO_MANIFEST = Path(__file__).resolve().parent / "manifest.json"
+# The benchmarks whose tasks the manifest lists (`benchmark_tasks`); data-eng-bench's is the
+# default of every command that takes `--benchmark`.
+DEFAULT_BENCHMARK = "data-eng-bench"
+BENCHMARKS = (DEFAULT_BENCHMARK, LSB_BENCHMARK)
 
 
 def score(trials: list[Trial]) -> dict[str, Any]:
@@ -345,6 +352,18 @@ def check_same_requests(job_dirs: Sequence[Path]) -> None:
         )
 
 
+def benchmark_of(task: str) -> str:
+    """The benchmark a manifest task belongs to: LiveSQLBench's ids carry its prefix, every other
+    id is data-eng-bench's (.scratch/livesqlbench/spec.md U2)."""
+    return LSB_BENCHMARK if task.startswith(LSB_TASK_PREFIX) else DEFAULT_BENCHMARK
+
+
+def benchmark_tasks(manifest: dict[str, Any], split: str, benchmark: str) -> list[str]:
+    """The tasks of one benchmark in one split of the manifest, in its order: the manifest's
+    top-level `dev` and `holdout` hold both benchmarks' tasks, a report or a run covers one."""
+    return [t for t in manifest[split] if benchmark_of(t) == benchmark]
+
+
 def split_trials(
     trials: list[Trial], manifest: dict[str, Any], split: str, label: str
 ) -> list[Trial]:
@@ -360,6 +379,16 @@ def split_trials(
             "job; every task in the split is needed"
         )
     return in_split
+
+
+def no_gold_answer(trial: Trial) -> bool:
+    """Whether the trial's verifier said it had no gold answer (evals.livesqlbench_verifier's
+    diagnostics), so its reward is no score."""
+    try:
+        diagnostics = json.loads((trial.dir / "verifier" / DIAGNOSTICS_FILE).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(diagnostics, dict) and diagnostics.get("gold_answer") == "missing"
 
 
 def check_dev_list(manifest: dict[str, Any], label: Path | str) -> None:
@@ -555,22 +584,30 @@ def write_report(
     trials_per_task: int = TRIALS_PER_TASK,
     manifest_label: Path | str = "the manifest",
     job_dirs: Sequence[Path] = (),
+    benchmark: str = DEFAULT_BENCHMARK,
 ) -> dict[str, Any]:
-    """Write `out_dir/report.json` for one split of the manifest; dev also gets `trials.json`.
+    """Write `out_dir/report.json` for one split of the manifest, the tasks of `benchmark` in it
+    (`benchmark_tasks`); dev also gets `trials.json`.
 
     Refuses a split that is incomplete: a task without results, or a split `check_complete`
     rejects; and a dev list `check_dev_list` rejects. Errors give counts only, so they name no
     holdout task. `job_dirs`, the jobs the trials come from, give the run contract (`run`) and
     the trials resumes dropped (`infra_excluded`, `interrupted_excluded`); a dev report adds
-    `gates`.
+    `gates`. Trials whose verifier had no gold answer (a LiveSQLBench task generated before the
+    answers were in hand, `no_gold_answer_trials`) are counted when there are any: their 0 is
+    no score.
     """
     if split == "dev":
         check_dev_list(manifest, manifest_label)
-    in_split = split_trials(trials, manifest, split, "this")
+    in_split = split_trials(
+        trials, {split: benchmark_tasks(manifest, split, benchmark)}, split, "this"
+    )
     check_complete(in_split, split, trials_per_task)
     tasks = {t.task for t in in_split}
     excluded = excluded_trials(job_dirs, tasks)
     report: dict[str, Any] = {"split": split, **summary(in_split), **excluded}
+    if no_gold := sum(1 for t in in_split if no_gold_answer(t)):
+        report["no_gold_answer_trials"] = no_gold
     report["run"] = run_contract(in_split, job_dirs)
     out_dir.mkdir(parents=True, exist_ok=True)
     if split == "dev":

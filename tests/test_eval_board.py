@@ -28,6 +28,7 @@ from test_eval_ablate import FakeHarbor, StopWhen, by_pass_rate
 
 from evals import ablate, balance, board, readiness
 from evals.__main__ import main as evals_main
+from evals.report import benchmark_tasks
 
 GIB = readiness.GIB
 DEV = "dbt-alpha"
@@ -190,8 +191,9 @@ def test_the_repo_registry_lists_the_103_v1_tasks_with_digests_and_the_holdout()
     assert all(t["ref"].startswith("sha256:") and len(t["ref"]) == 71 for t in tasks.values())
     assert {t["difficulty"] for t in tasks.values()} == {"easy", "medium", "hard", "very_hard"}
     manifest = json.loads(REPO_MANIFEST.read_text())
-    assert set(manifest["holdout"]) <= set(tasks)
-    assert set(manifest["dev"]) <= set(tasks)
+    # data-eng-bench's entries; LiveSQLBench's `lsb-` ones are not registry tasks (ticket 128).
+    assert set(benchmark_tasks(manifest, "holdout", "data-eng-bench")) <= set(tasks)
+    assert set(benchmark_tasks(manifest, "dev", "data-eng-bench")) <= set(tasks)
     assert board.ZERO_TASK in tasks
     assert tasks["cohort-retention-matrix"]["ref"] == (
         "sha256:90ba6b3940bf2725a1b3724319c86560593aa937501e4f7541f1e6eb07b2d039"

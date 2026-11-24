@@ -60,6 +60,8 @@ from pydantic import Field, field_validator
 from data_agent.run_config import CONFIG_NAMES, REPO_ROOT
 from data_agent.tracing import LANGFUSE_ENV, TraceTier
 from evals.atif import convert, usage
+from evals.livesqlbench import BENCHMARK as LSB_BENCHMARK
+from evals.livesqlbench import DATABASE_URL_ENV as LSB_DATABASE_URL_ENV
 from evals.wheels import PROBE, Platform, download, wheelhouse
 
 # Harbor error types worth retrying: rate limits, server errors and dropped connections. The job
@@ -102,6 +104,8 @@ TRACE_CLAIM = ".data-agent-trace-"
 # every DBT_* variable (data_agent.dbt_execute, data_agent.sandbox.LOCAL_TASK_PREFIXES). Set here
 # only, for data-eng-bench (ADR-0005).
 DBT_ENV = {"DBT_TARGET": "dev"}
+# Where a LiveSQLBench agent writes its SQL in the workspace (upstream README_TASK.md:19-27).
+LSB_PREDICTION = "pred.json"
 # Pinned like the other tools; the container has no uv of its own. install() uploads uv's static
 # Linux build for the container's `uname -m`, fetched here and checked against the release's
 # `<archive>.sha256`.
@@ -249,8 +253,8 @@ class DataAgentOptions(InstalledAgentOptions):
     # Langfuse, one trial per task (observability spec "覆盖范围").
     trace: bool = Field(default=False, description="Export this task's first trial to Langfuse.")
     # Harbor's `--ak benchmark=livesqlbench` (.scratch/livesqlbench/spec.md U5): which benchmark's
-    # tasks the trial runs. Ticket 127 adds the field only; ticket 128 makes `livesqlbench` run a
-    # `--type query` task on the task's Postgres (evals.livesqlbench).
+    # tasks the trial runs. `livesqlbench` runs a `--type query` task on the task's Postgres
+    # (evals.livesqlbench, `_query_command`).
     benchmark: Literal["data-eng-bench", "livesqlbench"] = Field(
         default="data-eng-bench", description="The benchmark whose task the trial runs."
     )
@@ -353,6 +357,11 @@ class DataAgent(BaseInstalledAgent):
             env["DATA_AGENT_MODEL"] = self._parsed_model_name
         return env
 
+    def _benchmark_env(self) -> dict[str, str]:
+        """The benchmark's own variables: dbt's target for data-eng-bench only (ADR-0005)."""
+        assert isinstance(self.options, DataAgentOptions)
+        return {} if self.options.benchmark == LSB_BENCHMARK else DBT_ENV
+
     def _trace(self) -> tuple[TraceTier | None, dict[str, str]]:
         """With `trace`: the tier of the trial's task, and the Langfuse variables when the host has
         all three and this trial claims its task's export (`claim_trace`); without, nothing."""
@@ -369,6 +378,8 @@ class DataAgent(BaseInstalledAgent):
 
     def _run_command(self, instruction: str, trace_tier: TraceTier | None = None) -> str:
         assert isinstance(self.options, DataAgentOptions)
+        if self.options.benchmark == LSB_BENCHMARK:
+            return self._query_command(instruction, trace_tier)
         logs = self.environment_logs_dir
         return (
             # data-eng-bench's Snowflake variant needs a Snowflake gateway, which there is not.
@@ -394,6 +405,33 @@ class DataAgent(BaseInstalledAgent):
             'rc=$?; if [ "$rc" -eq 1 ]; then exit 0; fi; exit "$rc"'
         )
 
+    def _query_command(self, instruction: str, trace_tier: TraceTier | None) -> str:
+        """A LiveSQLBench trial (evals.livesqlbench): a query run on the task's Postgres, read
+        through the read-only role whose URL the task container holds in `LSB_DATABASE_URL`
+        (`--postgres-env`, so it is never on the command line). The agent writes its SQL to
+        `/app/pred.json`, which is copied into the logs directory afterwards (ticket 128 Context
+        9.1b: the trial keeps the agent's own answer; the verifier reads the original)."""
+        assert isinstance(self.options, DataAgentOptions)
+        logs = self.environment_logs_dir
+        prediction = self.WORKSPACE / LSB_PREDICTION
+        return (
+            f"{shlex.quote(str(self.venv / 'bin' / 'data-agent'))} run --type query "
+            f"--workspace {shlex.quote(str(self.WORKSPACE))} "
+            f"--postgres-env {LSB_DATABASE_URL_ENV} "
+            f"--config {shlex.quote(self.options.run_config)} "
+            # As for dbt: the task container is the isolated environment, and no --network.
+            "--sandbox local "
+            f"--events-dir {shlex.quote(str(logs / self.EVENTS_DIR))} "
+            f"--agent-timeout-sec {shlex.quote(str(self.options.agent_timeout_sec))} "
+            f"--task {shlex.quote(instruction)} "
+            + (f"--trace-tier {trace_tier} " if trace_tier else "")
+            + f"2>&1 | tee {shlex.quote(str(logs / self.OUTPUT_FILE))}; "
+            "rc=$?; "
+            f"cp {shlex.quote(str(prediction))} {shlex.quote(str(logs / LSB_PREDICTION))} "
+            "2>/dev/null || true; "
+            'if [ "$rc" -eq 1 ]; then exit 0; fi; exit "$rc"'
+        )
+
     async def _last_result(self, environment: BaseEnvironment) -> dict[str, Any] | None:
         events = shlex.quote(str(self.environment_logs_dir / self.EVENTS_DIR))
         found = await environment.exec(command=f"cat {events}/*.jsonl")
@@ -413,7 +451,7 @@ class DataAgent(BaseInstalledAgent):
             await self.exec_as_agent(
                 environment,
                 command=self._run_command(instruction, tier),
-                env=self._model_env() | DBT_ENV | trace_env,
+                env=self._model_env() | self._benchmark_env() | trace_env,
             )
         except NonZeroAgentExitCodeError as exc:
             result = await self._last_result(environment)

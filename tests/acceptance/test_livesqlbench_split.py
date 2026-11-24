@@ -29,12 +29,6 @@ from livesqlbench_support import REPO_ROOT, Env, ablate_run, lsb_server_manifest
 
 from evals import livesqlbench
 
-TICKET_128 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 128: the LiveSQLBench split is not implemented or not committed",
-)
-
 MANIFEST = REPO_ROOT / "evals" / "manifest.json"
 REGISTRY = REPO_ROOT / "evals" / "registry.json"
 SEED = 20261124
@@ -72,7 +66,6 @@ def test_the_generated_records_are_what_the_split_tests_assume() -> None:
     assert all(len(f"lsb-{r['instance_id']}") > 32 for r in records)
 
 
-@TICKET_128
 def test_the_same_seed_gives_the_same_split() -> None:
     first = livesqlbench.split(generated_records(), SEED)
     second = livesqlbench.split(generated_records(), SEED)
@@ -81,7 +74,6 @@ def test_the_same_seed_gives_the_same_split() -> None:
     assert first == second
 
 
-@TICKET_128
 def test_the_split_is_60_dev_and_120_holdout_of_all_records() -> None:
     result = livesqlbench.split(generated_records(), SEED)
     every = {livesqlbench.task_id(r["instance_id"]) for r in generated_records()}
@@ -92,7 +84,6 @@ def test_the_split_is_60_dev_and_120_holdout_of_all_records() -> None:
     assert set(result.dev) | set(result.holdout) == every
 
 
-@TICKET_128
 def test_every_database_with_two_or_more_records_is_on_both_sides() -> None:
     result = livesqlbench.split(generated_records(), SEED)
     sizes = Counter(r["selected_database"] for r in generated_records())
@@ -106,7 +97,6 @@ def test_every_database_with_two_or_more_records_is_on_both_sides() -> None:
             assert dev[database] >= 1 and holdout[database] >= 1, database
 
 
-@TICKET_128
 def test_ids_are_lsb_instance_ids_distinct_in_their_first_32_characters() -> None:
     result = livesqlbench.split(generated_records(), SEED)
     ids = result.dev + result.holdout
@@ -129,7 +119,6 @@ def committed() -> tuple[list[str], list[str], dict[str, str]]:
     return dev, holdout, databases
 
 
-@TICKET_128
 def test_the_committed_manifest_holds_the_60_120_split_and_its_database_table() -> None:
     dev, holdout, databases = committed()
 
@@ -146,7 +135,6 @@ def test_the_committed_manifest_holds_the_60_120_split_and_its_database_table() 
             assert sides[database] == {"dev", "holdout"}, database
 
 
-@TICKET_128
 def test_the_committed_ids_do_not_collide_with_data_eng_bench() -> None:
     dev, holdout, _ = committed()
     manifest = json.loads(MANIFEST.read_text())

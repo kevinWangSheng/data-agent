@@ -20,7 +20,8 @@ too). Otherwise the verdict is `rerun-old`, unless a regression task regressed: 
 on the new version alone, so the verdict is `fail` either way.
 
 Dev set only: any job, target or regression task outside the manifest's dev set is refused, by
-count, so no holdout task is named (ADR-0004).
+count, so no holdout task is named (ADR-0004). data-eng-bench only (ADR-0008): the dev set is the
+manifest's data-eng-bench dev tasks (`benchmark_tasks`), so LiveSQLBench's are outside it.
 
 Exit 0 on pass; 1 on fail, rerun-regression (rerun the listed tasks, add them with --rerun) or
 rerun-old; 2 on input it refuses.
@@ -39,8 +40,10 @@ from evals.harbor import Trial, event_files, load_trials
 from evals.metrics import is_success
 from evals.process import job_metrics, timing_markdown
 from evals.report import (
+    DEFAULT_BENCHMARK,
     MERGE_HELP,
     TRIALS_PER_TASK,
+    benchmark_tasks,
     check_complete,
     is_infra_error,
     last_record,
@@ -125,6 +128,7 @@ def evaluate(
     rerun_jobs: list[Path],
     trials: int,
 ) -> dict[str, Any]:
+    dev_tasks = benchmark_tasks({"dev": dev_tasks}, "dev", DEFAULT_BENCHMARK)
     dev = set(dev_tasks)
     old, new = load_jobs(old_jobs), load_jobs(new_jobs)
     reruns = [t for job in rerun_jobs for t in load_trials(job)]
@@ -194,6 +198,7 @@ def evaluate_screening(
     dev set are left out by count, never named. The new job must have every one of the change's
     tasks `trials` times; its other trials are ignored. Same verdict order as `evaluate`; the
     result has `evaluate`'s shape without `point_estimate`, plus `"screening": true`."""
+    dev_tasks = benchmark_tasks({"dev": dev_tasks}, "dev", DEFAULT_BENCHMARK)
     dev = set(dev_tasks)
     old_jobs_trials = load_jobs(old_jobs)
     old = [t for t in old_jobs_trials if t.task in dev]
