@@ -37,7 +37,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, override
+from typing import Any, ClassVar, Literal, override
 
 from harbor.agents.installed.base import (
     AgentAuthenticationError,
@@ -248,6 +248,12 @@ class DataAgentOptions(InstalledAgentOptions):
     # Harbor's `--ak trace=true` (`evals ablate/board --trace`): export the trial's trace to
     # Langfuse, one trial per task (observability spec "覆盖范围").
     trace: bool = Field(default=False, description="Export this task's first trial to Langfuse.")
+    # Harbor's `--ak benchmark=livesqlbench` (.scratch/livesqlbench/spec.md U5): which benchmark's
+    # tasks the trial runs. Ticket 127 adds the field only; ticket 128 makes `livesqlbench` run a
+    # `--type query` task on the task's Postgres (evals.livesqlbench).
+    benchmark: Literal["data-eng-bench", "livesqlbench"] = Field(
+        default="data-eng-bench", description="The benchmark whose task the trial runs."
+    )
 
     @field_validator("run_config")
     @classmethod
