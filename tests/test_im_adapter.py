@@ -237,3 +237,46 @@ async def test_a_refused_answer_keeps_the_question_open(tmp_path: Path) -> None:
 
     await adapter.on_press(press)
     assert conversations.sent[-1] == ("conv1", "Net")
+
+
+async def ask_net_or_gross(
+    tmp_path: Path, platform: Platform
+) -> tuple[Adapter, Conversations, Press]:
+    """A turn whose run asked "Net or gross?" with two buttons; the press of the first."""
+    adapter, conversations, runs, _ = await bot(tmp_path, platform)
+    await adapter.on_message(mention("What was the 2024 revenue?"))
+    clarification = {
+        "type": "clarification",
+        "question": "Net or gross?",
+        "options": ["Net", "Gross"],
+    }
+    write_events(runs, "run1", clarification, {"type": "result"})
+    await adapter.poll()
+    asked_id = f"m{len(platform.sent)}"
+    assert len(platform.sent[-1].buttons) == 2
+    return adapter, conversations, Press("slack", "C1", "T1", "U1", False, asked_id, "answer:1")
+
+
+async def test_a_typed_answer_closes_the_question(tmp_path: Path) -> None:
+    platform = Platform()
+    adapter, conversations, press = await ask_net_or_gross(tmp_path, platform)
+    await adapter.on_message(mention("Gross, please"))
+    assert conversations.sent[-1] == ("conv1", "Gross, please")
+    # The question's buttons were taken off.
+    assert any("Net or gross?" in edit.text and edit.buttons == () for edit in platform.edited)
+
+    await adapter.on_press(press)
+    assert len(conversations.sent) == 2
+    assert "no longer open" in platform.sent[-1].text
+
+
+async def test_a_refused_typed_answer_keeps_the_question_open(tmp_path: Path) -> None:
+    platform = Platform()
+    adapter, conversations, press = await ask_net_or_gross(tmp_path, platform)
+    conversations.refusals.append(Refused(409, "another run is going; one run at a time"))
+    await adapter.on_message(mention("Gross, please"))
+    assert "one run at a time" in platform.sent[-1].text
+    assert all("Net or gross?" not in edit.text for edit in platform.edited)
+
+    await adapter.on_press(press)
+    assert conversations.sent[-1] == ("conv1", "Net")

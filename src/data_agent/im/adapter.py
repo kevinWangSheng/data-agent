@@ -285,20 +285,17 @@ class Adapter:
             return
         option = question.options[int(number) - 1]
         # A refused answer (another run going) leaves the question open, its buttons on.
-        if not await self.send_turn(question.conversation, option, chat, question.thread_id):
-            return
-        del self.questions[(chat, press.message_id)]
-        if self.platform.capabilities.edit:
-            # Its buttons go, so the question is answered once.
-            await self.edit(chat, press.message_id, Outgoing(question.text))
+        await self.send_turn(question.conversation, option, chat, question.thread_id)
 
     async def send_turn(self, conversation: str, text: str, chat: str, thread: str | None) -> bool:
-        """Whether `send()` took the message (a turn or a steer); a refusal is told."""
+        """Whether `send()` took the message (a turn or a steer); a refusal is told. A taken
+        message, pressed or typed, answers the conversation's open questions, so they close."""
         try:
             sent = await asyncio.to_thread(self.conversations.send, conversation, text)
         except Refused as exc:
             await self.reply(chat, thread, exc.detail)
             return False
+        await self.close_questions(conversation)
         if sent.get("kind") != "turn":
             return True
         turn = Turn(conversation, chat, thread, str(sent["run_id"]), edited_at=self.clock())
@@ -309,6 +306,16 @@ class Adapter:
             )
         self.turns[turn.run_id] = turn
         return True
+
+    async def close_questions(self, conversation: str) -> None:
+        """Forgets the conversation's open questions and, where the platform edits, takes
+        their buttons off, so none of them is answered a second time."""
+        for key, question in list(self.questions.items()):
+            if question.conversation != conversation:
+                continue
+            del self.questions[key]
+            if self.platform.capabilities.edit:
+                await self.edit(key[0], key[1], Outgoing(question.text))
 
     async def stop_turn(self, conversation: str | None, chat: str, thread: str | None) -> None:
         if conversation is None:
