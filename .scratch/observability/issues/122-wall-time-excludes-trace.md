@@ -1,6 +1,6 @@
 # 122 — 运行页墙钟和回放时间线不算 trace 导出的时间
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 121 (done)
 Spec: ../spec.md
 Claimed by: claude (opus 5.5)
@@ -63,10 +63,10 @@ Branch: worktree-122-wall-time-excludes-trace
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 2
+- Attempts: 3
+- Review rounds: 3
 - Model spend: $0
-- Outcome: —
+- Outcome: in review (round 3: `result.ended_ts`; backend and web)
 
 ## Comments
 
@@ -144,3 +144,64 @@ Branch: worktree-122-wall-time-excludes-trace
   - **Leftovers:** `build:local` rewrote `src/data_agent/web/static/`, which git ignores. The evidence scripts and logs are in `runs/t122/`.
 
 - 2026-11-24（主会话）退回第 2 轮：原因——PR #130 第 7 步审查（Opus 子 agent，只读）的第 1 条属实（主会话对照 `agent.py:2391-2399` 核实）：截止时间等停下时不写事件，"导出前那个事件"会把墙钟少算几分钟，比 main 更糟；第 2 条也属实：历史页 `runs.py:173` 仍含导出等待。根因是事件文件不记运行结束时刻，只改网页修不了；这是主会话第 1 次退回改写工单时选错了做法（agent 第 1 轮已建议改后端）。人 2026-11-24 定扩到后端，Authority、Context、Acceptance 已改。等 121 合入后在原分支上接着做（先把 main 合进来）；改了后端，第 5 步要跑 `da-review`，第 7 步等 Codex GitHub app。PR #130 不关，在同一分支上继续推。审查的 3 条小问题（结束事件没有 `ts`、回放中 export-start `error` 让时间回退、测试注释断行）随新做法一并消失或顺手修。
+
+- 2026-11-24（工单 agent 退回第 2 轮最终回复，主会话照抄）：
+
+- **2026-11-24 (claude opus 5.5, round 3 after the return; branch `worktree-122-wall-time-excludes-trace`; commits `3f7ff5e` (merge of `origin/main`, which has 121), `2d6b281`, `0886dcf`, `641c711`)**
+  - **What changed:**
+    - **Backend writers:** the `result` event has a new field, `ended_ts`. It is taken right before `if export is not None` in `src/data_agent/agent.py:2423-2425` and in `evals/dab.py:578-584`, so it is written whether or not the export ran. The other `result` fields and the event order are unchanged.
+    - **`evals/dab.py:39`:** adds `from datetime import UTC, datetime`. This line is outside the allowed `:575-581` range, but the new field needs it.
+    - **`src/data_agent/web/runs.py:174`:** `duration_ms` uses `result.ended_ts`, and falls back to `result.ts` when the field is missing.
+    - **`web/src/run-view/model.ts`:** I first reset this file to main, which removes round 2's guess at the run's end. A new function, `endedMs`, reads `result.ended_ts`. The wall time ends there. In replay, no event's time is later than it, so `trace` and `result` still appear, at that time. Older files without the field, and runs still going, behave as on main.
+  - **Tests** (each new one was run before the fix and failed with `KeyError: 'ended_ts'` or the wrong duration):
+    - `tests/test_agent_run_end.py`: an `agent.run` with the export on and a relay that is slow to drain. `ended_ts` is no earlier than `answer`, and earlier than `trace_export_error`, `trace` and `result.ts`.
+    - `tests/test_agent_outcomes.py::test_without_a_trace_the_result_still_records_the_runs_end`: without the export, `ended_ts` is still written.
+    - `tests/test_dab_trace.py::test_the_result_records_the_runs_end_before_the_export_waits`: the same check for the `result` that `evals/dab.py` writes.
+    - `tests/test_web_runs_duration.py`: the history row's `duration_ms` is 15000 with `ended_ts` and 25000 without it.
+    - `model.test.ts`, describe `export events`, six cases:
+      - A traced run: wall time ends at `ended_ts`.
+      - A run stopped at its deadline mid tool call: wall time runs to `ended_ts` (300 s), with nothing cut off.
+      - Replay: `trace` and `result` appear, no time is later than `ended_ts`, and the 114 link shows at the end.
+      - An older file: as on main.
+      - A running run: as on main.
+      - `rowOf` gives 15000 and 25000 for the same event shapes as the `runs.py` test.
+    - Round 2's export-block tests are gone along with that approach.
+    - The merged acceptance tests have no diff: `git diff origin/main --name-only | grep -c acceptance` prints 0.
+  - **Checks:** `make check` on `641c711` exited 0. Ruff "All checks passed!", basedpyright 0 errors, pytest 2867 passed and 2 skipped, vitest 30 files and 448 tests passed. Logs: `runs/t122/check-r3-final.log`; `runs/t122/check-r3.log` is the run on `2d6b281`.
+  - **Before/after on made-up data:** `runs/t122/make_data_r3.py` builds four runs from the query-shop fixture in the backend's real order: `answer`, then `trace` 10 s later, then `result` with `ended_ts`.
+    - Run view model (`node --experimental-strip-types runs/t122/compare_r3.ts`) and history row (`uv run python runs/t122/compare_r3_runs.py`, which loads main's `runs.py` for "before"), wall time in ms:
+
+      | Run | Before | After |
+      |---|---|---|
+      | Traced run | 26948 | 16948 |
+      | No export | 16948 | 16948 |
+      | Older traced file (no `ended_ts`) | 26948 | 26948 |
+      | Stopped at deadline (5 min into a tool call) | 312673 | 302673 |
+
+    - The two after-values match for all four runs. Outputs: `runs/t122/compare_r3.out` and `runs/t122/compare_r3_runs.out`.
+    - **In the browser:** I served `runs/t122/local3` with `data-agent web` on port 8824. `/api/runs` gives the same after-values. The run pages show:
+      - the traced run: wall time 17 s and the "Open in Langfuse" link;
+      - the run with no export: 17 s;
+      - the older traced file: 27 s;
+      - the deadline run: 5m 03s.
+    - On the traced run's page the timeline ends at 0:16. Screenshot: `runs/t122/run-page-after-r3.png`.
+    - The "before" numbers come from the scripts only; I did not look at a pre-fix bundle in the browser.
+    - I did not do a real traced model run, because ticket agents can't load the model env. That one falls to the main session.
+  - **Reviews:**
+    - **`da-review main` (on `2d6b281`):** "No actionable defects found". Codex says it could not run the backend tests in its read-only sandbox. Log: `runs/t122/da-review-r3.log`.
+    - **`eng:code-review main` (on `2d6b281`):** Standards and Spec sub-agents, no blocking findings.
+  - **Review findings fixed:**
+    - Tests were in `tests/test_tracing.py` and `tests/test_web_read.py`, which are outside Authority. I moved them to the two new files and restored both files to main (`641c711`).
+    - Imports inside test functions are now at module level, and a test comment that said "up to 10 s" now says "up to its timeout" (`0886dcf`).
+    - `0886dcf` and `641c711` only touch tests and were not re-reviewed. The final `make check` covers them.
+  - **Review findings not fixed, with reasons:**
+    - **`SlowRelay` defined twice** (agent and dab tests): their base classes differ, `StandInRelay` and a bare relay.
+    - **`ended_ts` taken in two run loops:** the ticket asks for both writers, and the two loops were already parallel on main.
+    - **The fallback for files without `ended_ts`:** the ticket requires it. It covers existing run files, not a renamed name, so it is not the kind of compatibility shim the standards ban.
+    - **`rowOf` and `runs.py` can differ by 1 ms:** Python rounds and `Date.parse` truncates the microseconds. This is already true on main for `ts`.
+    - **A replay prefix that ends at `trace` without `result` would show the unclamped time:** this can't happen, because the clamped events share one time and replay reveals them together.
+  - **For the main session, outside Authority:**
+    - `evals/dab.py:536` writes a third `result`, when DAB's databases fail to load. It has no `ended_ts`. No export wait comes before it, so the fallback to `ts` gives the right duration.
+  - **Leftovers:** `build:local` rewrote `src/data_agent/web/static/`, which git ignores. The evidence scripts, logs and screenshot are in `runs/t122/`. The server on port 8824 is stopped.
+
+- 2026-11-24（主会话）真实运行，122 分支 `641c711`，worktree 里 `runs/122real-641c711/`（不进 git）：`data-agent run --type query --config full --sandbox local --trace-tier full`，shop.sql 夹具，同 121 的问题。exit 0，花费 $0.0073。事件末尾 `text, answer, trace, result`；相对第一个事件：`answer` 25.128 s，`result.ended_ts` 25.128 s，`trace` 27.600 s，`result.ts` 27.600 s。即这次真实导出等待 2.47 s，`ended_ts` 落在导出之前、紧跟 `answer`。
