@@ -146,6 +146,58 @@ Evaluation commands (`evals ablate`, `evals board`, `evals dab`, `evals jaffle`)
 in `evals/manifest.json`: dev tasks `full`, everything else `structure`. DataAgentBench, which has
 no held-out split, uses `full`; jaffle-shop, which is not in the manifest, uses `structure`.
 
+### External MCP servers
+
+`data-agent run --mcp-servers FILE` and `data-agent web --mcp-servers FILE` give the agent the tools
+of MCP servers you already use, such as MongoDB's or GitHub's. `FILE` is a Claude Code / Cursor
+`mcpServers` JSON kept outside the repository, with one addition: each server lists the tools the
+agent may call in `allowedTools`.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/readonly",
+      "headers": {"Authorization": "Bearer ${DATA_AGENT_MCP_GITHUB_TOKEN}"},
+      "allowedTools": ["*"]
+    }
+  }
+}
+```
+
+- Transports: `stdio` (the default when `type` is left out) and `http`. A server that uses `sse`,
+  OAuth, an unknown type or an unknown field is refused. A run with a bad file stops before its
+  session starts, with exit code 2 and an error that names the server.
+- `allowedTools`: `["find", "aggregate"]` allows those two tools, and `["*"]` allows all of the
+  server's tools. A server without the list, or with an empty one, is not mounted, and the run prints
+  a warning. Tools not on the list are refused. Tool annotations such as "read-only" count for
+  nothing.
+- Credentials: write `${DATA_AGENT_MCP_<NAME>}` in `env` or `headers` values, and set the variable
+  in the environment. `data-agent` expands only variables with that prefix, and only in those two
+  places. An unset variable, another prefix, or `${...}` anywhere else stops the run. The server
+  name `data` is reserved. A name may use only letters, digits, `-` and `_`, may not contain `__`,
+  and may not start or end with `_`. The event file masks every referenced variable's value
+  everywhere it appears, so reference only secrets this way. Write plain settings such as `"true"`
+  as literals.
+- Each stdio server is started through `data-agent mcp-launch`. It starts from a clean environment
+  (`PATH`, `HOME`, `LANG` and a few other basic variables) plus the server's own `env`. The server
+  never sees the model key, database URLs or Langfuse keys. If your Docker needs `DOCKER_HOST`, add
+  it to the server's `env`.
+- The run's `version` event records each mounted server's name and allow list, and nothing else
+  from the file. The evaluation entry points never mount external servers.
+
+Complete MongoDB and GitHub setups are in [`docs/setup.md`](docs/setup.md#外部-mcp-server工单-116).
+
+Risks you take on with `--mcp-servers`:
+
+- A write tool on the allow list (MongoDB's `insert-many`, say) runs without asking. Leave write
+  tools off the list, or use the server's own read-only mode.
+- stdio servers run on this machine, outside the sandbox. `--network` does not limit their network
+  access.
+- External tools' inputs and outputs are written to the event file. They also go to your Langfuse
+  when trace export is on.
+
 ## How it works
 
 ![Architecture: a task goes to the main agent; Skills, context tools and a verifier are switchable layers; the database is reached only through data tools and a read-only gateway; the dbt project is the only write path; every run writes an event log](docs/assets/architecture.svg)
@@ -249,6 +301,12 @@ in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
   labels exactly; they failed in every run.
 - Data sources are DuckDB, Postgres and dbt projects. There is no memory across runs yet. The web UI
   is for one user on one machine: it has no login.
+- External MCP servers (`--mcp-servers`) have no confirmation before a write tool runs. Their stdio
+  processes run on the host, with network access that `--network` does not control. An http
+  server's expanded headers reach the Claude Code CLI as part of its `--mcp-config` argument, so
+  other local users who can list this machine's processes can see them. stdio servers' values do not reach any
+  argv: they reach the wrapper through the CLI's environment. The wrapper reads the file again when
+  the CLI starts the server, so an edit made to the file during a run takes effect at that point.
 
 ## How it was built
 

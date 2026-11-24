@@ -1,10 +1,10 @@
 # 119 — 答案图表：后端（`--charts`、查询 id、`display_chart`、画图规则、网页命令行）
 
-Status: ready-for-agent
+Status: done
 Blocked by: 118（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 119-charts-backend)
+Branch: worktree-119-charts-backend
 
 ## Goal
 
@@ -116,10 +116,80 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2 (Fable: 4 fixed; eng:code-review: 1 nit fixed)
 - Model spend: $0
-- Outcome: —
-- Human review minutes: — (filled by the human at merge, optional)
+- Outcome: in-review, branch `worktree-119-charts-backend`, commits e4eb6ed, 9753c8e, fb43b35
 
 ## Comments
+
+- 2026-11-23（工单 agent 最终回复，主会话照抄）：
+
+**What was done**
+- **Switches:** `run --charts` and `mcp-server --charts` (single database and `--source`); both default to off.
+- **Query ids:** whenever charts or the sandbox is on, `query_database` results get `query_N` ids from one store that `sandbox_exec` and `display_chart` share.
+- **The tool:** `display_chart` and its checks live in the new `src/data_agent/charts.py`; `mcp_server.py` only registers it.
+- **Prompts:** with `--charts`, the system prompt gets `CHARTS_PROMPT` and the query prompt uses `CHARTS_QUERY_PROMPT`.
+- **Web:** form runs and conversation turns pass `--charts`.
+- **Tests:** in the two acceptance files I only deleted the `TICKET_119` marks and their definitions (`git diff --stat`: −5 / −7 lines). The extra unit tests are in `tests/test_charts.py` (29 tests).
+- **Untouched:** `tests/fixtures/charts/`, `evals/`, `SANDBOX_RULE` and `ANSWER_RULE`.
+
+**Evidence**
+- **`make check` on `fb43b35`:** exit 0 (saved in `runs/119/make-check-final.txt`).
+  - ruff: "All checks passed!"
+  - basedpyright: "0 errors, 0 warnings, 0 notes"
+  - pytest: "2666 passed, 2 skipped, 79 deselected, 73 xfailed"
+  - web: "Tests 322 passed | 52 expected fail"
+- **Acceptance:** `uv run pytest tests/acceptance/test_charts_server.py tests/acceptance/test_charts_switch.py -v` gave "29 passed in 48.10s", every case PASSED, including the fixture replay (`runs/119/acceptance.txt`).
+- **Model-free real run:** `uv run python runs/119-real/stdio_run.py runs/119-real/shop.duckdb` starts `data-agent mcp-server --config no-context --duckdb … --charts` over stdio. The database was built from `tests/fixtures/shop.sql`. Output (`runs/119-real/stdio-output.txt`):
+  - Monthly revenue query: 7 rows, last line `[result id: query_1; give it to display_chart as query_id to chart it]`.
+  - `display_chart(query_1, line, x=month, series=[revenue "Revenue"])`: `is_error=False`, `{"chart":{"query_id":"query_1","chart_type":"line","x":"month","series":[{"column":"revenue","label":"Revenue"}],"stacked":false,"title":"Revenue by month"},"data":[{"month":"2025-03-01","revenue":227.25}, … 7 rows]}`.
+  - Pie with 2 series: `is_error=True`, "a pie chart takes one series, not 2".
+  - x=region: `is_error=True`, "column region is not in query_1; its columns: month, orders, revenue".
+
+**Reviews**
+- **Fable read-only review (stands in for `da-review`):** nothing severe. All four findings fixed in `9753c8e`, each with tests:
+  - inf/NaN values passed the checks and produced invalid JSON (`Infinity`). They are now refused with a message saying to filter them out or make them NULL.
+  - `Decimal("NaN")` crashed the pie check. The same non-finite check covers it.
+  - A result with a repeated column name charted the wrong column. It is now refused with a message saying to alias the columns.
+  - The same series column given twice is now refused.
+- **`eng:code-review main`:**
+  - Spec axis: nothing missing, no conflict with the spec. The round-1 refusals are stricter than spec lines 41-46 but consistent with contract 5.
+  - Standards axis: no hard violations. Fixed: the pyright ignore is gone because `is_number` now narrows the type (`fb43b35`). Not fixed:
+    - "dead `results is not None` check" (`mcp_server.py`): it is there so the type checker knows `results` is set.
+    - "two duplicate-name checks look alike": two lines with different messages; a helper would not make it clearer.
+    - "the `charts` flag is threaded through many functions": it follows the existing `network`/`effort` pattern.
+    - "make the return value a TypedDict": the contract's types live in `web/src/chart/model.ts` and the acceptance tests.
+  - Spec note, not fixed: `CHARTS_SANDBOX_RULE` names `sandbox_exec` even in a run without a sandbox. `SANDBOX_RULE` already did that, and it is not the id line.
+
+**待人定 (decisions left for the human)**
+1. **`SANDBOX_RULE` vs the charting rule.**
+   - Now: `SANDBOX_RULE` is untouched. Only with `--charts` does the query prompt use `CHARTS_QUERY_PROMPT = QUERY_PROMPT.replace(SANDBOX_RULE, CHARTS_SANDBOX_RULE)` (`agent.py`, near `QUERY_PROMPT`). The new line drops "plotting" and adds "Show a chart with `display_chart`, not by plotting in `sandbox_exec`." Without `--charts`, and in DAB, the prompt is byte-identical (`tests/test_charts.py` and `test_task_file.py`).
+   - Why: this is the ticket's prescribed approach.
+   - To change: edit the `CHARTS_SANDBOX_RULE` constant, or drop the `query_prompt = …` line in `run` to keep the old wording.
+2. **Do dbt runs started from the web form get `--charts`?**
+   - Now: yes. Every form run passes `"--charts"` (`web/launcher.py`, after `--network`), pinned by `test_a_dbt_run_from_the_run_form_has_the_switch`.
+   - Verifier subagents do not get `display_chart`: their tools are an explicit list (`verifiers.py:102`, `DATA_TOOLS`), pinned by `test_the_verifier_subagents_never_get_display_chart`.
+   - To give it to query runs only: change that line to `*(("--charts",) if task_type == "query" else ())` and flip that test.
+3. **Which tools get ids.**
+   - Now: only `query_database`.
+   - Other tools that return table results: `query_labels` (`mcp_server.py`, `format_rows(db.labels.query(...))`). The rest (`list_tables`, `describe_table`, `explain_query`, `classify_text`, context and verifier tools) return catalogs, plans or reports, not query rows.
+   - To add `query_labels`: use the same `results.add` / `results.note` pattern as `query_database`, passing `results` into the `query_labels` closure in `register_base_tools`.
+
+**Real-model run (for you to run).** Docker is present here. The database sits outside the workspace, which docker runs require:
+```bash
+mkdir -p runs/119-real/work && uv run python -c "import duckdb; duckdb.connect('runs/119-real/shop.duckdb').execute(open('tests/fixtures/shop.sql').read())"
+uv run data-agent run --type query --config full --charts --sandbox docker \
+  --duckdb runs/119-real/shop.duckdb --workspace runs/119-real/work \
+  --events-dir runs/119-real/events-1 --task "How did order revenue change month by month in 2025?"
+grep '"mcp__data__display_chart"' runs/119-real/events-1/events.jsonl | grep tool_end
+uv run data-agent run --type query --config full --charts --sandbox docker \
+  --duckdb runs/119-real/shop.duckdb --workspace runs/119-real/work \
+  --events-dir runs/119-real/events-2 --task "How many orders are there in total?"
+grep -c display_chart runs/119-real/events-2/events.jsonl   # expect 0
+```
+For run 1, check that `tool_end.content` is `{"chart":…,"data":…}` with no `{"result":…}` wrapper, and that the data matches the query rows.
+
+- 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查完成，无意见。合并前：真实运行（`runs/batch2/live-checks.sh`）和"待人定"交人定。
+- 2026-11-23（主会话，真实运行）：`data-agent run --charts --type query --config full --sandbox local --duckdb shop.duckdb --task "Show monthly revenue as a chart, …"` exit 0，答案 2025-04 最高 325.50。`display_chart` 调 1 次（query_5，bar，x=month）；`tool_end.content` 是紧凑 JSON `{"chart":{query_id,chart_type,x,series,stacked,title},"data":[{"month":"2025-03-01","revenue":151.5},…]}`，没有 `{"result":…}` 包装，DECIMAL 为数字，形状和金样 `tests/fixtures/charts/run/events.jsonl` 一致（`runs/batch2/119-charts.log`）。
+- 2026-11-23（主会话）：人定"按目前做法合并，实质项之后逐条过"。PR #127 squash 合并为 a4c476b。

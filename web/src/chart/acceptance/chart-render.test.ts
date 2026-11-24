@@ -76,25 +76,25 @@ function seriesColours(el: Element): string[] {
 const colour = (i: number) => `var(--chart-series-${(i % 6) + 1})`
 
 describe('Chart', () => {
-  test.fails.each(CASES)('%s draws without throwing, under its root with type and title', async (type, payload) => {
+  test.each(CASES)('%s draws without throwing, under its root with type and title', async (type, payload) => {
     const root = rootOf(await draw(payload))
     expect(root.getAttribute('data-chart-type')).toBe(type)
     expect(root.textContent).toContain(payload.chart.title)
     expect(root.querySelector('svg')).not.toBeNull()
   })
 
-  test.fails.each(CASES)('%s has one series layer per series', async (type, payload) => {
+  test.each(CASES)('%s has one series layer per series', async (type, payload) => {
     const root = rootOf(await draw(payload))
     expect(root.querySelectorAll(`.recharts-${type}`)).toHaveLength(payload.chart.series.length)
   })
 
-  test.fails('bar: one rectangle per row and series', async () => {
+  test('bar: one rectangle per row and series', async () => {
     const payload = payloadOf('bar')
     const root = rootOf(await draw(payload))
     expect(root.querySelectorAll('.recharts-bar-rectangle')).toHaveLength(payload.data.length * payload.chart.series.length)
   })
 
-  test.fails.each([true, false])('bar with stacked %s: the series of a row share an x only when stacked', async (stacked) => {
+  test.each([true, false])('bar with stacked %s: the series of a row share an x only when stacked', async (stacked) => {
     const base = payloadOf('bar')
     const payload: ChartPayload = { ...base, chart: { ...base.chart, stacked } }
     const layers = [...rootOf(await draw(payload)).querySelectorAll('.recharts-bar')]
@@ -106,19 +106,19 @@ describe('Chart', () => {
     else xs[0].forEach((x, row) => expect(xs[1][row]).not.toBe(x))
   })
 
-  test.fails('scatter: one symbol per row and series', async () => {
+  test('scatter: one symbol per row and series', async () => {
     const payload = payloadOf('scatter')
     const root = rootOf(await draw(payload))
     expect(root.querySelectorAll('.recharts-scatter-symbol')).toHaveLength(payload.data.length * payload.chart.series.length)
   })
 
-  test.fails('pie: one slice per row', async () => {
+  test('pie: one slice per row', async () => {
     const payload = payloadOf('pie')
     const root = rootOf(await draw(payload))
     expect(root.querySelectorAll('.recharts-pie-sector')).toHaveLength(payload.data.length)
   })
 
-  test.fails.each([
+  test.each([
     ['line', '.recharts-line-curve'],
     ['area', '.recharts-area-curve'],
   ] as const)('%s: each series draws a curve', async (type, curve) => {
@@ -129,14 +129,14 @@ describe('Chart', () => {
     for (const path of paths) expect(path.getAttribute('d') ?? '').not.toBe('')
   })
 
-  test.fails.each(CASES.filter(([type]) => type !== 'pie'))('%s: series i is coloured var(--chart-series-i+1)', async (type, payload) => {
+  test.each(CASES.filter(([type]) => type !== 'pie'))('%s: series i is coloured var(--chart-series-i+1)', async (type, payload) => {
     const root = rootOf(await draw(payload))
     const layers = [...root.querySelectorAll(`.recharts-${type}`)]
     expect(layers).toHaveLength(payload.chart.series.length)
     layers.forEach((layer, i) => expect(seriesColours(layer)).toEqual([colour(i)]))
   })
 
-  test.fails('the seventh series takes the first colour again', async () => {
+  test('the seventh series takes the first colour again', async () => {
     const series = Array.from({ length: 7 }, (_, i) => ({ column: `s${i}`, label: `S${i}` }))
     const data = ['a', 'b'].map((x, r) => Object.fromEntries([['x', x], ...series.map((s, i) => [s.column, r + i + 1])]))
     const payload: ChartPayload = { chart: { query_id: 'query_1', chart_type: 'bar', x: 'x', series, stacked: false, title: 'Seven' }, data }
@@ -144,13 +144,13 @@ describe('Chart', () => {
     expect(layers.map((layer) => seriesColours(layer))).toEqual(series.map((_, i) => [colour(i)]))
   })
 
-  test.fails('pie: slice i is coloured var(--chart-series-i+1)', async () => {
+  test('pie: slice i is coloured var(--chart-series-i+1)', async () => {
     const payload = payloadOf('pie')
     const sectors = [...rootOf(await draw(payload)).querySelectorAll('.recharts-pie-sector')]
     expect(sectors.map((sector) => seriesColours(sector))).toEqual(payload.data.map((_, i) => [colour(i)]))
   })
 
-  test.fails.each(CASES)('%s with no rows shows its title and a note, and does not throw', async (type, payload) => {
+  test.each(CASES)('%s with no rows shows its title and a note, and does not throw', async (type, payload) => {
     const empty: ChartPayload = { ...payload, data: [] }
     const root = rootOf(await draw(empty))
     expect(root.getAttribute('data-chart-type')).toBe(type)

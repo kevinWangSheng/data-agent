@@ -1,10 +1,10 @@
 # 112 — 可观测性后端：开关、CLI 导出变量、父 span、`trace` 事件、评测入口、`trace-check`、SDK 升级
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 111（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (Opus 5.5), 2026-11-23
+Branch: worktree-112-observability-backend
 
 ## Goal
 
@@ -131,10 +131,232 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: —
+- `03225e8`：修复本身。父 span 改为显式导出；`ParentExporter` 记下 HTTP 状态码；失败时写 `trace_export_error`；配 500 和连接被拒两个测试。
+- `6ae0645`：Fable 审查第 1 轮。3xx 记成 `http_error`，配测试。
+- `d45693e`：`eng:code-review` 第 2 轮。状态码按最后一次尝试算，归类挪进 `ParentExporter.send`，测试改用关闭的端口，加 503 后断连的测试。
+- 改动文件：`src/data_agent/tracing.py`、`tests/test_tracing.py`。真实运行的脚本和输出在 `runs/112/return1/`（不进 git）。
 
 ## Comments
+
+- 2026-11-23（工单 agent 最终回复，主会话照抄）：
+
+**Commits**
+- `4adcd0f`: SDK upgrade to 0.2.187 and the dependency move.
+- `4ee1d8e`: the feature itself.
+- `2fb56aa`: fixes from the Fable review.
+- `d69448b`: fixes from `eng:code-review`.
+
+**Evidence**
+
+- **Baseline before any change:** 2613 passed, 2 skipped, 97 xfailed.
+- **After the SDK upgrade, with only the version tests changed:** 2613 passed, 2 skipped, 97 xfailed. No other test failed.
+- **Final `make check` (`d69448b`):**
+  - ruff passed, 401 files formatted, basedpyright 0 errors.
+  - pytest: 2684 passed, 2 skipped, 79 deselected, 63 xfailed in 610 s.
+  - web: 322 passed, 52 expected fail.
+- **`pytest tests/acceptance/test_observability_*.py -v`:** 45 passed, 17 xfailed.
+  - All 17 xfails are in `test_observability_relay.py` and still carry `TICKET_113`.
+  - They include the two end-to-end cases that had both marks.
+  - The "export off" guard group passes.
+- **`git diff main -- tests/acceptance/`:** only deleted lines. That is 19 `@TICKET_112` marks, 4 `TICKET_112 = ...` definitions, and the 3 blank lines that came with them (ruff's import sorting requires removing them).
+- **Dependencies:**
+  - `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http` 1.45.1 are now in the main dependencies. `opentelemetry-proto` stays in the `dev` group.
+  - `opentelemetry-api` stays at 1.45.1 and `protobuf` at 6.33.6.
+  - `uv export --no-dev` gains these packages: certifi, charset-normalizer, googleapis-common-protos, opentelemetry-exporter-http-transport, opentelemetry-exporter-otlp-common, opentelemetry-exporter-otlp-proto-common, opentelemetry-exporter-otlp-proto-http, opentelemetry-proto, opentelemetry-sdk, opentelemetry-semantic-conventions, protobuf, requests, urllib3. claude-agent-sdk goes from 0.2.168 to 0.2.187.
+- **Test 1 (what the CLI sends when effort is not set), against a fake local endpoint:**
+  - No `--effort` and an empty `CLAUDE_CONFIG_DIR`: `{"effort":"high"}`.
+  - No `--effort` with user settings that say `xhigh`: `xhigh`.
+  - `--effort max`: `max`.
+  - Only `CLAUDE_CODE_EFFORT_LEVEL=low`: `low`.
+  - `low` plus `--effort max`: `max`.
+  - This is the same as on 2.1.301. One new thing: `thinking` is now `{"type":"adaptive","display":"updates"}`. Whether DeepSeek accepts `display` is unconfirmed.
+- **Harbor offline install:**
+  - There is no data-eng-bench task image on this machine, so I used `python:3.12-slim` (CPython 3.12, glibc 2.41, aarch64) with `--network none`.
+  - 53 wheels, 208 MB in total. The SDK wheel is 167 MB (it was 114 MB).
+  - Container install time: `installed in 12 s`, far under the 360 s limit.
+  - x86_64 setup time on the server is still unmeasured.
+- **Real run with the export off:**
+  - Command: `runs/112/export_off_run.sh` (fake model on 127.0.0.1:18912; two of the three Langfuse variables set; the base URL points at a stand-in on :18913 that logs requests). Exit 0.
+  - Events: `version, task, status, text, answer, result`, with no `trace` or `trace_export_error`.
+  - The Langfuse stand-in received 0 requests.
+- **`trace-check` run as a real command:** `runs/112/trace_check_demo.py`, against the acceptance tests' fake Langfuse.
+  - With a `trace` event: exit 0, prints a 4-level tree plus counts and only attribute names. One `GET /api/public/v2/observations?traceId=…&fields=core,basic,metadata,usage` was made. The planted secret-like value was not printed.
+  - Without a `trace` event: exit 2.
+- **Probe for decision 6 (export off, the shell's own `OTEL_*` pointed at a local sink):**
+  - With the three content switches, and also with `OTEL_LOG_RAW_API_BODIES=1` plus `OTEL_LOG_ASSISTANT_RESPONSES=1`, no span carried the model's reply.
+  - With `ENABLE_BETA_TRACING_DETAILED=1` plus `BETA_TRACING_ENDPOINT`, the CLI sends **OTLP/JSON** to the beta endpoint instead of the normal export, and `llm_request` then carries `response.model_output`.
+
+**Changed existing (non-acceptance) tests**
+- `tests/test_harbor_agent.py:626` and `tests/test_eval_atif.py:16-17`: version numbers.
+- `tests/test_agent_outcomes.py`: the fixture description comment.
+- `tests/test_eval_jaffle.py`: the hand-built `Namespace` gains `trace=False`, because `jaffle.run` now reads `args.trace`.
+- `tests/test_postgres.py:176`: the exact set of env keys gains `LANGFUSE_ENV`, because the Langfuse keys are now blanked on every run.
+
+**Reviews**
+- **First review (Fable, standing in for `da-review`).** No P0.
+  - Fixed:
+    - A failed export start or finish no longer breaks the run; it writes one `error` event with `source: trace` instead.
+    - `OTEL_SDK_DISABLED` leaves the run untraced.
+    - `TRACEPARENT` and `TRACESTATE` are set explicitly in the options' env, so `OTEL_PROPAGATORS` cannot detach the CLI's spans.
+    - Exceptions are not recorded on the parent span.
+    - Host names are masked as whole words, so a host called `db` no longer turns "dbt" into `[REDACTED]t`.
+    - No `cost_details` is sent when the run has no cost.
+    - `http.client.HTTPException` is caught.
+    - `trace-check` exits non-zero on a trace with no observations.
+    - The Langfuse keys are blanked in the CLI env and masked in the event file on every run.
+  - Not fixed:
+    - Parent-span usage may be double-counted: the spec requires it, so it goes in the decisions below.
+    - User-settings `env` blocks may override our variables: unconfirmed, also in the decisions below.
+    - `CLAUDE_CODE_OTEL_*` variables are not blanked: they only change content length, not the destination.
+    - The Harbor claim is taken before the trial runs: this is the known cost of decision 3.
+    - The public export may include the `trace` URL: `evals/export.py` is outside my Authority; handle it before 114.
+    - The README uses the public Cloud URL: it is a vendor address, not a secret.
+- **Second review (`eng:code-review main`).**
+  - Standards:
+    - Fixed: one hard violation. A DAB run whose export failed wrote the `error` before the `version` header; a new test covers it.
+    - Fixed: DAB's logs now use one secret list.
+    - Fixed: `active()` now has a real return type.
+    - Fixed: reworded the jaffle comment.
+    - Not fixed: duplication between `agent.run` and `dab.run_once`. The two loops already differ (event file, database load, result); the risky part sits in `RunExport`, and the ordering is covered by a test.
+    - Not fixed: the two `--trace` arguments in ablate and board. They are two lines each.
+    - Not fixed: the size of `tracing.py`. It does one job, the export.
+  - Spec: "keys blanked when the export is off", "a new `error` event", "explicit TRACEPARENT" and "the URL fallback differs from the ticket's wording" are all written up in the decisions below.
+
+
+### Commands for the main session
+
+Leave the three Langfuse variables unset until 113 merges.
+
+1. **jaffle-shop, 7 cases (needs 7/7):**
+   `uv run python -m evals jaffle --postgres-env <VAR> --out runs/112-jaffle --config full`
+2. **Dev-set screen, 3 tasks:** run `da-remote setup <branch HEAD after push>`, then:
+   `da-remote start 112-screen -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --out runs/112-screen --budget 3 --split dev --task <t1> --task <t2> --task <t3> --trials 1 --config full`
+   - The ticket says `evals board`; I used the dev-set form documented in `docs/setup.md`.
+   - Then read each trial's setup time with `da-remote exec -- bash -c 'grep -h "installed in" runs/112-screen/**/agent/setup/install.log'`. The exact path is unconfirmed.
+3. **Test 2 (verifier subagent after the fork default changed):**
+   `uv run python -m evals jaffle --postgres-env <VAR> --out runs/112-fork --config full --case b1_monthly_revenue`
+   - Check in the event file:
+     - `verifier_start` and `verifier_end` both appear before the single `result`.
+     - There is no `error` with `source: spend`, which would mean the transcript read failed.
+     - The result's `cost_basis` is `price_table`.
+   - Check that `subagents/agent-*.jsonl` exists under the session.
+   - If it fails, retry with `CLAUDE_CODE_FORK_SUBAGENT=0` and send the ticket back.
+4. **Test 3 (steer probe):**
+   `uv run python <worktree>/runs/112/steer_probe.py`, then again with `--replay`.
+   - Record the number of `ResultMessage`s, each one's `num_turns`, whether BANANA appears, and `user_message_uuid(s)`.
+   - The script prints P for the prompt and S for the steer.
+5. **After both 112 and 113 merge**, with the three variables set, run `data-agent trace-check <events file>` after each of these:
+   - one dbt run on `full`;
+   - one query run on the dev tier and one with `--trace-tier structure` (on repo fixtures);
+   - two turns of a web conversation;
+   - one run with the export off.
+   - Rebase 113 and confirm the two relay end-to-end cases PASS.
+
+### `trace-check` permission rule (for human review; I did not touch `.claude/`)
+
+The repo already allows `Bash(uv run *)`. What actually blocks agents is that the keys live in `~/.config/data-agent/env`, which agents may not read. The suggestion is a one-argument wrapper at `~/.local/bin/da-trace-check`:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+[ $# -eq 1 ] || { echo "usage: da-trace-check <events file | run id>" >&2; exit 2; }
+set -a; . ~/.config/data-agent/env; set +a
+exec uv run data-agent trace-check "$1"
+```
+
+Then add `"Bash(da-trace-check *)"` to `permissions.allow` in `.claude/settings.json`. This lets nothing else through:
+- The wrapper takes one argument and runs only `trace-check`, which prints only structure.
+- Claude Code checks each part of a compound command separately.
+- `Edit(~/.local/bin/da-*)` is already denied, so an agent cannot change the wrapper.
+
+### Decisions for you (待人定)
+
+1. **Inherited `OTEL_*` when the export is off:** not set and not cleared (spec wording). Two related points:
+   - The review added blanking the three Langfuse keys on every run. Change it in `tracing.cli_env`.
+   - The parent span's exporter in our own process still merges `OTEL_EXPORTER_OTLP_HEADERS` (ours win on the same key).
+2. **jaffle-shop tier:** `structure` (`evals/jaffle.py` `TRACE_TIER`).
+3. **The first Harbor trial:** an `O_EXCL` claim file at the job's top level (`harbor_agent.claim_trace`). Costs:
+   - A resumed trial does not export.
+   - A first trial that breaks on infrastructure uses up its task's export.
+   - Smoke runs are traced too, one trial per config.
+4. **Session id of a single run:** the event file name without `.jsonl`. DAB uses `dab-<dataset>-query<id>-run<k>-<random>`.
+5. **Trace URL:** `<BASE_URL>/project/<id>/traces/<trace id>`, as langfuse-python `get_trace_url` builds it (2cea520, read 2026-11-23). When the project id is missing it falls back to `<BASE_URL>/trace/<id>`, the web app's redirect page (langfuse 67b035c). Change it in `tracing.trace_url`.
+6. **Model output: no documented switch does it.**
+   - The three switches and `RAW_API_BODIES` put no model text on standard spans; `RAW_API_BODIES` emits log events, which the export turns off.
+   - Only the detailed beta tracing does, and it switches the export to JSON sent to a different endpoint, which the relay would also have to parse.
+   - What I did: only the final answer goes in the dev-tier parent span's `langfuse.observation.output`. The text of each model request does **not** reach Langfuse.
+   - This falls short of the spec's "能看到模型回答". Change it in `tracing.CONTENT_SWITCHES` and `result_attributes`.
+7. **Resource attribute field name:** implemented as the fixture has it (`metadata.<group>` keys). Compare against the real response in the acceptance run.
+8. **`trace-check <run_id>`:** a file path first; otherwise the single `runs/**/<run_id>.jsonl`. Change it in `trace_check.find_events`.
+
+Further points for you:
+- The parent span carries the run's total usage and cost while each request span carries its own, so Langfuse's trace total may be double. Check in the acceptance run.
+- If the user settings' `env` block sets `OTEL_*` and it takes precedence (unconfirmed), it would bypass the relay.
+- A failed export writes an `error` event with `source: trace`. The spec only defines `trace_export_error`.
+
+The local Langfuse stand-in (port 18913) was stopped when it hit its background time limit. It was only for the export-off run, which already finished with 0 requests to it, so nothing is affected.
+
+The fake model endpoint on port 18912 will stop the same way when its limit is reached. The main-session commands don't use it: they call the real model endpoint.
+
+The fake model endpoint on port 18912 has now also stopped at its background time limit. It was only for test 1, the probe on which switch carries model output, and the export-off run, and all three had already finished, so no result is affected.
+
+To re-run any of those, start it again with `uv run python runs/112/fake_model_server.py 18912 runs/112/m1/requests.jsonl runs/112/m1/otlp`.
+
+- 2026-11-23（主会话，第 7 步）：PR #125 CI 绿。Codex GitHub app 1 条意见，主会话对照代码核实属实：
+  - 退回：父 span 导出失败不报。`tracing.py:303,314` 用 `SimpleSpanProcessor`，它吞掉 exporter 的异常、不看导出结果；`_finish`（`:367` `self._span.end()`）之后照常写 `trace` 事件。Langfuse 拒收或超时时，父 span（会话 id、答案、总 usage 和 cost）静默丢失，事件里没有任何错误。要显式拿到父 span 的导出结果（例如直接调 exporter 的 `export()` 看 `SpanExportResult`，或包一层记下失败），失败时写一条 `trace_export_error`（只有错误类型和 HTTP 状态码，和中转同一口径），run 照常结束。配一个修复前会失败的测试（假 Langfuse 对父 span 返回 500 / 连接被拒）。
+  - 派修复要等主会话的真实运行（`runs/batch2/live-checks.sh` 在本工单 worktree 里跑 jaffle 和实测 2、3）结束，不在运行中改 worktree。
+- 2026-11-23（主会话，真实运行，`runs/batch2/live-checks.sh`，本分支 d69448b，Langfuse 变量未设）：
+  - jaffle 7 题 7/7 通过，$0.0926。
+  - 实测 2（fork 子 agent 默认开，`--case b1_monthly_revenue`）：通过，$0.0230。事件里 `verifier_dispatch`→`verifier_start`→`verifier_end`（turns 6、tool_calls 9、checks 全 PASS、hit_max_turns false）都在 `answer`、`result` 之前；无 `error` 事件；`result.cost_basis=price_table`，`errors: []`。验证子 agent 照常在前台跑完，不需要 `CLAUDE_CODE_FORK_SUBAGENT=0`。`subagents/agent-*.jsonl` 在本次运行的临时配置目录里，运行后已清掉，没直接看到文件；`verifier_end` 的 turns/tool_calls 来自它，说明读到了。
+  - 实测 3（steer）：中途插话得到 2 个 ResultMessage，各自 `num_turns=1`，`user_message_uuid` 分别为 P、S（`user_message_uuids` 各一个），第二轮含 BANANA；`--replay` 结果一致。
+- 2026-11-23（工单 agent，退回 1 修复）：父 span 导出失败不再被吞掉。
+  - **改法**
+    - 去掉 `SimpleSpanProcessor`。`RunExport._end_span` 结束父 span 后自己调导出，并看导出结果。
+    - 新增 `ParentExporter`，包着 OTLP 导出器。它用一个 `requests.Session` 子类，每次尝试（含重试）开头清空状态码，响应回来后记下。
+    - 由 `ParentExporter.send` 归类，口径和中转的 `ExportError` 一样：
+      - 最后一次尝试的回答不是 2xx：`http_error` 加状态码。3xx 也算，因为导出器把它当成功，但不跟随跳转，父 span 实际没到。
+      - 没收到回答：`connection_error`，状态码为 None。
+    - 这条错误事件排在中转的错误事件之后、`trace` 事件之前。`failure` 仍是 None，run 照常结束。
+    - `parent_exporter(settings)` 仍然只收一个参数，111 的验收测试一字未改。
+  - **修复前会失败的测试**（`tests/test_tracing.py`）
+    - 父 span 被回 500；
+    - 连接被拒（用一个绑定后关闭的端口）；
+    - 回 302；
+    - 先 503 重试，之后连接断开。
+
+    前两条在修复前的代码上跑过，确实失败：只有 `parse_error` 和 `trace` 两条事件，没有父 span 的错误。
+  - **`make check`**：exit 0，pytest 2688 passed、2 skipped、63 xfailed；web 322 passed、52 expected fail。
+  - **真实运行**：`uv run python runs/112/return1/probe.py`。真实的 `RunExport` 和 OTLP 导出器对着本地一个回 500 的 Langfuse 跑，再对着一个被拒的端口跑。中转用替身，因为中转是工单 113 的部分，还没实现。输出：
+    ```
+    ('trace_export_error', {'error_type': 'http_error', 'status': 500})
+    ('trace', {'trace_id': 'f83cb6dd…', 'url': 'http://127.0.0.1:50994/trace/f83cb6dd…', 'forwarded_spans': 0, 'forwarded_llm_requests': 0})
+    failure: None
+    ('trace_export_error', {'error_type': 'connection_error', 'status': None})
+    ('trace', {'trace_id': 'cfc79a5b…', 'url': 'http://127.0.0.1:9/trace/cfc79a5b…', …})
+    failure: None
+    ```
+  - **审查第 1 轮：Fable 只读子 agent**（da-review 不可用，用它代替）
+    - 修了：3xx 被当成功，父 span 照样静默丢失（`6ae0645`）。
+    - 不修，理由如下：
+      - 503 重试后连接断开，被报成过时的 `http_error 503`：第 2 轮已修（`d45693e`）。
+      - 编码失败、请求超过 64 MiB、导出器已关闭这类没收到回答的失败，都记成 `connection_error`：中转的口径里没有更合适的类型，已写进 `send` 的 docstring。
+      - 导出器自己抛异常时，`finish` 改为写 `error` 事件（`source: trace`）：真实的 OTLP 导出器会自己接住异常，只有会抛异常的测试替身受影响，run 仍照常结束。
+      - 取消 run 时 `finish` 和 `_close` 并发：只发生在已经中止的 run 上，导出到一半被关掉的情况修复前就有。
+      - `_shutdown` 里 `exporter.shutdown()` 抛错时，会跳过 `provider.shutdown()`：provider 没有挂任何 processor，只剩一个 atexit 钩子。
+      - `requests` 没有直接声明为依赖：它随导出器而来（导出器公开的 `session` 参数就是 `requests.Session`，钉住的 1.45.1 依赖 `requests~=2.7`）；已在代码里注释，不动 lockfile。
+  - **审查第 2 轮：`eng:code-review main`**（新上下文）：没有硬性违规，没有阻塞的 spec 问题。
+    - 修了（`d45693e`）：
+      - 状态码按最后一次尝试算，不再按最后收到的回答算；
+      - 归类从 `RunExport` 挪进 `ParentExporter.send`，原先在 `RunExport` 里用 `isinstance` 判断再读 `statuses` 列表；
+      - 只保留一个 `last_status`；
+      - 连接错误的测试不再依赖固定的 9 号端口。
+    - 不修，理由如下：
+      - run 异常退出或被取消时，`_close` 不报父 span 的导出错误：这条路径本来就不写 trace 相关事件，阻塞时长和修复前一样，不在退回说明要求的"run 照常结束"路径里。
+      - `connection_error` 比中转的定义宽：同第 1 轮。
+      - `parent_exporter` 返回类型是联合类型：为了让测试替身通过类型检查，docstring 已注明。
+  - 两轮审查都用完了，没有剩下要修的问题。
+- 2026-11-23（主会话，服务器筛查 t112-screen，本分支 d69448b，`board --config no-verifiers --budget 5 --trials 3 --n-concurrent 3`，workforce-analytics / pos-operations / marketing-campaigns-harbor）：5/9（55.6%），workforce 3/3、pos 2/3、marketing 0/3，和基线 t110-dbt-b（71a5bcc）5/9 持平；Readiness clean；每个 trial 的 agent_setup 25–33 s（远低于 360 s）；billed $0.73。SDK 升级没有带来回退。

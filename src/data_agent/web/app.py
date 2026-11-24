@@ -71,9 +71,10 @@ def create_app(
     """The app serving the runs under `runs_dir` (one subdirectory per run, named by run id, holding
     its event file), starting new runs through `start_run`, and serving the built web UI from
     `ui_dir`. ValueError when a dbt run could not copy a source's project into its own working
-    directory (`check_layout`)."""
+    directory (`check_layout`). With `mcp_servers` (ticket 116) every run, of the run form or a
+    conversation, gets that path as `--mcp-servers`."""
     runs = RunsDir(runs_dir)
-    launcher = Launcher(runs, data_sources, start_run)
+    launcher = Launcher(runs, data_sources, start_run, mcp_servers)
     conversations = Conversations(runs, launcher, data_sources)
 
     @asynccontextmanager
