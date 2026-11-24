@@ -17,10 +17,10 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 ## Solution
 
 - **主体用 Claude Code CLI 自带的 OpenTelemetry**（traces beta）。试验里它是唯一给出"每次请求一个 span"的方案，而且默认不发内容。
-- **外面挂一个我们自己的父 span `data-agent.run`**：带运行 id、对话 id、任务类型、配置、模型，和 `result` 事件里的总 usage、总花费。SDK 在有活动 span 时自动把 `TRACEPARENT` 传给 CLI，CLI 的 span 挂到它下面。
+- **外面挂一个我们自己的父 span `data-agent.run`**：带运行 id、对话 id、任务类型、配置、模型，和 `result` 事件里的总花费；总 token 放在 metadata（Update 2026-11-23：不进 usage，免得和每次请求的 GENERATION 重复计数）。SDK 在有活动 span 时自动把 `TRACEPARENT` 传给 CLI，CLI 的 span 挂到它下面。
 - **CLI 的 span 先进本地中转**：data-agent 进程在 `127.0.0.1` 上收 CLI 的 OTLP 请求，按档过滤、改名、匿名化，再带上密钥转发给 Langfuse。CLI 拿不到 Langfuse 密钥。
 - **默认关**：三个 `DATA_AGENT_LANGFUSE_*` 变量都设了才导出；评测还要显式 `--trace`。
-- **两档**：开发集档（完整记录，只去掉凭据和模型端点地址）；留出集档（只放行白名单里的结构字段，id 匿名）。
+- **两档**：开发集档（完整记录，只去掉凭据、模型端点地址，以及能认出机器的 `user.id`、`host.*`、`os.*`；Update 2026-11-24，工单 121）；留出集档（只放行白名单里的结构字段，id 匿名）。
 - SDK 升到 0.2.187（CLI 2.1.330），并入本 feature。
 
 ## Implementation Decisions
@@ -54,7 +54,7 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
   - `langfuse.trace.name`：`data-agent.run`
   - tag：任务类型（`query` / `dbt`）、配置名、模型
   - 运行 id、`skill_version`、代码 commit（取自 `version` 事件）
-  - 运行结束时写 `langfuse.observation.usage_details` 和 `langfuse.observation.cost_details`，数值取自 `result` 事件（`cost_usd` 口径，`agent.py:1818` `result_fields`），和报告同一个口径
+  - 运行结束时写 `langfuse.observation.cost_details` 和 metadata 里的总 token（Update 2026-11-23：不再写 `usage_details`，工单 121），数值取自 `result` 事件（`cost_usd` 口径，`agent.py:1818` `result_fields`），和报告同一个口径
 - 父 span 在 SDK 起 CLI 之前就要激活，才能让 SDK 注入 `TRACEPARENT`（`claude_agent_sdk/_internal/transport/subprocess_cli.py:786-806`，条件是有活动 span）。
 - 事件文件新增一个 `trace` 事件：trace id，以及 Langfuse 里打开这条 trace 的 URL，供网页链接用。URL 的格式实现时核实（是否需要 project id；需要的话启动时用 `GET /api/public/projects` 取一次）。
 - 每次请求的 token 留在 span 属性里，由中转改名后进 Langfuse 的 usage 列（见下）。不加独立的 OTel Collector。
@@ -79,11 +79,11 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 - 规则（两档共用）：
   - token 改名：`input_tokens` → `gen_ai.usage.input_tokens`，`output_tokens` → `gen_ai.usage.output_tokens`，`cache_read_tokens`、`cache_creation_tokens` 映射到 Langfuse 认的缓存字段（Langfuse 认 `gen_ai.usage.*`、`llm.token_count.*`，见 usage-mapping 笔记 §1；缓存字段的确切名字实现时核实）。
   - 删掉 `anthropic.custom_base_url`（模型端点地址）和任何凭据样的值。
-- 开发集档：不再删内容，只做两档共用的规则（改名、删凭据样的值和模型端点地址）。
+- 开发集档：不再删内容，只做两档共用的规则（改名、删凭据样的值和模型端点地址），另外删掉 `user.id` 和各层的 `host.*`、`os.*`（Update 2026-11-24，工单 121）。
 - 留出集档：
   - 属性按**白名单**放行：span 名、类型、层级、起止时间、`duration_ms`、`ttft_ms`、`first_content_ms`、token 数、`stop_reason`、`success`、`attempt`、`effort`、工具名（`tool_name`、`gen_ai.tool.name`、MCP 服务器名）、模型名（`model`、`gen_ai.request.model`）、`span.type`。其余属性一律删掉，包括 `user_prompt`、`user_prompt_length`、工具参数、`llm_request.context`、`user.id`、`terminal.type`、主机和系统信息。CLI 以后新增的属性默认发不出去。
   - `session.id`、`gen_ai.conversation.id`、`tool_use_id`、`gen_ai.tool.call.id` 换成这次运行随机生成的匿名 id（同一次运行内保持一致，能看出配对，看不出是哪一题）。
-  - 父 span 不带运行 id、题目 id、对话 id，只带配置名、模型、任务类型、`trace_tier=structure` 和总 usage、cost。
+  - 父 span 不带运行 id、题目 id、对话 id，只带配置名、模型、任务类型、`trace_tier=structure` 和总 token（metadata）、cost。
 - 出错不影响运行：解析失败、转发失败、Langfuse 返回错误，都只丢掉这批 span，写一条 `trace_export_error` 事件（只有错误类型和 HTTP 状态码），agent 照常跑完。
 - 收尾：CLI 退出后，等中转把已收到的请求转发完（有上限，如 10 秒），再关端口。转发出去的 span 数写进 `trace` 事件，用来核对"请求数和 span 数对得上"。
 
@@ -130,7 +130,7 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
   - 开发集档：prompt、SQL、工具输出、外部 MCP 工具的入参和输出都保留；夹具里放一个形如密钥的值和模型端点地址，它们被删
   - 留出集档：输出里每个属性名都在白名单里；夹具里加一个"CLI 将来新增的属性"，它被删掉；`user_prompt` 被删；会话 id、对话 id、`tool_use_id` 被换成匿名 id，同一次运行内一致，两次运行不同
 - **中转转发**：假 Langfuse 收到的请求带正确的 Basic 认证和 `x-langfuse-ingestion-version: 4`；假 Langfuse 返回 500、连接被拒、收到无法解析的请求时，`run` 照常结束，事件里有 `trace_export_error`；CLI 退出后已收到的请求都转发完，`trace` 事件里的计数等于转发数。
-- **父 span**：用内存 exporter，断言名字、session id、tag、`usage_details`、`cost_details` 取自 `result` 事件；留出集档的父 span 没有运行 id、题目 id、对话 id。
+- **父 span**：用内存 exporter，断言名字、session id、tag、metadata 里的总 token、`cost_details` 取自 `result` 事件，且不带 `usage_details`（Update 2026-11-23，人授权工单 121 改 `assert_usage_and_cost`）；留出集档的父 span 没有运行 id、题目 id、对话 id。
 - **评测入口**：不带 `--trace` 时，`harbor_agent` 拼出的 env 里没有 Langfuse 变量；带 `--trace` 时，dev 题走 `--trace-tier full`，holdout 题和不在 manifest 里的题走 `structure`；同一题的第 2、3 个 trial 不带 Langfuse 变量；DAB 走 `full`。
 - **`trace-check`**：对假 Langfuse 的 v2 observations 响应，输出里只有结构；响应里放一个内容字符串和一个形如密钥的字符串，断言它们都不出现在输出里。
 - **网页**（114）：有 `trace` 事件显示链接，没有不显示。
