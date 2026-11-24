@@ -1,6 +1,6 @@
 # 126 — `evals improve`：候选生成与应用、分支与提交、经 `da-remote` 初筛、`accept.py` 初筛模式判定、draft PR、报告、预算
 
-Status: in-review
+Status: done
 Blocked by: 125（done）
 Spec: ../spec.md
 Claimed by: claude-code (opus-5-5) 2026-11-24
@@ -300,7 +300,7 @@ Branch: worktree-126-evals-improve
 - Attempts: 1
 - Review rounds: 2
 - Model spend: $0（只用了假端点和假 judge，没调真实模型）
-- Outcome: —
+- Outcome: accepted (real round at the milestone)
 
 ## Comments
 
@@ -432,3 +432,5 @@ This notification only confirms the result already reported: `make check` on `0c
 - 2026-11-24（主会话）"待人定" 1–12 都在契约和 §10 的范围内，按 agent 的选择接受。真实一轮（开发集运行 + improve 第 1 轮）什么时候跑，待人定（主会话建议推到里程碑，复用那时的开发集统一评估）。
 
 - 2026-11-24（人定）真实一轮推到里程碑：所有改 agent 行为的工单合入后跑开发集统一评估，improve 第 1 轮用那次的 `full` 结果当输入（spec "验收" 已改）。本工单合入时只验收代码和测试（`make check`、假端点整轮、Codex 无意见）；上面"主会话合入后要跑的命令"挪到里程碑执行，第 1 条开发集运行由里程碑的统一评估代替。
+
+- 2026-11-24（主会话）合并：PR #137 squash 合入 main（`23e6536`）。CI 两次都过；Codex GitHub app 审了 `0c58c74`："Didn't find any major issues"。
