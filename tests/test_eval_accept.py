@@ -571,3 +571,19 @@ def test_reports_timing_of_both_jobs_and_marks_old_files_missing(
     assert "| run | trial wall | verifier wall |" in text
     assert "| old | missing | | | | | | | |" in text
     assert "| new | Bash | 12 | 1.5 | 1.5 | 1.5 | 1.5 | 0 | 0 |" in text
+
+
+def test_lsb_dev_tasks_in_the_manifest_leave_accept_on_data_eng_bench(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ticket 128: the manifest's dev list also holds LiveSQLBench's `lsb-` ids, which these
+    data-eng-bench jobs never ran; accept judges data-eng-bench's dev tasks only."""
+    mixed = tmp_path / "mixed.json"
+    lsb = ["lsb-alpha_1", "lsb-alpha_2"]
+    mixed.write_text(json.dumps({"seed": 0, "dev": [*DEV, *lsb], "holdout": HOLDOUT}))
+    old = write_job(tmp_path, "old", all_tasks(2, t1=1), commit="a")
+    new = write_job(tmp_path, "new", all_tasks(2, t1=3), commit="c")
+    code, result = accept(tmp_path, mixed, old, new, capsys=capsys)
+    assert (code, result["verdict"]) == (0, "pass")
+    code, _ = accept(tmp_path, mixed, old, new, targets=(lsb[0],), capsys=capsys)
+    assert code == 2  # a LiveSQLBench target is outside accept's dev set

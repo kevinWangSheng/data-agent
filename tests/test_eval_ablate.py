@@ -2008,3 +2008,147 @@ def test_readiness_states_a_warning_each_rerun_finds_again_once(
     assert run(monkeypatch, harbor, manifest, out, "--config", "full") == 0
     assert len(harbor.smoke) == 2
     assert [w["check"] for w in table(out)["readiness"]["warnings"]] == ["deadline"]
+
+
+# --- ticket 128: the manifest holds LiveSQLBench's `lsb-` ids beside data-eng-bench's ---
+
+LSB_DEV = ["lsb-alpha_1", "lsb-alpha_2"]
+LSB_HOLDOUT = ["lsb-alpha_3", "lsb-beta_1"]
+MIXED = {
+    "seed": 1,
+    "dev": ["dbt-alpha", *LSB_DEV],
+    "holdout": [*HOLDOUT, *LSB_HOLDOUT],
+    "livesqlbench_seed": 2,
+}
+
+
+@pytest.fixture
+def mixed(tmp_path: Path) -> Path:
+    path = tmp_path / "mixed.json"
+    path.write_text(json.dumps(MIXED))
+    return path
+
+
+def ran_tasks(call: list[str]) -> list[str]:
+    return [call[i + 1] for i, a in enumerate(call) if a == "-i"]
+
+
+def lsb_tasks(root: Path, gold: bool, tasks: list[str]) -> Path:
+    """Generated-task stand-ins: only `task.toml`'s `[metadata] gold_answer` is read here."""
+    for task in tasks:
+        (root / task).mkdir(parents=True)
+        value = "true" if gold else "false"
+        (root / task / "task.toml").write_text(f"[metadata]\ngold_answer = {value}\n")
+    return root
+
+
+def lsb_run(
+    monkeypatch: pytest.MonkeyPatch,
+    harbor: FakeHarbor,
+    manifest: Path,
+    out: Path,
+    tasks: Path,
+    *extra: str,
+) -> int:
+    monkeypatch.setattr(ablate, "run_harbor", harbor)
+    args = ablate_args(manifest, out, "--benchmark", "livesqlbench", *extra)
+    args[args.index("--tasks-dir") + 1] = str(tasks)
+    return evals_main(args)
+
+
+def test_without_benchmark_ablate_runs_only_data_eng_bench_tasks_and_smokes_one_of_them(
+    monkeypatch: pytest.MonkeyPatch, mixed: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, mixed, out, "--config", "full", "--config", "baseline") == 0
+    assert harbor.calls and harbor.smoke
+    assert all(ran_tasks(call) == HOLDOUT for call in harbor.calls)
+    assert all(ran_tasks(call) == ["dbt-alpha"] for call in harbor.smoke)
+    for call in [*harbor.calls, *harbor.smoke]:
+        assert call[call.index("--config") + 1] == str(ablate.JOB_CONFIG)
+    assert table(out)["n_tasks"] == len(HOLDOUT)
+    assert "benchmark" not in json.loads((out / "request.json").read_text())
+
+
+def test_benchmark_livesqlbench_runs_its_dev_tasks_with_its_job_config(
+    monkeypatch: pytest.MonkeyPatch, mixed: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    tasks = lsb_tasks(tmp_path / "lsb-tasks", False, LSB_DEV)
+    extra = ("--split", "dev", "--config", "full", "--config", "baseline", "--trials", "1")
+    assert lsb_run(monkeypatch, harbor, mixed, out, tasks, *extra) == 0
+    lsb_config = str(ablate.JOB_CONFIGS["livesqlbench"])
+    assert all(ran_tasks(call) == LSB_DEV for call in harbor.calls)
+    assert all(ran_tasks(call) == LSB_DEV[:1] for call in harbor.smoke)
+    for call in [*harbor.calls, *harbor.smoke]:
+        assert call[call.index("--config") + 1] == lsb_config
+    result = table(out)
+    assert result["n_tasks"] == len(LSB_DEV)
+    assert {c["config"] for c in result["configs"]} == {"full", "baseline"}
+    assert json.loads((out / "request.json").read_text())["benchmark"] == "livesqlbench"
+    # The generated tasks are no git clone: the record's benchmark commit is their digest.
+    (record,) = sorted((out / "records").glob("*.json"))
+    assert json.loads(record.read_text())["benchmark_commit"].startswith("tree:")
+
+
+def test_a_livesqlbench_holdout_run_refuses_tasks_without_gold_answers(
+    monkeypatch: pytest.MonkeyPatch,
+    mixed: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harbor = FakeHarbor()
+    tasks = lsb_tasks(tmp_path / "lsb-tasks", False, LSB_HOLDOUT)
+    assert lsb_run(monkeypatch, harbor, mixed, tmp_path / "out", tasks) == 2
+    err = capsys.readouterr().err
+    assert "2 of the 2 holdout tasks have no gold answer" in err
+    for task in LSB_HOLDOUT:
+        assert task not in err
+    assert harbor.calls == harbor.smoke == []
+
+
+def test_a_livesqlbench_holdout_run_with_gold_answers_runs_its_holdout(
+    monkeypatch: pytest.MonkeyPatch, mixed: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    tasks = lsb_tasks(tmp_path / "lsb-tasks", True, [*LSB_HOLDOUT, LSB_DEV[0]])
+    assert lsb_run(monkeypatch, harbor, mixed, tmp_path / "out", tasks, "--config", "full") == 0
+    assert harbor.calls
+    assert all(ran_tasks(call) == LSB_HOLDOUT for call in harbor.calls)
+
+
+def test_the_reference_must_be_among_the_configs(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harbor = FakeHarbor()
+    extra = ("--reference", "no-verifiers", "--config", "full", "--config", "baseline")
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", *extra) == 2
+    assert "--config must include no-verifiers" in capsys.readouterr().err
+    assert harbor.calls == []
+
+
+def test_reference_no_verifiers_compares_each_config_with_it(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    configs = ("baseline", "no-skill", "no-context", "no-verifiers")
+    extra = ("--reference", "no-verifiers", *(a for c in configs for a in ("--config", c)))
+    assert run(monkeypatch, FakeHarbor(), manifest, out, *extra) == 0
+    result = table(out)
+    assert result["reference"] == "no-verifiers"
+    contributions = {c["config"]: c for c in result["contributions"]}
+    assert set(contributions) == {"baseline", "no-skill", "no-context"}
+    # no-verifiers passes 2/3 of each task's trials: baseline 0, no-skill 1/3, no-context all.
+    assert contributions["baseline"]["diff"] == pytest.approx(100 * 2 / 3)
+    assert contributions["no-skill"]["diff"] == pytest.approx(100 / 3)
+    assert contributions["no-context"]["diff"] == pytest.approx(-100 / 3)
+    assert contributions["no-context"]["layer"] == "context tools"
+    assert contributions["no-skill"]["layer"] == "Skill"
+    assert contributions["baseline"]["layer"] == "both layers (Skill and context tools)"
+    markdown = (report_dirs(out)[0] / "ablation.md").read_text()
+    assert "no-verifiers minus the config without it" in markdown

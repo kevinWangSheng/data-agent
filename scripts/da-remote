@@ -11,11 +11,16 @@
 #                                                 and DAB at their pinned commits, DAB's data (fetched
 #                                                 and checked by its download.sh), its image
 #                                                 python-data:3.12, Postgres and MongoDB containers
-#                                                 on 127.0.0.1; steps already done are skipped
+#                                                 on 127.0.0.1; LiveSQLBench's write credential
+#                                                 (livesqlbench.env, mode 600), then its data, dump,
+#                                                 images and tasks (evals livesqlbench prepare);
+#                                                 steps already done are skipped
 #        da-remote start <name> -- <evals args>   run `python -m evals <evals args>` in the background,
 #                                                 log to runs/<name>/run.log on the server; give
 #                                                 evals --out runs/<name> so status and pull see it;
 #                                                 a dab run gets DAB's packages and database settings;
+#                                                 an ablate --benchmark livesqlbench run gets
+#                                                 LiveSQLBench's write credential, for its verifiers;
 #                                                 runs/<name>/memory.log samples the server every 5 s:
 #                                                 a header line (Mem and Swap used/total MiB from
 #                                                 `free -m`, load = /proc/loadavg 1/5/15 min), then
@@ -119,6 +124,11 @@ BENCH="${DIR%/*}/da-benchmarks"
 DEB="$BENCH/data-eng-bench"
 DAB="$BENCH/DataAgentBench"
 DABENV="$HOME/.config/data-agent/dab.env"
+# LiveSQLBench (ticket 128): its data, dump, images and tasks, and the verifiers' write
+# credential, sourced by a LiveSQLBench run only; the answers, when a human has put them there.
+LSB="$BENCH/livesqlbench"
+LSBENV="$HOME/.config/data-agent/livesqlbench.env"
+LSB_ANSWERS="$BENCH/livesqlbench-answers.jsonl"
 PG_CONTAINER=da-dab-postgres
 MONGO_CONTAINER=da-dab-mongo
 MONGO_PORT=37017
@@ -282,6 +292,26 @@ if [ -f "$DABENV" ]; then
   fi
 else
   bad "DAB database settings missing (da-remote benchmarks)"
+fi
+
+# LiveSQLBench: the credential's file here, the rest from evals (data, images, tasks, answers).
+if [ -f "$LSBENV" ]; then
+  perm=$(stat -c %a "$LSBENV" 2>/dev/null || stat -f %Lp "$LSBENV")
+  [ "$perm" = 600 ] && ok "LiveSQLBench write credential present, mode 600" || bad "LiveSQLBench write credential mode $perm (want 600)"
+else
+  bad "LiveSQLBench write credential missing (da-remote benchmarks)"
+fi
+if [ -d "$DIR/.git" ]; then
+  lsb=$(cd "$DIR" && uv run -q --no-sync python -m evals livesqlbench check --root "$LSB" 2>&1) && code=0 || code=$?
+  if [ "$code" -le 1 ] && grep -qE '^  (ok|FAIL)  ' <<<"$lsb"; then
+    printf '%s\n' "$lsb" | grep -E '^  (ok|FAIL)  '
+    fails=$((fails + $(grep -c '^  FAIL  ' <<<"$lsb")))
+  else
+    bad "LiveSQLBench readiness unknown: evals livesqlbench check failed (exit $code)"
+    printf '%s\n' "$lsb" | tail -n 3 | sed 's/^/          /'
+  fi
+else
+  bad "LiveSQLBench readiness unknown: needs the repo"
 fi
 
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.deepseek.com/ || echo 000)
@@ -468,8 +498,37 @@ dbs_ready "$probe" "$code" || {
   exit 1
 }
 
+# LiveSQLBench: the database images take the write role's password at build time, so a new one
+# is made only while there is no image it would have to match.
+if [ ! -f "$LSBENV" ]; then
+  if [ -n "$(docker image ls -q --filter 'reference=da-lsb-db-*' 2>/dev/null)" ]; then
+    echo "benchmarks: LiveSQLBench database images exist but $LSBENV does not, so their" \
+      "password is lost; remove the da-lsb-db-* images, then rerun"
+    exit 1
+  fi
+  lsb_password=$(LC_ALL=C tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+  (
+    umask 077
+    printf '# Written by da-remote benchmarks: the write credential of the LiveSQLBench verifiers.\n%s=%s\n' \
+      LSB_PG_WRITE_PASSWORD "$lsb_password" >"$LSBENV"
+  )
+  unset lsb_password
+  echo "LiveSQLBench write credential: written to $LSBENV (mode 600)"
+else
+  echo "LiveSQLBench write credential: kept in $LSBENV"
+fi
+[ -f "$LSB_ANSWERS" ] && echo "LiveSQLBench answers: $LSB_ANSWERS" ||
+  echo "LiveSQLBench answers: none at $LSB_ANSWERS (no gold answers: the tasks can only be smoke-tested)"
+mkdir -p "$LSB" || exit 1
+code=0
+(cd "$DIR" && set -a && . "$LSBENV" && set +a &&
+  uv run --no-sync python -m evals livesqlbench prepare --root "$LSB" --answers "$LSB_ANSWERS") ||
+  code=$?
+[ "$code" = 0 ] || { echo "benchmarks: LiveSQLBench prepare failed (exit $code)"; exit 1; }
+
 echo "benchmarks: ready. data-eng-bench: --tasks-dir ../da-benchmarks/data-eng-bench/tasks;" \
-  "DAB: --dab-root ../da-benchmarks/DataAgentBench (paths from the repo, where runs start)"
+  "DAB: --dab-root ../da-benchmarks/DataAgentBench;" \
+  "LiveSQLBench: --tasks-dir ../da-benchmarks/livesqlbench/tasks (paths from the repo, where runs start)"
 EOF
 }
 
@@ -477,15 +536,19 @@ start() {
   local name=$1
   shift
   # The budget the run was started with, for `status`'s spend line.
-  local budget="" prev=""
+  local budget="" prev="" lsb=""
   for a in "$@"; do
     [ "$prev" = --budget ] && budget=$a
     [[ $a == --budget=* ]] && budget=${a#--budget=}
+    # A LiveSQLBench run's verifiers need the write credential (evals.livesqlbench).
+    if [ "$prev" = --benchmark ] && [ "$a" = livesqlbench ] || [ "$a" = --benchmark=livesqlbench ]; then
+      lsb=1
+    fi
     prev=$a
   done
   # The host alias labels the machine in ablate's run record; an address given as the host is
   # masked, never written there.
-  run_script NAME "$name" BUDGET "$budget" MACHINE "$(printf '%s' "$host" | mask)" SUBCOMMAND "$1" \
+  run_script NAME "$name" BUDGET "$budget" MACHINE "$(printf '%s' "$host" | mask)" SUBCOMMAND "$1" LSB_RUN "$lsb" \
     EVALS_ARGS "$(printf '%q ' "$@")" <<'EOF'
 cd "$DIR" 2>/dev/null && [ -d .git ] || {
   echo "start: no repo at $DIR; run da-remote setup first"
@@ -504,6 +567,16 @@ if [ "$SUBCOMMAND" = dab ]; then
   }
   dab_env=". $(printf '%q' "$DABENV")"
   with="--with-requirements evals/dab-requirements.txt "
+fi
+# A LiveSQLBench run: Harbor's host process resolves the tasks' `${LSB_PG_WRITE_PASSWORD}` for
+# their verifiers; nothing passes it to an agent (evals/configs/livesqlbench.data-agent.yaml).
+lsb_env=""
+if [ "$SUBCOMMAND" = ablate ] && [ -n "$LSB_RUN" ]; then
+  [ -f "$LSBENV" ] || {
+    echo "start: no LiveSQLBench write credential on the server; run da-remote benchmarks first"
+    exit 1
+  }
+  lsb_env=". $(printf '%q' "$LSBENV")"
 fi
 run="runs/$NAME"
 if alive "$NAME"; then
@@ -524,6 +597,7 @@ export DATA_AGENT_MACHINE=$(printf '%q' "$MACHINE")
 set -a
 . "\$HOME/.config/data-agent/env"
 $dab_env
+$lsb_env
 set +a
 export PATH="\$HOME/.local/bin:\$PATH"
 cd $(printf '%q' "$PWD") || exit 1
