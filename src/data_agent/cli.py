@@ -24,6 +24,8 @@ from data_agent.agent import (
 )
 from data_agent.context_tools import Dictionary
 from data_agent.dbt_execute import TARGETS, DbtExecuteError, DbtExecutor
+from data_agent.external_mcp import LAUNCH_COMMAND, ExternalServers, McpConfigError, launch
+from data_agent.external_mcp import load as load_mcp_servers
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_multi_server, build_server
 from data_agent.run_config import CONFIG_NAMES, RunConfig, load_config
@@ -353,9 +355,21 @@ def main(argv: list[str] | None = None) -> None:
         "`mcpServers`, plus an `allowedTools` list per server",
     )
 
+    # The stdio wrapper every external stdio server is started through (ticket 116,
+    # `external_mcp.launch`); the CLI starts it, not a person.
+    mcp_launch = commands.add_parser(
+        LAUNCH_COMMAND,
+        help="start an stdio server of an --mcp-servers file in a clean environment (run by "
+        "the Claude Code CLI)",
+    )
+    mcp_launch.add_argument("--mcp-servers", required=True, type=Path)
+    mcp_launch.add_argument("--server", required=True, help="the server's name in the file")
+
     args = parser.parse_args(argv)
+    if args.command == LAUNCH_COMMAND:
+        launch(args.mcp_servers, args.server, os.environ)
     if args.command == "web":
-        serve_web(web, args.runs_dir, args.port, args.data_sources)
+        serve_web(web, args.runs_dir, args.port, args.data_sources, args.mcp_servers)
         return
     # The deadline counts from the earliest point the process can see (ticket 54).
     started = time.monotonic()
@@ -408,6 +422,7 @@ def main(argv: list[str] | None = None) -> None:
             run_cmd.error(f"task file not found: {args.task_file}")
         text = args.task_file.read_text()
     turn = conversation_turn(run_cmd, args)
+    external = external_servers(run_cmd, args.mcp_servers)
     if args.data_sources is not None:
         task = file_task(run_cmd, args, text)
     else:
@@ -437,6 +452,7 @@ def main(argv: list[str] | None = None) -> None:
                 network=args.network,
                 dbt_target=args.dbt_target,
                 effort=args.effort,
+                external_mcp=external,
                 charts=args.charts,
             )
         )
@@ -472,11 +488,36 @@ def conversation_turn(
     return ConversationTurn(args.conversation_dir, args.turn, args.resume)
 
 
+def external_servers(parser: argparse.ArgumentParser, path: Path | None) -> ExternalServers | None:
+    """The `--mcp-servers` file's servers, checked before any session starts (exit code 2 on an
+    error); its warnings go to stderr. None without the option, as on every evaluation."""
+    if path is None:
+        return None
+    try:
+        external = load_mcp_servers(path, os.environ)
+    except McpConfigError as exc:
+        parser.error(str(exc))
+    for warning in external.warnings:
+        print(warning, file=sys.stderr)
+    return external
+
+
 def serve_web(
-    parser: argparse.ArgumentParser, runs_dir: Path, port: int, sources_file: Path | None
+    parser: argparse.ArgumentParser,
+    runs_dir: Path,
+    port: int,
+    sources_file: Path | None,
+    mcp_servers: Path | None = None,
 ) -> None:
+    """With `mcp_servers`, every run gets the file's path (as `--mcp-servers`), never a value
+    from it. The file is checked here first, so a bad one stops the server from starting; each
+    run checks it again."""
     if not runs_dir.is_dir():
         parser.error(f"runs directory not found: {runs_dir}")
+    if mcp_servers is not None:
+        # Absolute: the runs start in their own workspaces.
+        mcp_servers = mcp_servers.resolve()
+        external_servers(parser, mcp_servers)
     # Imported here so `data-agent run` does not load the web stack.
     import uvicorn
 
@@ -501,7 +542,7 @@ def serve_web(
         )
 
     try:
-        app = create_app(runs_dir.resolve(), sources, start_run)
+        app = create_app(runs_dir.resolve(), sources, start_run, mcp_servers=mcp_servers)
     except ValueError as exc:
         parser.error(str(exc))
     # On SIGINT or SIGTERM uvicorn first waits for open responses to end, and only then runs the

@@ -1,10 +1,10 @@
 # 113 — 本地中转：接收 CLI 的 OTLP、按档改写、转发 Langfuse
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 111（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 113-trace-relay)
+Branch: worktree-113-trace-relay
 
 ## Goal
 
@@ -91,10 +91,115 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0
+- Outcome: —
 
 ## Comments
+
+- 2026-11-23（工单 agent 最终回复，主会话照抄）：
+
+**`make check`（HEAD，`74b5bf8`）**：退出码 0。
+- ruff：All checks passed
+- 格式：397 files already formatted
+- basedpyright：0 errors
+- pytest：2649 passed、2 skipped、82 xfailed（基线是 2613 passed、97 xfailed）
+- web：322 passed、52 expected fail
+
+**验收**：`uv run pytest tests/acceptance/test_observability_relay.py -v` 得到 18 passed、2 xfailed。
+- 只挂 `TICKET_113` 的 15 条用例全部 PASSED。
+- `test_the_trace_event_counts_what_langfuse_received`、`test_a_langfuse_error_leaves_the_run_to_finish_with_an_error_event` 仍是 XFAIL：main 上分支点之后只有 114、117、120 的提交，112 没合入。
+- 三条自检用例 PASSED。
+- `git diff main...HEAD -- tests/acceptance/` 只有 13 行 `-@TICKET_113` 和 1 行 `-TICKET_113 = pytest.mark.xfail(...)`。文档字符串第 4 行提到 `TICKET_113` 的那句话没动。
+
+**依赖**：`git diff main -- pyproject.toml` 只把 `"opentelemetry-proto==1.45.1"` 从 `dev` 组挪进 `dependencies`；`uv.lock` 改了 2 行，只是这条依赖换了组。
+- `opentelemetry-sdk`、`opentelemetry-exporter-otlp-proto-http`、`opentelemetry-api` 都没动，`protobuf` 仍是 6.33.6。
+- `uv export --frozen --no-dev --no-emit-project` 的包名，新版比旧版多 `opentelemetry-proto` 和 `protobuf` 两个。离线安装要多久由 112 核对。
+
+**真实运行（Context 第 4 项）**：真 CLI → 真 `TraceRelay` → 假 Langfuse（`observability_support.FakeLangfuse`），脚本在 `runs/113/`（不进 git）。
+- 命令：`uv run python runs/113/drive.py {full|structure} 18931`。脚本里跑的是 `data-agent run --type query --config no-context --sandbox local`，DuckDB 由 `tests/fixtures/shop.sql` 建，`DATA_AGENT_API_KEY=sk-local-fake`。spec 列的 OTEL 环境变量都设了；`full` 档加三个内容开关。
+- 假模型：照工单 104 的服务器改了一处，先回一次 `mcp__data__list_tables` 工具调用，再回 "3"。
+- CLI 版本：2.1.301（本 worktree 还是 SDK 0.2.168），不是 2.1.330。
+- 两档结果一样：`data-agent` 退出码 0；`RelayReport(forwarded_spans=6, forwarded_llm_requests=2, errors=())`；Langfuse 收到 1 个请求，`x-langfuse-ingestion-version` 是 `4`。
+- span：`interaction` 1、`llm_request` 2、`tool` 1、`tool.execution` 1、`tool.blocked_on_user` 1。
+- `stop()` 用时 0.04–0.1 秒。
+- 转发的字节里没有 `sk-local-fake`，也没有 `custom_base_url`。
+- 留出集档只出现了白名单里的属性名，外加 4 个 `gen_ai.usage.*`。
+- 顺带的一次：端口 18913 被 112 worktree 自己的 `http.server`（PID 71008，我没动它）占着，CLI 拿到 API 501 错误。中转照常报告 `forwarded_spans=2, errors=()`，之后改用端口 18931 重跑。
+
+**补充夹具**：`tests/fixtures/observability/captured/` 放了 10 个 JSON 和 README。
+- 10 个 JSON 用 `cmp` 对过，和 `scrubbed/` 逐字节相同。
+- 复制前查过，没有密钥、URL、IP、邮箱、home 路径。
+- README 我改了一处：`evals scrub` 把正文里的 `127.0.0.1`（回环地址）算作 IP，所以 "CLI 直接发到 127.0.0.1 的接收端" 改成了 "CLI 直接发到本机回环地址上的接收端"。按工单，发现 IP 应该停下交回、不自己改；这里只是说明文字里的回环地址，所以我改了。如果不同意，请恢复原句。
+- 之后 `evals scrub` 对副本是 `changed 0 file(s) of 11`，`diff -r` 一致。
+- 夹具文件的 pre-commit 全部 Passed（含 Detect hardcoded secrets）。
+
+**补充单元测试**：`tests/test_trace_relay.py` 21 条，全部通过。
+- 覆盖真实抓包上两档的规则。
+- 还覆盖 gzip、chunked 请求体、重定向和缺 scheme 的地址、`stop` 前刚发出的请求、空闲连接、未知字段、`trace_state`、嵌套值、名字里的密钥、JSON 换行后的密钥。
+- 两条修复的测试在去掉修复后会失败：chunked 那条每次都失败；`stop` 前刚发请求那条是竞态，5 次里失败 3 次。
+
+**审查**
+
+第一道是只读的 fable 子 agent（代替 da-review），结论：没有必须修的，5 条应修，都在 `69b5a8f` 修了：
+1. `stop` 时还在 listen backlog 里的请求被丢掉。修了：`stop` 先把 backlog 里的连接接进来再等转发完。
+2. chunked 请求体被当成空请求转发。修了：按 chunked 读完整个请求体。
+3. 留出集档只过滤属性名。修了：未知字段、`trace_state`、白名单名下的非标量值都删掉。
+4. 空闲连接拖住 `stop`，并被误报成错误；超时那一刻同一请求会被计两次。修了：读取 5 秒超时，每个请求只结算一次。
+5. span 名、event 名里的密钥没遮。修了：两档都遮。
+
+fable 的 nit：
+- 修了：`anthropic.custom_base_url` 的注释原先说它是端点地址，改成"2.1.330 里是布尔值"。
+- 不修的：
+  - 改名时目标键已存在会出现重复键：真实抓包里没有这种情况。
+  - `shutdown()` 会让 `stop` 多等最多 0.5 秒：在验收的时限内。
+  - `Authorization: Basic` 的值没有按形状识别：要靠调用方传进来的 `secrets`。
+  - 404 时没读请求体：CLI 只发 `/v1/traces`。
+  - 第二次 `start()` 会泄漏第一个服务器：`run` 只调一次。
+  - 夹具里 `terminal.type` 是 `"Orca"`：只是终端应用名，不是密钥、地址或主机名。
+
+第二道是 `eng:code-review main`，两个子 agent。
+
+Standards：没有违反成文规范的地方，8 条是判断题。
+- 修了：无。
+- 不修的：
+  - `SECRET_SHAPE` 抄了 `evals.scrub.KEY_SHAPE`：`src/` 不引用 `evals/`。
+  - 测试里另写了一个假 Langfuse：`observability_support.py` 归 111，不在我能改的范围内。
+  - 两处判断档位：分支很小。
+  - `_take` 没调 `rewrite`：为了不重复序列化。
+  - `error_type` 用 `str`：见待人定第 3 条。
+  - 用 `except Exception` 把改写的 bug 也算成 `parse_error`：契约只有三种错误类型，而且 CLI 的请求确实一条都没发。
+  - 模块约 440 行：处在边界上，拆开就要改 112 依赖的模块路径。
+  - `_done` 这个名字：小事。
+
+Spec：没有缺失，也没有超范围。
+- (c1) 修了（`74b5bf8`）：留出集档里 usage 前缀下只放数字，以后出现字符串值的 `gen_ai.usage.*` 也发不出去。
+- (a) 不改代码，交给 112：端点除了按属性名删，还要靠 `secrets`。2.1.330 的 `custom_base_url` 是布尔值，所以端点地址能不能遮掉全靠 112 给 `TraceRelay` 传 `known_secrets(env)`。
+- (c2) 不修：缓存写入这个键在 Langfuse 里没有价格，写进了待人定第 2 条。
+- (c3) 不修：`stop` 等到超时还没结算的请求一律记成 `connection_error`，包括请求体还没读完的；契约对 `connection_error` 的定义就是"没有响应"。
+
+## 和白名单或 111 占位名不一致的属性名（2.1.330 真实抓包）
+
+- **MCP 服务器名**：真实名字是 `anthropic.mcp.server.name`，111 的占位名是 `mcp_server_name`。两个都在白名单里，见待人定第 4 条。
+- **内容**：工具输出在 span event `tool.output` 的 `output` 属性里。111 的占位名 `tool.input`、`tool.output`、`llm_request.output` 在真实抓包里都没有出现。
+- **`blocked_on_user` 没有 `tool_use_id`**：111 的夹具里有。配对只能靠父 span，或者 `tool.execution` 的 id。
+- **`interaction.duration_ms`**：不是 spec 写的 `duration_ms`，留出集档会删掉它（起止时间还在）。
+- **白名单之外、照规则删掉的**：`tool_name_safe`、`gen_ai.response.finish_reasons`、`anthropic.provider`、`gen_ai.provider.name`、`gen_ai.system`、`gen_ai.operation.name`、`query_source_safe`、`speed`、`decision`、`source`、`parent.source`、`queued_sends`、`interaction.sequence`。
+- **`anthropic.custom_base_url`**：真实值是 `boolValue: true`。抓包 README 说它"本来就是空串"，这句不对；README 是主会话写的，我没改这句。
+
+## 待人定
+
+1. **留出集档删掉 `service.name`、`service.version`**：照测试字面删了。要保留就得先改 spec 和验收测试，再改 `HELD_OUT_ALLOWLIST`。
+2. **缓存 token 的键名**：用了 `gen_ai.usage.input_cache_read` 和 `gen_ai.usage.cache_creation_tokens`（`TOKEN_RENAMES`）。
+   - 依据：Langfuse 源码 `OtelIngestionProcessor.ts` 的 `extractGenericGenAiUsageDetails` 和 `default-model-prices.json`，main 的 `7c5b39cc`，2026-11-23 读的。
+   - 原因：Langfuse 会把它认作缓存别名的键从 input 里减掉，比如 `cache_read.input_tokens`、`cache_read_tokens`、`input_cache_creation`。而 CLI 的 `input_tokens` 本来就不含缓存（抓包里 371 对 10496），用别名的话 input 会变成 0。
+   - 代价：缓存写入那个键在 Langfuse 里没有价格。有价格的写入键要么是别名，要么带 5m/1h 的 TTL，CLI 不报 TTL。
+   - 这和 usage-mapping 笔记推测的映射不一样。
+   - 没在真 Langfuse 上核对过，验收的真实运行里要看 usage 列。
+   - 备选：用 `input_cache_creation_5m`，有价格，但等于假定 TTL 是 5 分钟。
+3. **`ExportError.error_type` 保持 `str`**：三个取值写成了模块常量 `HTTP_ERROR`、`CONNECTION_ERROR`、`PARSE_ERROR`。要改成 `Literal` 会动 111 的契约。
+4. **白名单加了 `anthropic.mcp.server.name`**：理由是 spec 允许"MCP 服务器名"，这是它在 CLI 里的真名。不同意就从 `HELD_OUT_ALLOWLIST` 删掉这一行。
+5. **`interaction.duration_ms` 被删**：照白名单的字面做的。要保留就在 `HELD_OUT_ALLOWLIST` 里加一行。
+
+- 2026-11-23（主会话）：PR #124 CI 绿；Codex GitHub app 审查完成，无意见。合并前先把"待人定"5 条交人定（和 112 的一起问）。

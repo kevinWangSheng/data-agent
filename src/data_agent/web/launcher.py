@@ -126,9 +126,20 @@ Prepare = Callable[[Path], tuple[list[str], Path]]
 
 
 class Launcher:
-    def __init__(self, runs: RunsDir, sources: Sequence[DataSource], start_run: StartRun) -> None:
+    def __init__(
+        self,
+        runs: RunsDir,
+        sources: Sequence[DataSource],
+        start_run: StartRun,
+        mcp_servers: Path | None = None,
+    ) -> None:
         check_layout(runs.path, sources)
         self.runs = runs
+        # Every run's `--mcp-servers` (ticket 116), conversations' too: the file's path only, so
+        # no value it expands is on a command line.
+        self.mcp_args: tuple[str, ...] = (
+            () if mcp_servers is None else ("--mcp-servers", str(mcp_servers))
+        )
         self.sources = {source.name: source for source in sources}
         self.start_run = start_run
         self.current: Running | None = None
@@ -166,6 +177,7 @@ class Launcher:
                 *("--sandbox", SANDBOX),
                 *(("--dbt-target", "scratch") if task_type == "dbt" else ()),
                 *(("--network",) if network else ()),
+                *self.mcp_args,
                 # Every run from the form may chart its answer (charts spec "开关"), dbt too.
                 "--charts",
             ]

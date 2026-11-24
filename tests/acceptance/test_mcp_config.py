@@ -64,10 +64,6 @@ from mcp_support import (
     write_config,
 )
 
-TICKET_116 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 116: external MCP is not wired yet"
-)
-
 # Fake values, built here so no file holds them.
 GITHUB_TOKEN = "tok-" + "Zq81" + "-fake"
 MONGO_PASSWORD = "pw-" + "9xQv"
@@ -130,7 +126,6 @@ def run_with(
 # --- Parsing and checks ----------------------------------------------------------------------
 
 
-@TICKET_116
 def test_run_mounts_stdio_and_http_servers_from_the_file(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -154,7 +149,6 @@ def test_run_mounts_stdio_and_http_servers_from_the_file(
     assert options.strict_mcp_config is True
 
 
-@TICKET_116
 @pytest.mark.parametrize(
     ("name", "server"),
     [
@@ -178,7 +172,6 @@ def test_a_bad_server_is_refused_before_the_session_naming_it(
     assert_refused_before_session(run, capture, name)
 
 
-@TICKET_116
 @pytest.mark.parametrize("allowed", [None, []], ids=["missing", "empty"])
 def test_a_server_without_an_allow_list_gets_none_of_its_tools_and_a_warning(
     tmp_path: Path,
@@ -204,7 +197,6 @@ def test_a_server_without_an_allow_list_gets_none_of_its_tools_and_a_warning(
 # --- `${VAR}` expansion ----------------------------------------------------------------------
 
 
-@TICKET_116
 def test_variables_are_expanded_into_http_headers(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -215,7 +207,6 @@ def test_variables_are_expanded_into_http_headers(
     assert http["headers"] == {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
 
-@TICKET_116
 @pytest.mark.parametrize(
     ("variable", "value", "where"),
     [
@@ -249,7 +240,6 @@ def test_a_bad_variable_is_refused_before_the_session_naming_it_and_the_server(
     assert_refused_before_session(run, capture, name, variable)
 
 
-@TICKET_116
 def test_expanded_values_stay_out_of_events_output_and_the_stdio_command_line(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -269,7 +259,6 @@ def test_expanded_values_stay_out_of_events_output_and_the_stdio_command_line(
 # --- The allow list --------------------------------------------------------------------------
 
 
-@TICKET_116
 def test_allowed_tools_become_mcp_names_and_nothing_else_changes(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -293,7 +282,6 @@ def test_allowed_tools_become_mcp_names_and_nothing_else_changes(
 # --- The `version` event ---------------------------------------------------------------------
 
 
-@TICKET_116
 def test_the_version_event_names_the_servers_and_their_allow_lists_only(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
