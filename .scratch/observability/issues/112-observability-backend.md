@@ -139,6 +139,7 @@ Branch: worktree-112-observability-backend
 - `6ae0645`：Fable 审查第 1 轮。3xx 记成 `http_error`，配测试。
 - `d45693e`：`eng:code-review` 第 2 轮。状态码按最后一次尝试算，归类挪进 `ParentExporter.send`，测试改用关闭的端口，加 503 后断连的测试。
 - 改动文件：`src/data_agent/tracing.py`、`tests/test_tracing.py`。真实运行的脚本和输出在 `runs/112/return1/`（不进 git）。
+- 2026-11-23 合并 origin/main 解决 PR #125 的冲突，merge commit f33db22；make check 和观测验收 62/62 通过。
 
 ## Comments
 
@@ -360,3 +361,7 @@ To re-run any of those, start it again with `uv run python runs/112/fake_model_s
       - `parent_exporter` 返回类型是联合类型：为了让测试替身通过类型检查，docstring 已注明。
   - 两轮审查都用完了，没有剩下要修的问题。
 - 2026-11-23（主会话，服务器筛查 t112-screen，本分支 d69448b，`board --config no-verifiers --budget 5 --trials 3 --n-concurrent 3`，workforce-analytics / pos-operations / marketing-campaigns-harbor）：5/9（55.6%），workforce 3/3、pos 2/3、marketing 0/3，和基线 t110-dbt-b（71a5bcc）5/9 持平；Readiness clean；每个 trial 的 agent_setup 25–33 s（远低于 360 s）；billed $0.73。SDK 升级没有带来回退。
+- 2026-11-23（工单 agent，合并 main）：合并 origin/main（113 中转、116 外部 MCP、119/120 图表）到本分支：merge commit f33db22，没有 rebase 或 force。
+  - 冲突：README（两节都留）；pyproject/uv.lock（OpenTelemetry 的 sdk、exporter、proto 都作为运行时依赖）；agent.py 的 build_options/run（trace、external_mcp、charts 都留；env 顺序 external 最先、trace 最后；secrets 先加 langfuse 密钥，再加 external 的值）；cli.py（trace-check 和 mcp-launch 都留）；test_observability_relay.py（只删 TICKET_112/TICKET_113 两个 xfail 标记）。
+  - 另修 tests/test_web_trace.py 的 create_app 替身，让它接受 main 新加的 mcp_servers 参数。112 对中转的调用和 main 上真实 trace_relay.py 的接口一致，没改代码。
+  - make check：exit 0（pytest 2850 passed，web 417 passed + 10 expected fail）。验收用例 tests/acceptance/test_observability_*.py：62 passed，包括两个用真实中转跑的端到端用例。
