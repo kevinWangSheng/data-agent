@@ -1,6 +1,6 @@
 # 122 — 运行页墙钟和回放时间线不算 trace 导出的时间
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (opus 5.5)
@@ -51,8 +51,8 @@ Branch: worktree-122-wall-time-excludes-trace
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 1
+- Attempts: 2
+- Review rounds: 2
 - Model spend: $0
 - Outcome: —
 
@@ -90,3 +90,43 @@ Branch: worktree-122-wall-time-excludes-trace
   - **Leftovers:** `pnpm --dir web build:local` wrote `src/data_agent/web/static/`, which git ignores. Nothing was pushed.
 
 - 2026-11-24（主会话）退回：原因——工单前提错了（主会话写工单时照 114 的造数，没对照 `agent.py` 的写事件顺序）。Context 和 Acceptance 已按真实顺序改写；做法仍只改 `model.ts`，Authority 不变。在原分支 `worktree-122-wall-time-excludes-trace` 上接着做，顺手处理上一轮审查的小问题（运行结束查找写了两遍、结束事件没有 `ts` 时回放仍偏晚、`clock[3]` 魔数、注释里重复的 "and"、`'trace'` 字面量重复）；"export event before the result keeps its own, earlier time" 那条测试和新做法矛盾，改掉。
+
+- 2026-11-24（工单 agent 退回第 1 轮最终回复，主会话照抄）：
+
+## Comments
+- **2026-11-24 (claude opus 5.5, round 2 after the return, commits `43c48f2`, `e9d408b`, `0c70651` on top of `11a9bf5`)**
+  - **What changed (only `web/src/run-view/model.ts` and `model.test.ts`):**
+    - An export event is a `trace`, a `trace_export_error`, or an `error` whose `source` is `"trace"`. One function, `runEndIndex`, finds where the run ended. `summarize` and `eventTimes` both use it, so the lookup is no longer written twice.
+    - Export events only count when they sit in the block at the end of the file, made of export events and `result`. The run then ends at the event just before the first of them: `answer, trace, result` ends at `answer`, and the old `result, trace` order ends at `result`. Without such a block, the run ends at its last event as before.
+    - In replay, every event after the run's end has its time capped at the run's end. If the end event has no `ts`, those events get no time and add no wait.
+  - **Tests:** 10 cases in describe `export events`.
+    - They cover the real order; a `trace_export_error` before the `trace`; the failure path `error` (source trace); an error from another source; the old order; replay of both orders (`trace` and `result` both appear, no time is later than the run's end, the 114 link shows at the end); a run with no export events; a running run; a run-end event with no `ts`; and an export that failed to start.
+    - The four real-order tests and the no-`ts` test failed before the change. The export-start test failed against `43c48f2`.
+    - The round-1 test "an export event before the result keeps its own, earlier time" is removed, and the bare `clock[3]` index is gone.
+    - The merged acceptance tests have no diff: `git diff main...HEAD --stat` lists only `model.ts` and `model.test.ts`.
+  - **Checks:**
+    - `make check` on `0c70651` exited 0: ruff "All checks passed!", basedpyright 0 errors, pytest 2850 passed and 2 skipped, web vitest 30 files and 452 tests passed. Log: `runs/t122/check-r2c.log`.
+  - **Before/after on real-order data:**
+    - `runs/t122/make_data_r2.py` takes the query-shop fixture and builds four runs. In three the export takes 10 s and `result` comes after it: one with a `trace`, one whose export failed (`error`, source trace), one with no export. The fourth has an `error` (source trace) right after `task`, as when the export fails to start.
+    - `node --experimental-strip-types runs/t122/compare_r2.ts`, wall time in ms: trace run 26948 → 16715; failed-export run 26948 → 16715; no-export run 16948 → 16948; export-start-failure run 16948 → 16948.
+    - Browser on the bundle built from final HEAD (port 8823): all four runs show "wall time 17 s". The trace run shows the Langfuse link. Screenshot: `runs/t122/run-page-after-r2.png`.
+    - The 27 s "before" figure comes from `compare_r2.ts` only. I did not build a pre-fix bundle to look at it in the browser.
+    - The run now ends at the last `text` (16.7 s), not at the 16.9 s that `result` had with no export. That is how the ticket defines the end: the event before the export starts.
+  - **Reviews:**
+    - `da-review` was not run, because this ticket is web-only.
+    - `eng:code-review main` ran on `43c48f2` (Standards and Spec sub-agents). `e9d408b` and `0c70651` were not re-reviewed.
+  - **Review findings fixed:**
+    - Spec: `src/data_agent/agent.py:2288` writes `error` (source trace) right after `task` when `export.start` fails. With `43c48f2`, such a run ended at `task`: wall time about 0, and the whole replay at one moment. Fixed in `e9d408b`, with a test.
+    - Spec and Standards: the `trace.ts` edit was outside Authority. Reverted in `0c70651`.
+    - Standards: the test comment named the wrong file for `RunExport.finish`. Corrected.
+  - **Review findings not fixed, with reasons:**
+    - **The repeated `'trace'` literal (asked for in the return comment):** fixing it means editing `trace.ts`, which is outside Authority, so I left it. If you want it, add `export const TRACE_EVENT = 'trace'` to `model.ts`, use it in `isExportEvent`, and change `trace.ts:4` to import it and `trace.ts:13` to compare against it.
+    - **Run-end event without `ts`:** the case with no export events matches the code before the change (wall time 0, times as before). With export events and an `answer` without `ts`, the wall time is 0 and the later events get no time. Before the change the wall time was 25 s. I followed the return comment, which asked that replay no longer end late in this case.
+    - **`'trace_export_error'`, and `'trace'` used as an error `source`, are still bare strings:** each appears once, in one function.
+    - **The test imports `run-page/replay` and `./trace`:** Acceptance asks for the 114 link to show when replay reaches the end, which needs both.
+    - **Two calls to `clockOf`:** they were already there before this ticket.
+    - **A first export event at index 0 falls back to the last event:** `version` is always the first event.
+  - **Known limitations:**
+    - On the chat page, the roughly 10 s export wait moves into the gap before the next turn. At 1x with idle gaps not skipped, replay still waits there. The ticket only covers each turn's duration.
+    - If the export fails to start and the CLI then writes nothing before `result` (`version, task, error(trace), result`), the run still ends at `task`. That needs both failures at once.
+  - **Leftovers:** `build:local` rewrote `src/data_agent/web/static/`, which git ignores. The evidence scripts and logs are in `runs/t122/`.
