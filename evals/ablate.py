@@ -109,6 +109,7 @@ from evals.report import (
     check_complete,
     check_dev_list,
     is_infra_error,
+    of_benchmark,
     split_trials,
 )
 from evals.selection import selection_markdown, selection_row
@@ -825,7 +826,7 @@ def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]
         code, out, err = evals_cli(["compare", *pair, *common, "--json"])
         if code != 0:
             raise Stop(f"compare {reference} with {config}: {err.strip()}")
-        layer = REFERENCE_LAYERS[reference].get(config, f"{reference} vs {config}")
+        layer = REFERENCE_LAYERS[reference][config]
         contributions.append({"layer": layer, "config": config, **json.loads(out)})
         if args.split == "dev":
             argv = ["diverge", *pair, "--manifest", str(manifest)]
@@ -921,7 +922,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         manifest = json.loads(args.manifest.read_text())
         tasks = benchmark_tasks(manifest, args.split, args.benchmark)
-        dev = benchmark_tasks(manifest | {"dev": manifest.get("dev") or []}, "dev", args.benchmark)
+        dev = of_benchmark(manifest.get("dev") or [], args.benchmark)
     except (OSError, ValueError, KeyError, AttributeError) as exc:
         print(
             f"ablate: cannot read the {args.split} tasks from {args.manifest}: {exc}",

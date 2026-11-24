@@ -6,7 +6,8 @@
 #   lsb_writer gets its password from the build secret lsb_write_password, read inside psql so it
 #   is on no command line; `root` exists without LOGIN only, for dumps that hand tables to it;
 # - the agent's role lsb_reader can connect and SELECT, nothing else: PUBLIC loses CREATE on
-#   every schema and CONNECT/TEMPORARY on `postgres`, and the template's grants and default
+#   every schema and CONNECT/TEMPORARY on `postgres`, `template1` and the template database,
+#   and the template's grants and default
 #   privileges (copied with each clone) give the reader SELECT on tables now and later;
 # - the template's table and column counts (upstream evaluation/check_db_metadata.py's) go to
 #   /opt/livesqlbench/counts.txt for `evals livesqlbench prepare` to check.
@@ -59,6 +60,11 @@ psql -v ON_ERROR_STOP=1 --username postgres --dbname template1 \
     -c "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
 
 create_template_database "${selected_database}"
+# Only the agent's clone opens CONNECT to lsb_reader (db-entrypoint.sh); the templates stay shut.
+psql -v ON_ERROR_STOP=1 --username postgres --dbname postgres <<EOSQL
+REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
+REVOKE CONNECT, TEMPORARY ON DATABASE "${selected_database}_template" FROM PUBLIC;
+EOSQL
 
 psql -v ON_ERROR_STOP=1 --username postgres --dbname "${selected_database}_template" <<'EOSQL'
 DO $$

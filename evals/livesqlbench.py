@@ -42,6 +42,7 @@ import json
 import random
 import re
 import shutil
+import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -353,8 +354,6 @@ def generate_tasks(
 def has_gold_answer(task_dir: Path) -> bool:
     """Whether a generated task's verifier has the gold answer (`[metadata] gold_answer`); a
     directory that is not a generated task has none."""
-    import tomllib
-
     try:
         config = tomllib.loads((task_dir / "task.toml").read_text())
     except (OSError, ValueError):

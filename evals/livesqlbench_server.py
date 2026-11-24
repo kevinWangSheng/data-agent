@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import urllib.request
 import zipfile
 from collections import Counter
@@ -299,8 +300,10 @@ def image_counts(run: Run, image: str) -> tuple[int, int]:
 def images(run: Run, root: Path, databases: Sequence[str]) -> None:
     """The database images missing, from the dump, and the `main` image; then the counts."""
     need = [db for db in databases if not image_exists(run, livesqlbench.db_image(db))]
+    archive = root / "dump" / "archive"
+    if need or archive.is_file():
+        fetch_dump(root, run)  # downloads when missing; the recorded sha256 is compared each call
     if need:
-        archive = fetch_dump(root, run)
         unpack(archive, root / "dumps")
         dirs = dump_dirs(root / "dumps", databases)
         for db in need:
@@ -445,83 +448,94 @@ raise SystemExit(1 if fails else 0)
 """
 
 
-def readonly(database: str, run: Run = subprocess.run) -> int:
-    """Start the database image and a `main` container beside it on a network of their own, and
-    from the `main` container check the read-only role and the credentials that must not work;
-    then that the `main` container's environment holds no write credential. Prints PASS/FAIL
-    lines only; returns the failures."""
+def task_environment(task_dir: Path) -> tuple[str, dict[str, str], Path]:
+    """A generated task's database, the variables its `main` container gets (`[environment]
+    env`, as Harbor passes them; the compose file sets none), and its `db_init` directory."""
+    config = tomllib.loads((task_dir / "task.toml").read_text())
+    database = str(config["metadata"]["selected_database"])
+    env = {str(k): str(v) for k, v in config["environment"]["env"].items()}
+    return database, env, task_dir / "environment" / "db_init"
+
+
+def readonly(task_dir: Path, run: Run = subprocess.run) -> int:
+    """Start the task's database image and a `main` container beside it on a network of their
+    own, the database reachable by its compose name and `main` given the task's own variables;
+    from `main` check the read-only role and the credentials that must not work, then that
+    `main`'s environment holds no write credential. Prints PASS/FAIL lines only; returns the
+    failures."""
     password = write_password()
+    database, task_env, init = task_environment(task_dir)
     tag = hashlib.sha256(os.urandom(8)).hexdigest()[:8]
     network, db_name, main_name = f"da-lsb-ro-{tag}", f"da-lsb-ro-db-{tag}", f"da-lsb-ro-main-{tag}"
-    url = f"postgresql://{livesqlbench.READER_ROLE}:{livesqlbench.READER_PASSWORD}@{db_name}:5432/{database}"
+    env_args = [a for k, v in task_env.items() for a in ("-e", f"{k}={v}")]
     fails = 0
-    with tempfile.TemporaryDirectory() as init:
-        (Path(init) / "db_name.txt").write_text(f"{database}\n")
-        (Path(init) / "preprocess.sql").write_text("\n")
-        Path(init).chmod(0o755)
-        try:
-            run(
-                ["docker", "network", "create", network], capture_output=True, text=True, check=True
-            )
-            run(
-                [
-                    *("docker", "run", "-d", "--name", db_name, "--network", network),
-                    *("-v", f"{init}:/docker-entrypoint-initdb.d/db_assets:ro"),
-                    livesqlbench.db_image(database),
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            for _ in range(120):
-                ready = [
-                    "docker",
-                    "exec",
-                    db_name,
-                    "pg_isready",
-                    "-U",
-                    "postgres",
-                    "-h",
-                    "127.0.0.1",
-                ]
-                if run(ready, capture_output=True, text=True).returncode == 0:
-                    break
-                run(["sleep", "2"], capture_output=True, text=True)
-            probe = run(
-                [
-                    *("docker", "run", "-i", "--name", main_name, "--network", network),
-                    *("-e", f"{livesqlbench.DATABASE_URL_ENV}={url}"),
-                    *(livesqlbench.main_image(), "python3", "-"),
-                ],
-                input=PROBE,
-                capture_output=True,
-                text=True,
-            )
-            lines = [
-                line for line in probe.stdout.splitlines() if line.startswith(("PASS", "FAIL"))
+    try:
+        run(["docker", "network", "create", network], capture_output=True, text=True, check=True)
+        run(
+            [
+                *("docker", "run", "-d", "--name", db_name, "--network", network),
+                *("--network-alias", livesqlbench.DB_SERVICE),
+                *("-v", f"{init.resolve()}:/docker-entrypoint-initdb.d/db_assets:ro"),
+                livesqlbench.db_image(database),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        for _ in range(120):
+            ready = [
+                "docker",
+                "exec",
+                db_name,
+                "pg_isready",
+                "-U",
+                "postgres",
+                "-h",
+                "127.0.0.1",
             ]
-            for line in lines:
-                say(line)
-            fails += sum(line.startswith("FAIL") for line in lines)
-            if probe.returncode != 0 and not fails:
-                fails += 1
-                say(f"FAIL the probe did not finish (exit {probe.returncode})")
-            env = run(
-                ["docker", "inspect", "-f", "{{json .Config.Env}}", main_name],
-                capture_output=True,
-                text=True,
-            )
-            clean = env.returncode == 0 and password not in env.stdout
-            fails += not clean
-            say(
-                f"{'PASS' if clean else 'FAIL'} the main container's environment holds no "
-                "write credential"
-            )
-        finally:
-            for name in (main_name, db_name):
-                run(["docker", "rm", "-f", name], capture_output=True, text=True)
-            run(["docker", "network", "rm", network], capture_output=True, text=True)
+            if run(ready, capture_output=True, text=True).returncode == 0:
+                break
+            run(["sleep", "2"], capture_output=True, text=True)
+        probe = run(
+            [
+                *("docker", "run", "-i", "--name", main_name, "--network", network),
+                *env_args,
+                *(livesqlbench.main_image(), "python3", "-"),
+            ],
+            input=PROBE,
+            capture_output=True,
+            text=True,
+        )
+        lines = [line for line in probe.stdout.splitlines() if line.startswith(("PASS", "FAIL"))]
+        for line in lines:
+            say(line)
+        fails += sum(line.startswith("FAIL") for line in lines)
+        if probe.returncode != 0 and not fails:
+            fails += 1
+            say(f"FAIL the probe did not finish (exit {probe.returncode})")
+        env = run(
+            ["docker", "inspect", "-f", "{{json .Config.Env}}", main_name],
+            capture_output=True,
+            text=True,
+        )
+        clean = env.returncode == 0 and password not in env.stdout
+        fails += not clean
+        say(
+            f"{'PASS' if clean else 'FAIL'} the main container's environment holds no "
+            "write credential"
+        )
+    finally:
+        for name in (main_name, db_name):
+            run(["docker", "rm", "-f", name], capture_output=True, text=True)
+        run(["docker", "network", "rm", network], capture_output=True, text=True)
     return fails
+
+
+def count_credential(root: Path) -> int:
+    """How often the write credential ($LSB_PG_WRITE_PASSWORD) occurs in the files under `root`
+    (a run directory, ticket 128 "口令不进运行产出"); only the count is ever printed."""
+    needle = write_password().encode()
+    return sum(p.read_bytes().count(needle) for p in sorted(root.rglob("*")) if p.is_file())
 
 
 # --- the command line ---
@@ -543,7 +557,11 @@ def run_step(args: argparse.Namespace) -> int:
     elif args.step == "check":
         return 1 if check(args.root) else 0
     elif args.step == "readonly":
-        return 1 if readonly(args.database) else 0
+        return 1 if readonly(args.task) else 0
+    elif args.step == "leaks":
+        found = count_credential(args.dir)
+        say(f"write credential: {found} occurrence(s) under {args.dir}")
+        return 1 if found else 0
     return 0
 
 
@@ -569,6 +587,8 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     p.add_argument("--answers", type=Path, required=True, help="used when it exists")
     p = steps.add_parser("check", help="on the server: readiness lines")
     p.add_argument("--root", type=Path, required=True)
-    p = steps.add_parser("readonly", help="on the server: the read-only checks of one database")
-    p.add_argument("--database", required=True)
+    p = steps.add_parser("readonly", help="on the server: the read-only checks of one task")
+    p.add_argument("--task", type=Path, required=True, help="a generated task's directory")
+    p = steps.add_parser("leaks", help=f"how often ${WRITE_PASSWORD_ENV} occurs under a directory")
+    p.add_argument("--dir", type=Path, required=True)
     parser.set_defaults(run=run_step)

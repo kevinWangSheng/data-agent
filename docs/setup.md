@@ -207,7 +207,8 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - **写库口令**：`~/.config/data-agent/livesqlbench.env`（mode 600），由 `benchmarks` 第一次运行时随机生成，里面只有 `LSB_PG_WRITE_PASSWORD`。它是验证阶段的写库角色 `lsb_writer` 的口令，构建镜像时经 `docker build --secret` 传入。只有 `da-remote start … -- ablate --benchmark livesqlbench …` 的运行会 source 它，进 Harbor 宿主进程的环境；任务里写的是 `${LSB_PG_WRITE_PASSWORD}` 模板，Harbor 验证时才解析。agent 用只读角色 `lsb_reader` 连库。这个文件丢了而镜像还在时，`benchmarks` 会停下：删掉 `da-lsb-db-*` 镜像再跑。
 - **标准答案**：人申请到以后放在 `da-benchmarks/livesqlbench-answers.jsonl`（每行一道题的 `instance_id`、`sol_sql`、`test_cases`、`external_knowledge`），只放服务器，不进 git。没有这个文件时任务照样生成，`task.toml` 标 `gold_answer = false`，验证脚本写 0 并注明"没有标准答案"：只能冒烟，不算分；`ablate --benchmark livesqlbench --split holdout` 拒绝开跑。放好以后重跑 `da-remote benchmarks` 重新生成任务（工单 136）。
 - **任务**：`tasks/`，180 道 `Query` 题，跑法 `ablate --benchmark livesqlbench --tasks-dir ../da-benchmarks/livesqlbench/tasks …`。`da-remote check` 列出数据、镜像、口令文件权限、任务数和有标准答案的题数。
-- **只读实测**：`da-remote exec -- bash -c 'set -a && . ~/.config/data-agent/livesqlbench.env && set +a && uv run --no-sync python -m evals livesqlbench readonly --database <db>'`：起这个库的镜像和一个 `main` 容器，从 `main` 里试只读角色的写操作、不带口令和用 `123123` 连库，再查 `main` 容器的环境里有没有写库口令；只打印 PASS/FAIL。
+- **只读实测**：`da-remote exec -- bash -c 'set -a && . ~/.config/data-agent/livesqlbench.env && set +a && uv run --no-sync python -m evals livesqlbench readonly --task ../da-benchmarks/livesqlbench/tasks/<task>'`：起这道题的库镜像和一个带着任务自己 `[environment] env` 的 `main` 容器，从 `main` 里试只读角色的写操作、不带口令和用 `123123` 连库，再查 `main` 容器的环境里有没有写库口令；只打印 PASS/FAIL。
+- **口令不进运行产出**：同样 source 口令文件后跑 `uv run --no-sync python -m evals livesqlbench leaks --dir runs/<run>`，只打印次数（本机取回的目录也一样查）。
 - **许可证**：仓库根目录 MIT，`LiveSQLBench-CLI/` 是 Apache-2.0，README 和 HF 数据卡写 CC BY / CC BY-SA，写法不一致（取证笔记 `docs/research/2026-11-23-livesqlbench.md`）。所以数据、dump 和镜像都只在服务器上，不重新发布；复制进本仓库的代码见 `NOTICE`。
 
 ## 上游参考仓库

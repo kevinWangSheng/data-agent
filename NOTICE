@@ -117,7 +117,9 @@ MIT (repository root):
   notice is kept at its top. Modified: remove_round logs nothing, the execution is written anew
   for psycopg, and nothing prints a query or a result (as noted at its top).
 
-Apache-2.0 (LiveSQLBench-CLI/adapters/livesqlbench/), each modified as noted at its top:
+Apache-2.0 (LiveSQLBench-CLI/adapters/livesqlbench/). The four files under
+evals/livesqlbench_images/ are modified as noted at their tops; the two Python files only follow
+upstream's logic, written anew, and say so where they do:
 - evals/livesqlbench_images/init-db.sh <- template/environment/init-db.sh (unchanged but for the
   header and one line's trailing whitespace)
 - evals/livesqlbench_images/bootstrap-db-image.sh <- template/environment/bootstrap-db-image.sh

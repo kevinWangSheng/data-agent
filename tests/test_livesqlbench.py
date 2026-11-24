@@ -25,6 +25,7 @@ from harbor.models.task.task import Task
 from test_harbor_agent import make_agent
 
 from evals import livesqlbench, livesqlbench_server, livesqlbench_verifier
+from evals.__main__ import main as evals_main
 from evals.harbor_agent import DBT_ENV, DataAgent
 from evals.livesqlbench import ExecutionError, Result
 
@@ -538,3 +539,75 @@ def test_a_multi_statement_entry_is_scored_by_its_last_result() -> None:
     cur = FakeCursor([(["a"], [(1,)]), None, (["b"], [(2,), (3,)])])
     assert livesqlbench_verifier.last_result(cur) == Result(columns=("b",), rows=((2,), (3,)))
     assert livesqlbench_verifier.last_result(FakeCursor([None])) == Result(columns=(), rows=())
+
+
+def test_every_prepare_compares_the_dump_with_its_recorded_sha256(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(livesqlbench.WRITE_PASSWORD_ENV, PASSWORD)
+    monkeypatch.setattr(livesqlbench_server, "EXPECTED_TABLES", 1)
+    monkeypatch.setattr(livesqlbench_server, "EXPECTED_COLUMNS", 2)
+    docker = FakeDocker({"alpha/t.sql": ""})
+    livesqlbench_server.images(docker, tmp_path, ["alpha"])
+    capsys.readouterr()
+    livesqlbench_server.images(docker, tmp_path, ["alpha"])  # every image is there now
+    assert "matches the recorded one" in capsys.readouterr().out
+    (tmp_path / "dump" / "archive").write_bytes(b"changed")
+    with pytest.raises(SystemExit, match="not the recorded"):
+        livesqlbench_server.images(docker, tmp_path, ["alpha"])
+
+
+def test_the_credential_is_counted_under_a_run_never_printed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(livesqlbench.WRITE_PASSWORD_ENV, PASSWORD)
+    run = tmp_path / "runs" / "lsb-smoke"
+    (run / "jobs" / "t").mkdir(parents=True)
+    (run / "jobs" / "t" / "a.txt").write_text(f"x {PASSWORD} y {PASSWORD}")
+    (run / "b.json").write_text("{}")
+    assert livesqlbench_server.count_credential(run) == 2
+    (run / "jobs" / "t" / "a.txt").write_text("clean")
+    assert evals_main(["livesqlbench", "leaks", "--dir", str(run)]) == 0
+    printed = capsys.readouterr().out
+    assert printed.strip() == f"write credential: 0 occurrence(s) under {run}"
+
+
+class ProbeDocker(FakeDocker):
+    """`docker` for `readonly`: the probe passes every check; the inspect shows `env`."""
+
+    def __init__(self, env: str) -> None:
+        super().__init__({})
+        self.env = env
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["docker", "run", "-i"]:
+            self.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "PASS read-only role reads\n", "")
+        if cmd[:2] == ["docker", "inspect"]:
+            self.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, self.env, "")
+        return super().__call__(cmd, **kwargs)
+
+
+def test_readonly_runs_the_tasks_own_environment_and_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(livesqlbench.WRITE_PASSWORD_ENV, PASSWORD)
+    task = {t.name: t for t in generate(tmp_path, empty_answers(tmp_path))}["lsb-tide_q1"]
+    url = Task(task).config.environment.env[livesqlbench.DATABASE_URL_ENV]
+    docker = ProbeDocker(json.dumps([f"{livesqlbench.DATABASE_URL_ENV}={url}"]))
+    assert livesqlbench_server.readonly(task, docker) == 0
+    db_run = next(c for c in docker.calls if c[:3] == ["docker", "run", "-d"])
+    assert db_run[db_run.index("--network-alias") + 1] == "postgresql"
+    assert db_run[-1] == livesqlbench.db_image("tide_gauges")
+    probe = next(c for c in docker.calls if c[:3] == ["docker", "run", "-i"])
+    assert f"{livesqlbench.DATABASE_URL_ENV}={url}" in probe
+    assert not any(PASSWORD in " ".join(c) for c in docker.calls)
+    assert sum(c[:3] == ["docker", "rm", "-f"] for c in docker.calls) == 2
+    assert any(c[:3] == ["docker", "network", "rm"] for c in docker.calls)
+    printed = capsys.readouterr().out
+    assert "PASS the main container's environment holds no write credential" in printed
+
+    leaky = ProbeDocker(json.dumps([f"PGPASSWORD={PASSWORD}"]))
+    assert livesqlbench_server.readonly(task, leaky) == 1
+    assert PASSWORD not in capsys.readouterr().out

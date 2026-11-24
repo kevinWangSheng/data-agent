@@ -358,10 +358,15 @@ def benchmark_of(task: str) -> str:
     return LSB_BENCHMARK if task.startswith(LSB_TASK_PREFIX) else DEFAULT_BENCHMARK
 
 
+def of_benchmark(tasks: list[str], benchmark: str) -> list[str]:
+    """The tasks of one benchmark, in their order."""
+    return [t for t in tasks if benchmark_of(t) == benchmark]
+
+
 def benchmark_tasks(manifest: dict[str, Any], split: str, benchmark: str) -> list[str]:
     """The tasks of one benchmark in one split of the manifest, in its order: the manifest's
     top-level `dev` and `holdout` hold both benchmarks' tasks, a report or a run covers one."""
-    return [t for t in manifest[split] if benchmark_of(t) == benchmark]
+    return of_benchmark(manifest[split], benchmark)
 
 
 def split_trials(
