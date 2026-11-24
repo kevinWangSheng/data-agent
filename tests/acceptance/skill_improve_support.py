@@ -309,10 +309,20 @@ def fake_da_remote(argv: list[str]) -> int:
     state.mkdir(exist_ok=True)
     entry: dict[str, Any] = {"tool": "da-remote", "argv": argv, "cwd": os.getcwd()}
     entry["origin"] = origin_branches(origin)
+    # The commit the server's checkout is at when the call comes: the last setup that succeeded.
+    entry["server_rev"] = (state / "rev").read_text() if (state / "rev").exists() else None
     append_log(log, entry)
     cmd = argv[0] if argv else ""
     if cmd == "setup" and len(argv) <= 2:
         rev = argv[1] if len(argv) == 2 else "origin/main"
+        # As on the server: setup fetches origin, then resolves the commit there.
+        known = subprocess.run(
+            ["git", "--git-dir", str(origin), "cat-file", "-e", f"{rev}^{{commit}}"],
+            capture_output=True,
+        )
+        if rev != "origin/main" and known.returncode != 0:
+            print(f"setup: unknown commit {rev}")
+            return 1
         (state / "rev").write_text(rev)
         print(f"setup: server at {rev}")
         return 0
@@ -413,7 +423,9 @@ class FakeJudge:
 
 @dataclass(frozen=True)
 class Start:
-    """One `da-remote start`, with the setup before it and origin's branches at that moment."""
+    """One `da-remote start`, with the commit the server is at (its last successful `setup`; the
+    fake's setup, like the real one, fails for a commit origin does not have) and origin's
+    branches at that moment."""
 
     name: str
     evals_args: list[str]
@@ -447,6 +459,7 @@ class World:
 
         self.skill_version = skill_version(self.repo / "skills")
         self.skills = {self.skill_version: load_skills(self.repo / "skills")}
+        self.advance_main()
         self.attribution_judge = FakeJudge("attribution", self.log, self.attribute_answer)
         self.edit_judge = FakeJudge("edit", self.log, self.edit_answer)
 
@@ -490,6 +503,18 @@ class World:
         git("remote", "add", "origin", str(origin), cwd=repo)
         git("fetch", "-q", "origin", cwd=repo)
         return repo, origin
+
+    def advance_main(self) -> None:
+        """main moves on past the input run's commit, its Skill changed, so only the version
+        headers name the commit the candidates build on."""
+        skill = self.repo / "skills" / "sql-workflow" / "SKILL.md"
+        text = skill.read_text().replace(
+            "5. Name the columns", "5. After the input run, name the columns"
+        )
+        skill.write_text(text)
+        git("commit", "-q", "-am", "main moves on", cwd=self.repo)
+        git("push", "-q", "origin", "main", cwd=self.repo)
+        self.head = git("rev-parse", "HEAD", cwd=self.repo)
 
     # Judges' answers.
 
@@ -591,15 +616,18 @@ class World:
 
     def starts(self) -> list[Start]:
         out: list[Start] = []
-        setup: str | None = None
         for call in self.calls("da-remote"):
             argv = call["argv"]
-            if argv[:1] == ["setup"]:
-                setup = argv[1] if len(argv) > 1 else None
-            elif argv[:1] == ["start"] and len(argv) >= 4 and argv[2] == "--":
+            if argv[:1] == ["start"] and len(argv) >= 4 and argv[2] == "--":
                 evals_args = argv[3:]
                 out.append(
-                    Start(argv[1], evals_args, option_values(evals_args), setup, call["origin"])
+                    Start(
+                        argv[1],
+                        evals_args,
+                        option_values(evals_args),
+                        call["server_rev"],
+                        call["origin"],
+                    )
                 )
         return out
 

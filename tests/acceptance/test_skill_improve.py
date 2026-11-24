@@ -515,7 +515,7 @@ def test_candidates_of_one_round_are_judged_and_handled_each_on_its_own(world: W
     branches = world.origin_branches()
     assert first.branch in branches
     assert second.branch not in branches
-    assert branches["main"] == world.base
+    assert branches["main"] == world.head
     assert [b for b in branches if b != "main" and not b.startswith("skill-improve/")] == []
 
 
