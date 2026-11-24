@@ -1,9 +1,12 @@
 // What kind of tool a step called, for its tag and colour. Names from src/data_agent/mcp_server.py,
 // verifier_tools.py and the built-in tools the agent is given.
 
-export type ToolKind = 'sql' | 'context' | 'schema' | 'check' | 'file' | 'edit' | 'shell' | 'sandbox' | 'dbt' | 'agent' | 'chart' | 'other'
+export type ToolKind = 'sql' | 'context' | 'schema' | 'check' | 'file' | 'edit' | 'shell' | 'sandbox' | 'dbt' | 'agent' | 'chart' | 'external' | 'other'
 
 const DATA = 'mcp__data__'
+// `mcp__<server>__<tool>` from any other MCP server the run was given (`--mcp-servers`). Server
+// names never contain `__` (src/data_agent/external_mcp.py), so the first `__` ends the server.
+const EXTERNAL = /^mcp__(.+?)__(.+)$/
 const SQL = new Set(['query_database', 'query_labels', 'explain_query', 'classify_text'])
 const CONTEXT = new Set(['discover', 'hydrate', 'dictionary_search'])
 const CHECK = new Set([
@@ -18,7 +21,9 @@ const CHECK = new Set([
 ])
 
 export function shortTool(tool: string): string {
-  return tool.startsWith(DATA) ? tool.slice(DATA.length) : tool
+  if (tool.startsWith(DATA)) return tool.slice(DATA.length)
+  const external = EXTERNAL.exec(tool)
+  return external ? `${external[1]} · ${external[2]}` : tool
 }
 
 export function toolKind(tool: string): ToolKind {
@@ -32,6 +37,7 @@ export function toolKind(tool: string): ToolKind {
     if (name === 'display_chart') return 'chart'
     return 'schema'
   }
+  if (EXTERNAL.test(tool)) return 'external'
   if (tool === 'Read' || tool === 'Glob' || tool === 'Grep') return 'file'
   if (tool === 'Write' || tool === 'Edit') return 'edit'
   if (tool === 'Bash') return 'shell'
@@ -51,6 +57,7 @@ export const KIND_TAG: Record<ToolKind, string> = {
   dbt: 'DBT',
   agent: 'AGT',
   chart: 'CHRT',
+  external: 'EXT',
   other: 'TOOL',
 }
 
@@ -66,5 +73,6 @@ export const KIND_NAME: Record<ToolKind, string> = {
   dbt: 'dbt execution',
   agent: 'Subagent dispatch',
   chart: 'Answer chart',
+  external: 'External MCP tool',
   other: 'Tool',
 }

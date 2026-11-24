@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest'
 
 import { buildRunView, type RunEvent, type RunView } from '../run-view/model'
 import { buildRows, defaultExpanded, isChange, isIssue, isSql, sectionStats, sectionsOf, verifyId, type Item } from './outline'
-import { toolKind } from './tools'
+import { shortTool, toolKind } from './tools'
 
 const FIXTURES = join(import.meta.dirname, '../../../tests/fixtures/web/real')
 
@@ -184,7 +184,20 @@ describe('toolKind', () => {
     ['mcp__data__dbt_execute', 'dbt'],
     ['Agent', 'agent'],
     ['WebSearch', 'other'],
+    ['mcp__mongo__find', 'external'],
+    ['mcp__data_x__find', 'external'],
   ])('%s is %s', (tool, kind) => {
     expect(toolKind(tool)).toBe(kind)
+  })
+})
+
+describe('shortTool', () => {
+  test.each([
+    ['mcp__data__query_database', 'query_database'],
+    ['mcp__my_db__run_query', 'my_db · run_query'],
+    ['mcp__data_x__find', 'data_x · find'],
+    ['WebSearch', 'WebSearch'],
+  ])('%s is shown as %s', (tool, shown) => {
+    expect(shortTool(tool)).toBe(shown)
   })
 })

@@ -32,16 +32,16 @@ const kindNames = KIND_NAME as Record<string, string>
 
 describe('external MCP tools (ticket 117)', () => {
   for (const [tool, shown] of EXTERNAL) {
-    test.fails(`${tool} is shown as "${shown}"`, () => {
+    test(`${tool} is shown as "${shown}"`, () => {
       expect(shortTool(tool)).toBe(shown)
     })
 
-    test.fails(`${tool} is an external tool`, () => {
+    test(`${tool} is an external tool`, () => {
       expect(toolKind(tool)).toBe('external')
     })
   }
 
-  test.fails('the external kind has a tag and a name of its own', () => {
+  test('the external kind has a tag and a name of its own', () => {
     expect(tags.external).toBeTruthy()
     expect(kindNames.external).toBeTruthy()
     expect(tags.external).not.toBe(tags.other)
