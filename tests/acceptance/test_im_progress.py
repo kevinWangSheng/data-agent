@@ -76,6 +76,24 @@ def test_the_status_text_follows_the_steps_and_ends_with_duration_and_cost() -> 
 
 
 @TICKET_131
+def test_a_turn_that_ends_on_a_clarification_does_not_read_as_answered() -> None:
+    asked = [
+        *header(),
+        {
+            "type": "clarification",
+            "ts": "2026-11-24T09:00:05+00:00",
+            "tool_use_id": "c1",
+            "question": "Net or gross?",
+            "options": ["Net", "Gross"],
+        },
+    ]
+    answered = [*header(), answer(5, ANSWER)]
+    waiting = status_text([*asked, result(51, ended=37)])
+    assert waiting not in {status_text(asked), status_text(answered)}
+    assert waiting != status_text([*answered, result(51, ended=37)])
+
+
+@TICKET_131
 async def test_one_status_message_edited_through_the_turn_then_the_answer(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))

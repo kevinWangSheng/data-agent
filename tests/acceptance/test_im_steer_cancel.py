@@ -21,7 +21,9 @@ from pathlib import Path
 
 import pytest
 from im_support import (
+    EDIT_INTERVAL,
     Sent,
+    end_without_result,
     expect_status,
     expect_stop_button,
     finish_turn,
@@ -59,9 +61,18 @@ async def test_the_stop_button_cancels_the_turn(tmp_path: Path) -> None:
     await bot.platform.deliver(message("How many orders?", thread="T1"))
     [conversation] = bot.conversations.created
     status = expect_status(bot)
+    running = status.text
     await bot.platform.press(status, expect_stop_button(status))
     assert bot.conversations.cancelled == [conversation]
     assert len(bot.conversations.sent) == 1
+
+    # The launcher records the run as cancelled (it wrote no `result`): the status says it ended.
+    end_without_result(bot.runs, bot.conversations.only_run(), "cancelled")
+    for _ in range(2):
+        bot.clock.advance(EDIT_INTERVAL + 0.1)
+        await bot.adapter.poll()
+    assert status.text != running
+    assert status.buttons == ()
 
 
 @TICKET_131
@@ -97,6 +108,7 @@ async def test_stop_with_no_turn_running_gets_a_reply(tmp_path: Path) -> None:
 
     await bot.platform.deliver(message("stop", thread="T1", mentioned=False))
     assert len(bot.platform.shown) == shown + 1
+    assert bot.platform.shown[-1] in bot.platform.in_thread("C1", "T1")
     assert len(bot.conversations.sent) == 1
 
 

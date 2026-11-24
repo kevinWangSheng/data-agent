@@ -132,7 +132,7 @@ def test_a_long_table_is_cut_and_its_total_given() -> None:
 
 
 @TICKET_131
-def test_a_table_too_wide_for_one_message_is_cut_to_fit_and_its_total_given() -> None:
+def test_a_table_too_long_for_one_message_is_cut_to_fit_and_its_total_given() -> None:
     lines = ["| item | description | amount |", "|---|---|---|"]
     lines += [
         f"| item-r{number:03d} | a long description of the item | {number * 3}.5 |"

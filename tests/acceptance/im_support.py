@@ -8,9 +8,10 @@ No real platform and no model: the seam is a platform in memory (`FakePlatform`,
 whose event files the tests write line by line (`append_events`), read by the adapter through
 `RunsDir` as the web UI reads them. Time is a `FakeClock` the tests move by hand.
 
-Nothing here asserts: a stand-in used wrongly, or a fixture that cannot be set up, raises
-`RuntimeError`, which a test marked `xfail(raises=(NotImplementedError, AssertionError))`
-reports as a failure, never as the expected one.
+The stand-ins and fixture helpers never assert: a stand-in used wrongly, or a fixture that
+cannot be set up, raises `RuntimeError`, which a test marked
+`xfail(raises=(NotImplementedError, AssertionError))` reports as a failure, never as the expected
+one. Only the `expect_*` helpers at the end assert: they check what the adapter did.
 """
 
 import json
@@ -123,7 +124,7 @@ class FakePlatform:
 
     async def edit(self, chat_id: str, message_id: str, message: Outgoing) -> None:
         self.calls.append(("edit", message))
-        [shown] = [shown for shown in self.shown if shown.id == message_id] or [None]
+        shown = next((shown for shown in self.shown if shown.id == message_id), None)
         if shown is None or shown.chat_id != chat_id:
             raise RuntimeError(f"edit of a message the bot never sent: {chat_id} {message_id}")
         shown.text = message.text

@@ -172,8 +172,10 @@ def serve(
         seen.append(dict(bound.arguments))
         return app
 
+    start_signature = inspect.signature(service.start)
+
     def fake_start(*args: Any, **kwargs: Any) -> None:
-        started.append((*args, *kwargs.values()))
+        started.append(tuple(start_signature.bind(*args, **kwargs).arguments.values()))
 
     monkeypatch.setattr(web_app, "create_app", fake_create_app)
     monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
