@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import type { RunData } from '../data/source'
 import { fmtCost, fmtDur } from '../format'
 import { buildRunView, eventTimes } from '../run-view/model'
+import { traceLink } from '../run-view/trace'
 import { Detail, type Selected } from './Detail'
 import { Outline } from './OutlinePane'
 import { ReplayControls } from './ReplayControls'
@@ -54,7 +55,10 @@ export function RunPage({
   const { revealed, replaying, togglePlay, controls } = useReplay(times, autoplay, { onPlay: () => setFollow(true) })
 
   const full = useMemo(() => buildRunView(events, notes), [events, notes])
-  const view = useMemo(() => (revealed === events.length ? full : buildRunView(events.slice(0, revealed), notes)), [events, notes, revealed, full])
+  const shown = useMemo(() => (revealed === events.length ? events : events.slice(0, revealed)), [events, revealed])
+  const view = useMemo(() => (shown === events ? full : buildRunView(shown, notes)), [events, notes, shown, full])
+  // From the same events as the view: a replay shows the link once it reaches the trace event.
+  const trace = useMemo(() => traceLink(shown), [shown])
   const { sections, loose } = useMemo(() => sectionsOf(view), [view])
   const fullSections = useMemo(() => sectionsOf(full).sections, [full])
   const numbers = useMemo(() => new Map(view.steps.map((s, i) => [s.id, i + 1])), [view])
@@ -274,7 +278,7 @@ export function RunPage({
         </section>
 
         <aside className="pane scroll" aria-label="Run summary">
-          <Side view={view} notes={notes} replaying={replaying} numbers={numbers} onSelect={select} selected={selectedId} />
+          <Side view={view} notes={notes} trace={trace} replaying={replaying} numbers={numbers} onSelect={select} selected={selectedId} />
           <div className="hidden max-[900px]:block sec text-[12px] text-ink-3">The step-by-step trace needs a desktop-width screen (1280 px and up).</div>
         </aside>
       </main>

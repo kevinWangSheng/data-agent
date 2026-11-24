@@ -14,6 +14,7 @@ import { ChatCode } from '../code/chat-code'
 import { Md } from '../code/markdown'
 import { fmtCost, fmtDur } from '../format'
 import type { Narration, RunStatus, RunView, Step, VerifierDispatch } from '../run-view/model'
+import { LangfuseLink } from '../run-page/LangfuseLink'
 import { DbtInputView, DbtResultView, SandboxInputView, SandboxResultView } from '../run-page/ToolPanels'
 import { isDbtExecute, isSandboxExec } from '../run-page/tool-views'
 import { shortTool } from '../run-page/tools'
@@ -104,6 +105,7 @@ function TurnMeta({ turn, runHref, onGo }: { turn: TurnView; runHref: string; on
       <Link href={runHref} onGo={onGo} className="link">
         Full run view →
       </Link>
+      {turn.trace && <LangfuseLink trace={turn.trace} />}
     </div>
   )
 }

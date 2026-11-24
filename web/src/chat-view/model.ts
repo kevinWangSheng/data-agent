@@ -5,6 +5,7 @@
 // tests/acceptance/test_chat_api.py's docstring.
 
 import { asString, buildRunView, type RunEvent, type RunNotes, type RunStatus, type RunView } from '../run-view/model'
+import { traceLink, type TraceLink } from '../run-view/trace'
 
 /** A message sent while a turn was running, as the index lists it. */
 export type IndexSteer = { id: string; text: string }
@@ -82,6 +83,8 @@ export type TurnView = {
   steers: Steer[]
   /** One per step that has an `sql` event, in step order. */
   queries: QueryDatabase[]
+  /** `traceLink(events)` of this turn's own run: null without a `trace` event. */
+  trace: TraceLink | null
 }
 
 export type ConversationView = {
@@ -117,6 +120,7 @@ export function buildConversationView(
       clarification: withChoice(clarificationOf(events), index.turns[i + 1]?.message ?? null),
       steers: steersOf(t.steers, events),
       queries: queriesOf(run, events),
+      trace: traceLink(events),
     })
   })
   const costs = turns.map((t) => t.run.summary.costUsd).filter((c) => c !== null)
