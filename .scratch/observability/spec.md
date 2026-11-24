@@ -160,3 +160,16 @@ agent 的过程现在只能在我们自己的事件文件和网页回放里看�
 - 已知限制：traces 在 CLI 里还是 beta，属性名可能随 CLI 版本变；留出集档靠白名单，CLI 改名后被删的字段要人看到才会补回白名单，不会泄漏。
 - Langfuse Cloud 免费档超额后是拒收还是限流，官方没写（未确认）；超额只影响导出，不影响运行。
 - 试验 worktree `../data-agent-spike-otel`（分支 `spike/otel`）留到 112、113 合入后再删。
+
+## 验收结果 2026-11-23（主会话，main 6fadb61，固定 worktree，Langfuse Cloud）
+
+命令：`runs/batch2/obs-acceptance.sh`、`runs/batch2/obs-web.sh`（不进 git）。`trace-check` 只取结构（`fields=core,basic,metadata,usage`，不取 io，只打印属性名和 usage/cost 有没有值），所以下面"看不到值"的几项要在 Langfuse 界面里看一次。
+
+- dbt 运行（jaffle b2，`full` 配置，`--trace` 留出集档）：通过，$0.040。树是 `data-agent.run` → `claude_code.interaction` → 每次请求一个 GENERATION（usage 有 `input / input_cache_read / cache_creation_tokens / output / total`）加工具 span；两个验证子 agent 的请求挂在 `TOOL Agent` 下（8 个、7 个）。`trace` 事件 `forwarded_llm_requests: 30` = 主线程 15 + 验证 8 + 7，没有丢；spec 里"6 轮只收到 4 个"是计法不同（`num_turns` 按轮算，不按请求算）。查询运行 7=7、5=5。
+- 开发集档查询：prompt 在（interaction 的 `user_prompt`）；SQL **没有**（CLI 不导出工具入参）；查询结果在 `tool.output` span 事件、答案在父 span 的 output，都在 io 里，`trace-check` 看不到值（未确认）。日志和事件里没有任何凭据。
+- 留出集档查询：属性名只有白名单里的、匿名 id 名和 `gen_ai.usage.*`；没有 user_prompt、host.*、user.id。id 值是否匿名，`trace-check` 看不到（未确认）。
+- 导出关闭：事件文件里没有 `trace`、没有 `trace_export_error`。
+- 网页对话两轮（`data-agent web`，网络关）：两轮各有一条 `trace` 事件（trace id 不同），页面上每轮的 "Open in Langfuse ↗" 链到各自的 trace；两轮的 `langfuse.session.id` 都取对话 id（`agent.py` `session=turn.conversation`），Langfuse 里是否显示为同一 session 未在界面确认。
+- 四次运行和网页两轮都没有 `error` / `trace_export_error` 事件。
+- SDK 升级回归：见 ADR-0008 Update 2026-11-23（jaffle 7/7、开发集初筛 5/9 与基线持平、3 项实测有结论）。
+- 其他发现：cost 没有重复（只有父 span 有 cost，GENERATION 都没有，DeepSeek 模型在 Langfuse 里大概没有价格，推断）；token 合计大概率重复（父 span 带全程 usage，键名 `cache_read` 和 GENERATION 的 `input_cache_read` 不同）；资源属性在 Langfuse 里是 `metadata.resourceAttributes.*`，`trace-check` 能显示；开发集档带 `user.id`、`terminal.type` 和 host/OS 资源属性（不是凭据，但能认出机器）。
