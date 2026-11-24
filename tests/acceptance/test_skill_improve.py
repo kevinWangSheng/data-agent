@@ -70,7 +70,9 @@ def only_candidate(report: ImproveReport) -> Candidate:
     return report.candidates[0]
 
 
-def edit(world: World, marker: str, op: str, anchor: str, text: str, file: str = SKILL_FILE):
+def edit(
+    world: World, marker: str, op: str, anchor: str, text: str, file: str = SKILL_FILE
+) -> None:
     world.edits[marker] = {"file": file, "op": op, "anchor": anchor, "text": text}
 
 
@@ -439,6 +441,7 @@ def test_a_passing_candidate_keeps_its_branch_and_gets_a_draft_pr(world: World) 
     assert key("alpha")[0] in body
     assert key("alpha")[2] in body
     assert "task-a" in body
+    assert REPLIES["edits"]["alpha"]["text"].strip() in body  # the diff
 
 
 @TICKET_126
@@ -456,6 +459,7 @@ def test_a_failing_candidate_loses_its_remote_branch_and_gets_no_pr(world: World
     assert candidate.branch is not None
     assert candidate.branch in world.report_md()
     assert "rejected" in world.report_md()
+    assert "fail" in world.report_md()
     assert candidate.branch in world.local_branches()
     assert candidate.branch not in world.origin_branches()
     assert world.calls("gh") == []
@@ -479,7 +483,35 @@ def test_a_regression_task_below_three_is_rerun_alone_then_judged(world: World) 
     assert candidate.outcome == "pr"
     (pr,) = world.pr_creates()
     assert option(pr["argv"], "--head") == [candidate.branch]
-    assert len(starts[0].tasks) + len(starts[1].tasks) <= MAX_TASKS
+
+
+@TICKET_126
+@pytest.mark.parametrize("blocked_by", ["task-cap", "budget"])
+def test_a_rerun_past_the_task_cap_or_the_budget_leaves_the_candidate_undecided(
+    world: World, blocked_by: str
+) -> None:
+    if blocked_by == "task-cap":
+        # 1 target + 29 regression tasks = 30; one rerun task would make 31.
+        regression = [*REGRESSION, *(f"bulk-{i:02d}" for i in range(1, 28))]
+        screen = Screen(wins={"reg-1": 2})
+    else:
+        regression = list(REGRESSION)
+        # 3 tasks x 3 trials x $7 + $0.10, billed at half: $31.55, over the $25.
+        screen = Screen(wins={"reg-1": 2}, cost_usd=7.0)
+    job = world.input_job({"task-a": TaskRun(0, "alpha")})
+    world.plan(screen, Screen())
+
+    report = world.run([job], regression=world.regression_file(regression))
+
+    candidate = only_candidate(report)
+    (start,) = world.starts()
+    assert "reg-1" in start.tasks
+    assert [s.verdict for s in candidate.screenings] == ["rerun-regression"]
+    assert candidate.outcome == "undecided"
+    assert "undecided" in world.report_md()
+    assert candidate.branch is not None
+    assert candidate.branch not in world.origin_branches()
+    assert world.calls("gh") == []
 
 
 @TICKET_126
@@ -527,8 +559,8 @@ def test_spend_over_the_budget_stops_the_remaining_screenings(world: World) -> N
     job = world.input_job(
         {"task-a": TaskRun(0, "alpha"), "task-c": TaskRun(1, "beta"), "task-d": TaskRun(2, "gamma")}
     )
-    # Candidate 1's screening lists 4 tasks x 3 trials x $7 = $84: over $25 at full price and at
-    # the off-peak half ($42).
+    # Candidate 1's screening lists 3 tasks x 3 trials x $7 + $0.10 smoke = $63.10: over $25 at
+    # full price and at the off-peak half ($31.55).
     world.plan(Screen(cost_usd=7.0))
 
     report = world.run([job])
@@ -541,6 +573,9 @@ def test_spend_over_the_budget_stops_the_remaining_screenings(world: World) -> N
     assert [c.outcome for c in report.candidates[1:]] == ["not-screened", "not-screened"]
     report_md = world.report_md()
     assert "not-screened" in report_md
-    assert "stopped" in report_md.lower()
+    second = report.candidates[1].branch
+    assert second is not None
+    stop_lines = [line for line in report_md.splitlines() if "stopped" in line.lower()]
+    assert [line for line in stop_lines if second in line], "report.md names no stop at candidate 2"
     later = {c.branch for c in report.candidates[1:]}
     assert later.isdisjoint(world.origin_branches())

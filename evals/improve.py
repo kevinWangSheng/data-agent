@@ -15,8 +15,10 @@ Contract (ticket 125, "要写进契约的细节" 1-10):
    shape: {Skill version: {Skill name: SKILL.md text}}), the date the branch and run names carry,
    and the server-side `ablate` paths. `git`, `da-remote` and `gh` are run by bare name from `PATH`
    (tests put fakes first), each with `repo` as its working directory, never the process's own.
-   Nothing else reaches the network: the model balance and the preflight are `ablate`'s own, on the
-   server. Status polls wait `poll_seconds` between calls.
+   Optional: `tasks_dir` (the local benchmark tasks, for the attribution prompt's task
+   instruction, as in `evals.attribute`), `secrets` (masked in everything written, as there) and
+   `budget_usd`. Nothing else reaches the network: the model balance and the preflight are
+   `ablate`'s own, on the server. Status polls wait `poll_seconds` between calls.
 2. Groups and choice. Each attributed dev failure (an `attribute` entry with a `failure_mode`)
    falls in the group keyed by (`failure_mode`, `skill`, `skill_quote`); a group's size is its
    failed trials, its targets the distinct dev tasks of those trials. Groups are ranked by size,
@@ -70,14 +72,17 @@ Contract (ticket 125, "要写进契约的细节" 1-10):
    - `fail`: the remote branch is deleted, no PR, the report has it. Outcome `rejected`.
    - `rerun-regression`: rerun once, only the tasks the verdict lists, if the budget is not used up
      and the candidate's tasks plus the rerun's stay within `MAX_TASKS`; then judged again with the
-     rerun, and handled by that verdict. Without a rerun it is `undecided`.
+     rerun, and handled by that verdict. Without a rerun it is `undecided`, and its remote branch
+   is deleted.
    - `rerun-old`: recorded as undecided (未判定), the remote branch is deleted, no PR. Outcome
      `undecided`.
 9. Spend. Spend is the judges' `cost_usd` plus the billed spend `evals spend` totals over each
    pulled run directory (the off-peak half rate included, the preflight smoke trial too). Before
-   each screening (a rerun too) the spend so far is checked: at `budget_usd` or more, no further
-   screening starts; the candidate that would have been screened next is `stopped_at`, it and the
-   ones after it are `not-screened`. Attribution and edit calls share the same budget.
+   each screening (a rerun too) the spend so far is checked: once it is more than `budget_usd`,
+   or what is left rounds down to $0.00 (nothing to give `--budget`), no further screening
+   starts; the candidate that would have been screened next is `stopped_at`, it and the ones after
+   it are `not-screened`, and report.md names it on its "stopped" line. Attribution and edit
+   calls share the same budget.
 10. Input. Only Harbor jobs are taken: a directory without `<trial>/result.json`, such as a DAB
     run (`OUT/<dataset>/query<id>/run<k>/events.jsonl`, `OUT/submission.json`), is refused with
     `InputRefused` before any judge call, branch or screening. So is a job whose dev trials ran a

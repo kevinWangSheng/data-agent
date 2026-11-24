@@ -1,5 +1,5 @@
 {
-  "_about": "Judge replies by failure marker. A failed trial's trace carries its marker; the fake attribution judge answers a prompt with the reply of the marker in it, the fake edit judge one with the edit of the marker whose quote is in it.",
+  "_about": "Judge replies by failure marker. A failed trial's trace carries its marker; the fake attribution judge answers a prompt with the reply of the marker in it, the fake edit judge one with the edit of the marker whose suggestion is in it (the edit prompt holds the whole Skill, so every quote). beta-fm4 quotes beta's sentence, so it shares beta's edit.",
   "attribution": {
     "alpha": {
       "failure_mode": "FM3",
@@ -61,6 +61,12 @@
       "op": "replace",
       "anchor": "4. Prefer one query per question.\n",
       "text": "4. Prefer one query per part of the question.\n"
+    },
+    "beta-fm4": {
+      "file": "skills/sql-workflow/SKILL.md",
+      "op": "insert_after",
+      "anchor": "2. Stop exploring after 3-5 tool calls.\n",
+      "text": "   Then write a first answer and refine it.\n"
     }
   }
 }

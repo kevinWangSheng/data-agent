@@ -31,7 +31,7 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -241,14 +241,23 @@ def option_values(args: Sequence[str]) -> dict[str, list[str]]:
     return out
 
 
-def origin_branches(origin: Path) -> dict[str, str]:
-    """{branch: commit} of the bare origin."""
+def branches(git_dir: Path) -> dict[str, str]:
+    """{branch: commit} of a repository (a bare one, or a checkout's `.git`)."""
     listed = subprocess.run(
-        ["git", "--git-dir", str(origin), "for-each-ref", "--format=%(refname:short) %(objectname)",
-         "refs/heads/"],
+        ["git", "--git-dir", str(git_dir), "for-each-ref",
+         "--format=%(refname:short) %(objectname)", "refs/heads/"],
         check=True, capture_output=True, text=True,
     ).stdout  # fmt: skip
     return dict(line.split(" ", 1) for line in listed.splitlines() if line)
+
+
+def is_start(argv: Sequence[str]) -> bool:
+    """`da-remote start <name> -- <evals args>`."""
+    return argv[:1] == ["start"] and len(argv) >= 4 and argv[2] == "--"
+
+
+def read_body_file(path: str) -> str:
+    return sys.stdin.read() if path == "-" else Path(path).read_text()
 
 
 def write_screening(top: Path, name: str, args: Sequence[str], rev: str, screen: Screen) -> float:
@@ -308,7 +317,7 @@ def fake_da_remote(argv: list[str]) -> int:
     state = log.parent / "server"
     state.mkdir(exist_ok=True)
     entry: dict[str, Any] = {"tool": "da-remote", "argv": argv, "cwd": os.getcwd()}
-    entry["origin"] = origin_branches(origin)
+    entry["origin"] = branches(origin)
     # The commit the server's checkout is at when the call comes: the last setup that succeeded.
     entry["server_rev"] = (state / "rev").read_text() if (state / "rev").exists() else None
     append_log(log, entry)
@@ -326,7 +335,7 @@ def fake_da_remote(argv: list[str]) -> int:
         (state / "rev").write_text(rev)
         print(f"setup: server at {rev}")
         return 0
-    if cmd == "start" and len(argv) >= 4 and argv[2] == "--":
+    if is_start(argv):
         name = argv[1]
         index = len(list(state.glob("start-*.json")))
         rev = (state / "rev").read_text() if (state / "rev").exists() else "origin/main"
@@ -373,10 +382,9 @@ def fake_gh(argv: list[str]) -> int:
         elif arg.startswith("--body="):
             body = arg.split("=", 1)[1]
         elif arg in ("--body-file", "-F") and value is not None:
-            body = sys.stdin.read() if value == "-" else Path(value).read_text()
+            body = read_body_file(value)
         elif arg.startswith("--body-file="):
-            path = arg.split("=", 1)[1]
-            body = sys.stdin.read() if path == "-" else Path(path).read_text()
+            body = read_body_file(arg.split("=", 1)[1])
     append_log(log, {"tool": "gh", "argv": argv, "cwd": os.getcwd(), "body": body})
     if argv[:2] == ["pr", "create"]:
         print(f"fake-pr-{sum(1 for _ in log.open())}")
@@ -404,7 +412,7 @@ class FakeJudge:
     """A judge (`evals.attribute.Judge`) answering each prompt with `answer(prompt)` at
     `JUDGE_COST_USD` a call; every prompt is kept and every call logged."""
 
-    def __init__(self, kind: str, log: Path, answer: "Any") -> None:
+    def __init__(self, kind: str, log: Path, answer: Callable[[str], str]) -> None:
         self.kind = kind
         self.log = log
         self.answer = answer
@@ -530,8 +538,6 @@ class World:
         for marker, reply in self.attribution.items():
             if reply["suggestion"] in prompt and marker in self.edits:
                 return json.dumps(self.edits[marker])
-            if reply["suggestion"] in prompt and marker == "beta-fm4":
-                return json.dumps(self.edits["beta"])
         return "{}"
 
     # Inputs.
@@ -618,7 +624,7 @@ class World:
         out: list[Start] = []
         for call in self.calls("da-remote"):
             argv = call["argv"]
-            if argv[:1] == ["start"] and len(argv) >= 4 and argv[2] == "--":
+            if is_start(argv):
                 evals_args = argv[3:]
                 out.append(
                     Start(
@@ -639,7 +645,7 @@ class World:
                 spent += entry["cost_usd"]
             elif entry["tool"] == "pull-spend":
                 spent += entry["billed_usd"]
-            elif entry["tool"] == "da-remote" and entry["argv"][:1] == ["start"]:
+            elif entry["tool"] == "da-remote" and is_start(entry["argv"]):
                 out.append(spent)
         return out
 
@@ -647,13 +653,10 @@ class World:
         return [c for c in self.calls("gh") if c["argv"][:2] == ["pr", "create"]]
 
     def origin_branches(self) -> dict[str, str]:
-        return origin_branches(self.origin)
+        return branches(self.origin)
 
     def local_branches(self) -> dict[str, str]:
-        listed = git(
-            "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/", cwd=self.repo
-        )
-        return dict(line.split(" ", 1) for line in listed.splitlines() if line)
+        return branches(self.repo / ".git")
 
     def show(self, rev: str, path: str) -> bytes:
         return subprocess.run(
