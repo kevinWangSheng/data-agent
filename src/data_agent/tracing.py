@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from data_agent.events import mask
 
 if TYPE_CHECKING:
-    from opentelemetry.sdk.trace import Span, TracerProvider
-    from opentelemetry.sdk.trace.export import SpanExporter
+    from opentelemetry.sdk.trace import ReadableSpan, Span, TracerProvider
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
-    from data_agent.trace_relay import RelayReport, TraceRelay
+    from data_agent.trace_relay import ExportError, RelayReport, TraceRelay
 
 # The two tiers (spec "覆盖范围"): `full`, the dev tier, records everything but credentials and the
 # model endpoint; `structure`, the held-out tier, lets only allowlisted structure through.
@@ -131,16 +131,43 @@ def cli_env(trace: CliTrace | None, inherited: Mapping[str, str]) -> dict[str, s
     )
 
 
-def parent_exporter(settings: LangfuseSettings) -> "SpanExporter":
-    """The exporter of the run's parent span, sending to `settings.base_url`. `run` looks it up on
-    this module on every call, so a test puts an in-memory exporter in its place."""
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+class ParentExporter:
+    """The exporter of the run's parent span: Langfuse's OTLP endpoint at `settings.base_url`,
+    keeping the HTTP status of each response to the last `export` in `statuses` (the
+    exporter's own result says only success or failure)."""
 
-    return OTLPSpanExporter(
-        endpoint=settings.base_url + OTLP_PATH,
-        headers=settings.headers() | {"x-langfuse-ingestion-version": INGESTION_VERSION},
-        timeout=PARENT_TIMEOUT_S,
-    )
+    def __init__(self, settings: LangfuseSettings):
+        # requests comes with the exporter: its public `session` parameter is a requests.Session.
+        import requests
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+        self.statuses: list[int] = []
+
+        def record(response: requests.Response, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            self.statuses.append(response.status_code)
+
+        session = requests.Session()
+        session.hooks["response"].append(record)
+        self._otlp = OTLPSpanExporter(
+            endpoint=settings.base_url + OTLP_PATH,
+            headers=settings.headers() | {"x-langfuse-ingestion-version": INGESTION_VERSION},
+            timeout=PARENT_TIMEOUT_S,
+            session=session,
+        )
+
+    def export(self, spans: Sequence["ReadableSpan"]) -> "SpanExportResult":
+        self.statuses.clear()
+        return self._otlp.export(spans)
+
+    def shutdown(self) -> None:
+        self._otlp.shutdown()
+
+
+def parent_exporter(settings: LangfuseSettings) -> "SpanExporter | ParentExporter":
+    """The exporter of the run's parent span. `run` looks it up on this module on every call, so
+    a test puts an in-memory exporter in its place."""
+    return ParentExporter(settings)
 
 
 def project_id(settings: LangfuseSettings) -> str | None:
@@ -250,8 +277,10 @@ class RunExport:
     has exited; leaving the block stops whatever is still running, on any path.
 
     A failed export never fails the run (spec "出错不影响运行"): `start` returns None and
-    `finish` an `error` event instead, the failure in `failure`. The relay gets the run's
-    secrets; the parent span is masked with them and with `names` (`Masks`).
+    `finish` an `error` event instead, the failure in `failure`. Langfuse refusing the parent
+    span, or not answering, is one more `trace_export_error` from `finish`, as for the relay's
+    batches. The relay gets the run's secrets; the parent span is masked with them and with
+    `names` (`Masks`).
 
     The relay and the exporter are looked up on their modules here, so a test's stand-ins
     apply."""
@@ -271,6 +300,7 @@ class RunExport:
         self.failure: str | None = None
         self._report: RelayReport | None = None
         self._provider: TracerProvider | None = None
+        self._exporter: SpanExporter | ParentExporter | None = None
         self._span: Span | None = None
         self._project: str | None = None
 
@@ -300,7 +330,6 @@ class RunExport:
     def _start(self, facts: RunFacts) -> CliTrace:
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
         from data_agent import trace_relay
@@ -308,11 +337,13 @@ class RunExport:
         self.relay = trace_relay.TraceRelay(self.settings, self.tier, self.secrets)
         endpoint = self.relay.start()
         # Given outright, so no OTEL_* variable of the process changes the resource or sampling.
+        # No span processor: `_end_span` exports the parent span itself, to see the result (a
+        # span processor drops it).
         provider = TracerProvider(
             resource=Resource({"service.name": SERVICE_NAME}), sampler=ALWAYS_ON
         )
-        provider.add_span_processor(SimpleSpanProcessor(parent_exporter(self.settings)))
         self._provider = provider
+        self._exporter = parent_exporter(self.settings)
         attributes = parent_attributes(self.tier, facts, self.masks)
         self._span = cast(
             "Span", provider.get_tracer("data_agent").start_span(SPAN_NAME, attributes=attributes)
@@ -348,7 +379,8 @@ class RunExport:
         self, result: Mapping[str, Any], answer: str | None
     ) -> list[tuple[str, dict[str, Any]]]:
         """Stops the relay (the CLI has exited), ends and sends the parent span; returns the
-        events to write: one `trace_export_error` per batch the relay dropped, then `trace`.
+        events to write: one `trace_export_error` per batch the relay dropped and one when the
+        parent span did not arrive, then `trace`.
         When that fails, one `error` event (`source: trace`) instead."""
         try:
             return self._finish(result, answer)
@@ -364,11 +396,12 @@ class RunExport:
         report = self._stop_relay()
         self._span.set_attributes(result_attributes(self.tier, result, answer, self.masks))
         trace_id = format(self._span.get_span_context().trace_id, "032x")
-        self._span.end()
+        parent_error = self._end_span()
         self._shutdown()
+        errors = [*report.errors, *([parent_error] if parent_error else [])]
         events: list[tuple[str, dict[str, Any]]] = [
             ("trace_export_error", {"error_type": error.error_type, "status": error.status})
-            for error in report.errors
+            for error in errors
         ]
         events.append(
             (
@@ -404,11 +437,29 @@ class RunExport:
             except Exception as exc:
                 self._failed(exc)
 
-    def _end_span(self) -> None:
-        if self._span is not None and self._span.is_recording():
-            self._span.end()
+    def _end_span(self) -> "ExportError | None":
+        """Ends the parent span and sends it, once; what went wrong when Langfuse answered with
+        an error status (`http_error`) or not at all (`connection_error`), as the relay reports
+        a batch."""
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        from data_agent.trace_relay import ExportError
+
+        if self._span is None or not self._span.is_recording():
+            return None
+        self._span.end()
+        assert self._exporter is not None, "the exporter comes with the span"
+        if self._exporter.export([self._span]) is SpanExportResult.SUCCESS:
+            return None
+        exporter = self._exporter
+        statuses = exporter.statuses if isinstance(exporter, ParentExporter) else []
+        status = statuses[-1] if statuses else None
+        return ExportError("http_error" if status is not None else "connection_error", status)
 
     def _shutdown(self) -> None:
+        if self._exporter is not None:
+            exporter, self._exporter = self._exporter, None
+            exporter.shutdown()
         if self._provider is not None:
             provider, self._provider = self._provider, None
             provider.shutdown()

@@ -29,9 +29,11 @@ ENDPOINT = "http://127.0.0.1:40001/v1/traces"
 
 @dataclass
 class Recorder:
-    """A Langfuse on 127.0.0.1: records every request; projects answer `projects` (None: 500)."""
+    """A Langfuse on 127.0.0.1: records every request; projects answer `projects` (None: 500),
+    the OTLP ingestion `post_status`."""
 
     projects: Any = field(default_factory=lambda: {"data": [{"id": "proj-1"}]})
+    post_status: int = 200
     seen: list[tuple[str, str, dict[str, str], bytes]] = field(default_factory=list)
     server: ThreadingHTTPServer | None = None
 
@@ -69,7 +71,7 @@ class Recorder:
                     self._answer(200, json.dumps(recorder.projects).encode())
 
             def do_POST(self) -> None:
-                self._answer(200, b"")
+                self._answer(recorder.post_status, b"")
 
             def log_message(self, format: str, *args: Any) -> None:
                 pass
@@ -265,6 +267,37 @@ def test_the_parent_span_goes_to_langfuse_with_its_keys_whatever_the_shell_says(
         ),
     ]
     assert export.relay.stopped == 1  # type: ignore[attr-defined]
+
+
+def test_a_parent_span_langfuse_rejects_is_a_trace_export_error(
+    monkeypatch: pytest.MonkeyPatch, langfuse: Recorder
+) -> None:
+    """The returned 112 (PR #125): the parent span's failed export was swallowed and `trace`
+    written as if it had arrived."""
+    monkeypatch.setattr(trace_relay, "TraceRelay", StandInRelay)
+    langfuse.post_status = 500
+    with RunExport(langfuse.settings(), "full", []) as export:
+        assert export.start(FACTS) is not None
+        events = export.finish(RESULT, "42")
+    assert [s[0] for s in langfuse.seen].count("POST") == 1  # 500 is not retried
+    assert events[:2] == [
+        ("trace_export_error", {"error_type": "parse_error", "status": None}),
+        ("trace_export_error", {"error_type": "http_error", "status": 500}),
+    ]
+    assert [name for name, _ in events] == ["trace_export_error"] * 2 + ["trace"]
+    assert export.failure is None
+
+
+def test_a_parent_span_langfuse_never_answers_is_a_connection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(trace_relay, "TraceRelay", StandInRelay)
+    monkeypatch.setattr(tracing, "PARENT_TIMEOUT_S", 0.5)
+    with RunExport(LangfuseSettings("pk", "sk", "http://127.0.0.1:9"), "full", []) as export:
+        assert export.start(FACTS) is not None
+        events = export.finish(RESULT, "42")
+    assert ("trace_export_error", {"error_type": "connection_error", "status": None}) in events
+    assert events[-1][0] == "trace"
 
 
 def test_a_run_that_breaks_still_stops_the_relay_and_ends_the_span(
