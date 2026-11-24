@@ -1,10 +1,10 @@
 # 131 — IM 入口：公共部分（接口、会话映射、澄清、进度、取消、排版、权限、配置、出错）、Slack 实现、`--im`、文档
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 130（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-24
+Branch: worktree-131-im-common-and-slack
 
 ## Goal
 
@@ -171,10 +171,110 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0（没有调模型）
+- Outcome: —
+- Human review minutes: —
 
 ## Comments
+
+- 2026-11-24（工单 agent 最终回复，主会话照抄）：
+
+**实现（commit `f45bad9`、`78c1c35`、`5013c61`）**
+- `src/data_agent/im/`：
+  - 实现了 130 的五个空壳（`config`、`format`、`progress`、`adapter`、`service`），新增 `slack.py`。130 定下的名字、签名、常量和 docstring 都没改。
+  - `service.ImUnavailable` 是新加的异常。配置里有还没实现的平台（item 4）、或缺 extra（item 5）时抛出，`serve_web` 把它转成 exit 2。
+- `cli.py` 改了三处：`main` 传 `args.im`；`serve_web` 读 `--im` 并调 `service.start`；`start_run` 只在给了 `--im` 时传 `env=run_env(...)`，不给时 `Popen` 不变（item 13）。
+- `app.py`：`app.state` 上放 `runs`、`conversations`、`services`。lifespan 开始服务后启动 services，在 `launcher.shutdown` 之前停掉。路由、签名、HTTP API 不变。
+- `pyproject.toml`：`im` extra 和 dev 组都加了 `slack-bolt==1.30.0`、`aiohttp>=3.14`。`uv.lock` 只多了 slack-bolt 1.30.0 和 slack-sdk 3.48.0，aiohttp 本来就在锁里。
+
+**检查输出**
+- `make check`：exit 0。输出存在 `runs/131/make_check_final.txt`。
+  - ruff "All checks passed!"，格式 "451 files already formatted"，basedpyright "0 errors, 0 warnings, 0 notes"。
+  - pytest：`2976 passed, 2 skipped, 79 deselected, 75 xfailed`。基线是 2870 passed、134 xfailed；少掉的 59 个 xfail 就是 IM 验收测试。
+  - web：`Tests 442 passed`。
+- `uv run pytest tests/acceptance/test_im_*.py -v`：`60 passed`，0 xfail，0 skip。输出存在 `runs/131/acceptance_im.txt`。
+- 验收测试只删了标记：
+  - `git diff main...HEAD -- tests/acceptance` 新增行为 0。
+  - 删掉的是 45 个 `@TICKET_131`、8 个 `TICKET_131 = pytest.mark.xfail(...)` 定义（每个 5 行，带它后面的空行），以及 3 个没用了的 `import pytest`。
+  - `--stat` 里 `tests/acceptance` 只有删除。新增的是 `tests/fixtures/im/slack_payloads.json`（假 id）和 `tests/test_im_{adapter,service,slack}.py`。
+- `uv export --frozen --no-dev --no-emit-project | grep -iE 'slack|aiohttp'`：输出为空（grep exit 1）。
+- 只装 extra 就够：`uv run --isolated --no-dev --extra im python -c "import data_agent.im.slack, slack_bolt, aiohttp"` 能导入。
+
+**不连 Slack 的真实运行（在 `5013c61` 上，token 都是运行时拼出来的假值）**
+- 坏的 `--im` 文件（`app_token_env = "DATA_AGENT_API_KEY"`）：exit 2。stderr 是 `data-agent web: error: --im file runs/131/bad.toml, [slack]: app_token_env must name a variable starting with DATA_AGENT_SLACK_ (the name, never the token)`，token 值出现 0 次。
+- 没装 extra（`uv run --no-dev --isolated`，环境里没有 slack_bolt）：exit 2，提示 `--im: the slack bot needs the IM libraries (slack_bolt is not installed); run uv sync --extra im (or install data-agent[im])`。
+- 只装 extra 的环境（`uv run --isolated --no-dev --extra im`）加假 token，脚本是 `runs/131/fake_token_run.sh`：
+  - `/api/options` 返回 200。
+  - 日志里只有 `slack: the bot could not connect; the web UI goes on without it` 和 `SlackApiError ... auth.test ... 'invalid_auth'`，网页照常服务。
+  - SIGINT 后 exit 0，日志里 token 值 0 次。
+  - 第一次只等了 5 秒，`auth.test` 还没返回；改成 25 秒后看到了这一行。
+
+**新单元测试（"测试没钉"那几条）**
+- Slack 消息格式 ↔ 接口的转换：
+  - 顶层消息、线程回复、私聊。
+  - @ 去掉 `<@id>`。
+  - 丢掉 `bot_id`/`subtype` 的事件。
+  - 同一条消息只交一次。
+  - 按钮点击转成 `Press`，并且和开线程那条消息落在同一个键上。
+  - `chat.postMessage`/`chat.update` 的参数，编辑去掉按钮。
+  - 消息和按钮点击一个个交给适配器。
+- Markdown → mrkdwn：11 个用例。
+- 限制：section 不超过 3000 字，`edit_interval` 2.0，typing 为 False。
+- 发送失败重试一次，再失败写日志。
+- 编辑失败（限流）跳过，过一个间隔再补；最后那次编辑也会重试；Slack 被限流（429）时 `edit` 抛出。
+- 适配器出错只写日志。
+- 两个平台共用 `threads.json`。
+- 缺 extra 的提示；配置里有还没实现的平台。
+- 坏文件时 stderr 不带 token；把 token 填在变量名位置时也不回显。
+- 不带 `--im` 时：子进程里查不到 slack 库，`Popen` 不收到 `env`。
+- lifespan 顺序：platform.start → platform.stop → launcher.shutdown。
+- 连不上时网页照常返回 200。
+- slack_sdk、slack_bolt 在 DEBUG 级的日志里没有 token：连本机关着的端口，并清掉了代理变量，因为 slack_sdk 会读环境里的代理。
+
+**审查**
+- `da-review main`（第 1 轮）三条都属实，已修（`78c1c35`），每条配了一个修复前会失败的测试：
+  - 前缀不对时报错原样带出了那个值，填错的 token 会出现在 stderr。
+  - mrkdwn 转义后可能超过 section 的 3000 字，被截断。现在拆成多个 section block。
+  - 澄清按钮在 `send()` 被拒（409）时就被收走了。现在被拒时问题和按钮都留着。
+- `eng:code-review main`（第 2 轮）：
+  - Standards：没有违反文档规定的地方。
+  - Spec：没有阻塞的缺口。
+  - 已修（`5013c61`）：
+    - `Adapter.stop()` 改名为 `stop_buttons()`。
+    - `slack.py` 改用 `format.FENCE`/`is_fence`。
+    - 补了 Slack 429 的测试。
+    - `docs/setup.md` 补了第 1、7 步和 typing 说明的链接，第 10 步、重装 scope 标"未确认"。
+    - README 去掉了 `pip`。
+  - 不修，理由如下：
+    - 两个 `Popen` 分支：item 13 要求不带 `--im` 时不传 `env=`，照字面做。
+    - `subtype` 一律丢掉，`file_share`、`thread_broadcast` 也在内：照 item 7 字面做。后果是带附件的消息和"同时发到频道"的回复不会有回应，列为已知限制，真实验收时看是否要放开。
+    - Repeated Switches（`status_text` 和 `conclude` 走同一串判断）、`chat`/`thread` Data Clump、`Turn` 的状态字段、`make_platform` 只有一个分支、两层锁：这些都是判断题。Slack 的锁保证到达顺序，适配器的锁让 `poll` 和处理函数轮流跑，作用不同。都不影响行为，不改。
+    - spec 以外的小行为：斜体、删除线、列表符号的转换，固定回复（空消息、`/new`、"问题已关闭"），重试上限（`FOLLOW_TRIES`、`FINAL_EDIT_TRIES`）。这些都是行为必需的或很小。
+- 和 item 6 的字面不同（请主会话定）：没做进程内一份共用的映射。每个适配器持有自己平台的条目，写盘时在模块级锁下重读文件、保留其他平台的条目再整体替换。"不让各平台整份覆盖彼此"做到了，有测试；没做共用映射是因为构造函数签名已定，取不到共用对象。
+
+**交给主会话的真实验收**（worktree `.claude/worktrees/131-im-common-and-slack`，上限 $2）
+1. 人照 `docs/setup.md` 的"Slack 机器人（工单 131）"建 app。两个 token 写进 `~/.config/data-agent/env`；在仓库外写 `im.toml`，`allowed_users` 填自己的 member id；把机器人拉进测试频道；另备一个不在名单里的账号。
+2. 在这个 worktree 里：`uv sync --extra im`，然后 `pnpm --dir web build:local`，然后：
+   ```bash
+   mkdir -p runs/131-live && set -a && . ~/.config/data-agent/env && set +a && \
+     uv run data-agent web --runs-dir runs/131-live --data-sources <仓库外的 sources.toml> --im <仓库外的 im.toml> 2>&1 | tee runs/131-live/web.log
+   ```
+3. 人做 spec `:119-123` 的每一条：
+   - 私聊问一个需要澄清的问题，点按钮回答，拿到答案；
+   - 在线程里追问一轮；运行中插一句话；点"停止"取消一次；
+   - 频道里 @ 机器人问一次；
+   - 名单外的账号私聊，收到"未授权"和自己的 id。
+4. 主会话：
+   - 在网页对话列表里看到这几次对话，能打开回放；
+   - `grep` 运行目录和 `web.log`，确认没有 token 值；
+   - 从事件文件读这几轮的花费。
+
+   另外几处要核对：
+   - `Press.direct` 按 `D` 前缀判断对不对；
+   - 机器人会不会收到自己发的消息（官方文档没写）；
+   - `/invite` 这一步；
+   - bot token 错时 `auth.test` 失败、不重试，要重启服务；app token 错时 slack_sdk 每 10 秒重试一次。
+
+- 2026-11-24（主会话）item 6 的做法（各适配器持有自己平台的条目，写盘时在模块级锁下重读、保留其他平台条目再整体替换）接受：达到"不让各平台整份覆盖彼此"，有测试；构造函数签名由人审过的契约定，取不到共用对象。
