@@ -371,6 +371,12 @@ def main(argv: list[str] | None = None) -> None:
         help="JSON file of external MCP servers for every run: Claude Code / Cursor "
         "`mcpServers`, plus an `allowedTools` list per server",
     )
+    web.add_argument(
+        "--im",
+        type=Path,
+        help="TOML file of the IM platforms (Slack, Telegram, Discord) to start the bot on: "
+        "per platform, the names of the token variables and the allowed users",
+    )
 
     # The stdio wrapper every external stdio server is started through (ticket 116,
     # `external_mcp.launch`); the CLI starts it, not a person.
