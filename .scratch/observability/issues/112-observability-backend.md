@@ -1,6 +1,6 @@
 # 112 — 可观测性后端：开关、CLI 导出变量、父 span、`trace` 事件、评测入口、`trace-check`、SDK 升级
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 111（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-23
@@ -135,6 +135,10 @@ Branch: worktree-112-observability-backend
 - Review rounds: 1
 - Model spend: $0
 - Outcome: —
+- `03225e8`：修复本身。父 span 改为显式导出；`ParentExporter` 记下 HTTP 状态码；失败时写 `trace_export_error`；配 500 和连接被拒两个测试。
+- `6ae0645`：Fable 审查第 1 轮。3xx 记成 `http_error`，配测试。
+- `d45693e`：`eng:code-review` 第 2 轮。状态码按最后一次尝试算，归类挪进 `ParentExporter.send`，测试改用关闭的端口，加 503 后断连的测试。
+- 改动文件：`src/data_agent/tracing.py`、`tests/test_tracing.py`。真实运行的脚本和输出在 `runs/112/return1/`（不进 git）。
 
 ## Comments
 
@@ -309,3 +313,49 @@ To re-run any of those, start it again with `uv run python runs/112/fake_model_s
   - jaffle 7 题 7/7 通过，$0.0926。
   - 实测 2（fork 子 agent 默认开，`--case b1_monthly_revenue`）：通过，$0.0230。事件里 `verifier_dispatch`→`verifier_start`→`verifier_end`（turns 6、tool_calls 9、checks 全 PASS、hit_max_turns false）都在 `answer`、`result` 之前；无 `error` 事件；`result.cost_basis=price_table`，`errors: []`。验证子 agent 照常在前台跑完，不需要 `CLAUDE_CODE_FORK_SUBAGENT=0`。`subagents/agent-*.jsonl` 在本次运行的临时配置目录里，运行后已清掉，没直接看到文件；`verifier_end` 的 turns/tool_calls 来自它，说明读到了。
   - 实测 3（steer）：中途插话得到 2 个 ResultMessage，各自 `num_turns=1`，`user_message_uuid` 分别为 P、S（`user_message_uuids` 各一个），第二轮含 BANANA；`--replay` 结果一致。
+- 2026-11-23（工单 agent，退回 1 修复）：父 span 导出失败不再被吞掉。
+  - **改法**
+    - 去掉 `SimpleSpanProcessor`。`RunExport._end_span` 结束父 span 后自己调导出，并看导出结果。
+    - 新增 `ParentExporter`，包着 OTLP 导出器。它用一个 `requests.Session` 子类，每次尝试（含重试）开头清空状态码，响应回来后记下。
+    - 由 `ParentExporter.send` 归类，口径和中转的 `ExportError` 一样：
+      - 最后一次尝试的回答不是 2xx：`http_error` 加状态码。3xx 也算，因为导出器把它当成功，但不跟随跳转，父 span 实际没到。
+      - 没收到回答：`connection_error`，状态码为 None。
+    - 这条错误事件排在中转的错误事件之后、`trace` 事件之前。`failure` 仍是 None，run 照常结束。
+    - `parent_exporter(settings)` 仍然只收一个参数，111 的验收测试一字未改。
+  - **修复前会失败的测试**（`tests/test_tracing.py`）
+    - 父 span 被回 500；
+    - 连接被拒（用一个绑定后关闭的端口）；
+    - 回 302；
+    - 先 503 重试，之后连接断开。
+
+    前两条在修复前的代码上跑过，确实失败：只有 `parse_error` 和 `trace` 两条事件，没有父 span 的错误。
+  - **`make check`**：exit 0，pytest 2688 passed、2 skipped、63 xfailed；web 322 passed、52 expected fail。
+  - **真实运行**：`uv run python runs/112/return1/probe.py`。真实的 `RunExport` 和 OTLP 导出器对着本地一个回 500 的 Langfuse 跑，再对着一个被拒的端口跑。中转用替身，因为中转是工单 113 的部分，还没实现。输出：
+    ```
+    ('trace_export_error', {'error_type': 'http_error', 'status': 500})
+    ('trace', {'trace_id': 'f83cb6dd…', 'url': 'http://127.0.0.1:50994/trace/f83cb6dd…', 'forwarded_spans': 0, 'forwarded_llm_requests': 0})
+    failure: None
+    ('trace_export_error', {'error_type': 'connection_error', 'status': None})
+    ('trace', {'trace_id': 'cfc79a5b…', 'url': 'http://127.0.0.1:9/trace/cfc79a5b…', …})
+    failure: None
+    ```
+  - **审查第 1 轮：Fable 只读子 agent**（da-review 不可用，用它代替）
+    - 修了：3xx 被当成功，父 span 照样静默丢失（`6ae0645`）。
+    - 不修，理由如下：
+      - 503 重试后连接断开，被报成过时的 `http_error 503`：第 2 轮已修（`d45693e`）。
+      - 编码失败、请求超过 64 MiB、导出器已关闭这类没收到回答的失败，都记成 `connection_error`：中转的口径里没有更合适的类型，已写进 `send` 的 docstring。
+      - 导出器自己抛异常时，`finish` 改为写 `error` 事件（`source: trace`）：真实的 OTLP 导出器会自己接住异常，只有会抛异常的测试替身受影响，run 仍照常结束。
+      - 取消 run 时 `finish` 和 `_close` 并发：只发生在已经中止的 run 上，导出到一半被关掉的情况修复前就有。
+      - `_shutdown` 里 `exporter.shutdown()` 抛错时，会跳过 `provider.shutdown()`：provider 没有挂任何 processor，只剩一个 atexit 钩子。
+      - `requests` 没有直接声明为依赖：它随导出器而来（导出器公开的 `session` 参数就是 `requests.Session`，钉住的 1.45.1 依赖 `requests~=2.7`）；已在代码里注释，不动 lockfile。
+  - **审查第 2 轮：`eng:code-review main`**（新上下文）：没有硬性违规，没有阻塞的 spec 问题。
+    - 修了（`d45693e`）：
+      - 状态码按最后一次尝试算，不再按最后收到的回答算；
+      - 归类从 `RunExport` 挪进 `ParentExporter.send`，原先在 `RunExport` 里用 `isinstance` 判断再读 `statuses` 列表；
+      - 只保留一个 `last_status`；
+      - 连接错误的测试不再依赖固定的 9 号端口。
+    - 不修，理由如下：
+      - run 异常退出或被取消时，`_close` 不报父 span 的导出错误：这条路径本来就不写 trace 相关事件，阻塞时长和修复前一样，不在退回说明要求的"run 照常结束"路径里。
+      - `connection_error` 比中转的定义宽：同第 1 轮。
+      - `parent_exporter` 返回类型是联合类型：为了让测试替身通过类型检查，docstring 已注明。
+  - 两轮审查都用完了，没有剩下要修的问题。
