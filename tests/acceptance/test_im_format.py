@@ -22,7 +22,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import pytest
 from im_support import (
     CHARTS_RUN,
     MAX_CHARS,
@@ -42,12 +41,6 @@ from data_agent.im.format import (
     format_answer,
     split_message,
     tables_to_code,
-)
-
-TICKET_131 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 131: the IM adapter is not implemented yet",
 )
 
 LIMIT = 200
@@ -77,7 +70,6 @@ def table(rows: int) -> str:
     return "\n".join(lines)
 
 
-@TICKET_131
 def test_a_long_answer_is_split_between_paragraphs_within_the_limit() -> None:
     text = "\n\n".join(paragraph(number) for number in range(1, 13))
     parts = split_message(text, LIMIT)
@@ -86,7 +78,6 @@ def test_a_long_answer_is_split_between_paragraphs_within_the_limit() -> None:
     assert "\n\n".join(parts) == text
 
 
-@TICKET_131
 def test_a_paragraph_over_the_limit_is_split_and_nothing_is_lost() -> None:
     lines = "\n".join(
         f"Line {number} of a long paragraph, with no blank line." for number in range(12)
@@ -98,7 +89,6 @@ def test_a_paragraph_over_the_limit_is_split_and_nothing_is_lost() -> None:
     assert squeezed("".join(parts)) == squeezed(text)
 
 
-@TICKET_131
 def test_a_code_block_that_fits_is_never_split() -> None:
     code = FENCE + "\n" + "\n".join(f"SELECT {number} AS n;" for number in range(6)) + "\n" + FENCE
     text = f"{paragraph(1, 150)}\n\n{code}\n\n{paragraph(2, 150)}"
@@ -109,7 +99,6 @@ def test_a_code_block_that_fits_is_never_split() -> None:
     assert any(code in part for part in parts)
 
 
-@TICKET_131
 def test_a_small_table_becomes_a_code_block_with_every_row() -> None:
     text = f"The amounts:\n\n{table(5)}\n\nThat is all."
     converted = tables_to_code(text)
@@ -122,7 +111,6 @@ def test_a_small_table_becomes_a_code_block_with_every_row() -> None:
     assert "That is all." in outside_fences(converted)
 
 
-@TICKET_131
 def test_a_long_table_is_cut_and_its_total_given() -> None:
     converted = tables_to_code(f"The amounts:\n\n{table(137)}")
     inside = inside_fences(converted)
@@ -131,7 +119,6 @@ def test_a_long_table_is_cut_and_its_total_given() -> None:
     assert re.search(r"(?<!\d)137(?!\d)", outside_fences(converted))
 
 
-@TICKET_131
 def test_a_table_too_long_for_one_message_is_cut_to_fit_and_its_total_given() -> None:
     lines = ["| item | description | amount |", "|---|---|---|"]
     lines += [
@@ -173,7 +160,6 @@ def chart_call(tool_use_id: str, parent: str | None, content: str) -> list[dict[
     ]
 
 
-@TICKET_131
 def test_charts_are_counted_as_the_web_ui_shows_them() -> None:
     events = fixture_events(CHARTS_RUN)
     assert chart_count(events) == 5
@@ -190,7 +176,6 @@ def test_charts_are_counted_as_the_web_ui_shows_them() -> None:
     assert chart_count([*events, *more]) == 6
 
 
-@TICKET_131
 def test_an_answer_with_charts_says_how_many() -> None:
     text = "Gold customers bring the most revenue."
     with_charts = format_answer(text, fixture_events(CHARTS_RUN), MAX_CHARS)
@@ -202,7 +187,6 @@ def test_an_answer_with_charts_says_how_many() -> None:
     assert without == [text]
 
 
-@TICKET_131
 async def test_the_bot_sends_a_long_answer_in_parts_within_the_platforms_limit(
     tmp_path: Path,
 ) -> None:

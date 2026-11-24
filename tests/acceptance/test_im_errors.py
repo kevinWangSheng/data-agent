@@ -31,12 +31,6 @@ from im_support import (
     start_bot,
 )
 
-TICKET_131 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 131: the IM adapter is not implemented yet",
-)
-
 FAILED_RESULTS: dict[str, dict[str, Any]] = {
     "api-error": {
         "subtype": "success",
@@ -93,14 +87,12 @@ async def without_result(tmp_path: Path, status: str) -> tuple[str, str]:
     return await ending(bot, before), run_id
 
 
-@TICKET_131
 @pytest.mark.parametrize("cause", list(FAILED_RESULTS))
 async def test_a_failed_result_is_told_with_the_run_id(tmp_path: Path, cause: str) -> None:
     told, run_id = await failed(tmp_path, cause)
     assert run_id in told
 
 
-@TICKET_131
 async def test_each_failed_result_reads_differently(tmp_path: Path) -> None:
     told = []
     for cause in FAILED_RESULTS:
@@ -109,14 +101,12 @@ async def test_each_failed_result_reads_differently(tmp_path: Path) -> None:
     assert len(set(told)) == len(FAILED_RESULTS), told
 
 
-@TICKET_131
 @pytest.mark.parametrize("status", ["cancelled", "failure"])
 async def test_a_run_without_a_result_is_told_with_the_run_id(tmp_path: Path, status: str) -> None:
     told, run_id = await without_result(tmp_path, status)
     assert run_id in told
 
 
-@TICKET_131
 async def test_stopped_and_crashed_read_differently(tmp_path: Path) -> None:
     told = [
         (await without_result(tmp_path / status, status))[0] for status in ["cancelled", "failure"]

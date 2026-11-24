@@ -397,7 +397,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == LAUNCH_COMMAND:
         launch(args.mcp_servers, args.server, os.environ)
     if args.command == "web":
-        serve_web(web, args.runs_dir, args.port, args.data_sources, args.mcp_servers)
+        serve_web(web, args.runs_dir, args.port, args.data_sources, args.mcp_servers, args.im)
         return
     # The deadline counts from the earliest point the process can see (ticket 54).
     started = time.monotonic()
@@ -537,10 +537,12 @@ def serve_web(
     port: int,
     sources_file: Path | None,
     mcp_servers: Path | None = None,
+    im: Path | None = None,
 ) -> None:
     """With `mcp_servers`, every run gets the file's path (as `--mcp-servers`), never a value
     from it. The file is checked here first, so a bad one stops the server from starting; each
-    run checks it again."""
+    run checks it again. With `im` (data_agent.im.service), the bot starts on the file's
+    platforms, and no run gets their tokens' variables."""
     if not runs_dir.is_dir():
         parser.error(f"runs directory not found: {runs_dir}")
     if mcp_servers is not None:
@@ -558,22 +560,44 @@ def serve_web(
         sources = load_data_sources(sources_file) if sources_file is not None else []
     except ValueError as exc:
         parser.error(str(exc))
+    # Imported here too, for the stand-in of the acceptance tests (data_agent.im.service). No
+    # platform library is imported before `service.start`.
+    from data_agent.im import config as im_config
+    from data_agent.im import service
+
+    try:
+        im_configs = im_config.load_config(im, os.environ) if im is not None else None
+    except im_config.ImConfigError as exc:
+        parser.error(str(exc))
 
     def start_run(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
         # Its own session, so cancelling can stop the run with the tools it started. A stdin pipe
         # of its own: a conversation's turn is steered through it (data_agent.web.conversations),
-        # and no run reads the server's.
+        # and no run reads the server's. With `--im`, no IM token.
+        if im_configs is None:
+            return subprocess.Popen(
+                [sys.executable, "-m", "data_agent", "run", *args],
+                cwd=cwd,
+                start_new_session=True,
+                stdin=subprocess.PIPE,
+            )
         return subprocess.Popen(
             [sys.executable, "-m", "data_agent", "run", *args],
             cwd=cwd,
             start_new_session=True,
             stdin=subprocess.PIPE,
+            env=im_config.run_env(os.environ, im_configs.values()),
         )
 
     try:
         app = create_app(runs_dir.resolve(), sources, start_run, mcp_servers=mcp_servers)
     except ValueError as exc:
         parser.error(str(exc))
+    if im_configs is not None:
+        try:
+            service.start(app, im_configs)
+        except service.ImUnavailable as exc:
+            parser.error(str(exc))
     # On SIGINT or SIGTERM uvicorn first waits for open responses to end, and only then runs the
     # app's lifespan shutdown, which stops the run (`Launcher.shutdown`). An open event stream ends
     # only with its run, so without a limit the run would go on until it finished. Past the limit

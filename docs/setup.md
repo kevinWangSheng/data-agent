@@ -186,6 +186,47 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 外部工具的入参和输出会进事件文件；打开 trace 导出时还会进用户自己的 Langfuse。
 - 凭据进 argv：SDK 0.2.168 把 `mcp_servers` 整个序列化成 CLI 的 `--mcp-config` 参数，所以 http server 展开后的请求头在 CLI 的命令行里，本机能列进程的用户看得到。stdio server 的值不在 argv 里：它们经 CLI 的环境传给包装命令，包装再从配置文件读出自己的 `env`。
 
+## Slack 机器人（工单 131）
+
+用法、权限和已知限制见 README 的 "Slack"。下面是建 Slack app 的步骤。没有注明出处的地方都是在 2026-11-24 读 Slack 官方文档（docs.slack.dev）核对过的，查不到的标了"未确认"。仓库里不写任何真实 token、工作区名或用户 id。
+
+1. **建 app**：打开 <https://api.slack.com/apps>，选 Create New App → From scratch，起个名字，选工作区。
+2. **打开 Socket Mode**：在 app 设置的 Socket Mode 页打开 Enable Socket Mode。打开时设置页会引导你生成 app-level token，也可以在 Basic Information → App-level tokens 里生成，token 以 `xapp-` 开头。给 token 加 scope `connections:write`。这个 scope 的依据是工单 131 读的 [connections:write](https://docs.slack.dev/reference/scopes/connections.write) 页（"Grants permission to generate websocket URIs and connect to Socket Mode"）；Socket Mode 页和 [apps.connections.open](https://docs.slack.dev/reference/methods/apps.connections.open) 页都没提它，后者写的是 "No scopes required"，只要 app-level token。Socket Mode 下，事件和交互都不需要、也不能填 Request URL。Socket Mode 的 app 不能上公开的 Slack Marketplace。（[Using Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode)）
+3. **Bot scopes**：在 OAuth & Permissions 的 Bot Token Scopes 里加这些：
+   - `chat:write`：发消息、编辑消息（[chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage)）。
+   - `im:history`：私聊。
+   - `channels:history`：公开频道。
+   - `groups:history`：私有频道（要用的话再加）。
+   - `mpim:history`：多人私聊（要用的话再加）。
+
+   每个 scope 对应的事件见第 4 步。
+4. **订阅事件**：在 Event Subscriptions 打开 Enable Events，在 Subscribe to bot events 里加：
+   - `message.im`（要 `im:history`）
+   - `message.channels`（要 `channels:history`）
+   - `message.groups`（要 `groups:history`）
+   - `message.mpim`（要 `mpim:history`）
+
+   出处见 [message 事件](https://docs.slack.dev/reference/events/message)和各子页。**不要**订阅 `app_mention`：机器人从 `message.*` 里判断有没有被 @，再订阅一遍，同一条 @ 就会收到两次。`message.*` 里带 `bot_id` 或 `subtype` 的事件（机器人发的、编辑、删除）都丢掉。官方文档写了 bot 发的消息带 `bot_id`（[bot_message](https://docs.slack.dev/reference/events/message/bot_message)），但没写机器人会不会收到自己发的消息（未确认，真实验收时看日志）。
+5. **打开私聊**：App Home → Show Tabs，打开 Messages Tab（[App Home](https://docs.slack.dev/surfaces/app-home)）。不打开的话，用户没法私聊机器人。设置页里可能还有一个 "Allow users to send Slash commands and messages from the messages tab" 勾选框，官方文档里没查到（未确认），看到就勾上。
+6. **打开交互（按钮）**：Interactivity & Shortcuts 里打开 Interactivity。Socket Mode 下不用填 Request URL（[Handling user interaction](https://docs.slack.dev/interactivity/handling-user-interaction)）。点按钮后要在 3 秒内确认，机器人收到就先确认。
+7. **装进工作区，拿 bot token**：Install App → Install to Workspace。装好后在 OAuth & Permissions 页的 OAuth Tokens 下面有 Bot User OAuth Token，以 `xoxb-` 开头。以后改了 scope 要重新安装。
+8. **写进 env 文件**：`~/.config/data-agent/env` 里加两行（`chmod 600`）。
+
+   ```bash
+   DATA_AGENT_SLACK_BOT_TOKEN=...   # xoxb-...
+   DATA_AGENT_SLACK_APP_TOKEN=...   # xapp-...
+   ```
+
+   启动前加载：`set -a && . ~/.config/data-agent/env && set +a`。
+9. **填允许名单**：自己的 member id 的找法是在 Slack 里打开自己的 profile，点 ⋮，选 Copy member ID（[App Home](https://docs.slack.dev/surfaces/app-home) 里的说法）。把它填进仓库外的 `im.toml` 的 `allowed_users`（格式见 README）。
+10. **把机器人拉进频道**：在频道里 `/invite @<机器人名>`。机器人只看得到它在的频道。
+
+几点说明：
+
+- Slack bot 没有能用的 typing 提示。旧的 RTM API 有，但新的 app 用不了；`assistant.threads.setStatus` 只给 AI 类 app 用。所以机器人不显示 typing，进度看状态消息。
+- 断线由 slack_sdk 自己重连。bot token 错了，启动时 `auth.test` 就失败，日志里写一行，机器人不起来，网页照常可用。连不上 Socket Mode（例如 app token 错了）时，slack_sdk 每 10 秒重试一次，每次写一行日志。
+- Press 是否私聊，按频道 id 以 `D` 开头来判断（未确认，真实验收时核对）。
+
 ## 以后才要
 
 | # | 资源 | 用于 |

@@ -1,0 +1,323 @@
+"""The Slack platform (data_agent.im.slack): Slack's payloads <-> the platform interface, the
+mrkdwn conversion, the limits, and no token in the logs. No Slack: a client that records its
+calls, or a real client pointed at a closed port on the loopback address."""
+
+import asyncio
+import json
+import logging
+import socket
+from pathlib import Path
+from typing import Any, cast
+
+import pytest
+from slack_sdk.web.async_client import AsyncWebClient
+
+from data_agent.im.config import PlatformConfig
+from data_agent.im.platform import Button, Incoming, Outgoing, Press
+from data_agent.im.slack import (
+    LIMITS,
+    SECTION_CHARS,
+    SlackPlatform,
+    message_payload,
+    to_incoming,
+    to_mrkdwn,
+    to_press,
+)
+
+PAYLOADS = json.loads(
+    (Path(__file__).parent / "fixtures" / "im" / "slack_payloads.json").read_text(encoding="utf-8")
+)
+BOT = "U0BOT0001"
+# Made up, in no real token's shape.
+BOT_TOKEN = "sb-" + "Kd8w" + "-made-up-bot"
+APP_TOKEN = "sa-" + "Pq2n" + "-made-up-app"
+CONFIG = PlatformConfig(
+    "slack",
+    frozenset({"U0ALICE01"}),
+    {"bot_token_env": "DATA_AGENT_SLACK_BOT_TOKEN", "app_token_env": "DATA_AGENT_SLACK_APP_TOKEN"},
+    {"bot_token_env": BOT_TOKEN, "app_token_env": APP_TOKEN},
+)
+
+
+class FakeClient:
+    """The calls of `AsyncWebClient` the platform makes, recorded."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.token = BOT_TOKEN
+
+    async def auth_test(self) -> dict[str, Any]:
+        return {"ok": True, "user_id": BOT}
+
+    async def chat_postMessage(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("chat.postMessage", kwargs))
+        return {"ok": True, "ts": f"1764000009.{len(self.calls):06d}"}
+
+    async def chat_update(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("chat.update", kwargs))
+        return {"ok": True}
+
+
+def platform(client: object | None = None) -> SlackPlatform:
+    return SlackPlatform(CONFIG, cast(AsyncWebClient, client or FakeClient()))
+
+
+# --- Slack's payloads -> the interface -----------------------------------------------------
+
+
+def test_a_top_level_mention_in_a_channel() -> None:
+    incoming = to_incoming(PAYLOADS["channel_mention"], BOT)
+    assert incoming == Incoming(
+        platform="slack",
+        chat_id="C0DATA001",
+        # A top-level message: the bot answers in its thread, named by its own ts.
+        thread_id="1764000000.000100",
+        user_id="U0ALICE01",
+        direct=False,
+        mentioned=True,
+        text="How many orders & refunds?",
+    )
+
+
+def test_a_message_without_the_mention_is_not_mentioned() -> None:
+    incoming = to_incoming(PAYLOADS["channel_plain"], BOT)
+    assert incoming is not None
+    assert not incoming.mentioned
+    assert incoming.text == "Lunch at noon?"
+
+
+def test_a_reply_in_a_thread_is_in_that_thread() -> None:
+    incoming = to_incoming(PAYLOADS["thread_reply"], BOT)
+    assert incoming is not None
+    assert incoming.thread_id == "1764000000.000100"
+    assert not incoming.mentioned
+
+
+def test_a_direct_message_is_direct() -> None:
+    incoming = to_incoming(PAYLOADS["direct"], BOT)
+    assert incoming is not None
+    assert incoming.direct
+    assert incoming.thread_id == "1764000000.000300"
+
+
+@pytest.mark.parametrize("name", ["bots_own", "other_bot", "edited", "deleted"])
+def test_bot_messages_edits_and_deletions_are_no_message(name: str) -> None:
+    assert to_incoming(PAYLOADS[name], BOT) is None
+
+
+def test_a_button_press_on_a_status_message() -> None:
+    press = to_press(PAYLOADS["stop_press"])
+    assert press == Press(
+        platform="slack",
+        chat_id="C0DATA001",
+        thread_id="1764000000.000100",
+        user_id="U0ALICE01",
+        direct=False,
+        message_id="1764000000.000400",
+        value="stop",
+    )
+
+
+def test_a_press_is_in_the_thread_of_the_message_that_started_it() -> None:
+    incoming = to_incoming(PAYLOADS["channel_mention"], BOT)
+    press = to_press(PAYLOADS["stop_press"])
+    assert incoming is not None and press is not None
+    key = (incoming.platform, incoming.chat_id, incoming.thread_id)
+    assert (press.platform, press.chat_id, press.thread_id) == key
+
+
+def test_a_press_in_a_direct_message_is_direct() -> None:
+    body = json.loads(json.dumps(PAYLOADS["stop_press"]))
+    body["channel"]["id"] = "D0ALICE01"
+    press = to_press(body)
+    assert press is not None and press.direct
+
+
+async def test_the_same_message_is_handed_on_once() -> None:
+    slack = platform()
+    got: list[Incoming] = []
+
+    async def on_message(message: Incoming) -> None:
+        got.append(message)
+
+    async def on_press(_: Press) -> None:
+        pass
+
+    await slack_handlers(slack, on_message, on_press)
+    for _ in range(2):
+        await slack.handle_event(PAYLOADS["channel_mention"])
+    await slack.handle_event(PAYLOADS["edited"])
+    assert len(got) == 1
+
+
+async def test_messages_and_presses_are_handed_on_one_at_a_time() -> None:
+    slack = platform()
+    running = 0
+    overlapped = False
+    order: list[str] = []
+
+    async def handler(name: str) -> None:
+        nonlocal running, overlapped
+        running += 1
+        overlapped = overlapped or running > 1
+        await asyncio.sleep(0.01)
+        order.append(name)
+        running -= 1
+
+    async def on_message(message: Incoming) -> None:
+        await handler(message.text)
+
+    async def on_press(press: Press) -> None:
+        await handler(press.value)
+
+    await slack_handlers(slack, on_message, on_press)
+    await asyncio.gather(
+        slack.handle_event(PAYLOADS["channel_mention"]),
+        slack.handle_action(PAYLOADS["stop_press"]),
+        slack.handle_event(PAYLOADS["thread_reply"]),
+    )
+    assert not overlapped
+    assert order == ["How many orders & refunds?", "stop", "Only paid ones"]
+
+
+async def slack_handlers(slack: SlackPlatform, on_message: Any, on_press: Any) -> None:
+    """The handlers and the bot's user id as `start` sets them, without connecting."""
+    slack.bot_user_id = BOT
+    slack.on_message = on_message
+    slack.on_press = on_press
+
+
+# --- the interface -> Slack's calls --------------------------------------------------------
+
+
+async def test_send_posts_into_the_thread_with_numbered_buttons() -> None:
+    client = FakeClient()
+    slack = platform(client)
+    buttons = (Button("1", "answer:1"), Button("2", "answer:2"))
+    ts = await slack.send("C0DATA001", "1764000000.000100", Outgoing("Net or **gross**?", buttons))
+    [(method, kwargs)] = client.calls
+    assert method == "chat.postMessage"
+    assert ts == "1764000009.000001"
+    assert kwargs["channel"] == "C0DATA001"
+    assert kwargs["thread_ts"] == "1764000000.000100"
+    assert kwargs["text"] == "Net or *gross*?"
+    section, actions = kwargs["blocks"]
+    assert section["text"] == {"type": "mrkdwn", "text": "Net or *gross*?"}
+    elements = actions["elements"]
+    assert [element["text"]["text"] for element in elements] == ["1", "2"]
+    assert [element["value"] for element in elements] == ["answer:1", "answer:2"]
+    assert len({element["action_id"] for element in elements}) == 2
+
+
+async def test_an_edit_without_buttons_takes_them_off() -> None:
+    client = FakeClient()
+    slack = platform(client)
+    await slack.edit("C0DATA001", "1764000000.000400", Outgoing("Done · 37s · $0.25"))
+    [(method, kwargs)] = client.calls
+    assert method == "chat.update"
+    assert kwargs["channel"] == "C0DATA001"
+    assert kwargs["ts"] == "1764000000.000400"
+    # The blocks are sent again, without an actions block, so the old ones (the buttons) go
+    # (chat.update: "To remove previous `blocks`, include an empty array"; docs.slack.dev).
+    assert [block["type"] for block in kwargs["blocks"]] == ["section"]
+
+
+def test_a_section_never_passes_slacks_limit() -> None:
+    text = "&" * LIMITS.max_chars
+    payload = message_payload(Outgoing(text, (Button("Stop", "stop"),)))
+    assert len(payload["blocks"][0]["text"]["text"]) <= SECTION_CHARS
+
+
+def test_the_limits() -> None:
+    assert LIMITS.max_chars < SECTION_CHARS
+    assert LIMITS.edit_interval == 2.0
+    assert not SlackPlatform.capabilities.typing
+
+
+# --- Markdown -> mrkdwn --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("markdown", "mrkdwn"),
+    [
+        ("**Revenue** grew", "*Revenue* grew"),
+        ("__Revenue__ grew", "*Revenue* grew"),
+        ("an *aside* here", "an _aside_ here"),
+        ("~~old~~ new", "~old~ new"),
+        ("see [the docs](https://example.com/a?b=1)", "see <https://example.com/a?b=1|the docs>"),
+        ("## Totals\nby month", "*Totals*\nby month"),
+        ("- one\n* two", "• one\n• two"),
+        ("a < b & c > d", "a &lt; b &amp; c &gt; d"),
+        ("use `a**b**` here", "use `a**b**` here"),
+        (
+            "```sql\nSELECT **x** FROM t WHERE a < 1\n```",
+            "```\nSELECT **x** FROM t WHERE a &lt; 1\n```",
+        ),
+        (
+            "before\n\n```\n| a | b |\n```\n\nafter **x**",
+            "before\n\n```\n| a | b |\n```\n\nafter *x*",
+        ),
+    ],
+    ids=[
+        "bold",
+        "bold-underscores",
+        "italic",
+        "strike",
+        "link",
+        "heading",
+        "bullets",
+        "escape",
+        "inline-code",
+        "code-block",
+        "around-code",
+    ],
+)
+def test_markdown_to_mrkdwn(markdown: str, mrkdwn: str) -> None:
+    assert to_mrkdwn(markdown) == mrkdwn
+
+
+# --- the tokens ----------------------------------------------------------------------------
+
+
+def closed_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+async def test_no_token_in_the_libraries_debug_log(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """slack_sdk and slack_bolt log their requests at DEBUG; a failed start logs and raises
+    without either token. The client goes to a closed port on the loopback address, through no
+    proxy (slack_sdk takes one from the environment)."""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    caplog.set_level(logging.DEBUG)
+    client = AsyncWebClient(token=BOT_TOKEN, base_url=f"http://127.0.0.1:{closed_port()}/api/")
+    slack = SlackPlatform(CONFIG, client)
+    with pytest.raises(Exception) as failed_auth:
+        await slack.start(no_message, no_press)
+
+    # Past `auth.test`, to the Socket Mode connection with the app token.
+    async def auth_test() -> dict[str, Any]:
+        return {"ok": True, "user_id": BOT}
+
+    client.auth_test = auth_test  # type: ignore[method-assign]
+    # slack_sdk's Socket Mode client tries again and again until it connects.
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(slack.start(no_message, no_press), timeout=2)
+    await slack.stop()
+    assert "auth.test" in caplog.text
+    assert "apps.connections.open" in caplog.text
+    for text in [caplog.text, str(failed_auth.value), repr(slack)]:
+        assert BOT_TOKEN not in text
+        assert APP_TOKEN not in text
+
+
+async def no_message(_: Incoming) -> None:
+    pass
+
+
+async def no_press(_: Press) -> None:
+    pass
