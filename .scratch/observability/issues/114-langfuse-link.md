@@ -1,10 +1,10 @@
 # 114 — 前端：运行页和对话页的"在 Langfuse 打开"链接
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 112
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (Opus 5.5)
+Branch: worktree-114-langfuse-link
 
 ## Goal
 
@@ -55,10 +55,66 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+- 2026-11-23（工单 agent，提交 dde5099、e50bf93）：
+
+**What changed**
+- `web/src/run-view/trace.ts`: `traceLink` uses the last `trace` event, wherever it sits relative to `result`. It returns `null` when there is no such event, when `trace_id` or `url` is missing, or when the url doesn't start with `http(s)://`.
+- `web/src/chat-view/model.ts`: `TurnView` gets a new field, `trace: TraceLink | null`, computed from that turn's own events. `RunView` is unchanged.
+- Chat page: `chat-page/Turn.tsx` `TurnMeta` puts the link after "Full run view →".
+- Run page: `run-page/Side.tsx` puts the link in the metrics block, below tokens. It shows even when there are no tokens.
+- New `run-page/LangfuseLink.tsx`: an `<a className="link" target="_blank" rel="noreferrer">`.
+- `run-page/RunPage.tsx` changes outside the summary area: it works out the link from the same revealed events as the view and passes it to `Side`. This is the only route, since `Side` has no access to the events.
+
+**Evidence**
+- `pnpm --dir web test` on HEAD `e50bf93`: 30 files, 442 tests passed. The `trace-link.test.ts` lines:
+  ```
+  ✓ src/run-view/acceptance/trace-link.test.ts > traceLink > a run with a trace event links to its trace
+  ✓ src/run-view/acceptance/trace-link.test.ts > traceLink > a run without a trace event has no link
+  ✓ src/run-view/acceptance/trace-link.test.ts > traceLink > each turn of a conversation links to its own turn's trace
+  ```
+- New `web/src/run-view/trace-link-markup.test.ts` (9 tests, rendered to markup with `react-dom/server`):
+  - Run page: the link appears with the `trace` event after `result` and before it, and is absent without one.
+  - Chat page, two turns: each turn's markup has its own url and not the other's.
+  - A turn without a `trace` event, and a still-running turn, have no link.
+  - A non-http url gives no link.
+- `pnpm --dir web typecheck` and `pnpm --dir web build` both pass on HEAD.
+- `make check` passes (log in `runs/t114/make-check.log`). It ran on `dde5099`, not on HEAD:
+  - ruff: All checks passed. Formatting: 410 files already formatted.
+  - basedpyright: 0 errors.
+  - pytest: 2850 passed, 2 skipped. Web: 442 passed. exit=0.
+  - `e50bf93` touches only `web/`, and I re-ran web typecheck, test and build on it.
+- Screenshots, taken on HEAD with the local server (`data-agent web --runs-dir runs/t114/local`, data made by `runs/t114/make_data.py` from a copy of query-shop):
+  - `runs/t114/run-page-with-trace.png`: the link in the run page summary.
+  - `runs/t114/run-page-without-trace.png`: no link.
+  - `runs/t114/chat-turn-1.png`: both turns of the conversation, each with its own link. A DOM check in the browser gave turn 1 → `…/0af76519…` and turn 2 → `…/4bf92f35…`.
+  - The "RUNNING" chip in the sidebar comes from the hand-made data, not from this change.
+- Replay in the browser: the link is there before Replay, gone mid-replay, and back once the replay reaches the `trace` event.
+- Site pages (the site's run page and recorded conversation): no test or screenshot shows the link there. 未确认. They use the same components, so I expect it to show.
+
+**Reviews**
+- `eng:code-review main`, Standards: no hard violations.
+  - Fixed: the revealed events were worked out twice in `RunPage.tsx`; the import order in `Turn.tsx`.
+  - Not fixed: placement of the test file. It tests one feature across both pages, so it sits next to `trace.ts`.
+- Spec: no missing or wrong requirements; Authority respected; the acceptance file has exactly three `.fails` removals. The reviewer flagged three small additions, all kept:
+  - The url guard, so an href can never be `javascript:`. It can't hide a real link: `base_url` is also the OTLP endpoint (`tracing.py:157`), so a host without `http(s)://` would fail to export anything.
+  - A `title` attribute showing the trace id.
+  - The `RunPage` pass-through, which is required.
+- No `da-review`, because this is a frontend ticket.
+
+**Follow-up (an omission, not planned work)**
+- `summarize` and `eventTimes` in `web/src/run-view/model.ts` end the run at its last event. The `trace` and `trace_export_error` events are written after the relay stops, so they stretch the wall time and the replay timeline.
+- The relay's `drain_timeout_s` defaults to 10.0 (`trace_relay.py:295`), so the stretch could be up to about 10 s; that figure is the reviewer's estimate. The screenshots show it: 18 s with `trace`, 17 s without, on otherwise identical events.
+- This has been on main since 112. The fix belongs in `model.ts`, outside this ticket's Authority, so it needs its own ticket.
+
+**待人定**
+1. Placement and wording: after "Full run view →" on the chat page, the run page summary below tokens, text "Open in Langfuse ↗".
+2. `trace_export_error` isn't shown.
+3. Whether the public site should show the link, and whether the export should keep `trace` events.
+4. Keeping the url guard, which wasn't asked for.
