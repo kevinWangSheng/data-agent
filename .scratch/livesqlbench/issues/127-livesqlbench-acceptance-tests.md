@@ -1,6 +1,6 @@
 # 127 — LiveSQLBench：验收测试（任务生成、划分、soft EX 规则、评测入口、答案不外泄、只读；全部不连库、不调模型、不下载数据）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (implement session)
@@ -278,7 +278,7 @@ spec 没写到的细节不是停下的理由：按 Context 第 5 项由本工单
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0
-- Outcome: —
+- Outcome: accepted
 
 ## Comments
 
@@ -415,3 +415,5 @@ spec 没写到的细节不是停下的理由：按 Context 第 5 项由本工单
 
 **只读组测不到的部分**
 - agent 连库用的角色是不是真的只读、沙箱能不能用别的凭据写库：`make check` 没有 Postgres，测不到。已写进模块 docstring，由 128 在冒烟时实测并写进它的 Comments。
+
+- 2026-11-24（主会话）合并：人审通过（契约照工单 Comments 原样），PR #133 squash 合入 main（`69dd3b8`）。CI 两次都过；Codex GitHub app："Didn't find any major issues"。

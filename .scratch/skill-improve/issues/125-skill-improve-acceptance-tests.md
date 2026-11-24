@@ -1,6 +1,6 @@
 # 125 — 小范围自动改写 Skill：验收测试（输入范围、候选生成、分支与提交、初筛、判定、预算；全部不调模型）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude (worktree 125-skill-improve-acceptance-tests)
@@ -218,7 +218,7 @@ spec "Testing Decisions"（`.scratch/skill-improve/spec.md` 的 "## Testing Deci
 - Attempts: 1
 - Review rounds: 2
 - Model spend: $0 (no data-agent model calls)
-- Outcome: 27 acceptance tests, all xfail; reference implementation 27/27; 22/22 mutants caught; `make check` green
+- Outcome: accepted
 - Human review minutes: —
 
 ## Comments
@@ -305,3 +305,5 @@ Choices beyond the spec, for you to decide:
 - **`mutants3.txt`**: all 22 mutants make at least one test fail. They range from `holdout` (1 test fails) to `no_push` (19 fail).
 - **`check3.txt`**: `make check exit=0`, with `2850 passed, 2 skipped, 79 deselected, 27 xfailed`, basedpyright `0 errors`, and web `442 passed`.
 - Since then the worktree is clean (`git status --short` prints nothing), there are no `skill-improve/*` branches, and the branch head is a441ce1. The next step belongs to the main session: copy the Comments, Ledger and `Status: in-review` from the previous message into the ticket, then push and open the PR.
+
+- 2026-11-24（主会话）合并：人审通过（契约照工单 Comments 原样），PR #135 squash 合入 main（`5a8bdfc`）。CI 两次都过；Codex GitHub app："Didn't find any major issues"。

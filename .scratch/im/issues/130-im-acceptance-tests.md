@@ -1,6 +1,6 @@
 # 130 — IM 入口：验收测试（会话映射、触发、澄清、进度、插话与取消、排版、配置、出错；全部不连平台、不调模型）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 130-im-acceptance-tests)
@@ -209,7 +209,7 @@ spec "Testing Decisions"（`.scratch/im/spec.md:102-114`，含 2026-11-24 的更
 - Attempts: 1
 - Review rounds: 2 (Codex 1 finding fixed; eng:code-review judgement calls fixed or answered above)
 - Model spend: $0
-- Outcome: —
+- Outcome: accepted
 
 ## Comments
 
@@ -331,3 +331,5 @@ None of the failures is a fixture or stand-in error.
    - **Unverified (`未确认`):** the API-error `result` uses `subtype: "success", is_error: true`. No repo fixture has a real `api_error` result to confirm it; the adapter decides by `terminal_reason`, so the test does not depend on it.
 
 No real run was made: per the ticket, the per-platform real runs belong to 131–133.
+
+- 2026-11-24（主会话）合并：人审通过（契约照工单 Comments 原样），PR #132 squash 合入 main（`7d1b4e6`）。CI 两次都过；Codex GitHub app："Didn't find any major issues"。
