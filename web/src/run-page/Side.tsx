@@ -8,6 +8,8 @@ import { AnswerCharts } from '../chart/AnswerCharts'
 import { Md } from '../code/markdown'
 import { fmtCost, fmtDur, fmtTokens } from '../format'
 import type { RunNotes, RunView } from '../run-view/model'
+import type { TraceLink } from '../run-view/trace'
+import { LangfuseLink } from './LangfuseLink'
 import { isIssue, isSql, narrationId, verifyId } from './outline'
 import { DataTable, StatusChip, VerdictCell, VerdictChip } from './ui'
 
@@ -57,6 +59,7 @@ const OUTCOME_TEXT = { success: 'Success', failure: 'Failure', running: 'Running
 export function Side({
   view,
   notes,
+  trace,
   replaying,
   numbers,
   onSelect,
@@ -64,6 +67,8 @@ export function Side({
 }: {
   view: RunView
   notes: RunNotes
+  /** The run's Langfuse trace, from the events the view is built from: null without one. */
+  trace: TraceLink | null
   /** A replay is part-way: the outcome is not shown yet. */
   replaying: boolean
   numbers: Map<string, number>
@@ -121,6 +126,11 @@ export function Side({
         {summary.tokens && (
           <div className="mono text-[10.5px] text-ink-3 mt-2">
             tokens: in {fmtTokens(summary.tokens.uncachedInput)} uncached + {fmtTokens(summary.tokens.cachedInput)} cached · out {fmtTokens(summary.tokens.output)}
+          </div>
+        )}
+        {trace && (
+          <div className="text-[11px] mt-2">
+            <LangfuseLink trace={trace} />
           </div>
         )}
       </div>

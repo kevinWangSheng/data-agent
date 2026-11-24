@@ -18,6 +18,7 @@ import { DbtInputView, DbtResultView, SandboxInputView, SandboxResultView } from
 import { isDbtExecute, isSandboxExec } from '../run-page/tool-views'
 import { shortTool } from '../run-page/tools'
 import { Caret, DataTable, errorLine, inputLine, phaseLabel, Pre, StatusChip, StepChip, StepTag, VerdictChip } from '../run-page/ui'
+import { LangfuseLink } from '../run-page/LangfuseLink'
 import { Link } from '../site/Link'
 import { steerState, turnLayout, type Group } from './layout'
 
@@ -104,6 +105,7 @@ function TurnMeta({ turn, runHref, onGo }: { turn: TurnView; runHref: string; on
       <Link href={runHref} onGo={onGo} className="link">
         Full run view →
       </Link>
+      {turn.trace && <LangfuseLink trace={turn.trace} />}
     </div>
   )
 }

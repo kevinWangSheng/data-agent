@@ -32,15 +32,15 @@ const FIRST = { trace_id: '0af7651916cd43dd8448eb211c80319c', url: `${BASE}/trac
 const SECOND = { trace_id: '4bf92f3577b34da6a3ce929d0e0e4736', url: `${BASE}/trace/4bf92f35` }
 
 describe('traceLink', () => {
-  test.fails('a run with a trace event links to its trace', () => {
+  test('a run with a trace event links to its trace', () => {
     expect(traceLink(run(FIRST))).toEqual({ traceId: FIRST.trace_id, url: FIRST.url })
   })
 
-  test.fails('a run without a trace event has no link', () => {
+  test('a run without a trace event has no link', () => {
     expect(traceLink(run())).toBeNull()
   })
 
-  test.fails("each turn of a conversation links to its own turn's trace", () => {
+  test("each turn of a conversation links to its own turn's trace", () => {
     const turns = [run(FIRST), run(SECOND)]
     expect(turns.map((events) => traceLink(events))).toEqual([
       { traceId: FIRST.trace_id, url: FIRST.url },
