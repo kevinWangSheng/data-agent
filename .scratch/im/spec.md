@@ -76,7 +76,7 @@ allowed_users = ["123456789012345678"]
 
 - 文件里只写环境变量的名字，变量必须是 `DATA_AGENT_<平台>_` 前缀（如 `DATA_AGENT_SLACK_`；Update 2026-11-24：原为 `DATA_AGENT_`，那样 `DATA_AGENT_API_KEY` 这类别的密钥也能通过）；token 的值放 `~/.config/data-agent/env`。写了哪个平台的段落就启动哪个，可以同时启动多个。
 - 变量没设、名单为空：启动时报错并点名是哪个平台。
-- token 不进运行（Update 2026-11-24，主会话对照代码核实）：运行子进程现在继承网页进程的全部环境（`src/data_agent/cli.py:556-565` 的 `Popen` 没传 `env=`），事件文件的遮罩也不含 IM token（`agent.py:2201-2210`）。所以启动运行时，从子进程环境里去掉配置里点名的 IM token 变量；运行拿不到这些值，事件文件里也就不会有，不用另加遮罩。
+- token 不进运行（Update 2026-11-24，主会话对照代码核实）：运行子进程现在继承网页进程的全部环境（`src/data_agent/cli.py` 的 `start_run`，现 `:562-571`，`Popen` 没传 `env=`），事件文件的遮罩也不含 IM token（`agent.py:2201-2210`）。所以启动运行时，从子进程环境里去掉配置里点名的 IM token 变量；运行拿不到这些值，事件文件里也就不会有，不用另加遮罩。
 
 ### 出错
 
@@ -86,7 +86,7 @@ allowed_users = ["123456789012345678"]
 
 ### 库
 
-slack_bolt 1.30.0、aiogram 3.34.0、discord.py 2.7.1，都是 MIT，作为可选依赖 `data-agent[im]`（`[project.optional-dependencies]` 的 `im`，`uv sync --extra im`）；缺库时 `--im` 报错并提示怎么装。（Update 2026-11-24，人定：原为正式依赖，那样会被打进每个 Harbor 评测容器的离线安装，`evals/harbor_agent.py:206-213` 的 `uv export --no-dev`。）不用 python-telegram-bot（pyproject 写 LGPL-3.0-only，仓库 LICENSE 是 GPL-3 全文，不一致）。
+slack_bolt 1.30.0、aiogram 3.34.0、discord.py 2.7.1，都是 MIT，作为可选依赖 `data-agent[im]`（`[project.optional-dependencies]` 的 `im`，`uv sync --extra im`；Slack 另需 aiohttp：slack-bolt 不声明它，而 `slack_bolt/app/async_app.py:8` 顶层导入，Update 2026-11-24 工单 131；为了 CI 的类型检查和测试，也写进 dev 组）；缺库时 `--im` 报错并提示怎么装。（Update 2026-11-24，人定：原为正式依赖，那样会被打进每个 Harbor 评测容器的离线安装，`evals/harbor_agent.py:206-213` 的 `uv export --no-dev`。）不用 python-telegram-bot（pyproject 写 LGPL-3.0-only，仓库 LICENSE 是 GPL-3 全文，不一致）。
 
 ## 工单
 
