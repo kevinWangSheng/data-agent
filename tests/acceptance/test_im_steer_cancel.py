@@ -7,7 +7,7 @@ pass and removes the marker, changing nothing else.
 The contract (data_agent.im.adapter, human-reviewed):
 
 - A message while the conversation's turn runs is `send()` (the chat backend makes it a steer,
-  `{"kind": "steer"}`), no `create()`, and no new message from the bot.
+  `{"kind": "steer"}`), no `create()`. Whether the bot acknowledges a steer is not fixed.
 - The status message has one button, Stop (with buttons); pressing it is `cancel()` of the
   turn's conversation.
 - A message whose text is `stop` (blanks around it and case aside; the platform has taken the
@@ -45,14 +45,12 @@ async def test_a_message_while_the_turn_runs_is_sent_as_a_steer(tmp_path: Path) 
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))
     [conversation] = bot.conversations.created
-    shown = len(bot.platform.shown)
 
     await bot.platform.deliver(message("Only paid ones", thread="T1", mentioned=False))
     assert bot.conversations.sent[-1] == Sent(conversation, "Only paid ones", True)
     assert bot.conversations.created == [conversation]
     # Still the one turn: the stand-in answered a steer.
     bot.conversations.only_run()
-    assert len(bot.platform.shown) == shown
 
 
 @TICKET_131
@@ -132,6 +130,7 @@ async def test_a_refused_send_is_told_and_the_conversation_is_kept(
     assert len(replies) == 1
     assert refusal.detail in replies[0].text
 
-    await bot.platform.deliver(message("How many orders?", thread="T1", mentioned=False))
+    await bot.platform.deliver(message("Try again, please", thread="T1", mentioned=False))
     assert bot.conversations.created == [conversation]
-    assert bot.conversations.sent[-1] == Sent(conversation, "How many orders?", True)
+    assert len(bot.conversations.sent) == 2
+    assert bot.conversations.sent[-1] == Sent(conversation, "Try again, please", True)

@@ -5,7 +5,9 @@ server from starting, as a bad `--data-sources` does), builds the app with `crea
 calls `start(app, configs)` before `uvicorn.run`. It looks `start` up on this module when it
 runs (`from data_agent.im import service` inside `serve_web`, as it imports `create_app`), so
 the acceptance tests can put a stand-in here; it never starts a platform any other way. Without
-`--im` it does not call `start`, and no platform library is imported.
+`--im` it does not call `start`, and no platform library is imported. Whether the libraries of
+the extra `data-agent[im]` are installed is checked inside `start` (with the hint to run
+`uv sync --extra im`), never in `serve_web` before it: the acceptance tests run without them.
 
 `start` attaches one `adapter.Adapter` per platform to the app: built with the app's own
 `Conversations` and `RunsDir` (the same launcher, so one run at a time holds across the web UI

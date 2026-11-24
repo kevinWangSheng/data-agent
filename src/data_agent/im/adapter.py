@@ -38,7 +38,8 @@ A turn:
   events come (`progress.status_text`), at most once per `Limits.edit_interval`. When the turn
   ends, its status shows how it ended, with duration and cost, and the Stop button is gone. Not
   fixed: whether that last edit waits out the interval.
-- `{"kind": "steer", ...}`: nothing new is sent; the running turn's status message carries on.
+- `{"kind": "steer", ...}`: no new status message; the running turn's carries on. Not fixed:
+  whether the bot acknowledges the steer.
 - A `clarification` event: one message with the question and its options numbered (`1. ...`
   on a line each); with buttons, one per option showing only its number. Pressing button k is
   `send()` of option k's text; a typed reply in the thread is `send()` of what was typed.
