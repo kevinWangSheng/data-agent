@@ -1,6 +1,6 @@
 # 117 — 前端：外部 MCP 工具的显示和类别
 
-Status: in-review
+Status: done
 Blocked by: 116
 Spec: ../spec.md
 Claimed by: claude (opus 5.5, worktree 117-external-tools-display)
@@ -99,3 +99,4 @@ Branch: worktree-117-external-tools-display
   are cut off ("mongo · find" fits). This was already the case for long names.
 - For the human: the tag/name wording and the colour (above).
 - 2026-11-23（主会话）：make check 跑在第一个提交上，第二个提交只加注释，跑了 src/run-page 测试（97 passed）；主会话推送后由 PR CI 跑完整检查。待人定：标签 EXT / 名字 External MCP tool；颜色 --k-external（时间线小标记和 schema 色接近）。
+- 2026-11-23（主会话，第 7 步）：上下文干净的 Opus 子 agent 只读审 PR #128，无问题；复核 external-tools.test.ts 只删了 `.fails`。CI 绿。照人对本批的定法（按目前做法合并、小项保留）squash 合并为 df7fec4。标签文字和颜色列入待人定小项。
