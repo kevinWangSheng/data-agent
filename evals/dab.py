@@ -539,6 +539,8 @@ async def run_once(
         log.emit("dab_load", seconds=round(seconds, 1))
         tools: dict[str, str] = {}
         server_up = True
+        # The dev tier's export also takes the session's events, as `agent.run`'s (ticket 134).
+        recorder = log if export is None else export.observing(log)
         # The parent span is current while the SDK starts the CLI (`agent.run`).
         with nullcontext() if export is None else export.active():
             try:
@@ -549,7 +551,7 @@ async def run_once(
                             final = message
                             continue
                         budget.observe(message)
-                        record_message(log, message, tools)
+                        record_message(recorder, message, tools)
                         if isinstance(message, SystemMessage) and message.subtype == "init":
                             # Without DAB's tools the agent can only say the data is unreachable;
                             # that is an outage, not an answer.
