@@ -1,10 +1,10 @@
 # 117 — 前端：外部 MCP 工具的显示和类别
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 116
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus 5.5, worktree 117-external-tools-display)
+Branch: worktree-117-external-tools-display
 
 ## Goal
 
@@ -51,10 +51,51 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: — (accepted | returned)
 - Human review minutes: — (filled by the human at merge, optional)
 
 ## Comments
+- Implementation (commits f8c1662, 6eaadd2):
+  - web/src/run-page/tools.ts: ToolKind gains 'external'. `EXTERNAL = /^mcp__(.+?)__(.+)$/` is checked
+    after the DATA prefix. shortTool → "server · tool" (U+00B7). toolKind → 'external'.
+    KIND_TAG.external = 'EXT', KIND_NAME.external = 'External MCP tool'.
+  - The regex splits at the first `__`; backend server names cannot contain `__`
+    (src/data_agent/external_mcp.py NAME_SEPARATOR_RISK).
+  - web/src/index.css: --k-external in all three theme blocks (light #6b700b, dark #c8cc4e).
+  - run-view/model.ts unchanged: it already parses only mcp__data__ query tools.
+  - The 7 test.fails in external-tools.test.ts: only `.fails` removed; the guard tests are untouched.
+  - New unit rows in outline.test.ts: toolKind (mcp__mongo__find, mcp__data_x__find → external);
+    shortTool (data / my_db · run_query / data_x · find / WebSearch).
+- Checks:
+  - pnpm --dir web test: Test Files 29 passed, Tests 430 passed | 3 expected fail
+    (other tickets' xfails). All 7 external-tools tests and both guard tests ✓.
+  - make check: ruff "All checks passed!"; basedpyright "0 errors, 0 warnings, 0 notes";
+    pytest "2773 passed, 2 skipped, 79 deselected, 36 xfailed"; web 430 passed.
+  - pnpm --dir web build: "✓ built in 477ms".
+- Real run:
+  - Copied the tests/fixtures/chat conversation to runs/t117/runs/ and inserted a mcp__mongo__find
+    tool_start/tool_end into turn 1 (result = the acceptance test's TABLE_TEXT; script
+    runs/t117/insert_mongo.py).
+  - Ran `pnpm --dir web build:local`, then `uv run data-agent web --runs-dir runs/t117/runs --port 8717`.
+  - Playwright screenshots: runs/t117/run-light.png, run-dark.png, chat-light.png, chat-dark.png.
+    Run page: outline row and detail heading show EXT + "mongo · find"; detail name "External MCP tool";
+    result is a text block, 0 <table>. Chat page: the card has the EXT tag and, expanded,
+    "mongo · find"; 0 <table>.
+- Review (frontend ticket, eng:code-review main only):
+  - Standards: no hard violations.
+    - Fixed: the external pattern depends on the DATA check running first → commented (6eaadd2).
+    - Not fixed: three duplicated dark theme blocks / CSS variables nothing checks — pre-existing
+      structure, not this ticket.
+    - Not fixed: exec/test both use one regex — one shared constant; a parse helper now would be
+      speculative.
+  - Spec: nothing missing, no scope creep, no logic bug.
+    - Colour nit (close to schema/file on the timeline) → left for the human.
+    - Pre-existing: any tool event carrying a `sql` field is shown as SQL (model.ts:399) — outside
+      this ticket, not changed.
+- Known limit: the outline column truncates the tool name at 118px, so long "server · tool" names
+  are cut off ("mongo · find" fits). This was already the case for long names.
+- For the human: the tag/name wording and the colour (above).
+- 2026-11-23（主会话）：make check 跑在第一个提交上，第二个提交只加注释，跑了 src/run-page 测试（97 passed）；主会话推送后由 PR CI 跑完整检查。待人定：标签 EXT / 名字 External MCP tool；颜色 --k-external（时间线小标记和 schema 色接近）。
