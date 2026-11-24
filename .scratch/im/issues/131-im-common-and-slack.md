@@ -1,6 +1,6 @@
 # 131 — IM 入口：公共部分（接口、会话映射、澄清、进度、取消、排版、权限、配置、出错）、Slack 实现、`--im`、文档
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 130（done）
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-24
@@ -171,7 +171,7 @@ Branch: worktree-131-im-common-and-slack
 
 ## Ledger
 
-- Attempts: 1
+- Attempts: 2
 - Review rounds: 2
 - Model spend: $0（没有调模型）
 - Outcome: —
@@ -280,3 +280,14 @@ Branch: worktree-131-im-common-and-slack
 - 2026-11-24（主会话）item 6 的做法（各适配器持有自己平台的条目，写盘时在模块级锁下重读、保留其他平台条目再整体替换）接受：达到"不让各平台整份覆盖彼此"，有测试；构造函数签名由人审过的契约定，取不到共用对象。
 
 - 2026-11-24（主会话）退回第 1 轮：原因——PR #136 上 Codex GitHub app 的 P2 属实（主会话对照 `5013c61` 核实）：在线程里打字回答澄清时（`src/data_agent/im/adapter.py:267` 的 `send_turn`），这个对话还开着的 `self.questions` 条目和它的按钮没有收掉；之后再点旧按钮仍过 `handle_press` 的检查（`:279-281`），会把第二个、可能矛盾的选项发出去。在原分支上修：打字回答被接受后，收掉这个对话所有还开着的问题、编辑掉它们的按钮（平台能编辑时）；`send()` 被拒（`Refused`）时保留问题。加回归测试：打字回答之后点旧按钮，`send()` 不再被调用、回复"问题已关闭"；被拒时问题仍开着。修完跑 `make check` 和 `da-review main`。
+
+- 2026-11-24（工单 agent 退回第 1 轮最终回复，主会话照抄）：
+
+- 2026-11-24 (claude opus-5-5) Bounce round 1, fixed on `worktree-131-im-common-and-slack`:
+  - `b372dff`: once `send()` accepts a message (typed or pressed), the conversation's open questions are closed and their buttons edited off; on `Refused` they stay open. Regression tests: `test_a_typed_answer_closes_the_question` (fails before the fix), `test_a_refused_typed_answer_keeps_the_question_open`.
+  - `da-review main`, run 1: two P2s, both real, fixed in `ac5679a`.
+    - On a Slack 429, send waits for `Retry-After` (at most 30 s) and retries once; edits still raise for the adapter to skip.
+    - Section cuts avoid `&…;` escapes and `<…>` links; a code block cut in two is closed and reopened in each section.
+  - `da-review main`, run 2: P1, real (introduced by `ac5679a`): a single code line expanding past 3000 characters made `sections` loop forever. Fixed in `5ee63be`; regression test plus 40 randomized cases.
+  - `da-review main`, run 3: "No actionable defects found".
+  - `make check`: 3025 passed, 2 skipped, 75 xfailed; web 442 passed.
