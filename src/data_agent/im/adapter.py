@@ -304,7 +304,9 @@ class Adapter:
         turn = Turn(conversation, chat, thread, str(sent["run_id"]), edited_at=self.clock())
         if self.platform.capabilities.edit:
             turn.shown = status_text([])
-            turn.status_id = await self.send(chat, thread, Outgoing(turn.shown, self.stop()))
+            turn.status_id = await self.send(
+                chat, thread, Outgoing(turn.shown, self.stop_buttons())
+            )
         self.turns[turn.run_id] = turn
         return True
 
@@ -317,7 +319,7 @@ class Adapter:
         except Refused as exc:
             await self.reply(chat, thread, NOT_RUNNING if exc.status == 409 else exc.detail)
 
-    def stop(self) -> tuple[Button, ...]:
+    def stop_buttons(self) -> tuple[Button, ...]:
         return (Button("Stop", STOP_VALUE),) if self.platform.capabilities.buttons else ()
 
     # --- following a turn ------------------------------------------------------------------
@@ -362,7 +364,7 @@ class Adapter:
         due = now - turn.edited_at >= self.platform.limits.edit_interval
         if not (due or (turn.over and turn.final_tries == 0)):
             return
-        buttons = () if turn.over else self.stop()
+        buttons = () if turn.over else self.stop_buttons()
         turn.edited_at = now
         if await self.edit(turn.chat_id, turn.status_id, Outgoing(text, buttons)):
             turn.shown = text

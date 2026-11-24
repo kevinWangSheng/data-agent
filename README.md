@@ -122,7 +122,7 @@ conversation. These conversations are the web UI's own: they show in its convers
 be replayed there. The Slack libraries are an optional extra:
 
 ```bash
-uv sync --extra im          # or: pip install 'data-agent[im]'
+uv sync --extra im          # an installed wheel: the extra data-agent[im]
 
 cat > ~/.config/data-agent/im.toml <<'EOF'
 [slack]

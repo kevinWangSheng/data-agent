@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
+from slack_sdk.web.slack_response import SlackResponse
 
 from data_agent.im.config import PlatformConfig
 from data_agent.im.platform import Button, Incoming, Outgoing, Press
@@ -220,6 +222,28 @@ async def test_an_edit_without_buttons_takes_them_off() -> None:
     # The blocks are sent again, without an actions block, so the old ones (the buttons) go
     # (chat.update: "To remove previous `blocks`, include an empty array"; docs.slack.dev).
     assert [block["type"] for block in kwargs["blocks"]] == ["section"]
+
+
+async def test_a_rate_limited_edit_raises_for_the_adapter_to_skip() -> None:
+    """The adapter skips an edit that raises and catches up later
+    (tests/test_im_adapter.py::test_a_failed_edit_is_skipped_and_caught_up_later)."""
+
+    class Limited(FakeClient):
+        async def chat_update(self, **kwargs: Any) -> dict[str, Any]:
+            response = SlackResponse(
+                client=None,
+                http_verb="POST",
+                api_url="https://slack.com/api/chat.update",
+                req_args={},
+                data={"ok": False, "error": "ratelimited"},
+                headers={"Retry-After": "1"},
+                status_code=429,
+            )
+            raise SlackApiError("ratelimited", response)
+
+    with pytest.raises(SlackApiError) as raised:
+        await platform(Limited()).edit("C0DATA001", "1764000000.000400", Outgoing("Thinking…"))
+    assert raised.value.response.status_code == 429
 
 
 def test_a_section_never_passes_slacks_limit() -> None:

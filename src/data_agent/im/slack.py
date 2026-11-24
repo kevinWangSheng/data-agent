@@ -37,6 +37,7 @@ from slack_bolt.async_app import AsyncAck, AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
 from data_agent.im.config import PlatformConfig
+from data_agent.im.format import FENCE, is_fence
 from data_agent.im.platform import (
     Capabilities,
     Incoming,
@@ -60,7 +61,6 @@ ACTION_ID = "data_agent_button"
 # How many messages' `ts` are remembered to drop an event delivered again.
 SEEN = 1000
 
-FENCE = "```"
 LINK = re.compile(r"\[([^\]\n]+)\]\((\S+?)\)")
 BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|__(?=\S)(.+?)(?<=\S)__")
 ITALIC = re.compile(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])")
@@ -243,7 +243,7 @@ def to_mrkdwn(markdown: str) -> str:
     code: list[str] | None = None
     text: list[str] = []
     for line in markdown.split("\n"):
-        if line.lstrip().startswith(FENCE):
+        if is_fence(line):
             if code is None:
                 out += convert_text(text)
                 text = []
