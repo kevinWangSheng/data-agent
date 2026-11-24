@@ -1,6 +1,6 @@
 # 114 — 前端：运行页和对话页的"在 Langfuse 打开"链接
 
-Status: in-review
+Status: done
 Blocked by: 112
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5)
@@ -118,3 +118,4 @@ Branch: worktree-114-langfuse-link
 2. `trace_export_error` isn't shown.
 3. Whether the public site should show the link, and whether the export should keep `trace` events.
 4. Keeping the url guard, which wasn't asked for.
+- 2026-11-23（主会话，第 7 步）：上下文干净的 Opus 子 agent 只读审 PR #129，无问题（复核验收文件只删 `.fails`、回放中链接随 trace 事件出现、每轮各自的链接）；网站页面上的链接没有测试或截图，未确认。CI 绿。照人对本批的定法 squash 合并为 6fadb61。遗漏（非计划）：`web/src/run-view/model.ts` 的 `summarize`/`eventTimes` 把运行结束算到最后一个事件，`trace` 事件在中转停止后写，墙钟和回放时间线被拉长（最多约 10 s），需另开工单。
