@@ -1,6 +1,6 @@
 # 116 — 外部 MCP：后端（配置解析与校验、`${VAR}` 展开、放行清单、`--mcp-servers` 接线、stdio 包装、`version` 事件、文档）
 
-Status: in-review
+Status: done
 Blocked by: 115（done）
 Spec: ../spec.md
 Claimed by: claude (opus 5.5, worktree 116-external-mcp-backend)
@@ -232,3 +232,4 @@ Check that the events contain a `tool_start` for an `mcp__github__` tool and tha
 
 - 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查完成，无意见。合并前：真实运行（`runs/batch2/live-checks.sh`）和"待人定"交人定。
 - 2026-11-23（主会话，真实运行）：`uv run pytest tests/acceptance/test_mcp_e2e.py -m integration -v` 第一次 1 failed 1 error，原因是本机 colima 的 docker 数据盘满（mongo 启动报 `No space left on device`），不是代码问题；清掉悬空镜像后重跑 `2 passed in 40.86s`（`runs/batch2/116-e2e.log`）。
+- 2026-11-23（主会话）：人定"按目前做法合并，实质项之后逐条过"。PR #126 squash 合并为 2548d1a。

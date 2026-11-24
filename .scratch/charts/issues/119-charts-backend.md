@@ -1,6 +1,6 @@
 # 119 — 答案图表：后端（`--charts`、查询 id、`display_chart`、画图规则、网页命令行）
 
-Status: in-review
+Status: done
 Blocked by: 118（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 119-charts-backend)
@@ -192,3 +192,4 @@ For run 1, check that `tool_end.content` is `{"chart":…,"data":…}` with no `
 
 - 2026-11-23（主会话）：PR CI 绿；Codex GitHub app 审查完成，无意见。合并前：真实运行（`runs/batch2/live-checks.sh`）和"待人定"交人定。
 - 2026-11-23（主会话，真实运行）：`data-agent run --charts --type query --config full --sandbox local --duckdb shop.duckdb --task "Show monthly revenue as a chart, …"` exit 0，答案 2025-04 最高 325.50。`display_chart` 调 1 次（query_5，bar，x=month）；`tool_end.content` 是紧凑 JSON `{"chart":{query_id,chart_type,x,series,stacked,title},"data":[{"month":"2025-03-01","revenue":151.5},…]}`，没有 `{"result":…}` 包装，DECIMAL 为数字，形状和金样 `tests/fixtures/charts/run/events.jsonl` 一致（`runs/batch2/119-charts.log`）。
+- 2026-11-23（主会话）：人定"按目前做法合并，实质项之后逐条过"。PR #127 squash 合并为 a4c476b。

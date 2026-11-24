@@ -359,3 +359,4 @@ To re-run any of those, start it again with `uv run python runs/112/fake_model_s
       - `connection_error` 比中转的定义宽：同第 1 轮。
       - `parent_exporter` 返回类型是联合类型：为了让测试替身通过类型检查，docstring 已注明。
   - 两轮审查都用完了，没有剩下要修的问题。
+- 2026-11-23（主会话，服务器筛查 t112-screen，本分支 d69448b，`board --config no-verifiers --budget 5 --trials 3 --n-concurrent 3`，workforce-analytics / pos-operations / marketing-campaigns-harbor）：5/9（55.6%），workforce 3/3、pos 2/3、marketing 0/3，和基线 t110-dbt-b（71a5bcc）5/9 持平；Readiness clean；每个 trial 的 agent_setup 25–33 s（远低于 360 s）；billed $0.73。SDK 升级没有带来回退。

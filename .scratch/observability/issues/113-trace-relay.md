@@ -1,6 +1,6 @@
 # 113 — 本地中转：接收 CLI 的 OTLP、按档改写、转发 Langfuse
 
-Status: in-review
+Status: done
 Blocked by: 111（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 113-trace-relay)
@@ -203,3 +203,4 @@ Spec：没有缺失，也没有超范围。
 5. **`interaction.duration_ms` 被删**：照白名单的字面做的。要保留就在 `HELD_OUT_ALLOWLIST` 里加一行。
 
 - 2026-11-23（主会话）：PR #124 CI 绿；Codex GitHub app 审查完成，无意见。合并前先把"待人定"5 条交人定（和 112 的一起问）。
+- 2026-11-23（主会话）：人定"按目前做法合并，实质项之后逐条过"。PR #124 squash 合并为 f6c3b0a。
