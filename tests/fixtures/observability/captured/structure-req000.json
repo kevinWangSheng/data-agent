@@ -1,0 +1,512 @@
+{
+ "resourceSpans": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "placeholder-arch"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "placeholder-os"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "placeholder-os-version"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "2.1.330"
+      }
+     }
+    ]
+   },
+   "scopeSpans": [
+    {
+     "scope": {
+      "name": "com.anthropic.claude_code.tracing",
+      "version": "1.0.0"
+     },
+     "spans": [
+      {
+       "traceId": "eOKVhBrPMp1Urvcep+w2Aw==",
+       "spanId": "Z/p2sYiC8uo=",
+       "parentSpanId": "tD7fORPV1Is=",
+       "name": "claude_code.llm_request",
+       "kind": "SPAN_KIND_INTERNAL",
+       "startTimeUnixNano": "1795466859559000000",
+       "endTimeUnixNano": "1795466860225148750",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d506b6c9-6d24-45d3-afce-fc0988f9939f"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "Orca"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "llm_request"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "deepseek-flash"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "deepseek-flash"
+         }
+        },
+        {
+         "key": "llm_request.context",
+         "value": {
+          "stringValue": "interaction"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "d506b6c9-6d24-45d3-afce-fc0988f9939f"
+         }
+        },
+        {
+         "key": "query_source_safe",
+         "value": {
+          "stringValue": "sdk"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": "666"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": "10532"
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": "52"
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "attempt",
+         "value": {
+          "intValue": "1"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": "240"
+         }
+        },
+        {
+         "key": "first_content_ms",
+         "value": {
+          "intValue": "240"
+         }
+        },
+        {
+         "key": "effort",
+         "value": {
+          "stringValue": "xhigh"
+         }
+        },
+        {
+         "key": "stop_reason",
+         "value": {
+          "stringValue": "tool_use"
+         }
+        },
+        {
+         "key": "gen_ai.response.finish_reasons",
+         "value": {
+          "arrayValue": {
+           "values": [
+            {
+             "stringValue": "tool_use"
+            }
+           ]
+          }
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1795466859562960167",
+         "name": "gen_ai.request.attempt",
+         "attributes": [
+          {
+           "key": "attempt",
+           "value": {
+            "intValue": "1"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {},
+       "flags": 257
+      },
+      {
+       "traceId": "eOKVhBrPMp1Urvcep+w2Aw==",
+       "spanId": "QuYLf/nw3uM=",
+       "parentSpanId": "NHUHUN/P5tA=",
+       "name": "claude_code.tool.blocked_on_user",
+       "kind": "SPAN_KIND_INTERNAL",
+       "startTimeUnixNano": "1795466860257000000",
+       "endTimeUnixNano": "1795466860259039375",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d506b6c9-6d24-45d3-afce-fc0988f9939f"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "Orca"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool.blocked_on_user"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "d506b6c9-6d24-45d3-afce-fc0988f9939f"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": "2"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "accept"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "config"
+         }
+        }
+       ],
+       "status": {},
+       "flags": 257
+      },
+      {
+       "traceId": "eOKVhBrPMp1Urvcep+w2Aw==",
+       "spanId": "9VrHGGzANRQ=",
+       "parentSpanId": "NHUHUN/P5tA=",
+       "name": "claude_code.tool.execution",
+       "kind": "SPAN_KIND_INTERNAL",
+       "startTimeUnixNano": "1795466860259000000",
+       "endTimeUnixNano": "1795466860351363375",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d506b6c9-6d24-45d3-afce-fc0988f9939f"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "Orca"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool.execution"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "d506b6c9-6d24-45d3-afce-fc0988f9939f"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call_00_ET_Hw7K7wJ9CMixm9eLXWwS7013"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.id",
+         "value": {
+          "stringValue": "call_00_ET_Hw7K7wJ9CMixm9eLXWwS7013"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": "92"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        }
+       ],
+       "status": {},
+       "flags": 257
+      },
+      {
+       "traceId": "eOKVhBrPMp1Urvcep+w2Aw==",
+       "spanId": "NHUHUN/P5tA=",
+       "parentSpanId": "tD7fORPV1Is=",
+       "name": "claude_code.tool",
+       "kind": "SPAN_KIND_INTERNAL",
+       "startTimeUnixNano": "1795466860257000000",
+       "endTimeUnixNano": "1795466860351601500",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d506b6c9-6d24-45d3-afce-fc0988f9939f"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "Orca"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "mcp__data__list_tables"
+         }
+        },
+        {
+         "key": "tool_name_safe",
+         "value": {
+          "stringValue": "mcp_other"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "execute_tool"
+         }
+        },
+        {
+         "key": "gen_ai.tool.name",
+         "value": {
+          "stringValue": "list_tables"
+         }
+        },
+        {
+         "key": "anthropic.mcp.server.name",
+         "value": {
+          "stringValue": "data"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "d506b6c9-6d24-45d3-afce-fc0988f9939f"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call_00_ET_Hw7K7wJ9CMixm9eLXWwS7013"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.id",
+         "value": {
+          "stringValue": "call_00_ET_Hw7K7wJ9CMixm9eLXWwS7013"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": "95"
+         }
+        }
+       ],
+       "status": {},
+       "flags": 257
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
