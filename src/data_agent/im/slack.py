@@ -27,13 +27,15 @@ Socket Mode, so the bot needs no public address. Part of the extra `data-agent[i
 """
 
 import asyncio
+import logging
 import re
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncAck, AsyncApp
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 from data_agent.im.config import PlatformConfig
@@ -48,11 +50,17 @@ from data_agent.im.platform import (
     Press,
 )
 
+log = logging.getLogger(__name__)
+
 PLATFORM = "slack"
 # A section block's text holds 3,000 characters; the Markdown handed in stays under it with room
 # for mrkdwn's escapes (`&amp;`, ...). Slack's edits: about one in two seconds (spec "进度").
 LIMITS = Limits(max_chars=2900, edit_interval=2.0)
 SECTION_CHARS = 3000
+# The longest a rate-limited send waits before it is tried again.
+RATE_LIMIT_WAIT = 30.0
+# An escape (`&amp;`, `&lt;`, `&gt;`) is at most this long.
+ESCAPE_CHARS = len("&amp;")
 # Block Kit: a button's text holds 75 characters, an actions block 25 elements.
 BUTTON_CHARS = 75
 ACTIONS = 25
@@ -89,6 +97,8 @@ class SlackPlatform:
         self.on_press: OnPress | None = None
         self.lock = asyncio.Lock()
         self.seen: OrderedDict[tuple[str, str], None] = OrderedDict()
+        # The tests wait for no time.
+        self.sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
     def __repr__(self) -> str:
         return f"SlackPlatform(bot_user_id={self.bot_user_id!r})"
@@ -119,10 +129,20 @@ class SlackPlatform:
             await handler.close_async()
 
     async def send(self, chat_id: str, thread_id: str | None, message: Outgoing) -> str:
+        """A rate-limited send (429) waits as long as `Retry-After` says, at most
+        `RATE_LIMIT_WAIT` seconds, and is tried once more: the adapter's own second try comes
+        at once, inside the limit, and a part of an answer would be lost. Other failures raise."""
         thread = {"thread_ts": thread_id} if thread_id is not None else {}
-        response = await self.client.chat_postMessage(
-            channel=chat_id, **thread, **message_payload(message)
-        )
+        payload = message_payload(message)
+        try:
+            response = await self.client.chat_postMessage(channel=chat_id, **thread, **payload)
+        except SlackApiError as exc:
+            wait = retry_after(exc)
+            if wait is None:
+                raise
+            log.warning("slack: a send was rate-limited; trying again in %.0f s", wait)
+            await self.sleep(wait)
+            response = await self.client.chat_postMessage(channel=chat_id, **thread, **payload)
         return str(response["ts"])
 
     async def edit(self, chat_id: str, message_id: str, message: Outgoing) -> None:
@@ -223,16 +243,50 @@ def message_payload(message: Outgoing) -> dict[str, Any]:
     return {"text": text, "blocks": blocks}
 
 
+def retry_after(exc: SlackApiError) -> float | None:
+    """The seconds a 429 asks to wait, at most `RATE_LIMIT_WAIT`; None for any other error."""
+    response = exc.response
+    if getattr(response, "status_code", None) != 429:
+        return None
+    headers = getattr(response, "headers", None) or {}
+    value = headers.get("Retry-After") or headers.get("retry-after") or "1"
+    try:
+        seconds = float(value)
+    except ValueError:
+        seconds = 1.0
+    return min(max(seconds, 0.0), RATE_LIMIT_WAIT)
+
+
 def sections(text: str) -> list[str]:
     """The mrkdwn in pieces a section block holds: escapes can take a message within
-    `LIMITS.max_chars` past `SECTION_CHARS`. Cut after a line, or anywhere in a line longer than
-    a section; the pieces joined are the text."""
+    `LIMITS.max_chars` past `SECTION_CHARS`. Slack reads each section on its own, so a cut is
+    after a line where it can be, else in the line but never inside an escape or a `<...>`
+    link; a code block cut in two is closed at the end of one piece and opened again at the
+    start of the next. Without a code block cut in two, the pieces joined are the text."""
+    closing = "\n" + FENCE
     pieces: list[str] = []
     while len(text) > SECTION_CHARS:
-        cut = text.rfind("\n", 0, SECTION_CHARS) + 1 or SECTION_CHARS
-        pieces.append(text[:cut])
-        text = text[cut:]
+        room = SECTION_CHARS - len(closing)
+        cut = text.rfind("\n", 0, room) + 1 or safe_cut(text, room)
+        piece, text = text[:cut], text[cut:]
+        if sum(is_fence(line) for line in piece.split("\n")) % 2:
+            piece = piece.removesuffix("\n") + closing
+            text = FENCE + "\n" + text
+        pieces.append(piece)
     return [*pieces, text]
+
+
+def safe_cut(text: str, room: int) -> int:
+    """Where to cut a line longer than `room`: at `room`, or before an escape or a link that
+    `room` would cut in two (unless that leaves nothing before the cut)."""
+    cut = room
+    amp = text.rfind("&", max(0, cut - ESCAPE_CHARS + 1), cut)
+    if amp != -1 and ";" not in text[amp:cut]:
+        cut = amp
+    opening = text.rfind("<", 0, cut)
+    if opening > text.rfind(">", 0, cut):
+        cut = opening
+    return cut or room
 
 
 def to_mrkdwn(markdown: str) -> str:

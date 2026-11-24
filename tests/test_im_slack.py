@@ -246,6 +246,70 @@ async def test_a_rate_limited_edit_raises_for_the_adapter_to_skip() -> None:
     assert raised.value.response.status_code == 429
 
 
+def rate_limited(method: str, retry_after: str) -> SlackApiError:
+    response = SlackResponse(
+        client=None,
+        http_verb="POST",
+        api_url=f"https://slack.com/api/{method}",
+        req_args={},
+        data={"ok": False, "error": "ratelimited"},
+        headers={"Retry-After": retry_after},
+        status_code=429,
+    )
+    return SlackApiError("ratelimited", response)
+
+
+class LimitedOnce(FakeClient):
+    """Its first `chat.postMessage` is rate-limited."""
+
+    def __init__(self, retry_after: str) -> None:
+        super().__init__()
+        self.retry_after = retry_after
+        self.limited = False
+
+    async def chat_postMessage(self, **kwargs: Any) -> dict[str, Any]:
+        if not self.limited:
+            self.limited = True
+            raise rate_limited("chat.postMessage", self.retry_after)
+        return await super().chat_postMessage(**kwargs)
+
+
+@pytest.mark.parametrize(("retry_after", "waited"), [("3", 3.0), ("3600", 30.0)])
+async def test_a_rate_limited_send_waits_as_slack_asks_and_is_tried_again(
+    retry_after: str, waited: float
+) -> None:
+    client = LimitedOnce(retry_after)
+    slack = platform(client)
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    slack.sleep = sleep
+    ts = await slack.send("C0DATA001", None, Outgoing("The answer."))
+    assert ts == "1764000009.000001"
+    # Waited as long as Retry-After says, at most a bound.
+    assert waits == [waited]
+    assert [method for method, _ in client.calls] == ["chat.postMessage"]
+
+
+async def test_a_send_failing_otherwise_raises_at_once() -> None:
+    class Broken(FakeClient):
+        async def chat_postMessage(self, **kwargs: Any) -> dict[str, Any]:
+            raise SlackApiError("channel_not_found", {"ok": False, "error": "channel_not_found"})
+
+    slack = platform(Broken())
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    slack.sleep = sleep
+    with pytest.raises(SlackApiError):
+        await slack.send("C0DATA001", None, Outgoing("The answer."))
+    assert waits == []
+
+
 def test_a_section_never_passes_slacks_limit() -> None:
     text = "&" * LIMITS.max_chars
     payload = message_payload(Outgoing(text, (Button("Stop", "stop"),)))
@@ -261,6 +325,42 @@ def test_escapes_past_a_sections_limit_go_into_more_sections() -> None:
     assert all(len(block["text"]["text"]) <= SECTION_CHARS for block in sections)
     assert "".join(block["text"]["text"] for block in sections) == to_mrkdwn(text)
     assert payload["blocks"][-1]["type"] == "actions"
+
+
+def section_texts(markdown: str) -> list[str]:
+    payload = message_payload(Outgoing(markdown, (Button("Stop", "stop"),)))
+    return [block["text"]["text"] for block in payload["blocks"] if block["type"] == "section"]
+
+
+def test_a_cut_never_falls_inside_an_escape() -> None:
+    texts = section_texts("a" + "&" * 600)
+    assert len(texts) > 1
+    assert all(len(text) <= SECTION_CHARS for text in texts)
+    for text in texts:
+        assert "&" not in text.replace("&amp;", "")
+    assert "".join(texts) == to_mrkdwn("a" + "&" * 600)
+
+
+def test_a_cut_never_falls_inside_a_link() -> None:
+    # 590 escapes come to 2950 characters, so the link runs across a section's limit.
+    link = "[the dashboard](https://example.com/" + "x" * 60 + ")"
+    texts = section_texts("&" * 590 + link + " and more")
+    assert len(texts) > 1
+    assert all(len(text) <= SECTION_CHARS for text in texts)
+    [holder] = [text for text in texts if "<https://" in text]
+    assert "<https://example.com/" + "x" * 60 + "|the dashboard>" in holder
+
+
+def test_a_code_block_cut_in_two_is_fenced_in_each_section() -> None:
+    rows = "\n".join(f"{index} & {index}" for index in range(500))
+    texts = section_texts(f"The rows:\n```\n{rows}\n```\nThat is all.")
+    assert len(texts) > 1
+    assert all(len(text) <= SECTION_CHARS for text in texts)
+    for text in texts:
+        fences = [line for line in text.split("\n") if line == "```"]
+        assert len(fences) % 2 == 0
+    assert texts[0].startswith("The rows:\n```\n")
+    assert texts[-1].endswith("```\nThat is all.")
 
 
 def test_the_limits() -> None:
