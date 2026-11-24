@@ -92,7 +92,7 @@ def run(args: argparse.Namespace) -> int:
         regression = json.loads(args.regression.read_text())
         if not isinstance(regression, list) or not all(isinstance(t, str) for t in regression):
             raise ValueError(f"{args.regression} must be a JSON list of task names")
-        judge = evaluate_screening if getattr(args, "screening", False) else evaluate
+        judge = evaluate_screening if args.screening else evaluate
         result = judge(
             args.old, args.new, manifest["dev"], args.target, regression, args.rerun, args.trials
         )

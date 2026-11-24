@@ -410,3 +410,28 @@ def test_a_run_pulled_without_its_job_has_unknown_spend_not_zero(world: World) -
     assert "spend is unknown" in (first.reason or "")
     assert "Spend of `improve-2026-11-24-1` is unknown here" in world.report_md()
     assert [c.outcome for c in report.candidates[1:]] == ["not-screened", "not-screened"]
+
+
+# --- review round 2 (eng:code-review) ------------------------------------------------------------
+
+
+def test_edit_calls_the_budget_refuses_are_named_on_a_stopped_line(world: World) -> None:
+    job = world.input_job({"task-a": TaskRun(0, "alpha")})
+    # Three attribution calls at $0.02 use up $0.06: no edit call is made.
+    report = asyncio.run(
+        improve(
+            [job], repo=world.repo, manifest=MANIFEST, regression=REGRESSION_FILE,
+            out_dir=world.out, attribution_judge=world.attribution_judge,
+            edit_judge=world.edit_judge, skills=world.skills, today=TODAY,
+            remote_tasks_dir=REMOTE_TASKS_DIR, remote_manifest=REMOTE_MANIFEST,
+            budget_usd=0.06, poll_seconds=0,
+        )
+    )  # fmt: skip
+    (candidate,) = report.candidates
+    assert (candidate.outcome, candidate.discarded) == ("discarded", "bad-reply")
+    assert "edit judge not called" in (candidate.reason or "")
+    assert world.edit_judge.prompts == []
+    stopped = [line for line in world.report_md().splitlines() if "stopped" in line.lower()]
+    assert stopped == [
+        "- Edit calls stopped at candidate 1: the budget is used up, so candidate(s) 1 got no edit"
+    ]

@@ -346,7 +346,9 @@ def _tool(
     return out
 
 
-def _git(repo: Path, *args: str, data: bytes | None = None, env: Mapping[str, str] | None = None):
+def _git(
+    repo: Path, *args: str, data: bytes | None = None, env: Mapping[str, str] | None = None
+) -> str:
     return _tool(repo, "git", *args, data=data, env=env)
 
 
@@ -483,12 +485,18 @@ def _key(entry: Mapping[str, Any]) -> GroupKey:
     return entry["failure_mode"], entry["skill"], entry["skill_quote"]
 
 
-def make_groups(entries: Sequence[Mapping[str, Any]]) -> list[Group]:
-    """Every group of attributed failures, ranked, with the drops of contract 2."""
+def group_members(entries: Sequence[Mapping[str, Any]]) -> dict[GroupKey, list[Mapping[str, Any]]]:
+    """The attributed entries (those with a `failure_mode`) by group key (contract 2)."""
     members: dict[GroupKey, list[Mapping[str, Any]]] = {}
     for entry in entries:
         if entry.get("failure_mode"):
             members.setdefault(_key(entry), []).append(entry)
+    return members
+
+
+def make_groups(entries: Sequence[Mapping[str, Any]]) -> list[Group]:
+    """Every group of attributed failures, ranked, with the drops of contract 2."""
+    members = group_members(entries)
     ranked = sorted(
         (
             Group(
@@ -648,6 +656,7 @@ class _Drafted:
     edited: bytes | None = None
     net: int | None = None
     problem: _Problem | None = None
+    budget: bool = False  # the budget refused the edit call
 
 
 def _check_edit(
@@ -699,7 +708,10 @@ async def _draft(
             reply = await judge(attempt_prompt)
         except ConfigError:
             raise
-        except Exception as exc:  # BudgetReached too: the candidate is not made
+        except BudgetReached as exc:
+            reason = f"edit judge not called: {exc}"
+            return _Drafted(drafted.edit, problem=_Problem("bad-reply", reason), budget=True)
+        except Exception as exc:  # one broken call must not lose the round
             return _Drafted(drafted.edit, problem=_Problem("bad-reply", f"edit judge: {exc}"))
         try:
             drafted = _check_edit(parse_edit(reply.text), repo, commit, files, names)
@@ -1115,13 +1127,11 @@ async def improve(
     )
     trial_dirs = {t.name: t.dir for t in failures}
     groups = make_groups(entries)
-    members: dict[GroupKey, list[dict[str, Any]]] = {}
-    for entry in entries:
-        if entry.get("failure_mode"):
-            members.setdefault(_key(entry), []).append(entry)
+    members = group_members(entries)
 
     candidates: list[Candidate] = []
     drafts: dict[int, _Drafted] = {}
+    edit_refused: list[int] = []  # candidates whose edit call the budget refused
     edit = ledger.meter(edit_judge)
     for group in (g for g in groups if g.dropped is None):
         number = len(candidates) + 1
@@ -1137,6 +1147,8 @@ async def improve(
         names = _group_names(members[key], manifest, skills, tasks_dir, trial_dirs)
         drafted = await _draft(group, repo, base, edit, names)
         candidate = replace(candidate, edit=drafted.edit, net_lines=drafted.net)
+        if drafted.budget:
+            edit_refused.append(number)
         if drafted.problem is not None:
             problem = drafted.problem
             candidate = replace(
@@ -1164,6 +1176,12 @@ async def improve(
     stopped_at: int | None = None
     halted: str | None = None
     notes: list[str] = []
+    if edit_refused:
+        listed = ", ".join(map(str, edit_refused))
+        notes.append(
+            f"Edit calls stopped at candidate {edit_refused[0]}: the budget is used up, so "
+            f"candidate(s) {listed} got no edit"
+        )
 
     def snapshot() -> ImproveReport:
         return ImproveReport(
@@ -1210,10 +1228,8 @@ async def improve(
             if handled.budget_stop:
                 stopped_at = candidate.number
             if handled.halt:
-                halted = f"screening stopped after candidate {candidate.number}: {handled.halt}"
-                notes.append(
-                    f"Screening stopped after candidate {candidate.number}: {handled.halt}"
-                )
+                halted = f"Screening stopped after candidate {candidate.number}: {handled.halt}"
+                notes.append(halted)
             if handled.candidate.verdict == "rerun-old" and NEW_DEV_RUN not in notes:
                 notes.append(NEW_DEV_RUN)
             write()
