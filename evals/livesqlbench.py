@@ -36,6 +36,10 @@ HOLDOUT_SIZE = 120
 # `{"lsb-<instance_id>": "<selected_database>", ...}` covering exactly the manifest's LiveSQLBench
 # ids (spec U2).
 DATABASES = REPO_ROOT / "evals" / "livesqlbench_databases.json"
+# The host variable holding the write credential at verification time, for a generated task that
+# names it as a Harbor template (`PGPASSWORD = "${LSB_PG_WRITE_PASSWORD}"` under `[verifier.env]`)
+# instead of writing `write_password` itself.
+WRITE_PASSWORD_ENV = "LSB_PG_WRITE_PASSWORD"
 
 
 def task_id(instance_id: str) -> str:
@@ -60,8 +64,10 @@ def generate_tasks(
 
     `write_password` is the database's write credential, which the verifier needs (upstream
     `template/tests/evaluator.py` creates and drops `<db>_process_1`). It is given to the
-    verification phase only (Harbor's `[verifier] env`); the agent's container (`environment/`,
-    `[environment] env`) gets neither it nor upstream's default `123123` (spec U6).
+    verification phase only: Harbor's `[verifier] env`, as the value or as a `${VAR}` template of
+    `WRITE_PASSWORD_ENV`, which Harbor resolves from the host when verifying. The agent's
+    container (`environment/`, `[environment] env`) gets neither it, nor that variable's name, nor
+    upstream's default `123123` (spec U6).
     """
     raise NotImplementedError("ticket 128")
 

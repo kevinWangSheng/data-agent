@@ -12,7 +12,7 @@ strings per record, written to a file under the test's tmp_path; the tests look 
 that file's path, where the agent or a pulled run could see them.
 
 The Harbor scaffolding (`LocalEnvironment`, `make_agent`, `jsonl`, `result_event`) comes from
-tests/test_harbor_agent.py and the `da-remote` one (`Env`, `SUMMARY_FILTERS`) from
+tests/test_harbor_agent.py and the `da-remote` one (`Env`, `pulled_whole`) from
 tests/test_da_remote.py, imported with `tests/` put on `sys.path` (neither directory is a
 package). Their stub `data-agent` writes only what the test hands it, so the one here also
 records its own argv and environment, and writes both into its event file, as a real run's event
@@ -41,11 +41,13 @@ from harbor.models.task.task import Task
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
-from test_da_remote import SUMMARY_FILTERS, Env  # noqa: E402
+from test_da_remote import Env, pulled_whole  # noqa: E402
 from test_harbor_agent import LocalEnvironment, make_agent  # noqa: E402
 
 from evals import livesqlbench  # noqa: E402
 from evals.harbor_agent import DataAgent  # noqa: E402
+
+__all__ = ["Env", "pulled_whole"]
 
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "livesqlbench"
 PUBLIC = FIXTURE / "public.jsonl"
@@ -314,16 +316,3 @@ def ablate_run(env: Env, manifest: dict[str, Any], jobs: dict[str, list[str]]) -
     (run / "logs" / "guards.log").write_text("spend ok\n")
     (run / "reports" / "t1").mkdir(parents=True)
     return run
-
-
-def pulled_whole(env: Env) -> bool:
-    """Whether `da-remote pull` took the whole run dir (True) or the summary only (False)."""
-    proc = env.run("pull", "smoke")
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    args = (env.log / "rsync.args").read_text().splitlines()
-    if args[3:-2] == SUMMARY_FILTERS:
-        assert "summary only" in proc.stdout
-        return False
-    assert args[3:-2] == []
-    assert "dev set" in proc.stdout
-    return True

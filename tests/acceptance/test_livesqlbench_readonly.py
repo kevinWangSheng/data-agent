@@ -13,7 +13,9 @@ agent, creates and drops `<db>_process_1` (template/tests/evaluator.py:46, :91, 
 Here the write credential is a stand-in given to `generate_tasks`:
 
 - The generated task gives it to the verification phase (`[verifier] env`, which Harbor 0.24 merges
-  only when verifying: harbor/verifier/verifier.py:190) and nowhere the agent sees: not
+  only when verifying: harbor/verifier/verifier.py:190), as the value or as a `${VAR}` template of
+  `WRITE_PASSWORD_ENV`, resolved from the host (harbor/utils/env.py `resolve_env_vars`), and nowhere
+  the agent sees, neither the value nor that variable's name: not
   `[environment] env`, not the compose `main` service's environment, not any file under
   `environment/` (Dockerfiles, compose, mounted documents such as upstream's `db_env.sh`), not
   the instruction. Neither is upstream's `123123`.
@@ -34,6 +36,7 @@ from pathlib import Path
 
 import pytest
 from harbor.models.task.task import Task
+from harbor.utils.env import resolve_env_vars
 from livesqlbench_support import (
     MODEL_ENV,
     UPSTREAM_PASSWORD,
@@ -50,7 +53,7 @@ from livesqlbench_support import (
     without_host,
 )
 
-from evals.livesqlbench import BENCHMARK
+from evals.livesqlbench import BENCHMARK, WRITE_PASSWORD_ENV
 
 TICKET_128 = pytest.mark.xfail(
     strict=True,
@@ -62,14 +65,19 @@ CREDENTIALS = [WRITE_PASSWORD, UPSTREAM_PASSWORD]
 
 
 @TICKET_128
-def test_the_write_credential_reaches_the_verifier_only(tmp_path: Path) -> None:
+def test_the_write_credential_reaches_the_verifier_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(WRITE_PASSWORD_ENV, WRITE_PASSWORD)
     generated = generate(tmp_path)
 
     assert len(generated.tasks) == len(query_records())
     for task_dir in generated.tasks:
         config = Task(task_dir).config
-        assert WRITE_PASSWORD in config.verifier.env.values(), "the verifier has no credential"
-        assert leaks(agent_visible(task_dir), CREDENTIALS) == []
+        verifier_env = resolve_env_vars(config.verifier.env)
+        assert WRITE_PASSWORD in verifier_env.values(), "the verifier has no credential"
+        # Nor the template's variable, which compose would interpolate into the agent's service.
+        assert leaks(agent_visible(task_dir), [*CREDENTIALS, WRITE_PASSWORD_ENV]) == []
 
 
 @TICKET_128

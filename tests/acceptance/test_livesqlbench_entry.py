@@ -49,6 +49,21 @@ def test_without_the_benchmark_kwarg_a_trial_is_the_data_eng_bench_dbt_run(
 
 
 @TICKET_128
+def test_a_livesqlbench_command_is_a_query_run_on_postgres_without_network_mcp_or_charts(
+    tmp_path: Path,
+) -> None:
+    """The adapter alone, without a generated task: the command `_run_command` builds."""
+    agent = new_agent(tmp_path, benchmark=BENCHMARK)
+    command = agent._run_command("Answer the question")  # pyright: ignore[reportPrivateUsage]
+
+    assert "/bin/data-agent run --type query " in command
+    assert re.search(r"--postgres-env [A-Za-z_][A-Za-z0-9_]* ", command), command
+    assert "--duckdb" not in command
+    for flag in OFF:
+        assert flag not in command
+
+
+@TICKET_128
 def test_a_livesqlbench_trial_is_a_query_run_on_postgres_without_network_mcp_or_charts(
     tmp_path: Path,
 ) -> None:

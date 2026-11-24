@@ -20,6 +20,7 @@ data-eng-bench's, and must keep doing so.
 
 import json
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,14 +38,17 @@ TICKET_128 = pytest.mark.xfail(
 MANIFEST = REPO_ROOT / "evals" / "manifest.json"
 REGISTRY = REPO_ROOT / "evals" / "registry.json"
 SEED = 20261124
-# 18 databases, 180 records; one database has a single record.
+# 18 databases, 180 records; one database has a single record. Each id is over 32 characters
+# with `lsb-`, distinct only in its first 10, so an id scheme that lengthens the prefix much
+# makes ids that share their first 32 characters.
+LONG_TAIL = "generated_question_identifier"
 SIZES = [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 12, 13, 14, 15, 16, 18, 19]
 
 
 def generated_records() -> list[dict[str, Any]]:
     return [
         {
-            "instance_id": f"synth{d:02d}_{n}",
+            "instance_id": f"s{d:02d}q{n:02d}_{LONG_TAIL}",
             "selected_database": f"synth_db_{d:02d}",
             "query": f"question {n} on database {d}",
             "category": "Query",
@@ -65,6 +69,7 @@ def test_the_generated_records_are_what_the_split_tests_assume() -> None:
     assert len({r["instance_id"] for r in records}) == 180
     sizes = Counter(r["selected_database"] for r in records)
     assert len(sizes) == 18 and min(sizes.values()) == 1
+    assert all(len(f"lsb-{r['instance_id']}") > 32 for r in records)
 
 
 @TICKET_128
@@ -163,7 +168,7 @@ SERVER_MANIFEST = lsb_server_manifest(LSB_DEV, LSB_HOLDOUT)
 
 
 @pytest.fixture
-def env(tmp_path: Path):
+def env(tmp_path: Path) -> Iterator[Env]:
     e = Env(tmp_path)
     yield e
     (e.server / "release").write_text("0")  # never leave a fake run waiting

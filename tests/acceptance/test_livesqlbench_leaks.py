@@ -54,7 +54,7 @@ from livesqlbench_support import (
 )
 
 from evals import livesqlbench
-from evals.livesqlbench import ExecutionError, Result
+from evals.livesqlbench import Execute, ExecutionError, Result
 
 TICKET_128 = pytest.mark.xfail(
     strict=True,
@@ -79,7 +79,7 @@ def payload() -> dict[str, Any]:
     return record | answer("tide_q1")
 
 
-def stand_in(case: str):
+def stand_in(case: str) -> Execute:
     """The evaluation script's executor without a database: the gold SQL returns GOLD; the
     predicted SQL returns GOLD's rows under other column names (right) or other rows (wrong)."""
 
