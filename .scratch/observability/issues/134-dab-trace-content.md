@@ -1,6 +1,6 @@
 # 134 — `evals dab --trace` 的开发集档 trace 也带工具入参和模型文字
 
-Status: in-review
+Status: done
 Blocked by: 121 (done)
 Spec: ../spec.md
 Claimed by: claude (opus-5.5)
@@ -48,7 +48,7 @@ Branch: worktree-134-dab-trace-content
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (no data-agent model calls)
-- Outcome: —
+- Outcome: accepted
 
 ## Comments
 
@@ -78,3 +78,5 @@ Branch: worktree-134-dab-trace-content
   - **Not fixed:**
     - The one-line `recorder = …` is duplicated between `agent.py` and `dab.py`. There are only two places, and CODING_STANDARDS.md asks for plain, explicit code, so it stays.
     - The `result_message()` builder is duplicated across test files. That spread existed before this ticket and is outside its scope.
+
+- 2026-11-24（主会话）合并：PR #134 squash 合入 main（`108254a`）。CI 两次都过；Codex GitHub app 👍（无意见）。
