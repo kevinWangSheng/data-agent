@@ -53,7 +53,7 @@ from claude_agent_sdk._cli_version import __cli_version__
 from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent import sandbox as sandboxes
-from data_agent import verifier_v2
+from data_agent import tracing, verifier_v2
 from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.dbt_execute import DbtExecuteError, DbtRun, Target, check_outside
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
@@ -76,7 +76,14 @@ from data_agent.sandbox import (
 )
 from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState
-from data_agent.tracing import CliTrace, TraceTier
+from data_agent.tracing import (
+    CliTrace,
+    LangfuseSettings,
+    RunExport,
+    RunFacts,
+    TraceTier,
+    langfuse_keys,
+)
 from data_agent.verifier_tools import SNAPSHOT_ENV
 from data_agent.verifiers import (
     AGENT_TOOL,
@@ -456,11 +463,13 @@ def transcript_usage(path: Path) -> dict[str, Tokens]:
     """The model calls in a subagent's transcript (the CLI's `subagents/agent-<id>.jsonl`), by
     message id.
 
-    The format is the CLI's own and undocumented (CLI 2.1.301; a real sample is
-    tests/fixtures/subagent_transcript.jsonl): one JSON object per line; a model call is one
-    `"type": "assistant"` line per content block, each with `message.id` and `message.usage`, the
-    last with the call's final usage and its `message.stop_reason` (the earlier ones have no
-    output yet and a null stop_reason).
+    The format is the CLI's own and undocumented (a real sample is
+    tests/fixtures/subagent_transcript.jsonl, written by CLI 2.1.301): one JSON object per line; a
+    model call is one `"type": "assistant"` line per content block, each with `message.id` and
+    `message.usage`, the last with the call's final usage and its `message.stop_reason`. Up to
+    2.1.306 the earlier lines had no output yet and a null stop_reason; from 2.1.307 every line
+    carries the final usage and stop reason (docs/research/2026-11-23-sdk-upgrade-0.2.187.md §2.3).
+    Taking each call's last line reads both the same.
     """
     try:
         lines = path.read_text().splitlines()
@@ -1262,9 +1271,11 @@ class ModelSettings:
             # Subagents (the verifiers) run in the foreground. Launched in the background, they
             # end the main turn before their reports are in and split the run into several results.
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-            # Ticket 110: the CLI (2.1.301) does not know the model, assumes a 200,000-token
-            # window and stops the session at 177,000; DeepSeek documents 1M. Compaction runs at
-            # this window less 33,000 (367,000), digits only (2.1.301 refuses `400k`).
+            # Ticket 110: the CLI does not know the model; 2.1.301 assumed a 200,000-token
+            # window and stopped the session at 177,000, and from 2.1.323 an unknown model's
+            # default is 1M. DeepSeek documents 1M, so the window is set either way. Compaction
+            # runs at this window less 33,000 (367,000). Digits work on every version (2.1.301
+            # refused `400k`; 2.1.304 and later also take the suffix).
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
             "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
             # Blank, so an exported one never turns compaction off: the CLI reads both as true
@@ -1589,7 +1600,9 @@ def build_options(
     `network` (ticket 98) loads WebSearch and WebFetch; without it, as on every evaluation, they
     are denied. Bash is denied on every run (ADR-0010). With the docker backend the Skills name
     their scripts as the container sees them (`SKILLS_MOUNT`). `effort` (ticket 104) is the
-    session's reasoning effort; None leaves it to the CLI (`EFFORTS`), as before.
+    session's reasoning effort; None leaves it to the CLI (`EFFORTS`), as before. With `trace`
+    (ticket 112) the CLI exports its spans to the run's relay, at that tier's content; without
+    it the options set no export variable at all.
     `external_mcp` (ticket 116, `data-agent run --mcp-servers`) adds the user's servers and the
     tools their allow lists name; without it, as on every evaluation, the session has only ours.
     `charts` (ticket 119) has the server serve display_chart, which `mcp__data` allows, and adds
@@ -1674,10 +1687,12 @@ def build_options(
     external_env = {} if external_mcp is None else external_mcp.env()
     external_servers = {} if external_mcp is None else external_mcp.sdk_servers()
     external_tools = [] if external_mcp is None else external_mcp.allowed_tools()
+    # Last, so no variable above can redirect the CLI's export (`tracing.cli_env`).
+    trace_env = tracing.cli_env(trace, os.environ)
     return ClaudeAgentOptions(
         model=settings.model,
         effort=effort,
-        env=external_env | settings.sdk_env() | server_env | session_env | effort_env,
+        env=external_env | settings.sdk_env() | server_env | session_env | effort_env | trace_env,
         resume=None if turn is None else turn.resume,
         system_prompt=system_prompt(
             task,
@@ -2133,6 +2148,10 @@ async def run(
     `sandbox` also gets dbt_execute, writing to `dbt_target` (`DbtRun.of_run`: `scratch` keeps
     its profile in `<events_dir>/profiles/`, which must be outside the workspace). `effort`
     (ticket 104) is the session's reasoning effort, recorded in the `version` event when given.
+    With all three Langfuse variables in `env` (`tracing.LangfuseSettings`, ticket 112) the run is
+    exported at `trace_tier`: a relay the CLI exports to, the parent span `data-agent.run` around
+    the session, and a `trace` event (with a `trace_export_error` per dropped batch) just before
+    `result`; without them none of it is built.
     `external_mcp` (ticket 116) mounts the user's MCP servers (`build_options`); the `version`
     event names them and their allow lists, and the event log masks the values they expand.
     `charts` (ticket 119) gives the agent display_chart and the charting rule (`build_options`)
@@ -2140,6 +2159,7 @@ async def run(
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
+    langfuse = LangfuseSettings.from_env(env)
     if sandbox == "docker":
         # Looked up on the module, so a test can stand in for the docker CLI (fake_docker.py).
         if not sandboxes.docker_on_path():
@@ -2183,6 +2203,8 @@ async def run(
     for variable in task.postgres_envs:
         secrets += url_secrets(env[variable])
         names += url_names(env[variable])
+    # Masked whether or not the export is on: a shell may hold them without the address.
+    secrets += langfuse_keys(env)
     if external_mcp is not None:
         secrets += external_mcp.secrets()
         names += external_mcp.names()
@@ -2206,17 +2228,23 @@ async def run(
     )
     saving = saved_task(task.text, task.workspace) if verified else nullcontext()
     snapshotting = taken_snapshot(task.workspace) if verified else nullcontext()
+    exporting = (
+        nullcontext() if langfuse is None else RunExport(langfuse, trace_tier, secrets, names)
+    )
+    commit = git_commit()
+    skills = skill_version(config.skills_dir) if config.skill else "none"
     with (
         containers,
         saving as task_file,
         snapshotting as snapshot,
         tool_ledger(spend, task.workspace),
         EventLog(path, secrets=secrets, names=names) as log,
+        exporting as export,
     ):
         log.emit(
             "version",
-            git_commit=git_commit(),
-            skill_version=skill_version(config.skills_dir) if config.skill else "none",
+            git_commit=commit,
+            skill_version=skills,
             skills=list(injected_skills(task.type, config, task.dialects)),
             config=config.name,
             layers=config.layers(),
@@ -2240,6 +2268,25 @@ async def run(
             data_source=data_source,
             **conversation,
         )
+        cli_trace = None
+        if export is not None:
+            facts = RunFacts(
+                run_id=path.stem,
+                session=path.stem if turn is None else turn.conversation,
+                task_type=task.type,
+                config=config.name,
+                model=settings.model,
+                skill_version=skills,
+                git_commit=commit,
+                task=task.text,
+                conversation=None if turn is None else turn.conversation,
+                turn=None if turn is None else turn.number,
+            )
+            # Off the event loop: it waits for Langfuse's project id.
+            cli_trace = await asyncio.to_thread(export.start, facts)
+            if cli_trace is None:
+                log.emit("error", source="trace", error=export.failure)
+                export = None
         source_names = tuple(source.name for source in task.databases)
         budget = None if task.type == "dbt" else TurnBudget(config.max_turns[task.type])
         query_prompt = CHARTS_QUERY_PROMPT if charts else QUERY_PROMPT
@@ -2285,9 +2332,12 @@ async def run(
                 network=network,
                 dbt=dbt_run,
                 effort=effort,
+                trace=cli_trace,
                 external_mcp=external_mcp,
                 charts=charts,
             )
+            if export is not None:
+                options = dataclasses.replace(options, env=options.env | export.context_env())
             open_calls: dict[str, str] = {}
             session_id: str | None = None
             over_limit: TurnLimitPassed | None = None
@@ -2298,44 +2348,47 @@ async def run(
                 if deadline is None
                 else max(0.0, deadline - DEADLINE_MARGIN_S - time.monotonic())
             )
-            try:
-                async with timer:
-                    try:
-                        stream = (
-                            query(prompt=prompt, options=options)
-                            if steering is None
-                            else query(
-                                prompt=prompt,
-                                options=options,
-                                steering=steering,
-                                emit=log.emit,
-                                spend=spend,
+            # The parent span is current while the SDK starts the CLI, which it hands the span to.
+            current = nullcontext() if export is None else export.active()
+            with current:
+                try:
+                    async with timer:
+                        try:
+                            stream = (
+                                query(prompt=prompt, options=options)
+                                if steering is None
+                                else query(
+                                    prompt=prompt,
+                                    options=options,
+                                    steering=steering,
+                                    emit=log.emit,
+                                    spend=spend,
+                                )
                             )
-                        )
-                        async with aclosing(capped(stream, spend)) as messages:
-                            async for message in messages:
-                                session_id = message_session(message) or session_id
-                                if isinstance(message, ResultMessage):
-                                    final = message
-                                else:
-                                    if budget is not None:
-                                        budget.observe(message)
-                                    record_message(log, message, tools, guarded, source_names)
-                                    track_open_calls(message, open_calls)
-                    except TurnLimitPassed as exc:
-                        over_limit = exc
-                    except Exception as exc:
-                        # A failed run ends with a ResultMessage and then a ResultError, whose
-                        # details the result event already holds. Anything else (the SDK also
-                        # raises plain Exceptions, e.g. an `initialize` timeout) means the run
-                        # itself broke.
-                        if final is None:
-                            log.emit(
-                                "error", source="sdk", error=str(exc), stderr_tail=stderr[-20:]
-                            )
-            except TimeoutError:
-                if not timer.expired():
-                    raise
+                            async with aclosing(capped(stream, spend)) as messages:
+                                async for message in messages:
+                                    session_id = message_session(message) or session_id
+                                    if isinstance(message, ResultMessage):
+                                        final = message
+                                    else:
+                                        if budget is not None:
+                                            budget.observe(message)
+                                        record_message(log, message, tools, guarded, source_names)
+                                        track_open_calls(message, open_calls)
+                        except TurnLimitPassed as exc:
+                            over_limit = exc
+                        except Exception as exc:
+                            # A failed run ends with a ResultMessage and then a ResultError, whose
+                            # details the result event already holds. Anything else (the SDK also
+                            # raises plain Exceptions, e.g. an `initialize` timeout) means the run
+                            # itself broke.
+                            if final is None:
+                                log.emit(
+                                    "error", source="sdk", error=str(exc), stderr_tail=stderr[-20:]
+                                )
+                except TimeoutError:
+                    if not timer.expired():
+                        raise
         if spend is not None and spend.stopped:
             stopped = spend.result_fields()
         elif timer.expired() and final is None:
@@ -2344,7 +2397,8 @@ async def run(
             stopped = turn_limit_fields(spend, over_limit)
         else:
             stopped = None
-        if stopped is None and (answer := final_answer(final)) is not None:
+        answer = final_answer(final) if stopped is None else None
+        if answer is not None:
             # The agent's final message, the run's answer. The agent names no query it rests on
             # (no prompt asks it to), so the query is left empty rather than guessed.
             log.emit("answer", text=answer, sql_tool_use_id=None)
@@ -2360,9 +2414,15 @@ async def run(
                     "the result is kept as given",
                 )
                 turn_result, restored = final, None
+        fields = stopped or ended_by_sdk(turn_result, settings.model, spend)
+        if export is not None:
+            # Before `result`, which readers take as the event file's end (web/runs.py). The CLI
+            # has exited, so the relay has all it will get.
+            for kind, values in await asyncio.to_thread(export.finish, fields, answer):
+                log.emit(kind, **values)
         log.emit(
             "result",
-            **(stopped or ended_by_sdk(turn_result, settings.model, spend)),
+            **fields,
             session_id=session_id,
             # The earlier turns' spend the CLI restored on resuming the session (`restored_cost`);
             # the counts above leave it out.

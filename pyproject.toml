@@ -6,11 +6,15 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=2.8,<3",
-    "claude-agent-sdk==0.2.168",
+    "claude-agent-sdk==0.2.187",
     "duckdb==1.2.2",
     "fastapi>=0.120",
     "mcp>=2.2,<3",
+    # The run's parent span `data-agent.run` and its export to Langfuse (observability spec
+    # "新增依赖"); OpenTelemetry's official packages, Apache-2.0.
+    "opentelemetry-exporter-otlp-proto-http==1.45.1",
     "opentelemetry-proto==1.45.1",
+    "opentelemetry-sdk==1.45.1",
     "psycopg[binary]>=3.2,<4",
     "pytz>=2025.2",
     "sqlglot==30.8.0",
@@ -30,8 +34,6 @@ dev = [
   "dbt-postgres>=1.9,<1.11",
   "harbor==0.24.0",
   "httpx>=0.28",
-  "opentelemetry-exporter-otlp-proto-http==1.45.1",
-  "opentelemetry-sdk==1.45.1",
   "pre-commit>=4.2",
   "pytest>=8.4",
   "pytest-asyncio>=1.2",

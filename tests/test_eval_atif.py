@@ -13,8 +13,8 @@ VERSION = {
     "config": "full",
     "layers": {"skill": True, "verifiers": True, "context": True},
     "model": "deepseek-flash",
-    "sdk_version": "0.2.168",
-    "cli_version": "2.1.301",
+    "sdk_version": "0.2.187",
+    "cli_version": "2.1.330",
 }
 RESULT = {
     "type": "result",

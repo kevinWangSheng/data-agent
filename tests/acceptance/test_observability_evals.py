@@ -46,8 +46,6 @@ from evals import ablate, board, dab, harbor_agent
 from evals.__main__ import build_parser
 from evals.harbor_agent import DataAgent
 
-TICKET_112 = pytest.mark.xfail(strict=True, reason="ticket 112: the evaluation entries' --trace")
-
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 FAKE_DAB = FIXTURES / "fake_dab"
 
@@ -134,7 +132,6 @@ def manifest(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(harbor_agent, "MANIFEST", EVAL_MANIFEST)
 
 
-@TICKET_112
 @pytest.mark.usefixtures("manifest")
 async def test_harbor_passes_the_langfuse_variables_only_with_trace(
     tmp_path: Path, langfuse: FakeLangfuse
@@ -146,7 +143,6 @@ async def test_harbor_passes_the_langfuse_variables_only_with_trace(
     assert langfuse_vars(env) == {}
 
 
-@TICKET_112
 @pytest.mark.usefixtures("manifest")
 @pytest.mark.parametrize(
     ("task", "tier"),
@@ -161,7 +157,6 @@ async def test_harbor_picks_the_tier_by_the_tasks_split(
     assert tier_flag(command) == tier
 
 
-@TICKET_112
 @pytest.mark.usefixtures("manifest")
 async def test_harbor_exports_exactly_one_trial_per_task_and_job(
     tmp_path: Path, langfuse: FakeLangfuse
@@ -180,7 +175,6 @@ async def test_harbor_exports_exactly_one_trial_per_task_and_job(
             assert langfuse_vars(exported[0]) == langfuse.env()
 
 
-@TICKET_112
 @pytest.mark.parametrize("command", ["ablate", "board"])
 def test_ablate_and_board_ask_harbor_for_trace_only_with_trace(
     tmp_path: Path, command: str
@@ -256,7 +250,6 @@ def otel_keys(options: ClaudeAgentOptions) -> list[str]:
     return [name for name in options.env if name.startswith("OTEL_")]
 
 
-@TICKET_112
 async def test_dab_exports_the_first_run_of_a_query_on_the_dev_tier_only_with_trace(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:

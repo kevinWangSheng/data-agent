@@ -114,6 +114,12 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
         help=f"stop after N infrastructure errors in a row (default {ablate.FAIL_FAST})",
     )
     parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="with DATA_AGENT_LANGFUSE_* set: export each task's first trial to Langfuse, at the "
+        "tier of its split in evals/manifest.json (Harbor's `--ak trace=true`)",
+    )
+    parser.add_argument(
         "--skip-smoke",
         action="store_true",
         help="no preflight smoke run (resuming a batch whose smoke passed)",
@@ -170,6 +176,7 @@ def harbor_run_args(
         *("run", "--config", str(args.out / JOB_CONFIG_FILE), "-d", DATASET_VERSION),
         *("-o", str(jobs), "--job-name", job_name, "-k", str(trials)),
         *("--ak", f"run_config={args.config}"),
+        *(("--ak", "trace=true") if args.trace else ()),
         *(a for task in tasks for a in ("-i", f"{org}/{task}")),
     ]
 

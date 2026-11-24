@@ -1,6 +1,6 @@
 """jaffle-shop cases (ticket 08): `data-agent run` on dbt-labs' jaffle_shop with a local Postgres.
 
-    python -m evals jaffle --postgres-env VAR --out DIR [--config full] [--case ID ...]
+    python -m evals jaffle --postgres-env VAR --out DIR [--config full] [--case ID ...] [--trace]
 
 VAR names an environment variable holding the URL of a scratch database kept for these cases:
 the runner drops its `jaffle_*` schemas. jaffle_shop is cloned at the commit `jaffle_shop/eval.json`
@@ -37,6 +37,7 @@ from psycopg.conninfo import conninfo_to_dict
 from data_agent.context_tools import literal, quote
 from data_agent.events import mask, url_names, url_secrets
 from data_agent.gateway import Gateway, PostgresGateway, QueryBlocked, QueryFailed
+from data_agent.tracing import LANGFUSE_ENV, TraceTier
 
 EVAL_FILE = Path(__file__).resolve().parent / "jaffle_shop" / "eval.json"
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
@@ -48,6 +49,10 @@ NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 # The MCP server's wording for a statement the gateway refused (mcp_server.run_query).
 GATEWAY_BLOCK = "blocked by the read-only gateway"
 RUN_TIMEOUT = 1800
+# The tier of a traced case (`--trace`, ticket 112). jaffle-shop is in no split of
+# evals/manifest.json, so it takes the held-out tier like any task the manifest does not name;
+# the spec also counts it as public demo data, so `full` is the other reading.
+TRACE_TIER: TraceTier = "structure"
 DBT_TIMEOUT = 600
 PROFILE = """\
 jaffle_shop:
@@ -242,6 +247,15 @@ def case_env(
     }
 
 
+def traced(env: Mapping[str, str], trace: bool) -> tuple[dict[str, str], list[str]]:
+    """The agent run's environment and its extra `data-agent run` arguments. With `trace`, the
+    tier; without, the Langfuse variables are dropped, so the run exports nothing even when the
+    shell has all three (an evaluation exports only when asked, observability spec "覆盖范围")."""
+    if trace:
+        return dict(env), ["--trace-tier", TRACE_TIER]
+    return {k: v for k, v in env.items() if k not in LANGFUSE_ENV}, []
+
+
 def apply_edits(root: Path, edits: Sequence[Mapping[str, str]]) -> None:
     for edit in edits:
         path = root / edit["file"]
@@ -315,7 +329,13 @@ def prepare_case_dir(project: Path, case_dir: Path) -> Path:
 
 
 def run_case(
-    case: Mapping[str, Any], project: Path, out: Path, url_env: str, config: str, tolerance: float
+    case: Mapping[str, Any],
+    project: Path,
+    out: Path,
+    url_env: str,
+    config: str,
+    tolerance: float,
+    trace: bool = False,
 ) -> dict[str, Any]:
     url = os.environ[url_env]
     case_dir = out / case["id"]
@@ -324,7 +344,7 @@ def run_case(
     profile, profile_env = dbt_profile(url, schema)
     (workspace / "profiles.yml").write_text(profile)
     apply_edits(workspace, case.get("setup", {}).get("edits", []))
-    env = case_env(os.environ, profile_env, workspace)
+    env, trace_args = traced(case_env(os.environ, profile_env, workspace), trace)
     reset_schemas(url)
     dbt(workspace, env, "seed")
     dbt(workspace, env, "run")
@@ -339,6 +359,7 @@ def run_case(
         *("--type", KINDS[case["kind"]], "--workspace", str(workspace)),
         *("--postgres-env", url_env, "--config", config),
         *("--events-dir", str(case_dir / "events")),
+        *trace_args,
     ]
     proc = subprocess.run(command, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT)
     stdout, stderr = redact(proc.stdout, url), redact(proc.stderr, url)
@@ -389,7 +410,9 @@ def run(args: argparse.Namespace) -> int:
     results = []
     for case in selected:
         try:
-            result = run_case(case, project, args.out, args.postgres_env, args.config, tolerance)
+            result = run_case(
+                case, project, args.out, args.postgres_env, args.config, tolerance, args.trace
+            )
         except (
             *(RuntimeError, ValueError, OSError, subprocess.TimeoutExpired),
             *(QueryBlocked, QueryFailed, psycopg.Error),
@@ -422,4 +445,10 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.add_argument("--out", type=Path, required=True, help="run directory")
     parser.add_argument("--config", default="full")
     parser.add_argument("--case", action="append", help="run only this case (repeatable)")
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help=f"with DATA_AGENT_LANGFUSE_* set: export each case's run to Langfuse ({TRACE_TIER} "
+        "tier)",
+    )
     parser.set_defaults(run=run)

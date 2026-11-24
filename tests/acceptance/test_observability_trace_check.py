@@ -28,8 +28,6 @@ from observability_support import (
 
 from data_agent import cli
 
-TICKET_112 = pytest.mark.xfail(strict=True, reason="ticket 112: data-agent trace-check")
-
 TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
 
 
@@ -89,7 +87,6 @@ def strings_in(value: Any) -> Iterator[str]:
             yield from strings_in(item)
 
 
-@TICKET_112
 def test_trace_check_prints_the_traces_structure_and_nothing_of_its_content(
     tmp_path: Path, langfuse: FakeLangfuse, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -119,7 +116,6 @@ def test_trace_check_prints_the_traces_structure_and_nothing_of_its_content(
         assert value not in output, value
 
 
-@TICKET_112
 @pytest.mark.usefixtures("langfuse")
 def test_trace_check_fails_on_a_run_without_a_trace_event(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]

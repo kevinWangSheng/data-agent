@@ -69,10 +69,6 @@ from data_agent.run_config import load_config
 from data_agent.trace_relay import AnonIds, TraceRelay, rewrite
 from data_agent.tracing import LangfuseSettings, TraceTier
 
-TICKET_112 = pytest.mark.xfail(
-    strict=True, reason="ticket 112: run starts the relay and writes its report"
-)
-
 TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
 USAGE_PREFIXES = ("gen_ai.usage.", "llm.token_count.")
 # Attributes holding a secret or the endpoint: dropped or masked, either is fine.
@@ -435,7 +431,6 @@ async def run_with_relay(
     return outcome, read_events(outcome.events_path)
 
 
-@TICKET_112
 async def test_the_trace_event_counts_what_langfuse_received(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
@@ -449,7 +444,6 @@ async def test_the_trace_event_counts_what_langfuse_received(
     assert not [e for e in events if e["type"] == "trace_export_error"]
 
 
-@TICKET_112
 async def test_a_langfuse_error_leaves_the_run_to_finish_with_an_error_event(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:

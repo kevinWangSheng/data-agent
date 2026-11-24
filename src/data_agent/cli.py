@@ -30,6 +30,7 @@ from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_multi_server, build_server
 from data_agent.run_config import CONFIG_NAMES, RunConfig, load_config
 from data_agent.sandbox import BACKENDS, DockerSandbox, LocalSandbox, Sandbox
+from data_agent.tracing import TRACE_TIERS
 from data_agent.web.sources import DataSource, load_data_sources
 
 EXIT_OK, EXIT_UNFINISHED, EXIT_ERROR = 0, 1, 2
@@ -312,6 +313,15 @@ def main(argv: list[str] | None = None) -> None:
         choices=EFFORTS,
         help="the model's reasoning effort (default: the Claude Code CLI's)",
     )
+    # Run-level too (ticket 112): the export happens only with the three Langfuse variables set;
+    # this picks what it carries. The evaluation entries pass it by the task's split.
+    run_cmd.add_argument(
+        "--trace-tier",
+        choices=TRACE_TIERS,
+        default="full",
+        help="with DATA_AGENT_LANGFUSE_* set: full (everything but credentials) or structure "
+        "(allowlisted structure only, anonymous ids) (default: full)",
+    )
     # A turn of a conversation (tests/acceptance/test_chat_api.py, contract item 5); evaluations
     # and single runs never set these (spec decision 19).
     run_cmd.add_argument(
@@ -340,6 +350,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     run_cmd.add_argument("--charts", action="store_true", help=CHARTS_HELP)
 
+    check = commands.add_parser(
+        "trace-check", help="print the structure of a run's trace as Langfuse holds it"
+    )
+    check.add_argument(
+        "run", help="the run's event file, or its run id (looked up as runs/**/<run id>.jsonl)"
+    )
+
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
     web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
     web.add_argument("--port", type=int, default=WEB_PORT)
@@ -366,6 +383,11 @@ def main(argv: list[str] | None = None) -> None:
     mcp_launch.add_argument("--server", required=True, help="the server's name in the file")
 
     args = parser.parse_args(argv)
+    if args.command == "trace-check":
+        # Imported here, like the web stack: no other command needs it.
+        from data_agent import trace_check
+
+        sys.exit(trace_check.main(args.run, os.environ))
     if args.command == LAUNCH_COMMAND:
         launch(args.mcp_servers, args.server, os.environ)
     if args.command == "web":
@@ -452,6 +474,7 @@ def main(argv: list[str] | None = None) -> None:
                 network=args.network,
                 dbt_target=args.dbt_target,
                 effort=args.effort,
+                trace_tier=args.trace_tier,
                 external_mcp=external,
                 charts=args.charts,
             )

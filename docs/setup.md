@@ -193,6 +193,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 | 6 | Harbor Hub 账号 | 上榜提交（人做），data-eng-bench 提交要 Hub 上的 job 链接 |
 | 7 | 服务器上的 PostgreSQL ≥17.5、MongoDB 8（用 Docker 起） | 工单 13 DAB；jaffle-shop（工单 08）在本地用 colima 起。服务器上由 `da-remote benchmarks` 起（工单 21） |
 | 8 | DAB 数据（`dataset_manifest.tsv` 36 个文件约 13 GB） | 工单 13；服务器上由 `da-remote benchmarks` 下载并校验（工单 21） |
+| 9 | Langfuse 项目（Cloud US 区，或自托管）的一对 API key | 可选的 trace 导出（`.scratch/observability/spec.md`）。三个变量 `DATA_AGENT_LANGFUSE_PUBLIC_KEY`、`DATA_AGENT_LANGFUSE_SECRET_KEY`、`DATA_AGENT_LANGFUSE_BASE_URL` 都设了才导出，缺一个就什么都不发。本机写进 `~/.config/data-agent/env`；服务器上**由人**加进服务器的 env 文件（agent 不读也不写它），Harbor 的 trial 从那里经 `evals/harbor_agent.py` 拿到，只有 `--trace` 且这道题第一个 trial 才传进容器。Cloud 和自托管只差 `BASE_URL`。往 Cloud 只发公开演示数据（jaffle-shop、仓库夹具、公开榜单） |
 
 不需要：GPU、云数仓账号、LiveSQLBench 标准答案邮件（二期）。
 

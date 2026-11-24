@@ -258,7 +258,8 @@ def call(
 TOOL_RESULT = UserMessage(content=[])
 TRANSCRIPT = Path(__file__).parent / "fixtures" / "subagent_transcript.jsonl"
 # The fixture is a real verifier transcript (CLI 2.1.301, scrubbed): 4 calls, 9678 uncached
-# input, 26112 cache-read and 7201 output tokens.
+# input, 26112 cache-read and 7201 output tokens. It keeps 2.1.301's earlier lines without the
+# final usage; from 2.1.307 every line has it (`agent.transcript_usage`), read the same way.
 TRANSCRIPT_USD = (9678 * 0.30 + 26112 * 0.006 + 7201 * 1.2) / 1e6
 
 

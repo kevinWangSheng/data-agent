@@ -20,6 +20,7 @@ from data_agent.gateway import PostgresGateway, QueryBlocked, QueryFailed
 from data_agent.run_config import load_config
 from data_agent.tool_annotations import CHAT_ENV
 from data_agent.tool_spend import LEDGER_ENV
+from data_agent.tracing import LANGFUSE_ENV
 
 DATA_AGENT = Path(sys.executable).with_name("data-agent")
 URL_ENV = "DATA_AGENT_TEST_POSTGRES_URL"
@@ -172,7 +173,9 @@ async def test_run_hands_the_database_variable_from_its_env_to_the_sdk(
     tools = {*settings.tool_env(), LEDGER_ENV}
     # The clarification tool's switch, blank outside a conversation turn (ticket 91).
     assert options.env[CHAT_ENV] == ""
-    assert set(options.env) == {*settings.sdk_env(), *tools, CHAT_ENV, "DA_TEST_URL"}
+    # The Langfuse keys, blank on every run so the CLI never inherits them (ticket 112).
+    keys = set(LANGFUSE_ENV)
+    assert set(options.env) == {*settings.sdk_env(), *tools, CHAT_ENV, "DA_TEST_URL", *keys}
 
 
 async def test_run_without_the_database_variable_in_its_env_is_a_config_error(

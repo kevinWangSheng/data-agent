@@ -330,3 +330,22 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
 - **提交包**（本机和服务器的 `runs/f19c-dab/`，旧包 `runs/f19b-dab/` 保留）：`pkg/submission.json`（no-context 的 270 条，和算分用的那份逐字节相同，sha256 前缀 87bfd3ddc70f8164）、`data-agent-dab-traces.zip`（14 MB，每个 trial 的 `events.jsonl` 和 `dab_tool_calls.jsonl`）、`PR.md`（三轮分数并排，写明每轮看过什么；Tuned prompt 一栏留空等人定）。scrub（69a7e2b）改了 355 个文件，密钥和 endpoint 0 处；剩的 `/home/corbax` 在 GITHUB_REPOS query2，是数据集里 SVG 文件的内容，和上次一样没有处理。
 - **对照 DAB 提交规则的自查**（`runs/f19c-dab/selfcheck/check.py`，同第 18b 项的脚本）：没有 trial 读 `ground_truth`、`validate.py`、`queries.json` 或别的提交文件（命中的 1 处是 agnews query4 run4 自己写的 `in_query.json`）。没有联网请求。crmarenapro query12 run3 在沙箱本地文件系统里找过原始数据集的缓存（`find / -iname "*crmarena*"`、`*huggingface*` 等），没找到，答案也没通过；按规则不构成泄漏，`PR.md` 里照实写。`classify_text` 调用 123 次，都在 agnews。
 - **提交决定**（人 2026-11-22，见 ADR-0005 Update 2026-11-22）：`runs/f19c-dab/` 不提交；#144 换成盲跑（`runs/f19-dab/pkg/submission.json`，sha256 前缀 7d89d2d843f9e5c2），标 Tuned prompt = 否，新说明在 `runs/f19-dab/PR-144.md`，轨迹放 release `dab-submission-2026-11-13`（tag 指向 b7c6071）。
+
+## Update 2026-11-23：claude-agent-sdk 0.2.168 → 0.2.187（自带 CLI 2.1.301 → 2.1.330，工单 112）
+
+依据：`docs/research/2026-11-23-sdk-upgrade-0.2.187.md`、`.scratch/observability/spec.md`"SDK 升级"。这一节先写工单 112 已确认的部分；实测 2、3 和真实回归运行由主会话补在后面。
+
+- **静态改动**：`pyproject.toml` 钉 0.2.187；`tests/test_harbor_agent.py` 的版本断言、`tests/test_eval_atif.py` 的 `sdk_version`/`cli_version` 跟着改。`agent.py` 两处注释按 2.1.330 改写，设置本身不变：子 agent transcript（2.1.307 起每个内容块行都带最终 usage 和 stop reason，取最后一行的逻辑新旧都对；夹具 `tests/fixtures/subagent_transcript.jsonl` 仍是 2.1.301 的样本，没换）；窗口与压缩（2.1.323 起不认识的模型默认窗口 1M，2.1.304 起 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 也认 `400k`；我们仍设 `1000000` 和 `400000`）。
+- **回归（单元测试）**：升级后除上面两个版本号测试，没有别的测试失败（工单 112 Comments 有全量输出）。
+- **实测 1：不设 effort 时 CLI 发什么**（不调模型：`data-agent run` 指向本地假端点，记下 `/v1/messages` 请求体的 `output_config`；一道 shop.sql 查数题，`--config no-context --sandbox local`）。和 2.1.301（工单 104）相同：
+
+  | 情况 | `output_config` |
+  |---|---|
+  | 不传 `--effort`，空的 `CLAUDE_CONFIG_DIR` | `{"effort": "high"}` |
+  | 不传 `--effort`，用户设置 `effortLevel: xhigh` | `{"effort": "xhigh"}` |
+  | `--effort max` | `{"effort": "max"}` |
+  | 只设 `CLAUDE_CODE_EFFORT_LEVEL=low` | `{"effort": "low"}` |
+  | `CLAUDE_CODE_EFFORT_LEVEL=low` 加 `--effort max` | `{"effort": "max"}`（工单 104 的覆盖仍有效） |
+
+  新变化：每个请求的 `thinking` 从 `{"type": "adaptive"}` 变成 `{"type": "adaptive", "display": "updates"}`。DeepSeek 端点认不认 `display` 未确认，由主会话的真实运行看。
+- **Harbor 离线安装**（工单 20 的做法：本机按容器平台备好 wheel，容器里 `--offline --no-index` 装；`runs/112/offline_install.py` 照 `DataAgent.install()` 的容器步骤，在 `--network none` 的容器里跑）：本机没有 data-eng-bench 的任务镜像，用 `python:3.12-slim`（CPython 3.12、glibc 2.41、aarch64，和工单 20 记的任务镜像同一 Python 与 glibc）代替。wheel 53 个共 208 MB，其中 `claude_agent_sdk-0.2.187-py3-none-manylinux_2_17_aarch64.whl` 167 MB（0.2.168 是 114 MB）；容器内 `installed in 12 s`（依赖 4.8 s，`data-agent --help` 5.1 s），离 Harbor 的 360 秒上限很远。x86_64 服务器上真实 trial 的 setup 用时由主会话从开发集初筛的 `agent/setup/install.log` 取。

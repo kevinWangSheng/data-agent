@@ -189,6 +189,12 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
         "run_config comes from --config",
     )
     parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="with DATA_AGENT_LANGFUSE_* set: export each task's first trial to Langfuse, at the "
+        "tier of its split in evals/manifest.json (Harbor's `--ak trace=true`)",
+    )
+    parser.add_argument(
         "--skip-smoke",
         action="store_true",
         help="no preflight smoke run (resuming a batch whose smoke passed)",
@@ -445,6 +451,7 @@ def harbor_run_args(
         *("-o", str(jobs), "--job-name", config, "-k", str(trials)),
         *("--ak", f"run_config={config}"),
         *(a for kwarg in args.agent_kwarg for a in ("--ak", kwarg)),
+        *(("--ak", "trace=true") if args.trace else ()),
         *(("-m", args.model) if args.model else ()),
         *(a for task in tasks for a in ("-i", task)),
     ]
