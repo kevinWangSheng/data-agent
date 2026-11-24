@@ -311,26 +311,37 @@ function clockOf(events: readonly RunEvent[]): (e: RunEvent) => number | null {
   }
 }
 
-/** Events the trace export writes after the relay stops (src/data_agent/tracing.py
- *  `RunExport.finish`), up to its drain timeout after the run ended: they are not part of the run's
- *  time. */
-const EXPORT_EVENTS: ReadonlySet<string> = new Set(['trace', 'trace_export_error'])
+/** The event type that carries the run's Langfuse trace (./trace.ts reads its link). */
+export const TRACE_EVENT = 'trace'
 
-/** The run's last event that is not an export event: where the run ended. */
-function runEnd(events: readonly RunEvent[]): RunEvent | undefined {
-  return events.findLast((e) => !EXPORT_EVENTS.has(e.type))
+/** Whether the trace export wrote this event: `trace` and `trace_export_error`, or the `error`
+ *  (`source: "trace"`) written instead when the export fails (src/data_agent/tracing.py
+ *  `RunExport.finish`). The export stops the relay and waits for it to drain, up to its timeout,
+ *  so these events' times are not part of the run's time. */
+function isExportEvent(e: RunEvent): boolean {
+  return e.type === TRACE_EVENT || e.type === 'trace_export_error' || (e.type === 'error' && e.source === 'trace')
+}
+
+/** The index of the event where the run ended: the one before the first export event (the moment
+ *  the export started; the backend writes `result` after the export, old made-up data writes
+ *  `trace` after `result`); the last event when there is no export event. -1 for no events. */
+function runEndIndex(events: readonly RunEvent[]): number {
+  const firstExport = events.findIndex(isExportEvent)
+  return firstExport > 0 ? firstExport - 1 : events.length - 1
 }
 
 /** Each event's time, in milliseconds after the run's first event (null when unknown): replay cuts
- *  its prefix and skips idle gaps by these. An export event comes no later than the run's end, so
- *  replay shows it there instead of waiting for the export. */
+ *  its prefix and skips idle gaps by these. Events after the run's end (the export events and the
+ *  `result` written after them) come no later than it, so replay does not wait for the export;
+ *  when the run's end has no time, they have none either and add no wait. */
 export function eventTimes(events: readonly RunEvent[]): (number | null)[] {
   const timeOf = clockOf(events)
-  const last = runEnd(events)
-  const end = last ? timeOf(last) : null
-  return events.map((e) => {
+  const endIndex = runEndIndex(events)
+  const end = endIndex >= 0 ? timeOf(events[endIndex]) : null
+  return events.map((e, i) => {
     const ms = timeOf(e)
-    return ms !== null && end !== null && EXPORT_EVENTS.has(e.type) ? Math.min(ms, end) : ms
+    if (i <= endIndex || ms === null) return ms
+    return end === null ? null : Math.min(ms, end)
   })
 }
 
@@ -531,7 +542,7 @@ function summarize(
   found: { version?: RunEvent; task?: RunEvent; status?: RunEvent; result?: RunEvent },
 ): RunSummary {
   const { version, task, status, result } = found
-  const end = runEnd(events)
+  const end = events.at(runEndIndex(events))
   const durationMs = (end ? clockOf(events)(end) : null) ?? 0
 
   let runStatus: RunStatus = 'running'
