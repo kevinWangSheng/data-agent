@@ -430,3 +430,5 @@ The run scripts and logs are under `runs/126/` and are not committed.
 This notification only confirms the result already reported: `make check` on `0c58c74` exited 0 (`2950 passed, 2 skipped, 79 deselected, 107 xfailed`). Nothing else changed.
 
 - 2026-11-24（主会话）"待人定" 1–12 都在契约和 §10 的范围内，按 agent 的选择接受。真实一轮（开发集运行 + improve 第 1 轮）什么时候跑，待人定（主会话建议推到里程碑，复用那时的开发集统一评估）。
+
+- 2026-11-24（人定）真实一轮推到里程碑：所有改 agent 行为的工单合入后跑开发集统一评估，improve 第 1 轮用那次的 `full` 结果当输入（spec "验收" 已改）。本工单合入时只验收代码和测试（`make check`、假端点整轮、Codex 无意见）；上面"主会话合入后要跑的命令"挪到里程碑执行，第 1 条开发集运行由里程碑的统一评估代替。
