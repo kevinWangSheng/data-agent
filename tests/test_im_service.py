@@ -108,6 +108,17 @@ def test_a_bad_file_stops_the_server_naming_the_platform(
     assert "slack" in err
 
 
+def test_a_token_written_where_its_variable_name_goes_is_not_echoed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tokens: None,
+) -> None:
+    # `refused` checks that the token is nowhere on stderr.
+    err = refused(tmp_path, monkeypatch, capsys, SLACK.replace(f'"{BOT_ENV}"', f'"{BOT_TOKEN}"'))
+    assert "slack" in err
+
+
 def test_without_im_runs_get_the_servers_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

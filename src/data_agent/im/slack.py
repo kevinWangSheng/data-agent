@@ -10,8 +10,9 @@ Socket Mode, so the bot needs no public address. Part of the extra `data-agent[i
 - `Incoming.thread_id` is the message's `thread_ts`, or its own `ts` for a top-level message:
   the bot answers in the message's thread, in a direct message too. The bot is mentioned when
   the text has `<@bot user id>` (from `auth.test` at start), which `text` has taken out.
-- Every message goes out as a section block of Slack mrkdwn (`to_mrkdwn`) with the buttons in an
-  actions block after it, and `text` as the notification's fallback; an edit sends the blocks
+- Every message goes out as section blocks of Slack mrkdwn (`to_mrkdwn`; one, or more when the
+  escapes take it past a section's 3,000 characters) with the buttons in an actions block after
+  them, and `text` as the notification's fallback; an edit sends the blocks
   again, so one without buttons takes them off.
 - A button press (`block_actions`) is acknowledged first, then handed on. `Press.thread_id` is
   the thread of the button's message (the bot only posts into threads); `direct` is a channel
@@ -200,9 +201,9 @@ def to_press(body: Mapping[str, Any]) -> Press | None:
 def message_payload(message: Outgoing) -> dict[str, Any]:
     """`chat.postMessage` / `chat.update` arguments: `text` and `blocks`."""
     text = to_mrkdwn(message.text)
-    section = text if len(text) <= SECTION_CHARS else text[: SECTION_CHARS - 1] + "…"
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": section}}
+        for section in sections(text)
     ]
     if message.buttons:
         blocks.append(
@@ -220,6 +221,18 @@ def message_payload(message: Outgoing) -> dict[str, Any]:
             }
         )
     return {"text": text, "blocks": blocks}
+
+
+def sections(text: str) -> list[str]:
+    """The mrkdwn in pieces a section block holds: escapes can take a message within
+    `LIMITS.max_chars` past `SECTION_CHARS`. Cut after a line, or anywhere in a line longer than
+    a section; the pieces joined are the text."""
+    pieces: list[str] = []
+    while len(text) > SECTION_CHARS:
+        cut = text.rfind("\n", 0, SECTION_CHARS) + 1 or SECTION_CHARS
+        pieces.append(text[:cut])
+        text = text[cut:]
+    return [*pieces, text]
 
 
 def to_mrkdwn(markdown: str) -> str:

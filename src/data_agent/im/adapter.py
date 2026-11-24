@@ -283,26 +283,30 @@ class Adapter:
                 chat, thread, "This question is no longer open; type your answer in the thread."
             )
             return
+        option = question.options[int(number) - 1]
+        # A refused answer (another run going) leaves the question open, its buttons on.
+        if not await self.send_turn(question.conversation, option, chat, question.thread_id):
+            return
         del self.questions[(chat, press.message_id)]
         if self.platform.capabilities.edit:
             # Its buttons go, so the question is answered once.
             await self.edit(chat, press.message_id, Outgoing(question.text))
-        option = question.options[int(number) - 1]
-        await self.send_turn(question.conversation, option, chat, question.thread_id)
 
-    async def send_turn(self, conversation: str, text: str, chat: str, thread: str | None) -> None:
+    async def send_turn(self, conversation: str, text: str, chat: str, thread: str | None) -> bool:
+        """Whether `send()` took the message (a turn or a steer); a refusal is told."""
         try:
             sent = await asyncio.to_thread(self.conversations.send, conversation, text)
         except Refused as exc:
             await self.reply(chat, thread, exc.detail)
-            return
+            return False
         if sent.get("kind") != "turn":
-            return
+            return True
         turn = Turn(conversation, chat, thread, str(sent["run_id"]), edited_at=self.clock())
         if self.platform.capabilities.edit:
             turn.shown = status_text([])
             turn.status_id = await self.send(chat, thread, Outgoing(turn.shown, self.stop()))
         self.turns[turn.run_id] = turn
+        return True
 
     async def stop_turn(self, conversation: str | None, chat: str, thread: str | None) -> None:
         if conversation is None:

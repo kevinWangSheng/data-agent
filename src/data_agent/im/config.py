@@ -102,9 +102,10 @@ def read_table(
         if not isinstance(variable, str) or not variable:
             raise ImConfigError(f"{where}: {key} must name the variable holding the token")
         if not variable.startswith(prefix) or variable == prefix:
+            # Not echoed: it may be a token written where its variable's name goes.
             raise ImConfigError(
-                f"{where}: {key} names {variable}; a {platform} token's variable starts "
-                f"with {prefix}"
+                f"{where}: {key} must name a variable starting with {prefix} (the name, "
+                "never the token)"
             )
         value = environ.get(variable, "")
         if not value.strip():

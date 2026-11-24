@@ -228,6 +228,17 @@ def test_a_section_never_passes_slacks_limit() -> None:
     assert len(payload["blocks"][0]["text"]["text"]) <= SECTION_CHARS
 
 
+def test_escapes_past_a_sections_limit_go_into_more_sections() -> None:
+    text = "a & b, " * (LIMITS.max_chars // 7 - 3) + "the conclusion."
+    assert len(text) <= LIMITS.max_chars
+    payload = message_payload(Outgoing(text, (Button("Stop", "stop"),)))
+    sections = [block for block in payload["blocks"] if block["type"] == "section"]
+    assert len(sections) > 1
+    assert all(len(block["text"]["text"]) <= SECTION_CHARS for block in sections)
+    assert "".join(block["text"]["text"] for block in sections) == to_mrkdwn(text)
+    assert payload["blocks"][-1]["type"] == "actions"
+
+
 def test_the_limits() -> None:
     assert LIMITS.max_chars < SECTION_CHARS
     assert LIMITS.edit_interval == 2.0

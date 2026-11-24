@@ -20,6 +20,7 @@ from data_agent.im.platform import (
     Outgoing,
     Press,
 )
+from data_agent.web.launcher import Refused
 from data_agent.web.runs import RunsDir
 
 INTERVAL = 2.0
@@ -78,6 +79,8 @@ class Conversations:
         self.fail = fail
         self.created: list[str] = []
         self.sent: list[tuple[str, str]] = []
+        # Raised by the next `send` calls, in order.
+        self.refusals: list[Refused] = []
 
     def create(self) -> str:
         if self.fail:
@@ -86,6 +89,8 @@ class Conversations:
         return self.created[-1]
 
     def send(self, conversation: str, text: str, network: bool = True) -> dict[str, Any]:
+        if self.refusals:
+            raise self.refusals.pop(0)
         self.sent.append((conversation, text))
         run_id = f"run{len(self.sent)}"
         (self.runs.path / run_id).mkdir()
@@ -206,3 +211,29 @@ async def test_a_question_asked_before_a_restart_says_it_is_no_longer_open(
     await adapter.on_press(Press("slack", "C1", "T1", "U1", False, "m9", "answer:1"))
     assert "no longer open" in platform.sent[-1].text
     assert conversations.sent == []
+
+
+async def test_a_refused_answer_keeps_the_question_open(tmp_path: Path) -> None:
+    platform = Platform()
+    adapter, conversations, runs, _ = await bot(tmp_path, platform)
+    await adapter.on_message(mention("What was the 2024 revenue?"))
+    clarification = {
+        "type": "clarification",
+        "question": "Net or gross?",
+        "options": ["Net", "Gross"],
+    }
+    write_events(runs, "run1", clarification, {"type": "result"})
+    await adapter.poll()
+    # The question is the last message sent so far, with a button per option.
+    asked_id = f"m{len(platform.sent)}"
+    assert "Net or gross?" in platform.sent[-1].text
+    assert len(platform.sent[-1].buttons) == 2
+    press = Press("slack", "C1", "T1", "U1", False, asked_id, "answer:1")
+
+    conversations.refusals.append(Refused(409, "another run is going; one run at a time"))
+    await adapter.on_press(press)
+    assert "one run at a time" in platform.sent[-1].text
+    assert all(edit.buttons or "Net or gross?" not in edit.text for edit in platform.edited)
+
+    await adapter.on_press(press)
+    assert conversations.sent[-1] == ("conv1", "Net")
