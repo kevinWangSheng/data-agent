@@ -39,10 +39,6 @@ from skill_improve_support import (
 
 from evals.improve import Candidate, ImproveReport
 
-TICKET_126 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 126: evals improve is not built yet"
-)
-
 SKILL_FILE = "skills/sql-workflow/SKILL.md"
 ORIGINAL_SKILL = (FIXTURES / "repo" / SKILL_FILE).read_bytes()
 BETA_LINE = "2. Stop exploring after 3-5 tool calls.\n"
@@ -85,7 +81,6 @@ def assert_no_branch_and_no_screening(world: World) -> None:
 # --- input scope ---------------------------------------------------------------------------------
 
 
-@TICKET_126
 def test_holdout_trials_reach_neither_judge_nor_any_candidate(world: World) -> None:
     job = world.input_job({"task-a": TaskRun(0, "alpha"), "held-1": TaskRun(0, "alpha")})
 
@@ -104,7 +99,6 @@ def test_holdout_trials_reach_neither_judge_nor_any_candidate(world: World) -> N
     assert "held-1" not in start.tasks
 
 
-@TICKET_126
 def test_a_dab_run_is_refused_before_any_judge_branch_or_screening(world: World) -> None:
     dab = write_dab_run(world.tmp / "dab-out")
 
@@ -118,7 +112,6 @@ def test_a_dab_run_is_refused_before_any_judge_branch_or_screening(world: World)
     assert world.calls("gh") == []
 
 
-@TICKET_126
 def test_a_run_on_a_skill_version_not_in_the_skill_sets_is_refused(world: World) -> None:
     job = world.input_job({"task-a": TaskRun(0, "alpha")}, skill_version="000000000000")
 
@@ -129,7 +122,6 @@ def test_a_run_on_a_skill_version_not_in_the_skill_sets_is_refused(world: World)
     assert_no_branch_and_no_screening(world)
 
 
-@TICKET_126
 def test_the_failures_of_two_input_jobs_are_attributed_together(world: World) -> None:
     first = world.input_job({"task-a": TaskRun(1, "alpha")}, name="u1", cover=["task-a", "task-b"])
     rest = [t for t in DEV if t not in ("task-a", "task-b")]
@@ -148,7 +140,6 @@ def test_the_failures_of_two_input_jobs_are_attributed_together(world: World) ->
 # --- candidate generation ------------------------------------------------------------------------
 
 
-@TICKET_126
 @pytest.mark.parametrize(
     ("op", "text", "expected", "net"),
     [
@@ -188,7 +179,6 @@ def test_an_edit_whose_anchor_matches_byte_for_byte_is_applied(
     assert candidate.net_lines == net
 
 
-@TICKET_126
 @pytest.mark.parametrize(
     "anchor",
     [
@@ -217,7 +207,6 @@ def lines_replacing_beta(count: int) -> str:
     return "".join(f"2.{i} Stop exploring after 3-5 tool calls, step {i}.\n" for i in range(count))
 
 
-@TICKET_126
 def test_an_edit_adding_net_ten_lines_is_a_candidate(world: World) -> None:
     # One line replaced by eleven: 11 added, 1 deleted.
     edit(world, "beta", "replace", BETA_LINE, lines_replacing_beta(11))
@@ -233,7 +222,6 @@ def test_an_edit_adding_net_ten_lines_is_a_candidate(world: World) -> None:
     assert len(world.starts()) == 1
 
 
-@TICKET_126
 def test_an_edit_adding_net_eleven_lines_gives_no_candidate(world: World) -> None:
     # One line replaced by twelve: 12 added, 1 deleted.
     edit(world, "beta", "replace", BETA_LINE, lines_replacing_beta(12))
@@ -248,7 +236,6 @@ def test_an_edit_adding_net_eleven_lines_gives_no_candidate(world: World) -> Non
     assert_no_branch_and_no_screening(world)
 
 
-@TICKET_126
 @pytest.mark.parametrize("file", ["README.md", "skills/../README.md"])
 def test_an_edit_outside_skills_gives_no_candidate(world: World, file: str) -> None:
     # README.md holds the anchor line too, so only the path rules it out.
@@ -264,7 +251,6 @@ def test_an_edit_outside_skills_gives_no_candidate(world: World, file: str) -> N
     assert_no_branch_and_no_screening(world)
 
 
-@TICKET_126
 @pytest.mark.parametrize(("n_regression", "screened"), [(MAX_TASKS - 1, True), (MAX_TASKS, False)])
 def test_a_candidate_over_thirty_tasks_is_discarded(
     world: World, n_regression: int, screened: bool
@@ -288,7 +274,6 @@ def test_a_candidate_over_thirty_tasks_is_discarded(
         assert_no_branch_and_no_screening(world)
 
 
-@TICKET_126
 def test_one_skill_passage_gives_one_candidate(world: World) -> None:
     # Two failure modes quote the same sentence: FM1 with three failures, FM4 with one.
     job = world.input_job({"task-c": TaskRun(0, "beta"), "task-d": TaskRun(2, "beta-fm4")})
@@ -307,7 +292,6 @@ def test_one_skill_passage_gives_one_candidate(world: World) -> None:
     assert [p for p in world.edit_judge.prompts if fm4_suggestion in p] == []
 
 
-@TICKET_126
 def test_only_the_three_groups_with_the_most_failures_become_candidates(world: World) -> None:
     job = world.input_job(
         {
@@ -335,7 +319,6 @@ def test_only_the_three_groups_with_the_most_failures_become_candidates(world: W
 # --- branches and commits ------------------------------------------------------------------------
 
 
-@TICKET_126
 def test_each_candidate_is_one_commit_on_the_input_commit_changing_skills_only(
     world: World,
 ) -> None:
@@ -358,7 +341,6 @@ def test_each_candidate_is_one_commit_on_the_input_commit_changing_skills_only(
         assert world.skill_version_at(candidate.commit) != world.skill_version
 
 
-@TICKET_126
 def test_a_branch_is_on_origin_with_its_commit_when_its_screening_starts(world: World) -> None:
     job = world.input_job({"task-a": TaskRun(0, "alpha"), "task-c": TaskRun(1, "beta")})
     world.plan(Screen(wins={"task-a": 0, "task-b": 0}), Screen())  # candidate 1 fails
@@ -378,7 +360,6 @@ def test_a_branch_is_on_origin_with_its_commit_when_its_screening_starts(world: 
 # --- screening -----------------------------------------------------------------------------------
 
 
-@TICKET_126
 def test_each_screening_runs_targets_and_regression_on_full_three_times_within_budget(
     world: World,
 ) -> None:
@@ -421,7 +402,6 @@ def option(argv: list[str], name: str) -> list[str]:
     return option_values(argv).get(name, [])
 
 
-@TICKET_126
 def test_a_passing_candidate_keeps_its_branch_and_gets_a_draft_pr(world: World) -> None:
     job = world.input_job({"task-a": TaskRun(0, "alpha")})
 
@@ -444,7 +424,6 @@ def test_a_passing_candidate_keeps_its_branch_and_gets_a_draft_pr(world: World) 
     assert REPLIES["edits"]["alpha"]["text"].strip() in body  # the diff
 
 
-@TICKET_126
 def test_a_failing_candidate_loses_its_remote_branch_and_gets_no_pr(world: World) -> None:
     job = world.input_job({"task-a": TaskRun(1, "alpha")})
     world.plan(Screen(wins={"task-a": 1}))  # no more successes than the old version
@@ -465,7 +444,6 @@ def test_a_failing_candidate_loses_its_remote_branch_and_gets_no_pr(world: World
     assert world.calls("gh") == []
 
 
-@TICKET_126
 def test_a_regression_task_below_three_is_rerun_alone_then_judged(world: World) -> None:
     job = world.input_job({"task-a": TaskRun(0, "alpha")})
     world.plan(Screen(wins={"reg-1": 2}), Screen())  # 2/3, then 3/3 on the rerun
@@ -485,7 +463,6 @@ def test_a_regression_task_below_three_is_rerun_alone_then_judged(world: World) 
     assert option(pr["argv"], "--head") == [candidate.branch]
 
 
-@TICKET_126
 @pytest.mark.parametrize("blocked_by", ["task-cap", "budget"])
 def test_a_rerun_past_the_task_cap_or_the_budget_leaves_the_candidate_undecided(
     world: World, blocked_by: str
@@ -514,7 +491,6 @@ def test_a_rerun_past_the_task_cap_or_the_budget_leaves_the_candidate_undecided(
     assert world.calls("gh") == []
 
 
-@TICKET_126
 def test_an_old_version_too_old_to_reuse_leaves_the_candidate_undecided(world: World) -> None:
     started = datetime.now(UTC) - timedelta(days=20)
     job = world.input_job({"task-a": TaskRun(0, "alpha")}, started=started)
@@ -531,7 +507,6 @@ def test_an_old_version_too_old_to_reuse_leaves_the_candidate_undecided(world: W
     assert world.calls("gh") == []
 
 
-@TICKET_126
 def test_candidates_of_one_round_are_judged_and_handled_each_on_its_own(world: World) -> None:
     # alpha (3 failures) is candidate 1, beta (2) candidate 2.
     job = world.input_job({"task-a": TaskRun(0, "alpha"), "task-c": TaskRun(1, "beta")})
@@ -554,7 +529,6 @@ def test_candidates_of_one_round_are_judged_and_handled_each_on_its_own(world: W
 # --- budget --------------------------------------------------------------------------------------
 
 
-@TICKET_126
 def test_spend_over_the_budget_stops_the_remaining_screenings(world: World) -> None:
     job = world.input_job(
         {"task-a": TaskRun(0, "alpha"), "task-c": TaskRun(1, "beta"), "task-d": TaskRun(2, "gamma")}

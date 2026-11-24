@@ -77,6 +77,12 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     p.add_argument("--rerun", type=Path, action="append", default=[], help="rerun job; repeatable")
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="trials per task")
     p.add_argument("--json", action="store_true")
+    p.add_argument(
+        "--screening",
+        action="store_true",
+        help="screening mode: --new covers only the targets and the regression set; no point "
+        "estimate (evaluate_screening)",
+    )
     p.set_defaults(run=run)
 
 
@@ -86,7 +92,8 @@ def run(args: argparse.Namespace) -> int:
         regression = json.loads(args.regression.read_text())
         if not isinstance(regression, list) or not all(isinstance(t, str) for t in regression):
             raise ValueError(f"{args.regression} must be a JSON list of task names")
-        result = evaluate(
+        judge = evaluate_screening if args.screening else evaluate
+        result = judge(
             args.old, args.new, manifest["dev"], args.target, regression, args.rerun, args.trials
         )
     except (OSError, ValueError) as exc:
@@ -160,18 +167,8 @@ def evaluate(
     conditions["regression"] = regression_check(new, reruns, regression, trials)
 
     rerun_tasks = [r["task"] for r in conditions["regression"]["tasks"] if r["status"] == "rerun"]
-    if conditions["regression"]["passed"] is False:
-        verdict = "fail"  # judged on the new version alone: rerunning the old cannot change it
-    elif problems:
-        verdict = "rerun-old"
-    elif any(c["passed"] is False for c in conditions.values()):
-        verdict = "fail"
-    elif rerun_tasks:
-        verdict = "rerun-regression"
-    else:
-        verdict = "pass"
     return {
-        "verdict": verdict,
+        "verdict": decide(conditions, problems, rerun_tasks),
         "old_reusable": not problems,
         "reuse_problems": problems,
         "rerun_tasks": rerun_tasks,
@@ -179,6 +176,83 @@ def evaluate(
         # Observed only: no condition reads it (ticket 51). Dev trials only, checked above.
         "timing": {"old": job_metrics(old)["timing"], "new": job_metrics(new)["timing"]},
     }
+
+
+def evaluate_screening(
+    old_jobs: list[Path],
+    new_jobs: list[Path],
+    dev_tasks: list[str],
+    targets: list[str],
+    regression: list[str],
+    rerun_jobs: list[Path],
+    trials: int,
+) -> dict[str, Any]:
+    """Screening mode (.scratch/skill-improve/spec.md "初筛与判定"): `evaluate`'s targets,
+    regression and reuse checks, thresholds unchanged, without the point estimate, for a new job
+    that ran only the change's tasks (targets plus regression set). The old job still covers the
+    whole dev set, each task `trials` times without infrastructure errors; its trials outside the
+    dev set are left out by count, never named. The new job must have every one of the change's
+    tasks `trials` times; its other trials are ignored. Same verdict order as `evaluate`; the
+    result has `evaluate`'s shape without `point_estimate`, plus `"screening": true`."""
+    dev = set(dev_tasks)
+    old_jobs_trials = load_jobs(old_jobs)
+    old = [t for t in old_jobs_trials if t.task in dev]
+    scope = set(targets) | set(regression)
+    new = [t for t in load_jobs(new_jobs) if t.task in scope]
+    reruns = [t for job in rerun_jobs for t in load_trials(job)]
+    for label, tasks in (
+        ("rerun", {t.task for t in reruns}),
+        ("target", set(targets)),
+        ("regression", set(regression)),
+    ):
+        check_dev(tasks, dev, label)
+    split_trials(old, {"dev": dev_tasks}, "dev", "the old")
+    missing = len(scope - {t.task for t in new})
+    if missing:
+        raise ValueError(
+            f"no trial results for {missing} of the change's {len(scope)} tasks (targets and "
+            "regression set) in the new job; every one is needed"
+        )
+    check_complete(new, "new", trials)
+
+    old_infra = had_infra_errors(old_jobs, old_jobs_trials)
+    problems = reuse_problems(old_jobs[0], new_jobs[0], old, new, old_infra)
+    conditions: dict[str, Any] = {}
+    if not old_infra:
+        check_complete(old, "old", trials)
+        old_wins, new_wins = successes(old), successes(new)
+        old_target = sum(old_wins[t] for t in targets)
+        new_target = sum(new_wins[t] for t in targets)
+        conditions["targets"] = {
+            "old": f"{old_target}/{trials * len(targets)}",
+            "new": f"{new_target}/{trials * len(targets)}",
+            "passed": new_target > old_target,
+        }
+    conditions["regression"] = regression_check(new, reruns, regression, trials)
+    rerun_tasks = [r["task"] for r in conditions["regression"]["tasks"] if r["status"] == "rerun"]
+    return {
+        "verdict": decide(conditions, problems, rerun_tasks),
+        "screening": True,
+        "old_reusable": not problems,
+        "reuse_problems": problems,
+        "rerun_tasks": rerun_tasks,
+        "conditions": conditions,
+        "timing": {"old": job_metrics(old)["timing"], "new": job_metrics(new)["timing"]},
+    }
+
+
+def decide(conditions: dict[str, Any], problems: list[str], rerun_tasks: list[str]) -> str:
+    """`evaluate`'s verdict order: a regression fails either way, then an old version that
+    cannot be reused, then any other failed condition, then reruns still to run."""
+    if conditions["regression"]["passed"] is False:
+        return "fail"  # judged on the new version alone: rerunning the old cannot change it
+    if problems:
+        return "rerun-old"
+    if any(c["passed"] is False for c in conditions.values()):
+        return "fail"
+    if rerun_tasks:
+        return "rerun-regression"
+    return "pass"
 
 
 def regression_check(
@@ -309,7 +383,9 @@ def render(result: dict[str, Any]) -> str:
         lines.append("old results: rerun the old version")
         lines += [f"  - {p}" for p in result["reuse_problems"]]
     conditions = result["conditions"]
-    for name in ("point_estimate", "targets"):
+    # A screening result has no point estimate by design (evaluate_screening).
+    names = ("targets",) if result.get("screening") else ("point_estimate", "targets")
+    for name in names:
         if name in conditions:
             c = conditions[name]
             mark = "pass" if c["passed"] else "FAIL"
