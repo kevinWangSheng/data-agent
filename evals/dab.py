@@ -36,6 +36,7 @@ import time
 import uuid
 from contextlib import aclosing, nullcontext
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import ModuleType
@@ -576,11 +577,13 @@ async def run_once(
                 mask_dab_logs(directory, secrets_of(env))
         stopped = cap.result_fields() if cap is not None and cap.stopped else None
         fields = stopped or ended_by_sdk(final, settings.model, cap)
+        # The run's end, before the export waits for the relay to drain (as in agent.py).
+        ended_ts = datetime.now(UTC).isoformat()
         if export is not None:
             answer = (final.result or None) if final is not None and stopped is None else None
             for kind, values in await asyncio.to_thread(export.finish, fields, answer):
                 log.emit(kind, **values)
-        log.emit("result", **fields)
+        log.emit("result", **fields, ended_ts=ended_ts)
     if stopped is not None and server_up:
         return "", "unfinished"
     if (

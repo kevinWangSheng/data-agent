@@ -170,7 +170,8 @@ def summarize_run(run_id: str, path: Path) -> dict[str, Any]:
     else:
         ok = result.get("subtype") == "success" and not result.get("is_error")
         status = "success" if ok else "failure"
-        duration_ms = elapsed_ms(started_at, result.get("ts"))
+        # `ended_ts` is the run's end, before the trace export's wait; older files lack it.
+        duration_ms = elapsed_ms(started_at, result.get("ended_ts") or result.get("ts"))
         cost_usd = result.get("cost_usd")
     return {
         "id": run_id,

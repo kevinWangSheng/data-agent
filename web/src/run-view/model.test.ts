@@ -1,13 +1,16 @@
 // Unit tests for what the acceptance tests leave out: the injected Skills (`version.skills`,
 // ticket 83), the result-table parser's edge cases, task fields per field, durations, and the
-// narration and times (ticket 86).
+// narration and times (ticket 86), and the export events' place on the clock (ticket 122).
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, test } from 'vitest'
 
+import { rowOf } from '../data/source'
+import { replayClock, revealedAt } from '../run-page/replay'
 import { buildRunView, eventTimes, type RunEvent } from './model'
+import { traceLink } from './trace'
 
 function version(fields: Record<string, unknown>): RunEvent {
   return { seq: 0, type: 'version', ts: '2026-11-15T09:00:00+00:00', config: 'full', ...fields }
@@ -485,5 +488,79 @@ describe('agent tools (ticket 101)', () => {
         ['Bronze', '190.00'],
       ],
     })
+  })
+})
+
+describe('export events', () => {
+  // After the CLI exits the backend (src/data_agent/agent.py) writes `answer`, then the trace export
+  // (src/data_agent/tracing.py RunExport.finish: stop the relay, wait for it to drain, up to its timeout)
+  // writes `trace_export_error`s and `trace`, and `result` comes last. `result.ended_ts` is the
+  // run's end, taken before the export; older files lack it.
+  const at = (s: number) => `2026-11-15T09:${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}+00:00`
+  const url = 'https://langfuse.example/trace/abc'
+  const start: RunEvent[] = [
+    { ...version({}), ts: at(0) },
+    { seq: 1, type: 'task', ts: at(1), task: 'How many customers?', task_type: 'query' },
+    { seq: 2, type: 'answer', ts: at(15), text: '42', sql_tool_use_id: null },
+  ]
+  const endMs = 16_000
+  const trace = (seq: number, s: number): RunEvent => ({ seq, type: 'trace', ts: at(s), trace_id: 'abc', url })
+  const result = (seq: number, s: number, ended?: number): RunEvent => ({
+    seq,
+    type: 'result',
+    ts: at(s),
+    subtype: 'success',
+    is_error: false,
+    ...(ended === undefined ? {} : { ended_ts: at(ended) }),
+  })
+  const traced = [...start, trace(3, 26), result(4, 26, 16)]
+
+  test('answer, trace (+10 s), result: the wall time ends at the result ended_ts', () => {
+    expect(buildRunView(traced).summary.durationMs).toBe(endMs)
+  })
+
+  test('a run stopped at its deadline mid tool call: the wall time runs to ended_ts', () => {
+    // No event is written when the deadline stops the run (src/data_agent/agent.py), so the last
+    // event before the export is the tool call's start, minutes before the run ended.
+    const events: RunEvent[] = [
+      ...start.slice(0, 2),
+      { seq: 2, type: 'tool_start', ts: at(5), tool_use_id: 't1', tool: 'mcp__data__query', input: { sql: 'select 1' } },
+      trace(3, 310),
+      result(4, 310, 300),
+    ]
+    expect(buildRunView(events).summary.durationMs).toBe(300_000)
+    expect(eventTimes(events)).toEqual([0, 1000, 5000, 300_000, 300_000])
+  })
+
+  test('in replay the trace and the result still come, no later than ended_ts, with the link at the end', () => {
+    const times = eventTimes(traced)
+    expect(times).toEqual([0, 1000, 15_000, endMs, endMs])
+    const clock = replayClock(times, false)
+    const shown = traced.slice(0, revealedAt(clock, clock.at(-1) ?? 0))
+    expect(shown.map((e) => e.type)).toEqual(traced.map((e) => e.type))
+    expect(traceLink(shown)).toEqual({ traceId: 'abc', url })
+  })
+
+  test('an older file without ended_ts ends at its last event, as before', () => {
+    const events = [...start, trace(3, 26), result(4, 26)]
+    expect(buildRunView(events).summary.durationMs).toBe(26_000)
+    expect(eventTimes(events)).toEqual([0, 1000, 15_000, 26_000, 26_000])
+  })
+
+  test('a running run (no result yet) ends at its last event, as before', () => {
+    expect(buildRunView(start).summary.durationMs).toBe(15_000)
+    expect(eventTimes(start)).toEqual([0, 1000, 15_000])
+  })
+
+  test("rowOf gives the duration the backend's row gives for the same events", () => {
+    // tests/test_web_runs_duration.py: the same events give duration_ms 15000 with ended_ts, 25000 without.
+    const events = (ended?: number): RunEvent[] => [
+      { ...version({}), ts: at(0) },
+      { seq: 1, type: 'answer', ts: at(15), text: '42' },
+      trace(2, 25),
+      result(3, 25, ended),
+    ]
+    expect(rowOf('traced', { notes: {}, events: events(15) }).duration_ms).toBe(15_000)
+    expect(rowOf('traced', { notes: {}, events: events() }).duration_ms).toBe(25_000)
   })
 })

@@ -1,13 +1,16 @@
 """A traced DAB run whose export fails (ticket 112): the version header is still the first event
 (CODING_STANDARDS.md), the failure one `error` event, and the run goes on to its result. A traced
 run's export takes the session's events, an untraced run records into its event log (ticket 134).
+One whose export works records the run's end before the export waits (ticket 122).
 The DAB checkout is built as tests/acceptance/test_observability_evals.py builds it."""
 
 import json
 import shutil
 import sqlite3
+import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,9 +23,10 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from data_agent import trace_relay
+from data_agent import trace_relay, tracing
 from data_agent.events import EventLog
 from data_agent.run_config import load_config
+from data_agent.trace_relay import RelayReport
 from data_agent.tracing import LANGFUSE_ENV, CliTrace, ObservedLog, RunExport
 from evals import dab
 
@@ -209,3 +213,45 @@ async def test_an_untraced_run_records_messages_into_its_event_log(
     )
     assert recorders and all(type(log) is EventLog for log in recorders)
     assert {"text", "tool_start"} <= set(event_types(tmp_path / "out"))
+
+
+class SlowRelay:
+    """A relay that takes a while to drain, as the real one waits up to its timeout."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+
+    def start(self) -> str:
+        return "http://127.0.0.1:9/v1/traces"
+
+    def stop(self) -> RelayReport:
+        time.sleep(0.05)
+        return RelayReport(1, 1, ())
+
+
+async def test_the_result_records_the_runs_end_before_the_export_waits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ticket 122: `result.ended_ts` is taken before the export, so it precedes its events."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    async def fake_query(*, prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+        del prompt, options
+        yield result_message()
+
+    monkeypatch.setattr(dab, "query", fake_query)
+    monkeypatch.setattr(dab, "git_commit", lambda: "c0ffee")
+    monkeypatch.setattr(trace_relay, "TraceRelay", SlowRelay)
+    monkeypatch.setattr(tracing, "parent_exporter", lambda _: InMemorySpanExporter())
+    monkeypatch.setattr(tracing, "project_id", lambda _: None)
+    root = make_dab(tmp_path / "dab")
+    query = dab.load_query(root, "toyset", "1", hints=False)
+    await dab.run_query(
+        root, query, load_config("no-context"), tmp_path / "out", 1, TRACED_ENV, trace=True
+    )
+    [events_file] = (tmp_path / "out").rglob("events.jsonl")
+    events = [json.loads(line) for line in events_file.read_text().splitlines()]
+    *_, trace, result = events
+    assert (trace["type"], result["type"]) == ("trace", "result")
+    ended = datetime.fromisoformat(result["ended_ts"])
+    assert ended < datetime.fromisoformat(trace["ts"]) < datetime.fromisoformat(result["ts"])

@@ -2420,6 +2420,9 @@ async def run(
                 )
                 turn_result, restored = final, None
         fields = stopped or ended_by_sdk(turn_result, settings.model, spend)
+        # The run's end, before the export below waits for the relay to drain: readers time the
+        # run by it, not by `result`'s own `ts` (web/runs.py, the run view's wall time).
+        ended_ts = datetime.now(UTC).isoformat()
         if export is not None:
             # Before `result`, which readers take as the event file's end (web/runs.py). The CLI
             # has exited, so the relay has all it will get.
@@ -2432,6 +2435,7 @@ async def run(
             # The earlier turns' spend the CLI restored on resuming the session (`restored_cost`);
             # the counts above leave it out.
             **({} if restored is None else {"restored_sdk_cost_usd": restored.total_cost_usd}),
+            ended_ts=ended_ts,
         )
     if stopped is not None:
         return Outcome(

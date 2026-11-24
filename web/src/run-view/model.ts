@@ -311,10 +311,22 @@ function clockOf(events: readonly RunEvent[]): (e: RunEvent) => number | null {
   }
 }
 
+/** The run's end, in milliseconds after its first event: `result.ended_ts`, which the backend takes
+ *  before the trace export waits for its relay to drain (src/data_agent/agent.py), so the export's
+ *  events and `result` itself come later. null when there is none (the run is still going, or an
+ *  older file) or it cannot be read. */
+function endedMs(events: readonly RunEvent[]): number | null {
+  const start = events.length ? parseTs(events[0].ts) : null
+  const ended = parseTs(events.findLast((e) => e.type === 'result')?.ended_ts)
+  return start === null || ended === null ? null : ended - start
+}
+
 /** Each event's time, in milliseconds after the run's first event (null when unknown): replay cuts
- *  its prefix and skips idle gaps by these. */
+ *  its prefix and skips idle gaps by these. None is later than the run's end, so replay does not
+ *  wait for the trace export. */
 export function eventTimes(events: readonly RunEvent[]): (number | null)[] {
-  return events.map(clockOf(events))
+  const end = endedMs(events)
+  return events.map(clockOf(events)).map((ms) => (ms === null || end === null ? ms : Math.min(ms, end)))
 }
 
 type OpenDispatch = VerifierDispatch & { seq: number; agentId: string | null }
@@ -515,7 +527,7 @@ function summarize(
 ): RunSummary {
   const { version, task, status, result } = found
   const end = events.at(-1)
-  const durationMs = (end ? clockOf(events)(end) : null) ?? 0
+  const durationMs = endedMs(events) ?? (end ? clockOf(events)(end) : null) ?? 0
 
   let runStatus: RunStatus = 'running'
   if (notes?.cancelled) runStatus = 'cancelled'
