@@ -1,6 +1,6 @@
 # 121 — 开发集档 trace 补上 SQL 和模型文字（从我们自己的事件里取）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
 Claimed by: claude-opus-5-5 (worktree 121-trace-content-from-events)
@@ -65,7 +65,7 @@ Branch: worktree-121-trace-content-from-events
 ## Ledger
 
 - Attempts: 1
-- Review rounds: 2 (`da-review` ×2, `eng:code-review` ×1)
+- Review rounds: 2 + 退回 1 轮（`da-review` ×3，`eng:code-review` ×1）
 - Model spend: $0 (no model calls)
 - Outcome: —
 
@@ -144,3 +144,22 @@ The fix is a one-line change at `src/data_agent/tracing.py:477`, plus a regressi
 - 2026-11-24（主会话）退回：原因——Codex 第 2 轮的 P2 属实（主会话对照代码核实）：`RunExport._clean`（`src/data_agent/tracing.py:476-477`）遮值不遮键，`tool.input` 回退观测不经过中转的二次遮罩，秘密做 JSON 键时会原样到 Langfuse。在原分支上修：键也过 `self._clean(str(k))`（或同等做法），加回归测试（秘密放在键里、走回退路径）；再跑 `make check` 和一次 `da-review main` 确认。
   - 待人定 1（`thinking`）已由人 2026-11-24 定：不带，维持现状。
   - Codex 第 1 轮 P2（`evals dab --trace` 没接上，DAB trace 没有入参和文字）不在本工单 Authority 内，主会话另开后续工单，本轮不做。
+
+- 2026-11-24（工单 agent 退回第 1 轮最终回复，主会话照抄）：
+
+- 2026-11-24 (ticket agent, returned round 1):
+  - **Fix:** `RunExport._clean` (`src/data_agent/tracing.py:476-478`) now masks the keys of a tool input as well as its values (`self._clean(str(k))`, nested objects included). The docstring now says keys are masked too.
+  - **Regression test:** `tests/test_tracing.py::test_a_secret_used_as_a_key_in_a_tool_input_is_masked_on_the_fallback_path`. The input is `{"sk-test": {"nested sk-test": "SELECT 1"}}`, and no CLI span takes it, so it goes out as the `tool.input` observation.
+    - It failed before the fix: `'sk-test' is contained here: {"sk-test": {"nested sk-test": "SELECT 1"}}`.
+    - After the fix the input arrives as `{"[REDACTED]": {"nested [REDACTED]": "SELECT 1"}}`.
+  - **Focused tests:** `test_tracing`, `test_trace_relay`, `test_trace_check` and the observability acceptance tests: 126 passed. That is the 125 from before plus the new test.
+  - **`make check`:** exit 0. pytest 2862 passed, 2 skipped; web 442 passed (`runs/121/check-4.txt`).
+  - **`da-review main` (round 3):** "No actionable regressions found". Codex also ran its own in-memory check, on both tiers, that a secret used as a key is masked on the fallback path; it passed (`runs/121/da-review-3.txt`).
+  - **Known limit:** if two keys in one input mask to the same text, only one of them stays in the `tool.input` value. The secret still does not leak.
+  - **Unchanged:** the real-run command and what to look for are the same as in the previous Comment. That run is still for the main session to do.
+
+- 2026-11-24（主会话）真实运行，121 分支 `2f75051`，worktree 里跑，产出在该 worktree 的 `runs/121real-2f75051/`（不进 git）：
+  - 命令：`data-agent run --type query --config full --sandbox local --trace-tier full --duckdb <shop.sql 建的 DuckDB> --task "Which customer has the highest total order amount, and how much is it?"`（Langfuse 变量和模型变量从 env 文件读）。exit 0，答案 "Avery Lane: 438.75"，花费 $0.0058。事件末尾 `… text, answer, trace, result`；`trace` 事件 `forwarded_spans: 24`、`forwarded_llm_requests: 5`。
+  - `data-agent trace-check`：26 个观测。`query_database` ×5 和 `list_tables` ×1 都是 `input: yes`；`assistant.message` ×1（事件里 `text` 也是 1 条），`output: yes`；`data-agent.run` 是 `usage: none  cost: yes`，metadata 里有 `usage_total`（`cached_input_tokens, output_tokens, uncached_input_tokens`）；全部观测的属性名里 `user.id`、`host.*`、`os.*` 出现 0 次。
+  - 没看的：Langfuse 界面里 SQL 原文和遮罩的实际值（trace-check 只打印有没有值）；`metadata.usage_total` 在界面里是 JSON 还是字符串。
+  - 后续：`evals dab --trace` 的入参和文字另开工单 134。
