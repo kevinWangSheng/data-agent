@@ -501,8 +501,9 @@ def test_an_old_version_too_old_to_reuse_leaves_the_candidate_undecided(world: W
 
 @TICKET_126
 def test_candidates_of_one_round_are_judged_and_handled_each_on_its_own(world: World) -> None:
-    job = world.input_job({"task-a": TaskRun(0, "alpha"), "task-c": TaskRun(0, "beta")})
-    world.plan(Screen(), Screen(wins={"task-c": 0}))  # candidate 1 passes, candidate 2 fails
+    # alpha (3 failures) is candidate 1, beta (2) candidate 2.
+    job = world.input_job({"task-a": TaskRun(0, "alpha"), "task-c": TaskRun(1, "beta")})
+    world.plan(Screen(), Screen(wins={"task-c": 1}))  # candidate 1 passes, candidate 2 fails
 
     report = world.run([job])
 

@@ -234,7 +234,7 @@ def option_values(args: Sequence[str]) -> dict[str, list[str]]:
         if arg.startswith("--") and "=" in arg:
             key, value = arg.split("=", 1)
             out.setdefault(key, []).append(value)
-        elif arg.startswith("--") and i + 1 < len(args):
+        elif arg.startswith("--") and i + 1 < len(args) and not args[i + 1].startswith("--"):
             out.setdefault(arg, []).append(args[i + 1])
             i += 1
         i += 1
