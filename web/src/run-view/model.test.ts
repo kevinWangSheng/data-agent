@@ -491,9 +491,10 @@ describe('agent tools (ticket 101)', () => {
 })
 
 describe('export events', () => {
-  // After the CLI exits the backend writes `answer`, then the trace export (src/data_agent/agent.py,
-  // RunExport.finish: stop the relay, wait for it to drain, up to 10 s) writes `trace_export_error`s
-  // and `trace`, or one `error` with `source: "trace"`; `result` comes last. Old made-up data has
+  // After the CLI exits the backend (src/data_agent/agent.py) writes `answer`, then the trace export
+  // (src/data_agent/tracing.py RunExport.finish: stop the relay, wait for it to drain, up to 10 s)
+  // writes `trace_export_error`s and `trace`, or one `error` with `source: "trace"`; `result` comes
+  // last. Old made-up data has
   // `trace` after `result`.
   const at = (s: number) => `2026-11-15T09:00:${String(s).padStart(2, '0')}+00:00`
   const url = 'https://langfuse.example/trace/abc'
@@ -526,6 +527,13 @@ describe('export events', () => {
   test('an error from another source is part of the run', () => {
     const other: RunEvent = { ...traceError(3, 25), source: 'spend' }
     expect(buildRunView([...start, other, result(4, 25)]).summary.durationMs).toBe(25_000)
+  })
+
+  test('an export that failed to start (error, source: trace, after task) is part of the run', () => {
+    // src/data_agent/agent.py writes it when `export.start` fails; there is no export at the end then.
+    const events = [...start.slice(0, 2), traceError(2, 2), { ...start[2], seq: 3 }, result(4, 17)]
+    expect(buildRunView(events).summary.durationMs).toBe(17_000)
+    expect(eventTimes(events)).toEqual([0, 1000, 2000, answerMs, 17_000])
   })
 
   test('old order: result, trace (+10 s): the wall time ends at the result', () => {

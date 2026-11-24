@@ -322,11 +322,15 @@ function isExportEvent(e: RunEvent): boolean {
   return e.type === TRACE_EVENT || e.type === 'trace_export_error' || (e.type === 'error' && e.source === 'trace')
 }
 
-/** The index of the event where the run ended: the one before the first export event (the moment
- *  the export started; the backend writes `result` after the export, old made-up data writes
- *  `trace` after `result`); the last event when there is no export event. -1 for no events. */
+/** The index of the event where the run ended. The export writes its events at the file's end,
+ *  around `result` (the backend writes `result` after them, old made-up data writes `trace` after
+ *  `result`), so only that trailing block counts: the run ended at the event before its first
+ *  export event, the moment the export started. Otherwise (no export at the end; an `error` from an
+ *  export that failed to start comes early) the last event. -1 for no events. */
 function runEndIndex(events: readonly RunEvent[]): number {
-  const firstExport = events.findIndex(isExportEvent)
+  let tail = events.length
+  while (tail > 0 && (isExportEvent(events[tail - 1]) || events[tail - 1].type === 'result')) tail--
+  const firstExport = events.findIndex((e, i) => i >= tail && isExportEvent(e))
   return firstExport > 0 ? firstExport - 1 : events.length - 1
 }
 
