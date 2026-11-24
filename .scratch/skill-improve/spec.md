@@ -24,7 +24,7 @@ plan §3 定了"失败 → 改 Skill"：agent 写归因报告、给具体修改�
 - （Update 2026-11-24，人定）输入与旧版：取代上面"输入是一次已有的开发集运行，不新跑基线"。
   - 126 合入后的第一轮，先在当时的 main 上新跑一次开发集：30 题 × 3，`full`。人已批准这次运行，它不计入每轮 $25 上限；b7c6071 同样范围的运行花了 $8.83。
   - 这次运行既是归因的输入，也是 `accept.py` 的旧版。
-  - 之后的轮次在它满足 `accept.py` 复用条件时复用它（14 天、benchmark commit 相同等，`evals/accept.py:242-291`）。不再满足时，这一轮在报告里写明需要新跑一次开发集，自己不开跑。
+  - 之后的轮次在它满足 `accept.py` 复用条件时复用它（14 天、benchmark commit 相同等，`evals/accept.py:242-291`）。不再满足时，这一轮在报告里写明需要新跑一次开发集，自己不开跑。候选照常初筛，判定是 `rerun-old`（未判定），和工单 125 已合入的验收测试一致（Update 2026-11-24，主会话对照测试补明）。
   - 原因：b7c6071 的 Skill 版本 `e075718e1fd7` 不在当前 `skill_sets()` 里（`evals/attribute.py:145`），按 `:436-441` 一题也归因不了；它也超过了 `MAX_AGE` 14 天（`evals/accept.py:51`）。
 - （Update 2026-11-24，主会话对照代码更正）输入可以是多个 job 目录，按配置合并，和 `load_jobs` 一样（`evals/report.py:218`）。一次开发集运行可能分在几个 OUT 里，例如 b7c6071 的 `full` 分在 `runs/u1-target`、`u1-full-rest`、`u2-rest`。而 `attribute` 只收一个 job（`evals/attribute.py:501`、`:518`）。
 - （Update 2026-11-24，主会话对照代码更正）分组：`attribute` 的输出是一个失败一条（`evals/attribute.py:540`），没有分组、没有"段"这个单位，也不给替换。
