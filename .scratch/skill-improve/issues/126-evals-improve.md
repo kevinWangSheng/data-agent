@@ -1,10 +1,10 @@
 # 126 — `evals improve`：候选生成与应用、分支与提交、经 `da-remote` 初筛、`accept.py` 初筛模式判定、draft PR、报告、预算
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 125（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-code (opus-5-5) 2026-11-24
+Branch: worktree-126-evals-improve
 
 ## Goal
 
@@ -297,10 +297,136 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0（只用了假端点和假 judge，没调真实模型）
+- Outcome: —
 
 ## Comments
+
+- 2026-11-24（工单 agent 最终回复，主会话照抄）：
+
+**基线与 `make check`**
+- 改动前基线：`2870 passed, 2 skipped, 79 deselected, 134 xfailed`。
+- 最终：`2950 passed, 2 skipped, 79 deselected, 107 xfailed in 682.40s`。basedpyright `0 errors`，web `442 passed`，`make check exit=0`。完整输出在 `runs/126/final-check.log`。
+- xfailed 少了 27 个，就是本工单转绿的 27 个验收用例。
+
+**验收测试**
+- `uv run pytest tests/acceptance/test_skill_improve.py -v`：27 个用例全部 PASSED（`27 passed in 59.52s`，输出在 `runs/126/acceptance-v.txt`）。
+- `git diff main -- tests/acceptance/` 只有删除：
+  - 22 行 `@TICKET_126`；
+  - `:42-44` 的 `TICKET_126 = pytest.mark.xfail(...)` 定义。
+- `import pytest` 保留，因为夹具和 parametrize 还在用。
+
+**工单 agent 的 4 次真实运行（都在 HEAD `0c58c74` 上重跑过）**
+1. `uv run python -m evals improve --help`：退出码 0。
+2. b7c6071 的三个 job 作为输入：
+   - 输出 `improve: the dev trials ran Skill version(s) 'e075718e1fd7', which no Skill directory here has; …`，退出码 2；
+   - `PATH` 最前面放了记录调用的假 `da-remote`、`gh`，调用记录为空；
+   - 没有生成输出目录，环境里没有模型变量也跑完了。
+3. `accept --screening`，旧版是 b7c6071 合并后的 `full`，新版是 `t47-screen3`：
+   - 目标题：`dbt-customer-cross-sell-insights`、`dbt-fix-division-by-zero`；
+   - 回归集写进了 `runs/126/regression-t47.json`；
+   - 结果是 `verdict: fail`，`old results: reusable`，`targets: FAIL, old 5/6, new 3/6`，`regression: pass`，`reuse_problems` 为空。
+   - **工单预期的 `rerun-old` 不成立，实际数据如下：**
+     - 两边都在 2026-11-06 跑，新版结束 `01:10Z`，旧版开始 `16:15Z`，没超过 14 天；
+     - benchmark commit 都是 `a3278ad…`，机器都是 `da-server`；
+     - `git_commit` 不同，但它在 `CHANGED_BY_DESIGN` 里，按设计不比较；
+     - 复用判定的代码没改过，所以 `fail` 是对的。
+4. CLI 跑完整一轮，用本地假模型端点（`runs/126/run4/server.py`），加上 125 的假 `da-remote`/`gh` 和临时仓库加本地 bare origin（`runs/126/run4/setup.py`，临时仓库里放的是真实 `skills/`）：
+   - 输出 `improve: 1 group(s); candidates: 1 pr; spend $0.89 of $25.00`，退出码 0；
+   - 假端点收到真实 SDK 发来的请求：归因 2 次、改写 1 次，模型都是 `deepseek-flash`，所以 SDK judge 接线能通；
+   - `improve.json`：`judge_usd 0.00126`、`spend_usd 0.89126`、`stopped_at None`；候选 1 的结果是 `pr`，判定 `pass`，`net_lines 1`；
+   - `gh` 的参数：`['pr','create','--draft','--base','main','--head','skill-improve/2026-11-24-1','--title','skill-improve 2026-11-24-1: FM4 duckdb-sql','--body-file','…/runs/126/run4/out/pr-1.md']`；
+   - `report.md` 里有分组、候选的任务（14 个）、分支和 commit、初筛记录（`--budget $24.99`）和 diff。
+
+**主 checkout 的分支查询**
+- 最后才跑，在 worktree 里执行，它和主 checkout 共用 refs。
+- `git branch --list 'skill-improve/*'`：空。
+- `git ls-remote origin 'refs/heads/skill-improve/*'`：空。
+
+**审查**
+- **第 1 轮 `da-review main`**，两条都属实，已修（`8b96690`），各配一个修复前会失败的测试，已验证：
+  - P1：一个把留出题标成开发集的 manifest 能让留出题的轨迹进到 judge。现在先跑 `check_dev_list`，不过就 `InputRefused`。
+  - P2：预检或冒烟失败、没有 `jobs/full` 时，`da-remote pull` 只拉回汇总（已对照 `scripts/da-remote` 的 dev-only 判定核实），花费会被算成 $0。现在记为"花费未知"：写进候选的原因和报告的一行，并且停止后续初筛。
+- **第 2 轮 `eng:code-review main`**，修了这些（`0c58c74`）：
+  - Standards 唯一的硬违规：`_git` 补上返回类型；
+  - `accept.run` 的 `getattr` 兼容写法改为直接用 `args.screening`；
+  - 分组成员和停止说明原来各构建两次，改成一次；
+  - Spec #1：预算拒绝改写调用时，报告里现在有一行 "Edit calls stopped at candidate N"，附测试。
+- **第 2 轮不修的，理由如下：**
+  - `evaluate`/`evaluate_screening` 重复约 40 行：合并要改 `evaluate` 的结构，工单要求它的行为不变，留给后续；
+  - 分组键 `Group.key`、`_handle` 有 10 个参数、`improve.py` 约 1400 行：都是重构，超出本工单范围；
+  - `sdk_edit_judge` 复制了 `sdk_judge`：Authority 不允许改 `attribute.py`。后续工单可以给 `sdk_judge` 加 `system_prompt` 参数，再删掉这份拷贝；
+  - judge 延迟构建的包装：用意有注释，按设计保留；
+  - Spec #2–#7：都是有意的选择，列在下面"待人定"里。
+- 两轮修复用满了。第 2 轮的修复没有再审，第 7 步的 Codex app 会看到。
+
+**待人定**（选了什么、依据、改起来动哪里）
+1. **初筛模式的返回值**比 `evaluate` 多一个 `"screening": true` 键，`render` 靠它不打点估计那行。依据：沿用 `render`，旧结果的输出不变。改：`accept.evaluate_screening`、`render`。
+2. **初筛模式对旧版留出题**：丢掉并只计数，不拒绝。新 job 里不属于候选的 trial 忽略。依据：契约 10 规定非开发集题只计数。改：`evaluate_screening` 开头。
+3. **同一天的检查**：
+   - 只匹配 `runs/improve-<date>-<n>[-rerun]`，因为 tee 的 `runs/improve-<date>.log` 也会匹配字面上的 glob；
+   - `--out` 已存在但为空时放行；
+   - 会调用一次只读的 `git ls-remote origin`。
+   - 改：`_check_fresh`。
+4. **`check_dev_list` 拒绝改了留出集的 manifest**：契约和 spec 没写，是 da-review P1 加的，和 ablate 的做法一致。改：`improve` 开头。
+5. **`da-remote status` 失败**：连续 `MAX_STATUS_ERRORS = 5` 次才算失败（ssh 抖动）。其余工具失败照 10.5 停下后面的初筛；`evaluate_screening` 报错也照此处理。改：`MAX_STATUS_ERRORS`、`_handle`。
+6. **`gh pr create` 失败**：候选判 `undecided`，原因里写明，分支留在 origin 上，后面的候选照常初筛。改：`_handle` 的 pass 分支。
+7. **候选判断的顺序和归类**：
+   - 先查 `too-many-tasks` 再调改写 judge，省一次调用；
+   - 改了等于没改、点名题目或数据（重试后仍然点名）、预算拒绝调用，都归 `bad-reply`，因为 `Discard` 不能改；
+   - 改：`_draft`、`_check_edit`。
+8. **`skill: none` 的组**按契约 2 共用 `("none", "")` 这一段，所以一轮最多出一个 none 候选。改：`make_groups`。
+9. **推送用完整 refspec**：`git push origin refs/heads/<b>:refs/heads/<b>`，和契约写的 `git push origin <branch>` 效果一样、更不容易歧义。改：`push_branch`。
+10. **多出来的输出**：`attribution.json`（每条失败的归因，已打码）和 `pr-<n>.md`。
+11. **CLI 退出码**：只要一轮跑完、报告写好就是 0，中途停下也是 0；停下的原因在 `report.md`。改：`improve.run`。
+12. **`evals/__main__.py`** 除了 `modules` 里加一项，import 列表也得加 `improve`，不加就用不了。
+
+**已知限制**（不阻塞，后续可以修）
+- status 轮询放弃时，服务器上的运行可能还在跑，这时记下的花费只是下限，而且没有标成"未知"。
+- 第一次写 `report.md`/`attribution.json` 在建分支之后。如果建分支时 git 失败，已经花钱的归因结果不会落盘。
+
+### 主会话合入后要跑的命令
+
+1. 开发集运行（已批准，不计入 $25）。前提：本地 main 等于 origin/main，服务器上没有活着的运行。
+
+   ```
+   scripts/da-remote setup <main 的完整 hash>
+   scripts/da-remote start dev-<YYYYMMDD> -- ablate --tasks-dir ../da-benchmarks/data-eng-bench/tasks --manifest evals/manifest.json --out runs/dev-<YYYYMMDD> --split dev --config full --trials 3 --budget 15
+   scripts/da-remote status dev-<YYYYMMDD>     # 直到 finished, exit 0
+   scripts/da-remote pull dev-<YYYYMMDD>
+   ```
+
+   拉回之后核对：`runs/dev-<YYYYMMDD>/jobs/full` 有 90 个 trial、0 个基础设施报错，`dropped/` 不存在或为空。有报错时不要用同一个 `--out` 续跑，停下问人。
+
+2. `evals improve` 第 1 轮。在主 checkout 里跑，HEAD 是第 1 步的 commit；用后台运行，等它结束。
+
+   ```
+   set -a; . ~/.config/data-agent/env; set +a
+   PATH="$PWD/scripts:$PATH" uv run python -m evals improve runs/dev-<YYYYMMDD>/jobs/full --manifest evals/manifest.json --tasks-dir ../data-agent-refs/data-eng-bench/tasks 2>&1 | tee runs/improve-<YYYY-MM-DD>.log
+   ```
+
+   - 默认值：`--regression evals/regression.json`、`--repo` 是仓库根、`--out runs/improve-<今天>`、`--budget 25`、`--date` 今天、远端路径照测试。
+   - `PATH` 必须带 `scripts/`。用旧的 `~/.local/bin/da-remote` 的话，拉回的 ablate 只有汇总，候选 1 会在服务器已经花了钱之后以"花费未知"停下。
+   - 如果中途停下，本地会留下 `skill-improve/<date>-*` 分支和 `runs/improve-<date>-*`，同一天再跑要加 `--date`。
+   - 手动重判一个候选：
+
+     ```
+     uv run python -m evals accept --screening --old runs/dev-<YYYYMMDD>/jobs/full --new runs/improve-<date>-<n>/jobs/full --manifest evals/manifest.json --target <t> … --regression evals/regression.json [--rerun runs/improve-<date>-<n>-rerun/jobs/full]
+     ```
+
+
+Files changed in the commits:
+- `evals/improve.py`
+- `evals/accept.py`
+- `evals/__main__.py`
+- `tests/acceptance/test_skill_improve.py` (marks removed only)
+- `tests/test_eval_accept_screening.py` (new)
+- `tests/test_eval_improve.py` (new)
+
+The run scripts and logs are under `runs/126/` and are not committed.
+
+This notification only confirms the result already reported: `make check` on `0c58c74` exited 0 (`2950 passed, 2 skipped, 79 deselected, 107 xfailed`). Nothing else changed.
+
+- 2026-11-24（主会话）"待人定" 1–12 都在契约和 §10 的范围内，按 agent 的选择接受。真实一轮（开发集运行 + improve 第 1 轮）什么时候跑，待人定（主会话建议推到里程碑，复用那时的开发集统一评估）。
