@@ -1,6 +1,6 @@
 # 112 — 可观测性后端：开关、CLI 导出变量、父 span、`trace` 事件、评测入口、`trace-check`、SDK 升级
 
-Status: in-review
+Status: done
 Blocked by: 111（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-23
@@ -365,3 +365,4 @@ To re-run any of those, start it again with `uv run python runs/112/fake_model_s
   - 冲突：README（两节都留）；pyproject/uv.lock（OpenTelemetry 的 sdk、exporter、proto 都作为运行时依赖）；agent.py 的 build_options/run（trace、external_mcp、charts 都留；env 顺序 external 最先、trace 最后；secrets 先加 langfuse 密钥，再加 external 的值）；cli.py（trace-check 和 mcp-launch 都留）；test_observability_relay.py（只删 TICKET_112/TICKET_113 两个 xfail 标记）。
   - 另修 tests/test_web_trace.py 的 create_app 替身，让它接受 main 新加的 mcp_servers 参数。112 对中转的调用和 main 上真实 trace_relay.py 的接口一致，没改代码。
   - make check：exit 0（pytest 2850 passed，web 417 passed + 10 expected fail）。验收用例 tests/acceptance/test_observability_*.py：62 passed，包括两个用真实中转跑的端到端用例。
+- 2026-11-23（主会话，第 7 步）：PR #125 合并 main 后 CI 绿，Codex 新一轮审查无意见。squash 合并为 672d045。实测 2、3 与回归结论由主会话写进 ADR-0008。

@@ -349,3 +349,9 @@ accept-2（13b）full 56/90 低于 baseline 62/90。读完 180 个 trial 后发�
 
   新变化：每个请求的 `thinking` 从 `{"type": "adaptive"}` 变成 `{"type": "adaptive", "display": "updates"}`。DeepSeek 端点认不认 `display` 未确认，由主会话的真实运行看。
 - **Harbor 离线安装**（工单 20 的做法：本机按容器平台备好 wheel，容器里 `--offline --no-index` 装；`runs/112/offline_install.py` 照 `DataAgent.install()` 的容器步骤，在 `--network none` 的容器里跑）：本机没有 data-eng-bench 的任务镜像，用 `python:3.12-slim`（CPython 3.12、glibc 2.41、aarch64，和工单 20 记的任务镜像同一 Python 与 glibc）代替。wheel 53 个共 208 MB，其中 `claude_agent_sdk-0.2.187-py3-none-manylinux_2_17_aarch64.whl` 167 MB（0.2.168 是 114 MB）；容器内 `installed in 12 s`（依赖 4.8 s，`data-agent --help` 5.1 s），离 Harbor 的 360 秒上限很远。x86_64 服务器上真实 trial 的 setup 用时由主会话从开发集初筛的 `agent/setup/install.log` 取。
+
+以下由主会话补（2026-11-23，真实模型，工单 112 分支 d69448b）：
+
+- **实测 2：fork 子 agent 默认打开后，验证子 agent 照常在前台跑完。** 一次 jaffle-shop `full` 运行（`--case b1_monthly_revenue`）通过，$0.023。事件里 `verifier_dispatch` → `verifier_start` → `verifier_end`（6 轮、9 次工具调用、检查全 PASS、`hit_max_turns: false`）都在 `answer`、`result` 之前；没有 `error` 事件；`result.cost_basis` 是 `price_table`。不需要设 `CLAUDE_CODE_FORK_SUBAGENT=0`。
+- **实测 3：中途插话（steer）的结果消息。** 插话后得到 2 个 `ResultMessage`，各自 `num_turns=1`，`user_message_uuid` 分别是原消息和插话（`user_message_uuids` 各一个），第二轮回答带上了插话内容；回放结果一致。
+- **回归：** jaffle-shop 7 题 7/7（$0.093）；DeepSeek 端点接受新的 `thinking.display: "updates"`，所有运行没有 API 错误。服务器开发集初筛（`board --config no-verifiers --trials 3`，workforce-analytics / pos-operations / marketing-campaigns-harbor）5/9（55.6%），和升级前的基线（71a5bcc，5/9）持平；x86_64 上每个 trial 的 agent setup 用时 25–33 秒。
