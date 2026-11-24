@@ -55,9 +55,10 @@ export function RunPage({
   const { revealed, replaying, togglePlay, controls } = useReplay(times, autoplay, { onPlay: () => setFollow(true) })
 
   const full = useMemo(() => buildRunView(events, notes), [events, notes])
-  const view = useMemo(() => (revealed === events.length ? full : buildRunView(events.slice(0, revealed), notes)), [events, notes, revealed, full])
+  const shown = useMemo(() => (revealed === events.length ? events : events.slice(0, revealed)), [events, revealed])
+  const view = useMemo(() => (shown === events ? full : buildRunView(shown, notes)), [events, notes, shown, full])
   // From the same events as the view: a replay shows the link once it reaches the trace event.
-  const trace = useMemo(() => traceLink(revealed === events.length ? events : events.slice(0, revealed)), [events, revealed])
+  const trace = useMemo(() => traceLink(shown), [shown])
   const { sections, loose } = useMemo(() => sectionsOf(view), [view])
   const fullSections = useMemo(() => sectionsOf(full).sections, [full])
   const numbers = useMemo(() => new Map(view.steps.map((s, i) => [s.id, i + 1])), [view])
