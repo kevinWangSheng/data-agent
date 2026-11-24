@@ -369,3 +369,44 @@ def test_the_cli_refuses_a_dab_run_without_model_settings(
     assert code == 2
     assert "not a Harbor job" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
+
+
+# --- review round 1 (da-review) ------------------------------------------------------------------
+
+
+def test_a_manifest_listing_a_holdout_task_as_dev_is_refused_before_any_judge_call(
+    world: World,
+) -> None:
+    job = world.input_job({"task-a": TaskRun(0, "alpha")})
+    leaky = {**MANIFEST, "holdout": [*MANIFEST["holdout"], "task-a"]}
+    with pytest.raises(InputRefused, match="holds out tasks the dev list names"):
+        asyncio.run(
+            improve(
+                [job], repo=world.repo, manifest=leaky, regression=REGRESSION_FILE,
+                out_dir=world.out, attribution_judge=world.attribution_judge,
+                edit_judge=world.edit_judge, skills=world.skills, today=TODAY,
+                remote_tasks_dir=REMOTE_TASKS_DIR, remote_manifest=REMOTE_MANIFEST,
+                poll_seconds=0,
+            )
+        )  # fmt: skip
+    assert world.attribution_judge.prompts == []
+
+
+def test_a_run_pulled_without_its_job_has_unknown_spend_not_zero(world: World) -> None:
+    # The preflight failed: ablate exits 2 and the pull brings back the summary only.
+    fake = world.tmp / "bin" / "da-remote"
+    top = '"$(git rev-parse --show-toplevel)"'
+    wrap(
+        world,
+        "da-remote",
+        'if [ "$1" = status ]; then echo "$2: finished, exit 2"; exit 0; fi\n'
+        f'if [ "$1" = pull ]; then {fake} "$@"; rc=$?; '
+        f'rm -rf {top}/runs/"$2"/jobs {top}/runs/"$2"/smoke; exit $rc; fi',
+    )
+    report = world.run([three_candidates(world)])
+
+    first = report.candidates[0]
+    assert first.outcome == "undecided"
+    assert "spend is unknown" in (first.reason or "")
+    assert "Spend of `improve-2026-11-24-1` is unknown here" in world.report_md()
+    assert [c.outcome for c in report.candidates[1:]] == ["not-screened", "not-screened"]

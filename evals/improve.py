@@ -138,7 +138,7 @@ from evals.attribute import (
     specific_names,
 )
 from evals.harbor import Trial, event_files
-from evals.report import MERGE_HELP, is_infra_error, load_jobs
+from evals.report import MERGE_HELP, check_dev_list, is_infra_error, load_jobs
 
 BUDGET_USD = 25.0
 MAX_CANDIDATES = 3
@@ -752,6 +752,9 @@ class _Ledger:
         self.budget = Decimal(str(budget_usd))
         self.judges = Decimal(0)
         self.screenings = Decimal(0)
+        # Runs whose spend could not be read back (no full pull): not in `spent`, named in
+        # report.md.
+        self.unknown: list[str] = []
 
     @property
     def spent(self) -> Decimal:
@@ -860,17 +863,24 @@ async def _screen(
     try:
         _tool(remote.repo, "da-remote", "pull", name)
     except ToolFailed as exc:
-        return screening, None, failure or f"{exc}; its spend is not counted"
+        ledger.unknown.append(name)
+        return screening, None, failure or f"{exc}; its spend is unknown here"
     out = remote.repo / "runs" / name
     try:
         billed = spent(out) if out.is_dir() else Decimal(0)
     except Stop as exc:
+        ledger.unknown.append(name)
         return screening, None, failure or f"cannot total its spend: {exc}"
     ledger.screenings += billed
     screening = replace(screening, spend_usd=float(billed))
     job = out / "jobs" / CONFIG
-    if failure is None and not job.is_dir():
-        failure = f"the pulled run has no jobs/{CONFIG}"
+    if not job.is_dir():
+        # `da-remote pull` brings an ablate run back whole only once its jobs show dev tasks
+        # only; without a job (setup, preflight or smoke failed) it brings the summary, not the
+        # smoke trial's event files, so the run's spend cannot be read here.
+        ledger.unknown.append(name)
+        unknown = f"the pulled run has no jobs/{CONFIG}, so its spend is unknown here"
+        failure = f"{failure}; {unknown}" if failure else unknown
     return screening, None if failure else job, failure
 
 
@@ -1081,6 +1091,11 @@ async def improve(
     passing ones and write the report (module docstring, contract 1-10). Raises `InputRefused` for
     input it does not take (contract 10)."""
     dev = set(manifest["dev"])
+    try:
+        # As `ablate` does: a manifest relabelling a holdout task as dev would reach the judges.
+        check_dev_list(dict(manifest), "the manifest")
+    except ValueError as exc:
+        raise InputRefused(str(exc)) from exc
     regression_tasks = _load_regression(regression, dev)
     try:
         trials = load_jobs(jobs)
@@ -1163,7 +1178,12 @@ async def improve(
         )
 
     def write() -> None:
-        _write(out_dir, snapshot(), day, entries, diffs, notes, masked)
+        unknown = [
+            f"Spend of `{name}` is unknown here and not in the total above (the pull brought "
+            "back its summary only); read it on the server"
+            for name in ledger.unknown
+        ]
+        _write(out_dir, snapshot(), day, entries, diffs, [*notes, *unknown], masked)
         attribution = mask({"failures": entries}, masked)
         (out_dir / "attribution.json").write_text(
             json.dumps(attribution, indent=2, ensure_ascii=False) + "\n"
