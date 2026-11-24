@@ -4,8 +4,8 @@
 The trace id comes from the run's `trace` event; the observations from Langfuse's
 `GET /api/public/v2/observations` (the older `/api/public/traces` answers 410 on a new Cloud
 project). What is printed is structure only: each observation's type, name and depth, whether it
-has usage and cost, and the names of its metadata attributes. No attribute value, no input or
-output, no key.
+has usage, cost, an input and an output, and the names of its metadata attributes. No attribute
+value, no input or output, no key.
 """
 
 import http.client
@@ -21,9 +21,10 @@ from typing import Any
 from data_agent.tracing import LangfuseSettings
 
 OBSERVATIONS_PATH = "/api/public/v2/observations"
-# The v2 field groups asked for: no `io` (inputs and outputs) and no `model`, which are content
-# or not needed. `core` (id, trace id, parent, type, times) always comes back.
-FIELDS = "core,basic,metadata,usage"
+# The v2 field groups asked for; no `model`, not needed. `core` (id, trace id, parent, type,
+# times) always comes back. `io` (inputs and outputs) only to say whether each observation has
+# them (ticket 121): their values are content, never printed.
+FIELDS = "core,basic,io,metadata,usage"
 PAGE_LIMIT = 100
 TIMEOUT_S = 30.0
 RUNS_DIR = Path("runs")
@@ -92,6 +93,11 @@ def names(value: Any) -> str:
     return ", ".join(sorted(str(k) for k in value)) if isinstance(value, Mapping) else "-"
 
 
+def present(value: Any) -> str:
+    """Whether an input or output holds anything: `yes` or `no`, nothing of the value."""
+    return "no" if value is None or value in ("", {}, []) else "yes"
+
+
 def structure(trace: str, found: list[dict[str, Any]]) -> list[str]:
     """The printed lines: the tree (each observation under its parent, by start time; one whose
     parent is not in the trace at the top), then the count of each type and name."""
@@ -116,6 +122,7 @@ def structure(trace: str, found: list[dict[str, Any]]) -> list[str]:
                 f"{indent}{o.get('type')} {o.get('name')}"
                 f"  usage: {names(usage) if has_usage else 'none'}"
                 f"  cost: {'yes' if has_cost else 'no'}"
+                f"  input: {present(o.get('input'))}  output: {present(o.get('output'))}"
             )
             metadata = o.get("metadata")
             if isinstance(metadata, Mapping):

@@ -339,12 +339,12 @@ def one(events: list[dict[str, Any]], type: str) -> dict[str, Any]:
 
 
 def assert_usage_and_cost(attributes: Any, result: dict[str, Any]) -> None:
-    usage = json.loads(attributes["langfuse.observation.usage_details"])
-    assert usage["output"] == result["output_tokens"]
-    total = (
-        result["uncached_input_tokens"] + result["cached_input_tokens"] + result["output_tokens"]
-    )
-    assert sum(usage.values()) == total
+    # Ticket 121 (human, 2026-11-23): the parent span keeps only the cost; the run's token total
+    # is metadata, so Langfuse does not count the GENERATIONs' tokens twice.
+    assert "langfuse.observation.usage_details" not in attributes
+    usage = json.loads(attributes["langfuse.observation.metadata.usage_total"])
+    keys = ("uncached_input_tokens", "cached_input_tokens", "output_tokens")
+    assert usage == {key: result[key] for key in keys}
     cost = json.loads(attributes["langfuse.observation.cost_details"])
     assert cost["total"] == pytest.approx(result["cost_usd"])
 

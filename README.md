@@ -136,10 +136,17 @@ the keys and forwards them: the CLI never sees the keys.
 There are two tiers (`data-agent run --trace-tier`):
 
 - `full` (the default, also for the web UI): everything is recorded (prompts, SQL, tool output,
-  query results, the answer), except credentials and the model endpoint. Send to Langfuse Cloud only
-  runs on public demo data (jaffle-shop, this repo's fixtures, public benchmarks).
+  query results, the answer), except credentials, the model endpoint and what names the machine
+  (`user.id`, `host.*`, `os.*`). The CLI exports no tool input and no model text, so the run adds
+  them from its own events: each tool span gets its call's input (the SQL of `query_database`), and
+  each of the model's messages is an `assistant.message` under the run's span (a verifier's names
+  it in `parent`). Send to Langfuse Cloud only runs on public demo data (jaffle-shop, this repo's
+  fixtures, public benchmarks).
 - `structure`: only an allowlist of structure fields (span names, timings, token counts, tool and
   model names), with anonymous ids.
+
+The run's span carries the cost; its token total is metadata (`usage_total`), so Langfuse counts each
+model request's tokens once.
 
 Evaluation commands (`evals ablate`, `evals board`, `evals dab`, `evals jaffle`) export only with
 `--trace`, and only the first trial of each task. data-eng-bench picks the tier by the task's split

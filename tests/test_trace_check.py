@@ -44,6 +44,8 @@ PAGES: dict[str, dict[str, Any]] = {
                 "type": "TOOL",
                 "name": "claude_code.tool",
                 "startTime": "3",
+                "input": '{"sql": "SELECT secret_column_value"}',
+                "output": "",
                 "metadata": {"attributes": {"tool_name": "mcp__data__query_database"}},
             },
             # A parent outside the trace: printed at the top.
@@ -117,15 +119,20 @@ def test_every_page_is_read_and_only_the_structure_printed(
 ) -> None:
     lines = trace_check.check(str(events(tmp_path / "run.jsonl")), langfuse.env())
     assert [q.get("cursor") for q in langfuse.queries] == [None, ["page-2"]]
-    assert langfuse.queries[0]["fields"] == ["core,basic,metadata,usage"]
+    # `io` so the check can say whether an input or output is there (ticket 121), never what.
+    assert langfuse.queries[0]["fields"] == ["core,basic,io,metadata,usage"]
     text = "\n".join(lines)
     assert lines[0] == f"trace {TRACE_ID}: 4 observations"
-    assert "  SPAN data-agent.run  usage: none  cost: no" in lines
-    assert "    GENERATION claude_code.llm_request  usage: input, output  cost: yes" in lines
+    assert "  SPAN data-agent.run  usage: none  cost: no  input: no  output: no" in lines
+    assert (
+        "    GENERATION claude_code.llm_request  usage: input, output  cost: yes"
+        "  input: no  output: no"
+    ) in lines
+    assert "    TOOL claude_code.tool  usage: none  cost: no  input: yes  output: no" in lines
     assert "      metadata.attributes: tool_name" in lines
-    assert "  EVENT orphan  usage: none  cost: no" in lines
+    assert "  EVENT orphan  usage: none  cost: no  input: no  output: no" in lines
     assert "  1 TOOL claude_code.tool" in lines
-    for value in ("end_turn-value", "mcp__data__query_database", SECRET):
+    for value in ("end_turn-value", "mcp__data__query_database", SECRET, "secret_column_value"):
         assert value not in text
 
 
