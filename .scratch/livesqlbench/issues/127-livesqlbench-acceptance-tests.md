@@ -1,10 +1,10 @@
 # 127 — LiveSQLBench：验收测试（任务生成、划分、soft EX 规则、评测入口、答案不外泄、只读；全部不连库、不调模型、不下载数据）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (implement session)
+Branch: worktree-127-livesqlbench-acceptance-tests
 
 ## Goal
 
@@ -275,10 +275,143 @@ spec 没写到的细节不是停下的理由：按 Context 第 5 项由本工单
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 1
+- Review rounds: 1
+- Model spend: $0
+- Outcome: —
 
 ## Comments
+
+- 2026-11-24（工单 agent 最终回复，主会话照抄）：
+
+### 合并时请人审的点
+
+1. **"题数允许"按"至少 2 题"理解。**
+2. **评分在 spec 点名的规则外多了几条，都照官方 soft EX 写：** 去注释、小数 2 位四舍五入、日期、空结果判错、重复行合并、JSON 值。
+3. **写库凭据给验证阶段的方式。** `[verifier] env` 里放凭据值，或放 `${LSB_PG_WRITE_PASSWORD}` 模板，两种都判对。agent 这边连这个变量名都不能出现。Harbor job 级的 `verifier_env` 这条路，这组测试没有覆盖。
+4. **`--postgres-env` 指的变量必须由任务的 agent 容器提供**（`[environment] env` 或 compose 的 `main` 服务）。由适配器或 `--ae` 给的话，这条测试不过。
+5. **取回 `runs/` 的外泄检查查的是服务器上的 run 目录。** 假 rsync 不拷文件；先断言了这次是整目录取回，再查这个目录。
+6. **Harbor 会把 job 的 `--ae` 注入容器。** 所以 job 配置本身不能经 `--ae` 传写库凭据，适配器的测试管不到这一层。这条留给 128 的 job 配置。
+
+### Comments（抄进工单）
+
+**上游与 clone**
+- `bird-bench/livesqlbench` 已 clone 到 `~/dev/AI/data-agent-refs/livesqlbench`，在 `e15cd22`（"Merge pull request #9 …"）。
+- 没有下载数据、dump 或镜像，也没有连服务器。
+
+**基线**
+- 改动前跑的 `make check`：2850 passed、2 skipped（`runs/ref127/baseline-check.txt`）。
+
+**评分期望值的来源**
+- 脚本 `runs/ref127/expected_soft_ex.py`（不提交）。它从上游 `evaluation/src/test_utils.py` import `remove_comments`、`remove_distinct`、`remove_round`、`preprocess_results`；上游要的 `db_utils`、`psycopg2` 用 `runs/ref127/upstream_stubs/` 里的替身模块。
+- SQL 按 `test_case_default` 的顺序清洗；结果比较照 `ex_base` 最后几行（`:276-285`）。
+- 命令：`uv run python runs/ref127/expected_soft_ex.py runs/ref127/upstream_stubs ~/dev/AI/data-agent-refs/livesqlbench/evaluation/src`
+- 输出原文在 `runs/ref127/expected_soft_ex.out`。摘录：
+  - `distinct_on` 保持原样
+  - `round_nested` 得到 `"SELECT price * 1.1 FROM items"`
+  - `comments` 得到 `"SELECT a FROM t WHERE b = 1"`
+  - `order_true_permuted` 0；`order_none_permuted` 1；`duplicates_merged` 1
+  - `decimal_half_up` 1；`float_half_up` 1；`decimal_differs` 0
+  - `date_vs_datetime` 1；`date_vs_string` 1
+  - `json_key_order` 1；`pred_empty`、`gold_empty`、`both_empty` 都是 0
+- 测试里的期望值全部照抄这份输出，没有手推。
+
+**`uv run pytest tests/acceptance/test_livesqlbench_*.py -v` 的结果**
+- 5 passed、48 xfailed、0 XPASS、0 skipped。
+- PASSED（守门测试，不带标记）：
+  - `split::test_the_generated_records_are_what_the_split_tests_assume`
+  - 3 条 `da-remote pull` 守门：`lsb-` 留出题 trial 有 `result.json` 的一例和只有 trial 名的一例都只取回汇总；只有 `lsb-` 开发题时整目录取回
+  - `entry::test_without_the_benchmark_kwarg_a_trial_is_the_data_eng_bench_dbt_run`
+- 其余都是 XFAIL：tasks 4、split 6、scoring 27、entry 2、leaks 7、readonly 2。
+- 用例逐条的名字在 `runs/ref127/lsb-verbose.txt`。
+
+**`--runxfail` 的失败原因（每组）**
+
+| 组 | 失败原因 |
+|---|---|
+| 任务生成 | 4 条都是 `evals/livesqlbench.py:72: NotImplementedError: ticket 128` |
+| 划分 | 4 条 `:93 NotImplementedError`；2 条 `AssertionError: 0 LiveSQLBench dev ids in the manifest` |
+| 评分 | 27 条：`:118`、`:127` 的 `NotImplementedError` |
+| 评测入口 | 1 条 `:72 NotImplementedError`；1 条 `assert '/bin/data-agent run --type query ' in 'if [ "$DB_TYPE" != duckdb ]…'` |
+| 答案不外泄 | 5 条 `:145`、2 条 `:72`，都是 `NotImplementedError` |
+| 只读 | 2 条 `:72 NotImplementedError` |
+
+没有一条是因为夹具、导入或脚手架出错而失败。
+
+**参考实现与反向检查**
+- 临时写的参考实现补丁在 `runs/ref127/ref.patch`，`runs/ref127/ref_livesqlbench_tail.py` 是它的实现部分。补丁同时带了一份临时的 60/120 清单和对照表（`runs/ref127/ref_manifest.py` 生成）。
+- 用 `--runxfail`（等于去掉标记）跑：53 passed。
+- 反向检查用 `LSB_REF=<flag>` 切换（`runs/ref127/reverse.sh`，输出在 `runs/ref127/reverse-checks.txt`）。每个开关都让对应的用例失败：
+  - `leak_ek`（题面带 `external_knowledge`）：3 失败
+  - `management`（管理题也生成任务）：5 失败
+  - `unstratified`（不按库分层）：1 失败
+  - `drop_distinct_on`（连 `DISTINCT ON` 一起去掉）：1 失败
+  - `ignore_order`（忽略 `conditions.order`）：1 失败
+  - `compare_columns`（比较列名）：4 失败
+  - `network`（命令行带 `--network`）：2 失败
+  - `leak_path`（答案路径进题面）：2 失败
+  - `log_sql`（评测脚本打印标准 SQL）：3 失败
+  - `agent_password`（agent 的环境带写库凭据）：1 失败
+  - `password_in_main`（`main` 服务带 `PGPASSWORD=123123`）：2 失败
+  - `noprefix`（题号不带 `lsb-`）：6 失败
+- 参考实现用 `git apply -R` 撤掉、新文件按路径删除，`evals/manifest.json` 和原文件逐字节一致。分支上没有参考代码。
+
+**脱敏与扫描**
+- `uv run python -m evals scrub tests/fixtures/livesqlbench`：`changed 0 file(s) of 7; redactions: key=0 endpoint=0 host=0 ip=0 home=0 user=0`。
+- 三次提交的 pre-commit 都过了，包括 "Detect hardcoded secrets"。
+
+**改动范围**
+- `git diff main...HEAD --stat`：16 个文件，+1342 / −1。
+- 都是 Authority 列出的新文件，加上 `evals/harbor_agent.py` 里的 `benchmark` 字段和它要的 `Literal` import。没有复制上游代码。
+
+**审查**
+- `da-review main`（Codex）："No actionable defects found against ticket 127's acceptance-test scope."
+- `eng:code-review main`，Standards 一侧：没有硬性违规。
+  - 已修：两处函数缺返回类型；`pulled_whole` 改成从 `tests/test_da_remote.py` import，不再照抄一份。
+  - 不修 `ablate_run` 的复制：原函数写死了自己的清单，要改它就得改 `tests/test_da_remote.py`，那不在 Authority 里。
+  - 不修 `benchmark` 字段暂时没人用：这是工单定下的空壳，128 会用它。
+  - 不修 `dev_size` 参数：它是契约的一部分。
+  - 不修各文件各自定义 `TICKET_128`：照工单 88、115 的约定，128 要逐个文件删。
+  - 不修测试里直接写 `"lsb-"`：故意钉死 spec 的题号格式。
+- `eng:code-review main`，Spec 一侧：
+  - 已修：入口测试原来要先生成任务才能碰到适配器。现在加了一条只测适配器的用例，今天失败在 `--type query` 那条正向断言上。
+  - 已修：写库凭据原来只能以明文值放进 `[verifier] env`。现在明文值和 `${LSB_PG_WRITE_PASSWORD}` 模板都接受，并禁止这个变量名出现在 agent 能看到的地方。
+  - 已修：前 32 个字符互不相同那条原来是空检查（生成的题号太短）。现在生成的题号都超过 32 个字符，只有前 10 个字符不同。
+  - 不修，交人审："`--postgres-env` 的变量来自容器"和"取回 `runs/` 查服务器副本"，即上面第 4、5 条。
+- 修复 1 轮。修完重跑了参考实现和全部反向检查，结果同上。
+
+### 契约清单（写在 `evals/livesqlbench.py` 的 docstring 里）
+
+**常量**
+- `BENCHMARK = "livesqlbench"`
+- `TASK_PREFIX = "lsb-"`
+- `DEV_SIZE = 60`，`HOLDOUT_SIZE = 120`
+- `DATABASES`：`evals/livesqlbench_databases.json`，格式 `{"lsb-<instance_id>": "<selected_database>"}`，正好覆盖清单里的 LiveSQLBench 题号
+- `WRITE_PASSWORD_ENV = "LSB_PG_WRITE_PASSWORD"`
+
+**函数和类型**
+- `task_id(instance_id) -> str`：返回 `lsb-<instance_id>`，instance id 原样不变。这也是 Harbor 任务目录名，也就是 trial 的 `task_name`。
+- `generate_tasks(public, answers, db_assets, out, *, write_password) -> list[Path]`
+  - `public` 是公开字段的 JSONL；`answers` 是按 `instance_id` 对应的隐藏字段 JSONL；`db_assets` 下是 `<db>/` 目录。
+  - 每道 `Query` 题生成一个 `out/lsb-<id>`，`Management` 题不生成。
+  - `task.toml` 的 `[metadata]` 里写 `task_type = "query"`；题面含 `query` 和库名；`db_assets` 原样放在 `environment/` 下。
+  - 隐藏字段和答案文件路径都不进题面和 `environment/`。
+  - 写库凭据只进 `[verifier] env`；`environment/` 和 `[environment] env` 里都没有它、没有它的变量名、也没有 `123123`。
+- `split(records, seed, dev_size=DEV_SIZE) -> Split(dev, holdout, databases)`：按 `selected_database` 分层；同一个种子结果相同；至少 2 道题的库两边都有题。
+- `Result(columns, rows)`；`ExecutionError`；`Execute = Callable[[Sequence[str]], Result]`。
+- `clean_sql(sqls) -> list[str]`：照上游 `test_case_default` 的顺序，128 照抄上游函数（spec U9）。
+- `results_match(predicted, gold, conditions) -> bool`：照 `ex_base` 末尾的比较，不比列名。
+- `evaluate(payload, predicted_sql, execute, out) -> int`
+  - 写 `out/reward.txt`（`1` 或 `0`）；任一边 `ExecutionError` 记 0。
+  - 写出、打印、记日志的内容里都没有标准 SQL 和标准结果的值。
+  - 怎么读 `/app/pred.json` 不钉死（spec U10）。
+
+**适配器字段**
+- `DataAgentOptions.benchmark: Literal["data-eng-bench", "livesqlbench"]`，默认 `"data-eng-bench"`。
+
+**夹具**
+- 3 道编造的题：两道 `Query`，一道 `Management`；两个编造的库各有 3 个 `db_assets` 文件。
+- 答案替身（哨兵串）在测试代码里拼出来，不写进夹具文件。
+
+**只读组测不到的部分**
+- agent 连库用的角色是不是真的只读、沙箱能不能用别的凭据写库：`make check` 没有 Postgres，测不到。已写进模块 docstring，由 128 在冒烟时实测并写进它的 Comments。
