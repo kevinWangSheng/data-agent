@@ -468,13 +468,15 @@ class RunExport:
             self._texts.append((now, self._sequence, text, parent if parent else None))
 
     def _clean(self, value: Any) -> Any:
-        """`value` with every string masked, leaf by leaf, before any JSON escapes a secret."""
+        """`value` with every string masked, keys included, leaf by leaf, before any JSON
+        escapes a secret."""
         from data_agent.trace_relay import mask_shapes
 
         if isinstance(value, str):
             return mask_shapes(self.masks(value))
         if isinstance(value, Mapping):
-            return {str(k): self._clean(v) for k, v in cast(Mapping[Any, Any], value).items()}
+            items = cast(Mapping[Any, Any], value).items()
+            return {self._clean(str(k)): self._clean(v) for k, v in items}
         if isinstance(value, list | tuple):
             return [self._clean(item) for item in cast(Sequence[Any], value)]
         if value is None or isinstance(value, bool | int | float):

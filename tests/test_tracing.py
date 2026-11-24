@@ -621,6 +621,34 @@ async def test_a_tool_input_no_span_took_is_an_observation_of_its_own(
     assert json.loads(observed.attributes["langfuse.observation.input"]) == MASKED_INPUT
 
 
+async def test_a_secret_used_as_a_key_in_a_tool_input_is_masked_on_the_fallback_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`tool.input` goes to Langfuse without the relay's second pass, so the run masks the
+    input's keys as well as its values."""
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+
+    from data_agent.agent import QUERY_TOOL
+
+    messages = [
+        AssistantMessage(
+            content=[
+                ToolUseBlock(
+                    id="toolu_q1",
+                    name=QUERY_TOOL,
+                    input={"sk-test": {"nested sk-test": "SELECT 1"}},
+                )
+            ],
+            model="m",
+        )
+    ]
+    _, _, _, exporter = await traced_run(monkeypatch, tmp_path, messages=messages)
+    [observed] = [s for s in children(exporter) if s.name == "tool.input"]
+    posted = observed.attributes["langfuse.observation.input"]
+    assert "sk-test" not in posted
+    assert json.loads(posted) == {"[REDACTED]": {"nested [REDACTED]": "SELECT 1"}}
+
+
 CAPTURED_TOOL = REPO_ROOT / "tests" / "fixtures" / "observability" / "captured" / "full-req002.json"
 CAPTURED_CALL = "call_00_ijxia9nc1ynowUqX4bg23505"  # its `query_database` call
 
