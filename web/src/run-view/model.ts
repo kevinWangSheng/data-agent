@@ -311,15 +311,12 @@ function clockOf(events: readonly RunEvent[]): (e: RunEvent) => number | null {
   }
 }
 
-/** The event type that carries the run's Langfuse trace (./trace.ts reads its link). */
-export const TRACE_EVENT = 'trace'
-
 /** Whether the trace export wrote this event: `trace` and `trace_export_error`, or the `error`
  *  (`source: "trace"`) written instead when the export fails (src/data_agent/tracing.py
  *  `RunExport.finish`). The export stops the relay and waits for it to drain, up to its timeout,
  *  so these events' times are not part of the run's time. */
 function isExportEvent(e: RunEvent): boolean {
-  return e.type === TRACE_EVENT || e.type === 'trace_export_error' || (e.type === 'error' && e.source === 'trace')
+  return e.type === 'trace' || e.type === 'trace_export_error' || (e.type === 'error' && e.source === 'trace')
 }
 
 /** The index of the event where the run ended. The export writes its events at the file's end,
