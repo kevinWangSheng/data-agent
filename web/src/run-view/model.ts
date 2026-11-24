@@ -311,10 +311,27 @@ function clockOf(events: readonly RunEvent[]): (e: RunEvent) => number | null {
   }
 }
 
+/** Events the trace export writes after the relay stops (src/data_agent/tracing.py
+ *  `RunExport.finish`), up to its drain timeout after the run ended: they are not part of the run's
+ *  time. */
+const EXPORT_EVENTS: ReadonlySet<string> = new Set(['trace', 'trace_export_error'])
+
+/** The run's last event that is not an export event: where the run ended. */
+function runEnd(events: readonly RunEvent[]): RunEvent | undefined {
+  return events.findLast((e) => !EXPORT_EVENTS.has(e.type))
+}
+
 /** Each event's time, in milliseconds after the run's first event (null when unknown): replay cuts
- *  its prefix and skips idle gaps by these. */
+ *  its prefix and skips idle gaps by these. An export event comes no later than the run's end, so
+ *  replay shows it there instead of waiting for the export. */
 export function eventTimes(events: readonly RunEvent[]): (number | null)[] {
-  return events.map(clockOf(events))
+  const timeOf = clockOf(events)
+  const last = runEnd(events)
+  const end = last ? timeOf(last) : null
+  return events.map((e) => {
+    const ms = timeOf(e)
+    return ms !== null && end !== null && EXPORT_EVENTS.has(e.type) ? Math.min(ms, end) : ms
+  })
 }
 
 type OpenDispatch = VerifierDispatch & { seq: number; agentId: string | null }
@@ -514,7 +531,7 @@ function summarize(
   found: { version?: RunEvent; task?: RunEvent; status?: RunEvent; result?: RunEvent },
 ): RunSummary {
   const { version, task, status, result } = found
-  const end = events.at(-1)
+  const end = runEnd(events)
   const durationMs = (end ? clockOf(events)(end) : null) ?? 0
 
   let runStatus: RunStatus = 'running'

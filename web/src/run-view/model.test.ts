@@ -1,13 +1,15 @@
 // Unit tests for what the acceptance tests leave out: the injected Skills (`version.skills`,
 // ticket 83), the result-table parser's edge cases, task fields per field, durations, and the
-// narration and times (ticket 86).
+// narration and times (ticket 86), and the export events' place on the clock (ticket 122).
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, test } from 'vitest'
 
+import { replayClock, revealedAt } from '../run-page/replay'
 import { buildRunView, eventTimes, type RunEvent } from './model'
+import { traceLink } from './trace'
 
 function version(fields: Record<string, unknown>): RunEvent {
   return { seq: 0, type: 'version', ts: '2026-11-15T09:00:00+00:00', config: 'full', ...fields }
@@ -485,5 +487,52 @@ describe('agent tools (ticket 101)', () => {
         ['Bronze', '190.00'],
       ],
     })
+  })
+})
+
+describe('export events', () => {
+  // `trace` and `trace_export_error` are written after the relay stops (src/data_agent/tracing.py
+  // RunExport.finish), up to its drain timeout after the run ended.
+  const at = (s: number) => `2026-11-15T09:00:${String(s).padStart(2, '0')}+00:00`
+  const ran: RunEvent[] = [
+    { ...version({}), ts: at(0) },
+    { seq: 1, type: 'task', ts: at(1), task: 'How many customers?', task_type: 'query' },
+    { seq: 2, type: 'answer', ts: at(15), text: '42', sql_tool_use_id: null },
+    { seq: 3, type: 'result', ts: at(17), subtype: 'success', is_error: false },
+  ]
+  const url = 'https://langfuse.example/trace/abc'
+  const trace = (seq: number): RunEvent => ({ seq, type: 'trace', ts: at(27), trace_id: 'abc', url })
+  const exportError: RunEvent = { seq: 4, type: 'trace_export_error', ts: at(26), error: 'timeout' }
+
+  test('a trace event 10 s after the result does not lengthen the wall time', () => {
+    expect(buildRunView(ran).summary.durationMs).toBe(17_000)
+    expect(buildRunView([...ran, trace(4)]).summary.durationMs).toBe(17_000)
+  })
+
+  test('nor does a trace_export_error followed by a trace', () => {
+    expect(buildRunView([...ran, exportError, trace(5)]).summary.durationMs).toBe(17_000)
+  })
+
+  test('in replay the trace event still comes, at the run end, and its link shows there', () => {
+    const events = [...ran, exportError, trace(5)]
+    const times = eventTimes(events)
+    expect(times).toEqual([0, 1000, 15_000, 17_000, 17_000, 17_000])
+    const clock = replayClock(times, false)
+    const end = clock[3]
+    expect(clock.at(-1)).toBe(end)
+    const shown = events.slice(0, revealedAt(clock, end))
+    expect(shown).toHaveLength(events.length)
+    expect(traceLink(shown)).toEqual({ traceId: 'abc', url })
+    expect(buildRunView(shown).summary.durationMs).toBe(17_000)
+  })
+
+  test('an export event before the result keeps its own, earlier time', () => {
+    const events = [...ran.slice(0, 3), { ...trace(3), ts: at(16) }, { ...ran[3], seq: 4 }]
+    expect(eventTimes(events)).toEqual([0, 1000, 15_000, 16_000, 17_000])
+    expect(buildRunView(events).summary.durationMs).toBe(17_000)
+  })
+
+  test('a running run (no result yet) still ends at its last event', () => {
+    expect(buildRunView(ran.slice(0, 3)).summary.durationMs).toBe(15_000)
   })
 })
