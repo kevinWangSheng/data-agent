@@ -1,6 +1,6 @@
 # 133 — IM 入口：Discord 实现（discord.py，gateway）
 
-Status: ready-for-human
+Status: ready-for-agent
 Blocked by: 131（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-25
@@ -259,3 +259,7 @@ Branch: worktree-133-im-discord
 - `eng:code-review` Standards：无硬违规。已修：会话 key 分支收进 `channel_key`；`SEEN` 改名 `REMEMBERED`，`find` 改名 `thread_or_source`。不修：共用的有界 map 辅助、`service.py` 改成按平台一张表，都要动本工单不许改的 `slack.py` 和 `service.py` 其他部分；模块大小和六个有界 map 各有单一用途和注释；chat/thread/direct 三元组和 id 的字符串/整数转换由共用的 `Incoming`/`Press` 类型决定；命令描述用 `getattr` 是因为命令树类型包含没有描述的右键菜单。
 
 **真实验收交接**（worktree `/Users/shenghuikevin/dev/AI/data-agent/.claude/worktrees/133-im-discord`）：工单第 2 步命令可在该 worktree 原样运行。除两处 未确认 外另看：`/new` 在私信里是否出现、私有"思考中"提示是否消失只剩一条回复；关掉 ping 的回复是否仍算 @（定的点 3 假定只有带 ping 的算）；归档线程里的追问是否还在同一对话；登录超过 3 秒，discord.py 不读代理环境变量，网络要能直连 Discord。
+- 2026-11-25（主会话，人定"照上游"）：
+  - 退回：论坛帖子起始消息里 @ 机器人没有回答（`src/data_agent/im/discord_bot.py:315-319` 把它当顶层消息，在线程里再建线程）。照 spec "会话映射" Update 2026-11-25 晚：判断"已在线程里"看消息所在频道是不是线程（`discord.Thread`），不比较消息 id 和线程 id；论坛起始消息就在这个帖子线程里回复。配一个修复前会失败的测试（起始消息 id 等于线程 id、频道是论坛帖子线程）。人允许为这一条做第 3 轮修复；修完照常跑两道审查，审查再有新问题就停下交回。
+  - 先把 `origin/main` 合进本分支（132 Telegram 已合入 `65631e5`，同改 `service.py` 的 `LIBRARIES`/`make_platform`、`pyproject.toml`、`uv.lock`、README、`docs/setup.md`，`tests/test_im_service.py` 的"未实现平台"那例）：两个平台都保留；`uv.lock` 用 `uv lock` 重新生成，只能有 aiogram、discord.py 两组包的变化；"未实现平台"那例和 `service.start` 里 "not implemented yet" 的分支照 Context "和 132 并行"（`:80`）一起删掉。
+  - `/new` 后线程免 @ 的缺口不在本工单修，归 137（改 adapter）；README 里"`/new` 后要再 @"那句先留着，137 去掉。
