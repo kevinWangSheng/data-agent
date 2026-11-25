@@ -91,3 +91,7 @@ Branch: —
 - 2026-11-24（主会话建票）：从 128 拆出。128 不需要答案就能完成；本工单只做需要答案的两项。
   - `needs-info` 是在等人：标准答案邮件。
   - 128 done、人把答案文件放到服务器之后，主会话把 Status 改成 `ready-for-agent`。
+
+- 2026-11-25（主会话）答案文件已就位：人用 `scp` 传到 `da-server:/root/da-benchmarks/livesqlbench-answers.jsonl`，主会话改成 mode 600。只查了结构，没读内容：270 行，270 个不同的 id，全部能解析；每行恰好有 `instance_id`（str）、`sol_sql`、`test_cases`、`external_knowledge`（都是 list）四个字段；覆盖公开数据全部 270 题，其中 180 道 Query 全部覆盖，没有公开数据之外的 id。字段名和 Context、Stop conditions 预期的一致。
+  - 重跑 `scripts/da-remote benchmarks`："tasks: 180 in /root/da-benchmarks/livesqlbench/tasks, 180 with a gold answer"。`scripts/da-remote check`：0 failure(s)，"LiveSQLBench tasks: 180 …, 180 with a gold answer"。
+  - 派工前还剩一项待对齐：验证脚本自身失败的 trial 怎么记分（见 Acceptance）。
