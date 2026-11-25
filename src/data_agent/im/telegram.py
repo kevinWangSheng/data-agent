@@ -94,20 +94,25 @@ NOT_MODIFIED = "message is not modified"
 SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
 CODE_SPECIAL = re.compile(r"([`\\])")
 URL_SPECIAL = re.compile(r"([)\\])")
+# A code span (CommonMark): a run of backticks, the code, then a run of the same length;
+# runs are matched whole (`++` and the lookarounds), so ``` `` ``` cannot close ``` ` ```.
+CODE_SPAN = r"(?<!`)(?P<ticks>`++)(?P<code>[^\n]+?)(?<!`)(?P=ticks)(?!`)"
 # Markdown's inline elements, in one scan: code, a link (its URL may hold one level of
 # parentheses), bold, strikethrough, italic.
 INLINE = re.compile(
-    r"`(?P<code>[^`\n]+)`"
-    r"|\[(?P<label>[^\]\n]+)\]\((?P<url>(?:[^()\s]|\([^()\s]*\))+)\)"
-    r"|\*\*(?=\S)(?P<bold>.+?)(?<=\S)\*\*"
-    r"|(?<!\w)__(?=[^\s_])(?P<bold_underscores>.+?)(?<=[^\s_])__(?!\w)"
-    r"|~~(?=\S)(?P<strike>.+?)(?<=\S)~~"
-    r"|(?<![\w*])\*(?=\S)(?P<italic>[^*\n]+?)(?<=\S)\*(?![\w*])"
+    CODE_SPAN
+    + (
+        r"|\[(?P<label>[^\]\n]+)\]\((?P<url>(?:[^()\s]|\([^()\s]*\))+)\)"
+        r"|\*\*(?=\S)(?P<bold>.+?)(?<=\S)\*\*"
+        r"|(?<!\w)__(?=[^\s_])(?P<bold_underscores>.+?)(?<=[^\s_])__(?!\w)"
+        r"|~~(?=\S)(?P<strike>.+?)(?<=\S)~~"
+        r"|(?<![\w*])\*(?=\S)(?P<italic>[^*\n]+?)(?<=\S)\*(?![\w*])"
+    )
 )
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 # Bold in a heading, which is bold already; `__` inside a word is no bold (CommonMark).
 BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)__(?=[^\s_])(.+?)(?<=[^\s_])__(?!\w)")
-INLINE_CODE = re.compile(r"(`[^`\n]+`)")
+INLINE_CODE = re.compile(CODE_SPAN)
 BULLET = re.compile(r"^(\s*)[-*+]\s+")
 LANGUAGE = re.compile(r"^[\w+#-]+$")
 
@@ -369,7 +374,9 @@ def to_markdown_v2(markdown: str) -> str:
     out: list[str] = []
     in_code = False
     for line in markdown.split("\n"):
-        if is_fence(line):
+        # An opening fence's info string holds no backtick (CommonMark): ```SELECT 1``` on its
+        # own line is inline code, not a code block.
+        if is_fence(line) and (in_code or "`" not in line.strip()[len(FENCE) :]):
             language = line.strip()[len(FENCE) :].strip()
             if in_code or not LANGUAGE.match(language):
                 language = ""
@@ -388,16 +395,20 @@ def convert_line(line: str) -> str:
     heading = HEADING.match(line)
     if heading:
         # Bold inside the heading's own bold would close it early: its markers go, outside code.
-        pieces = INLINE_CODE.split(heading[1])
-        content = "".join(
-            piece if index % 2 else BOLD.sub(lambda match: match[1] or match[2], piece)
-            for index, piece in enumerate(pieces)
-        )
+        content, end = "", 0
+        for code in INLINE_CODE.finditer(heading[1]):
+            content += unbold(heading[1][end : code.start()]) + code[0]
+            end = code.end()
+        content += unbold(heading[1][end:])
         return "*" + inline(content, styled=True) + "*"
     bullet = BULLET.match(line)
     if bullet:
         return bullet[1] + "• " + inline(line[bullet.end() :])
     return inline(line)
+
+
+def unbold(text: str) -> str:
+    return BOLD.sub(lambda match: match[1] or match[2], text)
 
 
 def inline(text: str, styled: bool = False) -> str:
@@ -409,10 +420,14 @@ def inline(text: str, styled: bool = False) -> str:
         out.append(escape(text[end : match.start()]))
         end = match.end()
         if match["code"] is not None:
+            code = match["code"]
+            # CommonMark drops one space each side, which lets code start or end with a `.
+            if code.startswith(" ") and code.endswith(" ") and code.strip():
+                code = code[1:-1]
             if styled:
-                out.append(escape(match[0]))
+                out.append(escape("`" + code + "`"))
             else:
-                out.append("`" + CODE_SPECIAL.sub(r"\\\1", match["code"]) + "`")
+                out.append("`" + CODE_SPECIAL.sub(r"\\\1", code) + "`")
         elif match["label"] is not None:
             url = URL_SPECIAL.sub(r"\\\1", match["url"])
             out.append("[" + inline(match["label"], styled=True) + "](" + url + ")")

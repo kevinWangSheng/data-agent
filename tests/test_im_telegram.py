@@ -268,6 +268,25 @@ def test_an_unclosed_code_block_is_closed() -> None:
     assert to_markdown_v2("```\nSELECT 1") == "```\nSELECT 1\n```"
 
 
+@pytest.mark.parametrize(
+    ("markdown", "v2"),
+    [
+        # A fence's info string holds no backtick (CommonMark), so this line is inline code.
+        (
+            "Total:\n```SELECT SUM(revenue) FROM orders```\ndone",
+            "Total:\n`SELECT SUM(revenue) FROM orders`\ndone",
+        ),
+        ("```a_b``` and c.", r"`a_b` and c\."),
+        ("use ``a`b`` here", "use `a\\`b` here"),
+        ("`` `x` ``", "`\\`x\\``"),
+        ("# Run ```dbt run``` **now**", r"*Run \`dbt run\` now*"),
+    ],
+    ids=["whole-line", "line-start", "double-backticks", "padded", "in-heading"],
+)
+def test_inline_code_with_several_backticks(markdown: str, v2: str) -> None:
+    assert to_markdown_v2(markdown) == v2
+
+
 # --- the interface -> Telegram's calls -----------------------------------------------------
 
 
