@@ -1,6 +1,6 @@
 # 132 — IM 入口：Telegram 实现（aiogram，长轮询）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 131（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 132-im-telegram)
@@ -194,8 +194,8 @@ Branch: worktree-132-im-telegram
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2
+- Attempts: 2
+- Review rounds: 4（首轮 2，退回 1 轮 2）
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
 - Outcome: 已实现，两道审查通过；真实 Telegram 验收待人建 bot、主会话跑
 - Human review minutes: —
@@ -235,3 +235,8 @@ Branch: worktree-132-im-telegram
 5. 机器人的 `text_mention` 在群里可用，`<mention> stop` 也可用。
 - 2026-11-25（主会话，PR #139 第 1 轮 Codex 意见）：
   - 退回：`to_markdown_v2` 把整行的三反引号行内代码当成代码块的开头栅栏（`src/data_agent/im/telegram.py:371-376`：`is_fence` 只看行首是否为 ```，后面的"语言"不匹配 `LANGUAGE` 就丢掉）。主会话核实：`to_markdown_v2("Total:\n```SELECT SUM(revenue) FROM orders```\ndone")` 返回 `'Total:\n```\ndone\n```'`，SQL 丢了，后面的 `done` 也被包进代码块。要求：同一行里已闭合的 ```…``` 按行内代码处理（或原样保留内容），不丢回答内容；配一个修复前会失败的测试。在原分支 `worktree-132-im-telegram` 上修。
+- 2026-11-25（工单 agent 退回第 1 轮最终回复，主会话照抄；HEAD `f348197`）：
+  - 修复：`45600d0` 同一行里已闭合的 ```…``` 按行内代码（CommonMark：开头栅栏的 info string 不能含反引号）；行内代码接受多反引号并去掉两侧各一个空格，标题里同样处理。`f348197` 修掉审查在 `45600d0` 里发现的回归（4 个反引号的栅栏不再是代码块）：栅栏照 CommonMark，开头是 3 个以上反引号且 info string 不含反引号，结尾至少同样长且后面没东西；顺带修了旧的丢内容（结尾栅栏后的文字被丢）。新测试 `test_inline_code_with_several_backticks`（5 例，含退回的原例）、`test_code_block_fences`（3 例），在 `5c5eb44` 上全部失败、现在通过。
+  - 检查：`make check`（`runs/132/make-check-5.log`）ruff/basedpyright 干净，pytest "3324 passed, 3 skipped, 79 deselected"，web 448 passed，exit 0。真实调用：`to_markdown_v2("Total:\n```SELECT SUM(revenue) FROM orders```\ndone")` 返回 `'Total:\n`SELECT SUM(revenue) FROM orders`\ndone'`；最坏情况（4000 个反引号、1000 行栅栏）几毫秒内完成。
+  - 审查：第 1 轮 `da-review` "No actionable defects"，`eng:code-review` 找出上述回归和结尾栅栏后丢文字，已在 `f348197` 修；第 2 轮 `da-review` "No actionable regressions"，`eng:code-review` 无阻塞项。不修（判断题或小节）：`startswith(opening)` 可读性；`CODE_SPECIAL.sub` 出现两次、`BOLD` 与 `INLINE` 部分重复；语言不合 `LANGUAGE` 时丢语言、保留代码；缩进 4 格以上的栅栏仍开代码块（不丢内容，利于列表里的栅栏）；Slack 和 Telegram 的限流重试代码重复，等 133 加第三份时再抽。
+  - 已知限制（超出本工单 Authority，待人定是否开后续工单）：`format.py:62` 的 `is_fence` 仍把同一行的 ```x``` 当栅栏，Slack 的 `to_mrkdwn` 同样（工作中看到，没跑）。审查跑过确认 `format.py` 里两个影响，都不丢文字：`tables_to_code` 不把这种行之后的管道表格转成等宽块；`split_message` 对被拆分的长回答，后面每块重复这一行，除最后一块外都以空代码块结尾。
