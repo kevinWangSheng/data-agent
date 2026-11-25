@@ -37,6 +37,7 @@ CHANNEL = 200000000000000001
 GUILD = 300000000000000001
 THREAD = 400000000000000001
 DM = 500000000000000001
+FORUM = 800000000000000001
 # Made up, in no real token's shape.
 TOKEN = "dc-" + "Zr5m" + "-made-up-bot"
 CONFIG = PlatformConfig(
@@ -374,6 +375,32 @@ async def test_a_message_in_a_thread_needs_no_new_thread() -> None:
     await handed([message("more", where=channel(PUBLIC_THREAD, THREAD))], bot)
     await bot.send(str(CHANNEL), str(THREAD), Outgoing("ok"))
     assert [kind for kind, _ in client.calls] == ["send"]
+
+
+async def test_a_mention_in_a_forum_posts_starter_message_is_answered_in_the_post() -> None:
+    """A forum post is a thread whose starter message has the thread's id: the message is in
+    the thread already (its channel is the thread), so no thread is made from it."""
+    client = FakeClient()
+    bot = platform(client)
+    post = SimpleNamespace(type=PUBLIC_THREAD, id=THREAD, parent_id=FORUM)
+    got = await handed(
+        [
+            message(
+                f"<@{BOT}> how many orders?",
+                where=post,
+                message_id=THREAD,
+                mentions=(BOT,),
+                calls=client.calls,
+            )
+        ],
+        bot,
+    )
+    assert [(item.chat_id, item.thread_id, item.mentioned) for item in got] == [
+        (str(FORUM), str(THREAD), True)
+    ]
+    await bot.send(str(FORUM), str(THREAD), Outgoing("ok"))
+    assert [kind for kind, _ in client.calls] == ["send"]
+    assert client.calls[0][1]["channel"] == THREAD
 
 
 async def test_no_thread_sends_into_the_channel_or_direct_message() -> None:

@@ -10,9 +10,11 @@ type checkers look for `import discord` next to the importing file first.
 - Keys (`Incoming.chat_id`, `thread_id`): in a direct message the private channel's id and no
   thread; in a server channel the channel's id and the message's own id, which a thread made
   from the message will have; in a thread its parent's id and the thread's id, so a
-  conversation begun with a mention goes on in the thread the bot made from it. A thread
-  discord.py has not cached (an archived one) comes with a channel of no type, which is
-  fetched to tell it from a channel. User ids are strings.
+  conversation begun with a mention goes on in the thread the bot made from it. A message is
+  in a thread when its channel is one: a forum post's starter message, whose id is the post's,
+  is answered in the post, with no thread made from it. A thread discord.py has not cached (an
+  archived one) comes with a channel of no type, which is fetched to tell it from a channel.
+  User ids are strings.
 - The bot is mentioned when `message.mentions` has it: a reply to the bot that pings it is one;
   `@everyone`, `@here` and role mentions are not. `text` has `<@id>` and `<@!id>` taken out.
 - `send` into a thread that is not there yet (not made by this process, not found by
@@ -313,10 +315,12 @@ class DiscordPlatform:
             if incoming is None:
                 return
             if incoming.thread_id is not None:
-                if incoming.thread_id == str(message.id):
-                    remember(self.sources, incoming.thread_id, (message, incoming.text))
-                else:
+                # In a thread by its channel, not by comparing ids: a forum post's starter
+                # message has the post's (the thread's) id.
+                if channel.type in THREAD_TYPES:
                     remember(self.threads, incoming.thread_id, None)
+                else:
+                    remember(self.sources, incoming.thread_id, (message, incoming.text))
             await self.on_message(incoming)
 
     async def resolve(self, message: discord.Message) -> Any:

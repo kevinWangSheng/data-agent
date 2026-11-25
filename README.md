@@ -227,7 +227,8 @@ allowed_users = ["123456789012345678"]           # Discord user ids, written as 
 
 - **In a server channel**, mention the bot (`@data-agent how many orders last month?`). It makes a
   thread from your message and answers there. Messages in that thread go to the same
-  conversation, with no mention needed. Replying to one of the bot's messages with the ping on
+  conversation, with no mention needed. In a forum post, which is a thread already, it answers in
+  the post. Replying to one of the bot's messages with the ping on
   counts as a mention; `@everyone`, `@here` and role mentions do not.
 - **In a direct message**, every message goes to the chat's current conversation. The `/new`
   slash command ends it, so the next message starts a new one. `/new` in one of the bot's threads
