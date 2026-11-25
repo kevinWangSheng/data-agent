@@ -287,6 +287,27 @@ def test_inline_code_with_several_backticks(markdown: str, v2: str) -> None:
     assert to_markdown_v2(markdown) == v2
 
 
+@pytest.mark.parametrize(
+    ("markdown", "v2"),
+    [
+        ("````\na_b\n````", "```\na_b\n```"),
+        # A fence closes only on a run at least as long as the opening one (CommonMark).
+        (
+            "````md\n```sql\nSELECT 1\n```\n````\nafter",
+            "```md\n\\`\\`\\`sql\nSELECT 1\n\\`\\`\\`\n```\nafter",
+        ),
+        # A closing fence holds nothing after its backticks, so this line stays code.
+        (
+            "```sql\nSELECT 1\n``` trailing.\n```\nafter",
+            "```sql\nSELECT 1\n\\`\\`\\` trailing.\n```\nafter",
+        ),
+    ],
+    ids=["four-backticks", "nested-fence", "text-after-backticks"],
+)
+def test_code_block_fences(markdown: str, v2: str) -> None:
+    assert to_markdown_v2(markdown) == v2
+
+
 # --- the interface -> Telegram's calls -----------------------------------------------------
 
 

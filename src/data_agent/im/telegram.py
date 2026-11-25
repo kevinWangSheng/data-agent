@@ -56,7 +56,7 @@ from aiogram.types import (
 )
 
 from data_agent.im.config import PlatformConfig
-from data_agent.im.format import FENCE, is_fence
+from data_agent.im.format import FENCE
 from data_agent.im.platform import (
     Button,
     Capabilities,
@@ -95,7 +95,7 @@ SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
 CODE_SPECIAL = re.compile(r"([`\\])")
 URL_SPECIAL = re.compile(r"([)\\])")
 # A code span (CommonMark): a run of backticks, the code, then a run of the same length;
-# runs are matched whole (`++` and the lookarounds), so ``` `` ``` cannot close ``` ` ```.
+# runs are matched whole (`++` and the lookarounds), so a run of two cannot close a run of one.
 CODE_SPAN = r"(?<!`)(?P<ticks>`++)(?P<code>[^\n]+?)(?<!`)(?P=ticks)(?!`)"
 # Markdown's inline elements, in one scan: code, a link (its URL may hold one level of
 # parentheses), bold, strikethrough, italic.
@@ -115,6 +115,9 @@ BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)__(?=[^\s_])(.+?)(?<=[^\s_
 INLINE_CODE = re.compile(CODE_SPAN)
 BULLET = re.compile(r"^(\s*)[-*+]\s+")
 LANGUAGE = re.compile(r"^[\w+#-]+$")
+# A code fence (CommonMark): 3 or more backticks, then an info string, which holds no backtick
+# when the fence opens and is blank when it closes; closing takes a run as long as the opening.
+FENCE_LINE = re.compile(r"^\s*(?P<ticks>`{3,})(?P<info>.*)$")
 
 
 class TelegramPlatform:
@@ -372,21 +375,21 @@ def to_markdown_v2(markdown: str) -> str:
     (bold lines), bullets, inline code and code blocks (with their language) converted, and
     every other special character escaped. An unclosed code block is closed."""
     out: list[str] = []
-    in_code = False
+    opening = ""  # the open code block's backtick run
     for line in markdown.split("\n"):
-        # An opening fence's info string holds no backtick (CommonMark): ```SELECT 1``` on its
-        # own line is inline code, not a code block.
-        if is_fence(line) and (in_code or "`" not in line.strip()[len(FENCE) :]):
-            language = line.strip()[len(FENCE) :].strip()
-            if in_code or not LANGUAGE.match(language):
-                language = ""
-            out.append(FENCE + language)
-            in_code = not in_code
-        elif in_code:
+        fence = FENCE_LINE.match(line)
+        if not opening and fence and "`" not in fence["info"]:
+            language = fence["info"].strip()
+            out.append(FENCE + (language if LANGUAGE.match(language) else ""))
+            opening = fence["ticks"]
+        elif opening and fence and fence["ticks"].startswith(opening) and not fence["info"].strip():
+            out.append(FENCE)
+            opening = ""
+        elif opening:
             out.append(CODE_SPECIAL.sub(r"\\\1", line))
         else:
             out.append(convert_line(line))
-    if in_code:
+    if opening:
         out.append(FENCE)
     return "\n".join(out)
 
