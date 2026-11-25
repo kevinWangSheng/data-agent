@@ -195,7 +195,8 @@ A file can hold both a `[slack]` and a `[telegram]` table; both bots then run.
   In a group, send `/new@its_username`: a bare `/new` there does not mention the bot, so the bot
   ignores it.
 - **`/start`**, which Telegram sends when someone opens the bot, starts no question and gets no
-  reply.
+  reply, also from someone not on the allowed list: they see their user id once they send any
+  other message.
 - **In a group** the bot answers a message that mentions it (`@its_username`) or replies to one of
   its messages, and nothing else: with no threads, a follow-up needs the mention or the reply
   every time. In a private chat it answers every message.

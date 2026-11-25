@@ -35,8 +35,8 @@ type checkers look for `import discord` next to the importing file first.
   answer only its user sees, an `Incoming` with `new_conversation` (and `mentioned`: the
   command is to the bot) is handed on, and the deferred answer is deleted: whatever the
   adapter replies is the one visible reply. A `/new` typed as text is an ordinary message.
-  `/new` in a bot's thread drops the thread's key in the adapter, so the next message there
-  needs a mention again.
+  `/new` in a bot's thread starts a new conversation there; the adapter still counts the thread
+  as the bot's, so the next message there needs no mention.
 - discord.py runs each event in a task of its own; one lock hands messages, presses and `/new`
   to the adapter one at a time, in the order they came. An interaction takes its place in that
   order when it comes, and its acknowledgement goes out at once beside it (in time however long
