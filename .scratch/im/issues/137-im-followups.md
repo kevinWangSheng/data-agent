@@ -1,10 +1,10 @@
 # 137 — IM 跟进：`/new` 后线程免 @、Telegram `/start`、同一行的三反引号代码、Discord 异常里的 interaction token
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —（原 133；133 代码已合入 main `747cdcf`，只差真实验收，不阻塞本工单）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 137-im-followups)
+Branch: worktree-137-im-followups
 
 ## Goal
 
@@ -65,12 +65,23 @@ Status `ready-for-human`，Comment 写明试了什么、哪里失败、分支名
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Outcome: 四条都实现；验收测试不变且通过；`make check` 绿
 - Human review minutes: —
 
 ## Comments
 
 - 2026-11-25（主会话）：来源是 132、133 交回时的待定点；人定"照上游"，上游取证由子 agent 读 Hermes `4d8ebf8c`、OpenClaw `0b99555d`、Chat SDK `e490e84` 源码，结论写进 spec "会话映射" Update 2026-11-25 晚。Blocked by 133：要删 133 加进 README 的那句，且 133 改 Discord 线程判断。
+- 2026-11-25（工单 agent 最终回复，主会话照抄；分支 `worktree-137-im-followups`，`1743ef0` 实现、`93de101` 审查修复）：
+  - `make check`：基线 3410 passed、3 skipped；最终 `3432 passed, 3 skipped, 79 deselected`，web 448 passed，ruff、basedpyright 干净。`tests/acceptance/` diff 为空，`tests/acceptance/test_im_*.py` 原样通过。
+  - 第 1 条（`adapter.py`）：分开记 `threads`（每个键的当前对话）和 `joined`（机器人参与过的线程键）；`/new` 只丢对话；对话被丢的线程在 `threads.json` 里留作 `"conversation": null`；旧格式文件读回时所有线程键都算参与过；Telegram 没有线程 id，不会参与，仍要 @。测试 `test_after_a_bare_new_the_bots_thread_needs_no_mention[slack|discord]`、`test_after_new_with_a_question_the_bots_thread_needs_no_mention[slack|discord]`（都含重启）、`test_a_bare_new_before_a_restart_keeps_the_thread_the_bots`、`test_a_thread_map_of_the_old_shape_is_read_back`、`test_after_new_a_chat_without_threads_still_needs_the_mention`；修复前 4 个失败（`/new <问题>` 和 Telegram 的本来就对）。
+  - 第 2 条（`telegram.py`）：`to_incoming` 对 `/start`、`/start payload`、`/start@本机器人` 返回 None；`/start@别的机器人` 照旧。测试 `test_start_is_a_ping_not_a_message[bare|payload|at-bot|at-bot-upper]`、`test_start_for_another_bot_is_an_ordinary_message`、`test_start_is_not_handed_on_and_answered_with_nothing`；修复前 5 个失败。
+  - 第 3 条：`format.fence_after`/`fences_after` 照 CommonMark（Telegram 原来的 `FENCE_LINE` 规则移进 `format.py`），`paragraphs`、`split_lines`、`tables_to_code`、Slack `to_mrkdwn`、Telegram `to_markdown_v2` 共用；`split_lines` 用开头那串反引号重开、关闭被拆开的块。真实返回值（前→后）：`slack.to_mrkdwn("Total:\n```SELECT SUM(revenue) FROM orders```\ndone")` `'Total:\n```\ndone'` → `'Total:\n```SELECT SUM(revenue) FROM orders```\ndone'`；`tables_to_code("Query:\n```SELECT 1```\n\n| a | b |\n|---|---|\n| 1 | 2 |")` 表格原样 → `'Query:\n```SELECT 1```\n\n```\na | b\n--+--\n1 | 2\n```'`；`split_message`（这行加 6 段，limit 120）之前每块重复这行、除最后一块外都以空栅栏结尾，之后 4 块、这行只出现一次、没有块以栅栏结尾。`tests/test_im_fences.py` 修复前在 import 时失败（没有 `fence_after`）；新的 Slack 用例 `one-line-code`、`text-after-a-run` 修复前失败。Telegram 已有的栅栏测试原样通过。
+  - 第 4 条（`discord_bot.py`）：`REDACTED_LOGGERS` 加 `discord.client`、`discord.app_commands.tree`；记录的 traceback 里有 token 时，`RedactTokens` 格式化一次、脱敏、写进 `exc_text`、清掉 `exc_info`。测试 `test_no_interaction_token_is_in_a_logged_callback_timeout`：一直超时的 connector 让 aiohttp 经 discord.py 的 webhook adapter 抛真实的 `ConnectionTimeoutError`（带 callback URL），再经库自己的 `Client._run_event` 和 `CommandTree.on_error`（包成 `CommandInvokeError`）在 DEBUG 下记日志，断言日志和 traceback 都没有 token；修复前 tree 的 traceback 里有 token。
+  - 偏离 Authority：格式测试放在 `tests/test_im_fences.py` 而不是 `tests/test_im_format.py`：后者和 `tests/acceptance/test_im_format.py` 重名，pytest 默认导入模式报 "import file mismatch" 停止收集。
+  - 真实运行：工单预算 $0、不连平台，真实运行就是上面三处格式函数的调用和内存里的适配器运行。
+  - 审查：`da-review main`（`1743ef0`）"No actionable regressions"，HEAD `93de101` 复跑同样。`eng:code-review` Standards 无硬违规，已修 `split_lines` 的嵌套三元、`redact` 算两次、缺 docstring；Spec 无越界，已加 `/new <问题>` 后重启的检查。不修：`threads`/`joined` 两个集合是工单要求的"分开记"；旧格式读回路径是工单要求的；`fence_after` 的三态返回（None / "" / 反引号串）是调用方要的"每行之后的块状态"；Telegram 再匹配一次 `FENCE_LINE` 只为取语言；Slack `sections` 读的是 `to_mrkdwn` 的输出（栅栏都是裸 ``` 行、代码行可能以反引号开头），按 CommonMark 重读会弄坏 `test_sections_end_and_hold_the_limit_on_mixed_text[31]`。
+  - 已知限制：Slack 里四反引号块中间的裸 ``` 行显示时会提前结束代码块（mrkdwn 没有转义）；`format.py` 和 Telegram 都对。
+- 2026-11-25（主会话）：工单 agent 留下的两处小尾巴在本分支补了 `4a9dbf6`：`discord_bot.py` 模块 docstring 里"`/new` 后要再 @"改成和第 1 条一致；README Telegram 一节写明名单外的人点 Start 也不回复、发别的消息才看到自己的 user id（照 Hermes，属"照上游"已定）。
