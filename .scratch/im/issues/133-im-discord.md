@@ -1,6 +1,6 @@
 # 133 — IM 入口：Discord 实现（discord.py，gateway）
 
-Status: ready-for-human
+Status: in-review
 Blocked by: 131（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-25
@@ -280,3 +280,4 @@ Branch: worktree-133-im-discord
   - 检查：`make check`（`c230790`，`runs/133-fake/make-check-r4.log`）ruff/basedpyright 干净，pytest 3367 passed、3 skipped，web 448/448。真实运行（`runs/133-fake/r4-redact.py`，运行时生成假 token，日志 `runs/133-fake/r4-redact.log`）：DEBUG 日志里是 `'token': '[redacted]'`、`POST …/interactions/11/[redacted]/callback`、`DELETE …/webhooks/22/[redacted]/messages/@original`，token 0 次；压住 `/new` 确认时交给适配器的顺序是 `['new', 'first question after /new']`。
   - `eng:code-review` Spec：无缺失、无越界；确认过滤覆盖 discord.py 2.7.1 里所有在消息文本中记 interaction token 的地方（`gateway.py:518`、`webhook/async_.py:185`、`http.py:660/707/740`）；`/new` 经 `CommandTree` 到 `handle_new` 中间不让出（读源码确认，没跟踪运行）。Standards：无硬违规；不修：两个处理函数重复 create_task→lock→await 的形状；`RedactTokens`/`REDACT_TOKENS`/`redact_tokens` 只差大小写；`to_press`/`channel_key` 抛错或 `stop` 时等锁被取消，确认任务没人 await（最多一条 "Task exception was never retrieved" 警告）；网关测试经私有属性建 `DiscordWebSocket`（discord.py 钉 2.7.1）；两个顺序测试重复 setup。
   - `da-review`（`runs/133-fake/da-review-r4.log`）1 个新 P2，按退回条件未修，已对照代码核实：interaction callback 超时时 aiohttp 抛 `ConnectionTimeoutError(f"Connection timeout to host {req.url}")`（`aiohttp/client.py:858-859`），URL 带 interaction token；异常经 `handle_interaction`/`handle_new` 传出，由 `discord.client`（`client.py:582`，`_log.exception`）和 `app_commands.tree`（`tree.py:819`，`exc_info=error`）记下。这两个 logger 没挂过滤器，过滤器也只改 `getMessage()`，不改 traceback。仍是短期 interaction token，不是 bot token。可能的修法：两个 logger 也挂过滤器，并脱敏 `exc_info`/`exc_text`，配一个 callback 超时的测试。
+- 2026-11-25（主会话，人定）：traceback 里的 interaction token 不在本工单修，写进 137 的第 4 条和验收标准；本工单开 PR。

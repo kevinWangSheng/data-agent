@@ -1,4 +1,4 @@
-# 137 — IM 跟进：`/new` 后线程免 @、Telegram `/start`、同一行的三反引号代码
+# 137 — IM 跟进：`/new` 后线程免 @、Telegram `/start`、同一行的三反引号代码、Discord 异常里的 interaction token
 
 Status: ready-for-agent
 Blocked by: 133
@@ -13,6 +13,7 @@ Branch: —
 1. 在机器人参与过的线程里 `/new` 之后，不 @ 的消息照样回应（Slack、Discord 的线程；Telegram 没有线程，不受影响）。
 2. Telegram 的 `/start`（带不带参数都算）当作平台 ping：不交给 agent，不回复。
 3. 一行里已闭合的三反引号代码（```` ```SELECT 1``` ````）在公共排版和 Slack 里不再被当成代码块的栅栏，不丢内容。
+4. Discord interaction callback 出错（如超时）时，记下的异常和 traceback 里不出现 interaction token。
 
 ## Authority
 
@@ -20,9 +21,10 @@ Branch: —
   - `src/data_agent/im/adapter.py`：只为第 1 条。"机器人参与过的线程"和"当前对话"分开记，`/new` 只换对话。持久化的形状由你定（如 `threads.json` 里加一项或另一个文件），旧的 `threads.json` 要能读回。
   - `src/data_agent/im/telegram.py`：只为第 2 条（`to_incoming` 的 `bot_command` 分支，`:306` 起），以及第 3 条里把栅栏判断换成共用的那一份（如果你把它移进 `format.py`）。
   - `src/data_agent/im/format.py`、`src/data_agent/im/slack.py`：只为第 3 条。
-  - `tests/test_im_adapter.py`、`tests/test_im_telegram.py`、`tests/test_im_slack.py`，新建 `tests/test_im_format.py`（如果还没有，否则在已有的格式测试文件里加）。
+  - `tests/test_im_adapter.py`、`tests/test_im_telegram.py`、`tests/test_im_slack.py`、`tests/test_im_discord.py`（第 4 条），新建 `tests/test_im_format.py`（如果还没有，否则在已有的格式测试文件里加）。
+  - `src/data_agent/im/discord_bot.py`：只为第 4 条（`RedactTokens`、`REDACTED_LOGGERS` 及其测试所在的 `tests/test_im_discord.py`）。
   - `README.md`：删掉 Discord 一节里 "`/new` 后要再 @ 一次" 的那句（133 合入后才有）；在 Telegram 一节写明 `/start` 不会触发回答。
-- Must not edit：`tests/acceptance/`（全部）、`tests/fixtures/` 里已有的文件；`platform.py`、`config.py`、`progress.py`、`service.py`、`discord_bot.py`；130 定下的名字、签名、常量；`src/` 里其他文件；`web/`、`evals/`、`.claude/`、`CODING_STANDARDS.md`、`AGENTS.md`。
+- Must not edit：`tests/acceptance/`（全部）、`tests/fixtures/` 里已有的文件；`platform.py`、`config.py`、`progress.py`、`service.py`；130 定下的名字、签名、常量；`src/` 里其他文件；`web/`、`evals/`、`.claude/`、`CODING_STANDARDS.md`、`AGENTS.md`。
 - Server access: none
 - Spend cap：$0（不调模型，不连真实平台）。
 
@@ -37,6 +39,7 @@ Branch: —
   - `format.tables_to_code` 对这种行之后的管道表格不转成等宽块。
   - 132 的审查还跑出 `split_message` 对被拆分的长回答：后面每块重复这一行，除最后一块外都以空代码块结尾（132 工单 Comments，退回第 1 轮）。
   - 132 已在 `telegram.py` 里按 CommonMark 修了自己的转换（`FENCE_LINE`，`:120`；开头 3 个以上反引号、info string 不含反引号；结尾至少同样长、后面没东西）。照它做，最好把栅栏判断收成 `format.py` 里一份，Slack、Telegram、`split_message`、`tables_to_code` 都用它。
+- **第 4 条**（133 第 4 轮 `da-review` 的 P2，人 2026-11-25 定放进本工单）：callback 超时时 aiohttp 抛 `ConnectionTimeoutError(f"Connection timeout to host {req.url}")`（`aiohttp/client.py:858-859`），URL 带 interaction token；异常由 `discord.client`（`client.py:582`，`_log.exception`）和 `discord.app_commands.tree`（`tree.py:819`，`exc_info=error`）记下。133 的 `RedactTokens` 只挂在 `REDACTED_LOGGERS` 上、只改 `getMessage()`。要做：这两个 logger 也挂上，并脱敏异常文本（如格式化 `exc_info` 后把脱敏结果写进 `record.exc_text`、清掉 `exc_info`）。行号按 133 合入后的 main 再核。
 - 停机期间到的消息：spec 定为保持现状，不改。
 
 ## Acceptance
@@ -44,6 +47,7 @@ Branch: —
 - [ ] 第 1 条：Slack 和 Discord 键（`thread_id` 不为 None）的线程里，bare `/new` 和 `/new <问题>` 之后，不 @ 的下一条消息开（或进）新对话并得到回答；新适配器读同一个 runs 目录后仍然如此；旧格式的 `threads.json` 能读回。Telegram（`thread_id` 为 None）的行为不变。
 - [ ] 第 2 条：`/start`、`/start payload`、`/start@本机器人` 不产生 `Incoming`（或适配器收到后什么都不做），不调 `conversations.create`/`send`，不发消息；`/start@别的机器人` 照旧。
 - [ ] 第 3 条：上面三处 `format.py`/Slack 的例子各有一个修复前会失败的测试；Telegram 已有的栅栏测试照样通过；4 个以上反引号的栅栏、结尾栅栏后的文字照 CommonMark。
+- [ ] 第 4 条：一个让 interaction callback 超时（或抛带 token URL 的异常）的测试，在 DEBUG 下断言日志和 traceback 里都没有 token；修复前失败。
 - [ ] `tests/acceptance/test_im_*.py` 原样通过；`make check` 通过。
 
 ## Evidence required
