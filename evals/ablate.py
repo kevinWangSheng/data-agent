@@ -510,6 +510,11 @@ def harbor_run_args(
         *(("--ak", "trace=true") if args.trace else ()),
         *(("-m", args.model) if args.model else ()),
         *(a for task in tasks for a in ("-i", task)),
+        # LiveSQLBench's tasks read the write credential from the host (`[verifier.env]`'s
+        # `${LSB_PG_WRITE_PASSWORD}`); Harbor 0.24 asks before that (cli/jobs.py
+        # `_confirm_host_env_access`) and aborts without a TTY, as under `da-remote start`. `-y`
+        # also skips `--diff` and hub-sharing prompts, neither of which a run here uses.
+        *(("-y",) if args.benchmark == LSB_BENCHMARK else ()),
     ]
 
 

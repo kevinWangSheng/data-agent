@@ -1,7 +1,9 @@
 #!/bin/bash
 # From LiveSQLBench @ e15cd22, LiveSQLBench-CLI/adapters/livesqlbench/template/environment/
 # init-db.sh (Apache License 2.0, LiveSQLBench-CLI/LICENSE; see NOTICE). Modified for
-# data-agent (ticket 128): this header, and trailing whitespace trimmed on 1 line(s); nothing else.
+# data-agent (ticket 128): this header, trailing whitespace trimmed on 1 line(s), and a mapped
+# table without a dump file is an error instead of a skipped WARNING (a case mismatch had built
+# an empty database); nothing else.
 set -euo pipefail
 
 SELECTED_DB_FILE="${SELECTED_DB_FILE:-/docker-entrypoint-initdb.d/db_assets/db_name.txt}"
@@ -163,8 +165,8 @@ import_dump_into_database() {
             dump_file="$source_dir/${table_name}.sql"
 
             if [[ ! -f "$dump_file" ]]; then
-                echo "[init-db.sh] WARNING: Mapped dump file not found, skipping: $dump_file"
-                continue
+                echo "[init-db.sh] ERROR: Mapped dump file not found: $dump_file" >&2
+                exit 1
             fi
 
             echo "[init-db.sh] Restoring table dump: $(basename "$dump_file")"

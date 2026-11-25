@@ -2067,6 +2067,7 @@ def test_without_benchmark_ablate_runs_only_data_eng_bench_tasks_and_smokes_one_
     assert all(ran_tasks(call) == ["dbt-alpha"] for call in harbor.smoke)
     for call in [*harbor.calls, *harbor.smoke]:
         assert call[call.index("--config") + 1] == str(ablate.JOB_CONFIG)
+        assert "-y" not in call
     assert table(out)["n_tasks"] == len(HOLDOUT)
     assert "benchmark" not in json.loads((out / "request.json").read_text())
 
@@ -2084,6 +2085,8 @@ def test_benchmark_livesqlbench_runs_its_dev_tasks_with_its_job_config(
     assert all(ran_tasks(call) == LSB_DEV[:1] for call in harbor.smoke)
     for call in [*harbor.calls, *harbor.smoke]:
         assert call[call.index("--config") + 1] == lsb_config
+        # Harbor 0.24 asks before loading [verifier.env]'s host variable; no TTY aborts it.
+        assert "-y" in call
     result = table(out)
     assert result["n_tasks"] == len(LSB_DEV)
     assert {c["config"] for c in result["configs"]} == {"full", "baseline"}

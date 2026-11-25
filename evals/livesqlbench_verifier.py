@@ -2,10 +2,12 @@
 U7, U9, U10; ticket 128).
 
 `generate_tasks` (evals.livesqlbench) copies this file into each task's `tests/`, where Harbor runs
-it in the task's `main` container after the agent (`tests/test.sh`): that container has Python and
-`psycopg` but not this repo, so the file needs nothing beyond the standard library and `psycopg`,
-and `evals.livesqlbench` re-exports its names (`Result`, `ExecutionError`, `Execute`, `clean_sql`,
-`results_match`, `evaluate`) rather than defining them twice.
+it after the agent (`tests/test.sh`) in a separate verifier environment: a fresh copy of the task's
+compose environment (`main` image and database), with the agent's `/app/pred.json` uploaded as an
+artifact. That image has Python, `psycopg` and `json-repair` but not this repo, so the file needs
+nothing beyond the standard library, `psycopg` and `json_repair` (upstream's evaluator.py repairs
+`pred.json` with it), and `evals.livesqlbench` re-exports its names (`Result`, `ExecutionError`,
+`Execute`, `clean_sql`, `results_match`, `evaluate`) rather than defining them twice.
 
 The SQL cleaning and the result comparison are upstream's, copied from LiveSQLBench @ e15cd22
 `evaluation/src/test_utils.py` (MIT, below; spec U9). Modified: `remove_round` no longer logs the
@@ -344,22 +346,33 @@ def kind(exc: BaseException) -> str:
     return type(cause).__name__ if cause is not None else type(exc).__name__
 
 
-# --- the script: Harbor's verifier runs it in the task's `main` container ---
+# --- the script: Harbor's verifier runs it in the task's separate verifier environment ---
 
 
 def read_prediction(path: Path) -> tuple[str, list[str]]:
     """The agent's SQL from `pred.json` (`{"instance_id", "predicted_sql": [...]}`) and its state:
-    `missing`, `unparsable` (not JSON, or no non-empty `predicted_sql` list of strings) or `ok`."""
+    `missing`; `ok`; `repaired` (not JSON as written, but JSON after upstream's repair: evaluator.py
+    reads `json.loads(repair_json(pred_text))`, json-repair 0.58.5 as its requirements.txt pins);
+    or `unparsable` (not JSON even repaired, or no non-empty `predicted_sql` list of strings, where
+    upstream also scores 0, or fails on a non-object)."""
     if not path.is_file():
         return "missing", []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    state = "ok"
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        data = json.loads(text)
     except ValueError:
-        return "unparsable", []
+        from json_repair import repair_json  # in the task's `main` image, pinned (Dockerfile.main)
+
+        state = "repaired"
+        try:
+            data = json.loads(repair_json(text))  # pyright: ignore[reportArgumentType]
+        except ValueError:
+            return "unparsable", []
     sqls = data.get("predicted_sql") if isinstance(data, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     if not isinstance(sqls, list) or not sqls or not all(isinstance(s, str) for s in sqls):  # pyright: ignore[reportUnknownVariableType]
         return "unparsable", []
-    return "ok", [str(s) for s in sqls]  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+    return state, [str(s) for s in sqls]  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
 
 
 def last_result(cur: Any) -> Result:

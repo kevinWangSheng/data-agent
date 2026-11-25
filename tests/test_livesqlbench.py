@@ -189,6 +189,28 @@ def test_a_generated_task_uses_local_images_and_the_reader_url(tmp_path: Path) -
     assert "/app/pred.json" in (task_dir / "instruction.md").read_text()
 
 
+def test_a_generated_task_verifies_in_a_separate_environment_with_the_prediction(
+    tmp_path: Path,
+) -> None:
+    from harbor.models.task.config import VerifierEnvironmentMode
+    from harbor.models.task.verifier_mode import (
+        resolve_task_verifier_mode,
+        resolve_verifier_environment_definition,
+    )
+
+    task = Task({t.name: t for t in generate(tmp_path, empty_answers(tmp_path))}["lsb-tide_q1"])
+    assert resolve_task_verifier_mode(task.config) == VerifierEnvironmentMode.SEPARATE
+    assert task.config.artifacts == ["/app/pred.json"]
+    # No [verifier.environment]: a fresh copy of the task's own compose environment and image.
+    definition = resolve_verifier_environment_definition(task.config, task.paths)
+    assert definition is not None
+    assert definition.config.docker_image == livesqlbench.main_image()
+    assert (definition.directory / "docker-compose.yaml").is_file()
+    # The keys sit in their tables, not as metadata or as verifier variables.
+    assert "environment_mode" not in task.config.verifier.env
+    assert "artifacts" not in task.config.metadata
+
+
 def test_generation_refuses_a_task_file_holding_the_write_credential(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     for db in ("orchard_ledger", "tide_gauges"):
@@ -287,6 +309,11 @@ def test_an_error_is_recorded_by_the_drivers_class_only(tmp_path: Path) -> None:
         ('{"predicted_sql": []}', "unparsable", []),
         ('{"predicted_sql": "SELECT 1"}', "unparsable", []),
         ('{"instance_id": "x", "predicted_sql": ["SELECT 1"]}', "ok", ["SELECT 1"]),
+        # Upstream evaluator.py: json.loads(repair_json(pred_text)), json-repair 0.58.5.
+        ('{"instance_id": "x", "predicted_sql": ["SELECT 1"', "repaired", ["SELECT 1"]),
+        ('```json\n{"predicted_sql": ["SELECT 1",],}\n```', "repaired", ["SELECT 1"]),
+        ("[1", "unparsable", []),
+        ("", "unparsable", []),
     ],
 )
 def test_pred_json_is_read_as_upstream_asks_for_it(
@@ -325,8 +352,8 @@ def test_the_scripts_own_failure_scores_0_and_names_its_class_only(tmp_path: Pat
     assert "x9" not in (out / livesqlbench_verifier.DIAGNOSTICS_FILE).read_text()
 
 
-def test_the_script_runs_with_the_standard_library_and_psycopg_only() -> None:
-    """It runs in the task's `main` container, which has no copy of this repo."""
+def test_the_script_runs_with_the_standard_library_psycopg_and_json_repair_only() -> None:
+    """It runs in a container of the task's `main` image, which has no copy of this repo."""
     tree = ast.parse(livesqlbench.VERIFIER_SCRIPT.read_text())
     imports = {
         alias.name.split(".")[0]
@@ -336,7 +363,42 @@ def test_the_script_runs_with_the_standard_library_and_psycopg_only() -> None:
     } | {
         n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module
     }
-    assert imports - set(sys.stdlib_module_names) == {"psycopg"}
+    assert imports - set(sys.stdlib_module_names) == {"psycopg", "json_repair"}
+
+
+def test_the_main_image_pins_the_verifiers_packages_as_uv_lock_does() -> None:
+    dockerfile = (livesqlbench.IMAGES_DIR / "Dockerfile.main").read_text()
+    lock = (REPO_ROOT / "uv.lock").read_text()
+    for package, pin, version in (
+        ("psycopg", "psycopg[binary]", "3.3.6"),
+        ("json-repair", "json-repair", "0.58.5"),
+    ):
+        assert f'"{pin}=={version}"' in dockerfile
+        assert f'name = "{package}"\nversion = "{version}"' in lock
+
+
+def test_a_repairable_pred_json_is_scored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class Stub:
+        def __init__(self, database: str, environ: Any) -> None:
+            self.database = database
+
+        def __call__(self, sqls: Sequence[str]) -> Result:
+            return Result(columns=("a",), rows=((1,),))
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(livesqlbench_verifier, "PostgresExecute", Stub)
+    payload = tmp_path / "task_payload.json"
+    payload.write_text(json.dumps(query_records()[0] | {"sol_sql": ["SELECT 1"]}))
+    prediction = tmp_path / "pred.json"
+    # A trailing comma and an unclosed list and object: not JSON, but repairable.
+    prediction.write_text('{"instance_id": "tide_q1", "predicted_sql": ["SELECT 1",')
+    out = tmp_path / "verifier"
+    assert livesqlbench_verifier.main(payload, prediction, out) == 0
+    assert (out / "reward.txt").read_text().strip() == "1"
+    found = diagnostics(out)
+    assert (found["outcome"], found["pred_json"]) == ("match", "repaired")
 
 
 # --- the job config and the adapter ---
@@ -403,11 +465,53 @@ def test_dump_directories_are_found_by_name_or_template_name(tmp_path: Path) -> 
 def test_the_table_order_is_found_as_upstream_finds_it(tmp_path: Path) -> None:
     dump = tmp_path / "alpha_template"
     dump.mkdir()
+    (dump / "a.sql").write_text("")
+    (dump / "b.sql").write_text("")
     assert livesqlbench_server.table_order(dump, "alpha") is None
     (tmp_path / "init-databases.sh").write_text('  ["alpha_template"]="b a"\n')
-    assert livesqlbench_server.table_order(dump, "alpha") == "b a\n"
+    assert livesqlbench_server.table_order(dump, "alpha") == "b\na\n"
     (tmp_path / "alpha_table_orders.txt").write_text("a\nb\n")
     assert livesqlbench_server.table_order(dump, "alpha") == "a\nb\n"
+
+
+def test_table_order_names_resolve_to_the_dump_files_regardless_of_case(tmp_path: Path) -> None:
+    # Upstream's cybermarket order file capitalises names whose dump files are lower case; on a
+    # case-sensitive file system init-db.sh skipped every table and built an empty database.
+    dump = tmp_path / "alpha_template"
+    dump.mkdir()
+    for name in ("markets", "riskanalysis", "Exchange_Map", "enum_definitions"):
+        (dump / f"{name}.sql").write_text("")
+    (tmp_path / "alpha_table_orders.txt").write_text("Markets RiskAnalysis\nexchange_map\n")
+    expected = "markets\nriskanalysis\nExchange_Map\n"
+    assert livesqlbench_server.table_order(dump, "alpha") == expected
+
+
+def test_a_table_order_name_without_a_dump_file_stops(tmp_path: Path) -> None:
+    dump = tmp_path / "alpha_template"
+    dump.mkdir()
+    (dump / "markets.sql").write_text("")
+    (tmp_path / "alpha_table_orders.txt").write_text("Markets Vendors\n")
+    with pytest.raises(SystemExit, match="no dump file for \\['Vendors'\\]"):
+        livesqlbench_server.table_order(dump, "alpha")
+
+
+def test_a_table_order_name_matching_two_dump_files_stops(tmp_path: Path) -> None:
+    dump = tmp_path / "alpha_template"
+    dump.mkdir()
+    (dump / "markets.sql").write_text("")
+    (dump / "Markets.sql").write_text("")
+    if len(list(dump.glob("*.sql"))) < 2:
+        pytest.skip("case-insensitive file system: two names differing in case are one file")
+    (tmp_path / "alpha_table_orders.txt").write_text("markets\n")
+    with pytest.raises(SystemExit, match="more than one dump file for \\['markets'\\]"):
+        livesqlbench_server.table_order(dump, "alpha")
+
+
+def test_init_db_fails_on_a_mapped_table_without_a_dump_file() -> None:
+    # The DATABASE_MAPPING fallback (no order file beside the dump) no longer skips silently.
+    script = (livesqlbench.IMAGES_DIR / "init-db.sh").read_text()
+    assert "Mapped dump file not found, skipping" not in script
+    assert "ERROR: Mapped dump file not found" in script
 
 
 class FakeDocker:
@@ -419,6 +523,7 @@ class FakeDocker:
         self.counts = counts
         self.images: set[str] = set()
         self.calls: list[list[str]] = []
+        self.orders: dict[str, str] = {}
 
     def __call__(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         self.calls.append(cmd)
@@ -431,6 +536,9 @@ class FakeDocker:
             done.returncode = 0 if cmd[3] in self.images else 1
         elif cmd[:2] == ["docker", "build"]:
             self.images.add(cmd[cmd.index("-t") + 1])
+            order = Path(cmd[-1]) / "db_seed" / "table_order.txt"
+            if order.is_file():
+                self.orders[cmd[cmd.index("-t") + 1]] = order.read_text()
         elif cmd[:2] == ["docker", "run"]:
             done.stdout = f"{self.counts[0]} {self.counts[1]}\n"
         return done
@@ -459,6 +567,35 @@ def test_images_build_what_is_missing_with_the_credential_as_a_secret(
     docker.calls.clear()
     livesqlbench_server.images(docker, tmp_path, ["alpha", "beta"])
     assert not any(c[:2] == ["docker", "build"] or "gdown" in c for c in docker.calls)
+
+
+def test_an_image_is_built_with_the_resolved_table_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(livesqlbench.WRITE_PASSWORD_ENV, PASSWORD)
+    monkeypatch.setattr(livesqlbench_server, "EXPECTED_TABLES", 1)
+    monkeypatch.setattr(livesqlbench_server, "EXPECTED_COLUMNS", 2)
+    docker = FakeDocker(
+        {
+            "dumps/alpha_template/markets.sql": "",
+            "dumps/alpha_template/vendors.sql": "",
+            "dumps/alpha_table_orders.txt": "Markets Vendors",
+        }
+    )
+    livesqlbench_server.images(docker, tmp_path, ["alpha"])
+    assert docker.orders[livesqlbench.db_image("alpha")] == "markets\nvendors\n"
+
+
+def test_an_unresolved_table_order_name_builds_no_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(livesqlbench.WRITE_PASSWORD_ENV, PASSWORD)
+    docker = FakeDocker(
+        {"dumps/alpha_template/markets.sql": "", "dumps/alpha_table_orders.txt": "Markets Buyers"}
+    )
+    with pytest.raises(SystemExit, match="no dump file for \\['Buyers'\\]"):
+        livesqlbench_server.images(docker, tmp_path, ["alpha"])
+    assert not any(c[:2] == ["docker", "build"] for c in docker.calls)
 
 
 def test_a_dump_that_changed_since_its_first_download_stops(
@@ -503,6 +640,37 @@ def test_check_reports_data_images_and_tasks(
     printed = capsys.readouterr().out
     assert "ok    LiveSQLBench database images: 18 of 18" in printed
     assert "no gold answers" in printed
+
+
+def test_check_flags_tasks_of_another_image_and_a_main_image_without_the_verifiers_packages(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    tasks = generate(tmp_path, empty_answers(tmp_path))
+    old = tasks[0] / "task.toml"
+    old.write_text(old.read_text().replace(livesqlbench.main_image(), "da-lsb-main:000000000000"))
+    (tmp_path / "root").mkdir()
+    tasks[0].parent.rename(tmp_path / "root" / "tasks")
+    docker = FakeDocker({})
+    docker.images.add(livesqlbench.main_image())
+    livesqlbench_server.check(tmp_path / "root", docker)
+    printed = capsys.readouterr().out
+    main = livesqlbench.main_image()
+    assert f"FAIL  LiveSQLBench tasks naming another image than {main}: 1" in printed
+    assert f"ok    LiveSQLBench image {main} imports psycopg and json_repair" in printed
+    probe = next(c for c in docker.calls if c[:2] == ["docker", "run"])
+    assert probe[-2:] == ["-c", "import psycopg, json_repair"]
+    assert probe[probe.index("--network") + 1] == "none"
+
+    def no_packages(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        done = docker(cmd, **kw)
+        if cmd[:2] == ["docker", "run"]:
+            done.returncode = 1
+        return done
+
+    livesqlbench_server.check(tmp_path / "root", no_packages)
+    assert f"FAIL  LiveSQLBench image {main} imports psycopg and json_repair" in (
+        capsys.readouterr().out
+    )
 
 
 class Column:

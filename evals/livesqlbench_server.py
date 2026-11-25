@@ -256,19 +256,41 @@ def build(run: Run, args: list[str], image: str) -> None:
 def table_order(dump: Path, db: str) -> str | None:
     """The dump's table restore order, as upstream build_db_images.sh `write_table_order_file`
     finds it beside the database's directory: a `<db>_table_order(s).txt`, else the line of an
-    `init-databases*.sh` naming it; None leaves init-db.sh's DATABASE_MAPPING to decide."""
+    `init-databases*.sh` naming it; None leaves init-db.sh's DATABASE_MAPPING to decide (which
+    now fails on a name without a dump file). Each name is resolved to the stem of exactly one
+    `.sql` file in the dump, ignoring case: upstream's dumps were made on a case-insensitive file
+    system, and cybermarket's order file capitalises names whose files are lower case."""
     root, names = dump.parent, (db, dump.name)
     for name in names:
         for suffix in ("_table_orders.txt", "_table_order.txt"):
             candidate = root / f"{name}{suffix}"
             if candidate.is_file() and candidate.stat().st_size:
-                return candidate.read_text()
+                return resolve_order(dump, candidate.read_text())
     for script in sorted(root.glob("init-databases*.sh")):
         for line in script.read_text(errors="replace").splitlines():
             found = re.fullmatch(rf'\s*\["{re.escape(dump.name)}"\]="(.*)"\s*', line)
             if found:
-                return found.group(1) + "\n"
+                return resolve_order(dump, found.group(1))
     return None
+
+
+def resolve_order(dump: Path, order: str) -> str:
+    """`order`'s table names as the dump's file stems, one per line; stops on a name matching
+    no `.sql` file or more than one."""
+    stems: dict[str, list[str]] = {}
+    for path in sorted(dump.glob("*.sql")):
+        if not path.name.startswith("."):
+            stems.setdefault(path.stem.lower(), []).append(path.stem)
+    names = order.split()
+    missing = [n for n in names if n.lower() not in stems]
+    twice = [n for n in names if len(stems.get(n.lower(), [])) > 1]
+    if missing:
+        raise SystemExit(f"livesqlbench: {dump.name}'s table order: no dump file for {missing}")
+    if twice:
+        raise SystemExit(
+            f"livesqlbench: {dump.name}'s table order: more than one dump file for {twice}"
+        )
+    return "".join(f"{stems[n.lower()][0]}\n" for n in names)
 
 
 def build_db_image(run: Run, db: str, dump: Path, work: Path) -> None:
@@ -377,10 +399,20 @@ def check(root: Path, run: Run = subprocess.run) -> int:
         len(images_found) == len(databases),
         f"LiveSQLBench database images: {len(images_found)} of {len(databases)}",
     )
-    line(
-        image_exists(run, livesqlbench.main_image()),
-        f"LiveSQLBench image {livesqlbench.main_image()}",
-    )
+    main = livesqlbench.main_image()
+    main_found = image_exists(run, main)
+    line(main_found, f"LiveSQLBench image {main}")
+    if main_found:
+        # The verifier's imports (livesqlbench_verifier.py), in the image it runs in.
+        probe = run(
+            [
+                *("docker", "run", "--rm", "--network", "none", "--entrypoint", "python3", main),
+                *("-c", "import psycopg, json_repair"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        line(probe.returncode == 0, f"LiveSQLBench image {main} imports psycopg and json_repair")
     tasks = sorted(p for p in (root / "tasks").glob(f"{livesqlbench.TASK_PREFIX}*") if p.is_dir())
     gold = sum(livesqlbench.has_gold_answer(t) for t in tasks)
     line(
@@ -388,7 +420,19 @@ def check(root: Path, run: Run = subprocess.run) -> int:
         f"LiveSQLBench tasks: {len(tasks)} in {root / 'tasks'}, {gold} with a gold answer"
         + ("" if gold else f" ({NO_ANSWERS})"),
     )
+    # Tasks generated before the image files changed name images of the old tag.
+    stale = sum(task_image(t) != main for t in tasks)
+    line(not stale, f"LiveSQLBench tasks naming another image than {main}: {stale}")
     return fails
+
+
+def task_image(task_dir: Path) -> str | None:
+    try:
+        config = tomllib.loads((task_dir / "task.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    image = config.get("environment", {}).get("docker_image")
+    return image if isinstance(image, str) else None
 
 
 # --- the read-only check (ticket 128 Acceptance "只读实测") ---

@@ -118,10 +118,11 @@ MIT (repository root):
   for psycopg, and nothing prints a query or a result (as noted at its top).
 
 Apache-2.0 (LiveSQLBench-CLI/adapters/livesqlbench/). The four files under
-evals/livesqlbench_images/ are modified as noted at their tops; the two Python files only follow
+evals/livesqlbench_images/ are modified as noted at their tops; the Python files only follow
 upstream's logic, written anew, and say so where they do:
 - evals/livesqlbench_images/init-db.sh <- template/environment/init-db.sh (unchanged but for the
-  header and one line's trailing whitespace)
+  header, one line's trailing whitespace, and a mapped table without a dump file failing instead
+  of being skipped)
 - evals/livesqlbench_images/bootstrap-db-image.sh <- template/environment/bootstrap-db-image.sh
 - evals/livesqlbench_images/db-entrypoint.sh <- template/environment/db-entrypoint.sh
 - evals/livesqlbench_images/Dockerfile.db <- template/environment/Dockerfile.db
@@ -131,6 +132,9 @@ upstream's logic, written anew, and say so where they do:
   preprocess.sql, the task.toml limits, the instruction's answer format) <- adapter.py,
   template/environment/docker-compose.yaml and template/documents/README_TASK.md, written anew
   without the credentials and without external_knowledge in the instruction
+- evals/livesqlbench_verifier.py: read_prediction's parse of pred.json (json.loads of json-repair's
+  repair_json) <- template/tests/evaluator.py, written anew; json-repair itself (MIT) is installed
+  in the task's image (Dockerfile.main), not copied
 
 The data (HF birdsql/livesqlbench-base-lite) and the PostgreSQL dumps are not in this repository
 and are not redistributed: `da-remote benchmarks` downloads them on the evaluation server only.
