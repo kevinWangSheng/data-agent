@@ -1,7 +1,7 @@
 # 136 — LiveSQLBench：标准答案到手后，官方对拍与"每道题都能判分"的检查
 
-Status: needs-info
-Blocked by: 128（done，`deb64e2`）；另要人把标准答案文件放到服务器，见 Comments
+Status: ready-for-agent
+Blocked by: 128（done，`deb64e2`）；答案文件已在服务器（见 Comments）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -21,6 +21,7 @@ Branch: —
   - `tests/`（除 `tests/acceptance/`）；
   - `docs/setup.md`；
   - `NOTICE`：调用或复制上游评测代码时登记。
+  - `evals/report.py`，必要时加 `evals/ablate.py`：只限把"验证脚本自身失败"归为基础设施错误，并配上测试；data-eng-bench、DAB 的记分不变（人 2026-11-25 定）。
 - Must not edit：
   - `tests/acceptance/`；
   - 127 的契约（名字、参数、返回类型）；
@@ -60,7 +61,7 @@ Branch: —
 - [ ] oracle：180/180 判对；没有全对就逐类修，或写明原因交回。
 - [ ] 对拍：两批答案上，官方评测和我们的 soft EX 的 reward 逐题一致，贴一致的数目。修复都配了单元测试。
 - [ ] 上游评测的输出不在 `runs/` 里，`pull` 回来的内容里也没有。检查标准 SQL 哨兵的办法照 128 的口令检查：只打印次数。
-- [ ] 验证脚本自身失败的 trial（128 改成只写 `diagnostics.json` 的 `outcome: verifier_error`、不写 reward，Harbor 记 `RewardFileNotFoundError`）在全量里怎么处理：现在它在 `evals/report.py` 的 `NOT_RETRIED` 里，不重试、算 0。改成可重试或排除出分母，二选一，开工前在对齐会话定（可能要把 `evals/report.py` 加进 Authority）；实现配测试。来源：128 第 1 轮退回交回第 3 项（人 2026-11-25 定）。
+- [ ] 验证脚本自身失败的 trial（诊断 `diagnostics.json` 里 `outcome: verifier_error`；Harbor 记 `RewardFileNotFoundError`，现在在 `NOT_RETRIED` 里，算 0）改成按基础设施错误处理（人 2026-11-25 定，照 plan §7）：resume 时重跑，不进分母。按验证脚本的诊断识别，不只按异常类型。单元测试覆盖：这类 trial 不计分、会被重跑；agent 自己造成的没有 reward 仍算 0；data-eng-bench、DAB 的记分不变。实测 `harbor job resume` 会不会重跑这类 trial，写进 Comments；不会重跑就停下交回。
 - [ ] `make check` 通过。
 
 ## Evidence required
@@ -95,3 +96,5 @@ Branch: —
 - 2026-11-25（主会话）答案文件已就位：人用 `scp` 传到 `da-server:/root/da-benchmarks/livesqlbench-answers.jsonl`，主会话改成 mode 600。只查了结构，没读内容：270 行，270 个不同的 id，全部能解析；每行恰好有 `instance_id`（str）、`sol_sql`、`test_cases`、`external_knowledge`（都是 list）四个字段；覆盖公开数据全部 270 题，其中 180 道 Query 全部覆盖，没有公开数据之外的 id。字段名和 Context、Stop conditions 预期的一致。
   - 重跑 `scripts/da-remote benchmarks`："tasks: 180 in /root/da-benchmarks/livesqlbench/tasks, 180 with a gold answer"。`scripts/da-remote check`：0 failure(s)，"LiveSQLBench tasks: 180 …, 180 with a gold answer"。
   - 派工前还剩一项待对齐：验证脚本自身失败的 trial 怎么记分（见 Acceptance）。
+
+- 2026-11-25（对齐会话，人定）：验证脚本自身失败按基础设施错误处理（重跑、不进分母），Authority 加 `evals/report.py`（必要时加 `evals/ablate.py`），只限这一项归类。Status → ready-for-agent。
