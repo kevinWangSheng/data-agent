@@ -1,6 +1,6 @@
 # 128 — LiveSQLBench：适配器、PostgreSQL 镜像、soft EX、60/120 划分、`ablate`/`report` 按榜单过滤、只读凭据、冒烟（不含官方对拍）
 
-Status: in-review
+Status: done
 Blocked by: 127（done）
 Spec: ../spec.md
 Claimed by: claude (Opus 5.5, worktree 128-livesqlbench-adapter)
@@ -339,7 +339,7 @@ Base-Lite 的 180 道 `Query` 题能在服务器上以 Harbor 任务跑通，并
 - Attempts: 2
 - Review rounds: 2
 - Model spend: $0
-- Outcome: return 1 fixed (`0f499f2`, not pushed); server steps pending
+- Outcome: merged as `deb64e2` (PR #138, squash); smoke passed at `0f499f2`
 - Human review minutes: —
 
 ## Comments
@@ -519,3 +519,19 @@ Base-Lite 的 180 道 `Query` 题能在服务器上以 Harbor 任务跑通，并
   3. 验证脚本自身失败不写 reward、冒烟停下：取代第 1 轮的"记 0 分"。上游（`test.sh` 等库失败、`evaluator.py:212-220`）判 0；我们报告里同样算 0（`NOT_RETRIED`），分数口径不变，只是基础设施故障可见。全量里不重试、算 0 的口子写进 136 的验收标准。
   4. `--reference no-verifiers` 默认只跑它的 4 个配置、其余 exit 2：与 spec 的 2×2（Skill × 上下文工具）一致，修掉写报告时的崩溃。
   - 下一步（主会话）：服务器上用 `0f499f2` 重跑 `da-remote setup`、`benchmarks`（镜像全部换新 tag 重建，盯磁盘），再跑冒烟。另：本工单上一条写"未 push"，实际远端分支已在 `0f499f2`。
+
+- 2026-11-25（主会话）服务器第 2 轮，`0f499f2`（输出在 worktree `runs/128/server/*-r1.txt`）：
+  - `scripts/da-remote setup 0f499f2`：成功，新装 `json-repair==0.58.5`。
+  - `scripts/da-remote benchmarks`：dump sha256 `fb1aa1f4…b44` 和记录的一致；18 个库镜像和 `da-lsb-main` 在新 tag `65fdda0d463b` 下重建；"databases: 175 tables, 2286 columns (upstream: 175, 2286)"，cybermarket 不再是空库；180 个任务，0 个有标准答案。
+  - `scripts/da-remote check`：0 failure(s)。含 18/18 镜像、`main` 能 import `psycopg` 和 `json_repair`、指向旧镜像的任务 0 个、余额 100.13 CNY。
+  - 只读实测（`readonly --task …/lsb-cybermarket_3`）：17 项全部 PASS，包括只读角色的 CREATE TABLE/CREATE TEMP TABLE/INSERT/UPDATE/DELETE/DROP 都被拒；postgres、root、lsb_writer、lsb_reader 不带口令或用 `123123` 都连不上；`main` 容器环境里没有写库口令；写库角色能克隆、查询、删除过程库。
+  - 冒烟：`da-remote start lsb-smoke -- ablate --benchmark livesqlbench --tasks-dir ../da-benchmarks/livesqlbench/tasks --manifest evals/manifest.json --split dev --task lsb-cybermarket_3 --task lsb-virtual_9 --task lsb-alien_1 --config baseline --config no-skill --config no-context --config no-verifiers --reference no-verifiers --trials 1 --out runs/lsb-smoke --budget 4`：exit 0；4 个预检都过；readiness clean；报告标 **Not scored**（12 个 trial 没有标准答案）。
+    - 16 个 trial（4 预检 + 12）：16 个 `reward.txt`；16 份诊断都是 `outcome: no_gold_answer`、`pred_json: ok`；16 份 `pred.json` 拷进了 agent 日志目录。每个配置写出 `pred.json` 的都是 3/3。
+    - 写库口令：`leaks --dir runs/lsb-smoke` 计 0 次。取回的目录是服务器那份的一部分，服务器上为 0 就盖住了它。
+    - 单题成本：12 个 trial 标价合计 $0.1658，约 $0.0138/trial（实际扣费约一半，全部在 off-peak 时段）。留出集全量 1440 trial 按标价估约 $20，比工单的先期估算（$72–115）低。注意：没有标准答案，agent 不一定按正常深度做完，以 136 之后的实测为准。
+    - separate verifier 的额外开销（12 个 trial 的 `result.json`）：agent 结束到验证开始 17.5–29.7 s，验证阶段 26.5–32.8 s。报告的 "verifier wall" 一列量的是验证子 agent（`evals/process.py:90-96`），这 4 个配置在查数题上都不跑它，所以那一列为空是正常的，和 separate 模式无关。
+  - `scripts/da-remote pull lsb-smoke`：取回到 worktree 的 `runs/lsb-smoke/`。
+  - Codex PR 审查（`0f499f2`，P2，`evals/livesqlbench.py:313`，preprocess 多条语句没有分号时拼接会坏）：**不属实，不修**。拼接逐行照抄上游 `LiveSQLBench-CLI/adapters/livesqlbench/adapter.py:380-385` 的 `_to_sql_blob`；而且 180 道 Query 题都没有 `preprocess_sql`（第 1 轮交回已核对），所以不影响任何任务。
+  - 合并前，main 已经走到 `30ed465`（131），先把 main 合进本分支再跑 `make check`。
+  - main 合进本分支（`028e6e5`）后：`make check` exit 0（basedpyright 0 errors；pytest 3248 passed、3 skipped；web 448 passed）；CI 两个 `check` 都过。补评 `@codex review`，审查 `028e6e5`，只有上面那条 preprocess 的 P2，没有新意见。
+  - PR #138 squash 合并为 `deb64e2`（state MERGED）。Status → done。

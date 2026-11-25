@@ -1,7 +1,7 @@
 # 136 — LiveSQLBench：标准答案到手后，官方对拍与"每道题都能判分"的检查
 
 Status: needs-info
-Blocked by: 128（另要人把标准答案文件放到服务器，见 Comments）
+Blocked by: 128（done，`deb64e2`）；另要人把标准答案文件放到服务器，见 Comments
 Spec: ../spec.md
 Claimed by: —
 Branch: —
