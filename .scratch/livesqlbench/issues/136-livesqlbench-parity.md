@@ -84,7 +84,7 @@ Branch: worktree-136-livesqlbench-parity
 - Attempts: 1
 - Review rounds: 2
 - Model spend: $0
-- Outcome: committed `2b97af8`; server runs pending
+- Outcome: merged as `4db31a9` (PR #140, squash); parity 180/180 + 16/16, oracle 174/180 (6 gold-side defects, kept as official)
 - Human review minutes: —
 
 ## Comments
@@ -173,3 +173,4 @@ Branch: worktree-136-livesqlbench-parity
 
 - 2026-11-25（对齐会话，人定）：oracle 没判对的 6 道照官方口径处理：留在分母里，算错；在报告里列成标准 SQL 一侧的已知缺陷。原因写明，oracle 一项按"写明原因"算过。不冻结数据库时钟（偏离官方，日期也未知）。这样分数能直接和榜单比；每个配置的满分上限都是 174/180 = 96.7%，所以消融差值不受影响。
 - 2026-11-25（主会话）`lsb-archeology_7` 取证（只打印错误码和位置，不打印 SQL；`runs/136/server/probe-archeology_7.txt`）：在本题的库镜像（PostgreSQL 14.12，上游指定的版本）上，用写库角色执行，结果是 `sqlstate 42601`（syntax_error），位置在 1737 个字符里的第 1603 个（43 行里的第 39 行），出错的是一个字母数字记号。拿同一条 SQL 在空的 `postgres:17` 上执行，同样是 `42601`，同样在第 1603 个字符。语法错误发生在解析阶段，跟数据和版本都无关，所以结论是标准 SQL 本身写错了，不是我们的环境问题。
+- 2026-11-25（主会话）main 走到 `023b2f4`（132 Telegram），先合进本分支（`91446ab`）；`make check` exit 0（basedpyright 0 errors；pytest 3367 passed、3 skipped；web 448 passed）。PR #140 的 CI 两个 `check` 都过；`@codex review` 审 `91446ab`："Didn't find any major issues"。squash 合并为 `4db31a9`（state MERGED）。Status → done。
