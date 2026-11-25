@@ -160,3 +160,13 @@ Branch: worktree-136-livesqlbench-parity
   - 停止条件：ablate 自己的 resume 路径（先删掉出错的 trial，再 `harbor job resume`）会重跑验证脚本自身失败的 trial，算满足"会重跑"，不停下（`runs/136/resume-check.txt`："ablate path reran it: True"；直接 `harbor job resume` 不会重跑，但我们不这样 resume）。兜底是 `--fail-fast`。
   - 范围外 3 项接受：`scripts/da-remote start` 给 `livesqlbench-parity` 也 source 口令；`evals/__main__.py` 注册新命令；验证脚本 `main` 的 docstring。
   - 偏差 6 项接受：上游用 `lsb_writer` 而不是 `root/123123`；上游评测的镜像新写；每个库一个容器，两边每个用例都从模板克隆；涉及超时的不一致重跑一次；`upstream_failed`/`ours_no_reward` 交人判断，有就 exit 1；标准 SQL 泄漏计数只在服务器上跑。
+
+- 2026-11-25（主会话）服务器运行，`2b97af8`（worktree `runs/136/server/`）：
+  - `setup 2b97af8` 成功；`benchmarks`："175 tables, 2286 columns"，"180 … 180 with a gold answer"；`check` 0 failure(s)。
+  - 单题 `start lsb-parity-1 -- livesqlbench-parity run … --trials runs/lsb-smoke --task lsb-virtual_9`：exit 0；oracle 1/1；gold 上 1/1 一致，dev trial 上 4/4 一致；scratch 已删。
+  - 全量 `start lsb-parity -- livesqlbench-parity run --root ../da-benchmarks/livesqlbench --out runs/lsb-parity --trials runs/lsb-smoke`：exit 1。
+    - **对拍通过**：gold SQL 上 180/180 一致；dev trial 的 `pred.json` 上 16/16 一致。
+    - **oracle 没过**：174/180 判对；没判对的 `{'empty_result': 5, 'execution_error': 1}`。开发集 3 道：`lsb-archeology_7` execution_error（SyntaxError）、`lsb-insider_1` empty_result、`lsb-vaccine_7` empty_result。留出集只看数：`{'empty_result': 3}`。上游评测对这 6 道也判 0（对拍一致），所以不是我们的验证脚本出错。
+  - 取证（不打印内容，只打印标志，只查开发集 3 道）：`insider_1`、`vaccine_7` 的标准 SQL 都含 `CURRENT_DATE`（`insider_1` 还含 `INTERVAL`）；`archeology_7` 不含时间函数。3 道都是 1 条语句，`test_cases` 为空。推断：两道 empty_result 是相对"今天"取数，数据停在 2025 年，现在查不到行（未确认，没有在冻结时钟下复跑）。archeology_7 的语法错误原因未确认。版本对得上：上游 Base-Lite 是 2025-05-28（`README.md:278`），答案文件名是 `…_0528`。上游 issue 里搜不到这几道题。
+  - 标准 SQL 泄漏计数：`runs/lsb-parity`、`runs/lsb-parity-1` 都是 0 次。`pull lsb-parity`：留出集只取回汇总。
+  - 待对齐：oracle 没判对的 6 道怎么处理。
