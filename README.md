@@ -182,7 +182,8 @@ allowed_users = ["123456789012345678"]           # Discord user ids, written as 
   counts as a mention; `@everyone`, `@here` and role mentions do not.
 - **In a direct message**, every message goes to the chat's current conversation. The `/new`
   slash command ends it, so the next message starts a new one. `/new` in one of the bot's threads
-  does the same for that thread.
+  ends that thread's conversation too; the bot then forgets the thread, so mention it to start
+  the next conversation there.
 - **The allowed list, a turn, errors.** These work as on Slack (above). The status message has a
   Stop button and is edited about every two seconds. A clarifying question has one button per
   option. Anyone not on the list who sends a direct message is told their user id. In a channel,

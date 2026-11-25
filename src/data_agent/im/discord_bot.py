@@ -10,13 +10,14 @@ type checkers look for `import discord` next to the importing file first.
 - Keys (`Incoming.chat_id`, `thread_id`): in a direct message the private channel's id and no
   thread; in a server channel the channel's id and the message's own id, which a thread made
   from the message will have; in a thread its parent's id and the thread's id, so a
-  conversation begun with a mention goes on in the thread the bot made from it. User ids are
-  strings.
+  conversation begun with a mention goes on in the thread the bot made from it. A thread
+  discord.py has not cached (an archived one) comes with a channel of no type, which is
+  fetched to tell it from a channel. User ids are strings.
 - The bot is mentioned when `message.mentions` has it: a reply to the bot that pings it is one;
   `@everyone`, `@here` and role mentions are not. `text` has `<@id>` and `<@!id>` taken out.
 - `send` into a thread that is not there yet (not made by this process, not found by
   `fetch_channel`) makes it from the message first: named after the message's first
-  `THREAD_NAME_CHARS` characters (the mention out), archived after a day without messages.
+  `THREAD_NAME_CHARS` characters (mentions out), archived after a day without messages.
   The adapter only sends where it answers, so a message it ignores leaves no thread. When the
   thread cannot be made (no permission, a channel without threads), it is logged, and that
   conversation's messages go into the channel as replies to the message instead (Chat SDK's
@@ -32,11 +33,14 @@ type checkers look for `import discord` next to the importing file first.
   answer only its user sees, an `Incoming` with `new_conversation` (and `mentioned`: the
   command is to the bot) is handed on, and the deferred answer is deleted: whatever the
   adapter replies is the one visible reply. A `/new` typed as text is an ordinary message.
+  `/new` in a bot's thread drops the thread's key in the adapter, so the next message there
+  needs a mention again.
 - discord.py runs each event in a task of its own; one lock hands messages and presses to the
   adapter one at a time, in the order they came.
 - `start` logs in (`LoginFailure` when the token is wrong), connects in a task of its own (the
   library reconnects), returns once the gateway is ready, raising when the connection ends
-  before, and syncs `/new` when Discord's global commands differ. Never `Client.run`, which
+  before, and syncs `/new` when Discord's global commands differ (a failed sync is logged, and
+  the bot goes on: the adapter must poll the turns its messages start). Never `Client.run`, which
   sets up logging; the token is given explicitly and goes only into the `Authorization` header
   and the gateway's IDENTIFY, neither of which discord.py logs.
 - discord.py waits out a 429 itself, up to `RATE_LIMIT_WAIT` seconds; past that it raises
@@ -90,9 +94,11 @@ CUSTOM_ID = "data_agent:"
 NEW_COMMAND = "new"
 NEW_DESCRIPTION = "Start a new conversation with the data agent"
 # How many ids each of the platform's maps remembers (handed-on messages, messages to make a
-# thread from, made threads, where sent messages are).
-SEEN = 1000
+# thread from, threads known to be there, where sent messages are, ...).
+REMEMBERED = 1000
 
+# `<@id>`, `<@!id>`, `<@&role id>`, `<#channel id>`.
+MENTION = re.compile(r"<(?:@[!&]?|#)\d+>")
 MESSAGE_TYPES = (discord.MessageType.default, discord.MessageType.reply)
 THREAD_TYPES = (
     discord.ChannelType.public_thread,
@@ -159,13 +165,18 @@ class DiscordPlatform:
             ready.cancel()
             connection.result()
             raise ConnectionError("discord: the gateway closed before it was ready")
-        await sync_commands(tree)
+        try:
+            await sync_commands(tree)
+        except Exception:
+            # The gateway is up and messages come; only `/new` may be missing or stale.
+            log.exception("discord: syncing /new failed; the bot goes on without it")
 
     def register(self, client: discord.Client) -> app_commands.CommandTree[Any]:
         """The event handlers and the command tree with `/new`."""
         tree = app_commands.CommandTree(client)
 
         @tree.command(name=NEW_COMMAND, description=NEW_DESCRIPTION)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=False)
         async def new(interaction: discord.Interaction) -> None:  # pyright: ignore[reportUnusedFunction]
             await self.handle_new(interaction)
 
@@ -234,7 +245,7 @@ class DiscordPlatform:
             return partial(int(chat_id)), reply_to(chat_id, thread_id)
         found = self.sources.pop(thread_id, None)
         if found is None:
-            found = await self.find(chat_id, thread_id)
+            found = await self.thread_or_source(chat_id, thread_id)
             if found is None:
                 return partial(int(thread_id)), None
         source, text = found
@@ -253,7 +264,9 @@ class DiscordPlatform:
         remember(self.threads, thread_id, None)
         return partial(int(thread_id)), None
 
-    async def find(self, chat_id: str, thread_id: str) -> tuple[discord.Message, str] | None:
+    async def thread_or_source(
+        self, chat_id: str, thread_id: str
+    ) -> tuple[discord.Message, str] | None:
         """For a key this process has not seen the message of (a restart): None when the
         thread is there, else the message to make it from."""
         try:
@@ -274,10 +287,13 @@ class DiscordPlatform:
         user = self.client.user
         if self.on_message is None or user is None:
             return
-        incoming = to_incoming(message, user.id)
-        if incoming is None or message.id in self.seen:
+        if message.id in self.seen or not is_to_bot(message):
             return
+        # Before the fetch `resolve` may make: an event delivered again meanwhile is dropped.
         remember(self.seen, message.id, None)
+        incoming = to_incoming(message, user.id, await self.resolve(message))
+        if incoming is None:
+            return
         if incoming.thread_id is not None:
             if incoming.thread_id == str(message.id):
                 remember(self.sources, incoming.thread_id, (message, incoming.text))
@@ -285,6 +301,20 @@ class DiscordPlatform:
                 remember(self.threads, incoming.thread_id, None)
         async with self.lock:
             await self.on_message(incoming)
+
+    async def resolve(self, message: discord.Message) -> Any:
+        """The message's channel, fetched when discord.py has no type for it: a server channel
+        it has not cached (an archived thread leaves the cache, `state.py` THREAD_UPDATE), whose
+        message comes with a `PartialMessageable` that cannot tell a thread from a channel.
+        None when `message.channel` will do."""
+        channel: Any = message.channel
+        if channel.type is not None or message.guild is None:
+            return None
+        try:
+            return await self.client.fetch_channel(channel.id)
+        except discord.HTTPException:
+            log.warning("discord: channel %s could not be fetched", channel.id, exc_info=True)
+            return None
 
     async def handle_interaction(self, interaction: discord.Interaction) -> None:
         """A press of one of the bot's buttons; `/new` comes through the command tree."""
@@ -346,26 +376,37 @@ class DiscordPlatform:
 
 
 async def sync_commands(tree: app_commands.CommandTree[Any]) -> None:
-    """Syncs the global commands (`/new`) when Discord's differ from the tree's: a sync on
-    every start would be rate-limited."""
-    local = {(command.name, getattr(command, "description", "")) for command in tree.get_commands()}
-    remote = {(command.name, command.description) for command in await tree.fetch_commands()}
+    """Syncs the global commands (`/new`) when Discord's differ from the tree's (name,
+    description, where it can be used): a sync on every start would be rate-limited."""
+    local = {
+        (command.name, getattr(command, "description", ""), contexts(command.allowed_contexts))
+        for command in tree.get_commands()
+    }
+    remote = {
+        (command.name, command.description, contexts(command.allowed_contexts))
+        for command in await tree.fetch_commands()
+    }
     if remote != local:
         await tree.sync()
         log.info("discord: synced the slash commands")
 
 
-def to_incoming(message: discord.Message, bot_id: int) -> Incoming | None:
-    """The message to the bot a message is, or None for any other."""
-    if message.type not in MESSAGE_TYPES or message.author.bot:
+def contexts(allowed: Any) -> tuple[bool, bool, bool] | None:
+    """Where a command can be used (the tree's `AppCommandContext` or Discord's), comparable."""
+    if allowed is None:
         return None
-    channel: Any = message.channel
-    if channel.type == discord.ChannelType.private:
-        chat, thread, direct = str(channel.id), None, True
-    elif channel.type in THREAD_TYPES:
-        chat, thread, direct = str(channel.parent_id), str(channel.id), False
-    else:
-        chat, thread, direct = str(channel.id), str(message.id), False
+    return allowed.guild, allowed.dm_channel, allowed.private_channel
+
+
+def to_incoming(message: discord.Message, bot_id: int, channel: Any = None) -> Incoming | None:
+    """The message to the bot a message is, or None for any other. `channel` is the message's
+    channel when `message.channel` is a stand-in without a type (see `handle_message`)."""
+    if not is_to_bot(message):
+        return None
+    chat, thread, direct = channel_key(channel if channel is not None else message.channel)
+    if thread is None and not direct:
+        # A top-level message: the key of the thread made from it.
+        thread = str(message.id)
     return Incoming(
         platform=PLATFORM,
         chat_id=chat,
@@ -375,6 +416,11 @@ def to_incoming(message: discord.Message, bot_id: int) -> Incoming | None:
         mentioned=any(user.id == bot_id for user in message.mentions),
         text=strip_mention(message.content, bot_id),
     )
+
+
+def is_to_bot(message: discord.Message) -> bool:
+    """A person's message (default or reply), not a system message's type or a bot's."""
+    return message.type in MESSAGE_TYPES and not message.author.bot
 
 
 def channel_key(channel: Any) -> tuple[str, str | None, bool]:
@@ -392,9 +438,10 @@ def strip_mention(text: str, bot_id: int) -> str:
 
 
 def thread_name(text: str) -> str:
-    """The message's text on one line, its first `THREAD_NAME_CHARS` characters (77 and `...`
-    when it is longer); `THREAD_NAME` when nothing is left."""
-    name = " ".join(text.split())
+    """The message's text without mentions (users, roles, channels), on one line, its first
+    `THREAD_NAME_CHARS` characters (77 and `...` when it is longer); `THREAD_NAME` when nothing
+    is left."""
+    name = " ".join(MENTION.sub("", text).split())
     if len(name) > THREAD_NAME_CHARS:
         name = name[: THREAD_NAME_CHARS - 3] + "..."
     return name or THREAD_NAME
@@ -442,5 +489,5 @@ def message_kwargs(message: Outgoing) -> dict[str, Any]:
 def remember[K, V](seen: OrderedDict[K, V], key: K, value: V) -> None:
     seen[key] = value
     seen.move_to_end(key)
-    while len(seen) > SEEN:
+    while len(seen) > REMEMBERED:
         seen.popitem(last=False)

@@ -197,6 +197,24 @@ async def test_a_direct_message_has_no_thread() -> None:
     assert (got[0].chat_id, got[0].thread_id, got[0].direct) == (str(DM), None, True)
 
 
+async def test_a_message_in_a_thread_discord_py_has_not_cached_keeps_the_thread_key() -> None:
+    """An archived thread leaves discord.py's cache; its next message comes with a channel of
+    no type, which is fetched to tell the thread from a channel."""
+    client = FakeClient()
+    fetched: list[int] = []
+
+    async def fetch_channel(channel_id: int) -> SimpleNamespace:
+        fetched.append(channel_id)
+        return channel(PUBLIC_THREAD, THREAD)
+
+    cast(Any, client).fetch_channel = fetch_channel
+    unknown = message("still there?", where=SimpleNamespace(type=None, id=THREAD))
+    unknown.guild = SimpleNamespace(id=GUILD)
+    got = await handed([unknown], platform(client))
+    assert fetched == [THREAD]
+    assert (got[0].chat_id, got[0].thread_id) == (str(CHANNEL), str(THREAD))
+
+
 async def test_everyone_is_no_mention_of_the_bot() -> None:
     # Discord leaves `mentions` empty for `@everyone`; `mention_everyone` is set instead.
     got = await handed([message("@everyone lunch?")])
@@ -292,6 +310,7 @@ def test_thread_names() -> None:
     assert thread_name("a" * 81) == "a" * 77 + "..."
     assert thread_name("  \n ") == THREAD_NAME
     assert thread_name("two\nlines") == "two lines"
+    assert thread_name("<@123> and <@!45> ask <@&6> in <#7>: why?") == "and ask in : why?"
 
 
 async def test_a_thread_already_there_is_not_made_again() -> None:
@@ -553,26 +572,56 @@ async def test_new_is_answered_first_then_a_new_conversation(
 
 
 async def test_the_command_is_synced_only_when_it_changed() -> None:
-    calls: list[str] = []
+    """Against the tree `start` registers: `/new`, usable in servers and direct messages."""
+    client = Started(ready=True)
+    tree = DiscordPlatform(CONFIG, client).register(client)
+    (command,) = tree.get_commands()
+    assert command.name == "new"
+    assert command.allowed_contexts is not None
+    assert command.allowed_contexts.guild and command.allowed_contexts.dm_channel
+    where = discord.app_commands.AppCommandContext(
+        guild=True, dm_channel=True, private_channel=False
+    )
+    synced: list[str] = []
 
-    class Tree:
-        def __init__(self, remote: list[tuple[str, str]]) -> None:
-            self.remote = remote
+    async def sync(**_: Any) -> list[Any]:
+        synced.append("sync")
+        return []
 
-        def get_commands(self) -> list[Any]:
-            return [SimpleNamespace(name="new", description="Start")]
+    async def check(remote: list[tuple[str, str, Any]]) -> None:
+        async def fetch_commands(**_: Any) -> list[Any]:
+            return [
+                SimpleNamespace(name=name, description=text, allowed_contexts=contexts)
+                for name, text, contexts in remote
+            ]
 
-        async def fetch_commands(self) -> list[Any]:
-            return [SimpleNamespace(name=name, description=text) for name, text in self.remote]
+        cast(Any, tree).fetch_commands = fetch_commands
+        cast(Any, tree).sync = sync
+        await sync_commands(tree)
 
-        async def sync(self) -> None:
-            calls.append("sync")
+    await check([("new", "Start a new conversation with the data agent", where)])
+    assert synced == []
+    await check([])
+    await check([("new", "Older text", where)])
+    await check([("new", "Start a new conversation with the data agent", None)])
+    assert synced == ["sync"] * 3
+    await client.close()
 
-    await sync_commands(cast(Any, Tree([("new", "Start")])))
-    assert calls == []
-    await sync_commands(cast(Any, Tree([])))
-    await sync_commands(cast(Any, Tree([("new", "Older text")])))
-    assert calls == ["sync", "sync"]
+
+async def test_a_failed_command_sync_still_starts_the_bot(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Messages come once the gateway is ready; the adapter must poll, so `start` returns."""
+
+    async def sync(_: Any) -> None:
+        raise discord.HTTPException(cast(Any, SimpleNamespace(status=500, reason="x")), "down")
+
+    monkeypatch.setattr("data_agent.im.discord_bot.sync_commands", sync)
+    bot = DiscordPlatform(CONFIG, Started(ready=True))
+    await asyncio.wait_for(bot.start(no_message, no_press), timeout=2)
+    assert "syncing /new failed" in caplog.text
+    assert bot.connection is not None and not bot.connection.done()
+    await bot.stop()
 
 
 # --- start and stop --------------------------------------------------------------------------
