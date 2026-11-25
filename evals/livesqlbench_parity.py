@@ -32,7 +32,7 @@ import shutil
 import subprocess
 import tempfile
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,7 +48,7 @@ from evals.livesqlbench import (
     VERIFIER_SCRIPT,
     WRITER_ROLE,
 )
-from evals.livesqlbench_server import image_exists, say, task_image, write_password
+from evals.livesqlbench_server import Run, image_exists, say, task_image, write_password
 from evals.livesqlbench_verifier import (
     DIAGNOSTICS_FILE,
     REWARD_FILE,
@@ -111,8 +111,6 @@ UPSTREAM_FAILURES = frozenset(
 OUR_TIMEOUT = "QueryCanceled"
 SENTINEL_MIN_CHARS = 16
 SCRATCH_MARKER = ".livesqlbench-parity-scratch"
-
-type Run = Callable[..., subprocess.CompletedProcess[str]]
 
 
 @dataclass(frozen=True)

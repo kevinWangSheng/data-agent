@@ -746,8 +746,9 @@ def ensure_job(
         # A LiveSQLBench verifier that failed itself leaves Harbor's RewardFileNotFoundError,
         # which is also an agent's own missing reward (a scored 0): `-f` would rerun those too,
         # so these trials are deleted here (ticket 136) and `-f` gets the other errors' types.
-        own = [t.dir for t in errored if verifier_failed(t)]
-        infra = sorted({str(t.exception_type) for t in errored if not verifier_failed(t)})
+        failed_itself = {t.dir for t in errored if verifier_failed(t)}
+        own = sorted(failed_itself)
+        infra = sorted({str(t.exception_type) for t in errored if t.dir not in failed_itself})
         # Both are deleted by the resume and run again; what they cost was billed all the same.
         dropped = [*(t.dir for t in errored), *interrupted(job)]
         harbor_args = ["job", "resume", "-p", str(job), *(a for e in infra for a in ("-f", e))]
