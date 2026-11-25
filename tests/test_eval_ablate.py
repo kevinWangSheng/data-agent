@@ -2122,6 +2122,64 @@ def test_a_livesqlbench_holdout_run_with_gold_answers_runs_its_holdout(
     assert all(ran_tasks(call) == LSB_HOLDOUT for call in harbor.calls)
 
 
+class VerifierErrorHarbor(FakeHarbor):
+    """FakeHarbor whose LiveSQLBench trials without a reward in `failing` (trial-name globs) get
+    the verifier's own-failure diagnostics, as livesqlbench_verifier `main` writes them."""
+
+    def __init__(self, outcome: Outcome, failing: list[str]) -> None:
+        super().__init__(outcome)
+        self.failing = failing
+
+    def fill(
+        self,
+        job: Path,
+        config: dict[str, Any],
+        stop_when: StopWhen,
+        outcome: Outcome,
+        smoke: bool,
+    ) -> str | None:
+        reason = super().fill(job, config, stop_when, outcome, smoke)
+        for trial in (t for pattern in self.failing for t in job.glob(pattern)):
+            if json.loads((trial / "result.json").read_text())["verifier_result"] is None:
+                (trial / "verifier").mkdir(exist_ok=True)
+                diagnostics = {"reward": None, "outcome": "verifier_error", "error": "SetupError"}
+                (trial / "verifier" / "diagnostics.json").write_text(json.dumps(diagnostics))
+        return reason
+
+
+def test_a_resume_reruns_a_livesqlbench_verifier_error_and_keeps_the_agents_missing_reward(
+    monkeypatch: pytest.MonkeyPatch, mixed: Path, tmp_path: Path
+) -> None:
+    """Ticket 136: a trial whose verifier failed itself is infrastructure, so the resume reruns
+    it. Harbor's `-f` filters by exception type alone and RewardFileNotFoundError is also the
+    agent's own missing reward, so ablate deletes that trial itself (kept under OUT/dropped/) and
+    filters nothing: the agent's trial without a reward stays and scores 0."""
+    broken = {"yes": True}
+
+    def outcome(config: str, task: str, attempt: int) -> tuple[float | None, str | None]:
+        if attempt == 0 and (task == LSB_HOLDOUT[1] or broken["yes"]):
+            return None, "RewardFileNotFoundError"
+        return 1.0, None
+
+    harbor = VerifierErrorHarbor(outcome, [f"{LSB_HOLDOUT[0]}__a0c*"])
+    tasks = lsb_tasks(tmp_path / "lsb-tasks", True, [*LSB_HOLDOUT, LSB_DEV[0]])
+    out = tmp_path / "out"
+    assert lsb_run(monkeypatch, harbor, mixed, out, tasks, "--config", "full") == 2
+    job = out / "jobs" / "full"
+    (errored,) = [p.name for p in job.glob(f"{LSB_HOLDOUT[0]}__a0c*")]
+    (agents,) = [p.name for p in job.glob(f"{LSB_HOLDOUT[1]}__a0c*")]
+    broken["yes"] = False
+    assert lsb_run(monkeypatch, harbor, mixed, out, tasks, "--config", "full") == 0
+    assert harbor.calls[-1] == ["job", "resume", "-p", str(job)]
+    assert not (job / errored).exists()
+    assert [p.name for p in job.glob(f"{LSB_HOLDOUT[0]}__a0c*")] != []
+    assert (job / agents).is_dir()
+    assert sorted(p.name for p in (out / "dropped" / "full").iterdir()) == [errored]
+    assert (out / "dropped" / "full" / errored / "result.json").is_file()
+    (full,) = table(out)["configs"]
+    assert (full["n_trials"], full["accuracy"]) == (6, pytest.approx(100 * 5 / 6))
+
+
 def test_the_reference_must_be_among_the_configs(
     monkeypatch: pytest.MonkeyPatch,
     manifest: Path,

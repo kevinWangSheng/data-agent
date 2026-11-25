@@ -106,11 +106,30 @@ def billed_usd(trial: Trial) -> float:
 
 
 def is_infra_error(trial: Trial) -> bool:
-    return (
-        not is_success(trial.reward)
-        and trial.exception_type is not None
-        and trial.exception_type not in NOT_RETRIED
-    )
+    """Infrastructure, rerun and never scored (plan §7): an exception Harbor retries (not in
+    `NOT_RETRIED`), or a LiveSQLBench trial whose verifier failed itself (`verifier_failed`),
+    whatever exception Harbor recorded for it."""
+    if is_success(trial.reward):
+        return False
+    if verifier_failed(trial):
+        return True
+    return trial.exception_type is not None and trial.exception_type not in NOT_RETRIED
+
+
+def verifier_failed(trial: Trial) -> bool:
+    """Whether a LiveSQLBench trial has no reward because its verifier failed itself: its
+    diagnostics (evals.livesqlbench_verifier `main`) say `verifier_error` (no connection, no
+    process database, the script's own crash). Harbor records that as RewardFileNotFoundError,
+    which is in `NOT_RETRIED` because a missing reward is otherwise the agent's (human decision
+    2026-11-25, ticket 136). Read from the verifier's own output only, which the agent cannot
+    write (the verifier runs in a separate environment); never for another benchmark's trial."""
+    if trial.reward is not None or not trial.task.startswith(LSB_TASK_PREFIX):
+        return False
+    try:
+        diagnostics = json.loads((trial.dir / "verifier" / DIAGNOSTICS_FILE).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(diagnostics, dict) and diagnostics.get("outcome") == "verifier_error"
 
 
 def summary(trials: list[Trial]) -> dict[str, Any]:

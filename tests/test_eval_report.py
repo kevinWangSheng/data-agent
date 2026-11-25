@@ -797,3 +797,116 @@ def test_compare_on_a_split_takes_the_benchmarks_tasks(
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["diff"] == pytest.approx(100.0)
+
+
+# --- ticket 136: a LiveSQLBench verifier that failed itself is infrastructure, not a 0 ---
+
+NO_REWARD = {"exception_info": {"exception_type": "RewardFileNotFoundError"}}
+VERIFIER_ERROR = {"reward": None, "outcome": "verifier_error", "error": "OperationalError"}
+
+
+def write_lsb_trial(
+    job: Path, name: str, task: str, diagnostics: dict[str, Any] | None, **result: Any
+) -> None:
+    write_trial(job, name, {"task_name": task, **result})
+    if diagnostics is not None:
+        (job / name / "verifier").mkdir()
+        (job / name / "verifier" / "diagnostics.json").write_text(json.dumps(diagnostics))
+
+
+def two_passes_and(job: Path, task: str, diagnostics: dict[str, Any] | None) -> None:
+    """Two passing trials of `task` and a third without a reward, with these diagnostics."""
+    for n in range(2):
+        write_trial(
+            job, f"{task}__{n}", {"task_name": task, "verifier_result": {"rewards": {"reward": 1}}}
+        )
+    write_lsb_trial(job, f"{task}__x", task, diagnostics, **NO_REWARD)
+
+
+def lsb_report(
+    job: Path, tmp_path: Path, benchmark: str = "livesqlbench", split: str = "dev"
+) -> subprocess.CompletedProcess[str]:
+    return evals(
+        *("report", str(job), "--manifest", str(mixed_manifest(tmp_path))),
+        *("--split", split, "--out", str(tmp_path / "r"), "--benchmark", benchmark),
+    )
+
+
+@pytest.mark.parametrize(("split", "task"), [("dev", "lsb-a_1"), ("holdout", "lsb-a_2")])
+def test_a_livesqlbench_verifier_error_is_infrastructure_and_blocks_the_report(
+    tmp_path: Path, split: str, task: str
+) -> None:
+    job = tmp_path / "job"
+    two_passes_and(job, task, VERIFIER_ERROR)
+    proc = lsb_report(job, tmp_path, split=split)
+    assert proc.returncode != 0
+    assert "1 infrastructure error" in proc.stderr
+    assert task not in proc.stderr
+    assert not (tmp_path / "r" / "report.json").exists()
+
+
+def test_is_infra_error_reads_the_livesqlbench_verifiers_diagnostics(tmp_path: Path) -> None:
+    from evals.report import is_infra_error
+
+    job = tmp_path / "job"
+    # The verifier failed itself: whatever exception Harbor recorded, the trial is rerun.
+    write_lsb_trial(job, "lsb-a_1__v", "lsb-a_1", VERIFIER_ERROR, **NO_REWARD)
+    write_lsb_trial(
+        job,
+        "lsb-a_1__t",
+        "lsb-a_1",
+        VERIFIER_ERROR,
+        exception_info={"exception_type": "AgentTimeoutError"},
+    )
+    # No reward without the verifier saying it failed (test.sh never ran it, the agent broke the
+    # container): the agent's, a 0 as before.
+    write_lsb_trial(job, "lsb-a_1__n", "lsb-a_1", None, **NO_REWARD)
+    # The verifier scored the agent's answer 0.
+    write_lsb_trial(
+        job,
+        "lsb-a_1__m",
+        "lsb-a_1",
+        {"reward": 0, "outcome": "mismatch"},
+        verifier_result={"rewards": {"reward": 0.0}},
+    )
+    # An unreadable or non-object diagnostics file is no verifier error.
+    write_lsb_trial(job, "lsb-a_1__u", "lsb-a_1", None, **NO_REWARD)
+    (job / "lsb-a_1__u" / "verifier").mkdir()
+    (job / "lsb-a_1__u" / "verifier" / "diagnostics.json").write_text("{not json")
+    write_lsb_trial(job, "lsb-a_1__l", "lsb-a_1", None, **NO_REWARD)
+    (job / "lsb-a_1__l" / "verifier").mkdir()
+    (job / "lsb-a_1__l" / "verifier" / "diagnostics.json").write_text('["verifier_error"]')
+    # data-eng-bench's scoring is unchanged, even beside the same file.
+    write_lsb_trial(job, "t1__d", "t1", VERIFIER_ERROR, **NO_REWARD)
+    found = {t.name: is_infra_error(t) for t in load_trials(job)}
+    assert found == {
+        "lsb-a_1__l": False,
+        "lsb-a_1__m": False,
+        "lsb-a_1__n": False,
+        "lsb-a_1__t": True,
+        "lsb-a_1__u": False,
+        "lsb-a_1__v": True,
+        "t1__d": False,
+    }
+
+
+def test_an_lsb_trial_without_a_reward_the_verifier_did_not_fail_on_still_scores_0(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    two_passes_and(job, "lsb-a_1", None)
+    proc = lsb_report(job, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads((tmp_path / "r" / "report.json").read_text())
+    assert (report["n_trials"], report["n_failed"]) == (3, 1)
+
+
+def test_a_data_eng_bench_reward_file_error_still_scores_0_beside_a_verifier_error_file(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    two_passes_and(job, "t1", VERIFIER_ERROR)
+    proc = lsb_report(job, tmp_path, benchmark="data-eng-bench")
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads((tmp_path / "r" / "report.json").read_text())
+    assert (report["n_trials"], report["n_failed"]) == (3, 1)
