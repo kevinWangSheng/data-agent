@@ -39,6 +39,7 @@ which records which side failed and how, never what.
     SOFTWARE.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -461,7 +462,9 @@ def main(
         try:
             reward = evaluate(payload, predicted, execute, out)
         finally:
-            execute.close()
+            # As upstream evaluator.py's cleanup: a failed drop leaves the reward as it is.
+            with contextlib.suppress(Exception):
+                execute.close()
     except Exception as exc:
         reward = write_output(out, 0, {"outcome": "verifier_error", "error": type(exc).__name__})
     path = out / DIAGNOSTICS_FILE

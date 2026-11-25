@@ -221,8 +221,13 @@ def dump_dirs(dumps: Path, databases: Sequence[str]) -> dict[str, Path]:
     (upstream build_db_images.sh takes either); stops when one is missing or found twice."""
     found: dict[str, list[Path]] = {db: [] for db in databases}
     for path in sorted(p for p in dumps.rglob("*") if p.is_dir()):
+        # An archive made on macOS mirrors every file under __MACOSX/ as `._<name>`.
+        if any(
+            part == "__MACOSX" or part.startswith(".") for part in path.relative_to(dumps).parts
+        ):
+            continue
         name = path.name.removesuffix("_template")
-        if name in found and any(path.glob("*.sql")):
+        if name in found and any(not p.name.startswith(".") for p in path.glob("*.sql")):
             found[name].append(path)
     missing = [db for db, paths in found.items() if not paths]
     twice = [db for db, paths in found.items() if len(paths) > 1]
@@ -240,7 +245,9 @@ def image_exists(run: Run, image: str) -> bool:
 
 
 def build(run: Run, args: list[str], image: str) -> None:
-    done = run(["docker", "build", "-q", *args], capture_output=True, text=True)
+    # `--secret` and `RUN --mount` need BuildKit.
+    env = os.environ | {"DOCKER_BUILDKIT": "1"}
+    done = run(["docker", "build", "-q", *args], capture_output=True, text=True, env=env)
     if done.returncode != 0:
         tail = (done.stdout + done.stderr).strip().splitlines()[-5:]
         raise SystemExit(f"livesqlbench: docker build of {image} failed:\n" + "\n".join(tail))
@@ -448,6 +455,24 @@ raise SystemExit(1 if fails else 0)
 """
 
 
+WRITER_PROBE = r"""
+import os
+import sys
+
+sys.path.insert(0, "/tests")
+from livesqlbench_verifier import PostgresExecute
+
+text = "the write role clones, queries and drops the process database"
+execute = PostgresExecute(os.environ["LSB_DATABASE"], os.environ)
+try:
+    ok = execute(["SELECT 1"]).rows == ((1,),)
+    execute.close()
+    print(("PASS " if ok else "FAIL ") + text)
+except Exception as exc:
+    print(f"FAIL {text} ({type(exc).__name__})")
+"""
+
+
 def task_environment(task_dir: Path) -> tuple[str, dict[str, str], Path]:
     """A generated task's database, the variables its `main` container gets (`[environment]
     env`, as Harbor passes them; the compose file sets none), and its `db_init` directory."""
@@ -524,6 +549,28 @@ def readonly(task_dir: Path, run: Run = subprocess.run) -> int:
             f"{'PASS' if clean else 'FAIL'} the main container's environment holds no "
             "write credential"
         )
+        # The verifier's side, in a container of its own: the task's tests/ and the write role,
+        # the credential passed by name from this process's environment (never in argv).
+        writer = run(
+            [
+                *("docker", "run", "-i", "--rm", "--network", network),
+                *("-e", f"PGHOST={livesqlbench.DB_SERVICE}", "-e", "PGPORT=5432"),
+                *("-e", f"PGUSER={livesqlbench.WRITER_ROLE}", "-e", "PGPASSWORD"),
+                *("-e", f"LSB_DATABASE={database}"),
+                *("-v", f"{(task_dir / 'tests').resolve()}:/tests:ro"),
+                *(livesqlbench.main_image(), "python3", "-"),
+            ],
+            input=WRITER_PROBE,
+            capture_output=True,
+            text=True,
+            env=os.environ | {"PGPASSWORD": password},
+        )
+        line = next(
+            (x for x in writer.stdout.splitlines() if x.startswith(("PASS", "FAIL"))),
+            f"FAIL the write role's check did not finish (exit {writer.returncode})",
+        )
+        fails += not line.startswith("PASS")
+        say(line)
     finally:
         for name in (main_name, db_name):
             run(["docker", "rm", "-f", name], capture_output=True, text=True)

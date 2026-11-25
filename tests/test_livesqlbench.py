@@ -578,8 +578,13 @@ class ProbeDocker(FakeDocker):
     def __init__(self, env: str) -> None:
         super().__init__({})
         self.env = env
+        self.writer_env: dict[str, str] = {}
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:4] == ["docker", "run", "-i", "--rm"]:
+            self.calls.append(cmd)
+            self.writer_env = kwargs.get("env") or {}
+            return subprocess.CompletedProcess(cmd, 0, "PASS the write role clones\n", "")
         if cmd[:3] == ["docker", "run", "-i"]:
             self.calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, "PASS read-only role reads\n", "")
@@ -600,14 +605,24 @@ def test_readonly_runs_the_tasks_own_environment_and_cleans_up(
     db_run = next(c for c in docker.calls if c[:3] == ["docker", "run", "-d"])
     assert db_run[db_run.index("--network-alias") + 1] == "postgresql"
     assert db_run[-1] == livesqlbench.db_image("tide_gauges")
-    probe = next(c for c in docker.calls if c[:3] == ["docker", "run", "-i"])
+    probe = next(c for c in docker.calls if c[:3] == ["docker", "run", "-i"] and "--rm" not in c)
     assert f"{livesqlbench.DATABASE_URL_ENV}={url}" in probe
     assert not any(PASSWORD in " ".join(c) for c in docker.calls)
     assert sum(c[:3] == ["docker", "rm", "-f"] for c in docker.calls) == 2
     assert any(c[:3] == ["docker", "network", "rm"] for c in docker.calls)
     printed = capsys.readouterr().out
     assert "PASS the main container's environment holds no write credential" in printed
+    assert "PASS the write role clones" in printed
+    writer = next(c for c in docker.calls if c[:4] == ["docker", "run", "-i", "--rm"])
+    assert "PGPASSWORD" in writer and docker.writer_env["PGPASSWORD"] == PASSWORD
 
     leaky = ProbeDocker(json.dumps([f"PGPASSWORD={PASSWORD}"]))
     assert livesqlbench_server.readonly(task, leaky) == 1
     assert PASSWORD not in capsys.readouterr().out
+
+
+def test_a_macos_archive_mirror_is_not_a_second_dump_directory(tmp_path: Path) -> None:
+    for name in ("dumps/alpha_template/t.sql", "__MACOSX/dumps/alpha_template/._t.sql"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("")
+    assert livesqlbench_server.dump_dirs(tmp_path, ["alpha"])["alpha"].parent.name == "dumps"

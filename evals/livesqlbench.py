@@ -252,7 +252,9 @@ def compose(db: str) -> str:
         "    volumes:\n"
         "      - ./db_init:/docker-entrypoint-initdb.d/db_assets:ro\n"
         "    healthcheck:\n"
-        '      test: ["CMD-SHELL", "pg_isready -U postgres"]\n'
+        # Over TCP: the entrypoint's own socket-only server answers on the socket while it
+        # still clones the template.
+        '      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]\n'
         "      interval: 5s\n"
         "      timeout: 5s\n"
         "      retries: 60\n"

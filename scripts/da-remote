@@ -243,6 +243,8 @@ for t in docker uv git git-lfs rsync; do
   command -v "$t" >/dev/null && ok "$t installed" || bad "$t missing"
 done
 docker info >/dev/null 2>&1 && ok "docker runs without sudo" || bad "docker info failed (daemon down or user not in docker group)"
+# LiveSQLBench's database images take the write credential as a build secret, which needs BuildKit.
+docker buildx version >/dev/null 2>&1 && ok "docker buildx (BuildKit) available" || bad "docker buildx missing: the LiveSQLBench images need BuildKit"
 
 if [ -d "$DIR/.git" ]; then
   ok "repo at $DIR ($(git -C "$DIR" log --oneline -1))"
