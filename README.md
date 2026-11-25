@@ -164,6 +164,55 @@ Known limits:
 Setting up the Slack app (scopes, events, tokens) is described in
 [docs/setup.md](docs/setup.md#slack-机器人工单-131).
 
+### Telegram
+
+With a `[telegram]` table in the `--im` file, `data-agent web` also starts a Telegram bot in the
+same process. It uses long polling, so it needs no public address either, and it shares the web
+UI's conversations, like the Slack bot. Telegram chats have no threads, so each chat has one
+current conversation: every message in it continues that conversation until someone sends
+`/new`. The same extra installs the Telegram library (aiogram):
+
+```bash
+uv sync --extra im
+
+cat > ~/.config/data-agent/im.toml <<'EOF'
+[telegram]
+bot_token_env = "DATA_AGENT_TELEGRAM_BOT_TOKEN"   # the token @BotFather gave
+allowed_users = [123456789]                       # Telegram user ids (numbers)
+EOF
+
+uv run data-agent web --runs-dir runs-web --data-sources sources.toml --im ~/.config/data-agent/im.toml
+```
+
+A file can hold both a `[slack]` and a `[telegram]` table; both bots then run.
+
+- **The file holds variable names only.** The name must start with `DATA_AGENT_TELEGRAM_`; the
+  token stays in the environment, and runs are started without it.
+- **The allowed list** holds numeric user ids. Anyone else who messages the bot privately is told
+  their id; in a group the bot ignores them.
+- **`/new`** starts a new conversation in the chat. Text after it, as in `/new revenue by month?`,
+  is the first question of the new conversation. The bot lists `/new` in Telegram's command menu.
+  In a group, send `/new@its_username`: a bare `/new` there does not mention the bot, so the bot
+  ignores it.
+- **In a group** the bot answers a message that mentions it (`@its_username`) or replies to one of
+  its messages, and nothing else: with no threads, a follow-up needs the mention or the reply
+  every time. In a private chat it answers every message.
+- **A turn** works as on Slack: a status message edited about once a second with a Stop button,
+  `stop` typed in the chat, numbered buttons for a clarifying question, the answer split at
+  paragraphs into messages of up to 4,000 characters.
+
+Known limits:
+
+- Forum topics are not supported. A message in a topic is handled as an ordinary message of the
+  group, and the bot's reply goes to the group, outside the topic.
+- With Group Privacy turned off (which the setup asks for), the bot receives every message of its
+  groups. It answers only those that mention it or reply to it.
+- Each question costs model spend, and there is no spending cap per conversation.
+- Charts are not drawn in Telegram; the bot says how many charts an answer has.
+
+Creating the bot and turning off Group Privacy is described in
+[docs/setup.md](docs/setup.md#telegram-机器人工单-132).
+
 ### Traces in Langfuse (optional)
 
 Each run can also be exported as a trace to [Langfuse](https://langfuse.com/). The trace shows every
