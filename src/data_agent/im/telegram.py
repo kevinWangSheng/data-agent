@@ -4,7 +4,10 @@ long polling, so the bot needs no public address. Part of the extra `data-agent[
 
 - Only messages and callback queries are polled (the dispatcher asks for the update types it
   has handlers for). A message with no text (a join, a photo), from a bot (the bot itself,
-  others) or a channel's post is no message to the bot; edits are never polled.
+  others) or a channel's post is no message to the bot; edits are never polled. Nothing is
+  dropped as a duplicate, as slack.py does: polling confirms each update (`getUpdates`'
+  offset, aiogram/dispatcher/dispatcher.py:319) once it is handled, so one process never gets
+  an update twice; updates sent while the bot was down come when it starts.
 - A chat has no threads: `thread_id` is None, and a message in a forum topic is an ordinary
   group message (topics are not supported; the bot's replies go to the chat, in no topic).
 - In a group the bot is mentioned by `@<its username>` (in any case), a `text_mention` of it,
@@ -97,11 +100,14 @@ INLINE = re.compile(
     r"`(?P<code>[^`\n]+)`"
     r"|\[(?P<label>[^\]\n]+)\]\((?P<url>(?:[^()\s]|\([^()\s]*\))+)\)"
     r"|\*\*(?=\S)(?P<bold>.+?)(?<=\S)\*\*"
-    r"|__(?=\S)(?P<bold_underscores>.+?)(?<=\S)__"
+    r"|(?<!\w)__(?=[^\s_])(?P<bold_underscores>.+?)(?<=[^\s_])__(?!\w)"
     r"|~~(?=\S)(?P<strike>.+?)(?<=\S)~~"
     r"|(?<![\w*])\*(?=\S)(?P<italic>[^*\n]+?)(?<=\S)\*(?![\w*])"
 )
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
+# Bold in a heading, which is bold already; `__` inside a word is no bold (CommonMark).
+BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)__(?=[^\s_])(.+?)(?<=[^\s_])__(?!\w)")
+INLINE_CODE = re.compile(r"(`[^`\n]+`)")
 BULLET = re.compile(r"^(\s*)[-*+]\s+")
 LANGUAGE = re.compile(r"^[\w+#-]+$")
 
@@ -252,7 +258,7 @@ async def with_plain_fallback[T](
     except TelegramBadRequest as exc:
         if UNPARSABLE not in str(exc).lower():
             raise
-        log.warning("telegram: the MarkdownV2 was refused (%s); sending plain text", exc)
+        log.warning("telegram: the MarkdownV2 was refused (%s); falling back to plain text", exc)
         return await call(markdown, None)
 
 
@@ -381,8 +387,12 @@ def to_markdown_v2(markdown: str) -> str:
 def convert_line(line: str) -> str:
     heading = HEADING.match(line)
     if heading:
-        # A heading is bold already; bold inside it (`**`, `__`) would close it early.
-        content = heading[1].replace("**", "").replace("__", "")
+        # Bold inside the heading's own bold would close it early: its markers go, outside code.
+        pieces = INLINE_CODE.split(heading[1])
+        content = "".join(
+            piece if index % 2 else BOLD.sub(lambda match: match[1] or match[2], piece)
+            for index, piece in enumerate(pieces)
+        )
         return "*" + inline(content, styled=True) + "*"
     bullet = BULLET.match(line)
     if bullet:

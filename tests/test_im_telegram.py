@@ -218,6 +218,16 @@ def test_a_press_without_a_message_is_no_press() -> None:
         ("## Totals\nby month", "*Totals*\nby month"),
         # Bold in a heading, either way, would close the heading's own bold.
         ("# Revenue __2025__ **net**", "*Revenue 2025 net*"),
+        # Only bold markers go: not `__` inside a word or in code, nor a lone `**`.
+        (
+            "# Use `a__b`, stg_shop__orders and 2 ** 3",
+            r"*Use \`a\_\_b\`, stg\_shop\_\_orders and 2 \*\* 3*",
+        ),
+        # `__` inside a word is no bold (CommonMark), as dbt model names have it.
+        (
+            "join stg_shop__orders to stg_shop__items",
+            r"join stg\_shop\_\_orders to stg\_shop\_\_items",
+        ),
         ("- one\n* two", "• one\n• two"),
         ("use `a_b\\c` here", "use `a_b\\\\c` here"),
         (
@@ -240,6 +250,8 @@ def test_a_press_without_a_message_is_no_press() -> None:
         "link",
         "heading",
         "bold-in-heading",
+        "literal-in-heading",
+        "intraword-underscores",
         "bullets",
         "inline-code",
         "code-block",
@@ -436,7 +448,7 @@ def visible(v2: str) -> str:
     return re.sub(r"\\(.)", r"\1", v2, flags=re.DOTALL)
 
 
-@pytest.mark.parametrize("char", [".", "_", "\\", "-", "!", "a"])
+@pytest.mark.parametrize("char", [".", "_", "*", "~", "`", "\\", "-", "!", "a"])
 def test_a_message_at_the_limit_fits_after_parsing(char: str) -> None:
     text = char * LIMITS.max_chars
     assert len(visible(to_markdown_v2(text))) <= MAX_TEXT
