@@ -636,9 +636,17 @@ def parity(
     """The oracle and both parity checks (module docstring); writes OUT/reports/parity.json."""
     check_scratch(scratch, out)
     password = write_password()
+    dev = dev_set()
+    # ADR-0004: a holdout task scored alone would give its own outcome; the holdout runs whole.
+    if held := sum(task not in dev for task in set(only)):
+        raise SystemExit(f"livesqlbench-parity: {held} --task id(s) are holdout tasks; give none")
     tasks = scored_tasks(root, only)
     by_id = {t.name: t for t in tasks}
-    dev = dev_set()
+    for trial_root in trial_roots:
+        if not trial_cases([trial_root], by_id, dev).cases:
+            raise SystemExit(
+                f"livesqlbench-parity: --trials {trial_root} has no dev trial with a pred.json"
+            )
     found = trial_cases(trial_roots, by_id, dev)
     fresh_scratch(scratch)
     try:
@@ -686,15 +694,21 @@ def passed(summary: Mapping[str, Any]) -> bool:
 
 def sentinels(answers: Path) -> set[str]:
     """Each gold statement of the answer file, whitespace-normalised, as written and as soft EX
-    cleans it; statements shorter than SENTINEL_MIN_CHARS are left out (no gold statement is that
-    short, and a fragment would match unrelated text)."""
+    cleans it, each also as a JSON string holds it (a pred.json, upstream's debug.txt: newlines and
+    quotes escaped, with or without ASCII escapes); statements shorter than SENTINEL_MIN_CHARS are
+    left out (no gold statement is that short, and a fragment would match unrelated text)."""
     found: set[str] = set()
     for record in livesqlbench.read_jsonl(answers):
         for sql in statements(record.get("sol_sql")):
             for variant in (sql, *clean_sql([sql])):
-                normalised = " ".join(variant.split())
-                if len(normalised) >= SENTINEL_MIN_CHARS:
-                    found.add(normalised)
+                for form in (
+                    variant,
+                    json.dumps(variant)[1:-1],
+                    json.dumps(variant, ensure_ascii=False)[1:-1],
+                ):
+                    normalised = " ".join(form.split())
+                    if len(normalised) >= SENTINEL_MIN_CHARS:
+                        found.add(normalised)
     return found
 
 

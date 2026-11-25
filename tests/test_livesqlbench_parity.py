@@ -401,3 +401,42 @@ def test_leaks_counts_gold_statements_raw_and_cleaned_and_prints_the_count_only(
     )
     printed = capsys.readouterr().out
     assert "gold SQL: 2 occurrence(s)" in printed and "orchard_trees" not in printed
+
+
+# --- review round 1 (Codex) ---
+
+
+def test_a_gold_statement_written_as_json_is_counted(tmp_path: Path) -> None:
+    """A pred.json or upstream's debug.txt holds the statement JSON-escaped (newlines, quotes)."""
+    sql = 'SELECT "tree_id"\nFROM orchard_trees WHERE planted_year > 2001'
+    answers = tmp_path / "answers.jsonl"
+    answers.write_text(json.dumps({"instance_id": "a", "sol_sql": [sql]}) + "\n")
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "pred.json").write_text(json.dumps({"predicted_sql": [sql]}))
+    (run / "debug.txt").write_text(json.dumps({"predicted_sql": [sql]}, ensure_ascii=False))
+    assert lp.count_gold(answers, run) == 2
+
+
+def test_a_holdout_task_cannot_be_picked_alone(setup: Path, tmp_path: Path) -> None:
+    """ADR-0004: --task on a holdout task would give that task's own outcome."""
+    with pytest.raises(SystemExit) as stop:
+        lp.parity(setup, tmp_path / "out", [], tmp_path / "scratch", [HOLDOUT], run=Fake())
+    assert "1 --task id(s) are holdout tasks" in str(stop.value)
+    assert HOLDOUT not in str(stop.value)
+    summary = lp.parity(setup, tmp_path / "out", [], tmp_path / "scratch", [DEV], run=Fake())
+    assert summary["tasks"] == 1
+
+
+@pytest.mark.parametrize("kind", ["missing", "empty", "holdout only"])
+def test_a_trials_directory_without_a_dev_prediction_is_refused(
+    setup: Path, tmp_path: Path, kind: str
+) -> None:
+    trials = tmp_path / "trials"
+    if kind != "missing":
+        trials.mkdir()
+    if kind == "holdout only":
+        pred = {"instance_id": "tide_q1", "predicted_sql": ["SELECT 1"]}
+        write_trial(trials, "baseline", f"{HOLDOUT}__a", HOLDOUT, pred)
+    with pytest.raises(SystemExit, match=r"no dev trial with a pred\.json"):
+        parity(setup, tmp_path, Fake(), [trials])
