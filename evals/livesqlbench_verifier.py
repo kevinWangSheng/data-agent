@@ -346,7 +346,8 @@ def evaluate(
 
 
 def kind(exc: BaseException) -> str:
-    """An error's class, and the driver's class beneath an ExecutionError: never its message."""
+    """An error's class, and the driver's class beneath an ExecutionError or SetupError: never
+    its message."""
     cause = exc.__cause__
     return type(cause).__name__ if cause is not None else type(exc).__name__
 
@@ -491,11 +492,12 @@ def main(
                 execute.close()
     except Exception as exc:
         reward = None
-        write_output(out, 0, {"outcome": "verifier_error", "error": kind(exc)})
-        (out / REWARD_FILE).unlink()
+        out.mkdir(parents=True, exist_ok=True)
+        (out / REWARD_FILE).unlink(missing_ok=True)
+        failed = {"reward": None, "outcome": "verifier_error", "error": kind(exc)}
+        (out / DIAGNOSTICS_FILE).write_text(json.dumps(failed))
     path = out / DIAGNOSTICS_FILE
-    diagnostics = json.loads(path.read_text())
-    diagnostics = diagnostics | {"pred_json": state, "reward": reward}
+    diagnostics = json.loads(path.read_text()) | {"pred_json": state}
     path.write_text(json.dumps(diagnostics, indent=2))
     print(f"reward {reward} ({diagnostics.get('outcome')}, pred.json {state})")
     return 0 if reward is not None else 1

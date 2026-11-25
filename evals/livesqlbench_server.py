@@ -427,6 +427,8 @@ def check(root: Path, run: Run = subprocess.run) -> int:
 
 
 def task_image(task_dir: Path) -> str | None:
+    """A generated task's `[environment] docker_image`; None when its task.toml is unreadable or
+    names none, which `check` counts as stale like an old tag."""
     try:
         config = tomllib.loads((task_dir / "task.toml").read_text())
     except (OSError, tomllib.TOMLDecodeError):
