@@ -56,7 +56,7 @@ from aiogram.types import (
 )
 
 from data_agent.im.config import PlatformConfig
-from data_agent.im.format import FENCE
+from data_agent.im.format import FENCE, FENCE_LINE, fence_after
 from data_agent.im.platform import (
     Button,
     Capabilities,
@@ -72,6 +72,9 @@ log = logging.getLogger(__name__)
 
 PLATFORM = "telegram"
 NEW = "/new"
+# Telegram sends `/start` (with a deep link's payload or none) when someone opens the bot: a
+# ping, as Hermes takes it, not a question.
+START = "/start"
 NEW_DESCRIPTION = "Start a new conversation"
 MARKDOWN_V2 = "MarkdownV2"
 # sendMessage and editMessageText take "1-4096 characters after entities parsing"
@@ -115,9 +118,6 @@ BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)__(?=[^\s_])(.+?)(?<=[^\s_
 INLINE_CODE = re.compile(CODE_SPAN)
 BULLET = re.compile(r"^(\s*)[-*+]\s+")
 LANGUAGE = re.compile(r"^[\w+#-]+$")
-# A code fence (CommonMark): 3 or more backticks, then an info string, which holds no backtick
-# when the fence opens and is blank when it closes; closing takes a run as long as the opening.
-FENCE_LINE = re.compile(r"^\s*(?P<ticks>`{3,})(?P<info>.*)$")
 
 
 class TelegramPlatform:
@@ -283,7 +283,8 @@ def keyboard(buttons: tuple[Button, ...]) -> InlineKeyboardMarkup | None:
 
 def to_incoming(message: Message, bot_id: int, bot_username: str) -> Incoming | None:
     """The message to the bot `message` is, or None for any other: one without text (a join,
-    a photo), from a bot (the bot itself, others), or a channel's post."""
+    a photo), from a bot (the bot itself, others), a channel's post, or `/start` (`START`, bare
+    or to this bot; `/start@another_bot` is an ordinary message)."""
     user = message.from_user
     if message.text is None or user is None or user.is_bot or message.chat.type == "channel":
         return None
@@ -308,6 +309,8 @@ def to_incoming(message: Message, bot_id: int, bot_username: str) -> Incoming | 
             if target and "@" + target.lower() != name:
                 continue
             mentioned = mentioned or bool(target)
+            if entity.offset == 0 and command.lower() == START:
+                return None
             if entity.offset == 0 and command.lower() == NEW:
                 new_conversation = True
                 cuts.append(span)
@@ -377,12 +380,13 @@ def to_markdown_v2(markdown: str) -> str:
     out: list[str] = []
     opening = ""  # the open code block's backtick run
     for line in markdown.split("\n"):
-        fence = FENCE_LINE.match(line)
-        if not opening and fence and "`" not in fence["info"]:
-            language = fence["info"].strip()
+        after = fence_after(line, opening)
+        if after:
+            fence = FENCE_LINE.match(line)
+            language = fence["info"].strip() if fence else ""
             out.append(FENCE + (language if LANGUAGE.match(language) else ""))
-            opening = fence["ticks"]
-        elif opening and fence and fence["ticks"].startswith(opening) and not fence["info"].strip():
+            opening = after
+        elif after == "":
             out.append(FENCE)
             opening = ""
         elif opening:

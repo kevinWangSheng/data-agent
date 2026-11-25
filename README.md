@@ -194,6 +194,8 @@ A file can hold both a `[slack]` and a `[telegram]` table; both bots then run.
   is the first question of the new conversation. The bot lists `/new` in Telegram's command menu.
   In a group, send `/new@its_username`: a bare `/new` there does not mention the bot, so the bot
   ignores it.
+- **`/start`**, which Telegram sends when someone opens the bot, starts no question and gets no
+  reply.
 - **In a group** the bot answers a message that mentions it (`@its_username`) or replies to one of
   its messages, and nothing else: with no threads, a follow-up needs the mention or the reply
   every time. In a private chat it answers every message.
@@ -233,8 +235,7 @@ allowed_users = ["123456789012345678"]           # Discord user ids, written as 
   counts as a mention; `@everyone`, `@here` and role mentions do not.
 - **In a direct message**, every message goes to the chat's current conversation. The `/new`
   slash command ends it, so the next message starts a new one. `/new` in one of the bot's threads
-  ends that thread's conversation too; the bot then forgets the thread, so mention it to start
-  the next conversation there.
+  ends that thread's conversation too, and the next message there starts a new one.
 - **The allowed list, a turn, errors.** These work as on Slack (above). The status message has a
   Stop button and is edited about every two seconds. A clarifying question has one button per
   option. Anyone not on the list who sends a direct message is told their user id. In a channel,

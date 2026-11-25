@@ -17,16 +17,19 @@ Conversations (contract item 3):
   calls `create()` once, then `send()` with that id; under a key with one, only `send()`.
 - The map is `<runs-dir>/im/threads.json` (`IM_DIR`, `THREADS_FILE`), replaced whole on every
   change and read back when an adapter starts, so a restart keeps it. It is no `*.jsonl` file,
-  so `RunsDir` lists no run for `im/`.
-- `Incoming.new_conversation` (Telegram's `/new`) drops the key's conversation; the next message,
-  or the command's own text when not blank, starts another.
+  so `RunsDir` lists no run for `im/`. Each entry is a key and its conversation; a thread the
+  bot is in whose conversation `/new` dropped stays, its conversation null. (A map written
+  before ticket 137 has no such entry: each of its thread keys is a thread the bot is in.)
+- `Incoming.new_conversation` (`/new`) drops the key's conversation; the next message, or the
+  command's own text when not blank, starts another. In a thread the bot stays in the thread,
+  as Hermes's thread participation outlives a reset: the next message needs no mention.
 
 Who gets an answer:
 
 - A direct message, always. In a channel or group: a message that mentions the bot, or any
-  message in a thread the bot is in (a mapped key whose thread id is not None). A group without
-  threads (Telegram) needs the mention every time; otherwise the bot would answer every message
-  of the group after its first.
+  message in a thread the bot is in (a key whose thread id is not None that has had a
+  conversation, `Adapter.joined`). A group without threads (Telegram) needs the mention every
+  time; otherwise the bot would answer every message of the group after its first.
 - Only the users of the allowed list (`allowed_users`) make the bot do anything: a turn, a steer,
   `stop`, `/new`, a button press. Anyone else, in a direct chat, gets one reply that gives their
   user id, and nothing else happens; in a channel or group, nothing at all (no reply, no call).
@@ -178,7 +181,10 @@ class Adapter:
         self.allowed = frozenset(allowed_users)
         self.clock = clock
         self.map_file = runs.path / IM_DIR / THREADS_FILE
-        self.threads: dict[Key, str] = self.read_map()
+        self.threads: dict[Key, str] = {}
+        # The threads the bot is in (keys with a thread id), with a conversation or after `/new`.
+        self.joined: set[Key] = set()
+        self.read_map()
         # By run id.
         self.turns: dict[str, Turn] = {}
         # By chat id and the id of the message with the buttons.
@@ -233,7 +239,7 @@ class Adapter:
         key: Key = (message.platform, message.chat_id, message.thread_id)
         chat, thread = message.chat_id, message.thread_id
         conversation = self.threads.get(key)
-        in_bots_thread = conversation is not None and thread is not None
+        in_bots_thread = thread is not None and key in self.joined
         if not (message.direct or message.mentioned or in_bots_thread):
             return
         if message.user_id not in self.allowed:
@@ -263,6 +269,8 @@ class Adapter:
         if conversation is None:
             conversation = await asyncio.to_thread(self.conversations.create)
             self.threads[key] = conversation
+            if thread is not None:
+                self.joined.add(key)
             await self.write_map()
         await self.send_turn(conversation, message.text, chat, thread)
 
@@ -459,18 +467,27 @@ class Adapter:
 
     # --- the thread map --------------------------------------------------------------------
 
-    def read_map(self) -> dict[Key, str]:
-        """This platform's entries of `threads.json`."""
-        return {
-            (entry["platform"], entry["chat_id"], entry["thread_id"]): entry["conversation"]
-            for entry in read_entries(self.map_file)
-            if entry.get("platform") == self.platform.name
-        }
+    def read_map(self) -> None:
+        """This platform's entries of `threads.json` into `threads` and `joined`."""
+        for entry in read_entries(self.map_file):
+            if entry.get("platform") != self.platform.name:
+                continue
+            key: Key = (entry["platform"], entry["chat_id"], entry["thread_id"])
+            if entry.get("conversation") is not None:
+                self.threads[key] = entry["conversation"]
+            if key[2] is not None:
+                self.joined.add(key)
 
     async def write_map(self) -> None:
+        keys = [*self.threads, *(key for key in self.joined if key not in self.threads)]
         mine = [
-            {"platform": platform, "chat_id": chat, "thread_id": thread, "conversation": conv}
-            for (platform, chat, thread), conv in self.threads.items()
+            {
+                "platform": platform,
+                "chat_id": chat,
+                "thread_id": thread,
+                "conversation": self.threads.get((platform, chat, thread)),
+            }
+            for platform, chat, thread in keys
         ]
         await asyncio.to_thread(write_entries, self.map_file, self.platform.name, mine)
 

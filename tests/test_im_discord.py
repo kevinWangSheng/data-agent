@@ -12,7 +12,8 @@ from typing import Any, cast
 
 import discord
 import pytest
-from aiohttp import ClientSession, web
+from aiohttp import BaseConnector, ClientSession, ConnectionTimeoutError, web
+from discord import app_commands
 from discord.gateway import DiscordWebSocket
 from discord.http import Route
 from discord.webhook.async_ import AsyncWebhookAdapter, interaction_response_params
@@ -985,6 +986,57 @@ async def test_no_interaction_token_is_in_the_debug_log(caplog: pytest.LogCaptur
     assert f"/interactions/{interaction_id}/" in logged
     assert f"/webhooks/{BOT}/" in logged
     assert INTERACTION_TOKEN not in logged
+
+
+class TimingOut(BaseConnector):
+    """A connector whose every connection times out: aiohttp then raises
+    `ConnectionTimeoutError("Connection timeout to host <the request's URL>")`."""
+
+    async def connect(self, *_: Any, **__: Any) -> Any:
+        raise TimeoutError
+
+
+async def test_no_interaction_token_is_in_a_logged_callback_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An interaction's callback that times out raises with its URL, token and all, through
+    discord.py's webhook adapter. Raised from a button's `on_interaction` it is logged by the
+    client (`Client.on_error`), from `/new` by the command tree (`CommandTree.on_error`, the
+    error wrapping it): both with the traceback."""
+    caplog.set_level(logging.DEBUG)
+    client = discord.Client(intents=discord.Intents.default())
+    bot = DiscordPlatform(CONFIG, client)
+    tree = bot.register(client)
+    interaction_id = 990000000000000002
+
+    async def callback() -> None:
+        async with ClientSession(connector=TimingOut()) as session:
+            await AsyncWebhookAdapter().create_interaction_response(
+                interaction_id,
+                INTERACTION_TOKEN,
+                session=session,
+                params=interaction_response_params(type=6),
+            )
+
+    with pytest.raises(ConnectionTimeoutError) as timed_out:
+        await callback()
+    # The exception itself holds the token; only the logs must not.
+    assert INTERACTION_TOKEN in str(timed_out.value)
+
+    await client._run_event(callback, "on_interaction")  # pyright: ignore[reportPrivateUsage]
+    new = tree.get_command("new")
+    assert isinstance(new, app_commands.Command)
+    interaction = cast(discord.Interaction, SimpleNamespace(command=new))
+    await tree.on_error(interaction, app_commands.CommandInvokeError(new, timed_out.value))
+
+    records = [record for record in caplog.records if record.name.startswith("discord")]
+    assert {"discord.client", "discord.app_commands.tree"} <= {record.name for record in records}
+    logged = "\n".join(caplog.handler.format(record) for record in records)
+    assert "ConnectionTimeoutError" in logged
+    assert "Traceback" in logged
+    assert f"/interactions/{interaction_id}/" in logged
+    assert INTERACTION_TOKEN not in logged
+    assert INTERACTION_TOKEN not in caplog.text
 
 
 # --- service ---------------------------------------------------------------------------------

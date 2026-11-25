@@ -39,7 +39,7 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 from data_agent.im.config import PlatformConfig
-from data_agent.im.format import FENCE, is_fence
+from data_agent.im.format import FENCE, fence_after
 from data_agent.im.platform import (
     Capabilities,
     Incoming,
@@ -262,19 +262,21 @@ def sections(text: str) -> list[str]:
     `LIMITS.max_chars` past `SECTION_CHARS`. Slack reads each section on its own, so a cut is
     after a line where it can be, else in the line but never inside an escape or a `<...>`
     link; a code block cut in two is closed at the end of one piece and opened again at the
-    start of the next. Without a code block cut in two, the pieces joined are the text."""
+    start of the next. Without a code block cut in two, the pieces joined are the text. A fence
+    is a line of `FENCE` alone, as `to_mrkdwn` writes each one: a line of code may start with
+    backticks."""
     closing = "\n" + FENCE
     pieces: list[str] = []
     while len(text) > SECTION_CHARS:
         room = SECTION_CHARS - len(closing)
         # A piece takes something past an opening fence, which the next piece would open again.
         first = text.split("\n", 1)[0]
-        head = len(first) + 1 if is_fence(first) else 0
+        head = len(first) + 1 if first == FENCE else 0
         cut = text.rfind("\n", 0, room) + 1
         if cut <= head:
             cut = safe_cut(text, room, head)
         piece, text = text[:cut], text[cut:]
-        if sum(is_fence(line) for line in piece.split("\n")) % 2:
+        if piece.split("\n").count(FENCE) % 2:
             piece = piece.removesuffix("\n") + closing
             text = FENCE + "\n" + text
         pieces.append(piece)
@@ -301,8 +303,11 @@ def to_mrkdwn(markdown: str) -> str:
     out: list[str] = []
     code: list[str] | None = None
     text: list[str] = []
+    opening = ""
     for line in markdown.split("\n"):
-        if is_fence(line):
+        after = fence_after(line, opening)
+        if after is not None:
+            opening = after
             if code is None:
                 out += convert_text(text)
                 text = []

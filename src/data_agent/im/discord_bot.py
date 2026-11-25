@@ -114,10 +114,18 @@ THREAD_TYPES = (
     discord.ChannelType.news_thread,
 )
 # The discord.py loggers whose records can hold an interaction's token: the gateway's events
-# (`gateway.py` `received_message`) and the requests (URLs) of `http.py` and the webhook adapter
-# (`webhook/async_.py`, which an interaction's callback and messages go through). A logger's
+# (`gateway.py` `received_message`), the requests (URLs) of `http.py` and the webhook adapter
+# (`webhook/async_.py`, which an interaction's callback and messages go through), and the
+# exceptions an event handler (`client.py` `on_error`) or a command (`app_commands/tree.py`
+# `on_error`) raised, as aiohttp's `ConnectionTimeoutError` with the callback's URL. A logger's
 # filter sees only its own records, not its children's, so these are the modules' own.
-REDACTED_LOGGERS = ("discord.gateway", "discord.http", "discord.webhook.async_")
+REDACTED_LOGGERS = (
+    "discord.gateway",
+    "discord.http",
+    "discord.webhook.async_",
+    "discord.client",
+    "discord.app_commands.tree",
+)
 # A `"token": "..."` field of a logged payload, and the token in a webhook's or an
 # interaction's URL (`/webhooks/{id}/{token}`, `/interactions/{id}/{token}/callback`).
 TOKEN_FIELD = re.compile(r"""(['"]token['"]\s*:\s*['"])[^'"]+""")
@@ -134,14 +142,26 @@ def intents() -> discord.Intents:
 
 
 class RedactTokens(logging.Filter):
-    """Takes tokens out of a record's message (formatted with its arguments)."""
+    """Takes tokens out of a record's message (formatted with its arguments) and out of its
+    exception's text: a traceback with a token is formatted once, redacted, and kept as
+    `exc_text`, the exception itself dropped from the record, so no handler formats it again."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        redacted = TOKEN_PATH.sub(rf"\1{REDACTED}", TOKEN_FIELD.sub(rf"\1{REDACTED}", message))
+        redacted = redact(message)
         if redacted != message:
             record.msg, record.args = redacted, ()
+        if record.exc_info and record.exc_info[0] is not None:
+            text = logging.Formatter().formatException(record.exc_info)
+            if redact(text) != text:
+                record.exc_text, record.exc_info = redact(text), None
+        elif record.exc_text:
+            record.exc_text = redact(record.exc_text)
         return True
+
+
+def redact(text: str) -> str:
+    return TOKEN_PATH.sub(rf"\1{REDACTED}", TOKEN_FIELD.sub(rf"\1{REDACTED}", text))
 
 
 REDACT_TOKENS = RedactTokens()
