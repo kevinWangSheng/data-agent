@@ -31,8 +31,14 @@ agent 现在只能在网页对话页和 CLI 里用。数据团队的问题多在
 - 会话键：平台 + 聊天 id + 线程 id。
   - Slack：在频道里 @ 机器人或私聊发一条新消息，开一次新对话，机器人在这条消息的线程里回复；线程里继续回复就是同一对话的下一轮。
   - Discord：新消息开新对话时，机器人自动建一个线程，在线程里回复。
+    - （Update 2026-11-25，人确认，照上游多数：Hermes `f85f33bf`、OpenClaw `acb3939a8`、Chat SDK `e490e84`）
+      - 私聊里建不了线程（discord.py 2.7.1 `message.py:1654`、`:1676-1695`），所以私聊照 Telegram 做：一个私聊对应一个"当前对话"，`thread_id` 为 None；`/new` 注册成全局斜杠命令，开一个新对话（Hermes `plugins/platforms/discord/adapter.py:102`）。
+      - 频道里线程的 id 就是被 @ 那条消息的 id（Discord 文档 "Start Thread from Message"）。线程在机器人第一次往里发消息时才建，名单外的人在频道里发消息因此不留下任何东西；线程名取消息前 80 字（去掉 @），`auto_archive_duration` 1440；消息本来就在线程里就不另建（Hermes `adapter.py:5189-5240`，Chat SDK `packages/adapter-discord/src/index.ts:1551`）。
   - Telegram：私聊和群没有线程，按聊天对应"当前对话"；发 `/new` 开一个新对话。
+    - （Update 2026-11-25，人确认）论坛话题（`message_thread_id`）不支持，记为已知限制。上游 Hermes、OpenClaw 按话题分会话，但那要改 130 的契约（Telegram 的 `thread_id` 为 None），而且"机器人参与过的线程免 @"放到话题里会变成每条都回。
 - 群里要 @ 机器人才回应；机器人已经参与的线程里不用再 @。
+  - （Update 2026-11-25，人确认，照上游多数）回复机器人的消息也算 @（Hermes、OpenClaw；Chat SDK 可配）。Discord 只认 `message.mentions` 里的机器人，`@everyone` 不算（Chat SDK `index.ts:2471`）。Telegram 认 `mention` 等于 `@机器人用户名`、`text_mention` 指向机器人、带 `@机器人用户名` 的 `bot_command`（Chat SDK `packages/adapter-telegram/src/index.ts:3862-3885`）。
+  - （Update 2026-11-25，人确认）Telegram 默认的隐私模式下，官方文档只保证机器人收到命令和对它消息的回复（core.telegram.org/bots/features#privacy-mode）。所以 `docs/setup.md` 要求在 BotFather 里关掉 Group Privacy（或把机器人设为管理员），再把机器人移出群、重新拉回（Hermes `website/docs/user-guide/messaging/telegram.md:253-277`，OpenClaw `docs/channels/telegram/setup.md:99-107`）。适配器对不该回应的群消息照旧什么都不做，也不写日志。
 - 映射存在 runs 目录下适配器自己的文件里（如 `<runs-dir>/im/threads.json`），不改 `conversation.json`。IM 发起的对话在网页对话列表里照常出现，能打开回放。
 
 ### 澄清、进度、取消
@@ -137,4 +143,4 @@ slack_bolt 1.30.0、aiogram 3.34.0、discord.py 2.7.1，都是 MIT，作为可�
 
 - 上游：Hermes（MIT）、OpenClaw（MIT）、Vercel Chat SDK（MIT）、LangBot（Apache-2.0）的做法对照见取证笔记；只参考设计，不复制代码。nao 的消息平台实现基于 JS 库 `chat`，Python 后端用不上；nao 的澄清是纯文本编号列表（`apps/backend/src/utils/messaging-provider.ts:456-462`）。
 - Slack Socket Mode 的 app 不能上 Slack Marketplace，符合自托管的定位。
-- 已知限制：插话的送不到窗口（工单 92）；机器人在频道里的回答对所有成员可见；每次提问都花模型额度，没有对话总花费上限。
+- 已知限制：插话的送不到窗口（工单 92）；机器人在频道里的回答对所有成员可见；每次提问都花模型额度，没有对话总花费上限；Telegram 论坛话题不支持（Update 2026-11-25）。
