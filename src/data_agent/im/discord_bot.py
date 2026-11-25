@@ -153,14 +153,16 @@ class RedactTokens(logging.Filter):
             record.msg, record.args = redacted, ()
         if record.exc_info and record.exc_info[0] is not None:
             text = logging.Formatter().formatException(record.exc_info)
-            if redact(text) != text:
-                record.exc_text, record.exc_info = redact(text), None
+            redacted_text = redact(text)
+            if redacted_text != text:
+                record.exc_text, record.exc_info = redacted_text, None
         elif record.exc_text:
             record.exc_text = redact(record.exc_text)
         return True
 
 
 def redact(text: str) -> str:
+    """The text with each token (`TOKEN_FIELD`, `TOKEN_PATH`) replaced by `REDACTED`."""
     return TOKEN_PATH.sub(rf"\1{REDACTED}", TOKEN_FIELD.sub(rf"\1{REDACTED}", text))
 
 

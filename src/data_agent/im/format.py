@@ -126,8 +126,13 @@ def split_lines(block: str, limit: int) -> list[str]:
 
     for line in block.split("\n"):
         ticks = fence_after(line, opening)
-        after_ticks = opening if ticks is None else ticks
-        after = None if not after_ticks else (fence if ticks is None else line)
+        if ticks is None:
+            # No fence: the part stays in (or out of) the block it is in.
+            after_ticks, after = opening, fence
+        elif ticks:
+            after_ticks, after = ticks, line
+        else:
+            after_ticks, after = "", None
         closing = len(after_ticks) + 1 if after is not None else 0
         if not fits(line, closing):
             flush()

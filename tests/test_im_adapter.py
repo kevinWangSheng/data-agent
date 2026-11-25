@@ -319,12 +319,18 @@ async def test_after_new_with_a_question_the_bots_thread_needs_no_mention(
     tmp_path: Path, name: str
 ) -> None:
     platform = Platform(name)
-    adapter, conversations, _, _ = await bot(tmp_path, platform)
+    adapter, conversations, runs, _ = await bot(tmp_path, platform)
     await adapter.on_message(mention("How many orders?", platform=name))
     await adapter.on_message(new("Refunds by month?", platform=name))
     await adapter.on_message(plain("And by week?", name))
     assert conversations.created == ["conv1", "conv2"]
     assert conversations.sent[1:] == [("conv2", "Refunds by month?"), ("conv2", "And by week?")]
+
+    restarted = Adapter(Platform(name), conversations, runs, ["U1"], Clock())
+    await restarted.start()
+    await restarted.on_message(plain("And by day?", name))
+    assert conversations.created == ["conv1", "conv2"]
+    assert conversations.sent[-1] == ("conv2", "And by day?")
 
 
 async def test_a_bare_new_before_a_restart_keeps_the_thread_the_bots(tmp_path: Path) -> None:
