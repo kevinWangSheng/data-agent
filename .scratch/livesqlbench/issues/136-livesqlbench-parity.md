@@ -1,10 +1,10 @@
 # 136 — LiveSQLBench：标准答案到手后，官方对拍与"每道题都能判分"的检查
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 128（done，`deb64e2`）；答案文件已在服务器（见 Comments）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 136-livesqlbench-parity)
+Branch: worktree-136-livesqlbench-parity
 
 ## Goal
 
@@ -81,10 +81,10 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2
 - Model spend: $0
-- Outcome: —
+- Outcome: committed `2b97af8`; server runs pending
 - Human review minutes: —
 
 ## Comments
@@ -98,3 +98,60 @@ Branch: —
   - 派工前还剩一项待对齐：验证脚本自身失败的 trial 怎么记分（见 Acceptance）。
 
 - 2026-11-25（对齐会话，人定）：验证脚本自身失败按基础设施错误处理（重跑、不进分母），Authority 加 `evals/report.py`（必要时加 `evals/ablate.py`），只限这一项归类。Status → ready-for-agent。
+
+- 2026-11-25（工单 agent 最终回复，主会话照抄；分支 `worktree-136-livesqlbench-parity`，`2b97af8`，未 push；范围外改动和偏差待对齐）：
+
+  The code for ticket 136 is done and committed on `worktree-136-livesqlbench-parity` (head `2b97af8`, not pushed). The oracle, the parity check and the leak count are written but have not run on real answers. Upstream's evaluator has not run anywhere yet: the local Docker VM has 0 bytes free and I didn't delete any of your images to make room. Those server runs fall to the main session (order at the end).
+
+  **Resume check (stop condition, needs your call).** Real Harbor 0.24, $0, oracle agent, stand-in local images, wrong write password (`runs/136/resume-check.txt`):
+  - The first trial got `RewardFileNotFoundError` with `outcome: verifier_error`, and the report counts it as infrastructure.
+  - A plain `harbor job resume` does **not** rerun it.
+  - Ablate's path does rerun it: keep its spend under `dropped/`, delete the trial directory, then resume. It came back as a new trial (`oLyZiNm`), and the old one is kept under `dropped/`.
+  - The script repeats `ensure_job`'s steps rather than calling `ensure_job`; `ensure_job` itself is tested only against the fake Harbor.
+  - Read literally, "不会重跑就停下交回" could mean stop here. My reading is that the ablate path reruns it, so I continued.
+
+  **What changed**
+  - **Scoring:** an `lsb-` trial with no reward whose `diagnostics.json` says `verifier_error` is now infrastructure: not scored, rerun on resume. Ablate deletes those trials itself and does not pass `-f RewardFileNotFoundError`. Harbor's `-f` matches only by exception type, so it would also rerun trials where the agent itself caused the missing reward. Those still score 0, and data-eng-bench and DAB scoring is unchanged. All of this has tests.
+  - **Verifier:** two inputs made our verifier raise where upstream scores 0: a comparison that throws (a row holding a list of dates, or `inf`), and an exception from outside the database driver during execution. Under the new rule that would have rerun the paid agent forever. Both now score 0, each with a test that failed first. This came after both review rounds.
+  - **New command `livesqlbench-parity`** (`evals/livesqlbench_parity.py`):
+    - `run` starts one container per database and scores the gold SQL and each dev trial's `pred.json` with both our verifier and upstream's.
+    - Each side's output is reduced to its reward plus named flags (our outcome, upstream markers), and kept in a scratch directory outside `runs/` that is deleted. The scratch is only removed if this command created it.
+    - The summary goes to `runs/lsb-parity/reports/parity.json`. Dev tasks appear by id; holdout tasks only as counts.
+    - It refuses a holdout `--task`, a `--trials` directory with no dev `pred.json`, or tasks whose verifier copy is stale.
+    - `leaks` counts gold SQL occurrences under a directory, including JSON-escaped forms, and prints only the count.
+  - **Checks:** `make check` passes (3291 passed, 3 skipped; web 448 passed; `runs/136/make-check-6.txt`). The LiveSQLBench acceptance tests pass.
+
+  **Changes outside Authority, please confirm:**
+  1. `scripts/da-remote start` now sources the write credential for `livesqlbench-parity` runs. The ticket's prescribed `start lsb-parity` command cannot run without it.
+  2. `evals/__main__.py` gains two lines to register the new command.
+  3. The docstring of the verifier's `main` was updated (the separate verifier fix above is within Authority).
+
+  **Deviations, please confirm:**
+  - Upstream runs as `lsb_writer`, not `root/123123`; our database images have no `root` login.
+  - Upstream's image comes from a Dockerfile written anew: `python:3.10-slim`, `postgresql-client` and upstream's `requirements.txt`, without the agent CLIs.
+  - There is one database container per database, not per task; both evaluators re-clone from the template for every case.
+  - A disagreement involving a timeout is rerun once, and the rerun count is reported.
+  - `upstream_failed` (upstream crashed, or swallowed an exception into a 1) and `ours_no_reward` are statuses for a human to judge, not verdicts. Either one makes the run exit 1.
+  - The gold SQL leak count only runs on the server, as with 128's credential check.
+
+  **Reviews**
+  - **Codex, 3 findings, all fixed:** a holdout `--task` could reveal one task's outcome; JSON-escaped gold SQL slipped past the leak count; an empty `--trials` passed as 0/0.
+  - **`eng:code-review`:** two fixes (reuse the `Run` alias; split verifier errors from the rest in one pass). Not fixed:
+    - module size (759 lines);
+    - DB start-up duplicated with `readonly`, and reward/diagnostics parsing repeated;
+    - the `trials` flag argument, and bare-string statuses;
+    - `Side` holding both sides' fields.
+
+    These are judgement calls with no behaviour change. The spec reviewer's remaining points are covered above.
+
+  **Server order for the main session:**
+  1. Push, then `da-remote setup <commit>`.
+  2. `da-remote benchmarks`. This is required: the verifier changed, so the tasks' copies are stale and the parity run refuses them otherwise.
+  3. `da-remote check`.
+  4. One dev task first, since upstream's evaluator has never run anywhere: `da-remote start lsb-parity -- livesqlbench-parity run --root ../da-benchmarks/livesqlbench --out runs/lsb-parity --trials runs/lsb-smoke --task <dev id>`.
+  5. The same command without `--task`, under a fresh `--out`: the single-task run already wrote `runs/lsb-parity`.
+  6. `da-remote exec -- uv run --no-sync python -m evals livesqlbench-parity leaks --answers ../da-benchmarks/livesqlbench-answers.jsonl --dir runs/<out>`, then `da-remote pull <out>`.
+
+  Ticket fields to copy in:
+  - **Status:** `in-review`
+  - **Ledger:** Attempts 1, Review rounds 2, Model spend $0, Outcome: committed `2b97af8`, server runs pending.
