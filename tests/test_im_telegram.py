@@ -177,6 +177,58 @@ def test_new_for_another_bot_is_no_new() -> None:
     assert got.text == "/new@other_bot top customers"
 
 
+def command(text: str, length: int, chat_type: str = "private") -> Message:
+    """A message from the allowed user that starts with a bot command `length` long."""
+    chat_id = 10001 if chat_type == "private" else -1009001
+    return Message.model_validate(
+        {
+            "message_id": 51,
+            "date": 1764000000,
+            "chat": {"id": chat_id, "type": chat_type},
+            "from": {"id": 10001, "is_bot": False, "first_name": "Alice"},
+            "text": text,
+            "entities": [{"type": "bot_command", "offset": 0, "length": length}],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "length", "chat_type"),
+    [
+        ("/start", 6, "private"),
+        ("/start campaign-7", 6, "private"),
+        (f"/start@{BOT_NAME}", 7 + len(BOT_NAME), "supergroup"),
+        (f"/START@{BOT_NAME} how many orders?", 7 + len(BOT_NAME), "supergroup"),
+    ],
+    ids=["bare", "payload", "at-bot", "at-bot-upper"],
+)
+def test_start_is_a_ping_not_a_message(text: str, length: int, chat_type: str) -> None:
+    """Telegram sends `/start` when someone opens the bot (as Hermes, a ping: no turn)."""
+    assert to_incoming(command(text, length, chat_type), BOT_ID, BOT_NAME) is None
+
+
+def test_start_for_another_bot_is_an_ordinary_message() -> None:
+    got = to_incoming(command("/start@other_bot hi", 16, "supergroup"), BOT_ID, BOT_NAME)
+    assert got is not None
+    assert not got.mentioned
+    assert got.text == "/start@other_bot hi"
+
+
+async def test_start_is_not_handed_on_and_answered_with_nothing() -> None:
+    bot = FakeBot()
+    got: list[Incoming] = []
+
+    async def on_message(incoming: Incoming) -> None:
+        got.append(incoming)
+
+    telegram = await connected(bot, on_message, no_press)
+    calls = len(bot.calls)
+    await telegram.handle_message(command("/start", 6))
+    await telegram.stop()
+    assert got == []
+    assert bot.calls[calls:] == []
+
+
 def test_a_button_press_in_a_group() -> None:
     assert to_press(query("stop_press")) == Press(
         platform="telegram",

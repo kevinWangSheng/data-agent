@@ -393,6 +393,12 @@ def test_the_limits() -> None:
             "before\n\n```\n| a | b |\n```\n\nafter **x**",
             "before\n\n```\n| a | b |\n```\n\nafter *x*",
         ),
+        (
+            "Total:\n```SELECT SUM(revenue) FROM orders```\ndone",
+            "Total:\n```SELECT SUM(revenue) FROM orders```\ndone",
+        ),
+        ("````sql\na < 1\n````\nafter", "```\na &lt; 1\n```\nafter"),
+        ("```\na\n``` b\n```\n**x**", "```\na\n``` b\n```\n*x*"),
     ],
     ids=[
         "bold",
@@ -406,6 +412,9 @@ def test_the_limits() -> None:
         "inline-code",
         "code-block",
         "around-code",
+        "one-line-code",
+        "four-backticks",
+        "text-after-a-run",
     ],
 )
 def test_markdown_to_mrkdwn(markdown: str, mrkdwn: str) -> None:

@@ -101,7 +101,7 @@ class Conversations:
         return {}
 
 
-def mention(text: str, thread: str = "T1", platform: str = "slack") -> Incoming:
+def mention(text: str, thread: str | None = "T1", platform: str = "slack") -> Incoming:
     return Incoming(platform, "C1", thread, "U1", False, True, text)
 
 
@@ -280,3 +280,98 @@ async def test_a_refused_typed_answer_keeps_the_question_open(tmp_path: Path) ->
 
     await adapter.on_press(press)
     assert conversations.sent[-1] == ("conv1", "Net")
+
+
+# --- threads the bot is in, past `/new` (ticket 137) ---------------------------------------
+
+
+def plain(text: str, platform: str = "slack", thread: str | None = "T1") -> Incoming:
+    """A message in the thread that does not mention the bot."""
+    return Incoming(platform, "C1", thread, "U1", False, False, text)
+
+
+def new(text: str = "", platform: str = "slack", thread: str | None = "T1") -> Incoming:
+    return Incoming(platform, "C1", thread, "U1", False, True, text, new_conversation=True)
+
+
+@pytest.mark.parametrize("name", ["slack", "discord"])
+async def test_after_a_bare_new_the_bots_thread_needs_no_mention(tmp_path: Path, name: str) -> None:
+    platform = Platform(name)
+    adapter, conversations, runs, _ = await bot(tmp_path, platform)
+    await adapter.on_message(mention("How many orders?", platform=name))
+    await adapter.on_message(new(platform=name))
+    assert platform.sent[-1].text == "Your next message starts a new conversation."
+    await adapter.on_message(plain("Top customers?", name))
+    assert conversations.created == ["conv1", "conv2"]
+    assert conversations.sent[-1] == ("conv2", "Top customers?")
+
+    # A new adapter on the same runs directory: the thread is still the bot's, and its
+    # conversation the new one.
+    restarted = Adapter(Platform(name), conversations, runs, ["U1"], Clock())
+    await restarted.start()
+    await restarted.on_message(plain("And last year?", name))
+    assert conversations.created == ["conv1", "conv2"]
+    assert conversations.sent[-1] == ("conv2", "And last year?")
+
+
+@pytest.mark.parametrize("name", ["slack", "discord"])
+async def test_after_new_with_a_question_the_bots_thread_needs_no_mention(
+    tmp_path: Path, name: str
+) -> None:
+    platform = Platform(name)
+    adapter, conversations, runs, _ = await bot(tmp_path, platform)
+    await adapter.on_message(mention("How many orders?", platform=name))
+    await adapter.on_message(new("Refunds by month?", platform=name))
+    await adapter.on_message(plain("And by week?", name))
+    assert conversations.created == ["conv1", "conv2"]
+    assert conversations.sent[1:] == [("conv2", "Refunds by month?"), ("conv2", "And by week?")]
+
+    restarted = Adapter(Platform(name), conversations, runs, ["U1"], Clock())
+    await restarted.start()
+    await restarted.on_message(plain("And by day?", name))
+    assert conversations.created == ["conv1", "conv2"]
+    assert conversations.sent[-1] == ("conv2", "And by day?")
+
+
+async def test_a_bare_new_before_a_restart_keeps_the_thread_the_bots(tmp_path: Path) -> None:
+    adapter, conversations, runs, _ = await bot(tmp_path, Platform())
+    await adapter.on_message(mention("How many orders?"))
+    await adapter.on_message(new())
+    restarted = Adapter(Platform(), conversations, runs, ["U1"], Clock())
+    await restarted.start()
+    await restarted.on_message(plain("Top customers?"))
+    assert conversations.created == ["conv1", "conv2"]
+    assert conversations.sent[-1] == ("conv2", "Top customers?")
+
+
+async def test_a_thread_map_of_the_old_shape_is_read_back(tmp_path: Path) -> None:
+    """Written before ticket 137: an entry per key with a conversation, nothing else."""
+    old = {
+        "threads": [
+            {"platform": "slack", "chat_id": "C1", "thread_id": "T1", "conversation": "conv9"},
+            {"platform": "telegram", "chat_id": "42", "thread_id": None, "conversation": "c7"},
+        ]
+    }
+    (tmp_path / IM_DIR).mkdir()
+    (tmp_path / IM_DIR / THREADS_FILE).write_text(json.dumps(old), encoding="utf-8")
+    adapter, conversations, _, _ = await bot(tmp_path, Platform())
+    await adapter.on_message(plain("And last year?"))
+    assert conversations.sent == [("conv9", "And last year?")]
+    await adapter.on_message(new())
+    await adapter.on_message(plain("Top customers?"))
+    assert conversations.sent[-1] == ("conv1", "Top customers?")
+    data = json.loads((tmp_path / IM_DIR / THREADS_FILE).read_text(encoding="utf-8"))
+    telegram = {"platform": "telegram", "chat_id": "42", "thread_id": None, "conversation": "c7"}
+    assert telegram in data["threads"]
+
+
+async def test_after_new_a_chat_without_threads_still_needs_the_mention(tmp_path: Path) -> None:
+    platform = Platform("telegram")
+    adapter, conversations, _, _ = await bot(tmp_path, platform)
+    await adapter.on_message(mention("How many orders?", thread=None, platform="telegram"))
+    await adapter.on_message(new(platform="telegram", thread=None))
+    sent = len(platform.sent)
+    await adapter.on_message(plain("Top customers?", "telegram", thread=None))
+    assert conversations.created == ["conv1"]
+    assert len(conversations.sent) == 1
+    assert len(platform.sent) == sent

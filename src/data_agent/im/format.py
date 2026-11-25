@@ -6,6 +6,10 @@
   than the limit by itself is split between lines, and a line longer than the limit between
   characters. A fenced code block is never split while it fits in one message; one that does
   not is split between lines, each part fenced again.
+- Code fences, here and on every platform (`fence_after`), as CommonMark reads them: three or
+  more backticks open a block when the info string after them holds no backtick, so a line with
+  its code closed on it (```` ```SELECT 1``` ````) opens none; a block is closed by a run at
+  least as long as its opening's with nothing after it.
 - `tables_to_code`: a Markdown pipe table becomes a fenced code block of its rows, columns
   padded to line up. A table of more than `TABLE_ROWS` data rows keeps its header and its first
   `TABLE_ROWS` rows, and a line after the block gives the total number of rows. Given a `limit`,
@@ -28,6 +32,8 @@ TABLE_ROWS = 20
 DISPLAY_CHART = "mcp__data__display_chart"
 
 FENCE = "```"
+# A fence's backtick run and what follows it on the line (the info string, when it opens).
+FENCE_LINE = re.compile(r"^\s*(?P<ticks>`{3,})(?P<info>.*)$")
 # A pipe table's delimiter row: `|---|:---:|`, with or without the outer pipes.
 DELIMITER = re.compile(r"^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$")
 # A pipe not escaped as `\|`.
@@ -59,21 +65,38 @@ def split_message(text: str, limit: int) -> list[str]:
     return parts
 
 
-def is_fence(line: str) -> bool:
-    return line.lstrip().startswith(FENCE)
+def fence_after(line: str, opening: str) -> str | None:
+    """For a line read in order, `opening` the backtick run of the code block it is in (""
+    outside one): None when the line is no fence there, else the run of the block after it, its
+    own when it opens one and "" when it closes one."""
+    fence = FENCE_LINE.match(line)
+    if fence is None:
+        return None
+    ticks, info = fence["ticks"], fence["info"]
+    if not opening:
+        return ticks if "`" not in info else None
+    return "" if len(ticks) >= len(opening) and not info.strip() else None
+
+
+def fences_after(lines: Iterable[str], opening: str = "") -> str:
+    """The backtick run of the code block open after the lines ("" when none is)."""
+    for line in lines:
+        after = fence_after(line, opening)
+        if after is not None:
+            opening = after
+    return opening
 
 
 def paragraphs(text: str) -> list[str]:
     """The text between blank lines; a fenced code block is one piece with its blank lines."""
     blocks: list[str] = []
-    in_code = False
+    opening = ""
     for piece in text.split("\n\n"):
-        if blocks and in_code:
+        if blocks and opening:
             blocks[-1] += "\n\n" + piece
         else:
             blocks.append(piece)
-        if sum(is_fence(line) for line in piece.split("\n")) % 2:
-            in_code = not in_code
+        opening = fences_after(piece.split("\n"), opening)
     return blocks
 
 
@@ -82,8 +105,10 @@ def split_lines(block: str, limit: int) -> list[str]:
     that ends inside a fenced code block closes it, and the next part opens it again."""
     parts: list[str] = []
     lines: list[str] = []
-    # The opening line of the code block the current part is in, else None.
+    # The opening line and the backtick run of the code block the current part is in, else
+    # None and "".
     fence: str | None = None
+    opening = ""
     content = False
 
     def size() -> int:
@@ -95,13 +120,20 @@ def split_lines(block: str, limit: int) -> list[str]:
     def flush() -> None:
         nonlocal lines, content
         if content:
-            parts.append("\n".join([*lines, FENCE] if fence is not None else lines))
+            parts.append("\n".join([*lines, opening] if fence is not None else lines))
         lines = [fence] if fence is not None else []
         content = False
 
     for line in block.split("\n"):
-        after = (None if fence is not None else line) if is_fence(line) else fence
-        closing = len(FENCE) + 1 if after is not None else 0
+        ticks = fence_after(line, opening)
+        if ticks is None:
+            # No fence: the part stays in (or out of) the block it is in.
+            after_ticks, after = opening, fence
+        elif ticks:
+            after_ticks, after = ticks, line
+        else:
+            after_ticks, after = "", None
+        closing = len(after_ticks) + 1 if after is not None else 0
         if not fits(line, closing):
             flush()
         if fits(line, closing):
@@ -114,7 +146,7 @@ def split_lines(block: str, limit: int) -> list[str]:
                 content = True
                 if start + room < len(line):
                     flush()
-        fence = after
+        fence, opening = after, after_ticks
     if content:
         parts.append("\n".join(lines))
     return parts
@@ -123,14 +155,15 @@ def split_lines(block: str, limit: int) -> list[str]:
 def tables_to_code(text: str, max_rows: int = TABLE_ROWS, limit: int | None = None) -> str:
     lines = text.split("\n")
     out: list[str] = []
-    in_code = False
+    opening = ""
     index = 0
     while index < len(lines):
         line = lines[index]
-        if is_fence(line):
-            in_code = not in_code
+        after = fence_after(line, opening)
+        if after is not None:
+            opening = after
         elif (
-            not in_code
+            not opening
             and is_row(line)
             and index + 1 < len(lines)
             and DELIMITER.match(lines[index + 1].strip())
