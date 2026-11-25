@@ -1,10 +1,10 @@
 # 132 — IM 入口：Telegram 实现（aiogram，长轮询）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 131（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 132-im-telegram)
+Branch: worktree-132-im-telegram
 
 ## Goal
 
@@ -194,10 +194,10 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 2
+- Review rounds: 4（首轮 2，退回 1 轮 2）
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Outcome: 已合并（`65631e5`）；真实 Telegram 验收待人建 bot、主会话跑
 - Human review minutes: —
 
 ## Comments
@@ -205,3 +205,39 @@ Branch: —
 - 2026-11-25（对齐会话）：
   - 依据：上游做法由人确认照多数（spec 的 Update 2026-11-25）；aiogram 3.34.0 的接口和 Telegram 平台事实由子 agent 读 wheel 源码和官方文档核实，见 Context。
   - 与 133 并行派工，冲突处理见 Context "和 133 并行"。
+- 2026-11-25（工单 agent 最终回复，主会话照抄；分支 `worktree-132-im-telegram`，HEAD `5c5eb44`）：
+
+**实现**：新建 `src/data_agent/im/telegram.py`；`service.py` 只改 `LIBRARIES` 和 `make_platform`；`im` extra 和 dev 组钉 `aiogram==3.34.0`；新建 `tests/test_im_telegram.py`（68 个测试）和 `tests/fixtures/im/telegram_updates.json`；`test_im_service.py` 只改"未实现平台"那一例，改用 `[discord]`、变量在测试里设，断言不变；README 和 `docs/setup.md` 加 Telegram 一节。`git diff main --stat` 只有 Authority 列出的文件。
+
+**检查**
+- `make check`（`5c5eb44`，`runs/132/make-check-3.log`）：ruff "All checks passed!"，basedpyright "0 errors, 0 warnings, 0 notes"，pytest "3316 passed, 3 skipped, 79 deselected"，web "Tests 448 passed (448)"，exit 0。`uv sync --locked`："Audited 163 packages"。IM 验收测试原样通过。
+- 依赖：`uv export --frozen --no-dev --no-emit-project | grep -iE 'aiogram|aiofiles|magic-filter'` 无输出；`git diff main -- uv.lock | grep '^[-+]version'` 只新增 aiofiles 25.1.0、aiogram 3.34.0、magic-filter 1.0.12，已有包版本不变、无删除。
+- 装 extra、假 token（运行时拼出，不落文件；dev venv 和 `uv sync --frozen --no-dev --extra im` 的独立 venv 各跑一次），`--im` 只含 `[telegram]`：日志 `telegram: the bot could not connect; the web UI goes on without it` / `aiogram.exceptions.TelegramUnauthorizedError: Telegram server says - Unauthorized`；`/api/options` 在机器人失败前后都 200；SIGINT 后 exit 0，无信号处理异常；日志里 grep 不到 token。局限：`getMe` 带假 token 真的连到 api.telegram.org 拿到 401；轮询没开始，所以 SIGINT 没覆盖活的轮询。
+- 不装 extra（`uv sync --frozen --no-dev` 的独立 venv）：`data-agent web: error: --im: the telegram bot needs the IM libraries (aiogram is not installed); run \`uv sync --extra im\` (or install \`data-agent[im]\`)`，exit 2。
+
+**审查**（每轮一次 da-review 加一次 `eng:code-review`，各跟一轮修复）
+- 第 1 轮 Codex P2：`text_mention` 留在 `text` 里，`<mention> stop` 停不了轮次。已修，配测试。
+- 第 1 轮 `eng:code-review` 已修：标题里的粗体把标题的粗体关掉；send 和 edit 共用一套 MarkdownV2 失败转纯文本；改名 `connected`→`require_bot`、`post`→`send_once`、`bold_`→`bold_underscores`；README 写明群里要 `/new@bot`；删掉重复投递检查（aiogram 处理完每条更新就把 `getUpdates` offset 移过去，`aiogram/dispatcher/dispatcher.py:319`，单进程不会收到两次），模块 docstring 写明。
+- 第 2 轮 Codex 无意见；`eng:code-review` 找出第 1 轮修复带来的 bug：标题丢掉字面的 `__` 和 `**`。已修：只去掉代码外真正的粗体标记，词内 `__`（`stg_shop__orders`）不当粗体。由此引起的长串下划线深递归也修了，最坏长度测试加了 `_ * ~ \``。Codex 复查最终 HEAD："No actionable regressions"。
+- 不修及理由：锁保留（工单要求逐条交给适配器）；`MAX_TEXT=4096` 保留为文档上限，测试对它核对；`make_platform` 的 if/else 正是 Authority 允许的；`/help@bot` 等非 `/new` 命令不从 `text` 剪掉，adapter 没有别的命令，无害；测试夹具经 JSON 往返复制，属风格小节。
+
+**`max_chars=4000` 的理由**（定的点 5）：Telegram 上限是 "1-4096 characters after entities parsing"，MarkdownV2 的转义和标记不算，所以转换后的消息显示字符数不超过原 Markdown；留 96 给 emoji 按两个 UTF-16 码元计的情况（未确认）。原始 MarkdownV2 可能超过 4096，需真实验收第 3 条核一次。
+
+**待人定的点**（已确认行为，未定）
+1. `/start`：Telegram 的 Start 按钮发 `/start`，作为普通私信、文本 `/start` 到达（对照 `to_incoming` 核过），所以允许的用户第一次点就会起一个付费轮次。
+2. 启动时补投：机器人停机期间来的更新，启动时会交给适配器。
+
+**真实验收补充项**（在 `.claude/worktrees/132-im-telegram` 按 Evidence required 第 1–4 步做，另加）
+1. 机器人连上时 Ctrl-C 正常退出（exit 0，无 traceback）。
+2. 最后一次状态编辑后 Stop 按钮消失（发空键盘去掉按钮离线无法证明）。
+3. 一条接近 4000 字、标点多、带 emoji 的回答能送达；Telegram 嫌长就调低 `max_chars`。
+4. `grep "MarkdownV2 was refused" runs/132-live/web.log`：有命中就是转换器 bug 被纯文本兜底掩盖了。
+5. 机器人的 `text_mention` 在群里可用，`<mention> stop` 也可用。
+- 2026-11-25（主会话，PR #139 第 1 轮 Codex 意见）：
+  - 退回：`to_markdown_v2` 把整行的三反引号行内代码当成代码块的开头栅栏（`src/data_agent/im/telegram.py:371-376`：`is_fence` 只看行首是否为 ```，后面的"语言"不匹配 `LANGUAGE` 就丢掉）。主会话核实：`to_markdown_v2("Total:\n```SELECT SUM(revenue) FROM orders```\ndone")` 返回 `'Total:\n```\ndone\n```'`，SQL 丢了，后面的 `done` 也被包进代码块。要求：同一行里已闭合的 ```…``` 按行内代码处理（或原样保留内容），不丢回答内容；配一个修复前会失败的测试。在原分支 `worktree-132-im-telegram` 上修。
+- 2026-11-25（工单 agent 退回第 1 轮最终回复，主会话照抄；HEAD `f348197`）：
+  - 修复：`45600d0` 同一行里已闭合的 ```…``` 按行内代码（CommonMark：开头栅栏的 info string 不能含反引号）；行内代码接受多反引号并去掉两侧各一个空格，标题里同样处理。`f348197` 修掉审查在 `45600d0` 里发现的回归（4 个反引号的栅栏不再是代码块）：栅栏照 CommonMark，开头是 3 个以上反引号且 info string 不含反引号，结尾至少同样长且后面没东西；顺带修了旧的丢内容（结尾栅栏后的文字被丢）。新测试 `test_inline_code_with_several_backticks`（5 例，含退回的原例）、`test_code_block_fences`（3 例），在 `5c5eb44` 上全部失败、现在通过。
+  - 检查：`make check`（`runs/132/make-check-5.log`）ruff/basedpyright 干净，pytest "3324 passed, 3 skipped, 79 deselected"，web 448 passed，exit 0。真实调用：`to_markdown_v2("Total:\n```SELECT SUM(revenue) FROM orders```\ndone")` 返回 `'Total:\n`SELECT SUM(revenue) FROM orders`\ndone'`；最坏情况（4000 个反引号、1000 行栅栏）几毫秒内完成。
+  - 审查：第 1 轮 `da-review` "No actionable defects"，`eng:code-review` 找出上述回归和结尾栅栏后丢文字，已在 `f348197` 修；第 2 轮 `da-review` "No actionable regressions"，`eng:code-review` 无阻塞项。不修（判断题或小节）：`startswith(opening)` 可读性；`CODE_SPECIAL.sub` 出现两次、`BOLD` 与 `INLINE` 部分重复；语言不合 `LANGUAGE` 时丢语言、保留代码；缩进 4 格以上的栅栏仍开代码块（不丢内容，利于列表里的栅栏）；Slack 和 Telegram 的限流重试代码重复，等 133 加第三份时再抽。
+  - 已知限制（超出本工单 Authority，待人定是否开后续工单）：`format.py:62` 的 `is_fence` 仍把同一行的 ```x``` 当栅栏，Slack 的 `to_mrkdwn` 同样（工作中看到，没跑）。审查跑过确认 `format.py` 里两个影响，都不丢文字：`tables_to_code` 不把这种行之后的管道表格转成等宽块；`split_message` 对被拆分的长回答，后面每块重复这一行，除最后一块外都以空代码块结尾。
+- 2026-11-25（主会话）：PR #139 CI 绿；第 1 轮 Codex P2（同一行三反引号行内代码被当栅栏）已退回并修好（`45600d0`、`f348197`）；Codex 对 `f348197` 复审无意见（👍）。已 squash 合并为 main `65631e5`。Status 保持 `in-review`，等人建好 bot 后主会话在 worktree `.claude/worktrees/132-im-telegram` 做真实验收（照 131 先例，验收后再标 done、清理 worktree）。

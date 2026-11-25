@@ -1,0 +1,174 @@
+{
+  "private": {
+    "message_id": 11,
+    "date": 1764000000,
+    "chat": {"id": 10001, "type": "private", "first_name": "Alice"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "How many orders?"
+  },
+  "group_mention": {
+    "message_id": 12,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "@Data_Agent_Test_Bot how many orders?",
+    "entities": [{"type": "mention", "offset": 0, "length": 20}]
+  },
+  "group_mention_after_emoji": {
+    "message_id": 13,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "📊 @data_agent_test_bot revenue?",
+    "entities": [{"type": "mention", "offset": 3, "length": 20}]
+  },
+  "group_text_mention": {
+    "message_id": 14,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "group", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "Data Agent revenue by month?",
+    "entities": [
+      {
+        "type": "text_mention",
+        "offset": 0,
+        "length": 10,
+        "user": {"id": 777000111, "is_bot": true, "first_name": "Data Agent"}
+      }
+    ]
+  },
+  "group_other_mention": {
+    "message_id": 15,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "@someone_else lunch?",
+    "entities": [{"type": "mention", "offset": 0, "length": 13}]
+  },
+  "group_plain": {
+    "message_id": 16,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "Lunch at noon?"
+  },
+  "group_reply_to_bot": {
+    "message_id": 17,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "Only paid ones",
+    "reply_to_message": {
+      "message_id": 9,
+      "date": 1763999990,
+      "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+      "from": {"id": 777000111, "is_bot": true, "first_name": "Data Agent", "username": "data_agent_test_bot"},
+      "text": "Net or gross?"
+    }
+  },
+  "group_reply_to_topic_created": {
+    "message_id": 18,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data", "is_forum": true},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "message_thread_id": 5,
+    "is_topic_message": true,
+    "text": "In the topic",
+    "reply_to_message": {
+      "message_id": 5,
+      "date": 1763999000,
+      "chat": {"id": -1009001, "type": "supergroup", "title": "Data", "is_forum": true},
+      "from": {"id": 777000111, "is_bot": true, "first_name": "Data Agent", "username": "data_agent_test_bot"},
+      "message_thread_id": 5,
+      "forum_topic_created": {"name": "Reports", "icon_color": 7322096}
+    }
+  },
+  "other_bot": {
+    "message_id": 19,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 555000222, "is_bot": true, "first_name": "Other", "username": "other_bot"},
+    "text": "@data_agent_test_bot hello",
+    "entities": [{"type": "mention", "offset": 0, "length": 20}]
+  },
+  "member_joined": {
+    "message_id": 20,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "new_chat_members": [{"id": 10002, "is_bot": false, "first_name": "Bob"}]
+  },
+  "channel_post": {
+    "message_id": 21,
+    "date": 1764000000,
+    "chat": {"id": -1009002, "type": "channel", "title": "News"},
+    "sender_chat": {"id": -1009002, "type": "channel", "title": "News"},
+    "text": "@data_agent_test_bot news",
+    "entities": [{"type": "mention", "offset": 0, "length": 20}]
+  },
+  "new_bare": {
+    "message_id": 22,
+    "date": 1764000000,
+    "chat": {"id": 10001, "type": "private", "first_name": "Alice"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "/new",
+    "entities": [{"type": "bot_command", "offset": 0, "length": 4}]
+  },
+  "new_with_question": {
+    "message_id": 23,
+    "date": 1764000000,
+    "chat": {"id": 10001, "type": "private", "first_name": "Alice"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "/new revenue by month?",
+    "entities": [{"type": "bot_command", "offset": 0, "length": 4}]
+  },
+  "new_at_bot": {
+    "message_id": 24,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "/new@data_agent_test_bot top customers",
+    "entities": [{"type": "bot_command", "offset": 0, "length": 24}]
+  },
+  "new_at_other_bot": {
+    "message_id": 25,
+    "date": 1764000000,
+    "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "text": "/new@other_bot top customers",
+    "entities": [{"type": "bot_command", "offset": 0, "length": 14}]
+  },
+  "stop_press": {
+    "id": "4382bfdwdsb323b2d9",
+    "chat_instance": "-7001",
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "data": "stop",
+    "message": {
+      "message_id": 31,
+      "date": 1764000000,
+      "chat": {"id": -1009001, "type": "supergroup", "title": "Data"},
+      "from": {"id": 777000111, "is_bot": true, "first_name": "Data Agent", "username": "data_agent_test_bot"},
+      "text": "Thinking…"
+    }
+  },
+  "private_press": {
+    "id": "4382bfdwdsb323b2e0",
+    "chat_instance": "-7002",
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "data": "answer:1",
+    "message": {
+      "message_id": 32,
+      "date": 1764000000,
+      "chat": {"id": 10001, "type": "private", "first_name": "Alice"},
+      "from": {"id": 777000111, "is_bot": true, "first_name": "Data Agent", "username": "data_agent_test_bot"},
+      "text": "Net or gross?"
+    }
+  },
+  "inline_press": {
+    "id": "4382bfdwdsb323b2e1",
+    "chat_instance": "-7003",
+    "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
+    "inline_message_id": "AAAAAA",
+    "data": "stop"
+  }
+}

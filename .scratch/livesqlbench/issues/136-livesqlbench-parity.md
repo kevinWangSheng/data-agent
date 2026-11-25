@@ -1,10 +1,10 @@
 # 136 — LiveSQLBench：标准答案到手后，官方对拍与"每道题都能判分"的检查
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 128（done，`deb64e2`）；答案文件已在服务器（见 Comments）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (worktree 136-livesqlbench-parity)
+Branch: worktree-136-livesqlbench-parity
 
 ## Goal
 
@@ -81,10 +81,10 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2
 - Model spend: $0
-- Outcome: —
+- Outcome: committed `2b97af8`; server runs pending
 - Human review minutes: —
 
 ## Comments
@@ -98,3 +98,78 @@ Branch: —
   - 派工前还剩一项待对齐：验证脚本自身失败的 trial 怎么记分（见 Acceptance）。
 
 - 2026-11-25（对齐会话，人定）：验证脚本自身失败按基础设施错误处理（重跑、不进分母），Authority 加 `evals/report.py`（必要时加 `evals/ablate.py`），只限这一项归类。Status → ready-for-agent。
+
+- 2026-11-25（工单 agent 最终回复，主会话照抄；分支 `worktree-136-livesqlbench-parity`，`2b97af8`，未 push；范围外改动和偏差待对齐）：
+
+  The code for ticket 136 is done and committed on `worktree-136-livesqlbench-parity` (head `2b97af8`, not pushed). The oracle, the parity check and the leak count are written but have not run on real answers. Upstream's evaluator has not run anywhere yet: the local Docker VM has 0 bytes free and I didn't delete any of your images to make room. Those server runs fall to the main session (order at the end).
+
+  **Resume check (stop condition, needs your call).** Real Harbor 0.24, $0, oracle agent, stand-in local images, wrong write password (`runs/136/resume-check.txt`):
+  - The first trial got `RewardFileNotFoundError` with `outcome: verifier_error`, and the report counts it as infrastructure.
+  - A plain `harbor job resume` does **not** rerun it.
+  - Ablate's path does rerun it: keep its spend under `dropped/`, delete the trial directory, then resume. It came back as a new trial (`oLyZiNm`), and the old one is kept under `dropped/`.
+  - The script repeats `ensure_job`'s steps rather than calling `ensure_job`; `ensure_job` itself is tested only against the fake Harbor.
+  - Read literally, "不会重跑就停下交回" could mean stop here. My reading is that the ablate path reruns it, so I continued.
+
+  **What changed**
+  - **Scoring:** an `lsb-` trial with no reward whose `diagnostics.json` says `verifier_error` is now infrastructure: not scored, rerun on resume. Ablate deletes those trials itself and does not pass `-f RewardFileNotFoundError`. Harbor's `-f` matches only by exception type, so it would also rerun trials where the agent itself caused the missing reward. Those still score 0, and data-eng-bench and DAB scoring is unchanged. All of this has tests.
+  - **Verifier:** two inputs made our verifier raise where upstream scores 0: a comparison that throws (a row holding a list of dates, or `inf`), and an exception from outside the database driver during execution. Under the new rule that would have rerun the paid agent forever. Both now score 0, each with a test that failed first. This came after both review rounds.
+  - **New command `livesqlbench-parity`** (`evals/livesqlbench_parity.py`):
+    - `run` starts one container per database and scores the gold SQL and each dev trial's `pred.json` with both our verifier and upstream's.
+    - Each side's output is reduced to its reward plus named flags (our outcome, upstream markers), and kept in a scratch directory outside `runs/` that is deleted. The scratch is only removed if this command created it.
+    - The summary goes to `runs/lsb-parity/reports/parity.json`. Dev tasks appear by id; holdout tasks only as counts.
+    - It refuses a holdout `--task`, a `--trials` directory with no dev `pred.json`, or tasks whose verifier copy is stale.
+    - `leaks` counts gold SQL occurrences under a directory, including JSON-escaped forms, and prints only the count.
+  - **Checks:** `make check` passes (3291 passed, 3 skipped; web 448 passed; `runs/136/make-check-6.txt`). The LiveSQLBench acceptance tests pass.
+
+  **Changes outside Authority, please confirm:**
+  1. `scripts/da-remote start` now sources the write credential for `livesqlbench-parity` runs. The ticket's prescribed `start lsb-parity` command cannot run without it.
+  2. `evals/__main__.py` gains two lines to register the new command.
+  3. The docstring of the verifier's `main` was updated (the separate verifier fix above is within Authority).
+
+  **Deviations, please confirm:**
+  - Upstream runs as `lsb_writer`, not `root/123123`; our database images have no `root` login.
+  - Upstream's image comes from a Dockerfile written anew: `python:3.10-slim`, `postgresql-client` and upstream's `requirements.txt`, without the agent CLIs.
+  - There is one database container per database, not per task; both evaluators re-clone from the template for every case.
+  - A disagreement involving a timeout is rerun once, and the rerun count is reported.
+  - `upstream_failed` (upstream crashed, or swallowed an exception into a 1) and `ours_no_reward` are statuses for a human to judge, not verdicts. Either one makes the run exit 1.
+  - The gold SQL leak count only runs on the server, as with 128's credential check.
+
+  **Reviews**
+  - **Codex, 3 findings, all fixed:** a holdout `--task` could reveal one task's outcome; JSON-escaped gold SQL slipped past the leak count; an empty `--trials` passed as 0/0.
+  - **`eng:code-review`:** two fixes (reuse the `Run` alias; split verifier errors from the rest in one pass). Not fixed:
+    - module size (759 lines);
+    - DB start-up duplicated with `readonly`, and reward/diagnostics parsing repeated;
+    - the `trials` flag argument, and bare-string statuses;
+    - `Side` holding both sides' fields.
+
+    These are judgement calls with no behaviour change. The spec reviewer's remaining points are covered above.
+
+  **Server order for the main session:**
+  1. Push, then `da-remote setup <commit>`.
+  2. `da-remote benchmarks`. This is required: the verifier changed, so the tasks' copies are stale and the parity run refuses them otherwise.
+  3. `da-remote check`.
+  4. One dev task first, since upstream's evaluator has never run anywhere: `da-remote start lsb-parity -- livesqlbench-parity run --root ../da-benchmarks/livesqlbench --out runs/lsb-parity --trials runs/lsb-smoke --task <dev id>`.
+  5. The same command without `--task`, under a fresh `--out`: the single-task run already wrote `runs/lsb-parity`.
+  6. `da-remote exec -- uv run --no-sync python -m evals livesqlbench-parity leaks --answers ../da-benchmarks/livesqlbench-answers.jsonl --dir runs/<out>`, then `da-remote pull <out>`.
+
+  Ticket fields to copy in:
+  - **Status:** `in-review`
+  - **Ledger:** Attempts 1, Review rounds 2, Model spend $0, Outcome: committed `2b97af8`, server runs pending.
+
+- 2026-11-25（对齐会话，人定）：
+  - 停止条件：ablate 自己的 resume 路径（先删掉出错的 trial，再 `harbor job resume`）会重跑验证脚本自身失败的 trial，算满足"会重跑"，不停下（`runs/136/resume-check.txt`："ablate path reran it: True"；直接 `harbor job resume` 不会重跑，但我们不这样 resume）。兜底是 `--fail-fast`。
+  - 范围外 3 项接受：`scripts/da-remote start` 给 `livesqlbench-parity` 也 source 口令；`evals/__main__.py` 注册新命令；验证脚本 `main` 的 docstring。
+  - 偏差 6 项接受：上游用 `lsb_writer` 而不是 `root/123123`；上游评测的镜像新写；每个库一个容器，两边每个用例都从模板克隆；涉及超时的不一致重跑一次；`upstream_failed`/`ours_no_reward` 交人判断，有就 exit 1；标准 SQL 泄漏计数只在服务器上跑。
+
+- 2026-11-25（主会话）服务器运行，`2b97af8`（worktree `runs/136/server/`）：
+  - `setup 2b97af8` 成功；`benchmarks`："175 tables, 2286 columns"，"180 … 180 with a gold answer"；`check` 0 failure(s)。
+  - 单题 `start lsb-parity-1 -- livesqlbench-parity run … --trials runs/lsb-smoke --task lsb-virtual_9`：exit 0；oracle 1/1；gold 上 1/1 一致，dev trial 上 4/4 一致；scratch 已删。
+  - 全量 `start lsb-parity -- livesqlbench-parity run --root ../da-benchmarks/livesqlbench --out runs/lsb-parity --trials runs/lsb-smoke`：exit 1。
+    - **对拍通过**：gold SQL 上 180/180 一致；dev trial 的 `pred.json` 上 16/16 一致。
+    - **oracle 没过**：174/180 判对；没判对的 `{'empty_result': 5, 'execution_error': 1}`。开发集 3 道：`lsb-archeology_7` execution_error（SyntaxError）、`lsb-insider_1` empty_result、`lsb-vaccine_7` empty_result。留出集只看数：`{'empty_result': 3}`。上游评测对这 6 道也判 0（对拍一致），所以不是我们的验证脚本出错。
+  - 取证（不打印内容，只打印标志，只查开发集 3 道）：`insider_1`、`vaccine_7` 的标准 SQL 都含 `CURRENT_DATE`（`insider_1` 还含 `INTERVAL`）；`archeology_7` 不含时间函数。3 道都是 1 条语句，`test_cases` 为空。推断：两道 empty_result 是相对"今天"取数，数据停在 2025 年，现在查不到行（未确认，没有在冻结时钟下复跑）。archeology_7 的语法错误原因未确认。版本对得上：上游 Base-Lite 是 2025-05-28（`README.md:278`），答案文件名是 `…_0528`。上游 issue 里搜不到这几道题。
+  - 标准 SQL 泄漏计数：`runs/lsb-parity`、`runs/lsb-parity-1` 都是 0 次。`pull lsb-parity`：留出集只取回汇总。
+  - 待对齐：oracle 没判对的 6 道怎么处理。
+
+- 2026-11-25（对齐会话，人定）：oracle 没判对的 6 道照官方口径处理：留在分母里，算错；在报告里列成标准 SQL 一侧的已知缺陷。原因写明，oracle 一项按"写明原因"算过。不冻结数据库时钟（偏离官方，日期也未知）。这样分数能直接和榜单比；每个配置的满分上限都是 174/180 = 96.7%，所以消融差值不受影响。
+- 2026-11-25（主会话）`lsb-archeology_7` 取证（只打印错误码和位置，不打印 SQL；`runs/136/server/probe-archeology_7.txt`）：在本题的库镜像（PostgreSQL 14.12，上游指定的版本）上，用写库角色执行，结果是 `sqlstate 42601`（syntax_error），位置在 1737 个字符里的第 1603 个（43 行里的第 39 行），出错的是一个字母数字记号。拿同一条 SQL 在空的 `postgres:17` 上执行，同样是 `42601`，同样在第 1603 个字符。语法错误发生在解析阶段，跟数据和版本都无关，所以结论是标准 SQL 本身写错了，不是我们的环境问题。
