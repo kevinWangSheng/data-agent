@@ -1,6 +1,6 @@
 # 133 — IM 入口：Discord 实现（discord.py，gateway）
 
-Status: ready-for-agent
+Status: ready-for-human
 Blocked by: 131（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-25
@@ -223,10 +223,10 @@ Branch: worktree-133-im-discord
 
 ## Ledger
 
-- Attempts: 2
-- Review rounds: 3（另有一次只核修复的 Codex 复查）
+- Attempts: 3
+- Review rounds: 4（另有一次只核修复的 Codex 复查）
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: 停在 ready-for-human（论坛修复与合入 main 完成；第 3 轮 da-review 找出 2 个新 P2）
+- Outcome: 停在 ready-for-human（第 4 轮两条已修 `c230790`；da-review 又找出 1 个 P2：异常 traceback 里带 interaction token）
 - Human review minutes: —
 
 ## Comments
@@ -274,3 +274,9 @@ Branch: worktree-133-im-discord
   - 真实验收补充：在论坛帖子起始消息里 @ 机器人，确认在帖子里回答。
 - 2026-11-25（主会话，人定再修一轮）：
   - 退回：修上面 `da-review` 的两个 P2（主会话已核实 `discord/gateway.py:518`、`discord_bot.py:376`）。1）interaction token 不进日志：给 `discord.gateway`、`discord.webhook`、`discord.http` 的 logger 加脱敏过滤（只在本模块里加），配一个喂假 `INTERACTION_CREATE` 和假 webhook URL、在 DEBUG 下断言 token 不出现的测试。2）`/new` 和按钮先排进投递顺序再 await 确认，仍在 3 秒内确认；配一个修复前会失败的顺序测试（`/new` 确认未完成时到的消息进新对话）。人允许为这两条做第 4 轮修复；修完跑两道审查，审查再有新问题就停下交回，不再修。
+- 2026-11-25（工单 agent 第 4 轮最终回复，主会话照抄；新提交 `c230790`）：
+  - 1）token 不进日志：新 `RedactTokens` 过滤器，建平台时挂到 `REDACTED_LOGGERS`，把 `'token': '…'` 字段和 `/webhooks/{id}/{token}`、`/interactions/{id}/{token}` URL 里的 token 换成 `[redacted]`。挂在 `discord.webhook.async_` 而不是 `discord.webhook`：logger 的过滤器只看自己产生的记录，不看子 logger 的。测试 `test_no_interaction_token_is_in_the_debug_log` 走 discord.py 自己的代码（`DiscordWebSocket.received_message` 喂假 `INTERACTION_CREATE`；`AsyncWebhookAdapter` 对本地服务器做 callback 和 `@original` 删除），DEBUG 下断言。
+  - 2）顺序：`/new` 和按钮立即把确认作为任务启动，再排队拿锁，拿到锁后才等确认、交给适配器。测试 `test_a_message_after_new_goes_into_the_new_conversation_while_new_is_acknowledged`、`test_a_press_keeps_its_place_while_it_is_acknowledged`（修复前失败）、`test_interactions_are_acknowledged_while_an_earlier_event_is_handed_on`（3 秒要求，防回归，新旧都过）。Spec 子 agent 在临时 worktree 里用 `c230790^` 的 `src` 跑过，前两个和 token 测试失败；`c230790` 上 44 个全过。
+  - 检查：`make check`（`c230790`，`runs/133-fake/make-check-r4.log`）ruff/basedpyright 干净，pytest 3367 passed、3 skipped，web 448/448。真实运行（`runs/133-fake/r4-redact.py`，运行时生成假 token，日志 `runs/133-fake/r4-redact.log`）：DEBUG 日志里是 `'token': '[redacted]'`、`POST …/interactions/11/[redacted]/callback`、`DELETE …/webhooks/22/[redacted]/messages/@original`，token 0 次；压住 `/new` 确认时交给适配器的顺序是 `['new', 'first question after /new']`。
+  - `eng:code-review` Spec：无缺失、无越界；确认过滤覆盖 discord.py 2.7.1 里所有在消息文本中记 interaction token 的地方（`gateway.py:518`、`webhook/async_.py:185`、`http.py:660/707/740`）；`/new` 经 `CommandTree` 到 `handle_new` 中间不让出（读源码确认，没跟踪运行）。Standards：无硬违规；不修：两个处理函数重复 create_task→lock→await 的形状；`RedactTokens`/`REDACT_TOKENS`/`redact_tokens` 只差大小写；`to_press`/`channel_key` 抛错或 `stop` 时等锁被取消，确认任务没人 await（最多一条 "Task exception was never retrieved" 警告）；网关测试经私有属性建 `DiscordWebSocket`（discord.py 钉 2.7.1）；两个顺序测试重复 setup。
+  - `da-review`（`runs/133-fake/da-review-r4.log`）1 个新 P2，按退回条件未修，已对照代码核实：interaction callback 超时时 aiohttp 抛 `ConnectionTimeoutError(f"Connection timeout to host {req.url}")`（`aiohttp/client.py:858-859`），URL 带 interaction token；异常经 `handle_interaction`/`handle_new` 传出，由 `discord.client`（`client.py:582`，`_log.exception`）和 `app_commands.tree`（`tree.py:819`，`exc_info=error`）记下。这两个 logger 没挂过滤器，过滤器也只改 `getMessage()`，不改 traceback。仍是短期 interaction token，不是 bot token。可能的修法：两个 logger 也挂过滤器，并脱敏 `exc_info`/`exc_text`，配一个 callback 超时的测试。
