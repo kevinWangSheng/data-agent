@@ -99,6 +99,8 @@ REMEMBERED = 1000
 
 # `<@id>`, `<@!id>`, `<@&role id>`, `<#channel id>`.
 MENTION = re.compile(r"<(?:@[!&]?|#)\d+>")
+# Discord's error code for "a thread has already been created for this message".
+THREAD_EXISTS = 160004
 MESSAGE_TYPES = (discord.MessageType.default, discord.MessageType.reply)
 THREAD_TYPES = (
     discord.ChannelType.public_thread,
@@ -253,16 +255,27 @@ class DiscordPlatform:
             await source.create_thread(
                 name=thread_name(text), auto_archive_duration=THREAD_ARCHIVE_MINUTES
             )
-        except (discord.HTTPException, ValueError):
-            log.warning(
-                "discord: no thread could be made from message %s; answering in the channel",
-                thread_id,
-                exc_info=True,
-            )
-            remember(self.unthreaded, thread_id, chat_id)
-            return partial(int(chat_id)), reply_to(chat_id, thread_id)
+        except discord.HTTPException as exc:
+            if exc.code == THREAD_EXISTS:
+                # Someone made a thread from the message first: it has the same id.
+                remember(self.threads, thread_id, None)
+                return partial(int(thread_id)), None
+            return self.unthreaded_target(chat_id, thread_id)
+        except ValueError:
+            return self.unthreaded_target(chat_id, thread_id)
         remember(self.threads, thread_id, None)
         return partial(int(thread_id)), None
+
+    def unthreaded_target(
+        self, chat_id: str, thread_id: str
+    ) -> tuple[discord.PartialMessageable, discord.MessageReference]:
+        log.warning(
+            "discord: no thread could be made from message %s; answering in the channel",
+            thread_id,
+            exc_info=True,
+        )
+        remember(self.unthreaded, thread_id, chat_id)
+        return self.client.get_partial_messageable(int(chat_id)), reply_to(chat_id, thread_id)
 
     async def thread_or_source(
         self, chat_id: str, thread_id: str
@@ -291,29 +304,37 @@ class DiscordPlatform:
             return
         # Before the fetch `resolve` may make: an event delivered again meanwhile is dropped.
         remember(self.seen, message.id, None)
-        incoming = to_incoming(message, user.id, await self.resolve(message))
-        if incoming is None:
-            return
-        if incoming.thread_id is not None:
-            if incoming.thread_id == str(message.id):
-                remember(self.sources, incoming.thread_id, (message, incoming.text))
-            else:
-                remember(self.threads, incoming.thread_id, None)
+        # The fetch too under the lock, so the messages reach the adapter in the order they came.
         async with self.lock:
+            channel = await self.resolve(message)
+            if channel is None:
+                return
+            incoming = to_incoming(message, user.id, channel)
+            if incoming is None:
+                return
+            if incoming.thread_id is not None:
+                if incoming.thread_id == str(message.id):
+                    remember(self.sources, incoming.thread_id, (message, incoming.text))
+                else:
+                    remember(self.threads, incoming.thread_id, None)
             await self.on_message(incoming)
 
     async def resolve(self, message: discord.Message) -> Any:
         """The message's channel, fetched when discord.py has no type for it: a server channel
         it has not cached (an archived thread leaves the cache, `state.py` THREAD_UPDATE), whose
         message comes with a `PartialMessageable` that cannot tell a thread from a channel.
-        None when `message.channel` will do."""
+        None when it cannot be fetched: the message is dropped (logged), as its key is unknown."""
         channel: Any = message.channel
         if channel.type is not None or message.guild is None:
-            return None
+            return channel
         try:
             return await self.client.fetch_channel(channel.id)
         except discord.HTTPException:
-            log.warning("discord: channel %s could not be fetched", channel.id, exc_info=True)
+            log.warning(
+                "discord: channel %s could not be fetched; its message is dropped",
+                channel.id,
+                exc_info=True,
+            )
             return None
 
     async def handle_interaction(self, interaction: discord.Interaction) -> None:

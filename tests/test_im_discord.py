@@ -215,6 +215,41 @@ async def test_a_message_in_a_thread_discord_py_has_not_cached_keeps_the_thread_
     assert (got[0].chat_id, got[0].thread_id) == (str(CHANNEL), str(THREAD))
 
 
+async def test_a_message_whose_channel_cannot_be_fetched_is_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No key is made up for it: a thread's message keyed as a channel's would start another
+    conversation."""
+    client = FakeClient()
+    unknown = message("still there?", where=SimpleNamespace(type=None, id=THREAD))
+    unknown.guild = SimpleNamespace(id=GUILD)
+    with caplog.at_level(logging.WARNING):
+        assert await handed([unknown], platform(client)) == []
+    assert "its message is dropped" in caplog.text
+
+
+async def test_a_fetched_channel_keeps_the_messages_in_order() -> None:
+    client = FakeClient()
+
+    async def fetch_channel(channel_id: int) -> SimpleNamespace:
+        await asyncio.sleep(0.02)
+        return channel(PUBLIC_THREAD, channel_id)
+
+    cast(Any, client).fetch_channel = fetch_channel
+    bot = platform(client)
+    order: list[str] = []
+
+    async def on_message(incoming: Incoming) -> None:
+        order.append(incoming.text)
+
+    bot.on_message = on_message
+    first = message("first", where=SimpleNamespace(type=None, id=THREAD), message_id=1)
+    first.guild = SimpleNamespace(id=GUILD)
+    second = message("second", where=channel(PUBLIC_THREAD, THREAD), message_id=2)
+    await asyncio.gather(bot.handle_message(first), bot.handle_message(second))
+    assert order == ["first", "second"]
+
+
 async def test_everyone_is_no_mention_of_the_bot() -> None:
     # Discord leaves `mentions` empty for `@everyone`; `mention_everyone` is set instead.
     got = await handed([message("@everyone lunch?")])
@@ -381,6 +416,24 @@ async def test_a_thread_that_cannot_be_made_is_a_reply_in_the_channel(
         press_interaction(CUSTOM_ID + "s", where=channel(), message_id=int(first))
     )
     assert pressed[0].thread_id == str(THREAD)
+
+
+async def test_a_thread_someone_made_first_from_the_message_is_used() -> None:
+    client = FakeClient()
+    bot = platform(client)
+    raced = message(f"<@{BOT}> q", mentions=(BOT,), message_id=THREAD)
+
+    async def create_thread(**_: Any) -> None:
+        response = cast(Any, SimpleNamespace(status=400, reason="Bad Request"))
+        raise discord.HTTPException(response, {"code": 160004, "message": "already created"})
+
+    raced.create_thread = create_thread
+    await handed([raced], bot)
+    await bot.send(str(CHANNEL), str(THREAD), Outgoing("one"))
+    await bot.send(str(CHANNEL), str(THREAD), Outgoing("two"))
+    sends = [call for kind, call in client.calls if kind == "send"]
+    assert [call["channel"] for call in sends] == [THREAD, THREAD]
+    assert all("reference" not in call for call in sends)
 
 
 async def test_messages_mention_nobody_and_carry_their_buttons_in_rows() -> None:
