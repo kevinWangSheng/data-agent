@@ -315,8 +315,7 @@ class DiscordPlatform:
             if incoming is None:
                 return
             if incoming.thread_id is not None:
-                # In a thread by its channel, not by comparing ids: a forum post's starter
-                # message has the post's (the thread's) id.
+                # By the channel: a forum post's starter message has the thread's id.
                 if channel.type in THREAD_TYPES:
                     remember(self.threads, incoming.thread_id, None)
                 else:

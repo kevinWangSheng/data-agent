@@ -216,8 +216,9 @@ Creating the bot and turning off Group Privacy is described in
 ### Discord
 
 The same `--im` file can also start a Discord bot, alone or next to the other bots: add a
-`[discord]` table. The bot connects to Discord's gateway, so it needs no public address either. It uses the same
-extra (`uv sync --extra im`), and its conversations are the web UI's own, like Slack's.
+`[discord]` table. The bot connects to Discord's gateway, so it needs no public address either.
+It uses the same extra (`uv sync --extra im`), and its conversations are the web UI's own, like
+Slack's.
 
 ```toml
 [discord]

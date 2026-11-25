@@ -1,7 +1,7 @@
 """Starting the bot from `data-agent web --im` (data_agent.im.service, the `--im` lines of
 data_agent.cli.serve_web, the lifespan of data_agent.web.app), past the acceptance tests in
-tests/acceptance/test_im_config.py: the missing extra, a platform not implemented yet, a bad file
-(exit code 2, no token on stderr), no platform library without `--im`, and the bot's start and
+tests/acceptance/test_im_config.py: the missing extra, a bad file (exit code 2, no token on
+stderr), no platform library without `--im`, and the bot's start and
 stop around the app's. A platform in memory; no Slack."""
 
 import subprocess
