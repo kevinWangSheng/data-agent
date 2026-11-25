@@ -1,6 +1,6 @@
 # 128 — LiveSQLBench：适配器、PostgreSQL 镜像、soft EX、60/120 划分、`ablate`/`report` 按榜单过滤、只读凭据、冒烟（不含官方对拍）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 127（done）
 Spec: ../spec.md
 Claimed by: claude (Opus 5.5, worktree 128-livesqlbench-adapter)
@@ -336,10 +336,10 @@ Base-Lite 的 180 道 `Query` 题能在服务器上以 Harbor 任务跑通，并
 
 ## Ledger
 
-- Attempts: 1
+- Attempts: 2
 - Review rounds: 2
 - Model spend: $0
-- Outcome: code complete, server steps pending
+- Outcome: return 1 fixed (`0f499f2`, not pushed); server steps pending
 - Human review minutes: —
 
 ## Comments
@@ -425,3 +425,90 @@ Base-Lite 的 180 道 `Query` 题能在服务器上以 Harbor 任务跑通，并
   - **`pred.json` 照上游先修复再解析（人定，改 Context 9.4）。** 上游 `LiveSQLBench-CLI/adapters/livesqlbench/template/tests/evaluator.py:32,136`（`e15cd22`）：`from json_repair import repair_json`，`pred_data = json.loads(repair_json(pred_text))`；版本钉在 `environment/requirements.txt:10` 的 `json-repair==0.58.5`（PyPI：MIT，无必需依赖，Python ≥3.10）。照做：验证脚本允许的依赖变成标准库、psycopg、`json-repair==0.58.5`，钉同一版本装进验证脚本运行的镜像；测试覆盖一个格式坏了但能修好的 `pred.json` 能判分。
   - **验证在独立容器里跑（人定，关掉 spec U6 的共享容器风险）。** 用 Harbor 自带的 separate verifier（项目锁定的 harbor 0.24.0 已有）：`[verifier] environment_mode = "separate"`。依据（`.venv/.../harbor`）：`models/task/config.py:555-600`（`VerifierEnvironmentMode`；不设 `[verifier.environment]` 时用顶层 `[environment]` 的一份新拷贝）；`trial/single_step.py:36-55`（separate 时先收集 artifacts、停掉 agent 环境，再起验证环境）；`trial/trial.py:900-965` 和 `trial/artifact_handler.py:171-205`（声明的 artifact 按原路径上传进验证环境）。所以：任务里把 `/app/pred.json` 声明成 artifact，`test.sh` 照旧读 `/app/pred.json`；写库口令只在 `[verifier.env]`，agent 的容器在验证开始前已经停掉。要确认并在 Comments 写明：验证环境里的 postgresql sidecar 是新起的（验证脚本本来就从模板库克隆，结果不应变）；每个 trial 多出的环境启动时间（冒烟里量）；`readonly` 检查和 `leaks` 计数在新模式下是否仍然成立。测试覆盖生成的 `task.toml` 带 `environment_mode = "separate"` 和 artifact 声明；Harbor `Task()` 能加载。
   - 冒烟仍由主会话在服务器上跑，这两项的真实效果（separate 模式能判分、修复后的 `pred.json` 被读到）在冒烟里看。
+
+- 2026-11-25（工单 agent 第 1 轮退回的交回，主会话照抄；`0f499f2`，未 push；工单范围外的 4 项改动待对齐会话定）：
+
+  ### Changes outside the ticket's Authority or return request
+
+  1. **`pyproject.toml` and `uv.lock`** now pin `json-repair==0.58.5` as a dev dependency. These files are outside the listed Authority, but the tests import the verifier, which now imports `json_repair`.
+  2. **`ablate` passes `harbor run -y` for LiveSQLBench runs only.** I missed this in round 1. Before reading the write password from the host (`[verifier.env]`), Harbor 0.24 asks "Proceed? (Y/n)". With no terminal, as under `da-remote start`, it aborts. My first local trial showed exactly that: "Aborted.". In `harbor run`, `-y` also skips the `--diff` and hub-sharing prompts, which we never use, and `job resume` doesn't ask at all.
+  3. **A verifier that fails itself now gives no score.** If the database can't be reached, the process database can't be created, or the script crashes, it writes `diagnostics.json` (`outcome: verifier_error` plus the error class) and no `reward.txt`. Harbor then records `RewardFileNotFoundError` and the smoke stops. Round 1's rule was "scores 0", so this reverses it.
+     - Known limit: `RewardFileNotFoundError` is in `NOT_RETRIED` (`evals/report.py`), so a real run's report still counts such a trial as a failure. I left that unchanged and suggest it go to ticket 136.
+  4. **`--reference no-verifiers` limits which configs run.** With no `--config`, it runs only its four: no-verifiers, baseline, no-skill, no-context. A config it has no layer label for is refused with exit 2. Before this, it ran all six and then crashed while writing the report (a Codex finding).
+
+  ### Comments (to copy into the ticket)
+
+  **Cybermarket**
+  - I kept the previous agent's uncommitted fix:
+    - Table-order names are matched to the dump's `.sql` files ignoring case, and each must match exactly one file.
+    - A name that matches nothing, or more than one file, stops `prepare` before any image is built.
+    - In `init-db.sh`, a name with no dump file is now an error instead of a skipped warning.
+  - Added: if a dump has `<db>_full.sql` or `<db>_template_full.sql`, the order file is not resolved, because `init-db.sh` restores the full dump without reading it.
+  - Local dry run in `postgres:17` (`runs/128/dryrun-order.txt`):
+    - With a capitalised order file over lower-case dump files, both tables are restored: 2 tables, 5 columns, exit 0.
+    - With the unresolved names (the old behaviour), it prints "ERROR: Mapped dump file not found … Markets.sql" and exits 1.
+    - That run is the only evidence for "the table count is right after import". The repo tests check the resolved order and the order file passed to `docker build`, and only grep `init-db.sh` for the new error.
+  - **Rebuild:** `init-db.sh` lives in `evals/livesqlbench_images/`, so the image tag changes. All 18 database images and `main` are rebuilt under the new tag. The old-tag images stay on the server; watch the disk stop condition.
+  - `enum_definitions.sql` is not imported, as upstream does; `markets.sql` creates its own types.
+
+  **pred.json**
+  - Parsed with `json.loads` first, then `json.loads(repair_json(text))` if that fails. This matches upstream, because `repair_json` 0.58.5 itself tries `json.loads` first. Diagnostics record which path was taken (`pred_json: ok` or `repaired`).
+  - `Dockerfile.main` pins `json-repair==0.58.5`.
+  - A test feeds a broken but repairable `pred.json` through `main()` and gets reward 1 with `pred_json: repaired`.
+
+  **Separate verifier**
+  - `task.toml` now declares `artifacts = ["/app/pred.json"]` and `[verifier] environment_mode = "separate"`.
+  - The test reads the loaded Harbor `Task()` rather than the file text. It checks:
+    - the separate mode resolves;
+    - the artifact is declared;
+    - the verifier environment is the task's own compose environment and `main` image.
+  - Local $0 trials with stand-in images:
+    - **Trial 1** (`runs/128/sep-trial.txt`, `harbor -a oracle`):
+      - reward 1, `pred_json: repaired`;
+      - the artifact was collected to `artifacts/app/pred.json`;
+      - a sentinel password appears 0 times in the job directory.
+    - **Trial 2** (`runs/128/sep-trial2.txt`): a copy of the real job config with only the agent swapped to oracle.
+      - In the agent's environment, the oracle created a database `agent_marker` through the task's own connection string.
+      - In the verifier's environment, the count of that database was 0, giving reward 1. So the verifier's database is newly started.
+      - Sentinel count 0.
+  - These two trials also settle Context 6's two open points, on stand-in images:
+    - Harbor did not try to pull the local `pull_policy: never` images.
+    - The resolved password is not written into the trial directory.
+  - Extra time per trial: about 11 s between the end of the agent and the start of the verifier, and the verifier phase took 18 s (local Docker).
+  - `readonly` still inspects a `main` container started with the task's `[environment] env`, so separate mode doesn't change it. `leaks` counts over `runs/`, and the trials above showed 0.
+
+  **`check` additions**
+  - Counts tasks whose `docker_image` isn't the current `main` image (tasks are regenerated on every `prepare`).
+  - Runs `import psycopg, json_repair` in the `main` image with `--network none`.
+
+  **Tests**
+  - New tests in `tests/test_livesqlbench.py`:
+    - table-order resolution (case, missing name, two matches, full dump);
+    - the resolved order reaching the build, and an unresolved name building no image;
+    - repairable `pred.json` cases;
+    - the image pins match `uv.lock`;
+    - separate mode and the artifact;
+    - the unreachable database giving no score;
+    - the `check` stale-task count and import probe.
+  - New in `tests/test_eval_ablate.py`: `-y` for LiveSQLBench and not otherwise; `--reference` defaults and refusal.
+  - Changed existing tests, with reasons:
+    - **Table order:** the expectation went from `"b a\n"` to `"b\na\n"`, because names are now resolved and written one per line.
+    - **Import-set test:** expects `{"psycopg", "json_repair"}`.
+    - **Script-failure test:** now expects no `reward.txt`, `reward: null` and exit 1 (change 3 above).
+
+  **Checks**
+  - `make check`: exit 0. Ruff and basedpyright have 0 errors. pytest: 3093 passed, 3 skipped, 59 xfailed. Web: 448 passed. Output in `runs/128/make-check-r5.txt`.
+  - Acceptance: `tests/acceptance/test_livesqlbench_*.py`, 53 passed.
+
+  **Reviews**
+  - **`da-review main` (Codex):** 2 findings, both fixed (changes 3 and 4 above).
+  - **`eng:code-review`:** it covered only `96b32e0..HEAD` (this round), not all of `main...HEAD`.
+    - Fixed:
+      - the failed verifier writes its diagnostics directly instead of writing a reward and deleting it;
+      - two docstrings;
+      - the full-dump case;
+      - the docs had claimed a report keeps a reward-less trial out of scoring, which is not so.
+    - Not fixed:
+      - `init-db.sh`'s `exit 1` is tested only by a string match; the dry run covers its behaviour.
+      - The `benchmark == livesqlbench` checks in `ablate` are left inline; there are only three.
+      - Harbor doesn't pass a job's extra mounts or compose files to the separate verifier. Our job config sets neither, so nothing is affected today.
