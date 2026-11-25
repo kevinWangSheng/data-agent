@@ -136,5 +136,13 @@ upstream's logic, written anew, and say so where they do:
   repair_json) <- template/tests/evaluator.py, written anew; json-repair itself (MIT) is installed
   in the task's image (Dockerfile.main), not copied
 
+Run unmodified, not copied (ticket 136's parity check, evals/livesqlbench_parity.py): on the
+evaluation server, the check fetches upstream at the full commit
+e15cd221267e06fabfaf6a3d4a69308280ce9a7c and runs, in an image it builds from upstream's
+template/environment/requirements.txt, LiveSQLBench-CLI/adapters/livesqlbench/template/tests/
+{test.sh, evaluator.py} (Apache-2.0) with evaluation/src/ (MIT) as their evaluator_src/. None of
+these files is in this repository; the image's Dockerfile follows template/environment/
+Dockerfile.claudecode (Apache-2.0) without its agent CLIs, written anew.
+
 The data (HF birdsql/livesqlbench-base-lite) and the PostgreSQL dumps are not in this repository
 and are not redistributed: `da-remote benchmarks` downloads them on the evaluation server only.

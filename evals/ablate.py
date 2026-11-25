@@ -37,15 +37,17 @@ new trials are watched: a usage limit or config error, or --fail-fast infrastruc
 row, stop Harbor and the batch. A finished job is not rerun; an interrupted one, or one with
 infrastructure errors, is resumed with `harbor job resume`, which deletes the errored trials and
 the interrupted ones (no result.json) and runs what is missing (plan §7: infrastructure errors are
-rerun, never scored); the event files of both are first moved to OUT/dropped/, so their spend
-still counts, once. A logical failure (a wrong answer, the agent out of time) is a result: its job
-is complete and is not rerun. An existing job is reused only from a clean checkout at the commit
-and Skill version its trials recorded, on the clean benchmark commit and the machine of OUT's last
-run record, and under the --model OUT was first run with (the recorded model names need not match
-Harbor's -m, so the request itself is compared), and the table needs one commit and one model
-across its configs. A config error (the model's key, name or parameters) stops the batch for a
-human: Harbor does not retry it and a report would score it as a real 0. So does a usage limit (the
-account ran out), but its trials are infrastructure errors, rerun once the account is topped up.
+rerun, never scored; a LiveSQLBench trial whose verifier failed itself is one, deleted by ablate
+itself since Harbor's `-f` filters by exception type alone); the event files of both are first
+moved to OUT/dropped/, so their spend still counts, once. A logical failure (a wrong answer, the
+agent out of time) is a result: its job is complete and is not rerun. An existing job is reused
+only from a clean checkout at the commit and Skill version its trials recorded, on the clean
+benchmark commit and the machine of OUT's last run record, and under the --model OUT was first run
+with (the recorded model names need not match Harbor's -m, so the request itself is compared), and
+the table needs one commit and one model across its configs. A config error (the model's key, name
+or parameters) stops the batch for a human: Harbor does not retry it and a report would score it as
+a real 0. So does a usage limit (the account ran out), but its trials are infrastructure errors,
+rerun once the account is topped up.
 Once every job is complete, `evals scrub` cleans this table's jobs in place, `evals report` writes
 each config's report and `evals compare --manifest --split <split>` gives each layer's
 contribution: the reference (`--reference`, default full) minus the config without the layer, in
@@ -111,6 +113,7 @@ from evals.report import (
     is_infra_error,
     of_benchmark,
     split_trials,
+    verifier_failed,
 )
 from evals.selection import selection_markdown, selection_row
 from evals.spend import SpendUnknown, file_spend
@@ -732,6 +735,7 @@ def ensure_job(
     jobs, logs = args.out / "jobs", args.out / "logs"
     job = jobs / config
     dropped: list[Path] = []
+    own: list[Path] = []
     if (job / "config.json").is_file():
         trials = load_trials(job) if any(job.glob("*/result.json")) else []
         check_config_errors(config, job, trials)
@@ -739,7 +743,12 @@ def ensure_job(
         if problem(trials, tasks, args.split, args.trials) is None:
             return
         errored = [t for t in trials if is_infra_error(t)]
-        infra = sorted({str(t.exception_type) for t in errored})
+        # A LiveSQLBench verifier that failed itself leaves Harbor's RewardFileNotFoundError,
+        # which is also an agent's own missing reward (a scored 0): `-f` would rerun those too,
+        # so these trials are deleted here (ticket 136) and `-f` gets the other errors' types.
+        failed_itself = {t.dir for t in errored if verifier_failed(t)}
+        own = sorted(failed_itself)
+        infra = sorted({str(t.exception_type) for t in errored if t.dir not in failed_itself})
         # Both are deleted by the resume and run again; what they cost was billed all the same.
         dropped = [*(t.dir for t in errored), *interrupted(job)]
         harbor_args = ["job", "resume", "-p", str(job), *(a for e in infra for a in ("-f", e))]
@@ -751,6 +760,8 @@ def ensure_job(
     guard_spend(args.out, args.budget)
     prepare()
     keep_spend(args.out, config, dropped)  # after the guard, which would count them twice
+    for trial_dir in own:  # kept by keep_spend; Harbor's resume runs the missing attempt
+        shutil.rmtree(trial_dir)
     log = logs / f"{config}.log"
     print(f"{config}: harbor {' '.join(harbor_args[:2])} -> {log}", flush=True)
     before = {p.parent.name for p in job.glob("*/result.json")}

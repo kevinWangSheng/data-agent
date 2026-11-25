@@ -301,6 +301,64 @@ def test_an_error_is_recorded_by_the_drivers_class_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        # array_agg(date_col): preprocess_results' json.dumps cannot encode a date.
+        ([__import__("datetime").date(2020, 1, 1)], "TypeError"),
+        (float("inf"), "InvalidOperation"),
+    ],
+)
+def test_a_comparison_that_raises_scores_0_as_upstream_does(
+    tmp_path: Path, value: Any, error: str
+) -> None:
+    """Ticket 136: upstream's run_test_case catches any exception of the test case and scores it
+    failed (evaluation.py), so a value preprocess_results cannot handle is a 0, never the
+    verifier's own failure (which would be rerun as infrastructure, forever)."""
+
+    def execute(sqls: Sequence[str]) -> Result:
+        return Result(columns=("a",), rows=((value,),))
+
+    payload = query_records()[0] | {"sol_sql": ["SELECT 1"]}
+    assert livesqlbench.evaluate(payload, ["SELECT 1"], execute, tmp_path) == 0
+    assert diagnostics(tmp_path) | {"gold_answer": None} == {
+        "reward": 0,
+        "gold_answer": None,
+        "outcome": "compare_error",
+        "error": error,
+    }
+
+
+def test_a_non_driver_error_while_executing_is_an_execution_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upstream execute_queries counts any exception of a statement as an execution error."""
+
+    class Cursor:
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+        def execute(self, query: str) -> None:
+            if not query.startswith("SET"):
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte")
+
+    class Conn:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def rollback(self) -> None:
+            pass
+
+    execute = livesqlbench_verifier.PostgresExecute("db", {})
+    monkeypatch.setattr(execute, "_connect", Conn)
+    with pytest.raises(ExecutionError) as raised:
+        execute(["SELECT 1"])
+    assert livesqlbench_verifier.kind(raised.value) == "UnicodeDecodeError"
+
+
+@pytest.mark.parametrize(
     ("text", "state", "sqls"),
     [
         (None, "missing", []),

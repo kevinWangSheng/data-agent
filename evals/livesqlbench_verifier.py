@@ -340,7 +340,13 @@ def evaluate(
             results[side] = execute(sqls)
         except ExecutionError as exc:
             return write_output(out, 0, found | {"outcome": f"{side}_error", "error": kind(exc)})
-    matched = results_match(results["predicted"], results["gold"], payload.get("conditions"))
+    try:
+        matched = results_match(results["predicted"], results["gold"], payload.get("conditions"))
+    except Exception as exc:
+        # Upstream `run_test_case` catches any exception of the test case and scores it failed:
+        # a value `preprocess_results` cannot take (a list of dates, an infinite float) is a 0,
+        # not the verifier's own failure (ticket 136 parity).
+        return write_output(out, 0, found | {"outcome": "compare_error", "error": kind(exc)})
     found["predicted_rows"] = len(results["predicted"].rows)
     return write_output(out, int(matched), found | {"outcome": "match" if matched else "mismatch"})
 
@@ -460,7 +466,11 @@ class PostgresExecute:
                     self.conn.commit()
                     result = last_result(cur)
             return result
-        except psycopg.Error as exc:
+        except SetupError:
+            raise
+        except Exception as exc:
+            # Upstream `execute_queries` counts any exception of a statement as an execution
+            # error, not only the driver's (ticket 136 parity).
             raise ExecutionError(str(exc)) from exc
 
     def close(self) -> None:
@@ -477,9 +487,10 @@ def main(
     state of `pred.json`. A failure of the script itself or of its database setup (`SetupError`:
     no connection, no process database) is no score: it writes the diagnostics, recorded by the
     error's class only, and no reward, so Harbor records `RewardFileNotFoundError` and the trial
-    has no reward (`ablate`'s smoke stops on it) instead of a 0 that reads as the agent's; a
-    report still counts it failed (evals.report `NOT_RETRIED`, a known limitation). Neither
-    the output nor Harbor's copy of it carries a SQL statement or a value."""
+    has no reward (`ablate`'s smoke stops on it) instead of a 0 that reads as the agent's; by
+    the `verifier_error` outcome a report counts it as infrastructure and `ablate` reruns it
+    (evals.report `verifier_failed`, ticket 136). Neither the output nor Harbor's copy of it
+    carries a SQL statement or a value."""
     state = "missing"
     try:
         payload = json.loads(payload_path.read_text(encoding="utf-8"))

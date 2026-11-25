@@ -1305,3 +1305,36 @@ def test_other_runs_do_not_get_the_livesqlbench_credential(env: Env, args: list[
     env.finish(0)
     log = (env.repo / "runs" / "smoke" / "run.log").read_text()
     assert "env loaded: yes" in log and "env loaded: lsb" not in log
+
+
+# --- ticket 136: the oracle and parity check ---
+
+
+def test_a_livesqlbench_parity_run_gets_the_write_credential(env: Env):
+    """Both verifiers it runs need the write role (evals.livesqlbench_parity)."""
+    assert env.run("setup").returncode == 0
+    args = ("livesqlbench-parity", "run", "--root", "../da-benchmarks/livesqlbench")
+    proc = env.run("start", "smoke", "--", *args, "--out", "runs/smoke")
+    assert proc.returncode == 1
+    assert "no LiveSQLBench write credential" in proc.stdout
+
+    (env.server / LSB_ENV).write_text("DATA_AGENT_SMOKE=lsb\n")
+    proc = env.run("start", "smoke", "--", *args, "--out", "runs/smoke")
+    assert proc.returncode == 0, proc.stdout
+    env.wait_for_evals()
+    env.finish(0)
+    assert "env loaded: lsb" in (env.repo / "runs" / "smoke" / "run.log").read_text()
+
+
+def test_pull_of_a_livesqlbench_parity_run_takes_the_summary_only(env: Env):
+    """Its scratch is outside runs/ already; a pull still brings back only the reports, the run
+    log and the control files, as for any subcommand it cannot judge."""
+    assert env.run("setup").returncode == 0
+    (env.server / LSB_ENV).write_text("DATA_AGENT_SMOKE=lsb\n")
+    args = ("livesqlbench-parity", "run", "--root", "r", "--out", "runs/smoke")
+    assert env.run("start", "smoke", "--", *args).returncode == 0
+    env.finish(0)
+    proc = env.run("pull", "smoke")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "summary only" in proc.stdout
+    assert (env.log / "rsync.args").read_text().splitlines()[3:-2] == SUMMARY_FILTERS

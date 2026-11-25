@@ -19,8 +19,9 @@
 #                                                 log to runs/<name>/run.log on the server; give
 #                                                 evals --out runs/<name> so status and pull see it;
 #                                                 a dab run gets DAB's packages and database settings;
-#                                                 an ablate --benchmark livesqlbench run gets
-#                                                 LiveSQLBench's write credential, for its verifiers;
+#                                                 an ablate --benchmark livesqlbench run and a
+#                                                 livesqlbench-parity run get LiveSQLBench's write
+#                                                 credential, for their verifiers;
 #                                                 runs/<name>/memory.log samples the server every 5 s:
 #                                                 a header line (Mem and Swap used/total MiB from
 #                                                 `free -m`, load = /proc/loadavg 1/5/15 min), then
@@ -572,8 +573,9 @@ if [ "$SUBCOMMAND" = dab ]; then
 fi
 # A LiveSQLBench run: Harbor's host process resolves the tasks' `${LSB_PG_WRITE_PASSWORD}` for
 # their verifiers; nothing passes it to an agent (evals/configs/livesqlbench.data-agent.yaml).
+# The oracle and parity check (ticket 136) runs both verifiers itself, with no agent.
 lsb_env=""
-if [ "$SUBCOMMAND" = ablate ] && [ -n "$LSB_RUN" ]; then
+if { [ "$SUBCOMMAND" = ablate ] && [ -n "$LSB_RUN" ]; } || [ "$SUBCOMMAND" = livesqlbench-parity ]; then
   [ -f "$LSBENV" ] || {
     echo "start: no LiveSQLBench write credential on the server; run da-remote benchmarks first"
     exit 1

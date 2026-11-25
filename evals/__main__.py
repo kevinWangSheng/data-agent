@@ -17,6 +17,7 @@ from evals import (
     export,
     improve,
     jaffle,
+    livesqlbench_parity,
     livesqlbench_server,
     scrub,
     selection,
@@ -149,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
         export,
         improve,
         livesqlbench_server,
+        livesqlbench_parity,
     )
     for module in modules:
         module.add_parser(commands)
