@@ -24,14 +24,7 @@ from im_support import (
 from data_agent.im.adapter import IM_DIR, THREADS_FILE
 from data_agent.im.platform import Incoming
 
-TICKET_131 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 131: the IM adapter is not implemented yet",
-)
 
-
-@TICKET_131
 @pytest.mark.parametrize("direct", [True, False], ids=["direct", "group-mention"])
 async def test_a_new_message_creates_a_conversation_and_sends_to_it(
     tmp_path: Path, direct: bool
@@ -50,7 +43,6 @@ async def test_a_new_message_creates_a_conversation_and_sends_to_it(
     assert bot.conversations.sent == [Sent(bot.conversations.created[0], "How many orders?", True)]
 
 
-@TICKET_131
 async def test_a_reply_in_the_thread_goes_to_its_conversation_another_thread_gets_another(
     tmp_path: Path,
 ) -> None:
@@ -71,7 +63,6 @@ async def test_a_reply_in_the_thread_goes_to_its_conversation_another_thread_get
     assert bot.conversations.sent[-1] == Sent(second, "Top customers?", True)
 
 
-@TICKET_131
 async def test_new_conversation_in_a_chat_without_threads_starts_another(tmp_path: Path) -> None:
     platform = FakePlatform("telegram")
 
@@ -115,7 +106,6 @@ async def test_new_conversation_in_a_chat_without_threads_starts_another(tmp_pat
     ]
 
 
-@TICKET_131
 async def test_the_thread_map_survives_a_restart_and_is_no_run(tmp_path: Path) -> None:
     runs_path = tmp_path / "runs"
     bot = await start_bot(runs_path)

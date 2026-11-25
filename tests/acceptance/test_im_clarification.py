@@ -28,12 +28,6 @@ from im_support import (
     start_bot,
 )
 
-TICKET_131 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 131: the IM adapter is not implemented yet",
-)
-
 EVENTS = fixture_events(CLARIFICATION_RUN)
 [CLARIFICATION] = [event for event in EVENTS if event["type"] == "clarification"]
 QUESTION: str = CLARIFICATION["question"]
@@ -58,7 +52,6 @@ def assert_numbered(text: str) -> None:
         assert re.search(line, text, re.MULTILINE), f"option {number} is not on a numbered line"
 
 
-@TICKET_131
 async def test_the_question_and_its_numbered_options_with_number_buttons(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     asked = await ask(bot)
@@ -72,7 +65,6 @@ async def test_the_question_and_its_numbered_options_with_number_buttons(tmp_pat
         assert len(button.value.encode()) <= 64
 
 
-@TICKET_131
 @pytest.mark.parametrize("number", [1, 2])
 async def test_pressing_a_number_sends_that_option(tmp_path: Path, number: int) -> None:
     bot = await start_bot(tmp_path / "runs")
@@ -82,7 +74,6 @@ async def test_pressing_a_number_sends_that_option(tmp_path: Path, number: int) 
     assert bot.conversations.sent[1:] == [Sent(conversation, OPTIONS[number - 1], True)]
 
 
-@TICKET_131
 async def test_a_typed_reply_is_sent_as_it_is(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await ask(bot)
@@ -91,7 +82,6 @@ async def test_a_typed_reply_is_sent_as_it_is(tmp_path: Path) -> None:
     assert bot.conversations.sent[1:] == [Sent(conversation, "Net, please", True)]
 
 
-@TICKET_131
 async def test_without_buttons_only_the_numbered_text(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs", platform=FakePlatform(buttons=False))
     asked = await ask(bot)

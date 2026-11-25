@@ -21,11 +21,23 @@ dependencies = [
     "uvicorn>=0.38",
 ]
 
+[project.optional-dependencies]
+# The IM entry (`data-agent web --im`, .scratch/im/spec.md "库"): `uv sync --extra im`. Optional, so
+# no Harbor install (`uv export --no-dev`) carries it. aiohttp is listed because slack-bolt's
+# asyncio app imports it at the top (slack_bolt/app/async_app.py) without declaring it.
+im = [
+  "aiohttp>=3.14",
+  "slack-bolt==1.30.0",
+]
+
 [project.scripts]
 data-agent = "data_agent.cli:main"
 
 [dependency-groups]
 dev = [
+  # The `im` extra again, so CI (`uv sync --locked`, no extra) type-checks and tests the Slack
+  # module.
+  "aiohttp>=3.14",
   "basedpyright>=1.31",
   # dbt for local dbt runs and seam A, pinned like the data-eng-bench image (plan §5). Not a runtime
   # dependency: an installed agent uses the environment's dbt (Harbor: the image's).
@@ -39,6 +51,7 @@ dev = [
   "pytest>=8.4",
   "pytest-asyncio>=1.2",
   "ruff>=0.15",
+  "slack-bolt==1.30.0",
 ]
 
 [build-system]

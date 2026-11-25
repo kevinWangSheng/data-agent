@@ -20,7 +20,6 @@ of 0.25; the run ids have neither.
 import re
 from pathlib import Path
 
-import pytest
 from im_support import (
     EDIT_INTERVAL,
     FakePlatform,
@@ -38,12 +37,6 @@ from im_support import (
 
 from data_agent.im.progress import status_text
 
-TICKET_131 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 131: the IM adapter is not implemented yet",
-)
-
 ANSWER = "Fourteen orders were placed, all of them paid."
 
 
@@ -51,7 +44,6 @@ def has_number(text: str, number: str) -> bool:
     return re.search(rf"(?<![\d.]){re.escape(number)}(?![\d])", text) is not None
 
 
-@TICKET_131
 def test_the_status_text_follows_the_steps_and_ends_with_duration_and_cost() -> None:
     events = header()
     started = status_text(events)
@@ -75,7 +67,6 @@ def test_the_status_text_follows_the_steps_and_ends_with_duration_and_cost() -> 
     assert has_number(status_text([*events, result(51)]), "51")
 
 
-@TICKET_131
 def test_a_turn_that_ends_on_a_clarification_does_not_read_as_answered() -> None:
     asked = [
         *header(),
@@ -93,7 +84,6 @@ def test_a_turn_that_ends_on_a_clarification_does_not_read_as_answered() -> None
     assert waiting != status_text([*answered, result(51, ended=37)])
 
 
-@TICKET_131
 async def test_one_status_message_edited_through_the_turn_then_the_answer(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))
@@ -122,7 +112,6 @@ async def test_one_status_message_edited_through_the_turn_then_the_answer(tmp_pa
     assert [shown.text for shown in thread[1:]] == [ANSWER]
 
 
-@TICKET_131
 async def test_edits_wait_out_the_platforms_interval(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))
@@ -149,7 +138,6 @@ async def test_edits_wait_out_the_platforms_interval(tmp_path: Path) -> None:
     assert status.text != first
 
 
-@TICKET_131
 async def test_without_edits_only_the_answer_is_sent(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs", platform=FakePlatform(edit=False))
     await bot.platform.deliver(message("How many orders?", thread="T1"))

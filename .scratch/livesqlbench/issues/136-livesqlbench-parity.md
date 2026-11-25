@@ -60,6 +60,7 @@ Branch: —
 - [ ] oracle：180/180 判对；没有全对就逐类修，或写明原因交回。
 - [ ] 对拍：两批答案上，官方评测和我们的 soft EX 的 reward 逐题一致，贴一致的数目。修复都配了单元测试。
 - [ ] 上游评测的输出不在 `runs/` 里，`pull` 回来的内容里也没有。检查标准 SQL 哨兵的办法照 128 的口令检查：只打印次数。
+- [ ] 验证脚本自身失败的 trial（128 改成只写 `diagnostics.json` 的 `outcome: verifier_error`、不写 reward，Harbor 记 `RewardFileNotFoundError`）在全量里怎么处理：现在它在 `evals/report.py` 的 `NOT_RETRIED` 里，不重试、算 0。改成可重试或排除出分母，二选一，开工前在对齐会话定（可能要把 `evals/report.py` 加进 Authority）；实现配测试。来源：128 第 1 轮退回交回第 3 项（人 2026-11-25 定）。
 - [ ] `make check` 通过。
 
 ## Evidence required

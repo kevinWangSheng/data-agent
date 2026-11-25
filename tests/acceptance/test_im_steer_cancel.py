@@ -33,14 +33,7 @@ from im_support import (
 
 from data_agent.web.launcher import Refused
 
-TICKET_131 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 131: the IM adapter is not implemented yet",
-)
 
-
-@TICKET_131
 async def test_a_message_while_the_turn_runs_is_sent_as_a_steer(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))
@@ -53,7 +46,6 @@ async def test_a_message_while_the_turn_runs_is_sent_as_a_steer(tmp_path: Path) 
     bot.conversations.only_run()
 
 
-@TICKET_131
 async def test_the_stop_button_cancels_the_turn(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))
@@ -73,7 +65,6 @@ async def test_the_stop_button_cancels_the_turn(tmp_path: Path) -> None:
     assert status.buttons == ()
 
 
-@TICKET_131
 @pytest.mark.parametrize("text", ["stop", "STOP", "  Stop \n"])
 async def test_the_word_stop_cancels_and_is_not_sent(tmp_path: Path, text: str) -> None:
     bot = await start_bot(tmp_path / "runs")
@@ -84,7 +75,6 @@ async def test_the_word_stop_cancels_and_is_not_sent(tmp_path: Path, text: str) 
     assert len(bot.conversations.sent) == 1
 
 
-@TICKET_131
 async def test_a_sentence_with_stop_in_it_is_an_ordinary_message(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))
@@ -94,7 +84,6 @@ async def test_a_sentence_with_stop_in_it_is_an_ordinary_message(tmp_path: Path)
     assert bot.conversations.cancelled == []
 
 
-@TICKET_131
 async def test_stop_with_no_turn_running_gets_a_reply(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))
@@ -110,7 +99,6 @@ async def test_stop_with_no_turn_running_gets_a_reply(tmp_path: Path) -> None:
     assert len(bot.conversations.sent) == 1
 
 
-@TICKET_131
 @pytest.mark.parametrize(
     "refusal",
     [
