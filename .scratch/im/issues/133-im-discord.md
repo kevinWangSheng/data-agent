@@ -1,6 +1,6 @@
 # 133 — IM 入口：Discord 实现（discord.py，gateway）
 
-Status: ready-for-human
+Status: ready-for-agent
 Blocked by: 131（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-25
@@ -272,3 +272,5 @@ Branch: worktree-133-im-discord
     1. interaction token 进 DEBUG 日志：discord.py 在 DEBUG 记每个网关事件原文（`discord/gateway.py:518`），`INTERACTION_CREATE` 带 interaction token；webhook 路由也把它放进 URL 路径（`discord/webhook/async_.py:264,300,321`）。是短期的 interaction token，不是 bot token；之前的测试只覆盖 `Authorization` 头里的 bot token。修法：给 `discord.gateway`、`discord.webhook`、`discord.http` 的 logger 加脱敏过滤，配一个喂假 interaction 的测试。
     2. 确认 interaction 会打乱顺序：`handle_new`（`discord_bot.py:376`）和 `handle_interaction` 先 await `defer` 再拿 `self.lock`，`/new` 的确认还没回来时发的消息先到适配器、进了旧对话（Codex 复现顺序 `['first question after /new', 'new']`）。修法：await 确认前先排进队列，仍在 3 秒内确认。
   - 真实验收补充：在论坛帖子起始消息里 @ 机器人，确认在帖子里回答。
+- 2026-11-25（主会话，人定再修一轮）：
+  - 退回：修上面 `da-review` 的两个 P2（主会话已核实 `discord/gateway.py:518`、`discord_bot.py:376`）。1）interaction token 不进日志：给 `discord.gateway`、`discord.webhook`、`discord.http` 的 logger 加脱敏过滤（只在本模块里加），配一个喂假 `INTERACTION_CREATE` 和假 webhook URL、在 DEBUG 下断言 token 不出现的测试。2）`/new` 和按钮先排进投递顺序再 await 确认，仍在 3 秒内确认；配一个修复前会失败的顺序测试（`/new` 确认未完成时到的消息进新对话）。人允许为这两条做第 4 轮修复；修完跑两道审查，审查再有新问题就停下交回，不再修。
