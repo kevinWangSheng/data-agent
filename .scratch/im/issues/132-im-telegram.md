@@ -1,6 +1,6 @@
 # 132 — IM 入口：Telegram 实现（aiogram，长轮询）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 131（done）
 Spec: ../spec.md
 Claimed by: claude (worktree 132-im-telegram)
@@ -233,3 +233,5 @@ Branch: worktree-132-im-telegram
 3. 一条接近 4000 字、标点多、带 emoji 的回答能送达；Telegram 嫌长就调低 `max_chars`。
 4. `grep "MarkdownV2 was refused" runs/132-live/web.log`：有命中就是转换器 bug 被纯文本兜底掩盖了。
 5. 机器人的 `text_mention` 在群里可用，`<mention> stop` 也可用。
+- 2026-11-25（主会话，PR #139 第 1 轮 Codex 意见）：
+  - 退回：`to_markdown_v2` 把整行的三反引号行内代码当成代码块的开头栅栏（`src/data_agent/im/telegram.py:371-376`：`is_fence` 只看行首是否为 ```，后面的"语言"不匹配 `LANGUAGE` 就丢掉）。主会话核实：`to_markdown_v2("Total:\n```SELECT SUM(revenue) FROM orders```\ndone")` 返回 `'Total:\n```\ndone\n```'`，SQL 丢了，后面的 `done` 也被包进代码块。要求：同一行里已闭合的 ```…``` 按行内代码处理（或原样保留内容），不丢回答内容；配一个修复前会失败的测试。在原分支 `worktree-132-im-telegram` 上修。
