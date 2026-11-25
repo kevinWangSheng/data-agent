@@ -170,3 +170,6 @@ Branch: worktree-136-livesqlbench-parity
   - 取证（不打印内容，只打印标志，只查开发集 3 道）：`insider_1`、`vaccine_7` 的标准 SQL 都含 `CURRENT_DATE`（`insider_1` 还含 `INTERVAL`）；`archeology_7` 不含时间函数。3 道都是 1 条语句，`test_cases` 为空。推断：两道 empty_result 是相对"今天"取数，数据停在 2025 年，现在查不到行（未确认，没有在冻结时钟下复跑）。archeology_7 的语法错误原因未确认。版本对得上：上游 Base-Lite 是 2025-05-28（`README.md:278`），答案文件名是 `…_0528`。上游 issue 里搜不到这几道题。
   - 标准 SQL 泄漏计数：`runs/lsb-parity`、`runs/lsb-parity-1` 都是 0 次。`pull lsb-parity`：留出集只取回汇总。
   - 待对齐：oracle 没判对的 6 道怎么处理。
+
+- 2026-11-25（对齐会话，人定）：oracle 没判对的 6 道照官方口径处理：留在分母里，算错；在报告里列成标准 SQL 一侧的已知缺陷。原因写明，oracle 一项按"写明原因"算过。不冻结数据库时钟（偏离官方，日期也未知）。这样分数能直接和榜单比；每个配置的满分上限都是 174/180 = 96.7%，所以消融差值不受影响。
+- 2026-11-25（主会话）`lsb-archeology_7` 取证（只打印错误码和位置，不打印 SQL；`runs/136/server/probe-archeology_7.txt`）：在本题的库镜像（PostgreSQL 14.12，上游指定的版本）上，用写库角色执行，结果是 `sqlstate 42601`（syntax_error），位置在 1737 个字符里的第 1603 个（43 行里的第 39 行），出错的是一个字母数字记号。拿同一条 SQL 在空的 `postgres:17` 上执行，同样是 `42601`，同样在第 1603 个字符。语法错误发生在解析阶段，跟数据和版本都无关，所以结论是标准 SQL 本身写错了，不是我们的环境问题。
