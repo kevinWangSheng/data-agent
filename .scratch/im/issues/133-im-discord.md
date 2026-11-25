@@ -226,7 +226,7 @@ Branch: worktree-133-im-discord
 - Attempts: 3
 - Review rounds: 4（另有一次只核修复的 Codex 复查）
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: 停在 ready-for-human（第 4 轮两条已修 `c230790`；da-review 又找出 1 个 P2：异常 traceback 里带 interaction token）
+- Outcome: 已合并（`747cdcf`）；traceback 里的 interaction token 归 137；真实 Discord 验收待人建 app
 - Human review minutes: —
 
 ## Comments
@@ -281,3 +281,4 @@ Branch: worktree-133-im-discord
   - `eng:code-review` Spec：无缺失、无越界；确认过滤覆盖 discord.py 2.7.1 里所有在消息文本中记 interaction token 的地方（`gateway.py:518`、`webhook/async_.py:185`、`http.py:660/707/740`）；`/new` 经 `CommandTree` 到 `handle_new` 中间不让出（读源码确认，没跟踪运行）。Standards：无硬违规；不修：两个处理函数重复 create_task→lock→await 的形状；`RedactTokens`/`REDACT_TOKENS`/`redact_tokens` 只差大小写；`to_press`/`channel_key` 抛错或 `stop` 时等锁被取消，确认任务没人 await（最多一条 "Task exception was never retrieved" 警告）；网关测试经私有属性建 `DiscordWebSocket`（discord.py 钉 2.7.1）；两个顺序测试重复 setup。
   - `da-review`（`runs/133-fake/da-review-r4.log`）1 个新 P2，按退回条件未修，已对照代码核实：interaction callback 超时时 aiohttp 抛 `ConnectionTimeoutError(f"Connection timeout to host {req.url}")`（`aiohttp/client.py:858-859`），URL 带 interaction token；异常经 `handle_interaction`/`handle_new` 传出，由 `discord.client`（`client.py:582`，`_log.exception`）和 `app_commands.tree`（`tree.py:819`，`exc_info=error`）记下。这两个 logger 没挂过滤器，过滤器也只改 `getMessage()`，不改 traceback。仍是短期 interaction token，不是 bot token。可能的修法：两个 logger 也挂过滤器，并脱敏 `exc_info`/`exc_text`，配一个 callback 超时的测试。
 - 2026-11-25（主会话，人定）：traceback 里的 interaction token 不在本工单修，写进 137 的第 4 条和验收标准；本工单开 PR。
+- 2026-11-25（主会话）：PR #141 CI 绿。Codex 唯一意见（P1，`discord_bot.py:143`：过滤器只改 `getMessage()`，异常 traceback 和 `discord.client` logger 里仍有 interaction token，callback 超时时出现）就是人已定放进 137 第 4 条的那一项，不是新问题，不退回。已 squash 合并为 main `747cdcf`。Status 保持 `in-review`，等人建好 Discord app 后主会话在 worktree `.claude/worktrees/133-im-discord` 做真实验收（照 131、132 先例）。

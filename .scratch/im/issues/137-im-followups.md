@@ -1,7 +1,7 @@
 # 137 — IM 跟进：`/new` 后线程免 @、Telegram `/start`、同一行的三反引号代码、Discord 异常里的 interaction token
 
 Status: ready-for-agent
-Blocked by: 133
+Blocked by: —（原 133；133 代码已合入 main `747cdcf`，只差真实验收，不阻塞本工单）
 Spec: ../spec.md
 Claimed by: —
 Branch: —
@@ -39,7 +39,7 @@ Branch: —
   - `format.tables_to_code` 对这种行之后的管道表格不转成等宽块。
   - 132 的审查还跑出 `split_message` 对被拆分的长回答：后面每块重复这一行，除最后一块外都以空代码块结尾（132 工单 Comments，退回第 1 轮）。
   - 132 已在 `telegram.py` 里按 CommonMark 修了自己的转换（`FENCE_LINE`，`:120`；开头 3 个以上反引号、info string 不含反引号；结尾至少同样长、后面没东西）。照它做，最好把栅栏判断收成 `format.py` 里一份，Slack、Telegram、`split_message`、`tables_to_code` 都用它。
-- **第 4 条**（133 第 4 轮 `da-review` 的 P2，人 2026-11-25 定放进本工单）：callback 超时时 aiohttp 抛 `ConnectionTimeoutError(f"Connection timeout to host {req.url}")`（`aiohttp/client.py:858-859`），URL 带 interaction token；异常由 `discord.client`（`client.py:582`，`_log.exception`）和 `discord.app_commands.tree`（`tree.py:819`，`exc_info=error`）记下。133 的 `RedactTokens` 只挂在 `REDACTED_LOGGERS` 上、只改 `getMessage()`。要做：这两个 logger 也挂上，并脱敏异常文本（如格式化 `exc_info` 后把脱敏结果写进 `record.exc_text`、清掉 `exc_info`）。行号按 133 合入后的 main 再核。
+- **第 4 条**（133 第 4 轮 `da-review` 的 P2，人 2026-11-25 定放进本工单）：callback 超时时 aiohttp 抛 `ConnectionTimeoutError(f"Connection timeout to host {req.url}")`（`aiohttp/client.py:858-859`），URL 带 interaction token；异常由 `discord.client`（`client.py:582`，`_log.exception`）和 `discord.app_commands.tree`（`tree.py:819`，`exc_info=error`）记下。133 的 `RedactTokens` 只挂在 `REDACTED_LOGGERS` 上、只改 `getMessage()`。要做：这两个 logger 也挂上，并脱敏异常文本（如格式化 `exc_info` 后把脱敏结果写进 `record.exc_text`、清掉 `exc_info`）。行号按 133 合入后的 main 再核。PR #141 上 Codex 把这一条标为 P1（引 AGENTS.md 不在运行产出里写密钥）。
 - 停机期间到的消息：spec 定为保持现状，不改。
 
 ## Acceptance
