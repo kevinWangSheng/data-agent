@@ -340,7 +340,13 @@ def evaluate(
             results[side] = execute(sqls)
         except ExecutionError as exc:
             return write_output(out, 0, found | {"outcome": f"{side}_error", "error": kind(exc)})
-    matched = results_match(results["predicted"], results["gold"], payload.get("conditions"))
+    try:
+        matched = results_match(results["predicted"], results["gold"], payload.get("conditions"))
+    except Exception as exc:
+        # Upstream `run_test_case` catches any exception of the test case and scores it failed:
+        # a value `preprocess_results` cannot take (a list of dates, an infinite float) is a 0,
+        # not the verifier's own failure (ticket 136 parity).
+        return write_output(out, 0, found | {"outcome": "compare_error", "error": kind(exc)})
     found["predicted_rows"] = len(results["predicted"].rows)
     return write_output(out, int(matched), found | {"outcome": "match" if matched else "mismatch"})
 
@@ -460,7 +466,11 @@ class PostgresExecute:
                     self.conn.commit()
                     result = last_result(cur)
             return result
-        except psycopg.Error as exc:
+        except SetupError:
+            raise
+        except Exception as exc:
+            # Upstream `execute_queries` counts any exception of a statement as an execution
+            # error, not only the driver's (ticket 136 parity).
             raise ExecutionError(str(exc)) from exc
 
     def close(self) -> None:
