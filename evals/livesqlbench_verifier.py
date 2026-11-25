@@ -77,6 +77,11 @@ class ExecutionError(Exception):
     """A SQL statement failed or timed out; the message is the driver's."""
 
 
+class SetupError(Exception):
+    """The verifier's own database setup failed (no connection, no process database): no SQL ran,
+    so no score (`main`); the message is the driver's."""
+
+
 # Runs a list of statements on the task's database and returns the last one's result; raises
 # ExecutionError. The evaluation script's real one connects with the verifier's credential.
 Execute = Callable[[Sequence[str]], Result]
@@ -438,7 +443,10 @@ class PostgresExecute:
 
         try:
             if self.conn is None:
-                self.conn = self._connect()
+                try:
+                    self.conn = self._connect()
+                except psycopg.Error as exc:
+                    raise SetupError(str(exc)) from exc
             result = Result(columns=(), rows=())
             for query in sqls:
                 with self.conn.cursor() as cur:
@@ -465,8 +473,11 @@ def main(
     payload_path: Path = PAYLOAD, prediction: Path = PREDICTION, out: Path = VERIFIER_DIR
 ) -> int:
     """Score the task and write the reward and diagnostics to `out`; the diagnostics add the
-    state of `pred.json`. Any failure of the script itself scores 0 and is recorded by its class
-    only, so neither its output nor Harbor's copy of it carries a SQL statement or a value."""
+    state of `pred.json`. A failure of the script itself or of its database setup (`SetupError`:
+    no connection, no process database) is no score: it writes the diagnostics, recorded by the
+    error's class only, and no reward, so Harbor records `RewardFileNotFoundError` and the trial
+    has no reward (`ablate`'s smoke stops on it) instead of a 0 that reads as the agent's. Neither
+    the output nor Harbor's copy of it carries a SQL statement or a value."""
     state = "missing"
     try:
         payload = json.loads(payload_path.read_text(encoding="utf-8"))
@@ -479,12 +490,15 @@ def main(
             with contextlib.suppress(Exception):
                 execute.close()
     except Exception as exc:
-        reward = write_output(out, 0, {"outcome": "verifier_error", "error": type(exc).__name__})
+        reward = None
+        write_output(out, 0, {"outcome": "verifier_error", "error": kind(exc)})
+        (out / REWARD_FILE).unlink()
     path = out / DIAGNOSTICS_FILE
     diagnostics = json.loads(path.read_text())
-    path.write_text(json.dumps(diagnostics | {"pred_json": state}, indent=2))
+    diagnostics = diagnostics | {"pred_json": state, "reward": reward}
+    path.write_text(json.dumps(diagnostics, indent=2))
     print(f"reward {reward} ({diagnostics.get('outcome')}, pred.json {state})")
-    return 0
+    return 0 if reward is not None else 1
 
 
 if __name__ == "__main__":

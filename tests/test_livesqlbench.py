@@ -342,14 +342,42 @@ def test_the_script_without_gold_answer_or_pred_json_scores_0_without_a_database
     assert "no_gold_answer" in capsys.readouterr().out
 
 
-def test_the_scripts_own_failure_scores_0_and_names_its_class_only(tmp_path: Path) -> None:
+def test_the_scripts_own_failure_is_no_score_and_names_its_class_only(tmp_path: Path) -> None:
     payload = tmp_path / "task_payload.json"
     payload.write_text(json.dumps({"query": "no database named", "sol_sql": ["SELECT 'x9'"]}))
     out = tmp_path / "verifier"
-    assert livesqlbench_verifier.main(payload, tmp_path / "pred.json", out) == 0
+    assert livesqlbench_verifier.main(payload, tmp_path / "pred.json", out) == 1
+    # No reward file: Harbor records RewardFileNotFoundError and the trial has no reward.
+    assert not (out / "reward.txt").exists()
     found = diagnostics(out)
-    assert (found["outcome"], found["error"], found["reward"]) == ("verifier_error", "KeyError", 0)
+    assert (found["outcome"], found["error"], found["reward"]) == (
+        "verifier_error",
+        "KeyError",
+        None,
+    )
     assert "x9" not in (out / livesqlbench_verifier.DIAGNOSTICS_FILE).read_text()
+
+
+def test_a_verifier_database_it_cannot_reach_is_no_score_not_the_agents_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psycopg
+
+    def refused(self: object) -> None:
+        raise psycopg.OperationalError("connection to 10.9.9.9 refused for SELECT 'x9'")
+
+    monkeypatch.setattr(livesqlbench_verifier.PostgresExecute, "_connect", refused)
+    payload = tmp_path / "task_payload.json"
+    payload.write_text(json.dumps(query_records()[0] | {"sol_sql": ["SELECT 'x9'"]}))
+    prediction = tmp_path / "pred.json"
+    prediction.write_text(json.dumps({"predicted_sql": ["SELECT 1"]}))
+    out = tmp_path / "verifier"
+    assert livesqlbench_verifier.main(payload, prediction, out) == 1
+    assert not (out / "reward.txt").exists()
+    found = diagnostics(out)
+    assert (found["outcome"], found["error"]) == ("verifier_error", "OperationalError")
+    text = (out / livesqlbench_verifier.DIAGNOSTICS_FILE).read_text()
+    assert "x9" not in text and "10.9.9.9" not in text
 
 
 def test_the_script_runs_with_the_standard_library_psycopg_and_json_repair_only() -> None:

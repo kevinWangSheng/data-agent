@@ -2135,6 +2135,34 @@ def test_the_reference_must_be_among_the_configs(
     assert harbor.calls == []
 
 
+def test_reference_no_verifiers_without_configs_runs_its_four(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
+) -> None:
+    harbor = FakeHarbor()
+    out = tmp_path / "out"
+    assert run(monkeypatch, harbor, manifest, out, "--reference", "no-verifiers") == 0
+    ran = {call[call.index("--job-name") + 1] for call in harbor.calls}
+    assert ran == {"baseline", "no-skill", "no-context", "no-verifiers"}
+    assert {c["config"] for c in table(out)["contributions"]} == {
+        "baseline",
+        "no-skill",
+        "no-context",
+    }
+
+
+def test_reference_no_verifiers_refuses_a_config_it_has_no_layer_for(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harbor = FakeHarbor()
+    extra = ("--reference", "no-verifiers", "--config", "no-verifiers", "--config", "full")
+    assert run(monkeypatch, harbor, manifest, tmp_path / "out", *extra) == 2
+    assert "has no layer for --config full" in capsys.readouterr().err
+    assert harbor.calls == [] and harbor.smoke == []
+
+
 def test_reference_no_verifiers_compares_each_config_with_it(
     monkeypatch: pytest.MonkeyPatch, manifest: Path, tmp_path: Path
 ) -> None:

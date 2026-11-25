@@ -920,9 +920,19 @@ def run(args: argparse.Namespace) -> int:
             f"ablate: --n-concurrent must be at least 1, got {args.n_concurrent}", file=sys.stderr
         )
         return 2
-    configs = [c for c in CONFIGS if c in (args.config or CONFIGS)]
+    # The reference and the configs it has a layer label against (all six for full).
+    allowed = {args.reference, *REFERENCE_LAYERS[args.reference]}
+    configs = [c for c in CONFIGS if c in (args.config or allowed)]
     if args.reference not in configs:
         print(f"ablate: --config must include {args.reference}, the reference", file=sys.stderr)
+        return 2
+    unlabelled = [c for c in configs if c not in allowed]
+    if unlabelled:
+        print(
+            f"ablate: --reference {args.reference} has no layer for --config "
+            f"{', '.join(unlabelled)}",
+            file=sys.stderr,
+        )
         return 2
     try:
         manifest = json.loads(args.manifest.read_text())
