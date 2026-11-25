@@ -68,7 +68,7 @@ Status `ready-for-human`，Comment 写明试了什么、哪里失败、分支名
 - Attempts: 1
 - Review rounds: 1
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: 四条都实现；验收测试不变且通过；`make check` 绿
+- Outcome: 已合并（PR #142）；真实平台验收与 132、133 一起
 - Human review minutes: —
 
 ## Comments
@@ -85,3 +85,4 @@ Status `ready-for-human`，Comment 写明试了什么、哪里失败、分支名
   - 审查：`da-review main`（`1743ef0`）"No actionable regressions"，HEAD `93de101` 复跑同样。`eng:code-review` Standards 无硬违规，已修 `split_lines` 的嵌套三元、`redact` 算两次、缺 docstring；Spec 无越界，已加 `/new <问题>` 后重启的检查。不修：`threads`/`joined` 两个集合是工单要求的"分开记"；旧格式读回路径是工单要求的；`fence_after` 的三态返回（None / "" / 反引号串）是调用方要的"每行之后的块状态"；Telegram 再匹配一次 `FENCE_LINE` 只为取语言；Slack `sections` 读的是 `to_mrkdwn` 的输出（栅栏都是裸 ``` 行、代码行可能以反引号开头），按 CommonMark 重读会弄坏 `test_sections_end_and_hold_the_limit_on_mixed_text[31]`。
   - 已知限制：Slack 里四反引号块中间的裸 ``` 行显示时会提前结束代码块（mrkdwn 没有转义）；`format.py` 和 Telegram 都对。
 - 2026-11-25（主会话）：工单 agent 留下的两处小尾巴在本分支补了 `4a9dbf6`：`discord_bot.py` 模块 docstring 里"`/new` 后要再 @"改成和第 1 条一致；README Telegram 一节写明名单外的人点 Start 也不回复、发别的消息才看到自己的 user id（照 Hermes，属"照上游"已定）。
+- 2026-11-25（主会话）：PR #142 CI 绿，Codex 对 `4a9dbf6` 无意见（👍）。已 squash 合并为 main。Status 保持 `in-review`，与 132、133 一起等人建好 bot/app 后的真实验收（另看：线程里 `/new` 后不 @ 也回答；Telegram 点 Start 不回复）。
