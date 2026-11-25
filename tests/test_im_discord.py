@@ -12,8 +12,10 @@ from typing import Any, cast
 
 import discord
 import pytest
-from aiohttp import web
+from aiohttp import ClientSession, web
+from discord.gateway import DiscordWebSocket
 from discord.http import Route
+from discord.webhook.async_ import AsyncWebhookAdapter, interaction_response_params
 from fastapi import FastAPI
 
 from data_agent.im import service
@@ -40,6 +42,7 @@ DM = 500000000000000001
 FORUM = 800000000000000001
 # Made up, in no real token's shape.
 TOKEN = "dc-" + "Zr5m" + "-made-up-bot"
+INTERACTION_TOKEN = "dc-" + "Qx7k" + "-made-up-interaction"
 CONFIG = PlatformConfig(
     "discord",
     frozenset({str(ALICE)}),
@@ -651,6 +654,93 @@ async def test_new_is_answered_first_then_a_new_conversation(
     assert incoming.user_id == str(ALICE)
 
 
+class SlowResponse(FakeResponse):
+    """An acknowledgement that takes until `done` is set."""
+
+    def __init__(self, calls: list[tuple[str, dict[str, Any]]]) -> None:
+        super().__init__(calls)
+        self.done = asyncio.Event()
+
+    async def defer(self, **kwargs: Any) -> None:
+        self.calls.append(("defer", kwargs))
+        await self.done.wait()
+
+
+async def test_a_message_after_new_goes_into_the_new_conversation_while_new_is_acknowledged() -> (
+    None
+):
+    """`/new` takes its place among the events when it comes, not when Discord has taken its
+    acknowledgement: a message sent meanwhile is handed on after it."""
+    bot = platform()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    order: list[str] = []
+
+    async def on_message(incoming: Incoming) -> None:
+        order.append("new" if incoming.new_conversation else incoming.text)
+
+    bot.on_message = on_message
+    interaction = new_interaction(channel(PRIVATE, DM), calls)
+    response = SlowResponse(calls)
+    interaction.response = response
+    new = asyncio.create_task(bot.handle_new(cast(discord.Interaction, interaction)))
+    await asyncio.sleep(0)
+    after = asyncio.create_task(
+        bot.handle_message(message("first question after /new", where=channel(PRIVATE, DM)))
+    )
+    await asyncio.sleep(0.01)
+    response.done.set()
+    await asyncio.gather(new, after)
+    assert order == ["new", "first question after /new"]
+
+
+async def test_a_press_keeps_its_place_while_it_is_acknowledged() -> None:
+    bot = platform()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    order: list[str] = []
+
+    async def on_message(incoming: Incoming) -> None:
+        order.append(incoming.text)
+
+    async def on_press(press: Press) -> None:
+        order.append(f"press {press.value}")
+
+    bot.on_message, bot.on_press = on_message, on_press
+    interaction = press_interaction(CUSTOM_ID + "stop", calls=calls)
+    response = SlowResponse(calls)
+    interaction.response = response
+    press = asyncio.create_task(bot.handle_interaction(interaction))
+    await asyncio.sleep(0)
+    after = asyncio.create_task(bot.handle_message(message("after the press")))
+    await asyncio.sleep(0.01)
+    response.done.set()
+    await asyncio.gather(press, after)
+    assert order == ["press stop", "after the press"]
+
+
+async def test_interactions_are_acknowledged_while_an_earlier_event_is_handed_on() -> None:
+    """Discord wants the acknowledgement within 3 seconds, however long the adapter takes."""
+    bot = platform()
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_message(_: Incoming) -> None:
+        pass
+
+    async def on_press(_: Press) -> None:
+        pass
+
+    bot.on_message, bot.on_press = on_message, on_press
+    async with bot.lock:
+        new = asyncio.create_task(
+            bot.handle_new(cast(discord.Interaction, new_interaction(channel(PRIVATE, DM), calls)))
+        )
+        press = asyncio.create_task(
+            bot.handle_interaction(press_interaction(CUSTOM_ID + "stop", calls=calls))
+        )
+        await asyncio.sleep(0.01)
+        assert [kind for kind, _ in calls] == ["defer", "defer"]
+    await asyncio.gather(new, press)
+
+
 async def test_the_command_is_synced_only_when_it_changed() -> None:
     """Against the tree `start` registers: `/new`, usable in servers and direct messages."""
     client = Started(ready=True)
@@ -836,6 +926,65 @@ async def test_a_wrong_token_raises_and_no_token_is_in_the_debug_log(
     assert "applications/@me" in caplog.text
     for text in [caplog.text, str(failed.value), str(refused.value), repr(bot)]:
         assert TOKEN not in text
+
+
+async def test_no_interaction_token_is_in_the_debug_log(caplog: pytest.LogCaptureFixture) -> None:
+    """discord.py logs every gateway event at DEBUG as it came (`gateway.py`
+    `received_message`), and an `INTERACTION_CREATE` carries the interaction's token; the
+    interaction's callback and its webhook messages have the token in the URL, which the
+    webhook adapter logs. Both through discord.py's own code, against a loopback server."""
+    caplog.set_level(logging.DEBUG)
+    DiscordPlatform(CONFIG, cast(discord.Client, FakeClient()))
+    interaction_id = 990000000000000001
+
+    gateway = cast(Any, DiscordWebSocket.__new__(DiscordWebSocket))
+    gateway.shard_id, gateway.sequence, gateway._keep_alive = None, None, None
+    gateway._dispatch, gateway._discord_parsers, gateway._dispatch_listeners = (
+        lambda *_: None,
+        {},
+        [],
+    )
+    event = {
+        "op": 0,
+        "s": 7,
+        "t": "INTERACTION_CREATE",
+        "d": {"id": str(interaction_id), "type": 2, "token": INTERACTION_TOKEN},
+    }
+    await gateway.received_message(json.dumps(event))
+
+    async def answer(_: web.Request) -> web.Response:
+        return web.Response(status=204)
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", answer)
+    runner, base = await serve(app)
+    adapter = AsyncWebhookAdapter()
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(Route, "BASE", base)
+            async with ClientSession() as session:
+                await adapter.create_interaction_response(
+                    interaction_id,
+                    INTERACTION_TOKEN,
+                    session=session,
+                    params=interaction_response_params(type=5),
+                )
+                await adapter.delete_original_interaction_response(
+                    BOT, INTERACTION_TOKEN, session=session
+                )
+    finally:
+        await runner.cleanup()
+
+    # discord.py's records; the loopback server's own access log is not the bot's.
+    logged = "\n".join(
+        caplog.handler.format(record)
+        for record in caplog.records
+        if record.name.startswith("discord")
+    )
+    assert "INTERACTION_CREATE" in logged
+    assert f"/interactions/{interaction_id}/" in logged
+    assert f"/webhooks/{BOT}/" in logged
+    assert INTERACTION_TOKEN not in logged
 
 
 # --- service ---------------------------------------------------------------------------------

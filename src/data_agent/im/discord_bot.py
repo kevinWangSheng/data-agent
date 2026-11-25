@@ -29,7 +29,7 @@ type checkers look for `import discord` next to the importing file first.
   or other mention in an answer notifies anyone. Buttons are components of the message, five to
   a row, their `custom_id` `CUSTOM_ID` and the button's value; no `View` is stored for them, so
   `on_interaction` handles every press, a button of a message from before a restart too.
-- A button press is deferred first (Discord wants an answer within 3 seconds), then handed on.
+- A button press is deferred (Discord wants an answer within 3 seconds), then handed on.
   An edit sends the components again, so one without buttons takes them off.
 - `/new` is a global slash command. Its interaction is deferred as an ephemeral "thinking"
   answer only its user sees, an `Incoming` with `new_conversation` (and `mentioned`: the
@@ -37,14 +37,18 @@ type checkers look for `import discord` next to the importing file first.
   adapter replies is the one visible reply. A `/new` typed as text is an ordinary message.
   `/new` in a bot's thread drops the thread's key in the adapter, so the next message there
   needs a mention again.
-- discord.py runs each event in a task of its own; one lock hands messages and presses to the
-  adapter one at a time, in the order they came.
+- discord.py runs each event in a task of its own; one lock hands messages, presses and `/new`
+  to the adapter one at a time, in the order they came. An interaction takes its place in that
+  order when it comes, and its acknowledgement goes out at once beside it (in time however long
+  the events before it take); it is handed on once Discord has the acknowledgement.
 - `start` logs in (`LoginFailure` when the token is wrong), connects in a task of its own (the
   library reconnects), returns once the gateway is ready, raising when the connection ends
   before, and syncs `/new` when Discord's global commands differ (a failed sync is logged, and
   the bot goes on: the adapter must poll the turns its messages start). Never `Client.run`, which
   sets up logging; the token is given explicitly and goes only into the `Authorization` header
-  and the gateway's IDENTIFY, neither of which discord.py logs.
+  and the gateway's IDENTIFY, neither of which discord.py logs. An interaction's token is
+  logged, though: in its `INTERACTION_CREATE` event, which the gateway logs at DEBUG as it came,
+  and in the URLs of its callback and webhook messages; `REDACTED_LOGGERS` have it taken out.
 - discord.py waits out a 429 itself, up to `RATE_LIMIT_WAIT` seconds; past that it raises
   `RateLimited`. An edit then raises, and the adapter skips it; a send waits and tries once more.
 """
@@ -109,6 +113,16 @@ THREAD_TYPES = (
     discord.ChannelType.private_thread,
     discord.ChannelType.news_thread,
 )
+# The discord.py loggers whose records can hold an interaction's token: the gateway's events
+# (`gateway.py` `received_message`) and the requests (URLs) of `http.py` and the webhook adapter
+# (`webhook/async_.py`, which an interaction's callback and messages go through). A logger's
+# filter sees only its own records, not its children's, so these are the modules' own.
+REDACTED_LOGGERS = ("discord.gateway", "discord.http", "discord.webhook.async_")
+# A `"token": "..."` field of a logged payload, and the token in a webhook's or an
+# interaction's URL (`/webhooks/{id}/{token}`, `/interactions/{id}/{token}/callback`).
+TOKEN_FIELD = re.compile(r"""(['"]token['"]\s*:\s*['"])[^'"]+""")
+TOKEN_PATH = re.compile(r"(/(?:webhooks|interactions)/\d+/)[^/?#\s'\"]+")
+REDACTED = "[redacted]"
 
 
 def intents() -> discord.Intents:
@@ -119,6 +133,26 @@ def intents() -> discord.Intents:
     return chosen
 
 
+class RedactTokens(logging.Filter):
+    """Takes tokens out of a record's message (formatted with its arguments)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = TOKEN_PATH.sub(rf"\1{REDACTED}", TOKEN_FIELD.sub(rf"\1{REDACTED}", message))
+        if redacted != message:
+            record.msg, record.args = redacted, ()
+        return True
+
+
+REDACT_TOKENS = RedactTokens()
+
+
+def redact_tokens() -> None:
+    """Puts the filter on `REDACTED_LOGGERS`, once (`addFilter` skips one already there)."""
+    for name in REDACTED_LOGGERS:
+        logging.getLogger(name).addFilter(REDACT_TOKENS)
+
+
 class DiscordPlatform:
     name = PLATFORM
     capabilities = Capabilities(edit=True, buttons=True, typing=False)
@@ -126,6 +160,7 @@ class DiscordPlatform:
 
     def __init__(self, config: PlatformConfig, client: discord.Client | None = None) -> None:
         """`client` is for the tests; the bot's own is made here."""
+        redact_tokens()
         self.token = config.tokens["bot_token_env"]
         self.client = (
             client
@@ -348,12 +383,13 @@ class DiscordPlatform:
         custom_id = str(data.get("custom_id", ""))
         if not custom_id.startswith(CUSTOM_ID):
             return
-        await interaction.response.defer()
+        acknowledgement = asyncio.create_task(interaction.response.defer())
         press = self.to_press(interaction, custom_id[len(CUSTOM_ID) :])
-        if press is None or self.on_press is None:
-            return
+        # In the queue before the acknowledgement is awaited (see the module's docstring).
         async with self.lock:
-            await self.on_press(press)
+            await acknowledgement
+            if press is not None and self.on_press is not None:
+                await self.on_press(press)
 
     def to_press(self, interaction: discord.Interaction, value: str) -> Press | None:
         channel, message = interaction.channel, interaction.message
@@ -374,12 +410,12 @@ class DiscordPlatform:
         )
 
     async def handle_new(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            channel = interaction.channel
-            if self.on_message is None or channel is None:
-                return
-            chat, thread, direct = channel_key(channel)
+        acknowledgement = asyncio.create_task(
+            interaction.response.defer(ephemeral=True, thinking=True)
+        )
+        incoming = None
+        if interaction.channel is not None:
+            chat, thread, direct = channel_key(interaction.channel)
             incoming = Incoming(
                 platform=PLATFORM,
                 chat_id=chat,
@@ -390,13 +426,22 @@ class DiscordPlatform:
                 text="",
                 new_conversation=True,
             )
+        acknowledged = False
+        try:
+            # In the queue before the acknowledgement is awaited (see the module's docstring).
             async with self.lock:
-                await self.on_message(incoming)
+                await acknowledgement
+                acknowledged = True
+                if incoming is not None and self.on_message is not None:
+                    await self.on_message(incoming)
         finally:
-            try:
-                await interaction.delete_original_response()
-            except discord.HTTPException:
-                log.warning("discord: the /new acknowledgement could not be deleted", exc_info=True)
+            if acknowledged:
+                try:
+                    await interaction.delete_original_response()
+                except discord.HTTPException:
+                    log.warning(
+                        "discord: the /new acknowledgement could not be deleted", exc_info=True
+                    )
 
 
 async def sync_commands(tree: app_commands.CommandTree[Any]) -> None:
