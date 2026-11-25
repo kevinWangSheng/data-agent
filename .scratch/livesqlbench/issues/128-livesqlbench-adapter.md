@@ -512,3 +512,10 @@ Base-Lite 的 180 道 `Query` 题能在服务器上以 Harbor 任务跑通，并
       - `init-db.sh`'s `exit 1` is tested only by a string match; the dry run covers its behaviour.
       - The `benchmark == livesqlbench` checks in `ablate` are left inline; there are only three.
       - Harbor doesn't pass a job's extra mounts or compose files to the separate verifier. Our job config sets neither, so nothing is affected today.
+
+- 2026-11-25（对齐会话，人定）工单范围外的 4 项改动全部接受：
+  1. `pyproject.toml`/`uv.lock` 加开发依赖 `json-repair==0.58.5`：已定的 `pred.json` 修复直接带出，版本与上游、`Dockerfile.main` 一致。
+  2. `ablate` 只对 LiveSQLBench 传 `harbor run -y`：Harbor 0.24 读本机变量前的确认提示（`harbor/cli/jobs.py:258-262`）没有单独开关；data-eng-bench、DAB 不受影响。
+  3. 验证脚本自身失败不写 reward、冒烟停下：取代第 1 轮的"记 0 分"。上游（`test.sh` 等库失败、`evaluator.py:212-220`）判 0；我们报告里同样算 0（`NOT_RETRIED`），分数口径不变，只是基础设施故障可见。全量里不重试、算 0 的口子写进 136 的验收标准。
+  4. `--reference no-verifiers` 默认只跑它的 4 个配置、其余 exit 2：与 spec 的 2×2（Skill × 上下文工具）一致，修掉写报告时的崩溃。
+  - 下一步（主会话）：服务器上用 `0f499f2` 重跑 `da-remote setup`、`benchmarks`（镜像全部换新 tag 重建，盯磁盘），再跑冒烟。另：本工单上一条写"未 push"，实际远端分支已在 `0f499f2`。
