@@ -838,7 +838,9 @@ fi
 exec REAL_GIT "$@"
 """
 
-# download.sh "fetches" the data file; the probe reports both databases up unless FAKE_DB_DOWN.
+# download.sh "fetches" the data file; the probe reports both databases up unless FAKE_DB_DOWN;
+# `evals livesqlbench prepare` records the write credential it was given (FAKE_LSB_FAIL fails it)
+# and `evals livesqlbench check` reports one ready and one missing item.
 FAKE_BENCH_UV = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$HOME/uv.calls"
 case "$*" in
@@ -858,6 +860,16 @@ case "$*" in
     if [ -n "${FAKE_PROBE_BROKEN:-}" ]; then echo "error: no interpreter found"; exit 2; fi
     echo "postgres ok"; echo "mongodb ok"
     ;;
+  *"livesqlbench prepare"*)
+    printf '%s' "${LSB_PG_WRITE_PASSWORD:-}" > "$HOME/lsb-prepare.password"
+    if [ -n "${FAKE_LSB_FAIL:-}" ]; then echo "livesqlbench: the dump download failed"; exit 1; fi
+    echo "tasks: 180 in tasks, 0 with a gold answer"
+    ;;
+  *"livesqlbench check"*)
+    echo "  ok    LiveSQLBench data at 507d7d9: 54 of 54 asset files"
+    echo "  FAIL  LiveSQLBench tasks: 0 in tasks, 0 with a gold answer"
+    exit 1
+    ;;
 esac
 """
 
@@ -867,7 +879,11 @@ st="$HOME/docker-state"
 mkdir -p "$st"
 case $1 in
   info) exit 0 ;;
-  image) [ -e "$st/image" ] ;;
+  image)
+    # `image ls`: LiveSQLBench's database images, present only with FAKE_LSB_IMAGES.
+    if [ "$2" = ls ]; then [ -n "${FAKE_LSB_IMAGES:-}" ] && echo 0123456789ab; exit 0; fi
+    [ -e "$st/image" ]
+    ;;
   build) touch "$st/image" ;;
   inspect) [ -e "$st/${@: -1}" ] && cat "$st/${@: -1}" ;;
   start) echo true > "$st/$2" ;;
@@ -1165,3 +1181,127 @@ def test_exec_runs_in_the_default_home_relative_repo_dir(env: Env):
     proc = env.run("exec", "--", "pwd", DA_REMOTE_DIR="~/data-agent")
     assert proc.returncode == 0, proc.stdout
     assert proc.stdout.splitlines() == [str(env.repo)]
+
+
+# --- LiveSQLBench (ticket 128) ---
+
+LSB_ENV = Path(".config") / "data-agent" / "livesqlbench.env"
+
+
+def lsb_password(env: Env) -> str:
+    lines = (env.server / LSB_ENV).read_text().splitlines()
+    return next(
+        line.split("=", 1)[1] for line in lines if line.startswith("LSB_PG_WRITE_PASSWORD=")
+    )
+
+
+def test_benchmarks_writes_the_livesqlbench_credential_and_prepares_its_tasks(bench: Env):
+    proc = bench.run("benchmarks")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (bench.server / LSB_ENV).stat().st_mode & 0o777 == 0o600
+    password = lsb_password(bench)
+    assert len(password) == 32 and password.isalnum()
+    assert password not in proc.stdout + proc.stderr
+    # Only `prepare` gets it, from the environment; never on a command line.
+    assert (bench.server / "lsb-prepare.password").read_text() == password
+    assert not any(password in c for c in calls(bench, "uv") + calls(bench, "docker"))
+    base = bench.server / "da-benchmarks"
+    prepare = (
+        f"run --no-sync python -m evals livesqlbench prepare --root {base / 'livesqlbench'} "
+        f"--answers {base / 'livesqlbench-answers.jsonl'}"
+    )
+    assert prepare in calls(bench, "uv")
+    assert "LiveSQLBench answers: none at" in proc.stdout
+    assert "tasks: 180 in tasks" in proc.stdout
+    assert "LiveSQLBench: --tasks-dir ../da-benchmarks/livesqlbench/tasks" in proc.stdout
+
+
+def test_benchmarks_keeps_the_livesqlbench_credential(bench: Env):
+    assert bench.run("benchmarks").returncode == 0
+    before = (bench.server / LSB_ENV).read_text()
+    proc = bench.run("benchmarks")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (bench.server / LSB_ENV).read_text() == before
+    assert "LiveSQLBench write credential: kept in" in proc.stdout
+
+
+def test_benchmarks_names_the_livesqlbench_answers_a_human_put_there(bench: Env):
+    answers = bench.server / "da-benchmarks" / "livesqlbench-answers.jsonl"
+    answers.parent.mkdir(parents=True)
+    answers.write_text("{}\n")
+    proc = bench.run("benchmarks")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"LiveSQLBench answers: {answers}" in proc.stdout
+    assert "none at" not in proc.stdout
+
+
+def test_benchmarks_mints_no_credential_for_existing_livesqlbench_images(bench: Env):
+    proc = bench.run("benchmarks", FAKE_LSB_IMAGES="1")
+    assert proc.returncode == 1
+    assert "their password is lost" in proc.stdout
+    assert not (bench.server / LSB_ENV).exists()
+    assert not any("livesqlbench prepare" in c for c in calls(bench, "uv"))
+
+
+def test_benchmarks_stops_when_livesqlbench_prepare_fails(bench: Env):
+    proc = bench.run("benchmarks", FAKE_LSB_FAIL="1")
+    assert proc.returncode == 1
+    assert "the dump download failed" in proc.stdout
+    assert "LiveSQLBench prepare failed (exit 1)" in proc.stdout
+    assert "benchmarks: ready" not in proc.stdout
+
+
+def test_check_reports_livesqlbench_readiness(bench: Env):
+    (bench.repo / ".git").mkdir()
+    proc = bench.run("check")
+    assert "FAIL  LiveSQLBench write credential missing (da-remote benchmarks)" in proc.stdout
+    assert "ok    LiveSQLBench data at 507d7d9" in proc.stdout
+    assert "FAIL  LiveSQLBench tasks: 0 in tasks" in proc.stdout
+    root = bench.server / "da-benchmarks" / "livesqlbench"
+    check = f"run -q --no-sync python -m evals livesqlbench check --root {root}"
+    assert check in calls(bench, "uv")
+
+    assert bench.run("benchmarks").returncode == 0
+    proc = bench.run("check")
+    assert "ok    LiveSQLBench write credential present, mode 600" in proc.stdout
+    assert lsb_password(bench) not in proc.stdout
+    (bench.server / LSB_ENV).chmod(0o644)
+    assert "FAIL  LiveSQLBench write credential mode 644" in bench.run("check").stdout
+
+
+def test_check_without_the_repo_cannot_read_livesqlbench_readiness(bench: Env):
+    proc = bench.run("check")
+    assert "FAIL  LiveSQLBench readiness unknown: needs the repo" in proc.stdout
+
+
+@pytest.mark.parametrize("flag", [["--benchmark", "livesqlbench"], ["--benchmark=livesqlbench"]])
+def test_a_livesqlbench_ablate_run_gets_the_write_credential(env: Env, flag: list[str]):
+    assert env.run("setup").returncode == 0
+    proc = env.run("start", "smoke", "--", "ablate", *flag, "--budget", "1")
+    assert proc.returncode == 1
+    assert "no LiveSQLBench write credential" in proc.stdout
+    assert not (env.repo / "runs" / "smoke").exists()
+
+    (env.server / LSB_ENV).write_text("DATA_AGENT_SMOKE=lsb\n")
+    assert env.run("start", "smoke", "--", "ablate", *flag, "--budget", "1").returncode == 0
+    env.wait_for_evals()
+    env.finish(0)
+    assert "env loaded: lsb" in (env.repo / "runs" / "smoke" / "run.log").read_text()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["ablate"],
+        ["ablate", "--benchmark", "data-eng-bench"],
+        ["board", "--benchmark", "livesqlbench"],
+    ],
+)
+def test_other_runs_do_not_get_the_livesqlbench_credential(env: Env, args: list[str]):
+    assert env.run("setup").returncode == 0
+    (env.server / LSB_ENV).write_text("DATA_AGENT_SMOKE=lsb\n")
+    assert env.run("start", "smoke", "--", *args, "--budget", "1").returncode == 0
+    env.wait_for_evals()
+    env.finish(0)
+    log = (env.repo / "runs" / "smoke" / "run.log").read_text()
+    assert "env loaded: yes" in log and "env loaded: lsb" not in log

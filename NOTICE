@@ -103,3 +103,38 @@ From the upstream NOTICE:
   `.github/workflows/leaderboard-*.yml` workflows are adapted from the
   Harbor Terminal-Bench 2.1 reference repository
   (https://github.com/harbor-framework/terminal-bench-2-1), also Apache-2.0.
+
+------------------------------------------------------------------------------
+LiveSQLBench (https://github.com/bird-bench/livesqlbench), commit e15cd22
+Two licenses: the repository root's LICENSE is the MIT License, "Copyright (c) 2024 bird_sql";
+LiveSQLBench-CLI/LICENSE is the Apache License 2.0 (its copyright line is the unfilled template).
+------------------------------------------------------------------------------
+
+MIT (repository root):
+- evals/livesqlbench_verifier.py <- evaluation/src/test_utils.py (remove_round_functions,
+  remove_round, process_decimals_recursive, preprocess_results, remove_distinct, remove_comments;
+  ex_base's comparison as results_match; test_case_default's cleaning order as clean_sql); the MIT
+  notice is kept at its top. Modified: remove_round logs nothing, the execution is written anew
+  for psycopg, and nothing prints a query or a result (as noted at its top).
+
+Apache-2.0 (LiveSQLBench-CLI/adapters/livesqlbench/). The four files under
+evals/livesqlbench_images/ are modified as noted at their tops; the Python files only follow
+upstream's logic, written anew, and say so where they do:
+- evals/livesqlbench_images/init-db.sh <- template/environment/init-db.sh (unchanged but for the
+  header, one line's trailing whitespace, and a mapped table without a dump file failing instead
+  of being skipped)
+- evals/livesqlbench_images/bootstrap-db-image.sh <- template/environment/bootstrap-db-image.sh
+- evals/livesqlbench_images/db-entrypoint.sh <- template/environment/db-entrypoint.sh
+- evals/livesqlbench_images/Dockerfile.db <- template/environment/Dockerfile.db
+- evals/livesqlbench_server.py: the image build (build_db_image, table_order, dump_dirs)
+  <- build_db_images.sh, rewritten in Python
+- evals/livesqlbench.py: the task layout (compose services, db_init/db_name.txt and
+  preprocess.sql, the task.toml limits, the instruction's answer format) <- adapter.py,
+  template/environment/docker-compose.yaml and template/documents/README_TASK.md, written anew
+  without the credentials and without external_knowledge in the instruction
+- evals/livesqlbench_verifier.py: read_prediction's parse of pred.json (json.loads of json-repair's
+  repair_json) <- template/tests/evaluator.py, written anew; json-repair itself (MIT) is installed
+  in the task's image (Dockerfile.main), not copied
+
+The data (HF birdsql/livesqlbench-base-lite) and the PostgreSQL dumps are not in this repository
+and are not redistributed: `da-remote benchmarks` downloads them on the evaluation server only.

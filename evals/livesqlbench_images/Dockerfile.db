@@ -1,0 +1,41 @@
+# From LiveSQLBench @ e15cd22, LiveSQLBench-CLI/adapters/livesqlbench/template/environment/
+# Dockerfile.db (Apache License 2.0, LiveSQLBench-CLI/LICENSE; see NOTICE). Modified for data-agent
+# (ticket 128, .scratch/livesqlbench/spec.md U6): no POSTGRES_PASSWORD (upstream bakes 123123 into
+# ENV) and POSTGRES_USER is the local superuser `postgres`; the write role's password is the build
+# secret lsb_write_password (`docker build --secret`), mounted for the bootstrap step only and in
+# no ENV, build argument or layer; the health check runs as `postgres`.
+# Built by `python -m evals livesqlbench prepare` (evals/livesqlbench_server.py) with this
+# directory as `environment/` and the database's dump as `db_seed/` in the build context.
+ARG POSTGRES_BASE_IMAGE=postgres:14.12
+FROM ${POSTGRES_BASE_IMAGE}
+
+ENV POSTGRES_USER=postgres
+ENV PGDATA=/var/lib/postgresql/livesqlbench-data
+
+# Copy scripts and build-time seed assets
+COPY environment/init-db.sh /usr/local/bin/livesqlbench-init-db.sh
+COPY environment/bootstrap-db-image.sh /usr/local/bin/livesqlbench-bootstrap-db-image.sh
+COPY environment/db-entrypoint.sh /usr/local/bin/livesqlbench-db-entrypoint.sh
+COPY db_seed /opt/livesqlbench/db_seed
+
+RUN chmod +x /usr/local/bin/livesqlbench-init-db.sh \
+    /usr/local/bin/livesqlbench-bootstrap-db-image.sh \
+    /usr/local/bin/livesqlbench-db-entrypoint.sh \
+    && mkdir -p "${PGDATA}" /docker-entrypoint-initdb.d/db_assets \
+    && touch /opt/livesqlbench/db_seed/preprocess.sql \
+    && chown -R postgres:postgres /usr/local/bin/livesqlbench-init-db.sh \
+        /usr/local/bin/livesqlbench-bootstrap-db-image.sh \
+        /usr/local/bin/livesqlbench-db-entrypoint.sh \
+        /opt/livesqlbench \
+        /docker-entrypoint-initdb.d \
+        /var/lib/postgresql
+RUN --mount=type=secret,id=lsb_write_password,required=true,mode=0444 \
+    gosu postgres /usr/local/bin/livesqlbench-bootstrap-db-image.sh
+
+USER postgres
+ENTRYPOINT ["/usr/local/bin/livesqlbench-db-entrypoint.sh"]
+CMD ["postgres"]
+
+# Health check: verify PostgreSQL is running
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=30 \
+    CMD pg_isready -U postgres -h 127.0.0.1 || exit 1

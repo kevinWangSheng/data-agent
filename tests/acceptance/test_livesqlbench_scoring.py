@@ -34,12 +34,6 @@ import pytest
 
 from evals.livesqlbench import Result, clean_sql, results_match
 
-TICKET_128 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 128: LiveSQLBench soft EX is not implemented",
-)
-
 # (input SQL list, upstream's cleaned list)
 CLEANED = {
     "comments": (
@@ -71,7 +65,6 @@ CLEANED = {
 }
 
 
-@TICKET_128
 @pytest.mark.parametrize("case", CLEANED)
 def test_sql_is_cleaned_as_upstream_cleans_it(case: str) -> None:
     sqls, expected = CLEANED[case]
@@ -134,7 +127,6 @@ def result(columns: tuple[str, ...], values: tuple[tuple[Any, ...], ...]) -> Res
     return Result(columns=columns[:width], rows=values)
 
 
-@TICKET_128
 @pytest.mark.parametrize("case", MATCHED)
 def test_results_compare_as_upstream_compares_them(case: str) -> None:
     predicted, gold, conditions, expected = MATCHED[case]
@@ -142,7 +134,6 @@ def test_results_compare_as_upstream_compares_them(case: str) -> None:
     assert results_match(result(columns, predicted), result(columns, gold), conditions) is expected
 
 
-@TICKET_128
 @pytest.mark.parametrize("conditions", [{}, {"order": True}])
 def test_column_names_are_not_compared(conditions: dict[str, Any]) -> None:
     """`ex_base` compares the rows' value tuples only (test_utils.py:276-285)."""

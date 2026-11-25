@@ -13,7 +13,6 @@ When Harbor uploads `tests/` (spec :20) is not pinned.
 
 from pathlib import Path
 
-import pytest
 from harbor.models.task.task import Task
 from livesqlbench_support import (
     DB_ASSETS,
@@ -30,14 +29,7 @@ from livesqlbench_support import (
 
 from evals import livesqlbench
 
-TICKET_128 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 128: LiveSQLBench task generation is not implemented",
-)
 
-
-@TICKET_128
 def test_each_query_record_becomes_a_task_harbor_reads(tmp_path: Path) -> None:
     generated = generate(tmp_path)
 
@@ -51,7 +43,6 @@ def test_each_query_record_becomes_a_task_harbor_reads(tmp_path: Path) -> None:
         assert task.config.metadata.get("task_type") == "query"
 
 
-@TICKET_128
 def test_the_agent_sees_its_databases_public_assets(tmp_path: Path) -> None:
     """Spec U8: the official tasks give the agent `db_assets` (knowledge base, column meanings,
     schema); here each fixture file of the task's database is under `environment/` unchanged."""
@@ -65,7 +56,6 @@ def test_the_agent_sees_its_databases_public_assets(tmp_path: Path) -> None:
             assert read(asset) in visible, f"{asset.name} is not in the task's environment"
 
 
-@TICKET_128
 def test_a_management_record_gets_no_task(tmp_path: Path) -> None:
     generated = generate(tmp_path)
 
@@ -78,7 +68,6 @@ def test_a_management_record_gets_no_task(tmp_path: Path) -> None:
         assert leaks(texts, [record["query"]]) == []
 
 
-@TICKET_128
 def test_no_answer_is_in_the_instruction_or_the_environment(tmp_path: Path) -> None:
     generated = generate(tmp_path)
 

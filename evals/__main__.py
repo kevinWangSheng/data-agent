@@ -17,6 +17,7 @@ from evals import (
     export,
     improve,
     jaffle,
+    livesqlbench_server,
     scrub,
     selection,
     spend,
@@ -24,8 +25,11 @@ from evals import (
 from evals.compare import paired_bootstrap
 from evals.harbor import by_task, load_trials
 from evals.report import (
+    BENCHMARKS,
+    DEFAULT_BENCHMARK,
     MERGE_HELP,
     TRIALS_PER_TASK,
+    benchmark_tasks,
     check_complete,
     load_jobs,
     score,
@@ -33,6 +37,9 @@ from evals.report import (
     write_report,
 )
 from evals.sample import read_task_list, sample, task_difficulty
+
+# `--benchmark` of report and compare: the split is the manifest's tasks of this benchmark.
+BENCH_HELP = "the benchmark whose tasks of the split count (default data-eng-bench)"
 
 
 def _print(result: dict[str, Any], as_json: bool) -> None:
@@ -57,8 +64,9 @@ def cmd_compare(args: argparse.Namespace) -> None:
     baseline, candidate = load_jobs(args.baseline), load_jobs(args.candidate)
     if args.split:
         manifest = json.loads(args.manifest.read_text())
-        baseline = split_trials(baseline, manifest, args.split, "the baseline")
-        candidate = split_trials(candidate, manifest, args.split, "the candidate")
+        tasks = {args.split: benchmark_tasks(manifest, args.split, args.benchmark)}
+        baseline = split_trials(baseline, tasks, args.split, "the baseline")
+        candidate = split_trials(candidate, tasks, args.split, "the candidate")
     check_complete(baseline, "baseline", args.trials)
     check_complete(candidate, "candidate", args.trials)
     result = paired_bootstrap(
@@ -71,12 +79,21 @@ def cmd_report(args: argparse.Namespace) -> None:
     manifest = json.loads(args.manifest.read_text())
     trials = load_jobs(args.job_dirs)
     report = write_report(
-        trials, manifest, args.split, args.out, args.trials, args.manifest, args.job_dirs
+        trials,
+        manifest,
+        args.split,
+        args.out,
+        args.trials,
+        args.manifest,
+        args.job_dirs,
+        args.benchmark,
     )
     print(
         f"{args.split}: accuracy {report['accuracy']:.1f}% ± {report['accuracy_stderr']:.1f}% "
         f"over {report['n_trials']} trials -> {args.out}"
     )
+    if no_gold := report.get("no_gold_answer_trials"):
+        print(f"{args.split}: {no_gold} trial(s) had no gold answer; their 0 is no score")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
     p.add_argument("--manifest", type=Path, help="with --split: both jobs must cover the split")
     p.add_argument("--split", choices=("dev", "holdout"))
+    p.add_argument("--benchmark", choices=BENCHMARKS, default=DEFAULT_BENCHMARK, help=BENCH_HELP)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_compare)
 
@@ -113,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--split", choices=("dev", "holdout"), required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--trials", type=int, default=TRIALS_PER_TASK, help="required trials per task")
+    p.add_argument("--benchmark", choices=BENCHMARKS, default=DEFAULT_BENCHMARK, help=BENCH_HELP)
     p.set_defaults(func=cmd_report)
 
     modules = (
@@ -129,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
         selection,
         export,
         improve,
+        livesqlbench_server,
     )
     for module in modules:
         module.add_parser(commands)

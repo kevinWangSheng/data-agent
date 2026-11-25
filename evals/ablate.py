@@ -48,16 +48,25 @@ human: Harbor does not retry it and a report would score it as a real 0. So does
 account ran out), but its trials are infrastructure errors, rerun once the account is topped up.
 Once every job is complete, `evals scrub` cleans this table's jobs in place, `evals report` writes
 each config's report and `evals compare --manifest --split <split>` gives each layer's
-contribution: full minus the config without the layer, in accuracy points, with a paired bootstrap
-95% interval. Per-task holdout results are never printed or written (ADR-0004); the guards' and
-Harbor's own output, which name tasks, go to logs.
+contribution: the reference (`--reference`, default full) minus the config without the layer, in
+accuracy points, with a paired bootstrap 95% interval. Per-task holdout results are never printed
+or written (ADR-0004); the guards' and Harbor's own output, which name tasks, go to logs.
 
 Run from the repo root with the DATA_AGENT_* variables set, as for `harbor run`:
 
     uv run python -m evals ablate --tasks-dir <data-eng-bench>/tasks \
         --manifest evals/manifest.json --out runs/ablation --budget 300 --n-concurrent 2
 
-plan §7's cuts: `--trials 2`, or `--config` repeated to drop configs (full is always needed).
+plan §7's cuts: `--trials 2`, or `--config` repeated to drop configs (the reference is always
+needed).
+
+`--benchmark livesqlbench` runs LiveSQLBench's tasks (evals.livesqlbench; `--tasks-dir` is the
+generated tasks, `da-remote benchmarks` writes them) with its own job config: the split is the
+manifest's tasks of that benchmark (`evals.report.benchmark_tasks`), the smoke task its first dev
+task, and the reports and comparisons cover its tasks only. Its 2x2 (.scratch/livesqlbench/spec.md
+"运行") takes `--reference no-verifiers`. A holdout run refuses tasks generated without the gold
+answers (their 0 is no score), by count. Its tasks are no git clone, so the run record's
+benchmark commit is a digest of the tasks directory's files.
 On the dev set (ADR-0008: read the trajectories where configs differ), for example one task once:
 
     uv run python -m evals ablate --tasks-dir <data-eng-bench>/tasks \
@@ -70,6 +79,7 @@ Harbor run, infrastructure errors left, a scrub that could not check everything)
 """
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -88,12 +98,18 @@ from data_agent.agent import git_commit, skill_version
 from data_agent.run_config import REPO_ROOT, load_config
 from evals import balance, readiness, wheels
 from evals.harbor import Trial, event_files, events_in, load_trials
+from evals.livesqlbench import BENCHMARK as LSB_BENCHMARK
+from evals.livesqlbench import has_gold_answer
 from evals.process import timing_markdown
 from evals.report import (
+    BENCHMARKS,
+    DEFAULT_BENCHMARK,
     TRIALS_PER_TASK,
+    benchmark_tasks,
     check_complete,
     check_dev_list,
     is_infra_error,
+    of_benchmark,
     split_trials,
 )
 from evals.selection import selection_markdown, selection_row
@@ -103,13 +119,23 @@ from evals.walk import walk_files
 # Run order: the reference first, and full-old-skill last, the first config plan §7 drops.
 CONFIGS = ("full", "baseline", "no-skill", "no-verifiers", "no-context", "full-old-skill")
 REFERENCE = "full"
-# What full minus each config measures.
+# What the reference minus each config measures, per reference (`--reference`). full is
+# data-eng-bench's; no-verifiers is LiveSQLBench's 2x2 of Skill and context tools
+# (.scratch/livesqlbench/spec.md "运行", U1), where full acts as no-verifiers does on a query task.
 LAYERS = {
     "baseline": "all layers",
     "no-skill": "Skill",
     "no-verifiers": "verifier subagents",
     "no-context": "context strategy",
     "full-old-skill": "failure-attribution loop (new vs old Skills)",
+}
+REFERENCE_LAYERS = {
+    REFERENCE: LAYERS,
+    "no-verifiers": {
+        "baseline": "both layers (Skill and context tools)",
+        "no-context": "context tools",
+        "no-skill": "Skill",
+    },
 }
 # Harbor does not retry these and a report scores them 0 like an agent failure (ticket 10's known
 # limitation), though they mean the model settings are wrong: stop for a human instead.
@@ -128,6 +154,10 @@ STOP_GRACE_SECONDS = 300.0
 # every later trial would fail the same way, so stop for a human too.
 ACCOUNT_ERRORS = frozenset({"ApiUsageLimitError"})
 JOB_CONFIG = REPO_ROOT / "evals" / "configs" / "data-eng-bench-duckdb.data-agent.yaml"
+JOB_CONFIGS = {
+    DEFAULT_BENCHMARK: JOB_CONFIG,
+    LSB_BENCHMARK: REPO_ROOT / "evals" / "configs" / "livesqlbench.data-agent.yaml",
+}
 DEFAULT_MODEL = "the job config's default"
 # The machine's human-given label for the run record (`da-remote start` sets its host alias);
 # never a hostname or address, which scrub would remove (plan §7).
@@ -158,7 +188,25 @@ def agent_kwarg(value: str) -> str:
 
 def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     parser = commands.add_parser("ablate", help="run the configs on a split, write the table")
-    parser.add_argument("--tasks-dir", type=Path, required=True, help="data-eng-bench tasks/")
+    parser.add_argument(
+        "--tasks-dir",
+        type=Path,
+        required=True,
+        help="data-eng-bench tasks/, or LiveSQLBench's generated tasks",
+    )
+    parser.add_argument(
+        "--benchmark",
+        choices=BENCHMARKS,
+        default=DEFAULT_BENCHMARK,
+        help="whose tasks of the split run, with its job config (default data-eng-bench)",
+    )
+    parser.add_argument(
+        "--reference",
+        choices=tuple(REFERENCE_LAYERS),
+        default=REFERENCE,
+        help=f"the config each other one is compared with; --config must include it "
+        f"(default {REFERENCE})",
+    )
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--budget", required=True, help="stop before a job at 80%% of this (USD)")
@@ -360,19 +408,27 @@ def check_conditions(config: str, job: Path, trials: list[Trial]) -> None:
 
 
 def check_request(
-    out: Path, model: str | None, split: str, tasks: list[str], agent_kwargs: list[str]
+    out: Path,
+    model: str | None,
+    split: str,
+    tasks: list[str],
+    agent_kwargs: list[str],
+    benchmark: str = DEFAULT_BENCHMARK,
 ) -> None:
     """OUT holds one request: finished jobs are reused, so another --model would otherwise get
     the table of the model OUT was first run with, and other tasks would meet jobs that never
     cover them. A holdout request records the model only, since the holdout is always run whole.
     The `--agent-kwarg`s are part of it when there are any (ticket 54: another timeout is
-    another run), so an OUT written before them stays reusable."""
+    another run), so an OUT written before them stays reusable. So is another benchmark than
+    data-eng-bench, whose holdout request would otherwise match data-eng-bench's."""
     path = out / "request.json"
     now: dict[str, Any] = {"model": model or DEFAULT_MODEL}
     if split != "holdout":
         now |= {"split": split, "tasks": tasks}
     if agent_kwargs:
         now |= {"agent_kwargs": agent_kwargs}
+    if benchmark != DEFAULT_BENCHMARK:
+        now |= {"benchmark": benchmark}
     if not path.is_file():
         path.write_text(json.dumps(now) + "\n")
         return
@@ -447,13 +503,18 @@ def harbor_run_args(
     """`harbor run` of the config on `tasks`, `trials` each, as job `jobs/<config>`, with the
     `--agent-kwarg`s after its run config."""
     return [
-        *("run", "--config", str(JOB_CONFIG), "--path", str(args.tasks_dir)),
+        *("run", "--config", str(JOB_CONFIGS[args.benchmark]), "--path", str(args.tasks_dir)),
         *("-o", str(jobs), "--job-name", config, "-k", str(trials)),
         *("--ak", f"run_config={config}"),
         *(a for kwarg in args.agent_kwarg for a in ("--ak", kwarg)),
         *(("--ak", "trace=true") if args.trace else ()),
         *(("-m", args.model) if args.model else ()),
         *(a for task in tasks for a in ("-i", task)),
+        # LiveSQLBench's tasks read the write credential from the host (`[verifier.env]`'s
+        # `${LSB_PG_WRITE_PASSWORD}`); Harbor 0.24 asks before that (cli/jobs.py
+        # `_confirm_host_env_access`) and aborts without a TTY, as under `da-remote start`. `-y`
+        # also skips `--diff` and hub-sharing prompts, neither of which a run here uses.
+        *(("-y",) if args.benchmark == LSB_BENCHMARK else ()),
     ]
 
 
@@ -538,15 +599,18 @@ def smoke(
     return warnings
 
 
-def concurrent_trials(args: argparse.Namespace, configs: list[str], tasks: list[str]) -> int:
+def concurrent_trials(
+    args: argparse.Namespace, configs: list[str], tasks: list[str], job_config: Path = JOB_CONFIG
+) -> int:
     """The most trials a job of this call can run at once, at most as many as a job has: a new
-    job takes --n-concurrent, else the job config's; a resumed one the `n_concurrent_trials` its
-    own config.json saved (`harbor job resume` reads it, not this call's)."""
+    job takes --n-concurrent, else the job config's (`job_config`); a resumed one the
+    `n_concurrent_trials` its own config.json saved (`harbor job resume` reads it, not this
+    call's)."""
     n = args.n_concurrent
     if n is None:
-        found = re.search(r"^n_concurrent_trials:\s*(\d+)", JOB_CONFIG.read_text(), re.MULTILINE)
+        found = re.search(r"^n_concurrent_trials:\s*(\d+)", job_config.read_text(), re.MULTILINE)
         if found is None:
-            raise Stop(f"{JOB_CONFIG} sets no n_concurrent_trials; pass --n-concurrent")
+            raise Stop(f"{job_config} sets no n_concurrent_trials; pass --n-concurrent")
         n = int(found.group(1))
     for config in configs:
         saved = args.out / "jobs" / config / "config.json"
@@ -580,12 +644,28 @@ def benchmark_commit(tasks_dir: Path) -> str | None:
     return head.stdout.strip() + ("-dirty" if status.stdout.strip() else "")
 
 
+def tree_digest(tasks_dir: Path) -> str | None:
+    """A digest of every file under the generated tasks (names and contents), standing for a
+    benchmark commit where the tasks are no git clone (LiveSQLBench's); None when unreadable."""
+    digest = hashlib.sha256()
+    try:
+        for path in sorted(p for p in tasks_dir.rglob("*") if p.is_file()):
+            digest.update(str(path.relative_to(tasks_dir)).encode() + b"\0")
+            digest.update(path.read_bytes() + b"\0")
+    except OSError:
+        return None
+    return f"tree:{digest.hexdigest()}"
+
+
 def make_record(args: argparse.Namespace, configs: list[str]) -> dict[str, Any]:
     """What ADR-0008 compares before reusing results, beyond the version headers: the benchmark's
-    commit and the machine, under a human-given label."""
+    commit (LiveSQLBench's: `tree_digest`) and the machine, under a human-given label."""
+    generated = args.benchmark == LSB_BENCHMARK
     return {
         "started_at": datetime.now(UTC).isoformat(),
-        "benchmark_commit": benchmark_commit(args.tasks_dir),
+        "benchmark_commit": (
+            tree_digest(args.tasks_dir) if generated else benchmark_commit(args.tasks_dir)
+        ),
         "machine": os.environ.get(MACHINE_ENV) or None,
         "git_commit": git_commit(),
         "model": args.model or DEFAULT_MODEL,
@@ -730,7 +810,11 @@ def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]
     if args.split == "dev":  # the reports and comparisons cover the tasks run, maybe a subset
         manifest = reports / "tasks.json"
         manifest.write_text(json.dumps({"dev": tasks}, indent=2) + "\n")
-    common = ["--manifest", str(manifest), "--split", args.split, "--trials", str(args.trials)]
+    common = [
+        *("--manifest", str(manifest), "--split", args.split, "--trials", str(args.trials)),
+        *("--benchmark", args.benchmark),
+    ]
+    reference = args.reference
     rows: list[dict[str, Any]] = []
     for config in configs:
         argv = ["report", str(jobs / config), *common, "--out", str(reports / config)]
@@ -741,27 +825,31 @@ def write_reports(args: argparse.Namespace, configs: list[str], tasks: list[str]
         rows.append({"config": config, **report, **ran_with[config]})
     contributions: list[dict[str, Any]] = []
     for config in configs:
-        if config == REFERENCE:
+        if config == reference:
             continue
-        pair = ["--baseline", str(jobs / config), "--candidate", str(jobs / REFERENCE)]
+        pair = ["--baseline", str(jobs / config), "--candidate", str(jobs / reference)]
         code, out, err = evals_cli(["compare", *pair, *common, "--json"])
         if code != 0:
-            raise Stop(f"compare {REFERENCE} with {config}: {err.strip()}")
-        contributions.append({"layer": LAYERS[config], "config": config, **json.loads(out)})
+            raise Stop(f"compare {reference} with {config}: {err.strip()}")
+        layer = REFERENCE_LAYERS[reference][config]
+        contributions.append({"layer": layer, "config": config, **json.loads(out)})
         if args.split == "dev":
             argv = ["diverge", *pair, "--manifest", str(manifest)]
             code, _, err = evals_cli([*argv, "--out", str(reports / "diverge" / config)])
             if code != 0:
-                raise Stop(f"diverge of {config} against {REFERENCE}: {err.strip()}")
+                raise Stop(f"diverge of {config} against {reference}: {err.strip()}")
     table = {
         "split": args.split,
         "n_tasks": len(tasks),
         "trials_per_task": args.trials,
-        "reference": REFERENCE,
+        "reference": reference,
         "configs": rows,
         "contributions": contributions,
         "readiness": readiness.summary(args.out),
     }
+    # Trials whose verifier had no gold answer (evals.report): their 0 is no score.
+    if unscored := sum(int(row.get("no_gold_answer_trials") or 0) for row in rows):
+        table["no_gold_answer_trials"] = unscored
     (reports / "ablation.json").write_text(json.dumps(table, indent=2) + "\n")
     (reports / "ablation.md").write_text(markdown(table))
     return reports
@@ -779,6 +867,13 @@ def markdown(table: dict[str, Any]) -> str:
         + "trials | cost (USD) | input tokens (uncached / cached) | output tokens |",
         "|---|---:|---:|" + "---:|" * len(passes) + "---:|---:|---:|---:|",
     ]
+    if unscored := table.get("no_gold_answer_trials"):
+        lines[1:1] = [
+            "",
+            f"**Not scored**: {unscored} trial(s) ran without a gold answer (tasks generated "
+            "before the answers were in hand), so their 0 is no score: the accuracies and the "
+            "contributions below say nothing about the agent; the costs and tokens hold.",
+        ]
     for row in rows:
         lines.append(
             f"| {row['config']} | {row['accuracy']:.1f} | {row['accuracy_stderr']:.1f} | "
@@ -825,14 +920,24 @@ def run(args: argparse.Namespace) -> int:
             f"ablate: --n-concurrent must be at least 1, got {args.n_concurrent}", file=sys.stderr
         )
         return 2
-    configs = [c for c in CONFIGS if c in (args.config or CONFIGS)]
-    if REFERENCE not in configs:
-        print(f"ablate: --config must include {REFERENCE}, the reference", file=sys.stderr)
+    # The reference and the configs it has a layer label against (all six for full).
+    allowed = {args.reference, *REFERENCE_LAYERS[args.reference]}
+    configs = [c for c in CONFIGS if c in (args.config or allowed)]
+    if args.reference not in configs:
+        print(f"ablate: --config must include {args.reference}, the reference", file=sys.stderr)
+        return 2
+    unlabelled = [c for c in configs if c not in allowed]
+    if unlabelled:
+        print(
+            f"ablate: --reference {args.reference} has no layer for --config "
+            f"{', '.join(unlabelled)}",
+            file=sys.stderr,
+        )
         return 2
     try:
         manifest = json.loads(args.manifest.read_text())
-        tasks: list[str] = manifest[args.split]
-        dev: list[str] = manifest.get("dev") or []
+        tasks = benchmark_tasks(manifest, args.split, args.benchmark)
+        dev = of_benchmark(manifest.get("dev") or [], args.benchmark)
     except (OSError, ValueError, KeyError, AttributeError) as exc:
         print(
             f"ablate: cannot read the {args.split} tasks from {args.manifest}: {exc}",
@@ -858,8 +963,21 @@ def run(args: argparse.Namespace) -> int:
             return 2
         tasks = [task for task in tasks if task in args.task]
     if not tasks:
-        print(f"ablate: the manifest's {args.split} split is empty", file=sys.stderr)
+        print(
+            f"ablate: the manifest's {args.split} split has no {args.benchmark} task",
+            file=sys.stderr,
+        )
         return 2
+    if args.benchmark == LSB_BENCHMARK and args.split == "holdout":
+        # A task generated before the answers were in hand scores 0 that is no score.
+        without = sum(1 for task in tasks if not has_gold_answer(args.tasks_dir / task))
+        if without:
+            print(
+                f"ablate: {without} of the {len(tasks)} holdout tasks have no gold answer "
+                f"in {args.tasks_dir}; regenerate them with the answers first",
+                file=sys.stderr,
+            )
+            return 2
     if not dev and not args.skip_smoke:
         print("ablate: the manifest has no dev task to smoke-test on", file=sys.stderr)
         return 2
@@ -870,7 +988,7 @@ def run(args: argparse.Namespace) -> int:
         record = make_record(args, configs)
         check_record(args.out, args.tasks_dir, record)
         record_path = write_record(args.out, record, stamp)
-        check_request(args.out, args.model, args.split, tasks, args.agent_kwarg)
+        check_request(args.out, args.model, args.split, tasks, args.agent_kwarg, args.benchmark)
         print(f"record: {record_path}", flush=True)
         prepared: list[bool] = []
 
@@ -880,7 +998,8 @@ def run(args: argparse.Namespace) -> int:
             check_balance(args.out, budget)
             try:
                 resources, checked = readiness.check_environment(
-                    concurrent_trials(args, configs, tasks), args.agent_kwarg
+                    concurrent_trials(args, configs, tasks, JOB_CONFIGS[args.benchmark]),
+                    args.agent_kwarg,
                 )
             except readiness.NotReady as exc:
                 raise Stop(f"readiness: {exc}; no job starts") from exc

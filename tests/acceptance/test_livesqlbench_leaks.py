@@ -56,12 +56,6 @@ from livesqlbench_support import (
 from evals import livesqlbench
 from evals.livesqlbench import Execute, ExecutionError, Result
 
-TICKET_128 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 128: LiveSQLBench tasks, adapter run and evaluation script are not implemented",
-)
-
 GOLD_VALUE = "GOLDVAL-" + "p44" + "-tide"
 GOLD = Result(columns=("station_id", "avg_high"), rows=((GOLD_VALUE, 212.4),))
 WRONG = Result(columns=("station_id", "avg_high"), rows=(("TG-9", 198.0),))
@@ -108,7 +102,6 @@ def answer_needles(instance_id: str) -> list[str]:
     return [*sentinels(instance_id), *answer(instance_id)["sol_sql"]]
 
 
-@TICKET_128
 def test_no_answer_or_answer_path_is_in_the_workspace_or_the_task_files(tmp_path: Path) -> None:
     generated = generate(tmp_path)
 
@@ -120,7 +113,6 @@ def test_no_answer_or_answer_path_is_in_the_workspace_or_the_task_files(tmp_path
         assert leaks(visible, needles) == []
 
 
-@TICKET_128
 def test_no_answer_is_in_the_agents_event_file_argv_or_environment(tmp_path: Path) -> None:
     generated = generate(tmp_path)
     task_dir = task_of(generated, "tide_q1")
@@ -145,7 +137,6 @@ def run_evaluation(case: str, out: Path) -> int:
     return livesqlbench.evaluate(payload(), PREDICTED[case], stand_in(case), out)
 
 
-@TICKET_128
 @pytest.mark.parametrize("case", EXPECTED)
 def test_the_evaluation_output_is_the_reward_and_no_answer(
     tmp_path: Path,
@@ -171,7 +162,6 @@ def test_the_evaluation_output_is_the_reward_and_no_answer(
     assert leaks(seen, [*answer_needles("tide_q1"), GOLD_VALUE]) == []
 
 
-@TICKET_128
 def test_a_pulled_dev_run_holds_no_answer(tmp_path: Path) -> None:
     (tmp_path / "remote").mkdir()
     env = Env(tmp_path / "remote")

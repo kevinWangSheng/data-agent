@@ -704,3 +704,96 @@ def test_stage_1_and_stage_2_under_different_contracts_are_not_merged(
     assert code == 2
     assert what in err
     assert not (tmp_path / "r" / "report.json").exists()
+
+
+# --- ticket 128: the manifest's top-level lists hold both benchmarks' tasks ---
+
+
+def mixed_manifest(tmp_path: Path) -> Path:
+    manifest = tmp_path / "mixed.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "seed": 0,
+                "dev": ["t1", "lsb-a_1"],
+                "holdout": ["t2", "lsb-a_2"],
+                "livesqlbench_seed": 1,
+            }
+        )
+    )
+    return manifest
+
+
+def write_three(job: Path, task: str, reward: float, gold: str | None = None) -> None:
+    for n in range(3):
+        name = f"{task}__{n}"
+        write_trial(
+            job,
+            name,
+            {"task_name": task, "verifier_result": {"rewards": {"reward": reward}}},
+        )
+        if gold is not None:
+            (job / name / "verifier").mkdir()
+            (job / name / "verifier" / "diagnostics.json").write_text(
+                json.dumps({"reward": 0, "gold_answer": gold})
+            )
+
+
+@pytest.mark.parametrize(("split", "task"), [("dev", "t1"), ("holdout", "t2")])
+def test_a_data_eng_bench_report_ignores_the_lsb_tasks_of_the_split(
+    tmp_path: Path, split: str, task: str
+) -> None:
+    job = tmp_path / "job"
+    write_three(job, task, 1.0)
+    out = tmp_path / "report"
+    proc = evals(
+        *("report", str(job), "--manifest", str(mixed_manifest(tmp_path))),
+        *("--split", split, "--out", str(out)),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads((out / "report.json").read_text())["accuracy"] == 100.0
+
+
+def test_a_livesqlbench_report_covers_its_tasks_and_counts_trials_without_gold_answers(
+    tmp_path: Path,
+) -> None:
+    job = tmp_path / "job"
+    write_three(job, "lsb-a_1", 0.0, gold="missing")
+    out = tmp_path / "report"
+    proc = evals(
+        *("report", str(job), "--manifest", str(mixed_manifest(tmp_path))),
+        *("--split", "dev", "--out", str(out), "--benchmark", "livesqlbench"),
+    )
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads((out / "report.json").read_text())
+    assert report["no_gold_answer_trials"] == 3
+    assert "3 trial(s) had no gold answer" in proc.stdout
+
+
+def test_a_report_with_gold_answers_has_no_such_count(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    write_three(job, "lsb-a_1", 1.0, gold="present")
+    out = tmp_path / "report"
+    proc = evals(
+        *("report", str(job), "--manifest", str(mixed_manifest(tmp_path))),
+        *("--split", "dev", "--out", str(out), "--benchmark", "livesqlbench"),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "no_gold_answer_trials" not in json.loads((out / "report.json").read_text())
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "task"), [(None, "t2"), ("data-eng-bench", "t2"), ("livesqlbench", "lsb-a_2")]
+)
+def test_compare_on_a_split_takes_the_benchmarks_tasks(
+    tmp_path: Path, benchmark: str | None, task: str
+) -> None:
+    for name, reward in (("base", 0.0), ("cand", 1.0)):
+        write_three(tmp_path / name, task, reward)
+    proc = evals(
+        *("compare", "--baseline", str(tmp_path / "base"), "--candidate", str(tmp_path / "cand")),
+        *("--manifest", str(mixed_manifest(tmp_path)), "--split", "holdout", "--json"),
+        *(("--benchmark", benchmark) if benchmark else ()),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["diff"] == pytest.approx(100.0)

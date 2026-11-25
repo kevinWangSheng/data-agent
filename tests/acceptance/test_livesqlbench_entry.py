@@ -21,17 +21,10 @@ is the data-eng-bench dbt run it is today.
 import re
 from pathlib import Path
 
-import pytest
 from harbor.models.task.task import Task
 from livesqlbench_support import agent_container_env, generate, new_agent, run_trial, task_of
 
 from evals.livesqlbench import BENCHMARK
-
-TICKET_128 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 128: the Harbor adapter does not run LiveSQLBench tasks yet",
-)
 
 DBT_CONTAINER = {"DB_TYPE": "duckdb", "DUCKDB_PATH": "/app/database/retail.duckdb"}
 OFF = ("--network", "--mcp-servers", "--charts")
@@ -48,7 +41,6 @@ def test_without_the_benchmark_kwarg_a_trial_is_the_data_eng_bench_dbt_run(
         assert flag not in trial.args
 
 
-@TICKET_128
 def test_a_livesqlbench_command_is_a_query_run_on_postgres_without_network_mcp_or_charts(
     tmp_path: Path,
 ) -> None:
@@ -63,7 +55,6 @@ def test_a_livesqlbench_command_is_a_query_run_on_postgres_without_network_mcp_o
         assert flag not in command
 
 
-@TICKET_128
 def test_a_livesqlbench_trial_is_a_query_run_on_postgres_without_network_mcp_or_charts(
     tmp_path: Path,
 ) -> None:

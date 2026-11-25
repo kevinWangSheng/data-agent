@@ -55,16 +55,9 @@ from livesqlbench_support import (
 
 from evals.livesqlbench import BENCHMARK, WRITE_PASSWORD_ENV
 
-TICKET_128 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 128: LiveSQLBench tasks and the adapter's query run are not implemented",
-)
-
 CREDENTIALS = [WRITE_PASSWORD, UPSTREAM_PASSWORD]
 
 
-@TICKET_128
 def test_the_write_credential_reaches_the_verifier_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -80,7 +73,6 @@ def test_the_write_credential_reaches_the_verifier_only(
         assert leaks(agent_visible(task_dir), [*CREDENTIALS, WRITE_PASSWORD_ENV]) == []
 
 
-@TICKET_128
 def test_the_adapter_gives_the_agent_no_write_credential(tmp_path: Path) -> None:
     task_dir = task_of(generate(tmp_path), "orchard_q1")
     planted = MODEL_ENV | dict.fromkeys(WRITE_PASSWORD_VARS, WRITE_PASSWORD)
