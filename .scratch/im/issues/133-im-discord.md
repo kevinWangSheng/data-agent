@@ -1,6 +1,6 @@
 # 133 — IM 入口：Discord 实现（discord.py，gateway）
 
-Status: ready-for-agent
+Status: ready-for-human
 Blocked by: 131（done）
 Spec: ../spec.md
 Claimed by: Claude Code (Opus 5.5), 2026-11-25
@@ -223,10 +223,10 @@ Branch: worktree-133-im-discord
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2（另有一次只核修复的 Codex 复查）
+- Attempts: 2
+- Review rounds: 3（另有一次只核修复的 Codex 复查）
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: 停在 ready-for-human（复查找出新 bug，修复已满 2 轮）
+- Outcome: 停在 ready-for-human（论坛修复与合入 main 完成；第 3 轮 da-review 找出 2 个新 P2）
 - Human review minutes: —
 
 ## Comments
@@ -263,3 +263,12 @@ Branch: worktree-133-im-discord
   - 退回：论坛帖子起始消息里 @ 机器人没有回答（`src/data_agent/im/discord_bot.py:315-319` 把它当顶层消息，在线程里再建线程）。照 spec "会话映射" Update 2026-11-25 晚：判断"已在线程里"看消息所在频道是不是线程（`discord.Thread`），不比较消息 id 和线程 id；论坛起始消息就在这个帖子线程里回复。配一个修复前会失败的测试（起始消息 id 等于线程 id、频道是论坛帖子线程）。人允许为这一条做第 3 轮修复；修完照常跑两道审查，审查再有新问题就停下交回。
   - 先把 `origin/main` 合进本分支（132 Telegram 已合入 `65631e5`，同改 `service.py` 的 `LIBRARIES`/`make_platform`、`pyproject.toml`、`uv.lock`、README、`docs/setup.md`，`tests/test_im_service.py` 的"未实现平台"那例）：两个平台都保留；`uv.lock` 用 `uv lock` 重新生成，只能有 aiogram、discord.py 两组包的变化；"未实现平台"那例和 `service.start` 里 "not implemented yet" 的分支照 Context "和 132 并行"（`:80`）一起删掉。
   - `/new` 后线程免 @ 的缺口不在本工单修，归 137（改 adapter）；README 里"`/new` 后要再 @"那句先留着，137 去掉。
+- 2026-11-25（工单 agent 退回第 1 轮最终回复，主会话照抄；新提交 `7ea6821` 合入 main、`fd3adef` 论坛修复、`39bebe8` 审查小节）：
+  - 论坛修复：`handle_message` 用 `channel.type in THREAD_TYPES` 判断"已在线程里"，不比较 id；论坛帖子起始消息里 @ 在帖子里回答、不建线程。新测试 `test_a_mention_in_a_forum_posts_starter_message_is_answered_in_the_post`（起始消息 id 等于线程 id、频道是帖子线程），修复前因记录到 `create_thread` 失败，修复后通过。Spec 审查确认没有别处按 id 推断线程。
+  - 合入 `origin/main`（132）：`service.py` 两个平台都在 `LIBRARIES`/`make_platform`，"not implemented yet" 分支和 `test_a_platform_not_implemented_yet_is_refused_by_name` 已删；`pyproject.toml` 两个库都在；`uv lock` 重生成，相对 origin/main 只多 audioop-lts 0.2.2、discord-py 2.7.1，`uv lock --check` 通过，`uv export --frozen --no-dev --no-emit-project | grep -iE 'discord|audioop|aiogram'` 无输出；`git diff origin/main --stat` 只有 Authority 内的文件。README "`/new` 后再 @" 一句留给 137。
+  - 检查：`make check`（`fd3adef`，`runs/133-fake/make-check-r3.log`）ruff/basedpyright 干净，pytest 3363 passed、3 skipped，web 448/448。`39bebe8` 之后没跑全量：ruff、格式、basedpyright 干净，`pytest tests/test_im_discord.py tests/test_im_service.py tests/acceptance/ -k im` 142 passed；IM 验收 60 passed。假 token 运行同前（LoginFailure 401，`/api/options` 200，Ctrl-C exit 0，token 0 次；同样向真实 Discord 发了一次登录请求）。
+  - 审查：`eng:code-review` Spec 无缺失、无越界，一条小节（过时 docstring）已修；Standards 无硬违规，注释措辞和 README 换行已修；不修：线程判断在 `handle_message` 和 `channel_key` 两处但共用 `THREAD_TYPES`，合并要改 `to_incoming` 返回类型；新平台要动几处列表是 main 的形状；`pyproject.toml` 注释位置属外观。
+  - `da-review`（`runs/133-fake/da-review-r3.log`）2 个新 P2，按退回条件未修（都在前几轮的代码里，主会话已对照代码核实）：
+    1. interaction token 进 DEBUG 日志：discord.py 在 DEBUG 记每个网关事件原文（`discord/gateway.py:518`），`INTERACTION_CREATE` 带 interaction token；webhook 路由也把它放进 URL 路径（`discord/webhook/async_.py:264,300,321`）。是短期的 interaction token，不是 bot token；之前的测试只覆盖 `Authorization` 头里的 bot token。修法：给 `discord.gateway`、`discord.webhook`、`discord.http` 的 logger 加脱敏过滤，配一个喂假 interaction 的测试。
+    2. 确认 interaction 会打乱顺序：`handle_new`（`discord_bot.py:376`）和 `handle_interaction` 先 await `defer` 再拿 `self.lock`，`/new` 的确认还没回来时发的消息先到适配器、进了旧对话（Codex 复现顺序 `['first question after /new', 'new']`）。修法：await 确认前先排进队列，仍在 3 秒内确认。
+  - 真实验收补充：在论坛帖子起始消息里 @ 机器人，确认在帖子里回答。
