@@ -12,7 +12,6 @@ their user id, and in a group nothing at all.
 
 from pathlib import Path
 
-import pytest
 from im_support import (
     ALICE,
     OUTSIDER,
@@ -26,14 +25,7 @@ from im_support import (
 
 from data_agent.im.platform import Incoming
 
-TICKET_131 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 131: the IM adapter is not implemented yet",
-)
 
-
-@TICKET_131
 async def test_in_a_group_only_a_mention_gets_an_answer(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1", mentioned=True))
@@ -47,7 +39,6 @@ async def test_in_a_group_only_a_mention_gets_an_answer(tmp_path: Path) -> None:
     assert len(bot.platform.shown) == shown
 
 
-@TICKET_131
 async def test_in_a_thread_the_bot_is_in_no_mention_is_needed(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1", mentioned=True))
@@ -56,7 +47,6 @@ async def test_in_a_thread_the_bot_is_in_no_mention_is_needed(tmp_path: Path) ->
     assert bot.conversations.sent[-1] == Sent(conversation, "Only paid ones", True)
 
 
-@TICKET_131
 async def test_a_group_without_threads_needs_the_mention_every_time(tmp_path: Path) -> None:
     platform = FakePlatform("telegram")
     bot = await start_bot(tmp_path / "runs", platform=platform)
@@ -71,7 +61,6 @@ async def test_a_group_without_threads_needs_the_mention_every_time(tmp_path: Pa
     assert len(bot.conversations.sent) == 1
 
 
-@TICKET_131
 async def test_an_outsider_in_a_direct_chat_gets_their_id_and_nothing_runs(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", chat="D1", thread=None, direct=True))
@@ -87,7 +76,6 @@ async def test_an_outsider_in_a_direct_chat_gets_their_id_and_nothing_runs(tmp_p
     assert len(bot.conversations.sent) == 1
 
 
-@TICKET_131
 async def test_an_outsider_in_a_group_gets_no_answer_at_all(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))
@@ -104,7 +92,6 @@ async def test_an_outsider_in_a_group_gets_no_answer_at_all(tmp_path: Path) -> N
     assert bot.conversations.cancelled == []
 
 
-@TICKET_131
 async def test_an_outsider_pressing_a_button_does_nothing(tmp_path: Path) -> None:
     bot = await start_bot(tmp_path / "runs")
     await bot.platform.deliver(message("How many orders?", thread="T1"))

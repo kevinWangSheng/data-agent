@@ -8,7 +8,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 
 import anyio
 from anyio import to_thread
@@ -61,6 +61,15 @@ class Message(BaseModel):
     network: bool = True
 
 
+class Service(Protocol):
+    """Something running beside the app for as long as it serves (the IM bot); neither method
+    raises."""
+
+    async def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
+
+
 def create_app(
     runs_dir: Path,
     data_sources: Sequence[DataSource],
@@ -76,14 +85,24 @@ def create_app(
     runs = RunsDir(runs_dir)
     launcher = Launcher(runs, data_sources, start_run, mcp_servers)
     conversations = Conversations(runs, launcher, data_sources)
+    # What `data-agent web --im` attaches (data_agent.im.service.start): started once the app
+    # serves, stopped before the launcher stops the run that is left.
+    services: list[Service] = []
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        for service in services:
+            await service.start()
         yield
+        for service in reversed(services):
+            await service.stop()
         # The server leaves no run it started behind.
         await to_thread.run_sync(launcher.shutdown)
 
     app = FastAPI(title="data-agent", lifespan=lifespan)
+    app.state.runs = runs
+    app.state.conversations = conversations
+    app.state.services = services
 
     @app.get("/api/options")
     def options() -> dict[str, list[str]]:

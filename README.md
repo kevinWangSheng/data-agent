@@ -113,6 +113,57 @@ leave the machine through its code or a web request. Runs from the page always u
 sandbox, and a dbt run writes only to a schema of its own (`da_run_<run id>`), never the project's
 production schemas.
 
+### Slack
+
+`data-agent web --im FILE` also starts a Slack bot in the same process. The bot uses Socket Mode,
+so it needs no public address. People on an allowed list message it directly, or mention it in a
+channel. It answers in the message's thread, and a reply in that thread continues the same
+conversation. These conversations are the web UI's own: they show in its conversation list and can
+be replayed there. The Slack libraries are an optional extra:
+
+```bash
+uv sync --extra im          # an installed wheel: the extra data-agent[im]
+
+cat > ~/.config/data-agent/im.toml <<'EOF'
+[slack]
+bot_token_env = "DATA_AGENT_SLACK_BOT_TOKEN"   # the bot token (xoxb-...)
+app_token_env = "DATA_AGENT_SLACK_APP_TOKEN"   # the app-level token for Socket Mode (xapp-...)
+allowed_users = ["U012ABCDEF"]                 # Slack member ids
+EOF
+
+uv run data-agent web --runs-dir runs-web --data-sources sources.toml --im ~/.config/data-agent/im.toml
+```
+
+- **The file holds variable names only.** Each name must start with `DATA_AGENT_SLACK_`, and the
+  token values stay in the environment. A missing variable, an empty `allowed_users` list or a
+  name with another prefix stops the server from starting, and the error names the platform.
+  Runs are started without these variables, so no run and no event file ever holds a Slack token.
+- **The allowed list.** Only listed users can start a turn, steer one, stop one or press a button.
+  Anyone else who messages the bot directly is told their member id, so they can ask to be added.
+  In a channel the bot ignores them. The bot answers in every channel it has been invited to,
+  and who can read those answers is set by the channel's own membership.
+- **A turn.** A turn posts one status message, which is edited about every two seconds as the
+  steps go by and has a Stop button. Typing `stop` in the thread stops the turn too. A
+  clarifying question lists its options as numbered lines, with one button per number; you can
+  also type an answer. The answer arrives as messages of its own, split at paragraphs. Tables
+  become code blocks of at most 20 rows, with the total row count given.
+- **Errors.** When a run fails, the bot names the cause (the model call, the budget or the turn
+  limit) and gives the run id. If the bot cannot connect to Slack, it only writes a log line; the
+  web UI keeps working.
+
+Known limits:
+
+- A message sent just as a turn ends counts as a steer but never reaches the turn. The web UI
+  has the same limit.
+- Answers in a channel can be read by every member of that channel.
+- Each question costs model spend, and there is no spending cap per conversation.
+- Charts are not drawn in Slack. The bot says how many charts an answer has, and you see them in
+  the web UI.
+- Socket Mode apps cannot be listed in the public Slack Marketplace.
+
+Setting up the Slack app (scopes, events, tokens) is described in
+[docs/setup.md](docs/setup.md#slack-机器人工单-131).
+
 ### Traces in Langfuse (optional)
 
 Each run can also be exported as a trace to [Langfuse](https://langfuse.com/). The trace shows every

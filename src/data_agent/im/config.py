@@ -30,9 +30,11 @@ No error text, log line or `repr` carries a token's value. Without `--data-sourc
 still accepted; each turn is then refused (`Refused(400)`) and the bot says so in the thread.
 """
 
+import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 PLATFORMS = ("slack", "telegram", "discord")
 # The keys naming a token's variable, per platform.
@@ -61,11 +63,70 @@ class PlatformConfig:
 
 def load_config(path: Path, environ: Mapping[str, str]) -> dict[str, PlatformConfig]:
     """Each platform the file has a table for, by name; the tokens read from `environ`."""
-    raise NotImplementedError("ticket 131")
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ImConfigError(f"--im file {path}: cannot read it: {exc.strerror}") from None
+    except tomllib.TOMLDecodeError as exc:
+        raise ImConfigError(f"--im file {path}: not valid TOML: {exc}") from None
+    configs: dict[str, PlatformConfig] = {}
+    for name, table in data.items():
+        if name not in PLATFORMS:
+            raise ImConfigError(
+                f"--im file {path}: [{name}] is no platform; the platforms are "
+                + ", ".join(PLATFORMS)
+            )
+        if not isinstance(table, dict):
+            raise ImConfigError(f"--im file {path}: {name} must be a table ([{name}])")
+        configs[name] = read_table(path, name, table, environ)
+    if not configs:
+        raise ImConfigError(
+            f"--im file {path}: no platform table; give one of " + ", ".join(PLATFORMS)
+        )
+    return configs
+
+
+def read_table(
+    path: Path, platform: str, table: dict[str, Any], environ: Mapping[str, str]
+) -> PlatformConfig:
+    where = f"--im file {path}, [{platform}]"
+    keys = TOKEN_KEYS[platform]
+    unknown = sorted(set(table) - {*keys, "allowed_users"})
+    if unknown:
+        raise ImConfigError(f"{where}: unknown keys {', '.join(unknown)}")
+    prefix = PREFIXES[platform]
+    token_envs: dict[str, str] = {}
+    tokens: dict[str, str] = {}
+    for key in keys:
+        variable = table.get(key)
+        if not isinstance(variable, str) or not variable:
+            raise ImConfigError(f"{where}: {key} must name the variable holding the token")
+        if not variable.startswith(prefix) or variable == prefix:
+            # Not echoed: it may be a token written where its variable's name goes.
+            raise ImConfigError(
+                f"{where}: {key} must name a variable starting with {prefix} (the name, "
+                "never the token)"
+            )
+        value = environ.get(variable, "")
+        if not value.strip():
+            raise ImConfigError(f"{where}: the variable {variable} ({key}) is not set")
+        token_envs[key] = variable
+        tokens[key] = value
+    users = table.get("allowed_users")
+    if not isinstance(users, list) or not users:
+        raise ImConfigError(f"{where}: allowed_users must list at least one user id")
+    allowed: set[str] = set()
+    for user in users:
+        # A bool is an int to Python, never a user id.
+        if isinstance(user, bool) or not isinstance(user, str | int) or not str(user).strip():
+            raise ImConfigError(f"{where}: allowed_users has {user!r}, not a user id")
+        allowed.add(str(user).strip())
+    return PlatformConfig(platform, frozenset(allowed), token_envs, tokens)
 
 
 def run_env(environ: Mapping[str, str], configs: Iterable[PlatformConfig]) -> dict[str, str]:
     """The environment a run starts with: `environ` without the variables the configs name for
     their tokens, everything else as it is. `serve_web`'s `start_run` gives it to `Popen` as
     `env=` when `--im` is given, so no run, and no event file, ever holds an IM token."""
-    raise NotImplementedError("ticket 131")
+    names = {variable for config in configs for variable in config.token_envs.values()}
+    return {name: value for name, value in environ.items() if name not in names}

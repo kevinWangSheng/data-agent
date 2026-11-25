@@ -1,0 +1,135 @@
+{
+  "_about": "Slack Events API `message` events and a `block_actions` payload, hand-written in the shapes of docs.slack.dev (reference/events/message, message/message_changed, message/message_deleted, message/bot_message; interactivity block_actions payload), read 2026-11-24. Made-up ids; no token. The bot's user id is U0BOT0001.",
+  "channel_mention": {
+    "type": "message",
+    "channel": "C0DATA001",
+    "user": "U0ALICE01",
+    "text": "<@U0BOT0001> How many orders &amp; refunds?",
+    "ts": "1764000000.000100",
+    "event_ts": "1764000000.000100",
+    "channel_type": "channel",
+    "team": "T0TEAM001"
+  },
+  "channel_plain": {
+    "type": "message",
+    "channel": "C0DATA001",
+    "user": "U0ALICE01",
+    "text": "Lunch at noon?",
+    "ts": "1764000000.000150",
+    "event_ts": "1764000000.000150",
+    "channel_type": "channel",
+    "team": "T0TEAM001"
+  },
+  "thread_reply": {
+    "type": "message",
+    "channel": "C0DATA001",
+    "user": "U0ALICE01",
+    "text": "Only paid ones",
+    "ts": "1764000000.000200",
+    "thread_ts": "1764000000.000100",
+    "parent_user_id": "U0ALICE01",
+    "event_ts": "1764000000.000200",
+    "channel_type": "channel",
+    "team": "T0TEAM001"
+  },
+  "direct": {
+    "type": "message",
+    "channel": "D0ALICE01",
+    "user": "U0ALICE01",
+    "text": "What was the 2024 revenue?",
+    "ts": "1764000000.000300",
+    "event_ts": "1764000000.000300",
+    "channel_type": "im",
+    "team": "T0TEAM001"
+  },
+  "bots_own": {
+    "type": "message",
+    "channel": "C0DATA001",
+    "user": "U0BOT0001",
+    "bot_id": "B0BOT0001",
+    "app_id": "A0APP0001",
+    "text": "Querying the database…",
+    "ts": "1764000000.000400",
+    "thread_ts": "1764000000.000100",
+    "event_ts": "1764000000.000400",
+    "channel_type": "channel",
+    "team": "T0TEAM001"
+  },
+  "other_bot": {
+    "type": "message",
+    "subtype": "bot_message",
+    "channel": "C0DATA001",
+    "bot_id": "B0OTHER01",
+    "username": "builds",
+    "text": "<@U0BOT0001> build passed",
+    "ts": "1764000000.000500",
+    "event_ts": "1764000000.000500",
+    "channel_type": "channel"
+  },
+  "edited": {
+    "type": "message",
+    "subtype": "message_changed",
+    "hidden": true,
+    "channel": "C0DATA001",
+    "ts": "1764000000.000600",
+    "event_ts": "1764000000.000600",
+    "channel_type": "channel",
+    "message": {
+      "type": "message",
+      "user": "U0ALICE01",
+      "text": "<@U0BOT0001> How many orders and refunds?",
+      "ts": "1764000000.000100",
+      "edited": {"user": "U0ALICE01", "ts": "1764000000.000600"}
+    },
+    "previous_message": {
+      "type": "message",
+      "user": "U0ALICE01",
+      "text": "<@U0BOT0001> How many orders &amp; refunds?",
+      "ts": "1764000000.000100"
+    }
+  },
+  "deleted": {
+    "type": "message",
+    "subtype": "message_deleted",
+    "hidden": true,
+    "channel": "C0DATA001",
+    "ts": "1764000000.000700",
+    "deleted_ts": "1764000000.000100",
+    "event_ts": "1764000000.000700",
+    "channel_type": "channel"
+  },
+  "stop_press": {
+    "type": "block_actions",
+    "user": {"id": "U0ALICE01", "username": "alice", "team_id": "T0TEAM001"},
+    "api_app_id": "A0APP0001",
+    "token": "",
+    "container": {
+      "type": "message",
+      "message_ts": "1764000000.000400",
+      "channel_id": "C0DATA001",
+      "is_ephemeral": false,
+      "thread_ts": "1764000000.000100"
+    },
+    "trigger_id": "1764000001.000000.made-up",
+    "team": {"id": "T0TEAM001", "domain": "example"},
+    "channel": {"id": "C0DATA001", "name": "data"},
+    "message": {
+      "type": "message",
+      "user": "U0BOT0001",
+      "bot_id": "B0BOT0001",
+      "ts": "1764000000.000400",
+      "thread_ts": "1764000000.000100",
+      "text": "Querying the database…"
+    },
+    "actions": [
+      {
+        "type": "button",
+        "action_id": "data_agent_button_0",
+        "block_id": "b0",
+        "text": {"type": "plain_text", "text": "Stop"},
+        "value": "stop",
+        "action_ts": "1764000001.000000"
+      }
+    ]
+  }
+}

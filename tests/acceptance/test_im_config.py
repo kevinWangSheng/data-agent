@@ -44,12 +44,6 @@ from data_agent.im.config import ImConfigError, PlatformConfig, load_config
 from data_agent.web import app as web_app
 from data_agent.web.app import create_app
 
-TICKET_131 = pytest.mark.xfail(
-    strict=True,
-    raises=(NotImplementedError, AssertionError),
-    reason="ticket 131: the IM adapter is not implemented yet",
-)
-
 SLACK_BOT_ENV = "DATA_AGENT_SLACK_BOT_TOKEN"
 SLACK_APP_ENV = "DATA_AGENT_SLACK_APP_TOKEN"
 TELEGRAM_ENV = "DATA_AGENT_TELEGRAM_BOT_TOKEN"
@@ -97,7 +91,6 @@ def assert_no_token(text: str) -> None:
 # --- reading the file ----------------------------------------------------------------------
 
 
-@TICKET_131
 def test_one_platform_is_read_with_its_tokens(tmp_path: Path, tokens: dict[str, str]) -> None:
     configs = load_config(write(tmp_path, SLACK), tokens)
     assert list(configs) == ["slack"]
@@ -109,7 +102,6 @@ def test_one_platform_is_read_with_its_tokens(tmp_path: Path, tokens: dict[str, 
     assert_no_token(repr(slack))
 
 
-@TICKET_131
 def test_several_platforms_are_read_and_only_those(tmp_path: Path, tokens: dict[str, str]) -> None:
     configs = load_config(write(tmp_path, SLACK + TELEGRAM_TABLE), tokens)
     assert set(configs) == {"slack", "telegram"}
@@ -132,7 +124,6 @@ BAD = {
 }
 
 
-@TICKET_131
 @pytest.mark.parametrize("case", list(BAD))
 def test_a_bad_table_is_refused_naming_its_platform(
     tmp_path: Path, tokens: dict[str, str], case: str
@@ -144,7 +135,6 @@ def test_a_bad_table_is_refused_naming_its_platform(
     assert_no_token(str(raised.value))
 
 
-@TICKET_131
 def test_a_file_without_a_platform_is_refused(tmp_path: Path, tokens: dict[str, str]) -> None:
     with pytest.raises(ImConfigError):
         load_config(write(tmp_path, "# nothing yet\n"), tokens)
@@ -188,7 +178,6 @@ def serve(
     return seen[0], app, started
 
 
-@TICKET_131
 def test_data_agent_web_im_starts_the_adapters_with_the_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tokens: dict[str, str]
 ) -> None:
@@ -207,7 +196,6 @@ def test_data_agent_web_without_im_starts_no_adapter(
     assert started == []
 
 
-@TICKET_131
 def test_a_run_starts_without_the_im_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tokens: dict[str, str]
 ) -> None:
@@ -238,7 +226,6 @@ def test_a_run_starts_without_the_im_tokens(
 # --- the tokens stay out of everything -----------------------------------------------------
 
 
-@TICKET_131
 async def test_no_token_value_reaches_the_log_the_output_or_the_platform(
     tmp_path: Path,
     tokens: dict[str, str],
