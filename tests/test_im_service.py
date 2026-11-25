@@ -92,9 +92,10 @@ def test_a_platform_not_implemented_yet_is_refused_by_name(
     capsys: pytest.CaptureFixture[str],
     tokens: None,
 ) -> None:
-    telegram = '[telegram]\nbot_token_env = "DATA_AGENT_TELEGRAM_BOT_TOKEN"\nallowed_users = [1]\n'
-    err = refused(tmp_path, monkeypatch, capsys, SLACK + telegram)
-    assert "telegram" in err
+    monkeypatch.setenv("DATA_AGENT_DISCORD_BOT_TOKEN", "dc-made-up")
+    discord = '[discord]\nbot_token_env = "DATA_AGENT_DISCORD_BOT_TOKEN"\nallowed_users = ["1"]\n'
+    err = refused(tmp_path, monkeypatch, capsys, SLACK + discord)
+    assert "discord" in err
     assert "not implemented" in err
 
 
