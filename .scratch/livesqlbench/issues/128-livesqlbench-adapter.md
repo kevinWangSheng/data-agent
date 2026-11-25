@@ -1,6 +1,6 @@
 # 128 — LiveSQLBench：适配器、PostgreSQL 镜像、soft EX、60/120 划分、`ablate`/`report` 按榜单过滤、只读凭据、冒烟（不含官方对拍）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 127（done）
 Spec: ../spec.md
 Claimed by: claude (Opus 5.5, worktree 128-livesqlbench-adapter)
@@ -412,3 +412,11 @@ Base-Lite 的 180 道 `Query` 题能在服务器上以 Harbor 任务跑通，并
     - Restoring a dump needs a `root` role to exist, so one is created without LOGIN.
     - `--reference` accepts `full` or `no-verifiers`, the two references that have layer labels.
     - The run record's benchmark commit for LiveSQLBench is a `tree:` digest of the generated tasks, so a run can be resumed even though the tasks are no git clone.
+
+- 2026-11-25（主会话）服务器步骤：PR #138；`da-remote setup 96b32e0` 成功；服务器缺 buildx，人批准后 `apt-get install docker-buildx`（0.30.1）。`da-remote benchmarks`：dump sha256 `fb1aa1f4108284e5d3af8d72b8e25c36b028832d3c525d500f9a4299e6370b44`（首次记录），18 个镜像建成，计数检查停下："166 tables, 2154 columns (upstream: 175, 2286)"。逐库对 `init-db.sh` 的 DATABASE_MAPPING：17 个库表数一致，`da-lsb-db-cybermarket` 是 0 表 0 列。
+
+- **退回：cybermarket 镜像是空库。** 根因：上游 `livesqlbench-base-lite-dumps/cybermarket_table_orders.txt` 写的是 `Markets Vendors Buyers Products Transactions Communication RiskAnalysis SecurityMonitoring Investigation`（首字母大写），dump 文件是小写（`markets.sql` 等）。`table_order()` 原样写进 `table_order.txt`，`init-db.sh` 找 `$source_dir/Markets.sql`，Linux 区分大小写，每张表打一行 WARNING 后跳过，构建仍然成功。上游 dump 在 macOS（不区分大小写，压缩包带 `__MACOSX`）上做，所以上游没暴露。其余 17 个库的顺序文件都是小写。要求：
+  - 表顺序里的名字按 dump 目录里实际的 `.sql` 文件名解析（不区分大小写，只匹配到一个文件才算）；解析不到的名字让构建失败，不再静默跳过（`init-db.sh` 里映射文件缺失时的 `WARNING … skipping` 改成报错，或在 Python 一侧先校验）。
+  - 测试：一个首字母大写的顺序文件加小写 dump 文件，导入后表数对；一个顺序里有、dump 里没有的名字，构建失败。
+  - 服务器上的 cybermarket 镜像要重建：镜像 tag 是 `evals/livesqlbench_images/` 的摘要，若只改 Python 一侧，tag 不变，`images()` 会认为镜像已有而跳过；说明怎么让它重建（例如改动落在 images 目录里，或 `prepare` 对计数不对的镜像重建）。
+  - `cybermarket_template/enum_definitions.sql` 不在顺序里：`markets.sql` 自带 `CREATE TYPE`，所以不影响；照上游不导入，在 Comments 说明即可。
