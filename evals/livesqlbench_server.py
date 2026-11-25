@@ -261,6 +261,8 @@ def table_order(dump: Path, db: str) -> str | None:
     `.sql` file in the dump, ignoring case: upstream's dumps were made on a case-insensitive file
     system, and cybermarket's order file capitalises names whose files are lower case."""
     root, names = dump.parent, (db, dump.name)
+    if any((dump / f"{name}_full.sql").is_file() for name in (db, f"{db}_template")):
+        return None  # init-db.sh restores the full dump and reads no order
     for name in names:
         for suffix in ("_table_orders.txt", "_table_order.txt"):
             candidate = root / f"{name}{suffix}"

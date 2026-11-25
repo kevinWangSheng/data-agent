@@ -477,7 +477,8 @@ def main(
     state of `pred.json`. A failure of the script itself or of its database setup (`SetupError`:
     no connection, no process database) is no score: it writes the diagnostics, recorded by the
     error's class only, and no reward, so Harbor records `RewardFileNotFoundError` and the trial
-    has no reward (`ablate`'s smoke stops on it) instead of a 0 that reads as the agent's. Neither
+    has no reward (`ablate`'s smoke stops on it) instead of a 0 that reads as the agent's; a
+    report still counts it failed (evals.report `NOT_RETRIED`, a known limitation). Neither
     the output nor Harbor's copy of it carries a SQL statement or a value."""
     state = "missing"
     try:

@@ -514,6 +514,16 @@ def test_table_order_names_resolve_to_the_dump_files_regardless_of_case(tmp_path
     assert livesqlbench_server.table_order(dump, "alpha") == expected
 
 
+@pytest.mark.parametrize("full", ["alpha_full.sql", "alpha_template_full.sql"])
+def test_a_dump_with_a_full_dump_file_needs_no_table_order(tmp_path: Path, full: str) -> None:
+    # init-db.sh restores `<db>_full.sql` or `<db>_template_full.sql` and reads no order.
+    dump = tmp_path / "alpha_template"
+    dump.mkdir()
+    (dump / full).write_text("")
+    (tmp_path / "alpha_table_orders.txt").write_text("Markets Vendors\n")
+    assert livesqlbench_server.table_order(dump, "alpha") is None
+
+
 def test_a_table_order_name_without_a_dump_file_stops(tmp_path: Path) -> None:
     dump = tmp_path / "alpha_template"
     dump.mkdir()
