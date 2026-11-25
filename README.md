@@ -192,6 +192,8 @@ A file can hold both a `[slack]` and a `[telegram]` table; both bots then run.
   their id; in a group the bot ignores them.
 - **`/new`** starts a new conversation in the chat. Text after it, as in `/new revenue by month?`,
   is the first question of the new conversation. The bot lists `/new` in Telegram's command menu.
+  In a group, send `/new@its_username`: a bare `/new` there does not mention the bot, so the bot
+  ignores it.
 - **In a group** the bot answers a message that mentions it (`@its_username`) or replies to one of
   its messages, and nothing else: with no threads, a follow-up needs the mention or the reply
   every time. In a private chat it answers every message.

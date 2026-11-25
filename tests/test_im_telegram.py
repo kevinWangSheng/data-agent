@@ -98,11 +98,21 @@ def test_a_mention_after_an_emoji_is_found_by_its_utf16_offset() -> None:
     assert got.text == "📊 revenue?"
 
 
-def test_a_text_mention_of_the_bot_is_mentioned() -> None:
+def test_a_text_mention_of_the_bot_is_mentioned_and_taken_out() -> None:
     got = incoming("group_text_mention")
     assert got is not None
     assert got.mentioned
     assert not got.direct
+    assert got.text == "revenue by month?"
+
+
+def test_stop_after_a_text_mention_is_the_bare_stop() -> None:
+    """The adapter stops the turn only on a text that is `stop` once the mention is out."""
+    update = json.loads(json.dumps(UPDATES["group_text_mention"]))
+    update["text"] = "Data Agent stop"
+    got = to_incoming(Message.model_validate(update), BOT_ID, BOT_NAME)
+    assert got is not None
+    assert got.text == "stop"
 
 
 def test_a_mention_of_someone_else_is_not_the_bots() -> None:
@@ -206,6 +216,8 @@ def test_a_press_without_a_message_is_no_press() -> None:
             r"see [the docs \(v2\)](https://example.com/a_(b\)?c=1)",
         ),
         ("## Totals\nby month", "*Totals*\nby month"),
+        # Bold in a heading, either way, would close the heading's own bold.
+        ("# Revenue __2025__ **net**", "*Revenue 2025 net*"),
         ("- one\n* two", "• one\n• two"),
         ("use `a_b\\c` here", "use `a_b\\\\c` here"),
         (
@@ -227,6 +239,7 @@ def test_a_press_without_a_message_is_no_press() -> None:
         "strike",
         "link",
         "heading",
+        "bold-in-heading",
         "bullets",
         "inline-code",
         "code-block",
@@ -519,15 +532,14 @@ async def test_messages_and_presses_are_handed_on_one_at_a_time() -> None:
     assert order == ["How many orders?", "stop", "how many orders?"]
 
 
-async def test_the_same_message_is_handed_on_once_and_others_not_at_all() -> None:
+async def test_a_message_not_to_the_bot_is_not_handed_on() -> None:
     got: list[Incoming] = []
 
     async def on_message(incoming: Incoming) -> None:
         got.append(incoming)
 
     telegram = await connected(FakeBot(), on_message, no_press)
-    for _ in range(2):
-        await telegram.handle_message(message("private"))
+    await telegram.handle_message(message("private"))
     await telegram.handle_message(message("other_bot"))
     await telegram.stop()
     assert len(got) == 1

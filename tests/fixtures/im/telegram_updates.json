@@ -27,7 +27,7 @@
     "date": 1764000000,
     "chat": {"id": -1009001, "type": "group", "title": "Data"},
     "from": {"id": 10001, "is_bot": false, "first_name": "Alice"},
-    "text": "Data Agent, revenue by month?",
+    "text": "Data Agent revenue by month?",
     "entities": [
       {
         "type": "text_mention",

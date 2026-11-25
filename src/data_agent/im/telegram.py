@@ -4,14 +4,14 @@ long polling, so the bot needs no public address. Part of the extra `data-agent[
 
 - Only messages and callback queries are polled (the dispatcher asks for the update types it
   has handlers for). A message with no text (a join, a photo), from a bot (the bot itself,
-  others) or a channel's post is no message to the bot; edits are never polled. A message
-  already handed on is dropped.
+  others) or a channel's post is no message to the bot; edits are never polled.
 - A chat has no threads: `thread_id` is None, and a message in a forum topic is an ordinary
   group message (topics are not supported; the bot's replies go to the chat, in no topic).
 - In a group the bot is mentioned by `@<its username>` (in any case), a `text_mention` of it,
   a command ending in `@<its username>`, or a reply to one of its messages (but not a reply to
-  a forum topic's creation, which every message of the topic is). Its `@username` is taken out
-  of `text`. A chat whose type is `private` is direct.
+  a forum topic's creation, which every message of the topic is). Its `@username` and the text
+  of a `text_mention` of it are taken out of `text` (so `<mention> stop` is `stop`). A chat
+  whose type is `private` is direct.
 - A message starting with `/new` or `/new@<its username>` is `new_conversation`, the rest of
   it the `text`; `/new@<another bot>` is an ordinary message. `start` registers `/new` in the
   bot's command menu (`setMyCommands`).
@@ -39,7 +39,6 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 
 from aiogram import Bot, Dispatcher
@@ -86,8 +85,6 @@ RATE_LIMIT_WAIT = 30.0
 # Telegram's descriptions of a text it cannot parse and of an edit that changes nothing.
 UNPARSABLE = "can't parse entities"
 NOT_MODIFIED = "message is not modified"
-# How many messages are remembered to drop one handed on again.
-SEEN = 1000
 
 # The characters MarkdownV2 wants escaped outside code and links; in code only `\` and `` ` ``,
 # in a link's `(...)` only `\` and `)` (core.telegram.org/bots/api#markdownv2-style).
@@ -100,7 +97,7 @@ INLINE = re.compile(
     r"`(?P<code>[^`\n]+)`"
     r"|\[(?P<label>[^\]\n]+)\]\((?P<url>(?:[^()\s]|\([^()\s]*\))+)\)"
     r"|\*\*(?=\S)(?P<bold>.+?)(?<=\S)\*\*"
-    r"|__(?=\S)(?P<bold_>.+?)(?<=\S)__"
+    r"|__(?=\S)(?P<bold_underscores>.+?)(?<=\S)__"
     r"|~~(?=\S)(?P<strike>.+?)(?<=\S)~~"
     r"|(?<![\w*])\*(?=\S)(?P<italic>[^*\n]+?)(?<=\S)\*(?![\w*])"
 )
@@ -128,7 +125,6 @@ class TelegramPlatform:
         self.on_message: OnMessage | None = None
         self.on_press: OnPress | None = None
         self.lock = asyncio.Lock()
-        self.seen: OrderedDict[tuple[int, int], None] = OrderedDict()
         # The tests wait for no time.
         self.sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
@@ -179,56 +175,41 @@ class TelegramPlatform:
         as `retry_after` says, at most `RATE_LIMIT_WAIT` seconds, and is tried once more: the
         adapter's own second try comes at once, inside the limit. Other failures raise."""
         try:
-            sent = await self.post(chat_id, message)
+            sent = await self.send_once(chat_id, message)
         except TelegramRetryAfter as exc:
             wait = min(max(float(exc.retry_after), 0.0), RATE_LIMIT_WAIT)
             log.warning("telegram: a send was rate-limited; trying again in %.0f s", wait)
             await self.sleep(wait)
-            sent = await self.post(chat_id, message)
+            sent = await self.send_once(chat_id, message)
         return str(sent.message_id)
 
-    async def post(self, chat_id: str, message: Outgoing) -> Message:
-        bot = self.connected()
+    async def send_once(self, chat_id: str, message: Outgoing) -> Message:
+        bot = self.require_bot()
         markup = keyboard(message.buttons)
-        try:
+
+        async def call(text: str, parse_mode: str | None) -> Message:
             return await bot.send_message(
-                chat_id=int(chat_id),
-                text=to_markdown_v2(message.text),
-                parse_mode=MARKDOWN_V2,
-                reply_markup=markup,
+                chat_id=int(chat_id), text=text, parse_mode=parse_mode, reply_markup=markup
             )
-        except TelegramBadRequest as exc:
-            if UNPARSABLE not in str(exc).lower():
-                raise
-            log.warning("telegram: the MarkdownV2 was refused (%s); sending plain text", exc)
-            return await bot.send_message(
-                chat_id=int(chat_id), text=message.text, parse_mode=None, reply_markup=markup
-            )
+
+        return await with_plain_fallback(call, message.text)
 
     async def edit(self, chat_id: str, message_id: str, message: Outgoing) -> None:
         """A rate-limited edit raises (`TelegramRetryAfter`), and the adapter skips it."""
-        bot = self.connected()
+        bot = self.require_bot()
         markup = keyboard(message.buttons) or InlineKeyboardMarkup(inline_keyboard=[])
+
+        async def call(text: str, parse_mode: str | None) -> object:
+            return await bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=markup,
+            )
+
         try:
-            try:
-                await bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=to_markdown_v2(message.text),
-                    parse_mode=MARKDOWN_V2,
-                    reply_markup=markup,
-                )
-            except TelegramBadRequest as exc:
-                if UNPARSABLE not in str(exc).lower():
-                    raise
-                log.warning("telegram: the MarkdownV2 was refused (%s); editing as plain text", exc)
-                await bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=message.text,
-                    parse_mode=None,
-                    reply_markup=markup,
-                )
+            await with_plain_fallback(call, message.text)
         except TelegramBadRequest as exc:
             if NOT_MODIFIED not in str(exc).lower():
                 raise
@@ -240,18 +221,12 @@ class TelegramPlatform:
         incoming = to_incoming(message, self.bot_id, self.bot_username)
         if incoming is None or self.on_message is None:
             return
-        seen = (message.chat.id, message.message_id)
-        if seen in self.seen:
-            return
-        self.seen[seen] = None
-        while len(self.seen) > SEEN:
-            self.seen.popitem(last=False)
         async with self.lock:
             await self.on_message(incoming)
 
     async def handle_query(self, query: CallbackQuery) -> None:
         try:
-            await self.connected().answer_callback_query(callback_query_id=query.id)
+            await self.require_bot().answer_callback_query(callback_query_id=query.id)
         except Exception as exc:
             # An old query cannot be answered any more; the press still counts.
             log.warning("telegram: a button press could not be answered (%s)", type(exc).__name__)
@@ -261,10 +236,24 @@ class TelegramPlatform:
         async with self.lock:
             await self.on_press(press)
 
-    def connected(self) -> Bot:
+    def require_bot(self) -> Bot:
         if self.bot is None:
             raise RuntimeError("the Telegram bot is not started")
         return self.bot
+
+
+async def with_plain_fallback[T](
+    call: Callable[[str, str | None], Awaitable[T]], markdown: str
+) -> T:
+    """`call(text, parse_mode)` with the MarkdownV2 of `markdown`; when Telegram cannot parse
+    it, once more with the Markdown itself and no parse mode."""
+    try:
+        return await call(to_markdown_v2(markdown), MARKDOWN_V2)
+    except TelegramBadRequest as exc:
+        if UNPARSABLE not in str(exc).lower():
+            raise
+        log.warning("telegram: the MarkdownV2 was refused (%s); sending plain text", exc)
+        return await call(markdown, None)
 
 
 def keyboard(buttons: tuple[Button, ...]) -> InlineKeyboardMarkup | None:
@@ -297,7 +286,9 @@ def to_incoming(message: Message, bot_id: int, bot_username: str) -> Incoming | 
             mentioned = True
             cuts.append(span)
         elif entity.type == "text_mention" and entity.user is not None:
-            mentioned = mentioned or entity.user.id == bot_id
+            if entity.user.id == bot_id:
+                mentioned = True
+                cuts.append(span)
         elif entity.type == "bot_command":
             command, _, target = part.partition("@")
             if target and "@" + target.lower() != name:
@@ -390,8 +381,9 @@ def to_markdown_v2(markdown: str) -> str:
 def convert_line(line: str) -> str:
     heading = HEADING.match(line)
     if heading:
-        # A heading is bold already; bold inside it would be bold in bold.
-        return "*" + inline(heading[1].replace("**", ""), styled=True) + "*"
+        # A heading is bold already; bold inside it (`**`, `__`) would close it early.
+        content = heading[1].replace("**", "").replace("__", "")
+        return "*" + inline(content, styled=True) + "*"
     bullet = BULLET.match(line)
     if bullet:
         return bullet[1] + "• " + inline(line[bullet.end() :])
@@ -414,8 +406,9 @@ def inline(text: str, styled: bool = False) -> str:
         elif match["label"] is not None:
             url = URL_SPECIAL.sub(r"\\\1", match["url"])
             out.append("[" + inline(match["label"], styled=True) + "](" + url + ")")
-        elif match["bold"] is not None or match["bold_"] is not None:
-            out.append("*" + inline(match["bold"] or match["bold_"], styled=True) + "*")
+        elif match["bold"] is not None or match["bold_underscores"] is not None:
+            bold = match["bold"] or match["bold_underscores"]
+            out.append("*" + inline(bold, styled=True) + "*")
         elif match["strike"] is not None:
             out.append("~" + inline(match["strike"], styled=True) + "~")
         else:
