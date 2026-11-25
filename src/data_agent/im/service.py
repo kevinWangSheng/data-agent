@@ -31,7 +31,10 @@ from data_agent.im.platform import Platform
 log = logging.getLogger(__name__)
 
 # The libraries of the extra `data-agent[im]` each implemented platform needs.
-LIBRARIES = {"slack": ("slack_bolt", "slack_sdk", "aiohttp")}
+LIBRARIES = {
+    "slack": ("slack_bolt", "slack_sdk", "aiohttp"),
+    "discord": ("discord", "aiohttp"),
+}
 INSTALL = "run `uv sync --extra im` (or install `data-agent[im]`)"
 
 
@@ -62,6 +65,10 @@ def start(app: object, configs: Mapping[str, PlatformConfig]) -> None:
 
 def make_platform(config: PlatformConfig) -> Platform:
     # Imported only here: without `--im` no platform library is loaded.
+    if config.platform == "discord":
+        from data_agent.im.discord_bot import DiscordPlatform
+
+        return DiscordPlatform(config)
     from data_agent.im.slack import SlackPlatform
 
     return SlackPlatform(config)
