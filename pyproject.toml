@@ -25,9 +25,11 @@ dependencies = [
 # The IM entry (`data-agent web --im`, .scratch/im/spec.md "库"): `uv sync --extra im`. Optional, so
 # no Harbor install (`uv export --no-dev`) carries it. aiohttp is listed because slack-bolt's
 # asyncio app imports it at the top (slack_bolt/app/async_app.py) without declaring it.
+# discord.py without its voice or speed extras (ticket 133).
 im = [
   "aiogram==3.34.0",
   "aiohttp>=3.14",
+  "discord.py==2.7.1",
   "slack-bolt==1.30.0",
 ]
 
@@ -36,8 +38,8 @@ data-agent = "data_agent.cli:main"
 
 [dependency-groups]
 dev = [
-  # The `im` extra again, so CI (`uv sync --locked`, no extra) type-checks and tests the Slack
-  # and Telegram modules.
+  # The `im` extra again, so CI (`uv sync --locked`, no extra) type-checks and tests the Slack,
+  # Telegram and Discord modules.
   "aiogram==3.34.0",
   "aiohttp>=3.14",
   "basedpyright>=1.31",
@@ -46,6 +48,7 @@ dev = [
   "dbt-core>=1.10,<1.11",
   "dbt-duckdb==1.10.0",
   "dbt-postgres>=1.9,<1.11",
+  "discord.py==2.7.1",
   "harbor==0.24.0",
   "httpx>=0.28",
   "json-repair==0.58.5",

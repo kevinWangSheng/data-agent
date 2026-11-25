@@ -213,6 +213,50 @@ Known limits:
 Creating the bot and turning off Group Privacy is described in
 [docs/setup.md](docs/setup.md#telegram-机器人工单-132).
 
+### Discord
+
+The same `--im` file can also start a Discord bot, alone or next to the other bots: add a
+`[discord]` table. The bot connects to Discord's gateway, so it needs no public address either.
+It uses the same extra (`uv sync --extra im`), and its conversations are the web UI's own, like
+Slack's.
+
+```toml
+[discord]
+bot_token_env = "DATA_AGENT_DISCORD_BOT_TOKEN"   # the bot token from the Developer Portal
+allowed_users = ["123456789012345678"]           # Discord user ids, written as strings
+```
+
+- **In a server channel**, mention the bot (`@data-agent how many orders last month?`). It makes a
+  thread from your message and answers there. Messages in that thread go to the same
+  conversation, with no mention needed. In a forum post, which is a thread already, it answers in
+  the post. Replying to one of the bot's messages with the ping on
+  counts as a mention; `@everyone`, `@here` and role mentions do not.
+- **In a direct message**, every message goes to the chat's current conversation. The `/new`
+  slash command ends it, so the next message starts a new one. `/new` in one of the bot's threads
+  ends that thread's conversation too; the bot then forgets the thread, so mention it to start
+  the next conversation there.
+- **The allowed list, a turn, errors.** These work as on Slack (above). The status message has a
+  Stop button and is edited about every two seconds. A clarifying question has one button per
+  option. Anyone not on the list who sends a direct message is told their user id. In a channel,
+  the bot ignores them and makes no thread. Nothing the bot writes notifies anyone: `@everyone` in
+  an answer stays plain text.
+- The file holds the variable's name only, starting with `DATA_AGENT_DISCORD_`. Runs are started
+  without it, so no run and no event file ever holds the Discord token.
+
+Known limits:
+
+- A thread the bot makes is visible to everyone who can read its channel.
+- Each question costs model spend, and there is no spending cap per conversation.
+- Replying in a thread Discord has archived (after a day without messages) is not yet confirmed.
+  Discord's docs say a message unarchives the thread unless a moderator locked it. They also say
+  `/new` cannot be used there. The live test will settle it.
+- If the bot cannot make a thread (no permission, or a channel without threads), it answers in
+  the channel as replies to your message. Each new mention there then starts a new conversation.
+- Charts are not drawn in Discord, as on Slack.
+
+Setting up the Discord app (intent, scopes, permissions, token) is described in
+[docs/setup.md](docs/setup.md#discord-机器人工单-133).
+
 ### Traces in Langfuse (optional)
 
 Each run can also be exported as a trace to [Langfuse](https://langfuse.com/). The trace shows every

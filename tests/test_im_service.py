@@ -1,7 +1,7 @@
 """Starting the bot from `data-agent web --im` (data_agent.im.service, the `--im` lines of
 data_agent.cli.serve_web, the lifespan of data_agent.web.app), past the acceptance tests in
-tests/acceptance/test_im_config.py: the missing extra, a platform not implemented yet, a bad file
-(exit code 2, no token on stderr), no platform library without `--im`, and the bot's start and
+tests/acceptance/test_im_config.py: the missing extra, a bad file (exit code 2, no token on
+stderr), no platform library without `--im`, and the bot's start and
 stop around the app's. A platform in memory; no Slack."""
 
 import subprocess
@@ -84,19 +84,6 @@ def test_without_the_extra_im_says_how_to_install_it(
     assert "uv sync --extra im" in err
     assert "slack" in err
     assert "Traceback" not in err
-
-
-def test_a_platform_not_implemented_yet_is_refused_by_name(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    tokens: None,
-) -> None:
-    monkeypatch.setenv("DATA_AGENT_DISCORD_BOT_TOKEN", "dc-made-up")
-    discord = '[discord]\nbot_token_env = "DATA_AGENT_DISCORD_BOT_TOKEN"\nallowed_users = ["1"]\n'
-    err = refused(tmp_path, monkeypatch, capsys, SLACK + discord)
-    assert "discord" in err
-    assert "not implemented" in err
 
 
 def test_a_bad_file_stops_the_server_naming_the_platform(

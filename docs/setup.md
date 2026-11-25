@@ -280,6 +280,37 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 机器人用长轮询（`getUpdates`），不需要公网地址。启动时先调 `getMe`：token 错了或者这时连不上 Telegram，日志里写一行，机器人不起来（要重启 `data-agent web` 才会再试），网页照常可用。启动之后再断线，aiogram 退避重试 `getUpdates`，每次写一行日志。
 - 机器人启动时用 `setMyCommands` 把 `/new` 放进命令菜单。
 
+## Discord 机器人（工单 133）
+
+用法、行为和已知限制见 README 的 "Discord"。下面是建 Discord app 的步骤。没有注明的地方都是 2026-11-25 读 Discord 官方开发者文档（`discord.com/developers/docs/...` 现在跳转到 `docs.discord.com/developers/...`）核对过的，查不到的标了"未确认"。仓库里不写任何真实 token、服务器名或 id。
+
+1. **建应用，拿 bot token**：打开 <https://discord.com/developers/applications>，New Application，填名字后按 Create。新建的应用默认就带一个 bot user。在应用的 Bot 页，Token 下面点 Reset Token 生成 token。token 只显示这一次，之后要看只能重新生成（[Getting started](https://docs.discord.com/developers/quick-start/getting-started)：“Newly-created apps have a bot user enabled by default.”，“You won't be able to view your token again unless you regenerate it”）。侧栏的页名以页面为准（未确认）。
+2. **打开 Message Content Intent**：还在 Bot 页，"Privileged Gateway Intents" 一节里打开 Message Content Intent（[Gateway → Privileged Intents](https://docs.discord.com/developers/events/gateway)：“toggle the privileged intents on the **Bot** page under the "Privileged Gateway Intents" section”）。不打开的话，频道消息的内容字段是空的，例外是私聊、@ 了机器人的消息和机器人自己的消息。机器人请求了这个 intent 而设置里没打开时，gateway 用 close code 4014 断开连接，`start` 报错，日志里写一行，网页照常可用。
+3. **生成邀请链接**：在应用的 OAuth2 页用 URL 生成器，scope 选 `bot` 和 `applications.commands`（[OAuth2 → Bot Authorization Flow](https://docs.discord.com/developers/topics/oauth2)；[Getting started](https://docs.discord.com/developers/quick-start/getting-started) 的 Guild Install 也是这两个 scope）。权限选这五项：
+   - View Channels（`VIEW_CHANNEL`）
+   - Send Messages（`SEND_MESSAGES`；它不包括在线程里发消息）
+   - Read Message History（`READ_MESSAGE_HISTORY`）
+   - Create Public Threads（`CREATE_PUBLIC_THREADS`）
+   - Send Messages in Threads（`SEND_MESSAGES_IN_THREADS`）
+
+   权限的出处是 [Permissions](https://docs.discord.com/developers/topics/permissions)。那一页只列 API 的名字，并写明客户端里的叫法可能不同；上面括号前的界面名称未确认。"URL 生成器"这个界面名在文档里也没查到（未确认），以开发者后台的页面为准。
+4. **邀请进测试服务器**：在浏览器里打开生成的链接，选 Add to server，选测试服务器，照提示装好（[Getting started → Installing your app](https://docs.discord.com/developers/quick-start/getting-started)）。机器人只能经 OAuth2 加进服务器，不能接受普通邀请（[OAuth2](https://docs.discord.com/developers/topics/oauth2)：“Bots are added to guilds through the OAuth2 API, and cannot accept normal invites.”）。
+5. **填允许名单**：在 Discord 的用户设置 → 高级（Advanced）里打开开发者模式（Developer Mode），然后右键自己的头像或名字，选 Copy User ID。把这个数字 id 写成字符串，填进仓库外 `im.toml` 的 `allowed_users`（格式见 README）。这一步的菜单路径未确认：Discord 帮助中心的文章（support.discord.com）拒绝了自动抓取，没读到原文。
+6. **写进 env 文件**：`~/.config/data-agent/env` 里加一行（`chmod 600`）：
+
+   ```bash
+   DATA_AGENT_DISCORD_BOT_TOKEN=...
+   ```
+
+   启动前加载：`set -a && . ~/.config/data-agent/env && set +a`。这一步只是本仓库自己的约定，没有外部出处。
+
+几点说明：
+
+- `/new` 是全局斜杠命令。机器人连上以后会对比 Discord 上已有的全局命令，不一样才同步。全局命令同步后多久出现在客户端里，文档没写（未确认）；[Application Commands](https://docs.discord.com/developers/interactions/application-commands) 只写了服务器命令立即生效。
+- 线程：Discord 规定从消息建的线程和消息同一个 id，线程名 1–100 字符（[Channel → Start Thread from Message](https://docs.discord.com/developers/resources/channel)）。线程一天没有消息就归档。[Threads](https://docs.discord.com/developers/topics/threads) 写的是 “Sending a message will automatically unarchive the thread, unless the thread has been locked by a moderator.”，还写了归档的线程里不能用应用命令（`/new`）。用户在归档线程里回复的实际表现，在真实验收时看一次。
+- 单条消息最长 2000 字符（[Message → Create Message](https://docs.discord.com/developers/resources/message)）。按钮交互要在 3 秒内响应，机器人收到后先 defer（[Receiving and Responding](https://docs.discord.com/developers/interactions/receiving-and-responding)）。
+- 断线由 discord.py 自己重连。token 错了，启动时登录就失败（`LoginFailure`），日志里写一行，机器人不起来，网页照常可用。discord.py 的 DEBUG 日志会写请求的方法、URL 和请求体，不写请求头，所以 token（在 `Authorization` 头里）不会进日志；这一点有测试。
+
 ## 以后才要
 
 | # | 资源 | 用于 |
