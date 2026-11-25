@@ -190,7 +190,38 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
 用法、权限和已知限制见 README 的 "Slack"。下面是建 Slack app 的步骤。没有注明出处的地方都是在 2026-11-24 读 Slack 官方文档（docs.slack.dev）核对过的，查不到的标了"未确认"。仓库里不写任何真实 token、工作区名或用户 id。
 
-1. **建 app**：打开 <https://api.slack.com/apps>，选 Create New App → From scratch，起个名字，选工作区（[App settings quickstart](https://docs.slack.dev/app-management/quickstart-app-settings)）。
+1. **建 app**：打开 <https://api.slack.com/apps>，选 Create New App，选工作区（[App settings quickstart](https://docs.slack.dev/app-management/quickstart-app-settings)）。2026-11-25 的创建页分 "From a template"（AI agent、Starter app）和 "From scratch"（Paste a manifest、Pick features）；选 **Paste a manifest**，贴下面的 YAML，第 2 步的 app-level token 和第 3–6 步的设置就一次配好（字段名照 [App manifest 参考](https://docs.slack.dev/reference/app-manifest)）。不选 AI agent 模板：它带 assistant 的 scope 和事件，本机器人用不到。manifest 生成不了 app-level token，第 2 步的 token 仍要手动生成；之后接着做第 7 步。2026-11-25 真实验收用的就是这份 manifest。
+
+   ```yaml
+   display_information:
+     name: data-agent
+   features:
+     app_home:
+       home_tab_enabled: false
+       messages_tab_enabled: true
+       messages_tab_read_only_enabled: false
+     bot_user:
+       display_name: data-agent
+       always_online: true
+   oauth_config:
+     scopes:
+       bot:
+         - chat:write
+         - im:history
+         - channels:history
+   settings:
+     event_subscriptions:
+       bot_events:
+         - message.im
+         - message.channels
+     interactivity:
+       is_enabled: true
+     socket_mode_enabled: true
+     org_deploy_enabled: false
+     token_rotation_enabled: false
+   ```
+
+   要用私有频道或多人私聊，在 `scopes.bot` 加 `groups:history` / `mpim:history`，在 `bot_events` 加 `message.groups` / `message.mpim`。第 2–6 步是手动配置时的做法，也说明 manifest 每一项的来由。
 2. **打开 Socket Mode**：在 app 设置的 Socket Mode 页打开 Enable Socket Mode。打开时设置页会引导你生成 app-level token，也可以在 Basic Information → App-level tokens 里生成，token 以 `xapp-` 开头。给 token 加 scope `connections:write`。这个 scope 的依据是工单 131 读的 [connections:write](https://docs.slack.dev/reference/scopes/connections.write) 页（"Grants permission to generate websocket URIs and connect to Socket Mode"）；Socket Mode 页和 [apps.connections.open](https://docs.slack.dev/reference/methods/apps.connections.open) 页都没提它，后者写的是 "No scopes required"，只要 app-level token。Socket Mode 下，事件和交互都不需要、也不能填 Request URL。Socket Mode 的 app 不能上公开的 Slack Marketplace。（[Using Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode)）
 3. **Bot scopes**：在 OAuth & Permissions 的 Bot Token Scopes 里加这些：
    - `chat:write`：发消息、编辑消息（[chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage)）。
