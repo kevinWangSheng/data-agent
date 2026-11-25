@@ -197,7 +197,7 @@ Branch: worktree-132-im-telegram
 - Attempts: 2
 - Review rounds: 4（首轮 2，退回 1 轮 2）
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: 已实现，两道审查通过；真实 Telegram 验收待人建 bot、主会话跑
+- Outcome: 已合并（`65631e5`）；真实 Telegram 验收待人建 bot、主会话跑
 - Human review minutes: —
 
 ## Comments
@@ -240,3 +240,4 @@ Branch: worktree-132-im-telegram
   - 检查：`make check`（`runs/132/make-check-5.log`）ruff/basedpyright 干净，pytest "3324 passed, 3 skipped, 79 deselected"，web 448 passed，exit 0。真实调用：`to_markdown_v2("Total:\n```SELECT SUM(revenue) FROM orders```\ndone")` 返回 `'Total:\n`SELECT SUM(revenue) FROM orders`\ndone'`；最坏情况（4000 个反引号、1000 行栅栏）几毫秒内完成。
   - 审查：第 1 轮 `da-review` "No actionable defects"，`eng:code-review` 找出上述回归和结尾栅栏后丢文字，已在 `f348197` 修；第 2 轮 `da-review` "No actionable regressions"，`eng:code-review` 无阻塞项。不修（判断题或小节）：`startswith(opening)` 可读性；`CODE_SPECIAL.sub` 出现两次、`BOLD` 与 `INLINE` 部分重复；语言不合 `LANGUAGE` 时丢语言、保留代码；缩进 4 格以上的栅栏仍开代码块（不丢内容，利于列表里的栅栏）；Slack 和 Telegram 的限流重试代码重复，等 133 加第三份时再抽。
   - 已知限制（超出本工单 Authority，待人定是否开后续工单）：`format.py:62` 的 `is_fence` 仍把同一行的 ```x``` 当栅栏，Slack 的 `to_mrkdwn` 同样（工作中看到，没跑）。审查跑过确认 `format.py` 里两个影响，都不丢文字：`tables_to_code` 不把这种行之后的管道表格转成等宽块；`split_message` 对被拆分的长回答，后面每块重复这一行，除最后一块外都以空代码块结尾。
+- 2026-11-25（主会话）：PR #139 CI 绿；第 1 轮 Codex P2（同一行三反引号行内代码被当栅栏）已退回并修好（`45600d0`、`f348197`）；Codex 对 `f348197` 复审无意见（👍）。已 squash 合并为 main `65631e5`。Status 保持 `in-review`，等人建好 bot 后主会话在 worktree `.claude/worktrees/132-im-telegram` 做真实验收（照 131 先例，验收后再标 done、清理 worktree）。
