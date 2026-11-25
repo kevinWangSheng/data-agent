@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 # The libraries of the extra `data-agent[im]` each implemented platform needs.
 LIBRARIES = {
     "slack": ("slack_bolt", "slack_sdk", "aiohttp"),
+    "telegram": ("aiogram", "aiohttp"),
     "discord": ("discord", "aiohttp"),
 }
 INSTALL = "run `uv sync --extra im` (or install `data-agent[im]`)"
@@ -47,8 +48,6 @@ def start(app: object, configs: Mapping[str, PlatformConfig]) -> None:
     if not isinstance(app, FastAPI):
         raise TypeError(f"start takes the app create_app made, not {type(app).__name__}")
     for name in configs:
-        if name not in LIBRARIES:
-            raise ImUnavailable(f"--im: the {name} bot is not implemented yet; leave out [{name}]")
         for library in LIBRARIES[name]:
             try:
                 importlib.import_module(library)
@@ -65,6 +64,10 @@ def start(app: object, configs: Mapping[str, PlatformConfig]) -> None:
 
 def make_platform(config: PlatformConfig) -> Platform:
     # Imported only here: without `--im` no platform library is loaded.
+    if config.platform == "telegram":
+        from data_agent.im.telegram import TelegramPlatform
+
+        return TelegramPlatform(config)
     if config.platform == "discord":
         from data_agent.im.discord_bot import DiscordPlatform
 

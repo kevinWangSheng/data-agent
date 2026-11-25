@@ -3,8 +3,8 @@
 Status: ready-for-agent
 Blocked by: 131（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: Claude Code (Opus 5.5), 2026-11-25
+Branch: worktree-133-im-discord
 
 ## Goal
 
@@ -223,10 +223,10 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2（另有一次只核修复的 Codex 复查）
 - Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Outcome: 停在 ready-for-human（复查找出新 bug，修复已满 2 轮）
 - Human review minutes: —
 
 ## Comments
@@ -234,3 +234,32 @@ Branch: —
 - 2026-11-25（对齐会话）：
   - 依据：上游做法由人确认照多数（spec 的 Update 2026-11-25）；discord.py 2.7.1 的接口和 Discord 平台事实由子 agent 读 wheel 源码和官方文档核实，见 Context。
   - 与 132 并行派工，冲突处理见 Context "和 132 并行"。
+- 2026-11-25（工单 agent 最终回复，主会话照抄）：
+
+**状态**：`ready-for-human`。两轮修复（`c6817aa`、`e035c98`）后，只核修复的第三次 `da-review` 找出新 bug，按修复上限停下。分支 `worktree-133-im-discord`（`c148965`、`c6817aa`、`e035c98`）。最终 `make check`：3287 passed、3 skipped；web 448/448；ruff、格式、basedpyright 干净。
+
+**未修的 bug（待人定：第三轮修，或记成已知限制）**：在 Discord 论坛帖子的第一条消息里 @ 机器人，这条消息的 id 和帖子线程的 id 相同；机器人当成顶层消息（`src/data_agent/im/discord_bot.py:315-319`），在线程里再建线程失败，回复发到不收普通消息的论坛频道，提问没有回答。spec 的"论坛话题不支持"只说 Telegram，没覆盖 Discord 论坛。可能的修法：用取到的频道类型判断消息是否已在线程里，加一个"起始消息 id 等于线程 id"的测试。
+
+**交对齐会话定**：在机器人的线程里 `/new`，adapter 会删掉这个线程的 key（`adapter.py:249-252`），之后不 @ 的消息被忽略。Discord 代码在不违反定的点 3（什么算 @）的前提下修不了，改 adapter 是停下条件。README 已写明 `/new` 后要再 @ 一次。
+
+**实现与检查**
+- 模块名 `src/data_agent/im/discord_bot.py`：叫 `discord.py` 时 basedpyright 把 `import discord` 解析成模块自己，按工单允许改名，docstring 写了原因。
+- 依赖：`im` extra 和 dev 组钉 `discord.py==2.7.1`。`uv.lock` 只新增 audioop-lts 0.2.2、discord-py 2.7.1，已有版本不变；`uv export --frozen --no-dev --no-emit-project | grep -iE 'discord|audioop'` 无输出；`uv lock --check` 通过。
+- `make check`（`e035c98`）：输出在 worktree 的 `runs/133-fake/make-check-final.log`。
+- 装 extra、假 token（`runs/133-fake/run.sh`，`data-agent web --im <只含 [discord]>`）：日志 "discord: the bot could not connect; the web UI goes on without it"，`discord.errors.LoginFailure: Improper token has been passed.`（HTTP 401）；`/api/options` 200；Ctrl-C exit 0；`web.log` 里 token 出现 0 次。注意：这次用假 token 向 Discord 真实 API 发了一次登录请求，Evidence 要这个失败，但和 Spend cap 行的"不连真实 Discord"相冲。
+- 不装 extra（`UV_PROJECT_ENVIRONMENT=runs/133-fake/noextra-venv uv sync --frozen --no-dev`，因为 dev 组带了 discord.py）：`--im: the discord bot needs the IM libraries (discord is not installed); run uv sync --extra im (or install data-agent[im])`，exit 2。
+- token 不进日志：测试让 discord.py 连本地 HTTP 服务器，抓 401 和 200 登录的 DEBUG 日志，token 都没出现；discord.py 只记方法、URL、body，不记请求头。网关 IDENTIFY（带 token）不记日志，读源码确认，没写测试。
+- 文档：`docs/setup.md` 链 Discord 官方文档（2026-11-25 读）；菜单准确名称、Developer Mode / Copy User ID 路径标 未确认（Discord 帮助站拒绝自动抓取）。
+
+**审查**
+- `da-review` 第 1 轮，都已处理：`/new` 命令同步失败时网关还在跑、adapter 却没开始轮询（已修）；线程里 `/new` 丢 key（即上面的 adapter 缺口，只改 README）。
+- `da-review` 第 2 轮，三条都修：未缓存线程的获取放进投递锁内保证顺序；取不到频道的消息记日志丢弃，不再编 key；别人已从该消息建了线程（Discord 错误 160004）时发进那个线程。
+- 复查：上面的论坛起始消息 bug，未修。
+- `eng:code-review` Spec（`c148965`）已修：归档（未缓存）线程里的消息没有频道类型、key 错，改为取频道；线程名去掉别的用户和角色的 mention；`/new` 设为服务器和私信都能用，同步检查比较可用范围。不修：重启后的编辑发到父频道（adapter 只在内存里存轮次和问题，`adapter.py:183-185`，重启后不会编辑旧消息）；启动失败不关 client（`Bot.stop` 总会调 `platform.stop()` 关掉）。
+- `eng:code-review` Standards：无硬违规。已修：会话 key 分支收进 `channel_key`；`SEEN` 改名 `REMEMBERED`，`find` 改名 `thread_or_source`。不修：共用的有界 map 辅助、`service.py` 改成按平台一张表，都要动本工单不许改的 `slack.py` 和 `service.py` 其他部分；模块大小和六个有界 map 各有单一用途和注释；chat/thread/direct 三元组和 id 的字符串/整数转换由共用的 `Incoming`/`Press` 类型决定；命令描述用 `getattr` 是因为命令树类型包含没有描述的右键菜单。
+
+**真实验收交接**（worktree `/Users/shenghuikevin/dev/AI/data-agent/.claude/worktrees/133-im-discord`）：工单第 2 步命令可在该 worktree 原样运行。除两处 未确认 外另看：`/new` 在私信里是否出现、私有"思考中"提示是否消失只剩一条回复；关掉 ping 的回复是否仍算 @（定的点 3 假定只有带 ping 的算）；归档线程里的追问是否还在同一对话；登录超过 3 秒，discord.py 不读代理环境变量，网络要能直连 Discord。
+- 2026-11-25（主会话，人定"照上游"）：
+  - 退回：论坛帖子起始消息里 @ 机器人没有回答（`src/data_agent/im/discord_bot.py:315-319` 把它当顶层消息，在线程里再建线程）。照 spec "会话映射" Update 2026-11-25 晚：判断"已在线程里"看消息所在频道是不是线程（`discord.Thread`），不比较消息 id 和线程 id；论坛起始消息就在这个帖子线程里回复。配一个修复前会失败的测试（起始消息 id 等于线程 id、频道是论坛帖子线程）。人允许为这一条做第 3 轮修复；修完照常跑两道审查，审查再有新问题就停下交回。
+  - 先把 `origin/main` 合进本分支（132 Telegram 已合入 `65631e5`，同改 `service.py` 的 `LIBRARIES`/`make_platform`、`pyproject.toml`、`uv.lock`、README、`docs/setup.md`，`tests/test_im_service.py` 的"未实现平台"那例）：两个平台都保留；`uv.lock` 用 `uv lock` 重新生成，只能有 aiogram、discord.py 两组包的变化；"未实现平台"那例和 `service.start` 里 "not implemented yet" 的分支照 Context "和 132 并行"（`:80`）一起删掉。
+  - `/new` 后线程免 @ 的缺口不在本工单修，归 137（改 adapter）；README 里"`/new` 后要再 @"那句先留着，137 去掉。

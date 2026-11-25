@@ -86,18 +86,6 @@ def test_without_the_extra_im_says_how_to_install_it(
     assert "Traceback" not in err
 
 
-def test_a_platform_not_implemented_yet_is_refused_by_name(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    tokens: None,
-) -> None:
-    telegram = '[telegram]\nbot_token_env = "DATA_AGENT_TELEGRAM_BOT_TOKEN"\nallowed_users = [1]\n'
-    err = refused(tmp_path, monkeypatch, capsys, SLACK + telegram)
-    assert "telegram" in err
-    assert "not implemented" in err
-
-
 def test_a_bad_file_stops_the_server_naming_the_platform(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

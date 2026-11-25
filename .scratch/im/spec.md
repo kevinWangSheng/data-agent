@@ -39,6 +39,11 @@ agent 现在只能在网页对话页和 CLI 里用。数据团队的问题多在
 - 群里要 @ 机器人才回应；机器人已经参与的线程里不用再 @。
   - （Update 2026-11-25，人确认，照上游多数）回复机器人的消息也算 @（Hermes、OpenClaw；Chat SDK 可配）。Discord 只认 `message.mentions` 里的机器人，`@everyone` 不算（Chat SDK `index.ts:2471`）。Telegram 认 `mention` 等于 `@机器人用户名`、`text_mention` 指向机器人、带 `@机器人用户名` 的 `bot_command`（Chat SDK `packages/adapter-telegram/src/index.ts:3862-3885`）。
   - （Update 2026-11-25，人确认）Telegram 默认的隐私模式下，官方文档只保证机器人收到命令和对它消息的回复（core.telegram.org/bots/features#privacy-mode）。所以 `docs/setup.md` 要求在 BotFather 里关掉 Group Privacy（或把机器人设为管理员），再把机器人移出群、重新拉回（Hermes `website/docs/user-guide/messaging/telegram.md:253-277`，OpenClaw `docs/channels/telegram/setup.md:99-107`）。适配器对不该回应的群消息照旧什么都不做，也不写日志。
+  - （Update 2026-11-25 晚，人定"照上游"（Hermes `4d8ebf8c`、OpenClaw `0b99555d`、Chat SDK `e490e84`，读源码于 2026-11-25，克隆在主会话 scratchpad `im-refs/`））
+    - Discord 论坛帖子：判断"消息已在线程里"看消息所在频道是不是线程（Hermes `isinstance(message.channel, discord.Thread)`，`plugins/platforms/discord/adapter.py:5877-5879`；OpenClaw 按频道类型，`extensions/discord/src/channel-type.ts:3-8`；Chat SDK `message.channel.isThread()`，`packages/adapter-discord/src/index.ts:2784-2800`），不比较消息 id 和线程 id；在论坛帖子起始消息里 @ 机器人，就在这个帖子线程里回复，不另建线程。
+    - `/new` 只换对话，不取消"机器人参与过这个线程"：在机器人的线程里 `/new` 之后，不 @ 的消息照样回应（Hermes 的线程参与集合与会话分开存，reset 不清，`gateway/platforms/helpers.py:367`、`discord/adapter.py:2527-2534`；OpenClaw 按线程所有者判断，`monitor/allow-list.ts:400-423`；Chat SDK 订阅按线程 id 存，只有显式 `unsubscribe()` 才去掉，`packages/chat/src/chat.ts:600-615`）。
+    - Telegram `/start`：当作平台的 ping，不交给 agent、不回复（Hermes `gateway/run_inbound.py:980-982`；Chat SDK 把它当斜杠命令走 `processSlashCommand`，不当普通消息，`packages/adapter-telegram/src/index.ts:1397-1430`）。带参数的 `/start <payload>` 一样。
+    - 停机期间到的消息：保持现状，启动后照常处理（Hermes `drop_pending_on_cold_boot` 默认 false，`plugins/platforms/telegram/adapter.py:589-592`；OpenClaw `drop_pending_updates: false`，`extensions/telegram/src/polling-session.ts:272`；Chat SDK `dropPendingUpdates: false`，`index.ts:951-959`）。
 - 映射存在 runs 目录下适配器自己的文件里（如 `<runs-dir>/im/threads.json`），不改 `conversation.json`。IM 发起的对话在网页对话列表里照常出现，能打开回放。
 
 ### 澄清、进度、取消
@@ -102,6 +107,7 @@ slack_bolt 1.30.0、aiogram 3.34.0、discord.py 2.7.1，都是 MIT，作为可�
 | 131 | 平台接口、会话映射（含 `/new` 开新对话的映射逻辑）、澄清、进度、取消、排版、权限、配置、出错的公共部分，加 Slack 实现；`--im`；README 与 `docs/setup.md`（建 Slack app 的步骤） | 130 |
 | 132 | Telegram 实现（aiogram，长轮询，把 `/new` 命令解析成公共部分的"开新对话"） | 131 |
 | 133 | Discord 实现（discord.py，gateway，自动建线程；Message Content 是特权 intent，要在开发者后台打开） | 131 |
+| 137 | 跟进（Update 2026-11-25 晚）：`/new` 后线程免 @、Telegram `/start` 当 ping、同一行三反引号代码不当栅栏（公共排版与 Slack） | 133 |
 
 132、133 可以并行。
 

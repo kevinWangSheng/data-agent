@@ -27,6 +27,7 @@ dependencies = [
 # asyncio app imports it at the top (slack_bolt/app/async_app.py) without declaring it.
 # discord.py without its voice or speed extras (ticket 133).
 im = [
+  "aiogram==3.34.0",
   "aiohttp>=3.14",
   "discord.py==2.7.1",
   "slack-bolt==1.30.0",
@@ -37,8 +38,9 @@ data-agent = "data_agent.cli:main"
 
 [dependency-groups]
 dev = [
-  # The `im` extra again, so CI (`uv sync --locked`, no extra) type-checks and tests the Slack
-  # and Discord modules.
+  # The `im` extra again, so CI (`uv sync --locked`, no extra) type-checks and tests the Slack,
+  # Telegram and Discord modules.
+  "aiogram==3.34.0",
   "aiohttp>=3.14",
   "basedpyright>=1.31",
   # dbt for local dbt runs and seam A, pinned like the data-eng-bench image (plan §5). Not a runtime

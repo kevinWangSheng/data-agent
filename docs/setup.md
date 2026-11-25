@@ -260,6 +260,26 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 断线由 slack_sdk 自己重连。bot token 错了，启动时 `auth.test` 就失败，日志里写一行，机器人不起来，网页照常可用。连不上 Socket Mode（例如 app token 错了）时，slack_sdk 每 10 秒重试一次，每次写一行日志。
 - Press 是否私聊，按频道 id 以 `D` 开头来判断（未确认，真实验收时核对）。
 
+## Telegram 机器人（工单 132）
+
+用法、权限和已知限制见 README 的 "Telegram"。下面是建 bot 的步骤。引文都是 2026-11-25 读 Telegram 官方文档（core.telegram.org）核对过的，查不到的标了"未确认"。仓库里不写任何真实 token、机器人用户名或用户 id。
+
+1. **建 bot，拿 token**：在 Telegram 里找 @BotFather，发 `/newbot`。它会问名字和用户名，用户名要以 `bot` 结尾，然后给出 token（[Creating a new bot](https://core.telegram.org/bots/features#creating-a-new-bot)："@BotFather will ask you for a name and username, then generate an authentication token for your new bot"）。token 丢了或泄露了，在 BotFather 里发 `/token` 重新生成（同一页）。把它写进 `~/.config/data-agent/env`（`chmod 600`）：
+
+   ```bash
+   DATA_AGENT_TELEGRAM_BOT_TOKEN=...
+   ```
+
+   启动前加载：`set -a && . ~/.config/data-agent/env && set +a`。变量名是本仓库自己的约定（前缀 `DATA_AGENT_TELEGRAM_`），没有外部出处。
+2. **关掉 Group Privacy**（要在群里用时）：默认的隐私模式下，机器人在群里只保证收到给它的命令和回复它消息的消息（[Privacy mode](https://core.telegram.org/bots/features#privacy-mode)："only see relevant messages and commands"），文档没写普通的 `@机器人` 能不能收到。所以在 BotFather 里发 `/setprivacy`，选这个 bot，选 Disable（[Edit settings](https://core.telegram.org/bots/features#edit-settings) 只写了 "/setprivacy – set which messages your bot will receive when added to a group"，选项的名字未确认）；也可以发 `/mybots` → 选 bot → Bot Settings → Group Privacy → Turn off（这条菜单路径官方文档没写，未确认）。另一种做法是把机器人设为群管理员：文档写 "bot admins always receive all messages"（同一节）。
+3. **已经在群里的机器人要移出再拉回**：改了隐私模式后，"the bot will need to be re-added to the group for this change to take effect"（[Privacy mode](https://core.telegram.org/bots/features#privacy-mode)）。
+4. **填允许名单**：用 `data-agent web --im` 起来后，私聊机器人一次。不在名单里的人私聊它，会收到一条"未授权"的回复，里面有自己的数字用户 id。把这个数字填进仓库外的 `im.toml` 的 `allowed_users`（格式见 README），重启。这一步是本仓库的行为（`src/data_agent/im/adapter.py`），没有外部出处。
+
+几点说明：
+
+- 机器人用长轮询（`getUpdates`），不需要公网地址。启动时先调 `getMe`：token 错了或者这时连不上 Telegram，日志里写一行，机器人不起来（要重启 `data-agent web` 才会再试），网页照常可用。启动之后再断线，aiogram 退避重试 `getUpdates`，每次写一行日志。
+- 机器人启动时用 `setMyCommands` 把 `/new` 放进命令菜单。
+
 ## Discord 机器人（工单 133）
 
 用法、行为和已知限制见 README 的 "Discord"。下面是建 Discord app 的步骤。没有注明的地方都是 2026-11-25 读 Discord 官方开发者文档（`discord.com/developers/docs/...` 现在跳转到 `docs.discord.com/developers/...`）核对过的，查不到的标了"未确认"。仓库里不写任何真实 token、服务器名或 id。
