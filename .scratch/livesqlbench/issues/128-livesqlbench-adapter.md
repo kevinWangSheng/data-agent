@@ -1,10 +1,10 @@
 # 128 — LiveSQLBench：适配器、PostgreSQL 镜像、soft EX、60/120 划分、`ablate`/`report` 按榜单过滤、只读凭据、冒烟（不含官方对拍）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 127（done）
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (Opus 5.5, worktree 128-livesqlbench-adapter)
+Branch: worktree-128-livesqlbench-adapter
 
 ## Goal
 
@@ -336,10 +336,10 @@ Base-Lite 的 180 道 `Query` 题能在服务器上以 Harbor 任务跑通，并
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2
+- Model spend: $0
+- Outcome: code complete, server steps pending
 - Human review minutes: —
 
 ## Comments
@@ -348,3 +348,67 @@ Base-Lite 的 180 道 `Query` 题能在服务器上以 Harbor 任务跑通，并
   - 本工单做 spec 128 行除"评分对拍"以外的全部，以及无答案的冒烟。
   - 官方对拍和 oracle 检查拆给 136，答案到手后做。
   - 留出集里程碑全量要等 136 完成。
+
+- 2026-11-25（工单 agent 最终回复，主会话照抄；分支 `worktree-128-livesqlbench-adapter`，`96b32e0`，未 push）：
+
+  - **Local evidence**
+    - `make check`: exit 0. Ruff, format and basedpyright are clean (0 errors). pytest: 3075 passed, 2 skipped, 59 xfailed (107 before; 48 of these are now green). Web: 448 passed. Output is in `runs/128/make-check-3.txt`.
+    - `uv run pytest tests/acceptance/test_livesqlbench_*.py -v`: 53 passed, 0 xfailed, 0 skipped (`runs/128/acceptance-v.txt`).
+    - **Split:** `python -m evals livesqlbench split --public runs/128/hf/livesqlbench_data.jsonl --seed 20261124`
+      - 4 dev / 6 holdout: cross_db, crypto, gaming, solar, vaccine, virtual.
+      - 3 dev / 7 holdout: the other 12 databases.
+      - Total 60 / 120. Run twice: `sha256sum -c` reports OK for both files. data-eng-bench's entries and `seed` are unchanged; those lines only gained a trailing comma.
+    - **HF data:** revision 507d7d9: 270 records (180 Query, 90 Management), 18 databases, hidden fields all empty. No Query record has `preprocess_sql`. Only counts were printed, no question text.
+    - **Task generation:** with an empty answer file, 180 tasks are written and every one loads with Harbor's `Task()`. All 180 have `gold_answer = false` and `task_type = query`, and their ids equal the manifest's `lsb-` ids. No Management task is generated.
+      - Layout of one dev task (`lsb-virtual_9`): `environment/{db_assets/virtual_*.{json,jsonl,txt}, db_init/{db_name.txt,preprocess.sql}, docker-compose.yaml}`, `instruction.md`, `task.toml`, `tests/{livesqlbench_verifier.py, task_payload.json, test.sh}`.
+    - **Local dry run of the database scripts:** the local Docker has no buildx, so I ran `Dockerfile.db`'s steps by hand in the local `postgres:17` image, with a synthetic one-table dump and a throwaway credential (`runs/128/scripts/dryrun_db.py`).
+      - The 15 read-only probe checks all print PASS: the read-only role can read, its CREATE TABLE, CREATE TEMP TABLE, INSERT, UPDATE, DELETE and DROP are refused, and `postgres`, `root`, `lsb_writer` and `lsb_reader` cannot connect with no password or with `123123`.
+      - The read-only role cannot connect to `template1`, `x_template` or `postgres`, and can read the table that preprocess creates.
+      - The write role clones the process database, queries it and drops it.
+      - A multi-statement entry is scored by its last result.
+      - `evaluate` gives reward 1 on a DISTINCT/comment case.
+      - The credential is not in the container log.
+      - This was PostgreSQL 17, not 14.12, and without the actual BuildKit build.
+
+  - **New tests**
+    - `tests/test_livesqlbench.py` (43 tests): the split's allocation, tasks without answers, the verifier (no gold answer, no prediction, preprocess errors, error class only, `pred.json` states, the script's own failure, stdlib + psycopg only, last result set), the job config, the adapter's `pred.json` copy and its env without `DBT_TARGET`, and the server steps (fetch, dump dirs and `__MACOSX`, table order, images and secret, sha256 on every call, counts, check, `leaks`, `readonly`).
+    - In `tests/test_eval_ablate.py`, `test_eval_report.py`, `test_eval_accept.py` and `test_da_remote.py`, the new tests are the ones whose names mention livesqlbench, lsb, benchmark, reference or gold.
+
+  - **Changed non-acceptance tests**
+    - `tests/test_eval_manifest.py`: it pinned 30/30 over the whole manifest. It now counts data-eng-bench's entries only (still 30/30, seed 20261015) and adds LiveSQLBench's 60/120, seed and source.
+    - `tests/test_eval_board.py:193-194`: these asserted that every manifest entry is a registry task. They now check data-eng-bench's entries only, since `lsb-` ids are not registry tasks.
+    - `tests/test_da_remote.py` scaffolding: the fake `uv` gained `livesqlbench prepare` and `check` cases, and the fake `docker` gained `image ls`. No existing assertion changed, and the 134 existing tests still pass.
+
+  - **NOTICE:** a new LiveSQLBench section at e15cd22.
+    - Under MIT (root, "Copyright (c) 2024 bird_sql"): `evals/livesqlbench_verifier.py`.
+    - Under Apache-2.0 (`LiveSQLBench-CLI/`): `evals/livesqlbench_images/{init-db.sh, bootstrap-db-image.sh, db-entrypoint.sh, Dockerfile.db}`, each with its modifications noted at the top.
+    - The Python rewrites of `build_db_images.sh` and the adapter's task layout are listed as well.
+
+  - **Reviews (2 rounds)**
+    - **Round 1, `da-review main` (Codex):** 2 findings, both fixed.
+      - psycopg 3 exposed the *first* result of a multi-statement string; it now advances to the last result, as upstream's psycopg2 does.
+      - The ablation table dropped the "no gold answer" mark; it now carries `no_gold_answer_trials` and a **Not scored** banner.
+    - **Round 2, `eng:code-review main`:** fixed
+      - a `leaks` command that prints a count only;
+      - `readonly` now uses the task's own `[environment] env` and checks the write role;
+      - the dump's sha256 is compared on every run;
+      - `template1` and `<db>_template` are closed to PUBLIC;
+      - NOTICE wording;
+      - a list-level benchmark filter;
+      - the unreachable fallback layer label is removed.
+    - After the advisor's check: the verifier swallows cleanup errors as upstream does, the healthcheck goes over TCP, builds force BuildKit and `check` reports buildx, and `__MACOSX` is skipped.
+    - **Not fixed, with reasons (please decide):**
+      - **`repair_json`:** upstream repairs a malformed `pred.json`; ours uses strict `json.loads`, because Context 9.4 limits the verifier to the standard library and psycopg. This is a parity risk for 136.
+      - **Shared container:** the verifier runs in the same `main` container as the agent (Harbor's default). A background process the agent left behind via `--sandbox local` could read the verifier's environment. Harbor's `environment_mode = "separate"` would close this; I didn't take it on here because it is a larger change. Recorded as a known limitation against spec U6.
+      - **Read-only password:** `READER_PASSWORD` is a constant, which Context 9.5 allows.
+      - **Not refactored:** the module's size, and the duplicated command tail in the adapter.
+    - **Other notes:**
+      - `readonly`'s check that `main` has no write credential inspects a container started with the task's declared env, not one Harbor launched.
+      - The pulled-directory leak count can't run on the Mac, because the credential stays on the server. The server count over `runs/lsb-smoke/` covers the pulled subset. Please accept or reject that reading.
+
+  - **Deviations from Context 9, with reasons**
+    - The server steps live in Python (`evals/livesqlbench_server.py`, `python -m evals livesqlbench …`), called by `da-remote`, not in bash.
+    - The image tag is a digest of `evals/livesqlbench_images/`, so any change to the build files gets a new tag.
+    - Restoring a dump needs a `root` role to exist, so one is created without LOGIN.
+    - `--reference` accepts `full` or `no-verifiers`, the two references that have layer labels.
+    - The run record's benchmark commit for LiveSQLBench is a `tree:` digest of the generated tasks, so a run can be resumed even though the tasks are no git clone.

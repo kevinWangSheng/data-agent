@@ -1,6 +1,6 @@
 # 131 — IM 入口：公共部分（接口、会话映射、澄清、进度、取消、排版、权限、配置、出错）、Slack 实现、`--im`、文档
 
-Status: in-review
+Status: done
 Blocked by: 130（done）
 Spec: ../spec.md
 Claimed by: claude (opus-5-5) 2026-11-24
@@ -173,8 +173,8 @@ Branch: worktree-131-im-common-and-slack
 
 - Attempts: 2
 - Review rounds: 2
-- Model spend: $0（没有调模型）
-- Outcome: —
+- Model spend: $0.0366（主会话 Slack 真实验收 10 次运行；工单 agent 没有调模型）
+- Outcome: accepted (PR #136, squash 30ed465)
 - Human review minutes: —
 
 ## Comments
@@ -291,3 +291,16 @@ Branch: worktree-131-im-common-and-slack
   - `da-review main`, run 2: P1, real (introduced by `ac5679a`): a single code line expanding past 3000 characters made `sections` loop forever. Fixed in `5ee63be`; regression test plus 40 randomized cases.
   - `da-review main`, run 3: "No actionable defects found".
   - `make check`: 3025 passed, 2 skipped, 75 xfailed; web 442 passed.
+
+- 2026-11-25（主会话）Slack 真实验收，131 分支 `5ee63be`（文档另提交 `64443ff`）。人用 Paste a manifest 建 app（manifest 已写进 `docs/setup.md` 第 1 步），token 在 env 文件里，`im.toml` 放仓库外。命令：`data-agent web --runs-dir runs-web --data-sources sources.toml --port 8831 --im <仓库外 im.toml>`，数据源是 `tests/fixtures/shop.sql` 建的 DuckDB，产出在 worktree 的 `runs/131real/`（不进 git）。spec "验收" `:119-123` 逐条：
+  - 澄清加按钮：私聊"帮我算一下收入"，turn 1 出 `clarification`（4 个口径选项），点第 1 项，turn 2 的输入就是该选项原文，回答 2139.25。
+  - 线程追问进同一对话：私聊线程到 turn 5，`threads.json` 一个线程对应一个对话；turn 3 沿用 turn 2 的"排除 returned"口径。
+  - 运行中插话：turn 5 03:31:23 开始，`steer_delivered` 在 03:31:36（"只分析 Avery Lane 一个人"），报告只写 Avery Lane；网页 turn 的 `steers` 有这一条。
+  - 停止：点 Stop 后约 1 秒 `cancelled`，Slack 回 "Stopped. Run 20261125T032732Z-f44a39 in the web UI."
+  - 频道 @：公开频道里 @ 机器人，`threads.json` 多一条 `C…` 频道线程，对应新对话，turn 1 success。
+  - 名单外：工作区只有人一个账号，把 `allowed_users` 换成假 id 重启后，人私聊和频道各发一条：没有新运行目录，`threads.json` 不变；人确认私聊收到了提示，提示原文主会话没有看到。之后改回名单并重启。
+  - 网页：`/api/conversations` 列出这 3 个对话，可回放。
+  - token：在 `runs-web/` 和各次 `web.log` 里查 `xoxb-`/`xapp-`/`xoxp-`，0 处。
+  - 花费：10 次运行 $0.0366（从事件文件 `result.cost_usd` 加总）。
+  - 未确认项的结论：私聊判断用的 `D` 前缀对（私聊 `D…`，频道 `C…`）；`/invite` 这一步要做；机器人会不会收到自己发的消息，日志里看不出来（成功时不写日志），但验收中没有出现重复回复或自己回复自己。
+  - 发现：Slack 的创建页已改版（2026-11-25），"From scratch"下面是 Paste a manifest / Pick features；`docs/setup.md` 第 1 步改成贴 manifest（`64443ff`，`make check` 通过：3025 passed，web 442 passed）。
