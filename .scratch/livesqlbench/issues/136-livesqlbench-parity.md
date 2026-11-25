@@ -155,3 +155,8 @@ Branch: worktree-136-livesqlbench-parity
   Ticket fields to copy in:
   - **Status:** `in-review`
   - **Ledger:** Attempts 1, Review rounds 2, Model spend $0, Outcome: committed `2b97af8`, server runs pending.
+
+- 2026-11-25（对齐会话，人定）：
+  - 停止条件：ablate 自己的 resume 路径（先删掉出错的 trial，再 `harbor job resume`）会重跑验证脚本自身失败的 trial，算满足"会重跑"，不停下（`runs/136/resume-check.txt`："ablate path reran it: True"；直接 `harbor job resume` 不会重跑，但我们不这样 resume）。兜底是 `--fail-fast`。
+  - 范围外 3 项接受：`scripts/da-remote start` 给 `livesqlbench-parity` 也 source 口令；`evals/__main__.py` 注册新命令；验证脚本 `main` 的 docstring。
+  - 偏差 6 项接受：上游用 `lsb_writer` 而不是 `root/123123`；上游评测的镜像新写；每个库一个容器，两边每个用例都从模板克隆；涉及超时的不一致重跑一次；`upstream_failed`/`ours_no_reward` 交人判断，有就 exit 1；标准 SQL 泄漏计数只在服务器上跑。
