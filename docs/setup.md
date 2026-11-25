@@ -277,7 +277,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
 几点说明：
 
-- 机器人用长轮询（`getUpdates`），不需要公网地址。连不上 Telegram 时 aiogram 退避重试，每次写一行日志；token 错了，启动时 `getMe` 就失败，日志里写一行，机器人不起来，网页照常可用。
+- 机器人用长轮询（`getUpdates`），不需要公网地址。启动时先调 `getMe`：token 错了或者这时连不上 Telegram，日志里写一行，机器人不起来（要重启 `data-agent web` 才会再试），网页照常可用。启动之后再断线，aiogram 退避重试 `getUpdates`，每次写一行日志。
 - 机器人启动时用 `setMyCommands` 把 `/new` 放进命令菜单。
 
 ## 以后才要
