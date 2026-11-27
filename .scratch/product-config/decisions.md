@@ -44,3 +44,15 @@
 - Skill 工具每次调用记进事件文件，供按轨迹调照做率。
 - 评测配置文件写死 Skill 列表和 `preload`，Skill 版本照旧记哈希。
 - 本块第一张工单是实测：DeepSeek 经 Anthropic 兼容接口能否调 Skill 工具、本地插件里的 Skill 能否被发现、脚本路径；任一不行就停下回对齐。
+
+## Q4 评测配置文件（已定）
+
+- 每个榜单一份基础配置文件，格式同使用者的 `config.toml`：`evals/profiles/data-eng-bench.toml`、`dab.toml`、`livesqlbench.toml`。写死模型、上限、`network = false`、沙箱、Skill 列表和 `preload`、不加载使用者的 MCP 和插件、该榜单官方的 `[prompts]`；现在分散在 `evals/configs/*.yaml`、`evals/dab.py` 里的值收进来。
+- 消融 = 基础配置 + 层开关覆盖，名字不变（`full`、`baseline`、`no-skill`、`no-verifiers`、`no-context`、`full-old-skill`），结果目录、报告、`evals compare` 照旧用这些名字，历史结果能对上。
+- 层开关写成 `evals/profiles/layers/*.toml`（只有 `[layers]` 几行，`full-old-skill` 另指 `skills-frozen/`），评测入口叠加在基础配置上。
+- `data-agent run --config` 只接配置文件路径；消融名只有评测入口认。
+
+## Q5 迁移判定（已定）
+
+- 第一步只换机制不换行为：评测配置文件完全复现现在的行为（现有 Skill 全文进提示词、Skill 工具关、上限与提示词片段不变）。判定：每个榜单几道样本题，新旧方式各生成一次完整运行参数做快照测试，系统提示词全文、工具清单（允许/禁止）、MCP 服务器、Skill 版本哈希、轮数与花费上限、传给 CLI 的环境变量逐项完全相同；$0。另每个榜单真跑 1 题冒烟。
+- 第二步评测改用产品新默认（按需加载、只常驻工作流 Skill），当作一次普通 Skill 改动：先在开发集上量、和第一步配对比较，再定跑榜用哪种；不和第一步混在一起。
