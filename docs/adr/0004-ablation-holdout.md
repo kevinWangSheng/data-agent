@@ -37,3 +37,7 @@
 - **DAB 只跑榜单的 54 题**：12 个数据集，baseline 和 no-context 各 54 × 5 = 270，共 540 个 trial。
   - 服务器上的 DAB clone（`6ad9d68`）有 104 题，多出来的 5 个新数据集（civic_unstructured、cve、imdb、krama、usaspending，共 50 题）不在榜单计分范围（DAB `README.md:158`），不跑。
   - 正式评测前先在 b7c6071 上小试跑：17 个数据集各跑 query1，两个配置各 1 次，共 34 个 trial。
+
+## Update 2026-11-27：产品默认改回 full；消融是配置文件
+
+见 ADR-0011。产品默认配置从 `no-verifiers`（2026-11-08）改回 `full`（人定 2026-11-27；dbt 任务每次成功的实付约翻倍，查数任务无差别）。消融配置变成"榜单基础配置 + `evals/profiles/layers/*.toml`"，名字不变，结果仍按这些名字比较。

@@ -36,6 +36,7 @@
   - 实时显示和回放用同一个渲染器：按序号读事件；回放可按原始时间播放，带倍速。
   - 基本使用包含：一条命令本地启动；界面上填任务、选类型、数据源和配置后提交；实时看过程，拿到答案和结果表；历史列表；取消运行、看花费。
   - 不做：登录、多用户、权限（只监听本机地址）；界面上增删改连接（连接从启动时的配置读，密钥不经过浏览器）；产品内澄清、Memory、多轮追问；答案里的图表；公网部署加固。澄清在界面第一版做完后单独讨论。
+    - 2026-11-27 改：一期做 Docker 部署（给 IM bot 和网页用，`[server].mode = "cloud"`），仍不做登录、多用户、管理界面加数据库（ADR-0011、`.scratch/cloud-deploy/spec.md`）。
     - 2026-11-17 改：澄清、多轮追问、运行中插话移到 §10 第 24 项对话界面（`.scratch/chat-ui/spec.md`）；Memory、答案里的图表仍不做。
   - 评测页覆盖 data-eng-bench 开发集（逐题下钻）、留出集消融（只有汇总，ADR-0004）、DAB（按数据集汇总和两个配置对比，逐题轨迹链接到 release，不进站点）。
 - **在线版**
@@ -346,7 +347,7 @@
 - 2026-11-23 项目终点讨论（人定）：不再分一期二期，要做的内容统一排序。
   - 做：可观测性（Langfuse，spec `.scratch/observability/spec.md`，工单 111–114）→ 外部 MCP 接入（spec `.scratch/mcp/spec.md`，工单 115–117；对外暴露 MCP 不做）→ 答案图表（spec `.scratch/charts/spec.md`，工单 118–120）→ IM 入口（spec `.scratch/im/spec.md`，工单 121–124）→ 小范围自动改写 Skill（spec `.scratch/skill-improve/spec.md`，工单 125–126）→ LiveSQLBench（spec `.scratch/livesqlbench/spec.md`，工单 127–129；Base-Lite 180 道 SELECT，开发 60 / 留出 120，留出集 2×2 消融，全量要人批）。前三项可并行，改 agent 行为的做完再跑大评测。
   - 放后面：Memory（以后讨论接哪个第三方组件，不自研）；视频、博客、中文版、求职材料最后做。
-  - 不做：澄清层消融、平台类（登录多用户、公网部署、中文界面等）、CRUD、micro-VM、C 区补跑（第二个模型可再单独讨论）。
+  - 不做：澄清层消融、平台类（登录多用户、中文界面等；公网部署 2026-11-27 改为一期做 Docker 部署，ADR-0011）、CRUD、micro-VM、C 区补跑（第二个模型可再单独讨论）。
   - 取证：`docs/research/2026-11-23-*.md`（observability、otel-spike、langfuse-usage-mapping、sdk-upgrade-0.2.187、external-mcp、livesqlbench）。
 
 关键路径：1 → 7 → 11 → 13 → 13b → 15 → 16 → 17 → 19 / 20。界面这条线（5 → 10）不花模型钱，可以和评测并行。

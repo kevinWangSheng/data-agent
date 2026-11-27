@@ -31,3 +31,7 @@ agent 现在只有查数的 MCP 工具和读文件工具；dbt 任务的 Bash �
 - 已知限制：跑 data-eng-bench 时，沙箱的 `local` 后端能直接写题目的 DuckDB 文件，"只经 `dbt_execute` 写"在跑榜时不强制（SignalPilot 跑榜同样如此）。
 - 产品默认联网，查出的数据可能被代码或 WebFetch 发到外部；设置里可以关，README 写明默认开。
 - 提示词和 Skill 会变，两个榜单的成绩可能波动，所以验收两个榜单都跑。
+
+## Update 2026-11-27：使用者的 MCP 例外；云端默认不联网
+
+见 ADR-0011。使用者自己配置的 MCP 服务器可能带写库凭据：产品允许，文档写明不在只读保证之内；评测一律不加载。`[server].mode = "cloud"` 时默认不联网、沙箱必须是 Docker 后端（挂 Docker socket），本地模式照旧默认联网。
