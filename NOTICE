@@ -122,6 +122,12 @@ MIT (repository root):
   ticket 138's single-call baseline; the MIT notice is kept at its top. Modified as noted there:
   type annotations, one database directory read without a cache, a missing file raising, and
   post_process.py's commented-out code left out.
+- evals/livesqlbench.py: asset_sections (ticket 139, the instruction with the assets inline)
+  <- baseline/src/prompt.py assistant_prompt (its headings "# Database Schema:", "# Column
+  Meanings:", "# External Knowledge:", the knowledge fields id, knowledge, description and
+  definition, json.dumps with indent=2) and baseline/src/prompt_generator.py
+  load_db_data_if_needed (column-meaning keys lower-cased, the knowledge base keyed by name),
+  written anew.
 
 Apache-2.0 (LiveSQLBench-CLI/adapters/livesqlbench/). The four files under
 evals/livesqlbench_images/ are modified as noted at their tops; the Python files only follow
