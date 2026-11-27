@@ -3,7 +3,8 @@ classify_text tests (no network, no real model).
 
 It answers `POST .../v1/messages` as the endpoint does. The labels come from `label` (text ->
 category, or None to leave the text out of the reply); a batch for which `fail` is true gets an
-HTTP 400 whose message quotes the request's Authorization header, as a careless endpoint might.
+HTTP 400 (or `fail_status`) whose message quotes the request's Authorization header, as a careless
+endpoint might.
 `rewrite` changes the labels' JSON before it is sent (a reply cut short, say), `stop_reason` is the
 reply's, and `thinking`, when set, comes first as a thinking block, as an endpoint that thinks by
 default answers. Every request is kept in `requests`.
@@ -13,6 +14,7 @@ import csv
 import json
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -34,6 +36,8 @@ class FakeModel:
     rewrite: Callable[[str], str] = lambda text: text
     stop_reason: str = "end_turn"
     thinking: str | None = None
+    fail_status: int = 400  # the HTTP status of a failed batch
+    delay_s: float = 0.0  # how long the endpoint waits before it answers
     requests: list[dict[str, Any]] = field(default_factory=list)
     url: str = ""
 
@@ -48,13 +52,14 @@ def handler(model: FakeModel) -> type[BaseHTTPRequestHandler]:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             request = {"path": self.path, "headers": dict(self.headers), "body": body}
             model.requests.append(request)
+            time.sleep(model.delay_s)
             texts = model.texts(request)
             if not self.path.endswith("/v1/messages"):
                 self.reply(404, {"type": "error", "error": {"type": "not_found_error"}})
             elif model.fail(texts):
                 message = f"fake failure for {self.headers.get('Authorization')}"
                 error = {"type": "invalid_request_error", "message": message}
-                self.reply(400, {"type": "error", "error": error})
+                self.reply(model.fail_status, {"type": "error", "error": error})
             else:
                 labels = {
                     str(n): label

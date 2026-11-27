@@ -19,6 +19,7 @@ from evals import (
     jaffle,
     livesqlbench_parity,
     livesqlbench_server,
+    lsb_single_shot,
     scrub,
     selection,
     spend,
@@ -151,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         improve,
         livesqlbench_server,
         livesqlbench_parity,
+        lsb_single_shot,
     )
     for module in modules:
         module.add_parser(commands)

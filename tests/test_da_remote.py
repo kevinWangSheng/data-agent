@@ -1327,6 +1327,22 @@ def test_a_livesqlbench_parity_run_gets_the_write_credential(env: Env):
     assert "env loaded: lsb" in (env.repo / "runs" / "smoke" / "run.log").read_text()
 
 
+def test_a_single_shot_baseline_run_gets_the_write_credential(env: Env):
+    """Ticket 138: a Harbor run of the LiveSQLBench tasks, whose verifiers need the write role."""
+    assert env.run("setup").returncode == 0
+    args = ("lsb-single-shot", "--tasks-dir", "t", "--split", "dev", "--out", "runs/smoke")
+    proc = env.run("start", "smoke", "--", *args, "--budget", "3")
+    assert proc.returncode == 1
+    assert "no LiveSQLBench write credential" in proc.stdout
+
+    (env.server / LSB_ENV).write_text("DATA_AGENT_SMOKE=lsb\n")
+    proc = env.run("start", "smoke", "--", *args, "--budget", "3")
+    assert proc.returncode == 0, proc.stdout
+    env.wait_for_evals()
+    env.finish(0)
+    assert "env loaded: lsb" in (env.repo / "runs" / "smoke" / "run.log").read_text()
+
+
 def test_pull_of_a_livesqlbench_parity_run_takes_the_summary_only(env: Env):
     """Its scratch is outside runs/ already; a pull still brings back only the reports, the run
     log and the control files, as for any subcommand it cannot judge."""

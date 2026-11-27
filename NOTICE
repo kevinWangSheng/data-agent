@@ -116,6 +116,12 @@ MIT (repository root):
   ex_base's comparison as results_match; test_case_default's cleaning order as clean_sql); the MIT
   notice is kept at its top. Modified: remove_round logs nothing, the execution is written anew
   for psycopg, and nothing prints a query or a result (as noted at its top).
+- evals/lsb_baseline.py <- baseline/src/prompt.py (assistant_prompt), baseline/src/
+  prompt_generator.py (load_db_data_if_needed and generate_prompts' filling of a record, as
+  load_db_data) and baseline/src/post_process.py (parse_sql, extract_sql_from_response), for
+  ticket 138's single-call baseline; the MIT notice is kept at its top. Modified as noted there:
+  type annotations, one database directory read without a cache, a missing file raising, and
+  post_process.py's commented-out code left out.
 - evals/livesqlbench.py: asset_sections (ticket 139, the instruction with the assets inline)
   <- baseline/src/prompt.py assistant_prompt (its headings "# Database Schema:", "# Column
   Meanings:", "# External Knowledge:", the knowledge fields id, knowledge, description and
