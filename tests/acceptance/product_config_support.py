@@ -1106,14 +1106,17 @@ def served(root: Path, monkeypatch: pytest.MonkeyPatch, argv: Sequence[str]) -> 
     def run(app: Any, **kwargs: Any) -> None:
         built["uvicorn"] = kwargs
 
-    monkeypatch.setattr(web_module, "create_app", create_app)
-    monkeypatch.setattr(uvicorn, "run", run)
-    try:
-        cli.main(["web", *argv])
-    except SystemExit as exc:
-        code = exc.code
-    else:
-        code = None
+    # Patched for this call only: a test may serve twice, and a second call must wrap the real
+    # `create_app`, not the first call's stand-in.
+    with monkeypatch.context() as patch:
+        patch.setattr(web_module, "create_app", create_app)
+        patch.setattr(uvicorn, "run", run)
+        try:
+            cli.main(["web", *argv])
+        except SystemExit as exc:
+            code = exc.code
+        else:
+            code = None
     web = Web(built["app"], started, gates) if "app" in built else None
     try:
         yield Served(code, web, built.get("created"), built.get("uvicorn"))

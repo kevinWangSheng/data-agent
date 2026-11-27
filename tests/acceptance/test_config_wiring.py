@@ -3,8 +3,10 @@ decisions.md Q2, Q8): `[limits]`, `[sandbox]`, `[policy]`, `[server]`, `[trace]`
 default layers; the web form; the effort and time limit of the web's and IM's runs.
 
 Written by ticket 141. The tests marked TICKET_144 are xfail(strict) until ticket 144 makes them
-pass and removes the marker, changing nothing else. The tests named `test_guard_...` pass now and
-must keep passing: a conversation turn and an IM turn run with every layer on today.
+pass and removes the marker, changing nothing else. The one marked TICKET_143 (a run without any
+config file has every layer on) passes with ticket 143's loader, which removes that marker. The
+tests named `test_guard_...` pass now and must keep passing: a conversation turn and an IM turn
+run with every layer on today.
 
 Seams: `data-agent run` in-process, sessions stopped at the SDK's client
 (tests/acceptance/product_config_support.py); the web app built by `create_app` with a
@@ -25,7 +27,8 @@ The contract fixed here (ticket 141 Context contract items 4 and 5; for the huma
    `create_app(runs_dir, sources, start_run)` call stays valid.
 5. `GET /api/options` has no `configs`; `POST /api/runs` takes no `config` (the form picks no
    ablation) and succeeds without it, the run getting the server config's layers (all on by
-   default).
+   default). A body that still sends `config` (the earlier acceptance files' runs do) is taken,
+   the field ignored.
 6. `[limits]`: `max_turns.dbt`/`max_turns.query` are the options' `max_turns`; `max_budget_usd` is
    the spend cap (the options' `max_budget_usd` scales with it); `effort` is the options' `effort`
    and `CLAUDE_CODE_EFFORT_LEVEL`; `agent_timeout_sec` is the run's deadline, as
@@ -80,6 +83,9 @@ from product_config_support import (
     write_file,
 )
 
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 TICKET_144 = pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
@@ -239,7 +245,9 @@ def test_policy_refuses_a_disabled_model(
 # --- The product's default layers -----------------------------------------------------------
 
 
-@TICKET_144
+# Ticket 143's: it makes `--config` optional (test_config_cli.py) with every layer on by default
+# (test_config_load.py), so this passes with it; a `TICKET_144` mark would XPASS there.
+@TICKET_143
 def test_a_run_without_any_config_has_every_layer_on(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
