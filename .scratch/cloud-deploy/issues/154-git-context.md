@@ -1,7 +1,7 @@
 # 154 — 上下文从 git：git 地址 → 本地路径（浅克隆、`[server].refresh`、原子切换、失败回退）
 
 Status: ready-for-agent
-Blocked by: product-config 143, 151, 152
+Blocked by: product-config 143, product-config 147, product-config 148, 151, 152
 Spec: ../spec.md（Implementation Decisions"上下文从 git"）；决定：`.scratch/product-config/decisions.md` Q8"git 来源"
 Claimed by: —
 Branch: —
