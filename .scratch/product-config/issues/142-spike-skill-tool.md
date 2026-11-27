@@ -1,6 +1,6 @@
 # 142 — 实测：DeepSeek 下的 Skill 工具、本地插件里的 Skill、Skill 脚本在沙箱里的路径
 
-Status: in-progress
+Status: in-review
 Blocked by: —
 Spec: ../spec.md（"Skill、MCP、插件"；decisions.md Q3 最后一条）
 Claimed by: claude (opus-5-5, worktree 142-spike-skill-tool)
@@ -49,12 +49,33 @@ Branch: worktree-142-spike-skill-tool
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0
-- Outcome: —
+- Attempts: 1
+- Review rounds: 2 (da-review ×2, eng:code-review ×1)
+- Model spend: $0.046（标价，主会话的 DeepSeek 运行）
+- Outcome: CLI side answered for all three questions; recommend candidate A; DeepSeek run pending in the main session
 - Human review minutes: —
 
 ## Comments
 
 - 2026-11-27（主会话建票）：product-config spec 的第一张实测工单；任一问题答"否"就停下回对齐（decisions.md Q3）。
+- 2026-11-27 (ticket agent): added `scripts/spikes/skill_tool/` (`probe.py`, minimal plugin `spike-probe`, README), `tests/test_spike_skill_tool.py` (23 tests, no CLI or model calls) and `docs/research/2026-11-27-skill-tool-spike.md`. Nothing under `src/` changed.
+- Real run, no model: `uv run python scripts/spikes/skill_tool/probe.py --endpoint stub --sandbox docker`. A local stub endpoint plays the model's turns and records every request. Output:
+  - `Q1 … CLI side: 是; model follows it (stub): 未实测; listed to the model: default-config-dir=是, conversation-config-dir=是, linked-plugin=是`
+  - `Q1 precondition — Skill tool in the session when \`tools\` omits it: 否`
+  - `Q2 … =是 ×3; unlisted Skill kept out: =是 ×3`
+  - `Q3`: the filled value is the host path. Sandbox runs: local + SDK path reached ×2; local + `/skills` failed; Docker today + SDK path failed ×2; Docker today + `/skills` reached; Docker + same-path mount (A) reached ×2. The full output is quoted in the research doc.
+- `make check`: exit 0 (ruff OK, 494 files formatted, basedpyright 0 errors, 3484 passed / 3 skipped, web 448 passed).
+- `da-review` round 1, 2 × P2, both fixed (`cd2d5f0`):
+  - the listing verdict passed without the listing being seen;
+  - the hidden-Skill verdict passed with no refusal observed (now `未实测`).
+- `eng:code-review`, fixed in `c788a2e`:
+  - Standards: the same-path sandbox copy of `DockerSandbox.start` had drifted (missing labels, network setting, `SKILLS_MOUNT`).
+  - Spec: the model prompt named the Skill; the doc cited evidence the probe didn't print (tools sent, `tool_use_result`, Skill counts, `plugin_errors` missing vs empty); the tools-without-Skill matrix wasn't part of the one command (now an init-only session); the `"all"` wording and a line reference were wrong.
+- `da-review` round 2, 1 × P2, fixed in `d964c62`: a failed container cleanup threw away all the evidence.
+- Not fixed, with reasons:
+  - `probe.py` is about 570 lines. It is a throwaway spike in five sections.
+  - The test calls the SDK's private `_build_command`. Existing tests already do this (`test_effort_option.py`), and it is the only way to check the argv.
+  - The README shows sourcing the env file. That line is labelled as a command for the main session.
+  - `make check` output isn't in the research doc; it goes in these Comments instead.
+- Still open: the DeepSeek run (command above).
+- 2026-11-27（主会话）：DeepSeek 真实运行 `probe.py --endpoint model --sandbox docker`，cost_usd 0.046348：模型从列表里自己选中 Skill（是）；未列出的 Skill 被拒（是 ×3）；没有阻塞性的"否"（`tools` 不含 Skill 时无 Skill 工具 → 147 显式加；现有 Docker 沙箱找不到宿主路径 → 方案 A 实测可用）。输出贴在研究笔记末尾（`f0eb505`）。push、开 PR。
