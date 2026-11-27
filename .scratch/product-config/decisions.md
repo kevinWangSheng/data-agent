@@ -63,3 +63,17 @@
 - 每个键的来源只在 `config show` 里显示，事件文件不记。
 - `ablate` 的 `check_request`（`evals/ablate.py:413`）加生效配置哈希：同一 `--out` 哈希不同就拒绝续跑。
 - 网页运行详情显示配置哈希和配置文件名，可展开看完整配置。
+
+## Q7 云端模式（已定）
+
+`[server].mode = "cloud"` 时：
+- 网页：不登录，但要访问令牌 `DATA_AGENT_WEB_TOKEN`（bearer）；没设令牌就拒绝监听非本机地址（照 ktx）。
+- IM：照旧用允许用户名单，名单为空拒绝启动。
+- 密钥：配置引用的环境变量缺一个就拒绝启动。
+- 联网：默认关，可配置打开（本地模式照 ADR-0010 默认开）。
+- dbt：强制临时 schema（`policy.dbt_target = "scratch"`）。
+- 模型端点：不能在单次运行里覆盖，只用配置文件里的。
+- 沙箱：Docker 后端，Compose 挂 Docker socket 由 data-agent 起沙箱容器；沙箱不挂凭据、默认不联网；不许 `local` 后端；文档写明挂 socket 等于宿主机 Docker 权限。
+- 上下文从 git：`[skills].dirs`、`[instructions].files`、`[sources.*].docs` 可写 git 地址加分支或提交，启动拉一次，按 `refresh` 间隔再拉（照 nao）。
+- `runs_dir` 放持久卷；加 `/healthz`；交付镜像和 `docker-compose.yml` 示例，文档写清每个环境变量。
+- 本块第一张工单是实测：容器里挂 Docker socket 起沙箱、工作区路径能否挂进沙箱（容器内外路径不同）；跑不通就停下回对齐。
