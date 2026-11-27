@@ -1,6 +1,6 @@
 # 150 — 清理：审计第 6 节（`verify_model_values` 残留、`VERIFIER_MAX_TURNS` 重复、过时注释、`trace-check --runs-dir`；`large = 75` 保留）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（工单表 150："清理：审计第 6 节"）
 Claimed by: claude (implement session, 2026-11-27)
@@ -94,3 +94,4 @@ Branch: worktree-150-cleanup
     - `da-review` (Codex): no actionable regressions. It confirmed that none of the 33 removed definitions has a caller left, and that the CLI passes `--runs-dir` through.
     - `eng:code-review`, Spec axis: nothing missing, no scope creep. It flagged the Langfuse ordering, recorded above.
     - `eng:code-review`, Standards axis: no hard violations. Fixed: the stale test name and its no-op assertion, and the missing comment in `progress.py`. Not fixed: `NOTICE` (outside Authority); `main()`'s `runs_dir` default (existing callers use it); `UNUSED UPSTREAMS` in tests (already dead before this branch).
+- 2026-11-27（主会话）：PR #148 CI 绿，Codex GitHub app 审 `021ade6` 没有意见，squash 合并。
