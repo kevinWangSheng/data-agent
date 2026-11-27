@@ -273,6 +273,19 @@ def test_the_run_form_offers_no_ablation_and_runs_with_every_layer_on(
 
 
 @TICKET_144
+def test_a_form_body_that_still_names_an_ablation_runs_the_servers_config(
+    tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Contract item 5: a stray `config` (the earlier acceptance files still send one) is taken
+    and ignored; `baseline` would turn every layer off if it were honoured."""
+    with web_app(tmp_path / "web") as web:
+        args = submit_form(web, config="baseline")
+        events_dir = replayed(capsys, args, capture, tmp_path / "replayed")
+
+    assert layers_of(events_dir) == FULL_LAYERS
+
+
+@TICKET_144
 def test_a_web_run_gets_the_servers_config(
     home: Path,
     tmp_path: Path,

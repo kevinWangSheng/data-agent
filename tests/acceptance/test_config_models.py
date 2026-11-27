@@ -27,7 +27,9 @@ The contract fixed here (for the human review):
    is `unknown` with `cost_usd` None (contract item 7 of ticket 141).
 5. `efforts`: given, a `[limits].effort` outside it is refused before any session (exit 2, stderr
    naming `limits.effort` and the model); a value inside it, even one today's `--effort` does not
-   take (`medium`), is the options' `effort`. Left out, nothing is checked.
+   take (`medium`), is taken (the run starts). That it then is the options' `effort` needs
+   ticket 144's `[limits]` wiring as well, which 145 is not blocked by: not asserted here (a
+   known gap, for the ticket after both). Left out, nothing is checked.
 """
 
 from pathlib import Path
