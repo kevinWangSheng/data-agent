@@ -205,3 +205,17 @@ agent 只在 data-eng-bench（dbt 任务）和 DAB（跨库查数）上出过分
   - 开发集 60 题里 37 题 `order` 为真；子 agent 归为"排序/并列"的题（`cybermarket_3`、`cybermarket_8`、`gaming_1`、`gaming_9`、`mental_9`、`cross_db_9`）以及"结果相同却判错"的 `gaming_4`、`news_9` 全是 `order` 为真。推断（未验证）：并列行的先后要和标准 SQL 一致，多加或少加次排序键都会判错。
 - 反复出现的通用做法问题（推断）：输出多于或少于问的列；加了没要求的次排序键；没照知识库公式原样写（改写代数式、加类型转换、COALESCE 成 0）；把题目没限定的人群过滤掉；问"ID"时选错标识列。
 - 有对有错的 11 题（同一题 3 次结果不同）最可能靠通用做法拿回；3 次全错的 20 题多为歧义或原因不明。
+
+### D4 补充：判分清洗改坏了 agent 的 SQL（主会话 2026-11-27，已核实）
+
+- 上游 soft EX 在比较前对两边 SQL 做 `remove_distinct`、`remove_round`（`evals/livesqlbench_verifier.py:214`、`:262-266`，照抄上游 `evaluation/src/test_utils.py:193`）。`remove_distinct` 把 `IS DISTINCT FROM` 里的 `DISTINCT` 也删掉：`clean_sql(['SELECT a FROM t WHERE x IS DISTINCT FROM y'])` → `['SELECT a FROM t WHERE x IS FROM y']`（本机实测），执行时 SyntaxError，记成 `predicted_error`。
+- D1 里 `cross_db_10` 的 2 个 trial 就是这样判 0 的（两条 SQL 都含 `IS DISTINCT FROM`；evaluate 在清洗后执行出错也记 `predicted_error`，`:338-342`）。这是上游判分的缺陷，我们和上游对拍一致（136），所以官方分数里也有。
+- 同一机制可能还在别处悄悄改答案（未核实）：`COUNT(DISTINCT x)` → `COUNT(x)`；`WHERE`/`ORDER BY` 里的 `ROUND(x, n)` → `x`。D1 提交的 SQL 里，聚合里带 DISTINCT 的 18 个 trial（8 题）、`SELECT DISTINCT` 10 个（5 题）；只是计数，不说明判错原因。
+- 可做的核实（$0，不碰标准答案）：在服务器上把 D1 每个 trial 的 `pred.json` 原样执行一次、清洗后执行一次，比两次结果是否相同；不同的就是"判分改了答案"。
+
+### D5 候选（待对齐会话定）
+
+1. **判分清洗缺陷**：先做上面的核实量出影响面；再定照官方保留（记成已知缺陷，像 136 的 6 道标准 SQL）还是修正（分数不能直接和榜单比）；是否给上游提 issue（对外动作，需人定）。
+2. **通用做法规则**（Skill 或提示词，ADR-0005 不写具体题目）：只输出问到的列；只按题目要求的键排序，不加次排序键；知识库公式照原样写（不改写代数式、不加类型转换、不把空值补成 0）；不过滤题目没限定的人群、不在连接后自行去重；问"ID"时对照列含义选标识列。预期开发集 +3～8 个点（推断）；在开发集 60 × 3 上量，约实扣 $2。
+3. **不做**：把判分规则（列序、`order`、去 ROUND/DISTINCT）写进产品提示词，这是迎合榜单，不是通用能力。
+4. **留出集 35% 的差距**：开发集看不到；要查只能看留出集按难度或按库的汇总分，是否允许按 ADR-0004 由人定。
