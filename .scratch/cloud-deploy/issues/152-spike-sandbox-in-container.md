@@ -1,6 +1,6 @@
 # 152 — 实测：data-agent 在容器里挂 Docker socket 起沙箱，工作区路径能挂进沙箱
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（Implementation Decisions"沙箱"）
 Claimed by: claude-opus-5-5（worktree 152-spike-sandbox-in-container）
@@ -105,3 +105,4 @@ product-config 的 `[skills].dirs` 是否已经覆盖这一点，我没核实。
   - 修了：死返回值、重复的网络探测、问题 id 不一致、mountinfo 标签写错、`q4` 改名、输出文件按运行加标签、note 里过时的卷路径。
   - 不修三条，理由：dbt 版本号在 Dockerfile 草稿和探针里各写一次，这是一次性 spike；改 `sandbox.NAME_PREFIX` 是为了满足工单的命名前缀，注释里写了原因；沙箱镜像缺失时自动 build，因为那就是产品要用的镜像，本次也没触发。
 - 2026-11-27（主会话）：抄入工单 agent 的回复（它写不了主 checkout）。155 的阻塞点（产品镜像里 Skill 目录在包内、宿主机上没有）留给下一个对齐会话。本机清理项（失败构建留下的容器和无标签镜像、`docker:cli` 镜像、`runs/spike-152-fast/`、`runs/spike-152-perm/`）由人处理，见 HANDOFF.md。
+- 2026-11-27（主会话）：Codex GitHub app 审 head，没有意见；CI 绿，squash 合并。

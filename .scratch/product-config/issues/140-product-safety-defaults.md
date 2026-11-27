@@ -1,6 +1,6 @@
 # 140 — 产品路径的三处安全默认：CLI dbt 写临时 schema、服务器级联网开关、隐藏别的运行的临时 schema
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: 无（执行已有规矩的修正，不是新设计；人 2026-11-27 定先单独派，不等 product-config spec）
 Claimed by: claude (opus-5.5) 2026-11-27
@@ -143,3 +143,4 @@ Branch: worktree-140-product-safety-defaults
 - 2026-11-27（主会话，子 agent 执行）：两次真实运行都通过，分支 `cf57d35`。
   1. 服务器：`da-remote setup cf57d35`；把 `tests/fixtures/dbt_shop` 复制到 `runs/t140-dbt/ws/`，DuckDB 由 `tests/fixtures/shop.sql` 建，events 目录放在工作区外；`uv run data-agent run --type dbt --workspace $R/ws --duckdb $R/shop.duckdb --config full --events-dir $R/events --task "Build the dbt project ... dbt build ..."`（不带 `--dbt-target`）→ exit 0。dbt_execute 的结果是 `target_schema: da_run_events_464910eb`、`target='da_run'`、`PASS=3`；生成的 profiles 在工作区外，权限 600；跑完后新表只在 `da_run_events_464910eb`，`main` 和 `raw` 没变。花费 $0.0102（deepseek-flash）。服务器已回到 main `07985b5`。另外发现：服务器上没有 `data-agent-sandbox` 镜像，`sandbox_exec` 用不了，和本工单无关。
   2. 本机：`uv run data-agent web --runs-dir ... --data-sources sources.toml --port 8791 --no-network`；带 `"network":true` 的 POST 返回 **409**（"this server was started with --no-network ..."）；不带的返回 **201**，子进程参数里没有 `--network`（之后因本机没有 API key 自己退出了，没调模型，$0）。
+- 2026-11-27（主会话）：Codex GitHub app 审 `cf57d35`，1 条意见（P1，`evals/jaffle.py:364`，"改 jaffle 入口越权"）。不属实：这一处是主会话在本工单 Comments 里按建票遗漏补进 Authority 的（"Authority 补上 `evals/jaffle.py` 那一处（显式传 `--dbt-target task`）"），之后才在原分支上接着做，没有越过停止条件。不改。CI 绿，squash 合并。

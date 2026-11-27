@@ -1,6 +1,6 @@
 # 142 — 实测：DeepSeek 下的 Skill 工具、本地插件里的 Skill、Skill 脚本在沙箱里的路径
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（"Skill、MCP、插件"；decisions.md Q3 最后一条）
 Claimed by: claude (opus-5-5, worktree 142-spike-skill-tool)
@@ -79,3 +79,4 @@ Branch: worktree-142-spike-skill-tool
   - `make check` output isn't in the research doc; it goes in these Comments instead.
 - Still open: the DeepSeek run (command above).
 - 2026-11-27（主会话）：DeepSeek 真实运行 `probe.py --endpoint model --sandbox docker`，cost_usd 0.046348：模型从列表里自己选中 Skill（是）；未列出的 Skill 被拒（是 ×3）；没有阻塞性的"否"（`tools` 不含 Skill 时无 Skill 工具 → 147 显式加；现有 Docker 沙箱找不到宿主路径 → 方案 A 实测可用）。输出贴在研究笔记末尾（`f0eb505`）。push、开 PR。
+- 2026-11-27（主会话）：Codex GitHub app 审 head，没有意见；CI 绿，squash 合并。
