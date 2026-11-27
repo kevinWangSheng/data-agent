@@ -110,7 +110,7 @@
 ### 改票后主会话再定的（2026-11-27）
 
 - 单独用 `data-agent run`、配置里有 git 地址：启动时拉一次到 `~/.data-agent/cache/git`，不定时刷新。
-- 网页 Cookie：值是签过名的会话值，不是令牌原文；cloud 默认带 `Secure`，local 不带。
+- 网页 Cookie：值是签过名的会话值，不是令牌原文；cloud 默认带 `Secure`（local 不登录、不发 Cookie，见下面 settings 细节 12）。
 - 151 的监听地址测试标 `TICKET_153`（153 已依赖 144），151 不加依赖。
 - `NewRun.tsx` 的合并顺序：144、149 先，156 最后。
 - 146 加 Blocked by 144（146 删 `CONFIG_NAMES`，网页 `app.py:113`、`launcher.py:256` 由 144 先改掉）。
@@ -140,6 +140,23 @@
 - S8 会话：一个线程一次会话（不变），`/new` 开新会话。bot 每次回复带"在网页打开"链接，打开这次运行的详情页（过程、SQL、结果、花费）。谁能看：频道会话 = 该频道成员（Slack `conversations.members`）；私聊 = 本人；组织管理员都能看。网页上只看不接着聊（照 Claude in Slack），接着问回到线程；网页自己的对话页照旧。链接不带权限，打开要登录并按上面检查。Telegram、Discord 的会话先只有组织管理员能在网页看。
 
 - S9 存储、审计、角色同步：sqlite 单文件放持久卷（和 `runs_dir` 同卷），带版本号的迁移、启动自动升级，备份即复制文件；运行记录照旧是文件。存：组织、工作区（token 的环境变量名）、按作用域的设置覆盖（字段与 `config.toml` 分节同一套有类型定义）、会话索引（线程 → 运行、所属频道）、改动记录。改动记录：谁（平台用户 id）、何时、哪层、哪个键、改前改后（密钥类只记"改过"）；设置页可按层看历史；频道层改动同时在频道公告。Slack 角色和频道成员每次请求查 `users.info`、`conversations.members`，缓存 5 分钟，不另存角色表。
+
+### 建 settings 工单时主会话定的细节（2026-11-27；都在 S1–S9 范围内，人可在审票时推翻）
+
+1. 令牌合并成一个：`DATA_AGENT_ADMIN_TOKEN` 既是没接 Slack 的部署里组织管理员登录设置页的凭据，也是脚本调 API 的 bearer（权限 = 组织管理员）；`DATA_AGENT_WEB_TOKEN` 不再单独存在（153 照改）。
+2. 设置的 HTTP API（后端，带权限检查）归 160；160 的审查分两半：后端文件走 `da-review` + `eng:code-review`，前端文件走 Opus（AGENTS.md 前端规则）。
+3. 会话索引由 161 写（IM 知道线程和频道）；`im/threads.json` 照旧是 IM 自己的线程映射，索引只记 线程 → 运行 id、所属频道；162 加 Blocked by 158、161。
+4. 运行列表（`/api/runs`、`/api/conversations`）和详情页用同一条可见性规则（S8）。
+5. 网页里发起的运行：所有者 = 登录的人；本人和组织管理员可看；设置用 组织 + 本人所在工作区 + 个人（同私聊，S2）。
+6. 多 Slack 工作区的配置形状：`[im.slack.workspaces.<名字>]`，各写 token 的环境变量名；161 实现，158 在 161 之前用一个默认工作区。
+7. 部署层新键：`DATA_AGENT_SLACK_OIDC_CLIENT_ID`、`DATA_AGENT_SLACK_OIDC_CLIENT_SECRET`、`[server].public_url`（登录回调、`!configure` 和"在网页打开"的链接）、`DATA_AGENT_SESSION_KEY`（签名会话的密钥，cloud 缺它拒绝启动）。
+8. "是否要 @ 才回复"归 161，默认值保持现有触发规则（`tests/acceptance/test_im_triggers.py` 钉住的行为）。
+9. 临时覆盖的生效范围：模型、effort、数据源、MCP 一律对整个线程生效，直到再换。
+10. 覆盖记进 146 的 `config` 事件（覆盖是生效配置的一部分），不另加事件；161 不改 `agent.py`。
+11. 单独的 `data-agent run`：配了 `[server].db_path` 且文件存在时读组织层，否则只读文件；`config show` 默认显示组织层，`--workspace`、`--channel`、`--user` 选看某个作用域。
+12. local 模式不登录、不发 Cookie；Q8 里"local 不带 Secure"作废。
+13. 159 加 Blocked by 158。Sign in with Slack 用 `im` extra 里已有的 `slack_sdk`；云端镜像装 `data-agent[im]`（155 照写）；不新增依赖。
+14. Telegram 私信发不出（用户没先和 bot 私聊过）时，在群里回一句提示"先私聊 bot 一次"，不带链接。
 
 ### 后续（排在后面，要做）
 
