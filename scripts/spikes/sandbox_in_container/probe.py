@@ -18,7 +18,6 @@ data-agent container), and canary variables whose values must never reach a sand
 import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import textwrap
@@ -115,17 +114,11 @@ for host, port in (({json.dumps(PG_HOST)}, 5432), ({json.dumps(EXTERNAL_HOST)}, 
 
 def net_probe_here() -> str:
     """The same probe from the data-agent container: the positive control."""
-    lines = []
-    for host, port in ((PG_HOST, 5432), (EXTERNAL_HOST, 443)):
-        try:
-            socket.create_connection((host, port), timeout=3).close()
-            lines.append(f"net {host}:{port} REACHABLE")
-        except OSError as exc:
-            lines.append(f"net {host}:{port} unreachable ({type(exc).__name__}: {exc})")
-    return "\n".join(lines)
+    done = subprocess.run([sys.executable, "-c", NET_PROBE], capture_output=True, text=True)
+    return done.stdout + done.stderr
 
 
-def setup() -> tuple[Path, Path, Path]:
+def setup() -> tuple[Path, Path]:
     section("Setup (inside the data-agent container)")
     show(
         "data-agent process",
@@ -137,7 +130,7 @@ def setup() -> tuple[Path, Path, Path]:
             "docker version": docker(
                 "version", "--format", "{{.Client.Version}} / {{.Server.Version}}"
             ),
-            "/proc/1/mountinfo (spike mounts)": [
+            "/proc/self/mountinfo (spike mounts)": [
                 " ".join(line.split()[3:5])
                 for line in Path("/proc/self/mountinfo").read_text().splitlines()
                 if any(str(p) in line for p in (SAME, DIFF, VOL, "/var/run/docker.sock"))
@@ -156,7 +149,7 @@ def setup() -> tuple[Path, Path, Path]:
     with psycopg.connect(os.environ[PG_ENV], autocommit=True) as pg:
         pg.execute(SQL)  # pyright: ignore[reportArgumentType]
     show("prepared", {"skills": str(skills), "duckdb": str(db), "postgres": PG_HOST})
-    return skills, db, data
+    return skills, db
 
 
 def q1_q2_same_path(skills: Path, db: Path) -> None:
@@ -197,7 +190,8 @@ def q1_q2_same_path(skills: Path, db: Path) -> None:
     seen_host = (workspace / "outputs/report.txt").read_text().strip()
     show("outputs/report.txt as the data-agent container reads it", seen_host)
     ok1 = "exit_code: 0" in reply
-    answer("Q1", ok1, f"container {facts['Id']} started via the mounted socket; exit_code 0")
+    exit_line = reply.splitlines()[0]
+    answer("Q1", ok1, f"container {facts['Id']} started via the mounted socket; {exit_line}")
     ok2 = (
         ok1
         and "C0001" not in reply  # the CSV is the grouped result, not raw rows
@@ -285,13 +279,13 @@ def q2_alternatives(skills: Path) -> None:
     )  # fmt: skip
     show("vol via type=volume,volume-subpath (raw docker run, not DockerSandbox)", out)
     answer(
-        "Q2 (volume-subpath, needs a src change)",
+        "Q2 (volume-subpath)",
         out == "vol",
         "the volume's subdirectory is the workspace when the mount names the volume",
     )
 
 
-def q4(db: Path) -> None:
+def q4_agent_side_tools(db: Path) -> None:
     section("Q4: gateway, value dictionary and dbt_execute in the data-agent container")
     ok = True
     gateways = {"duckdb": DuckDBGateway(db), "postgres": PostgresGateway(os.environ[PG_ENV])}
@@ -334,10 +328,10 @@ def q4(db: Path) -> None:
 
 def main() -> int:
     try:
-        skills, db, _ = setup()
+        skills, db = setup()
         q1_q2_same_path(skills, db)
         q2_alternatives(skills)
-        q4(db)
+        q4_agent_side_tools(db)
     except Exception:
         traceback.print_exc()
         answers["probe"] = False

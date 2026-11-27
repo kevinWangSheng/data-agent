@@ -11,7 +11,8 @@
 # here is the image draft for ticket 155). Postgres keeps its data in tmpfs.
 #
 # Everything it starts is named da-spike-152-<tag>-*; the trap removes those containers, the
-# volume, the network and runs/da-spike-152-<tag>/. The output is kept in runs/spike-152-output.txt.
+# volume, the network and runs/da-spike-152-<tag>/. The output is kept in
+# runs/da-spike-152-<tag>-output.txt.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -33,11 +34,12 @@ VENV="$BASE/venv"
 SAME="$BASE/same"
 DIFF_HOST="$BASE/diff"
 DIFF_IN=/srv/$PREFIX-diff
-OUT="$REPO/runs/spike-152-output.txt"
+OUT="$REPO/runs/$PREFIX-output.txt"
 # The invoking user: the files the containers make under $BASE stay removable by the trap (on a
 # Linux host bind mounts keep the container's uid).
-AGENT_UID=$(id -u)
-AGENT_GID=$(id -g)
+# SPIKE_UID / SPIKE_GID override it (e.g. 10001 on colima, whose virtiofs maps ownership).
+AGENT_UID=${SPIKE_UID:-$(id -u)}
+AGENT_GID=${SPIKE_GID:-$(id -g)}
 AGENT_USER=$AGENT_UID:$AGENT_GID
 
 cleanup() {
@@ -61,8 +63,8 @@ copy_out() {
 }
 
 main() {
-  echo "== host: $(uname -sm); docker context $(docker context show)"
-  docker info --format 'server {{.ServerVersion}}, {{.OperatingSystem}}, {{.NCPU}} CPUs'
+  echo "== host: $(uname -sm); docker context $(docker context show); probe $PREFIX as $AGENT_USER"
+  docker info --format 'server {{.ServerVersion}}, {{.OperatingSystem}}, {{.NCPU}} CPUs, {{.MemTotal}} B'
   docker image inspect data-agent-sandbox >/dev/null 2>&1 \
     || docker build -t data-agent-sandbox "$REPO/sandbox-image"
 
@@ -124,6 +126,9 @@ main() {
     "$BASE_IMAGE" python "$APP/probe.py"
 }
 
-trap cleanup EXIT
 mkdir -p "$REPO/runs"
-main 2>&1 | tee "$OUT"
+# The trap is inside the tee'd subshell, so the cleanup lines are in the output file too.
+(
+  trap cleanup EXIT
+  main
+) 2>&1 | tee "$OUT"
