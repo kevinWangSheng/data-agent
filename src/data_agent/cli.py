@@ -23,7 +23,7 @@ from data_agent.agent import (
     stdin_lines,
 )
 from data_agent.context_tools import Dictionary
-from data_agent.dbt_execute import TARGETS, DbtExecuteError, DbtExecutor
+from data_agent.dbt_execute import TARGETS, DbtExecuteError, DbtExecutor, scratch_schema
 from data_agent.external_mcp import LAUNCH_COMMAND, ExternalServers, McpConfigError, launch
 from data_agent.external_mcp import load as load_mcp_servers
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
@@ -65,8 +65,8 @@ SERVER_CHARTS_HELP = (
 # `--dbt-target` (ticket 99, spec "`dbt_execute`").
 DBT_TARGET_HELP = (
     "on a dbt task: where dbt_execute writes. scratch: a schema of the run's own, "
-    "through a profile generated outside the workspace; task (the default for run): the "
-    "project's own profile, writing to the database it names"
+    "through a profile generated outside the workspace; task: the project's own profile, "
+    "writing to the database it names (for an evaluation, which grades it there)"
 )
 
 
@@ -187,11 +187,19 @@ def server_dbt(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Dbt
         parser.error(str(exc))
 
 
+def own_schema(args: argparse.Namespace) -> str | None:
+    """The scratch schema `mcp-server --run-id` names, as dbt_execute's `scratch` target writes
+    it: it stays in the agent's view, and no other run's does (ticket 140). None without a run
+    id."""
+    return None if args.run_id is None else scratch_schema(args.run_id)
+
+
 def serve_sources(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
     config: RunConfig,
     sandbox: Sandbox | None,
+    own: str | None,
 ) -> None:
     """`mcp-server --source ...`: one server over every database the entries name."""
     sources = given_sources(parser, args.source)
@@ -205,7 +213,7 @@ def serve_sources(
         dictionaries[name] = Dictionary.load(Path(path))
     gateways = {source.name: source_gateway(source, os.environ) for source in sources}
     build_multi_server(
-        gateways, config, args.workspace, dictionaries, sandbox, charts=args.charts
+        gateways, config, args.workspace, dictionaries, sandbox, charts=args.charts, own_schema=own
     ).run("stdio")
 
 
@@ -341,7 +349,14 @@ def main(argv: list[str] | None = None) -> None:
         help="the previous turn's session to go on with (needs --chat)",
     )
     run_cmd.add_argument("--sandbox", choices=BACKENDS, default="docker", help=SANDBOX_HELP)
-    run_cmd.add_argument("--dbt-target", choices=TARGETS, default="task", help=DBT_TARGET_HELP)
+    # `scratch` unless given (ticket 140, ADR-0010): a product run never writes the data source's
+    # own schemas. The evaluation entries pass `task`, where their tasks are graded.
+    run_cmd.add_argument(
+        "--dbt-target",
+        choices=TARGETS,
+        default="scratch",
+        help=DBT_TARGET_HELP + " (default: scratch)",
+    )
     run_cmd.add_argument(
         "--mcp-servers",
         type=Path,
@@ -377,6 +392,15 @@ def main(argv: list[str] | None = None) -> None:
         help="TOML file of the IM platforms (Slack, Telegram, Discord) to start the bot on: "
         "per platform, the names of the token variables and the allowed users",
     )
+    # The server's network switch (ticket 140, ADR-0010: on by default, off in the settings).
+    web.add_argument(
+        "--network",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="whether runs from the web UI, its conversations and the IM bot may have the "
+        "network (WebSearch, WebFetch, the sandbox's network). With --no-network none has it, "
+        "and a request asking for it is refused (default: on)",
+    )
 
     # The stdio wrapper every external stdio server is started through (ticket 116,
     # `external_mcp.launch`); the CLI starts it, not a person.
@@ -397,7 +421,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == LAUNCH_COMMAND:
         launch(args.mcp_servers, args.server, os.environ)
     if args.command == "web":
-        serve_web(web, args.runs_dir, args.port, args.data_sources, args.mcp_servers, args.im)
+        serve_web(
+            web,
+            args.runs_dir,
+            args.port,
+            args.data_sources,
+            args.mcp_servers,
+            args.im,
+            args.network,
+        )
         return
     # The deadline counts from the earliest point the process can see (ticket 54).
     started = time.monotonic()
@@ -415,7 +447,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.source is not None:
             if args.dictionary is not None:
                 serve.error("with --source, give each database's dictionary as --source-dictionary")
-            serve_sources(serve, args, config, sandbox)
+            serve_sources(serve, args, config, sandbox, own_schema(args))
             return
         if args.source_dictionary is not None:
             serve.error("--source-dictionary goes with --source")
@@ -437,6 +469,7 @@ def main(argv: list[str] | None = None) -> None:
             sandbox,
             dbt,
             charts=args.charts,
+            own_schema=own_schema(args),
         ).run("stdio")
         return
 
@@ -538,11 +571,13 @@ def serve_web(
     sources_file: Path | None,
     mcp_servers: Path | None = None,
     im: Path | None = None,
+    network: bool = True,
 ) -> None:
     """With `mcp_servers`, every run gets the file's path (as `--mcp-servers`), never a value
     from it. The file is checked here first, so a bad one stops the server from starting; each
     run checks it again. With `im` (data_agent.im.service), the bot starts on the file's
-    platforms, and no run gets their tokens' variables."""
+    platforms, and no run gets their tokens' variables. With `network` off no run has the
+    network (`create_app`)."""
     if not runs_dir.is_dir():
         parser.error(f"runs directory not found: {runs_dir}")
     if mcp_servers is not None:
@@ -590,7 +625,9 @@ def serve_web(
         )
 
     try:
-        app = create_app(runs_dir.resolve(), sources, start_run, mcp_servers=mcp_servers)
+        app = create_app(
+            runs_dir.resolve(), sources, start_run, mcp_servers=mcp_servers, network=network
+        )
     except ValueError as exc:
         parser.error(str(exc))
     if im_configs is not None:

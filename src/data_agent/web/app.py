@@ -49,7 +49,8 @@ class Submit(BaseModel):
     task_type: str
     data_source: str
     config: str
-    network: bool = True
+    # Unset: as the server's switch is (`data-agent web --no-network`, ticket 140).
+    network: bool | None = None
 
 
 class NewConversation(BaseModel):
@@ -58,7 +59,7 @@ class NewConversation(BaseModel):
 
 class Message(BaseModel):
     text: str
-    network: bool = True
+    network: bool | None = None
 
 
 class Service(Protocol):
@@ -76,14 +77,17 @@ def create_app(
     start_run: StartRun,
     ui_dir: Path = UI_DIR,
     mcp_servers: Path | None = None,
+    network: bool = True,
 ) -> FastAPI:
     """The app serving the runs under `runs_dir` (one subdirectory per run, named by run id, holding
     its event file), starting new runs through `start_run`, and serving the built web UI from
     `ui_dir`. ValueError when a dbt run could not copy a source's project into its own working
     directory (`check_layout`). With `mcp_servers` (ticket 116) every run, of the run form or a
-    conversation, gets that path as `--mcp-servers`."""
+    conversation, gets that path as `--mcp-servers`. With `network` off (`data-agent web
+    --no-network`, ticket 140) no run has the network, and a request asking for it is refused
+    (409); on, a run has it unless its request turns it off."""
     runs = RunsDir(runs_dir)
-    launcher = Launcher(runs, data_sources, start_run, mcp_servers)
+    launcher = Launcher(runs, data_sources, start_run, mcp_servers, network)
     conversations = Conversations(runs, launcher, data_sources)
     # What `data-agent web --im` attaches (data_agent.im.service.start): started once the app
     # serves, stopped before the launcher stops the run that is left.

@@ -171,9 +171,11 @@ async def test_a_scratch_profile_inside_the_workspace_is_refused(
 # --- The command line ----------------------------------------------------------------------------
 
 
-def test_run_passes_the_dbt_target_and_defaults_to_task(
+def test_run_passes_the_dbt_target_and_defaults_to_scratch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Ticket 140: a product run's dbt writes only a schema of the run's own (ADR-0010); an
+    evaluation passes `--dbt-target task` itself (evals/harbor_agent.py, evals/jaffle.py)."""
     seen: list[Any] = []
 
     async def fake_run(*_: Any, **options: Any) -> Outcome:
@@ -187,10 +189,10 @@ def test_run_passes_the_dbt_target_and_defaults_to_task(
         *("--events-dir", str(tmp_path / "events")),
     ]
     with pytest.raises(SystemExit):
-        cli.main([*args, "--sandbox", "local", "--dbt-target", "scratch"])
+        cli.main([*args, "--sandbox", "local", "--dbt-target", "task"])
     with pytest.raises(SystemExit):
         cli.main(args)
-    assert seen == ["scratch", "task"]
+    assert seen == ["task", "scratch"]
 
 
 def test_a_scratch_target_without_sandbox_runs_on_the_default_docker_sandbox(

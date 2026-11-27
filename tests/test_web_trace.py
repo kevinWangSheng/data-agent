@@ -94,7 +94,11 @@ def test_the_web_backend_starts_runs_in_its_own_environment(
     captured: dict[str, Any] = {}
 
     def create(
-        runs_dir: Path, sources: Any, start_run: Any, mcp_servers: Path | None = None
+        runs_dir: Path,
+        sources: Any,
+        start_run: Any,
+        mcp_servers: Path | None = None,
+        network: bool = True,
     ) -> object:
         captured["start_run"] = start_run
         return object()

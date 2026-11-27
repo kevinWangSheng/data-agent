@@ -14,8 +14,11 @@ The catalog (`load_catalog`) and ref lookup (`find_table`) are shared with the c
 the verifier tools, which all read it through one `CatalogCache` per server process. The cache
 follows SignalPilot's schema cache (`gateway/connectors/schema_cache.py`, ideas only): it holds
 the rows already read and nothing else, so no database connection stays open between calls.
+A catalog may leave out a family of schemas (`HiddenSchemas`): the MCP server's hides other runs'
+scratch schemas (ticket 140, `context_tools.other_runs`).
 """
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -38,7 +41,7 @@ JOIN information_schema.tables AS t
   ON t.table_catalog = c.table_catalog
  AND t.table_schema = c.table_schema
  AND t.table_name = c.table_name
-WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog')
+WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog') AND {shown}
 ORDER BY c.table_schema, c.table_name, c.ordinal_position
 LIMIT {limit} OFFSET {offset}
 """
@@ -135,6 +138,34 @@ class Table:
         return f"{quote(self.schema)}.{quote(self.name)}"
 
 
+SAFE_NAME = re.compile(r"[a-z0-9_]*")
+
+
+@dataclass(frozen=True)
+class HiddenSchemas:
+    """The schemas a catalog leaves out: every one whose name starts with `prefix`, except
+    `kept`. Both are lower case [a-z0-9_] (as `dbt_execute.scratch_schema` names), so they go
+    into SQL as they are."""
+
+    prefix: str
+    kept: str | None = None
+
+    def __post_init__(self) -> None:
+        for value in (self.prefix, self.kept or ""):
+            if not SAFE_NAME.fullmatch(value):
+                raise ValueError(f"not a lower-case [a-z0-9_] name: {value!r}")
+
+    def shown(self, column: str) -> str:
+        """A SQL condition on the schema-name `column`, true for a schema shown. No LIKE: its `_`
+        matches any character, so `da_run_%` would take `da_runxy` too."""
+        kept = "" if self.kept is None else f" OR lower({column}) = '{self.kept}'"
+        return f"(left(lower({column}), {len(self.prefix)}) <> '{self.prefix}'{kept})"
+
+
+def shown_sql(column: str, hidden: HiddenSchemas | None) -> str:
+    return "TRUE" if hidden is None else hidden.shown(column)
+
+
 # The catalog as of now: the cache's `get`, or `load_catalog` bound to a `run` in tests.
 LoadCatalog = Callable[[], list[Table]]
 
@@ -168,12 +199,15 @@ def literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def load_catalog(run: RunQuery) -> list[Table]:
-    """Every column of every table, read in pages: one gateway query returns at most MAX_ROWS."""
+def load_catalog(run: RunQuery, hidden: HiddenSchemas | None = None) -> list[Table]:
+    """Every column of every table outside the `hidden` schemas, read in pages: one gateway query
+    returns at most MAX_ROWS."""
     tables: dict[tuple[str, str], Table] = {}
     offset = 0
+    shown = shown_sql("c.table_schema", hidden)
     while True:
-        rows = run(CATALOG_SQL.format(limit=MAX_ROWS, offset=offset), MAX_ROWS).rows
+        sql = CATALOG_SQL.format(shown=shown, limit=MAX_ROWS, offset=offset)
+        rows = run(sql, MAX_ROWS).rows
         for schema, name, kind, column, data_type in rows:
             table = tables.setdefault(
                 (schema, name), Table(schema, name, kind.lower().removeprefix("base "), [])
@@ -196,8 +230,10 @@ class CatalogCache:
         key: Callable[[], object | None],
         ttl_seconds: float = CATALOG_TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        hidden: HiddenSchemas | None = None,
     ) -> None:
         self.run = run
+        self.hidden = hidden
         self.key = key
         self.ttl_seconds = ttl_seconds
         self.clock = clock
@@ -213,7 +249,7 @@ class CatalogCache:
             if self._tables is not None and key == self._key and fresh:
                 return self._tables
             read_at = self.clock()
-            tables = load_catalog(self.run)
+            tables = load_catalog(self.run, self.hidden)
             self._tables, self._key, self._read_at = tables, key, read_at
             return tables
 

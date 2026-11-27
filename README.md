@@ -74,7 +74,11 @@ Assumptions:
 For your own data, replace `--duckdb FILE` with `--postgres-env VAR`, where `VAR` is the name of an
 environment variable holding a Postgres URL. For dbt work, use `--type dbt` and point `--workspace`
 at the dbt project. The container mounts the workspace, so a DuckDB file must sit outside it (a run
-refuses one inside); `--dbt-target scratch` has dbt write to a schema of the run's own. `events/` gets one JSONL file per run with every tool call, SQL statement, token
+refuses one inside). dbt writes only to a schema of the run's own (`da_run_<run id>`, the default
+`--dbt-target scratch`), never the project's production schemas; `--dbt-target task` uses the
+project's own profile and writes where it points, as the benchmark entries do. The agent's table
+listing, catalog and value dictionary leave out other runs' `da_run_*` schemas (they are kept after
+each run) and show its own. `events/` gets one JSONL file per run with every tool call, SQL statement, token
 count and cost. `data-agent run` stays offline unless given `--network`, which gives the agent
 WebSearch, WebFetch and a container that can reach the network.
 
@@ -107,7 +111,9 @@ started with `data-agent run --events-dir runs-web/<name>` appear in the list to
 time.
 
 Runs started from the page are online by default, with a toggle in the UI to turn network access
-off: when online, the agent gets WebSearch and WebFetch, and its container can reach the network
+off. `data-agent web --no-network` turns it off for the whole server: no run from the page, a
+conversation or an IM bot gets the network, and a request asking for it is refused (HTTP 409;
+untick the toggle). When online, the agent gets WebSearch and WebFetch, and its container can reach the network
 (to `pip install` a package, say). Data it has queried can then
 leave the machine through its code or a web request. Runs from the page always use the Docker
 sandbox, and a dbt run writes only to a schema of its own (`da_run_<run id>`), never the project's

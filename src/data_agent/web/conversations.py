@@ -94,20 +94,23 @@ class Conversations:
                 return single_row(summary, live)
             return None
 
-    def send(self, conversation: str, text: str, network: bool = True) -> dict[str, Any]:
+    def send(self, conversation: str, text: str, network: bool | None = None) -> dict[str, Any]:
         """A message: a new turn when the conversation has none running, else a steer into the
         running one. Refused (409) while a run of another conversation or of the run form is
         going. A new turn runs its commands in a container (`--sandbox docker`, ticket 100) and has
-        the web tools and the container's network (`--network`, ticket 98) unless `network` is
-        off; a steer goes into the turn as it was started."""
+        the web tools and the container's network (`--network`, ticket 98) as the launcher's
+        `network_for` decides: without `network`, as the server's switch is (the IM bot sends
+        none). A steer goes into the turn as it was started; one asking for the network on a
+        server without it is refused too (409)."""
         if not text.strip():
             raise Refused(400, "the message is empty")
+        online = self.launcher.network_for(network)
         with self.launcher.lock:
             index = self.existing(conversation)
             live = self.launcher.active()
             if live is not None and live.conversation == conversation:
                 return self.steer(index, live, text)
-            return self.start_turn(index, text, network)
+            return self.start_turn(index, text, online)
 
     def cancel(self, conversation: str) -> dict[str, Any]:
         """Stops the conversation's running turn (as the run form's cancel stops a run); returns

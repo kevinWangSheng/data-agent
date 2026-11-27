@@ -64,6 +64,13 @@ StartRun = Callable[[Sequence[str], Path], "subprocess.Popen[bytes]"]
 working directory and returns the process."""
 
 
+# What a request asking for the network gets from a server started without it (ticket 140).
+NETWORK_OFF = (
+    "this server was started with --no-network: its runs have no network (no WebSearch or "
+    "WebFetch, no network in the sandbox); send the request without it"
+)
+
+
 class Refused(Exception):
     """A submit or cancel the server will not do; `status` is the HTTP status to answer with."""
 
@@ -132,9 +139,13 @@ class Launcher:
         sources: Sequence[DataSource],
         start_run: StartRun,
         mcp_servers: Path | None = None,
+        network: bool = True,
     ) -> None:
         check_layout(runs.path, sources)
         self.runs = runs
+        # The server's network switch (`data-agent web --no-network`, ticket 140), for the run
+        # form's runs and every conversation's turns alike.
+        self.network = network
         # Every run's `--mcp-servers` (ticket 116), conversations' too: the file's path only, so
         # no value it expands is on a command line.
         self.mcp_args: tuple[str, ...] = (
@@ -148,12 +159,26 @@ class Launcher:
         # conversation.
         self.lock = threading.Lock()
 
+    def network_for(self, asked: bool | None) -> bool:
+        """Whether a run gets the network: as the request asks, else as the server's switch is.
+        Refused (409) when the request asks for it and the switch is off: never turned off
+        quietly."""
+        if asked and not self.network:
+            raise Refused(409, NETWORK_OFF)
+        return self.network if asked is None else asked
+
     def submit(
-        self, task: str, task_type: str, source_name: str, config: str, network: bool = True
+        self,
+        task: str,
+        task_type: str,
+        source_name: str,
+        config: str,
+        network: bool | None = None,
     ) -> str:
         """Checks the request, prepares the run's directories and starts it; returns its id. The
         run has the web tools and a sandbox with the network (`data-agent run --network`, tickets
-        98 and 100) unless `network` is off."""
+        98 and 100) as `network_for` decides."""
+        network = self.network_for(network)
         source = self.check(task, task_type, source_name, config)
 
         def prepare(run_dir: Path) -> tuple[list[str], Path]:
