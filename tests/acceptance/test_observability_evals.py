@@ -16,7 +16,8 @@ Written by ticket 111. Ticket 112 implements it and removes `TICKET_112`; nothin
 - `evals ablate` and `evals board`: the `harbor run` arguments (`harbor_run_args`) with and
   without `--trace`.
 - DAB: `evals.dab.run_query` with a scripted session, the relay `FakeRelay` and the parent span an
-  in-memory exporter.
+  in-memory exporter. Since ticket 141 reached through DAB's own command line (`python -m evals
+  dab --config no-context`).
 """
 
 import json
@@ -40,8 +41,9 @@ from observability_support import (
     FakeLangfuse,
     result_message,
 )
+from product_config_support import no_docker
 
-from data_agent.run_config import load_config
+from evals import __main__ as evals_main
 from evals import ablate, board, dab, harbor_agent
 from evals.__main__ import build_parser
 from evals.harbor_agent import DataAgent
@@ -225,9 +227,18 @@ def make_dab(root: Path) -> Path:
     return root
 
 
-async def dab_sessions(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse, out: str, **kwargs: Any
+def dab_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    langfuse: FakeLangfuse,
+    out: str,
+    trace: bool = False,
 ) -> list[ClaudeAgentOptions]:
+    """`python -m evals dab ... --config no-context --runs 2 [--trace]` in-process (ticket 141:
+    DAB's own command line, as tests/acceptance/product_config_support.py `dab_entry` drives it,
+    in place of `run_query(..., load_config(...))`, which ticket 146 removes; the ablation name
+    stays the entry's). The runs get the process's environment: the model key, and the Langfuse
+    variables the `langfuse` fixture set."""
     seen: list[ClaudeAgentOptions] = []
 
     async def fake_query(*, prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
@@ -240,9 +251,14 @@ async def dab_sessions(
     root = tmp_path / "dab"
     if not root.exists():
         make_dab(root)
-    query = dab.load_query(root, "toyset", "1", hints=False)
-    env = {"DATA_AGENT_API_KEY": "sk-test-secret"} | langfuse.env()
-    await dab.run_query(root, query, load_config("no-context"), tmp_path / out, 2, env, **kwargs)
+    # DAB's command line checks Docker first; no container starts with the scripted session.
+    no_docker(monkeypatch)
+    monkeypatch.setenv("DATA_AGENT_API_KEY", "sk-test-secret")
+    for name, value in langfuse.env().items():
+        monkeypatch.setenv(name, value)
+    argv = ["dab", "--dab-root", str(root), "--dataset", "toyset", "--query", "1", "--runs", "2"]
+    argv += ["--config", "no-context", "--out", str(tmp_path / out), "--no-hints"]
+    evals_main.main([*argv, *(["--trace"] if trace else [])])
     return seen
 
 
@@ -250,11 +266,11 @@ def otel_keys(options: ClaudeAgentOptions) -> list[str]:
     return [name for name in options.env if name.startswith("OTEL_")]
 
 
-async def test_dab_exports_the_first_run_of_a_query_on_the_dev_tier_only_with_trace(
+def test_dab_exports_the_first_run_of_a_query_on_the_dev_tier_only_with_trace(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
     traced = ExportStandIns(monkeypatch)
-    first, second = await dab_sessions(monkeypatch, tmp_path, langfuse, "traced", trace=True)
+    first, second = dab_sessions(monkeypatch, tmp_path, langfuse, "traced", trace=True)
     assert {name: first.env.get(name) for name in CONTENT_SWITCHES} == dict.fromkeys(
         CONTENT_SWITCHES, "1"
     )
@@ -262,6 +278,6 @@ async def test_dab_exports_the_first_run_of_a_query_on_the_dev_tier_only_with_tr
     [relay] = traced.relays
     assert relay.tier == "full"
     assert otel_keys(second) == []
-    plain = await dab_sessions(monkeypatch, tmp_path, langfuse, "plain")
+    plain = dab_sessions(monkeypatch, tmp_path, langfuse, "plain")
     assert [otel_keys(options) for options in plain] == [[], []]
     assert len(traced.relays) == 1

@@ -4,7 +4,9 @@ turns pass it, and the evaluation entries never do.
 
 Written by ticket 118. The guards (no mark) pass now and must keep passing; the `TICKET_119`
 tests pass once ticket 119 builds the switch, which then drops their marks and changes nothing
-else.
+else. Ticket 141 moved the `run` and `mcp-server` calls from the ablation name to its layer file
+(`--config <file>`, tests/acceptance/product_config_support.py); those tests are `TICKET_143`
+until ticket 143 reads config files.
 
 Contract fixed here (ticket 118, "本工单定下的契约" 1 and 8):
 
@@ -28,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import pytest
+from mcp_support import assert_cli_accepts
+from product_config_support import layer_config
 from seam_support import DATA_AGENT
 from test_chat_eval_unchanged import Captured, captured, dab_query, harbor_dbt
 
@@ -39,6 +43,10 @@ from data_agent.web.sources import DataSource
 from evals.harbor_agent import DataAgent
 
 __all__ = ["captured"]
+
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 
 CHART_TOOL = "display_chart"
 
@@ -87,11 +95,12 @@ def query_run(tmp_path: Path, seen: list[Captured], *flags: str) -> Captured:
     argv = [
         "run",
         *("--type", "query", "--workspace", str(workspace), "--duckdb", str(db)),
-        *("--config", "no-context", "--events-dir", str(tmp_path / "events")),
+        *("--config", str(layer_config("no-context")), "--events-dir", str(tmp_path / "events")),
         *("--task", "How many tables are there?", *flags),
     ]
     with pytest.raises(SystemExit):
         cli.main(argv)
+    assert len(seen) == 1, f"expected one session, got {len(seen)}"
     [session] = seen
     return session
 
@@ -99,6 +108,7 @@ def query_run(tmp_path: Path, seen: list[Captured], *flags: str) -> Captured:
 # --- guards: no switch, no charts --------------------------------------------------------------
 
 
+@TICKET_143
 def test_a_run_without_the_switch_has_no_chart_tool_and_no_rule(
     tmp_path: Path, captured: list[Captured]
 ) -> None:
@@ -126,12 +136,13 @@ def test_the_harbor_run_has_no_chart_tool_and_no_rule(
     assert not has_charts(harbor_dbt(tmp_path, captured))
 
 
-async def test_the_dab_session_has_no_chart_tool_and_no_rule(
+def test_the_dab_session_has_no_chart_tool_and_no_rule(
     tmp_path: Path, captured: list[Captured], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert not has_charts(await dab_query(tmp_path, captured, monkeypatch))
+    assert not has_charts(dab_query(tmp_path, captured, monkeypatch))
 
 
+@TICKET_143
 async def test_a_server_without_the_switch_or_a_sandbox_adds_no_id_line(tmp_path: Path) -> None:
     import duckdb  # pyright: ignore[reportMissingImports]
     from mcp import ClientSession, StdioServerParameters  # pyright: ignore[reportMissingImports]
@@ -140,11 +151,9 @@ async def test_a_server_without_the_switch_or_a_sandbox_adds_no_id_line(tmp_path
 
     db = tmp_path / "empty.duckdb"
     duckdb.connect(str(db)).close()
-    params = StdioServerParameters(
-        command=str(DATA_AGENT),
-        args=["mcp-server", "--config", "no-context", "--duckdb", str(db)],
-        env=dict(os.environ),
-    )
+    args = ["mcp-server", "--config", str(layer_config("no-context")), "--duckdb", str(db)]
+    assert_cli_accepts(args)
+    params = StdioServerParameters(command=str(DATA_AGENT), args=args, env=dict(os.environ))
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         result = await session.call_tool("query_database", {"sql": "SELECT 1 AS one, 2 AS two"})
@@ -159,6 +168,7 @@ async def test_a_server_without_the_switch_or_a_sandbox_adds_no_id_line(tmp_path
 # --- the switch on (ticket 119) ----------------------------------------------------------------
 
 
+@TICKET_143
 def test_a_run_with_the_switch_has_the_chart_tool_and_the_rule(
     tmp_path: Path, captured: list[Captured]
 ) -> None:

@@ -11,9 +11,11 @@ The contract (data_agent.im.config, data_agent.im.service; human-reviewed):
    is not set, `allowed_users` is empty, or a variable's name lacks the platform's own prefix
    `DATA_AGENT_<PLATFORM>_` (so neither `DATA_AGENT_API_KEY` nor another platform's token
    passes); and for a table that is no platform, or a file with no table.
-2. `data-agent web --im FILE` reads the file with `os.environ`, builds the app, and calls
+2. `data-agent web --config C`, C holding the file's tables as `[im.<platform>]` (ticket 141;
+   was `--im FILE`), reads them with `os.environ`, builds the app, and calls
    `data_agent.im.service.start(app, configs)` with what `create_app` returned; the runs it
    starts get `env=config.run_env(os.environ, configs)`: everything but the token variables.
+   The tests ticket 141 moved are `TICKET_143` until ticket 143 reads config files.
 3. No token value is in an error's text, a `repr`, the log, stdout or stderr, the thread map, a
    call to the chat backend, or anything the platform is given.
 
@@ -36,6 +38,7 @@ from im_support import (
     result,
     start_bot,
 )
+from product_config_support import fake_home, im_config
 
 from data_agent import cli
 from data_agent.im import service
@@ -43,6 +46,10 @@ from data_agent.im.adapter import IM_DIR
 from data_agent.im.config import ImConfigError, PlatformConfig, load_config
 from data_agent.web import app as web_app
 from data_agent.web.app import create_app
+
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 
 SLACK_BOT_ENV = "DATA_AGENT_SLACK_BOT_TOKEN"
 SLACK_APP_ENV = "DATA_AGENT_SLACK_APP_TOKEN"
@@ -140,7 +147,12 @@ def test_a_file_without_a_platform_is_refused(tmp_path: Path, tokens: dict[str, 
         load_config(write(tmp_path, "# nothing yet\n"), tokens)
 
 
-# --- `data-agent web --im` -----------------------------------------------------------------
+# --- `data-agent web --config` with `[im.*]` (was `--im`) --------------------------------
+
+
+def im_file(tmp_path: Path, text: str) -> Path:
+    """The old `--im` file `text` as a config file's `[im.<platform>]` tables (ticket 141)."""
+    return im_config(tmp_path, write(tmp_path, text))
 
 
 def serve(
@@ -170,18 +182,25 @@ def serve(
     monkeypatch.setattr(web_app, "create_app", fake_create_app)
     monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(service, "start", fake_start)
+    # No user-level config file of this machine's (ticket 141: `data-agent web` reads one).
+    monkeypatch.setenv("HOME", str(fake_home(tmp_path)))
+    monkeypatch.delenv("DATA_AGENT_CONFIG", raising=False)
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    cli.main(["web", "--runs-dir", str(runs_dir), *extra])
+    try:
+        cli.main(["web", "--runs-dir", str(runs_dir), *extra])
+    except SystemExit as exc:
+        raise AssertionError(f"data-agent web exited {exc.code!r}") from exc
     if len(seen) != 1:
         raise RuntimeError("create_app was not called once")
     return seen[0], app, started
 
 
+@TICKET_143
 def test_data_agent_web_im_starts_the_adapters_with_the_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tokens: dict[str, str]
 ) -> None:
-    _, app, started = serve(tmp_path, monkeypatch, ["--im", str(write(tmp_path, SLACK))])
+    _, app, started = serve(tmp_path, monkeypatch, ["--config", str(im_file(tmp_path, SLACK))])
     assert len(started) == 1
     given_app, configs = started[0]
     assert given_app is app
@@ -196,10 +215,11 @@ def test_data_agent_web_without_im_starts_no_adapter(
     assert started == []
 
 
+@TICKET_143
 def test_a_run_starts_without_the_im_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tokens: dict[str, str]
 ) -> None:
-    called, _, _ = serve(tmp_path, monkeypatch, ["--im", str(write(tmp_path, SLACK))])
+    called, _, _ = serve(tmp_path, monkeypatch, ["--config", str(im_file(tmp_path, SLACK))])
     popens: list[dict[str, Any]] = []
 
     def fake_popen(*args: Any, **kwargs: Any) -> object:

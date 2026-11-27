@@ -57,13 +57,15 @@ unchanged; the routes below are added to it.
      The next message starts a new turn.
 5. `data-agent run` arguments of a turn (spec 3, 14, 16, 19, 20), started through `start_run`
    with the conversation's `workspace/` as its working directory:
-   `--task=<message> --type query --config full --events-dir <runs_dir>/<run_id>
-   --workspace <conv>/workspace --data-sources <file> --chat --conversation-dir <conv>
-   --turn <n> [--resume <session_id>]`.
-   - `--data-sources FILE`: every configured source, in the TOML of `data-agent web
-     --data-sources` (data_agent.web.sources): name, kind, and the DuckDB path or the Postgres
-     variable's name, never a connection string. Exclusive with `--duckdb` / `--postgres-env`,
-     which stay for single runs and evaluations.
+   `--task=<message> --type query --config <file> --events-dir <runs_dir>/<run_id>
+   --workspace <conv>/workspace --chat --conversation-dir <conv> --turn <n>
+   [--resume <session_id>]`.
+   - `--config FILE` (ticket 141, product-config ticket 141 contract item 4; was `--config full
+     --data-sources FILE`): the web server's effective config, written by the server for the run,
+     with every configured source as its `[sources.<name>]` tables (the TOML `data-agent web
+     --data-sources` took, data_agent.web.sources): name, kind, and the DuckDB path or the
+     Postgres variable's name, never a connection string. The sources are exclusive with
+     `--duckdb` / `--postgres-env`, which stay for single runs and evaluations.
    - `--chat`: conversation mode, the switch for the clarification tool and stdin steering; off by
      default, and evaluations and single runs never set it (spec 19).
    - `--conversation-dir DIR`: sets `CLAUDE_CONFIG_DIR` to `DIR/claude-config`; the conversation's
@@ -80,6 +82,7 @@ import json
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,10 +90,14 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from product_config_support import flag_value, key_of
 from seam_support import FIXTURES
 
 from data_agent.web.app import DataSource, create_app
-from data_agent.web.sources import load_data_sources
+
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 
 CHAT_FIXTURES = FIXTURES / "chat"
 FAKE_CHAT_RUN = CHAT_FIXTURES / "fake_chat_run.py"
@@ -291,20 +298,24 @@ def test_a_new_conversation_takes_no_task_type_or_data_source(chat: Chat) -> Non
 # --- What a turn's run gets ----------------------------------------------------------------
 
 
+@TICKET_143
 def test_a_turn_gets_every_data_source_by_name_and_kind(chat: Chat) -> None:
     conversation = new_conversation(chat)
     start_turn(chat, conversation, "How many orders are there?")
     [run] = chat.started
     assert "--chat" in run.args
     assert "--duckdb" not in run.args and "--postgres-env" not in run.args
-    sources_file = Path(flag(run.args, "--data-sources"))
-    given = {source.name: source for source in load_data_sources(sources_file)}
+    # Ticket 141: the sources are the `[sources.<name>]` tables of the run's config file.
+    sources_file = Path(flag_value(run.args, "--config"))
+    assert sources_file.is_file(), f"the turn's --config is not a file: {sources_file}"
+    given = key_of(tomllib.loads(sources_file.read_text()), "sources")
     assert list(given) == ["orders", "customers", "warehouse"]
     for source in chat.sources:
-        assert given[source.name].postgres_env == source.postgres_env
-        assert (given[source.name].duckdb is None) == (source.duckdb is None)
+        entry = given[source.name]
+        assert entry.get("env") == source.postgres_env
+        assert ("path" not in entry) == (source.duckdb is None)
         if source.duckdb is not None:
-            assert given[source.name].duckdb == source.duckdb.resolve()
+            assert (sources_file.parent / entry["path"]).resolve() == source.duckdb.resolve()
     assert_no_connection_string(sources_file.read_text())
     assert_no_connection_string(json.dumps(run.args))
 

@@ -4,6 +4,12 @@
 Written by ticket 111. Ticket 113 implements `data_agent.trace_relay` and removes `TICKET_113`; the
 end-to-end case also waits for ticket 112 (`TICKET_112`). Nothing else here changes.
 
+Ticket 141 moved the end-to-end cases' run config to the config files
+(.scratch/product-config/spec.md, decisions.md Q8): `run_config.load_config` given the `full`
+layer file's effective config (tests/acceptance/product_config_support.py `run_config_of`; was
+`load_config("full")`, which ticket 146 removes). Those tests are `TICKET_143` until ticket 143
+reads config files.
+
 The input is tests/fixtures/observability/cli-request.json, a hand-made OTLP request shaped like
 the tree the spike read back (docs/research/2026-11-23-otel-spike.md, "A"): an interaction whose
 parent is a fixed span id (TRACEPARENT), three model requests (one of them a subagent's, under the
@@ -61,13 +67,17 @@ from observability_support import (
     span_count,
     spans,
 )
+from product_config_support import run_config_of
 
 from data_agent import agent, tracing
 from data_agent.agent import Task
 from data_agent.events import known_secrets
-from data_agent.run_config import load_config
 from data_agent.trace_relay import AnonIds, TraceRelay, rewrite
 from data_agent.tracing import LangfuseSettings, TraceTier
+
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 
 TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
 USAGE_PREFIXES = ("gen_ai.usage.", "llm.token_count.")
@@ -437,11 +447,12 @@ async def run_with_relay(
     duckdb.connect(str(db)).close()
     task = Task(text="How many customers?", type="query", workspace=tmp_path, duckdb=db)
     env = {"DATA_AGENT_API_KEY": "sk-test-secret"} | langfuse.env()
-    outcome = await agent.run(task, load_config("full"), tmp_path / "events", env)
+    outcome = await agent.run(task, run_config_of("full"), tmp_path / "events", env)
     assert seen, "the session never started"
     return outcome, read_events(outcome.events_path)
 
 
+@TICKET_143
 async def test_the_trace_event_counts_what_langfuse_received(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
@@ -455,6 +466,7 @@ async def test_the_trace_event_counts_what_langfuse_received(
     assert not [e for e in events if e["type"] == "trace_export_error"]
 
 
+@TICKET_143
 async def test_a_langfuse_error_leaves_the_run_to_finish_with_an_error_event(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:

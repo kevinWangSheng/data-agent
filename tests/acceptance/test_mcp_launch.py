@@ -5,11 +5,12 @@ environment, so the server gets none of our credentials.
 Written by ticket 115. Each test here is xfail(strict) until ticket 116 makes it pass and removes
 the marker, changing nothing else.
 
-How: `data-agent run ... --mcp-servers FILE` (in-process, stopped at the SDK's transport,
-tests/acceptance/mcp_support.py), where the config's one stdio server is
-`sys.executable tests/fixtures/mcp/print_env.py OUT`. While the session's files still exist (in
-the transport's `connect`), the test starts that server as the options name it, the way the CLI
-starts an stdio server: `command` + `args`, in a scratch directory, with the environment
+How: `data-agent run ... --config <a config file whose `[mcp]` names FILE>` (ticket 141 moved it off
+`--mcp-servers FILE`; `TICKET_143` until ticket 143 folds the option into the config; in-process,
+stopped at the SDK's transport, tests/acceptance/mcp_support.py), where the config's one stdio
+server is `sys.executable tests/fixtures/mcp/print_env.py OUT`. While the session's files still
+exist (in the transport's `connect`), the test starts that server as the options name it, the way
+the CLI starts an stdio server: `command` + `args`, in a scratch directory, with the environment
 `{**dirty parent, **options.env, **server.get("env", {})}`. Whether 116 has the expanded values
 reach the server through its `env` or through `options.env`, this holds either way. The wrapper's
 name and form (the spec's `python -m data_agent mcp-launch -- <command>` is an example) are not
@@ -17,9 +18,10 @@ asserted, only what the server's process sees.
 
 The dirty parent: the test process's own environment, plus fake values of the model key and
 endpoint (`DATA_AGENT_*`, and the `ANTHROPIC_*` the run gives the CLI), the `--postgres-env`
-variable or a `--data-sources` file's Postgres `env` variable (both runs are parametrised), the
-Langfuse keys and an `OTEL_EXPORTER_OTLP_HEADERS` (the observability work gives the CLI `OTEL_*`).
-The runs use `--config no-context`, so nothing tries to reach the fake Postgres before the session.
+variable or a config file's `[sources.*]` Postgres `env` variable (both runs are parametrised),
+the Langfuse keys and an `OTEL_EXPORTER_OTLP_HEADERS` (the observability work gives the CLI
+`OTEL_*`). The runs use the `no-context` layers, so nothing tries to reach the fake Postgres before
+the session.
 
 The contract fixed here (ticket 115 Context item 6; human-reviewed):
 
@@ -58,6 +60,10 @@ from mcp_support import (
     write_config,
 )
 from seam_support import build_shop_duckdb
+
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 
 BASE_ENV = frozenset(
     {
@@ -158,9 +164,10 @@ def database_args(kind: str, root: Path) -> list[str]:
         f'[sources.shop]\nkind = "duckdb"\npath = "{db}"\n\n'
         f'[sources.warehouse]\nkind = "postgres"\nenv = "{SOURCES_PG_ENV}"\n'
     )
-    return ["--data-sources", str(sources)]
+    return ["--config", str(sources)]
 
 
+@TICKET_143
 @pytest.mark.parametrize("database", ["postgres-env", "data-sources"])
 def test_a_stdio_server_starts_in_a_clean_environment_with_its_config_env(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str], database: str

@@ -924,8 +924,17 @@ def claude_code_mcp(home: Path) -> Path:
 #                                                    tables are the config's, unchanged)
 #   `--mcp-servers FILE.json`                     -> `--config mcp_config(dir, FILE.json)`
 #   `--im FILE` (`[slack]`, ...)                  -> `--config im_config(dir, FILE)` (`[im.slack]`)
+#   `run_config.load_config(<name>)` (in-process) -> `run_config_of(<name>)`
+#   `run_config.CONFIG_NAMES`                     -> `RUN_CONFIG_NAMES`
 
 LAYERS = PRODUCT_FIXTURES / "layers"
+# The six old run configs (`src/data_agent/configs/`, which ticket 146 deletes), in the order
+# `CONFIG_NAMES` had them (sorted).
+RUN_CONFIG_NAMES = ("baseline", "full", "full-old-skill", "no-context", "no-skill", "no-verifiers")
+# The one run config only evaluations have (the Skill directory swapped): no product layer file,
+# but ticket 146's evaluation layer file.
+EVAL_ONLY_LAYER = "full-old-skill"
+EVAL_LAYERS = REPO_ROOT / "evals" / "profiles" / "layers"
 
 
 def layer_config(name: str) -> Path:
@@ -935,6 +944,34 @@ def layer_config(name: str) -> Path:
     path = LAYERS / f"{name}.toml"
     assert path.is_file(), f"no layer file for {name!r}"
     return path
+
+
+def layer_file(name: str) -> Path:
+    """The config file of the old run config `name`: its product layer file, or for
+    `full-old-skill` ticket 146's `evals/profiles/layers/full-old-skill.toml`, asserted to be
+    there first."""
+    if name == EVAL_ONLY_LAYER:
+        path = EVAL_LAYERS / f"{name}.toml"
+        assert path.is_file(), f"no evaluation layer file {path} yet (ticket 146)"
+        return path
+    return layer_config(name)
+
+
+def run_config_of(name: str) -> Any:
+    """The `RunConfig` an in-process `agent.run`/`build_options` is given for the old run config
+    `name`, read the new way: `run_config.load_config` given the `EffectiveConfig` of the layer
+    file (ticket 143 Authority: `load_config` derives the `RunConfig` from the effective config;
+    ticket 146 removes `load_config(<name>)`). The file is asserted to be merged first, so today's
+    empty loader fails on an assertion, not on `load_config`'s `ValueError`."""
+    from data_agent import run_config
+    from data_agent.config import load_effective_config
+
+    path = layer_file(name)
+    effective = load_effective_config([path], dict(os.environ), {})
+    assert path in effective.files, f"the config loader did not merge {path}"
+    # By an Any: today's `load_config` takes a name, ticket 143's the effective config.
+    load: Any = run_config.load_config
+    return load(effective)
 
 
 def mcp_config(directory: Path, servers_file: Path) -> Path:

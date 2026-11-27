@@ -10,8 +10,10 @@ stopped at its `connect` (so whatever starts the session, a one-shot `query()` o
 
 - Harbor (data-eng-bench, dbt): `data-agent run --type dbt --duckdb ... --config full` with the
   arguments `evals/harbor_agent.py` `_run_command` gives it, run in-process through the CLI.
+  Since ticket 141 the arguments are read from `_run_command` itself, not written out here.
 - DAB (query): `evals.dab.run_query`, which calls `build_options` itself (`evals/dab.py:417`), on
-  a stand-in DAB checkout (tests/fixtures/fake_dab) with the config the DAB tests use.
+  a stand-in DAB checkout (tests/fixtures/fake_dab) with the config the DAB tests use. Since
+  ticket 141 reached through DAB's own command line (`python -m evals dab --config no-context`).
 
 For each, the options hold no clarification tool, no `resume`, and no `CLAUDE_CONFIG_DIR` in
 `env`; and the tools, `allowed_tools`, `disallowed_tools`, permission settings, MCP servers, and
@@ -33,10 +35,10 @@ from typing import Any
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from product_config_support import harbor_agent, harbor_command_args, no_docker, substitute
 from seam_support import FIXTURES, make_dbt_workspace
 
 from data_agent import cli
-from data_agent.run_config import load_config
 from evals import dab
 
 RECORDED = FIXTURES / "chat" / "eval-unchanged.json"
@@ -102,14 +104,17 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[Captured]]:
 
 
 def harbor_dbt(tmp_path: Path, seen: list[Captured]) -> Captured:
+    """The arguments are the ones `_run_command` gives the trial's `data-agent run` (as
+    tests/acceptance/product_config_support.py `harbor_entry` reads them), the trial container's
+    workspace, database and events dir swapped for the test's: whatever ticket 146 makes the
+    Harbor command pass as its config, this runs it."""
     project, db = make_dbt_workspace(tmp_path / "trial")
-    argv = [
-        "run",
-        *("--type", "dbt", "--workspace", str(project), "--duckdb", str(db)),
-        *("--config", HARBOR_CONFIG, "--events-dir", str(tmp_path / "events")),
-        *("--agent-timeout-sec", HARBOR_TIMEOUT_SEC),
-        *("--task", "Add a dbt model named customer_ltv with one row per customer."),
-    ]
+    trial = harbor_agent(tmp_path, HARBOR_CONFIG, "data-eng-bench")
+    task = "Add a dbt model named customer_ltv with one row per customer."
+    command = trial._run_command(task)  # pyright: ignore[reportPrivateUsage]
+    values = {"--workspace": str(project), "--duckdb": str(db)}
+    values |= {"--events-dir": str(tmp_path / "events"), "--agent-timeout-sec": HARBOR_TIMEOUT_SEC}
+    argv = ["run", *substitute(harbor_command_args(command), values)]
     with pytest.raises(SystemExit):
         cli.main(argv)
     [session] = seen
@@ -141,13 +146,20 @@ def make_dab(root: Path) -> Path:
     return root
 
 
-async def dab_query(tmp_path: Path, seen: list[Captured], monkeypatch: pytest.MonkeyPatch) -> Any:
+def dab_query(tmp_path: Path, seen: list[Captured], monkeypatch: pytest.MonkeyPatch) -> Any:
+    """DAB's own command line, `python -m evals dab ... --config no-context`, in-process (as
+    tests/acceptance/product_config_support.py `dab_entry` drives it): the ablation name stays
+    the entry's (product-config spec Q4), and `run_query`'s config argument goes with ticket 146.
+    Its runs get the process's environment, where the fixture set the model key."""
+    from evals import __main__ as evals_main
+
     root = make_dab(tmp_path / "dab")
     # A clean commit whatever state this checkout is in (tests/test_dab.py does the same).
     monkeypatch.setattr(dab, "git_commit", lambda: "c0ffee")
-    query = dab.load_query(root, "toyset", "1", hints=False)
-    env = {"DATA_AGENT_API_KEY": API_KEY}
-    await dab.run_query(root, query, load_config(DAB_CONFIG), tmp_path / "out", 1, env)
+    # DAB's command line checks Docker first; the session is stopped before a container starts.
+    no_docker(monkeypatch)
+    argv = ["dab", "--dab-root", str(root), "--dataset", "toyset", "--query", "1", "--runs", "1"]
+    evals_main.main([*argv, "--config", DAB_CONFIG, "--out", str(tmp_path / "out"), "--no-hints"])
     [session] = seen
     return session
 
@@ -192,9 +204,9 @@ def test_harbor_dbt_run_gets_the_same_options(tmp_path: Path, captured: list[Cap
     assert surface(session) == recorded("harbor-dbt")
 
 
-async def test_dab_query_session_gets_the_same_options(
+def test_dab_query_session_gets_the_same_options(
     tmp_path: Path, captured: list[Captured], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    session = await dab_query(tmp_path, captured, monkeypatch)
+    session = dab_query(tmp_path, captured, monkeypatch)
     assert_single_run(session)
     assert surface(session) == recorded("dab-query")

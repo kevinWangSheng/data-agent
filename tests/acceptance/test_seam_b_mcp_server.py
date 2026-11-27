@@ -2,8 +2,12 @@
 
 External interface fixed here:
 
-- Launch: `data-agent mcp-server --config <name> (--duckdb <path> | --postgres-env <VAR>)`,
-  where VAR names an environment variable holding a Postgres connection string.
+- Launch: `data-agent mcp-server --config <file> (--duckdb <path> | --postgres-env <VAR>)`,
+  where VAR names an environment variable holding a Postgres connection string. Ticket 141 moved
+  the file from the run config's name to a config file with its `[layers]`
+  (tests/acceptance/product_config_support.py `layer_config`; `full-old-skill`, an evaluation's
+  layer, is ticket 146's `evals/profiles/layers/full-old-skill.toml`). Those tests are
+  `TICKET_143` until ticket 143 reads config files (`full-old-skill`: `TICKET_146`).
 - Configs: baseline, full, no-skill, no-verifiers, no-context, full-old-skill.
 - Base tools (every config): `query_database(sql)`, `list_tables(name_contains=None)`.
 - Context tools (hidden by `baseline` and `no-context`): `discover(query)` returning
@@ -28,6 +32,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp_support import assert_cli_accepts, config_file
+from product_config_support import EVAL_ONLY_LAYER
 from seam_support import (
     CONTEXT_TOOLS,
     DATA_AGENT,
@@ -38,7 +44,26 @@ from seam_support import (
     duckdb_rows,
 )
 
-CONFIGS = ["baseline", "full", "no-skill", "no-verifiers", "no-context", "full-old-skill"]
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
+TICKET_146 = pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="ticket 146: the evaluation entries do not read config files yet",
+)
+
+
+def by_config(name: str, *values: object) -> Any:
+    """A case of a test parametrized by config, marked by the ticket its config file waits
+    for."""
+    return pytest.param(name, *values, marks=TICKET_146 if name == EVAL_ONLY_LAYER else TICKET_143)
+
+
+CONFIGS = [
+    by_config(name)
+    for name in ["baseline", "full", "no-skill", "no-verifiers", "no-context", "full-old-skill"]
+]
 BASE_TOOLS = {"query_database", "list_tables"}
 
 
@@ -47,6 +72,8 @@ async def mcp_server(*args: str) -> AsyncIterator[Any]:
     from mcp import ClientSession, StdioServerParameters  # pyright: ignore[reportMissingImports]
     from mcp.client.stdio import stdio_client  # pyright: ignore[reportMissingImports]
 
+    # The arguments are taken (ticket 141: `--config <file>`), so a missing feature fails here.
+    assert_cli_accepts(["mcp-server", *args])
     params = StdioServerParameters(
         command=str(DATA_AGENT), args=["mcp-server", *args], env=dict(os.environ)
     )
@@ -131,33 +158,33 @@ async def orders_count(session: Any) -> str:
 
 @pytest.mark.parametrize("config", CONFIGS)
 async def test_base_tools_in_every_config(config: str, shop_duckdb: Path) -> None:
-    async with mcp_server("--config", config, "--duckdb", str(shop_duckdb)) as session:
+    async with mcp_server("--config", config_file(config), "--duckdb", str(shop_duckdb)) as session:
         assert await tool_names(session) >= BASE_TOOLS
 
 
 # (config, layer on). Configs that switch a layer off pass as soon as ticket 05 adds the configs;
 # the others wait for the ticket that adds the layer's tools. Each case carries its own xfail.
 CONTEXT_CASES = [
-    pytest.param("baseline", False),
-    pytest.param("full", True),
-    pytest.param("no-skill", True),
-    pytest.param("no-verifiers", True),
-    pytest.param("no-context", False),
-    pytest.param("full-old-skill", True),
+    by_config("baseline", False),
+    by_config("full", True),
+    by_config("no-skill", True),
+    by_config("no-verifiers", True),
+    by_config("no-context", False),
+    by_config("full-old-skill", True),
 ]
 VERIFIER_CASES = [
-    pytest.param("baseline", False),
-    pytest.param("full", True),
-    pytest.param("no-skill", True),
-    pytest.param("no-verifiers", False),
-    pytest.param("no-context", True),
-    pytest.param("full-old-skill", True),
+    by_config("baseline", False),
+    by_config("full", True),
+    by_config("no-skill", True),
+    by_config("no-verifiers", False),
+    by_config("no-context", True),
+    by_config("full-old-skill", True),
 ]
 
 
 @pytest.mark.parametrize(("config", "layer_on"), CONTEXT_CASES)
 async def test_context_tools_follow_config(config: str, layer_on: bool, shop_duckdb: Path) -> None:
-    async with mcp_server("--config", config, "--duckdb", str(shop_duckdb)) as session:
+    async with mcp_server("--config", config_file(config), "--duckdb", str(shop_duckdb)) as session:
         names = await tool_names(session)
     if layer_on:
         assert names >= CONTEXT_TOOLS
@@ -167,7 +194,7 @@ async def test_context_tools_follow_config(config: str, layer_on: bool, shop_duc
 
 @pytest.mark.parametrize(("config", "layer_on"), VERIFIER_CASES)
 async def test_verifier_tools_follow_config(config: str, layer_on: bool, shop_duckdb: Path) -> None:
-    async with mcp_server("--config", config, "--duckdb", str(shop_duckdb)) as session:
+    async with mcp_server("--config", config_file(config), "--duckdb", str(shop_duckdb)) as session:
         names = await tool_names(session)
     if layer_on:
         assert names >= VERIFIER_TOOLS
@@ -178,8 +205,9 @@ async def test_verifier_tools_follow_config(config: str, layer_on: bool, shop_du
 # --- Read-only gateway ----------------------------------------------------------------------
 
 
+@TICKET_143
 async def test_select_executes(db_args: list[str]) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         result = await call(
             session,
             "query_database",
@@ -197,8 +225,9 @@ DDL = [
 ]
 
 
+@TICKET_143
 async def test_ddl_blocked(db_args: list[str]) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         before = await orders_count(session)
         for sql in DDL:
             assert_readable_block(await call(session, "query_database", {"sql": sql}), sql)
@@ -222,8 +251,9 @@ DML = {
 }
 
 
+@TICKET_143
 async def test_dml_blocked(db_args: list[str], dialect: str) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         before = await orders_count(session)
         for sql in DML[dialect]:
             assert_readable_block(await call(session, "query_database", {"sql": sql}), sql)
@@ -248,8 +278,9 @@ DANGEROUS = {
 }
 
 
+@TICKET_143
 async def test_dangerous_functions_blocked(db_args: list[str], dialect: str) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         for sql in DANGEROUS[dialect]:
             assert_readable_block(await call(session, "query_database", {"sql": sql}), sql)
 
@@ -275,8 +306,9 @@ async def discover_web_events(session: Any) -> tuple[Any, str]:
     return result, matches[0]
 
 
+@TICKET_143
 async def test_discover_returns_refs_and_short_summaries(shop_duckdb: Path) -> None:
-    async with mcp_server("--config", "full", "--duckdb", str(shop_duckdb)) as session:
+    async with mcp_server("--config", config_file("full"), "--duckdb", str(shop_duckdb)) as session:
         result, _ = await discover_web_events(session)
     results = payload(result)["results"]
     for item in results:
@@ -289,8 +321,9 @@ async def test_discover_returns_refs_and_short_summaries(shop_duckdb: Path) -> N
     assert not all(column in text for column in columns), "discover dumped the full schema"
 
 
+@TICKET_143
 async def test_hydrate_returns_full_object(shop_duckdb: Path) -> None:
-    async with mcp_server("--config", "full", "--duckdb", str(shop_duckdb)) as session:
+    async with mcp_server("--config", config_file("full"), "--duckdb", str(shop_duckdb)) as session:
         _, ref = await discover_web_events(session)
         result = await call(session, "hydrate", {"ref": ref})
     assert not is_tool_error(result), text_of(result)
@@ -299,8 +332,9 @@ async def test_hydrate_returns_full_object(shop_duckdb: Path) -> None:
     assert not missing, f"hydrate left out columns: {missing}"
 
 
+@TICKET_143
 async def test_dictionary_search_returns_real_values(shop_duckdb: Path) -> None:
-    async with mcp_server("--config", "full", "--duckdb", str(shop_duckdb)) as session:
+    async with mcp_server("--config", config_file("full"), "--duckdb", str(shop_duckdb)) as session:
         result = await call(session, "dictionary_search", {"keyword": "gold"})
     assert not is_tool_error(result), text_of(result)
     text = text_of(result)
@@ -312,8 +346,9 @@ async def test_dictionary_search_returns_real_values(shop_duckdb: Path) -> None:
 # --- The six tools the verifiers use (2 base, 4 verifier-only): a passing and a failing case each
 
 
+@TICKET_143
 async def test_list_tables(db_args: list[str]) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         everything = await call(session, "list_tables", {})
         nothing = await call(session, "list_tables", {"name_contains": "no_such_table"})
     assert not is_tool_error(everything), text_of(everything)
@@ -324,8 +359,9 @@ async def test_list_tables(db_args: list[str]) -> None:
         assert table not in text_of(nothing)
 
 
+@TICKET_143
 async def test_query_database(db_args: list[str]) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         ok = await call(session, "query_database", {"sql": "SELECT count(*) AS n FROM raw.orders"})
         bad = await call(session, "query_database", {"sql": "SELECT * FROM raw.no_such_table"})
     assert not is_tool_error(ok), text_of(ok)
@@ -335,10 +371,11 @@ async def test_query_database(db_args: list[str]) -> None:
     assert "Traceback" not in text_of(bad)
 
 
+@TICKET_143
 async def test_map_columns(db_args: list[str], tmp_path: Path) -> None:
     project = tmp_path / "dbt_shop"
     shutil.copytree(DBT_SHOP, project)
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         ok = await call(
             session, "map_columns", {"model_name": "customer_orders", "project_dir": str(project)}
         )
@@ -352,8 +389,9 @@ async def test_map_columns(db_args: list[str], tmp_path: Path) -> None:
     assert "no_such_model" in text_of(bad)
 
 
+@TICKET_143
 async def test_check_model_schema(db_args: list[str]) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         ok = await call(
             session,
             "check_model_schema",
@@ -377,8 +415,9 @@ async def test_check_model_schema(db_args: list[str]) -> None:
     assert "lifetime_value" in text_of(bad)
 
 
+@TICKET_143
 async def test_audit_model_sources(db_args: list[str]) -> None:
-    async with mcp_server("--config", "full", *db_args) as session:
+    async with mcp_server("--config", config_file("full"), *db_args) as session:
         ok = await call(
             session,
             "audit_model_sources",
