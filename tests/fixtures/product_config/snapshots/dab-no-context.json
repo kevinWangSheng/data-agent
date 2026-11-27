@@ -1,0 +1,98 @@
+{
+  "allowed_tools": [
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Edit",
+    "mcp__data"
+  ],
+  "disallowed_tools": [
+    "Bash",
+    "WebSearch",
+    "WebFetch"
+  ],
+  "env": {
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_AUTH_TOKEN": "<api-key>",
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash",
+    "ANTHROPIC_MODEL": "deepseek-flash",
+    "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-flash",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
+    "CLAUDE_CODE_OAUTH_TOKEN": "",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+    "DATA_AGENT_API_KEY": "<api-key>",
+    "DATA_AGENT_BASE_URL": "https://api.deepseek.com/anthropic",
+    "DATA_AGENT_CHAT": "",
+    "DATA_AGENT_LANGFUSE_BASE_URL": "",
+    "DATA_AGENT_LANGFUSE_PUBLIC_KEY": "",
+    "DATA_AGENT_LANGFUSE_SECRET_KEY": "",
+    "DATA_AGENT_MODEL": "deepseek-flash",
+    "DATA_AGENT_SPEND_DIR": "<tempdir>/data-agent-spend-<random>",
+    "DISABLE_AUTO_COMPACT": "",
+    "DISABLE_COMPACT": ""
+  },
+  "max_budget_usd": 83.33333333333333,
+  "max_turns": 50,
+  "mcp_servers": {
+    "data": {
+      "args": [
+        "-m",
+        "evals.dab_server",
+        "--dab-root",
+        "<tmp>/dab",
+        "--db-config",
+        "<tmp>/dab/query_toyset/db_config.yaml",
+        "--log",
+        "<tmp>/out/toyset/query1/run0/dab_tool_calls.jsonl",
+        "--workspace",
+        "<tmp>/out/toyset/query1/run0/workspace",
+        "--run-id",
+        "<run-id>",
+        "--skills-dir",
+        "<repo>/skills",
+        "--image",
+        "python-data:3.12",
+        "--stderr-log",
+        "<tmp>/out/toyset/query1/run0/dab_server_stderr.log"
+      ],
+      "command": "<python>",
+      "env": {
+        "PYTHONPATH": "<repo>"
+      },
+      "type": "stdio",
+      "url": null
+    }
+  },
+  "permission_mode": "dontAsk",
+  "plugins": [],
+  "prompt": "Task type: query\nDatabases, reachable only through the `data` MCP tools (pass the name as `db_name`):\n- prices_db (sqlite)\n- articles_db (mongo)\nWorkspace (your working directory): <tmp>/out/toyset/query1/run0/workspace\nIn `sandbox_exec` the workspace is at `/workspace`: write paths in sandbox commands under `/workspace` or relative to it, and the workspace path above with Read, Glob, Grep, Write and Edit.\nTurn limit: 50. Each response of yours that calls a tool uses one turn; once all 50 are used, the run ends with no answer. A response with no tool calls is your final answer.\nWhen query results need computing, combining or plotting, do it in `sandbox_exec` and pass it the results with `data_files`.\n\n<task>\nWhich ticker closed highest?\n</task>\n\n<database_description>\nprices_db holds daily closes.\n</database_description>\n\nEnd with a final message that gives the answer first. The answer holds only what the task asks for: no rows, columns or entities it did not ask about. Put each value right after its name, with no other column between them. Write names and text exactly as they appear in the data; do not shorten them or add an ellipsis. After the answer, state your assumptions in short sentences: no tables, no alternative answers or alternative methods.\n",
+  "setting_sources": [
+    "user"
+  ],
+  "skills": [],
+  "strict_mcp_config": true,
+  "system_prompt": "You are a data agent. You answer questions about a user's data by exploring the database and running SQL, then reply with the answer.\n\nAll database access goes through the `data` MCP tools, which are read-only. Work only from what the tools show you; do not guess table names, column names or values.\n\nFollow these skills.\n\n---\nname: sql-workflow\ndescription: \"Use this skill before writing any SQL query. Covers: output shape inference (cardinality clues from the question), efficient schema exploration, iterative CTE-based query building, structured verification loop (row count, NULL audit, fan-out check, sample inspection), error recovery protocol, turn budget management, and common SQL mistakes.\"\ntype: skill\n---\n\n<!-- Copied from signalpilot-plugin (see NOTICE). Modified for data-agent: tool calls use this\nagent's `mcp__data__` tools (query_database, list_tables); steps that used SignalPilot-only tools\n(describe_table, explore_column, find_join_path, validate_sql, debug_cte_query, schema_overview)\nnow use query_database or were removed. Content about benchmark scoring was removed (ADR-0005): the\n\"Saving Output\" section (result.sql/result.csv and their CSV format) and \"Common Benchmark Traps\";\nthat section's general SQL checks are kept as section 7, with a domain-neutral example. Section 6\nworks from the turn limit the task prompt states and the turns-left reminders, in place of an\nundefined N. Section 8 (general analysis rules: ties in top N, bound words, time windows, join keys,\nvalues stored as text, column choice, recomputing) was added for data-agent, and section 2's\n\"top N\" lines now keep ties instead of cutting at LIMIT N. -->\n\n# SQL Workflow Skill\n\n## 1. Schema Exploration - Do This First\n\nBefore writing any SQL, understand the data:\n\n0. **Read local schema files first** (if schema/ directory exists in workdir):\n - `schema/DDL.csv` - all CREATE TABLE statements (if it exists)\n - `schema/{table_name}.json` - column names, types, descriptions, sample values\n   Reading these files costs zero tool calls and gives you table structure + sample data.\n   Only call MCP tools for information not in the local files (e.g., row counts, live data exploration).\n1. Call `list_tables` to get all schemas, tables and their columns - only if no local schema files exist.\n2. Run `SELECT DISTINCT col, COUNT(*) ... GROUP BY col` with `query_database` on categorical columns to see their values (for filtering/grouping)\n\nStop exploring after 3-5 tool calls. Write SQL based on what you've found.\n\n## 2. Output Shape Inference - Before Writing SQL\n\nRead the task question carefully for cardinality clues:\n\n- \"for each X\" → GROUP BY X, one output row per X\n- \"top N\" / \"top 5\" → `RANK()` in a subquery, then `WHERE r <= N`; this keeps rows tied with the Nth (8.1)\n- \"total / sum / average\" → single row aggregate\n- \"list all\" → detail rows, no aggregation\n- \"how many\" → COUNT, result is 1 row 1 column\n\nWrite a comment at the top of your SQL:\n```sql\n-- EXPECTED: <row count estimate> rows because <reason from question>\n```\n\nCritical checks:\n- If the question asks for a single number, the result MUST be 1 row × 1 column\n- If the question says \"how many\", verify the result has exactly 1 row with a COUNT value\n- If \"top N\" appears in the question, verify any rows beyond N are tied with the Nth row\n\n## 3. Iterative Query Building - Build Bottom-Up\n\nDo NOT write a 50-line query and run it all at once:\n\n1. Write the innermost subquery or first CTE first\n2. Run it standalone with `query_database` - verify row count and sample values\n3. Add the next CTE, verify again\n4. Continue until the full query is built\n\nExample incremental pattern:\n```sql\n-- Step 1: verify source\nSELECT COUNT(*) FROM orders WHERE status = 'completed';\n\n-- Step 2: verify join partner cardinality\nSELECT COUNT(*), COUNT(DISTINCT customer_id) FROM orders;\n\n-- Step 3: build first CTE, verify\nWITH order_totals AS (\n  SELECT customer_id, SUM(amount) AS total\n  FROM orders\n  GROUP BY customer_id\n)\nSELECT COUNT(*), COUNT(DISTINCT customer_id) FROM order_totals;\n\n-- Step 4: add final aggregation\n```\n\n## 4. Execution and Structured Verification\n\n```\nmcp__data__query_database\n  sql=\"SELECT ...\"\n  row_limit=1000\n```\n\nAfter executing, run these checks IN ORDER before answering:\n\n1. **Row count sanity**: Does 0 rows make sense? Does 1M rows make sense for a \"top 10\" question?\n2. **Column count**: Does the result have the right number of columns for the question?\n3. **NULL audit**: For each key column - unexpected NULLs indicate wrong JOINs:\n   ```sql\n   SELECT COUNT(*) - COUNT(col) AS nulls FROM (your_query) t\n   ```\n4. **Sample inspection**: Look at 5 rows - are values in expected ranges? Do string columns have meaningful values (not join keys)?\n5. **Fan-out check**: If JOINing, compare `COUNT(*)` vs `COUNT(DISTINCT primary_key)`:\n   ```sql\n   SELECT COUNT(*) AS total_rows, COUNT(DISTINCT <pk>) AS unique_keys FROM (your_query) t;\n   ```\n   If they differ, you have duplicate rows from a fan-out JOIN.\n6. **Re-read the question**: Does your output actually answer what was asked?\n\n## 5. Error Recovery Protocol\n\n- **Syntax error**: Read the error message, fix the reported part, and re-run\n- **Wrong results**: Do NOT just re-run the same query. Diagnose: which JOIN is wrong? Which filter is too aggressive?\n- **Zero rows**: Binary-search your WHERE conditions - remove them one at a time to find the culprit:\n  ```sql\n  SELECT COUNT(*) FROM table WHERE cond_1;             -- still same? keep it\n  SELECT COUNT(*) FROM table WHERE cond_1 AND cond_2;  -- drops? cond_2 is culprit\n  ```\n- **Too many rows**: Check for fan-out (duplicate join keys) or missing GROUP BY\n- **CTE debugging**: Run each CTE on its own with `query_database` to find which step breaks\n\n## 6. Turn Budget Management\n\nThe task prompt gives your **Turn limit** (each response that calls a tool uses a turn). Reminders say how many turns are left, your next response included: one at 10 turns left, one at 3.\n\n- **First 3 turns**: Schema exploration only (`list_tables`, distinct values of key categorical columns). STOP exploring.\n- **Until the 3-turns-left reminder**: Write query iteratively - execute and verify each step.\n- **At 3 turns left**: Give the answer. If you have a working query, ANSWER NOW - do not keep iterating.\n\nIf your query works and passes all verification checks, ANSWER IMMEDIATELY - do not continue exploring \"just in case\".\n\n## 7. Common SQL Mistakes\n\n- **Fan-out from JOINs**: Always check `COUNT(*) vs COUNT(DISTINCT key)` after every JOIN\n- **Wrong NULL handling**: Use `IS NULL` / `IS NOT NULL`, not `= NULL`\n- **Date format mismatch**: Check the actual format stored in the column by sampling its values\n- **Case sensitivity**: Use the correct case-insensitive function for your backend\n- **Interpretation errors**: Before answering, re-read the original question. Verify:\n  * Filter conditions match domain values (check the column's distinct values if unsure)\n  * \"Excluding X\" means the right thing (NOT IN vs EXCEPT vs WHERE NOT)\n  * Metrics match the question's definition (e.g., \"customers who ordered\" means at least one order, not every customer row)\n\n## 8. Analysis Rules\n\n1. **Top N keeps ties**: rank with `RANK()` and keep every row tied with the Nth; do not add a tie-breaker the question did not give. \"The 3 customers with the most orders\", with two tied for 3rd → 4 rows:\n   ```sql\n   SELECT customer_id, n FROM (\n     SELECT customer_id, COUNT(*) AS n, RANK() OVER (ORDER BY COUNT(*) DESC) AS r\n     FROM orders GROUP BY customer_id) t\n   WHERE r <= 3;\n   ```\n2. **Bound words**: \"at least\", \"no fewer than\" include the boundary (`>=`); \"more than\", \"over\", \"exceeds\" do not (`>`). Every constraint in the question must hold for every row of the final result; check each one before answering. \"Customers in Canada with at least 5 orders in 2023\" → on the final rows, re-check country, the 2023 window and count >= 5.\n3. **Time windows**: filter on the date of the event the question names. \"Orders placed in March\" uses `order_date`, not `ship_date` or the customer's `signup_date`. A duration runs to the event that completes it: \"days to deliver\" ends at `delivered_at`, not `shipped_at`.\n4. **Join keys**: before joining, sample the key on both sides (prefixes or suffixes, whitespace, case, type), normalize, then join and check the match rate. `orders.customer_ref = ' CUST-42'` vs `customers.customer_id = 'cust-42'`:\n   ```sql\n   SELECT COUNT(DISTINCT o.order_id) AS total,\n          COUNT(DISTINCT o.order_id) FILTER (WHERE c.customer_id IS NOT NULL) AS matched\n   FROM orders o\n   LEFT JOIN customers c ON LOWER(TRIM(o.customer_ref)) = LOWER(TRIM(c.customer_id));\n   ```\n   A low match rate means the keys still differ: find out why before using the result.\n5. **Values stored as text**: parse number-, list- or dict-shaped strings (cast, or the backend's JSON and list functions) before using them; do not approximate with substring matching. `tags = '[\"giftcard\"]'`: `LIKE '%gift%'` matches it though `gift` is not an element; parse the list and compare elements.\n6. **Which column**: when a code column and a label column both exist (`status_code = 3`, `status = 'shipped'`), use the one the question literally names. Names in the answer are copied from the data as stored, not retyped or re-cased.\n7. **Recompute**: before answering, compute the final number a second way, e.g. filter then aggregate vs aggregate then filter, or a count from the detail table vs from a summary table. If they differ, find out why; the turn budget in section 6 still applies, so at 3 turns left give the best-supported answer.\n\n",
+  "tools": [
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Edit"
+  ],
+  "version": {
+    "config": "no-context",
+    "layers": {
+      "context": false,
+      "skill": true,
+      "verifiers": true
+    },
+    "skill_version": "<skill_version of skills/>"
+  }
+}
