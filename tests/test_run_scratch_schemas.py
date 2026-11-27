@@ -24,6 +24,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 
 from data_agent.context_tools import DictionaryBuild
+from data_agent.db_facts import HiddenSchemas
 from data_agent.dbt_execute import scratch_schema
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_multi_server, build_server
@@ -236,3 +237,10 @@ async def test_the_runs_own_custom_schemas_stay_and_other_runs_go(db: Path) -> N
     )
     assert "status" in described
     assert f"{OWN_CUSTOM}.stage_{OWN_CUSTOM}" in dictionary_refs(gateway, own_schema=OWN)
+
+
+@pytest.mark.parametrize(("prefix", "kept"), [("", None), ("da_run_", ""), ("da_run_", "x'y")])
+def test_hidden_schemas_take_only_plain_names(prefix: str, kept: str | None) -> None:
+    """They go into SQL as they are; an empty prefix would hide every schema."""
+    with pytest.raises(ValueError, match="name"):
+        HiddenSchemas(prefix, kept)

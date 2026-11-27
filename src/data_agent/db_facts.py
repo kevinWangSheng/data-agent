@@ -138,7 +138,7 @@ class Table:
         return f"{quote(self.schema)}.{quote(self.name)}"
 
 
-SAFE_NAME = re.compile(r"[a-z0-9_]*")
+SAFE_NAME = re.compile(r"[a-z0-9_]+")
 
 
 @dataclass(frozen=True)
@@ -152,7 +152,8 @@ class HiddenSchemas:
     kept: str | None = None
 
     def __post_init__(self) -> None:
-        for value in (self.prefix, self.kept or ""):
+        # An empty prefix would hide every schema.
+        for value in (self.prefix, *(() if self.kept is None else (self.kept,))):
             if not SAFE_NAME.fullmatch(value):
                 raise ValueError(f"not a lower-case [a-z0-9_] name: {value!r}")
 
