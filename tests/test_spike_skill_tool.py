@@ -229,3 +229,22 @@ def test_a_hidden_skill_that_loads_is_not_kept_out() -> None:
     session = passing_session("a")
     session.calls[1] = probe.SkillCall(HIDDEN, "Launching skill", False)
     assert "unlisted Skill kept out: a=否" in probe.report([session], [], "stub")
+
+
+def test_a_stub_run_whose_listing_was_not_seen_does_not_pass_the_listing() -> None:
+    session = passing_session("a")
+    session.listing = []
+    assert "listed to the model: a=否" in probe.report([session], [], "stub")
+
+
+def test_a_model_run_leaves_the_listing_unmeasured() -> None:
+    text = probe.report([passing_session("a", answer=probe.CANARY)], [], "model")
+    assert "listed to the model: a=未实测" in text
+
+
+def test_no_call_to_the_hidden_skill_leaves_its_refusal_unmeasured() -> None:
+    session = passing_session("a", answer=probe.CANARY)
+    session.calls = session.calls[:1]
+    assert "unlisted Skill kept out: a=未实测" in probe.report([session], [], "model")
+    failed = probe.Session("failed", error="TimeoutError")
+    assert "unlisted Skill kept out: failed=未实测" in probe.report([failed], [], "stub")

@@ -115,7 +115,7 @@ set -a && . ~/.config/data-agent/env && set +a && \
 预计 < $0.05（三段短会话，每段 3 次请求）。看输出末尾 `## verdicts`：
 
 - `Q1 ... model follows it (model): 是` = 三段会话的回答里都有金丝雀 `CANARY-142-plum-orbit`；每段的 `answer:` 里 `SKILL_DIR:` 应是宿主路径。
-- `HIDDEN:` 一行应是 allowlist 的拒绝信息；`unlisted Skill kept out` 全是 `是`。
+- `HIDDEN:` 一行应是 allowlist 的拒绝信息；`unlisted Skill kept out` 全是 `是`。模型没调隐藏 Skill 时这一项是 `未实测`（不算通过）；`listed to the model` 只有假端点能看到请求，真实运行恒为 `未实测`，以第 1.2 节为准。
 - 任一项 `否`：按 decisions.md Q3 停下回对齐。
 
 实测输出：（待主会话补）

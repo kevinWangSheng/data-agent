@@ -461,11 +461,17 @@ def report(sessions: Sequence[Session], trials: Sequence[SandboxTrial], endpoint
             CANARY in t for t in s.loaded
         )
 
-    def hidden_kept_out(s: Session) -> bool:
-        listed = hidden not in s.listing if endpoint == "stub" else True
+    def hidden_kept_out(s: Session) -> str:
+        """是 only on an observed refusal; 未实测 when no call to the hidden Skill came back."""
         called = [c for c in s.calls if c.skill == hidden]
+        if not called:
+            return verdict(False, measured=False)
         refused = all(c.is_error for c in called) and not any(HIDDEN_CANARY in t for t in s.loaded)
-        return listed and refused
+        return verdict(refused and (hidden not in s.listing))
+
+    def listed(s: Session) -> str:
+        """Only the stub records the requests, so only a stub run shows what was listed."""
+        return verdict(probe in s.listing and hidden not in s.listing, measured=endpoint == "stub")
 
     def plugin_found(s: Session) -> bool:
         init = s.probe_init(plugin)
@@ -476,13 +482,14 @@ def report(sessions: Sequence[Session], trials: Sequence[SandboxTrial], endpoint
     lines.append("\n## verdicts")
     lines.append(
         f"Q1 Skill tool, list, full SKILL.md — CLI side: {verdict(cli_ok)}; "
-        f"model follows it ({endpoint}): {verdict(model_ok, endpoint == 'model')}"
+        f"model follows it ({endpoint}): {verdict(model_ok, endpoint == 'model')}; "
+        "listed to the model: " + ", ".join(f"{s.label}={listed(s)}" for s in sessions)
     )
     lines.append(
         f"Q2 local plugin found as {probe}, per config dir: "
         + ", ".join(f"{s.label}={verdict(plugin_found(s))}" for s in sessions)
         + "; unlisted Skill kept out: "
-        + ", ".join(f"{s.label}={verdict(hidden_kept_out(s))}" for s in sessions)
+        + ", ".join(f"{s.label}={hidden_kept_out(s)}" for s in sessions)
     )
     dirs = {s.label: skill_dir_in("\n".join(s.loaded)) for s in sessions}
     lines.append(f"Q3 ${{CLAUDE_SKILL_DIR}} as filled: {json.dumps(dirs, ensure_ascii=False)}")
