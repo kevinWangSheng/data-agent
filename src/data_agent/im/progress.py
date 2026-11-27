@@ -36,7 +36,7 @@ CHECK = {
     "map_columns",
     "check_model_schema",
     "audit_model_sources",
-    "verify_model_values",
+    "verify_model_values",  # no longer served; kept, like tools.ts, for older runs' events
     "model_diff",
     "contract_check",
     "grain_facts",

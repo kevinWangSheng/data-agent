@@ -65,12 +65,12 @@ def test_dbt_runs_offer_one_read_only_verifier(tmp_path: Path) -> None:
     assert VERIFIERS_PROMPT in str(built.system_prompt)
 
 
-def test_verifier_turn_cap_is_fifty_and_the_hooks_read_the_same_number(tmp_path: Path) -> None:
+def test_verifier_turn_cap_is_fifty_and_defined_once(tmp_path: Path) -> None:
     """Spec "验证器": maxTurns 50; the SubagentStop hook calls a report at that many turns
-    NEEDS_INFO, so it reads the one constant `verifiers` defines."""
+    NEEDS_INFO, so it imports the one constant `verifiers` defines (ticket 150)."""
     definition = (options(tmp_path, "dbt", "full").agents or {})["verifier"]
     assert definition.maxTurns == VERIFIER_MAX_TURNS == 50
-    assert hooks.VERIFIER_MAX_TURNS == VERIFIER_MAX_TURNS
+    assert "VERIFIER_MAX_TURNS =" not in Path(hooks.__file__).read_text()
 
 
 @pytest.mark.parametrize(
