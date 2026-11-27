@@ -354,7 +354,13 @@ def main(argv: list[str] | None = None) -> None:
         "trace-check", help="print the structure of a run's trace as Langfuse holds it"
     )
     check.add_argument(
-        "run", help="the run's event file, or its run id (looked up as runs/**/<run id>.jsonl)"
+        "run",
+        help="the run's event file, or its run id (looked up as <runs dir>/**/<run id>.jsonl)",
+    )
+    check.add_argument(
+        "--runs-dir",
+        type=Path,
+        help="the directory a run id is looked up under (default: ./runs)",
     )
 
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
@@ -393,7 +399,7 @@ def main(argv: list[str] | None = None) -> None:
         # Imported here, like the web stack: no other command needs it.
         from data_agent import trace_check
 
-        sys.exit(trace_check.main(args.run, os.environ))
+        sys.exit(trace_check.main(args.run, os.environ, args.runs_dir or trace_check.RUNS_DIR))
     if args.command == LAUNCH_COMMAND:
         launch(args.mcp_servers, args.server, os.environ)
     if args.command == "web":

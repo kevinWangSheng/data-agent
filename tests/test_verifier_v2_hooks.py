@@ -14,8 +14,9 @@ from claude_agent_sdk.types import HookEvent
 from data_agent.run_config import load_config
 from data_agent.verifier_v2 import parse_report, record_report, run_hooks, stop_decision
 from data_agent.verifier_v2.dispatch import UNVERIFIED_HEADING
-from data_agent.verifier_v2.hooks import MAX_OUTSTANDING_DISPATCHES, VERIFIER_MAX_TURNS
+from data_agent.verifier_v2.hooks import MAX_OUTSTANDING_DISPATCHES
 from data_agent.verifier_v2.stop import model_hashes
+from data_agent.verifiers import VERIFIER_MAX_TURNS
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "verifier_v2"
 TRANSCRIPT = FIXTURES / "verifier_transcript.jsonl"

@@ -35,8 +35,9 @@ from data_agent.gateway import MAX_ROWS, QueryResult
 from data_agent.tool_spend import LEDGER_ENV, Ledger, RunState, ToolTokens
 
 TOOL = "classify_text"
-# Rows one call may classify (provisional; the main session sets it from the measured cost per
-# 1,000 rows). More is an error before any model call, never a cut.
+# Rows one call may classify (ticket 70, from the measured cost: 20,000 short texts cost about
+# $0.28; long texts are stopped by the run budget, not by this cap). More is an error before any
+# model call, never a cut.
 ROW_LIMIT = 20_000
 BATCH_ROWS = 50
 BATCH_CHARS = 30_000  # a longer text goes in a batch of its own

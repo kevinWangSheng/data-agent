@@ -155,9 +155,9 @@ def check(target: str, env: Mapping[str, str], runs_dir: Path = RUNS_DIR) -> lis
     return structure(trace, found)
 
 
-def main(target: str, env: Mapping[str, str]) -> int:
+def main(target: str, env: Mapping[str, str], runs_dir: Path = RUNS_DIR) -> int:
     try:
-        lines = check(target, env)
+        lines = check(target, env, runs_dir)
     except CheckFailed as exc:
         print(f"trace-check: {exc}", file=sys.stderr)
         return 2

@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from data_agent import trace_check
+from data_agent import cli, trace_check
 from data_agent.trace_check import CheckFailed, find_events
 from data_agent.tracing import LANGFUSE_ENV
 
@@ -168,3 +168,55 @@ def test_a_trace_without_observations_fails(
     env: dict[str, str] = dict(zip(LANGFUSE_ENV, ("pk", "sk", "http://127.0.0.1:9"), strict=True))
     with pytest.raises(CheckFailed, match="no observations"):
         trace_check.check(str(events(tmp_path / "run.jsonl")), env)
+
+
+def cli_trace_check(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
+    """`data-agent trace-check` through the CLI: (exit code, stdout + stderr)."""
+    try:
+        cli.main(["trace-check", *argv])
+        code = 0
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+    out = capsys.readouterr()
+    return code, out.out + out.err
+
+
+RUN_ID = "run-20261127T100000Z-bbbb2222"
+
+
+def test_runs_dir_names_where_a_run_id_is_looked_up(
+    tmp_path: Path,
+    langfuse: Langfuse,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ticket 150: `--runs-dir DIR` finds `<run id>.jsonl` under DIR, at any depth, instead of
+    ./runs; a run id not there fails naming DIR."""
+    for name, value in langfuse.env().items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    events(elsewhere / "web" / "r1" / f"{RUN_ID}.jsonl")
+    code, output = cli_trace_check(["--runs-dir", str(elsewhere), RUN_ID], capsys)
+    assert code == 0, output
+    assert output.startswith(f"trace {TRACE_ID}: 4 observations")
+    # Not in ./runs, so without the flag it is not found.
+    code, output = cli_trace_check([RUN_ID], capsys)
+    assert code == 2 and f"under {Path('runs')}/" in output, output
+    code, output = cli_trace_check(["--runs-dir", str(tmp_path / "empty"), RUN_ID], capsys)
+    assert code == 2 and f"under {tmp_path / 'empty'}/" in output, output
+
+
+def test_without_runs_dir_a_run_id_is_looked_up_in_runs(
+    tmp_path: Path,
+    langfuse: Langfuse,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for name, value in langfuse.env().items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(tmp_path)
+    events(tmp_path / "runs" / "cli" / f"{RUN_ID}.jsonl")
+    code, output = cli_trace_check([RUN_ID], capsys)
+    assert code == 0, output
+    assert output.startswith(f"trace {TRACE_ID}: 4 observations")
