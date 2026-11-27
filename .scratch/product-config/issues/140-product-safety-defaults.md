@@ -1,6 +1,6 @@
 # 140 — 产品路径的三处安全默认：CLI dbt 写临时 schema、服务器级联网开关、隐藏别的运行的临时 schema
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: 无（执行已有规矩的修正，不是新设计；人 2026-11-27 定先单独派，不等 product-config spec）
 Claimed by: claude (opus-5.5) 2026-11-27

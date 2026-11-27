@@ -1,10 +1,10 @@
 # 142 — 实测：DeepSeek 下的 Skill 工具、本地插件里的 Skill、Skill 脚本在沙箱里的路径
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../spec.md（"Skill、MCP、插件"；decisions.md Q3 最后一条）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5, worktree 142-spike-skill-tool)
+Branch: worktree-142-spike-skill-tool
 
 ## Goal
 

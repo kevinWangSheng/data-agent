@@ -106,3 +106,18 @@
 - 云端：IM 名单为空、缺 `${VAR}` 在所有模式都拒绝，写守门测试；153 加 Blocked by 146；`/healthz` 返回 `{"ready": true}`，两种模式都有；部署模式环境变量 `DATA_AGENT_MODE`；运行子进程的环境去掉 `DATA_AGENT_WEB_TOKEN`；任何模式监听非本机地址都要令牌。
 - git 来源：克隆放 `<runs_dir>/.cache/git`；服务器进程统一拉，运行读这份；刷新先克隆到新目录再原子切换，正在跑的运行用旧目录；令牌经 `GIT_ASKPASS`，不进 URL、`.git/config`；154 只负责"git 地址 → 本地路径"，接入由 147、148 用；154 加 Blocked by 152（克隆出的 Skill 目录要能挂进沙箱）。
 - 镜像：Compose 同时构建产品镜像和沙箱镜像（`DockerSandbox` 用 `--pull never`）；产品镜像装 dbt。
+
+### 改票后主会话再定的（2026-11-27）
+
+- 单独用 `data-agent run`、配置里有 git 地址：启动时拉一次到 `~/.data-agent/cache/git`，不定时刷新。
+- 网页 Cookie：值是签过名的会话值，不是令牌原文；cloud 默认带 `Secure`，local 不带。
+- 151 的监听地址测试标 `TICKET_153`（153 已依赖 144），151 不加依赖。
+- `NewRun.tsx` 的合并顺序：144、149 先，156 最后。
+- 146 加 Blocked by 144（146 删 `CONFIG_NAMES`，网页 `app.py:113`、`launcher.py:256` 由 144 先改掉）。
+
+### 留给下一个会话（派工前审票时处理）
+
+1. 141 合入后到 143/146 合入前，被改成新接口的旧验收测试是 XFAIL，这段时间它们守的行为没人守；派工前定是否接受，或让 143 尽快跟上。
+2. 144 写了"非本机 host 在 153 加令牌前拒绝"——起草 agent 的保守解读，审票时确认。
+3. git 地址由 154 转成本地路径，147、148 不依赖 154，也没写遇到 git 地址怎么办；154 合入后再补接入。
+4. 141 自己提、人审：快照里 MCP 服务器的 `--config` 参数（名字→路径）怎么比；LiveSQLBench、jaffle 的快照怎么在没有 Postgres 时生成。
