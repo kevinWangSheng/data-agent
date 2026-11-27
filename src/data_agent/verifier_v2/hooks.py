@@ -61,7 +61,7 @@ from data_agent.verifier_v2.stop import (
     redispatch_models,
     stop_decision,
 )
-from data_agent.verifiers import AGENT_TOOL, AGENTS_DIR, VERIFIER_NAMES, Emit
+from data_agent.verifiers import AGENT_TOOL, AGENTS_DIR, VERIFIER_MAX_TURNS, VERIFIER_NAMES, Emit
 
 # Where a verifier dispatch's model list came from (the `verifier_dispatch` event, ticket 59).
 type DispatchSource = Literal["first", "again", "fallback_all"]
@@ -69,8 +69,6 @@ type DispatchSource = Literal["first", "again", "fallback_all"]
 MAX_BLOCKS = 2
 # How many verifier dispatches may await a report before the oldest is presumed lost.
 MAX_OUTSTANDING_DISPATCHES = 4
-# The verifier's turn cap (spec "验证器"); a call that reaches it is read as NEEDS_INFO.
-VERIFIER_MAX_TURNS = 50
 # Seconds a verifier run needs: 13 of 14 verifier windows in runs/t47-screen took at most 970 s
 # (docs/research/2026-11-05-foundation-latency-audit.md §2).
 VERIFY_MIN_REMAINING_S = 1000.0
