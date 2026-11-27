@@ -41,7 +41,7 @@ from typing import Any, override
 
 import anthropic
 from harbor.agents.base import BaseAgent
-from harbor.agents.installed.base import ApiConnectionClosedError
+from harbor.agents.installed.base import ApiConnectionClosedError, NonZeroAgentExitCodeError
 from harbor.agents.options import AgentOptions
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext, ModelUsage
@@ -51,6 +51,7 @@ from data_agent.agent import DEFAULT_BASE_URL, DEFAULT_MODEL, PRICES, git_commit
 from evals.harbor_agent import LSB_PREDICTION, MANIFEST, status_error, task_name
 from evals.livesqlbench import TASK_PREFIX
 from evals.lsb_baseline import build_prompt, extract_sql_from_response
+from evals.report import check_dev_list
 
 # The config name the trials' version events record (evals.report's merge checks read it).
 CONFIG_NAME = "single-shot"
@@ -82,8 +83,22 @@ def question(instruction: str) -> tuple[str, str]:
 
 
 def dev_tasks(manifest: Path) -> list[str]:
-    dev = json.loads(manifest.read_text())["dev"]
-    return [t for t in dev if isinstance(t, str) and t.startswith(TASK_PREFIX)]
+    """The manifest's LiveSQLBench dev tasks. A manifest whose dev list names a task it or the
+    repo's evals/manifest.json holds out is refused (evals.report `check_dev_list`), so another
+    manifest cannot move a held-out task into the dev set."""
+    split = json.loads(manifest.read_text())
+    check_dev_list(split, manifest)
+    return [t for t in split["dev"] if isinstance(t, str) and t.startswith(TASK_PREFIX)]
+
+
+class UnsupportedModelParametersError(NonZeroAgentExitCodeError):
+    """The endpoint refused the call's parameters (HTTP 400): the settings are wrong, not the
+    model. Named as the error Harbor excludes from retries and evals.ablate's watcher stops the
+    run for (`CONFIG_ERRORS`, matched by type name); Harbor 0.24 has no class of its own."""
+
+
+def masked(text: str, secret: str) -> str:
+    return text.replace(secret, "<redacted>") if secret else text
 
 
 def stamp(at: datetime) -> str:
@@ -112,14 +127,17 @@ class SingleShot(BaseAgent):
     async def setup(self, environment: BaseEnvironment) -> None:
         return
 
-    def _client(self) -> anthropic.AsyncAnthropic:
+    def _api_key(self) -> str:
         api_key = self._get_env("DATA_AGENT_API_KEY")
         if not api_key:
             raise ValueError("DATA_AGENT_API_KEY is not set")
+        return api_key
+
+    def _client(self) -> anthropic.AsyncAnthropic:
         # Authenticated as the CLI is (a bearer token), as data_agent.classify's calls are.
         return anthropic.AsyncAnthropic(
             base_url=self._get_env("DATA_AGENT_BASE_URL") or DEFAULT_BASE_URL,
-            auth_token=api_key,
+            auth_token=self._api_key(),
             max_retries=MODEL_RETRIES,
             timeout=MODEL_TIMEOUT_S,
         )
@@ -135,15 +153,20 @@ class SingleShot(BaseAgent):
                 # Not a parameter of this SDK's create(); the endpoint takes it in the body.
                 extra_body={"temperature": TEMPERATURE},
             )
+        # Harbor keeps the exception and its traceback in the trial (exception.txt): each is
+        # raised again with the key masked and without the SDK's exception chained, which holds
+        # the endpoint's response.
         except anthropic.APIStatusError as exc:
-            error = status_error(exc.status_code)
-            if error is None:
-                raise
-            raise error(str(exc)) from exc
+            error = status_error(exc.status_code) or (
+                UnsupportedModelParametersError if exc.status_code == 400 else RuntimeError
+            )
+            message = masked(f"HTTP {exc.status_code}: {exc}", self._api_key())
         except anthropic.APITimeoutError:
-            raise
+            # Not retried, as the data agent's timed-out request (evals.harbor_agent).
+            error, message = TimeoutError, "the model request timed out"
         except anthropic.APIConnectionError as exc:
-            raise ApiConnectionClosedError(str(exc)) from exc
+            error, message = ApiConnectionClosedError, masked(str(exc), self._api_key())
+        raise error(message) from None
 
     @override
     async def run(

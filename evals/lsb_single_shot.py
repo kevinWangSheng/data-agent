@@ -58,9 +58,17 @@ from evals.ablate import (
     spent,
     stop_reason,
 )
-from evals.harbor import load_trials
+from evals.harbor import Trial, event_files, load_trials, version_header
 from evals.livesqlbench import BENCHMARK as LSB_BENCHMARK
-from evals.report import TRIALS_PER_TASK, benchmark_tasks, is_infra_error, verifier_failed
+from evals.lsb_single_shot_agent import MAX_TOKENS, OUTPUT_CONFIG, TEMPERATURE, THINKING
+from evals.lsb_single_shot_agent import git_commit as agent_commit
+from evals.report import (
+    TRIALS_PER_TASK,
+    benchmark_tasks,
+    check_dev_list,
+    is_infra_error,
+    verifier_failed,
+)
 from evals.spend import STOP_FRACTION, STOP_PERCENT
 
 JOB = "single-shot"
@@ -89,7 +97,13 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
 
 def dev_tasks(args: argparse.Namespace) -> list[str]:
     """The tasks to run: the manifest's LiveSQLBench dev tasks, or the `--task`s among them."""
-    tasks = benchmark_tasks(json.loads(args.manifest.read_text()), "dev", LSB_BENCHMARK)
+    manifest = json.loads(args.manifest.read_text())
+    try:
+        # Another manifest cannot move a held-out task into the dev set (ADR-0004).
+        check_dev_list(manifest, args.manifest)
+    except ValueError as exc:
+        raise Stop(str(exc)) from exc
+    tasks = benchmark_tasks(manifest, "dev", LSB_BENCHMARK)
     if not args.task:
         return tasks
     others = sum(1 for t in args.task if t not in tasks)
@@ -108,6 +122,13 @@ def check_request(out: Path, tasks: list[str], trials: int) -> None:
         "split": "dev",
         "tasks": tasks,
         "trials": trials,
+        # The call's settings (evals.lsb_single_shot_agent): other settings are another run.
+        "call": {
+            "max_tokens": MAX_TOKENS,
+            "thinking": THINKING,
+            "output_config": OUTPUT_CONFIG,
+            "temperature": TEMPERATURE,
+        },
     }
     if not path.is_file():
         path.write_text(json.dumps(now) + "\n")
@@ -118,6 +139,24 @@ def check_request(out: Path, tasks: list[str], trials: int) -> None:
         raise Stop(f"cannot read {path}: {exc}; use another --out") from exc
     if before != now:
         raise Stop(f"{out} was run for {before}, this call asks for {now}; use another --out")
+
+
+def check_versions(job: Path, trials: list[Trial]) -> None:
+    """A job is reused (skipped or resumed) only under the code its trials ran (the commit in
+    their event files' version headers), as evals.ablate `check_conditions` does: a changed
+    prompt or setting is another run. Infrastructure errors are dropped by the resume."""
+    now = agent_commit()
+    if now.endswith("-dirty"):
+        raise Stop(
+            "this checkout has uncommitted changes, so it cannot be matched to the existing job; "
+            "commit them, or use another --out"
+        )
+    headers = [
+        version_header(events) for t in trials if not is_infra_error(t) for events in event_files(t)
+    ]
+    found = sorted({str(h.get("git_commit")) for h in headers})
+    if found and found != [now]:
+        raise Stop(f"{job} was run at commit(s) {found}, this checkout is {now}; use another --out")
 
 
 def over_budget(out: Path, budget: Decimal) -> str | None:
@@ -158,6 +197,7 @@ def ensure_job(args: argparse.Namespace, tasks: list[str], budget: Decimal) -> N
     if (job / "config.json").is_file():
         trials = load_trials(job) if any(job.glob("*/result.json")) else []
         check_config_errors(JOB, job, trials)
+        check_versions(job, trials)
         if problem(trials, tasks, "dev", args.trials) is None:
             return
         errored = [t for t in trials if is_infra_error(t)]

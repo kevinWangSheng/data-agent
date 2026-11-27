@@ -17,7 +17,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import TaskConfig, TrialConfig
 
-from evals import lsb_baseline, lsb_single_shot, lsb_single_shot_agent
+from evals import ablate, lsb_baseline, lsb_single_shot, lsb_single_shot_agent
 from evals.ablate import evals_cli
 from evals.livesqlbench import instruction
 from evals.livesqlbench_verifier import read_prediction
@@ -219,6 +219,33 @@ def test_a_held_out_task_is_refused_before_any_model_call(tmp_path: Path):
     assert not env.at("/app/pred.json").exists()
 
 
+def test_a_task_the_repo_holds_out_is_refused_whatever_the_manifest_says(tmp_path: Path):
+    held_out = repo_holdout_task()
+    record = {
+        "instance_id": held_out.removeprefix("lsb-"),
+        **{k: TIDE[k] for k in TIDE if k != "instance_id"},
+    }
+    trial_dir, env, manifest = trial(tmp_path, record)
+    with serve(reply_with(REPLY)) as fake, pytest.raises(ValueError, match="holds out"):
+        run_agent(make_agent(trial_dir, manifest, fake.url), env, record)
+    assert fake.requests == []
+
+
+def test_a_refused_call_is_a_config_error_without_the_key_or_the_response(tmp_path: Path):
+    """The fake's failure message quotes the Authorization header, as a careless endpoint might;
+    Harbor writes the exception and its traceback into the trial."""
+    trial_dir, env, manifest = trial(tmp_path)
+    fake = FakeModel(label=lambda _t: None, fail=lambda _t: True)  # HTTP 400
+    with (
+        serve(fake),
+        pytest.raises(lsb_single_shot_agent.UnsupportedModelParametersError) as caught,
+    ):
+        run_agent(make_agent(trial_dir, manifest, fake.url), env)
+    assert "sk-fake" not in str(caught.value) and "HTTP 400" in str(caught.value)
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    assert type(caught.value).__name__ in ablate.CONFIG_ERRORS
+
+
 def test_a_rate_limited_call_raises_harbors_retried_error_and_writes_no_prediction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -345,10 +372,12 @@ def baseline_job(job: Path, rewards: dict[str, list[float]]) -> Path:
 @pytest.fixture
 def command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """The command's arguments for a dev run in tmp_path, with Harbor and the balance check
-    replaced (no network)."""
+    replaced (no network), and a clean checkout at commit c0ffee."""
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps(SPLIT))
     monkeypatch.setattr(lsb_single_shot, "check_balance", lambda out, budget: None)
+    monkeypatch.setattr(lsb_single_shot_agent, "git_commit", lambda: "c0ffee")
+    monkeypatch.setattr(lsb_single_shot, "agent_commit", lambda: "c0ffee")
     out = tmp_path / "out"
     args = [
         "lsb-single-shot",
@@ -439,3 +468,38 @@ def test_the_run_stops_at_the_spend_cap(
         code, _, err = evals_cli(args)
         assert code == 1
         assert len(harbor.calls) == 1
+
+
+def repo_holdout_task() -> str:
+    """A LiveSQLBench task the repo's manifest holds out (never printed)."""
+    manifest = json.loads((Path(__file__).parents[1] / "evals" / "manifest.json").read_text())
+    return next(t for t in manifest["holdout"] if t.startswith("lsb-"))
+
+
+def test_another_manifest_cannot_move_a_held_out_task_into_the_dev_set(
+    command: tuple[list[str], Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    args, _, manifest = command
+    held_out = repo_holdout_task()
+    manifest.write_text(json.dumps({"dev": [held_out], "holdout": []}))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(lsb_single_shot, "run_harbor", lambda a, *_: calls.append(a) or (0, None))
+    code, _, err = evals_cli(args)
+    assert code == 2 and "holds out" in err
+    assert held_out not in err
+    assert calls == []
+
+
+def test_a_rerun_under_other_code_does_not_reuse_the_job(
+    command: tuple[list[str], Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    args, out, _ = command
+    with serve(reply_with(SQL_REPLY)) as model:
+        harbor = HarborRunningTheAgent(model)
+        monkeypatch.setattr(lsb_single_shot, "run_harbor", harbor)
+        assert evals_cli(args)[0] == 0
+        monkeypatch.setattr(lsb_single_shot, "agent_commit", lambda: "beef00")
+        code, _, err = evals_cli(args)
+    assert code == 2 and "c0ffee" in err and "another --out" in err
+    assert len(harbor.calls) == 1
+    assert len(list((out / "reports").glob("*/report.json"))) == 1
