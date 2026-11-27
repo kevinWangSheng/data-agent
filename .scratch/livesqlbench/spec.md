@@ -133,3 +133,48 @@ agent 只在 data-eng-bench（dbt 任务）和 DAB（跨库查数）上出过分
   - `agent.py:1340-1342` → `src/data_agent/agent.py:1385-1387`（`uses_verifiers`）；
   - 取证笔记里的 `pyproject.toml:30` → `pyproject.toml:35`（`harbor==0.24.0`）；
   - Harbor 参考适配器的路径（稀疏 checkout，用 `git -C … show dc933be:adapters/...` 读）。
+
+## Update 2026-11-27：留出集分数偏低，在开发集上找原因（D1–D5）
+
+人定（2026-11-27，对齐会话）。
+
+### 背景（实测）
+
+- 留出集里程碑 `lsb-holdout-1`（`2f90141`，120 题 × 3 次 × 4 配置，基础设施错误 0）：`no-verifiers` 35.3%，`baseline` 36.1%，`no-skill` 35.0%，`no-context` 37.8%；3 个消融差值的 95% 区间都跨 0（`runs/lsb-holdout-1/reports/20261127T032240.021856Z/ablation.md`）。实扣 $18.68。
+- 开发集 `lsb-dev-1`（`no-verifiers`，60 × 1）：32/60 = 53.3%；18 个库都跑到，0 个异常。
+- 官方旧数字（取证笔记 `docs/research/2026-11-23-livesqlbench.md:121`）：o3-mini 47.78%、GPT-4.1 44.10%、Claude Sonnet 4 42.59%；口径（是否含管理题）未确认。
+- 和官方 baseline 的差别（`data-agent-refs/livesqlbench/baseline/src/prompt.py`、`prompt_generator.py`）：官方单次调用，把 `<db>_schema.txt`、`<db>_column_meaning_base.json`、整份 `<db>_kb.jsonl`（只留 `id`、`knowledge`、`description`、`definition`）直接放进提示词，temperature 0、max_tokens 6000（`call_api.py:112-116`）。我们只在任务说明里给文件路径，agent 自己读。三份资料最大的库合计约 75 KB（insider、archeology）。
+- 开发集 60 个 trial 都打开过知识库；整份读完的判对 13/30，只读一部分 9/15，只 grep 9/14，"没读知识库"不是原因（主会话 2026-11-27 统计 `runs/lsb-dev-1` 的事件文件）。
+
+### 目标
+
+回答：分数低是模型本身的水平、agent 的做法、还是资料的给法；再按失败类别决定改哪里。只用开发集。
+
+### 规矩（不变的部分照旧）
+
+- 开发集：读轨迹、看报错；**始终不看标准答案**（`:27`）。标准答案只用于验证脚本判分。
+- 留出集：不看逐题细节（ADR-0004）；本轮不跑留出集。"留出集最多再跑一次"要不要用，等 D5 的改动在开发集上有显著收益后再由人定。
+- `external_knowledge` 不给 agent，也不给单次调用（U8）。
+- Skill 里不写针对某道题的内容（ADR-0005）。
+
+### 判定口径与花费
+
+- "明显"＝按题配对 bootstrap，95% 区间不跨 0（和 `ablate` 的消融同一口径）；跨 0 写"看不出方向"。
+- 本轮（D1–D4 的运行）标价合计封顶 $15；到了就停下交人。
+
+### 步骤
+
+- **D1 对照组补齐**（主会话，不改代码）：`ablate --benchmark livesqlbench --split dev --config no-verifiers --reference no-verifiers --trials 3 --out runs/lsb-dev-3`，60 × 3 = 180 个 trial（不能在 `lsb-dev-1` 上加 trial 数：`ablate` 的 `check_request` 拒绝改了参数的同一 `--out`）。
+- **D2 单次调用对照**（工单 138）：照官方 baseline，用同一个模型 `deepseek-flash` 单次调用写 SQL，用我们已对拍过的验证脚本判分，开发集 60 × 3。
+- **D3 agent 加完整资料**（工单 139）：生成任务时可选把三份资料（同官方 baseline 的字段）直接写进任务说明；在 `no-verifiers` 上跑开发集 60 × 3，和 D1 比。开关默认关，留出集结果、产品默认、data-eng-bench、DAB 都不受影响。
+- **D4 轨迹归类**（主会话派 sonnet 子 agent，每题一个，只读轨迹和公开资料，不碰标准答案）：用 D1、D3 的开发集轨迹，把判错的 trial 归类。起始类别：知识库定义没找到或用错、题意歧义、过滤/聚合/排序/取列写错、没验证或验证不足、执行出错、原因不明；子 agent 可补新类别。同一题 3 次有对有错的单独列出。人只看汇总表。
+- **D5 定改动**：照下表读 D1–D3，再按 D4 的类别排先后，另开工单改通用的 Skill、提示词、工具或运行方式；只在开发集上量。
+
+| D2 对 D1 | D3 对 D1 | 原因在 | D5 方向 |
+|---|---|---|---|
+| 看不出方向 | 看不出方向 | 模型本身 | agent 层能补的有限；换模型或补通用方法 |
+| 明显更高 | 明显更高 | 资料的给法 | 默认内联资料，再按 D4 补 |
+| 明显更高 | 看不出方向 | agent 的做法 | 按 D4 改 Skill、提示词 |
+| 明显更低 | — | agent 有帮助，35% 是模型水平 | 查开发集与留出集的差距 |
+
+顺序：138、139 并行派工；D1 可以先跑。两张工单合入后主会话跑 D2、D3，再做 D4，结果写进本节下面，D5 回对齐会话定。
