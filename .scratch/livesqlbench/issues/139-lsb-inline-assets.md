@@ -15,11 +15,12 @@ Branch: —
 - May edit：
   - `evals/livesqlbench.py`：`instruction`、`write_task`、`generate_tasks` 加开关；
   - `evals/livesqlbench_server.py`：`tasks`、`prepare` 步加开关和输出目录；
-  - `scripts/da-remote`：只限在服务器上生成这套内联任务（例如 `benchmarks` 的一个选项，或另一个输出目录），`check` 不能因为多了这套任务报错；
+  - `scripts/da-remote`：只限 `benchmarks` 里 LiveSQLBench 的那一段（`scripts/da-remote:520-532`）和 `check` 里 LiveSQLBench 的检查，用来在服务器上生成这套内联任务（例如一个选项，或另一个输出目录），`check` 不能因为多了这套任务报错；`start` 一段归 138，不动；
   - `tests/`（除 `tests/acceptance/`）；
   - `NOTICE`：照抄上游提示词的段落标题、字段选择时登记；
   - `docs/setup.md`：写生成命令和 `ablate` 命令。
 - Must not edit：
+  - `evals/livesqlbench_images/`：镜像 tag 是这个目录里文件的摘要（`evals/livesqlbench.py:122-128` `image_version`），动了它 18 个库镜像都要重建、现有任务都要重新生成；只改 `evals/livesqlbench.py` 不影响 tag；
   - `src/`、`skills/`、`evals/ablate.py`、`evals/report.py`、`evals/harbor_agent.py`、`evals/manifest.json`、`evals/livesqlbench_databases.json`、`evals/livesqlbench_verifier.py`；
   - 工单 138 新建的文件；
   - `tests/acceptance/`、`.claude/`、`CODING_STANDARDS.md`、`AGENTS.md`、其他工单的文件。
@@ -36,7 +37,7 @@ Branch: —
 3. **不给的东西**：`external_knowledge`、`sol_sql`、`test_cases`（spec U7、U8、`:27`）。知识库文件本身是公开资料，不是 `external_knowledge` 字段。
 4. **大小**：最大的库三份资料合计约 75 KB（insider、archeology；主会话 2026-11-27 量的本地生成任务）。先在代码里核实这么长的任务说明从 `evals/harbor_agent.py` 到 agent 的提示词一路不会被截断或拒绝（`src/data_agent/agent.py` 的 `TASK_FILE_NOTE` 等），在 Comments 写明依据。要改 `src/` 或 `harbor_agent.py` 才行就停下。
 5. **任务目录**：服务器上现有任务在 `../da-benchmarks/livesqlbench/tasks`（`scripts/da-remote:534`），生成要写库口令（`prepare` 在 `scripts/da-remote:526-528` source 它）。内联任务用另一个目录（如 `tasks-inline`），题号不变，所以 `evals/manifest.json` 的 `dev`/`holdout` 判断照旧有效。验证脚本与 `task_payload.json` 和现有任务相同。
-6. 主会话之后的运行（写进 `docs/setup.md`）：`ablate --benchmark livesqlbench --tasks-dir <内联任务目录> --manifest evals/manifest.json --split dev --config no-verifiers --reference no-verifiers --trials 3 --out runs/lsb-dev-inline-3 --budget <余额内>`。
+6. 主会话之后的运行（写进 `docs/setup.md`）：`ablate --benchmark livesqlbench --tasks-dir <内联任务目录> --manifest evals/manifest.json --split dev --config no-verifiers --reference no-verifiers --trials 3 --out runs/lsb-dev-inline-3 --budget 5`（实扣上限，spec D3）；之后用 `evals compare` 和 D1 配对（spec "判定口径"）。
 
 ## Acceptance
 

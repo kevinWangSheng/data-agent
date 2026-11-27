@@ -159,14 +159,20 @@ agent 只在 data-eng-bench（dbt 任务）和 DAB（跨库查数）上出过分
 
 ### 判定口径与花费
 
-- "明显"＝按题配对 bootstrap，95% 区间不跨 0（和 `ablate` 的消融同一口径）；跨 0 写"看不出方向"。
-- 本轮（D1–D4 的运行）标价合计封顶 $15；到了就停下交人。
+- "明显"＝按题配对 bootstrap，95% 区间不跨 0（和 `ablate` 的消融同一口径）；跨 0 写"看不出方向"。三组运行在不同的 `--out` 里，用 `evals compare` 跨目录配对（`evals/__main__.py:64-76`，`--baseline`、`--candidate` 都收 Harbor job 目录）：
+  - D2 对 D1：`python -m evals compare --baseline runs/lsb-dev-3/jobs/no-verifiers --candidate <D2 的 job 目录> --manifest evals/manifest.json --split dev --benchmark livesqlbench --trials 3`；
+  - D3 对 D1：同上，`--candidate runs/lsb-dev-inline-3/jobs/no-verifiers`。
+- D2 若在 temperature 0 下 3 次几乎相同，等于每题 1 个样本；读区间时照实写明。
+- 本轮（D1–D4 的运行）**标价**合计封顶 $15；到了就停下交人。`ablate --budget` 和余额检查按**实扣**算（`evals/spend.py`），每次运行的 `--budget` 按下面各步写的数给，开跑前余额要不低于它（2026-11-27 查：47.31 CNY ≈ $6.48，D2、D3 之前多半要充值）。
 
 ### 步骤
 
-- **D1 对照组补齐**（主会话，不改代码）：`ablate --benchmark livesqlbench --split dev --config no-verifiers --reference no-verifiers --trials 3 --out runs/lsb-dev-3`，60 × 3 = 180 个 trial（不能在 `lsb-dev-1` 上加 trial 数：`ablate` 的 `check_request` 拒绝改了参数的同一 `--out`）。
-- **D2 单次调用对照**（工单 138）：照官方 baseline，用同一个模型 `deepseek-flash` 单次调用写 SQL，用我们已对拍过的验证脚本判分，开发集 60 × 3。
-- **D3 agent 加完整资料**（工单 139）：生成任务时可选把三份资料（同官方 baseline 的字段）直接写进任务说明；在 `no-verifiers` 上跑开发集 60 × 3，和 D1 比。开关默认关，留出集结果、产品默认、data-eng-bench、DAB 都不受影响。
+- **D1 对照组补齐**（主会话，不改代码；不等 138、139）：
+  - `scripts/da-remote start lsb-dev-3 -- ablate --benchmark livesqlbench --tasks-dir ../da-benchmarks/livesqlbench/tasks --manifest evals/manifest.json --split dev --config no-verifiers --reference no-verifiers --trials 3 --out runs/lsb-dev-3 --budget 4`，60 × 3 = 180 个 trial，按 `lsb-dev-1` 的单价约标价 $3.8、实扣 $1.9–3.8（不能在 `lsb-dev-1` 上加 trial 数：`ablate` 的 `check_request` 拒绝改了参数的同一 `--out`）。
+  - 同时在服务器上按公开 JSONL 的 `difficulty_tier` 统计开发集与留出集各档的题数（公开字段，只出计数），看两边难度分布是否不同（划分按库分层，没按难度）。
+  - **D1 是关口**：若开发集 3 次的准确率仍在 50% 上下，开发集看不到"35%"这个症状，D2、D3 回答的是"从 50% 怎么往上提"，不是"为什么只有 35%"；这时先把 D1 的数和难度分布带回对齐会话，决定是否照原计划继续 D2–D4，再跑。
+- **D2 单次调用对照**（工单 138）：照官方 baseline，用同一个模型 `deepseek-flash` 单次调用写 SQL，用我们已对拍过的验证脚本判分，开发集 60 × 3。推理设置和 agent 运行一样（agent 不设 effort，CLI 发 `high`，`src/data_agent/agent.py:137-145`），否则"D2 ≈ D1"读不成"模型本身"。`--budget`（或 138 的等价上限）实扣 $3。
+- **D3 agent 加完整资料**（工单 139）：生成任务时可选把三份资料（同官方 baseline 的字段）直接写进任务说明；在 `no-verifiers` 上跑开发集 60 × 3，和 D1 比，`--budget 5`。开关默认关，留出集结果、产品默认、data-eng-bench、DAB 都不受影响。
 - **D4 轨迹归类**（主会话派 sonnet 子 agent，每题一个，只读轨迹和公开资料，不碰标准答案）：用 D1、D3 的开发集轨迹，把判错的 trial 归类。起始类别：知识库定义没找到或用错、题意歧义、过滤/聚合/排序/取列写错、没验证或验证不足、执行出错、原因不明；子 agent 可补新类别。同一题 3 次有对有错的单独列出。人只看汇总表。
 - **D5 定改动**：照下表读 D1–D3，再按 D4 的类别排先后，另开工单改通用的 Skill、提示词、工具或运行方式；只在开发集上量。
 
@@ -176,5 +182,7 @@ agent 只在 data-eng-bench（dbt 任务）和 DAB（跨库查数）上出过分
 | 明显更高 | 明显更高 | 资料的给法 | 默认内联资料，再按 D4 补 |
 | 明显更高 | 看不出方向 | agent 的做法 | 按 D4 改 Skill、提示词 |
 | 明显更低 | — | agent 有帮助，35% 是模型水平 | 查开发集与留出集的差距 |
+
+若 D1 显示开发集本身在 50% 上下（见 D1 关口），上表只说明"开发集上怎么提分"；留出集偏低的原因另看难度分布，回对齐会话定。
 
 顺序：138、139 并行派工；D1 可以先跑。两张工单合入后主会话跑 D2、D3，再做 D4，结果写进本节下面，D5 回对齐会话定。

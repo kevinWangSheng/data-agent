@@ -17,7 +17,8 @@ Branch: —
   - `evals/__main__.py`：只加注册新子命令的几行；
   - `tests/`（除 `tests/acceptance/`）；
   - `NOTICE`：登记复制的上游代码；
-  - `docs/setup.md`：写服务器上的运行命令。
+  - `docs/setup.md`：写服务器上的运行命令；
+  - `scripts/da-remote`：只限 `start` 里决定 source LiveSQLBench 写库口令的那个条件（`scripts/da-remote:578`），加上本工单的新子命令（验证阶段要 `${LSB_PG_WRITE_PASSWORD}`，136 当时也加过 `livesqlbench-parity`）。其余部分不动（`benchmarks` 一段归 139）。
 - Must not edit：
   - `src/`、`skills/`；
   - `evals/livesqlbench.py`、`evals/livesqlbench_server.py`（工单 139 改）；
@@ -31,22 +32,25 @@ Branch: —
 1. **上游做法**（`/Users/shenghuikevin/dev/AI/data-agent-refs/livesqlbench/`，根目录 `LICENSE` 是 MIT，"Copyright (c) 2024 bird_sql"）：
    - 提示词：`baseline/src/prompt.py` `assistant_prompt`，资料的读法：`baseline/src/prompt_generator.py:37-98`（列含义的键转小写；知识库每条只留 `id`、`knowledge`、`description`、`definition`，不给 `type`、`children_knowledge`）。
    - 调用参数：`baseline/src/call_api.py:112-116`（temperature 0、max_tokens 6000）。
+   - **推理设置照 agent 运行，不照上游**（人 2026-11-27 定的对照目的是"同一个模型"）：agent 不设 effort，Claude Code CLI 发 `high`（`src/data_agent/agent.py:137-145`），事件里有 `thinking`。单次调用用同样的推理设置；max_tokens 要够思考加 SQL，不被思考吃光（6000 不够就调大，写明数值和依据）。和上游的这两处偏差写进 Comments。
    - 从回复里取 SQL：`baseline/src/post_process.py` `parse_sql` / `extract_sql_from_response`。
    - 照抄，不重写；复制的部分保留原版权与许可声明，登记 `NOTICE`（AGENTS.md MUST）。
 2. **不给的东西**：`external_knowledge`、`sol_sql`、`test_cases` 都是标准答案（spec U8、`:27`），不进提示词。运行器不读答案文件，也不读任务的 `tests/`。
 3. **模型**：和 agent 同一个模型与入口——`deepseek-flash`，`DATA_AGENT_BASE_URL`（默认 `https://api.deepseek.com/anthropic`，`src/data_agent/agent.py:106-107`、`:1243`）、`DATA_AGENT_*` 的密钥变量；`anthropic` SDK 已在依赖里（`pyproject.toml:8`）。价格表和峰谷计费照 `src/data_agent/agent.py:405` 与 `evals/spend.py`。
-4. **判分**：任务的验证脚本（separate verifier，128/136）。推荐做法是写成一个 Harbor agent（不装进容器的 `BaseAgent`，在宿主上调模型；资料从 agent 环境的 `/app/db_assets/` 读，答案写到 `/app/pred.json`），用一个新的 job 配置跑生成好的任务，这样判分、`pred.json` 拷贝、trial 目录结构都和 agent 运行一样。若 Harbor 0.24 的接口让这条路走不通，换别的做法也行，但判分必须走任务自己的验证脚本，在 Comments 写明理由。
-5. **花费与报告**：每个 trial 的 token 和花费要记下来，能和 agent 运行同口径汇总（标价、实扣、峰谷）。先读 `evals/spend.py`、`evals/report.py` 需要的事件文件格式：能写出它们认的最小事件文件就用现有的 `evals spend` / `evals report`；不能的话，新子命令自己出汇总（准确率、每题 3 次、标价与实扣），在 Comments 写明为什么不能复用。不改这两个模块。
-6. **只跑开发集**：新子命令只接受 `--split dev`（或只跑清单 `dev` 里的 `lsb-` 题），给留出题直接拒绝（ADR-0004；spec 本轮不跑留出集）。输出放 `runs/<out>/`，不含标准答案（U7）。
-7. **不开 `--network`**（AGENTS.md MUST）。
-8. 服务器上的任务目录：`../da-benchmarks/livesqlbench/tasks`（`scripts/da-remote:534`）。
+4. **判分**：任务的验证脚本（separate verifier，128/136）。推荐做法是写成一个 Harbor agent（`harbor/agents/base.py:29` 的 `BaseAgent`，不装进容器，在宿主上调模型；资料从 agent 环境的 `/app/db_assets/` 读，答案写到 `/app/pred.json`——先核实宿主侧 agent 能经环境接口读写这两处），用一个新的 job 配置跑生成好的任务，这样判分、`pred.json` 拷贝、trial 目录结构都和 agent 运行一样。若 Harbor 0.24 的接口让这条路走不通，换别的做法也行，但判分必须走任务自己的验证脚本，在 Comments 写明理由。
+5. **产出必须能和 D1 配对**：结果是一个 Harbor job 目录，`python -m evals compare --baseline runs/lsb-dev-3/jobs/no-verifiers --candidate <本工单的 job 目录> --manifest evals/manifest.json --split dev --benchmark livesqlbench --trials 3` 能直接读（`evals/__main__.py:64-76`，`load_jobs` 读 trial 的 `result.json`）。用替身 job 目录配一个测试。
+6. **花费与报告**：每个 trial 的 token 和花费要记下来，能和 agent 运行同口径汇总（标价、实扣、峰谷）。先读 `evals/spend.py`、`evals/report.py` 需要的事件文件格式：能写出它们认的最小事件文件就用现有的 `evals spend` / `evals report`；不能的话，新子命令另出花费汇总（标价与实扣），但第 5 项的配对仍必须成立，在 Comments 写明为什么不能复用。不改这两个模块。运行要有实扣上限（spec：D2 实扣 $3），到了就停。
+7. **只跑开发集**：新子命令只接受 `--split dev`（或只跑清单 `dev` 里的 `lsb-` 题），给留出题直接拒绝（ADR-0004；spec 本轮不跑留出集）。输出放 `runs/<out>/`，不含标准答案（U7）。
+8. **不开 `--network`**（AGENTS.md MUST）。
+9. 服务器上的任务目录：`../da-benchmarks/livesqlbench/tasks`（`scripts/da-remote:534`）。
 
 ## Acceptance
 
 - [ ] 单元测试（替身模型客户端，不联网、不连库）：
   - 提示词含该库的 schema、列含义、知识库，知识库每条只含 `id`、`knowledge`、`description`、`definition`；
   - 提示词里没有 `external_knowledge`、`sol_sql`、`test_cases` 的任何内容，也没有答案文件路径；
-  - 调用参数是 temperature 0、max_tokens 6000、模型 `deepseek-flash`；
+  - 调用参数：模型 `deepseek-flash`、temperature 0、推理设置与 agent 运行相同、max_tokens 为 Context 1 定下的值；
+  - 产出的 job 目录能被 `evals compare` 读（Context 5）；
   - 回复里取出的 SQL 按官方格式写成 `{"instance_id", "predicted_sql": [...]}`；取不出时也写出文件（空列表或原样），由验证脚本判 0，不报基础设施错误；
   - 留出题被拒绝；
   - 每个 trial 的 token 与花费被记下。
@@ -62,7 +66,7 @@ Branch: —
 ## Stop conditions
 
 - 判分只能绕开任务的验证脚本才做得到。
-- 复用花费汇总必须改 `evals/spend.py` 或 `evals/report.py`。
+- 复用花费汇总必须改 `evals/spend.py` 或 `evals/report.py`，或者产出没法让 `evals compare` 读。
 - 需要改 `src/` 或 139 的文件。
 - 第二轮审查修复后仍不过。
 
