@@ -1,6 +1,6 @@
 # HANDOFF — 通用 data agent 求职项目
 
-> **当前状态（2026-11-27）：两条线。① LiveSQLBench 诊断（D1、D4 做完，D2/D3 暂停）。② 产品配置与云端部署：ADR-0011 和两份 spec 已写、工单 140–156 已建，但人在收尾时要求加"设置界面 + 数据库 + Slack 身份与权限"，推翻 ADR-0011 第 5 条，新会话先对齐这一条再派工。详见下面"2026-11-27 交接"。**
+> **当前状态（2026-11-27 晚）：两条线。① LiveSQLBench 诊断（D1、D4 做完，D2/D3 暂停，待对齐）。② 产品配置 + 云端部署 + 设置界面：ADR-0011、ADR-0012，三份 spec（product-config、cloud-deploy、settings），工单 140–162 都已建好、对齐完，**到可以派工为止**；140、142、152 已开 PR 未合并。下一个会话从派工开始。详见"2026-11-27 交接"。**
 >
 > 先读：`AGENTS.md`；`docs/plan.md` §10（一期各项和结果）；`docs/report.md`（分数、消融、失败归因）。
 > 2026-11-01 到 11-22 的逐日进度记录已从本文件移出，原文见 `git show 9493448:HANDOFF.md`；各项结论以 ADR（尤其 ADR-0004、0005、0008 的各个 Update）、工单 Comments 和 plan §10 为准。
@@ -18,18 +18,14 @@
 ### ② 产品配置与云端部署
 
 - 依据：`docs/adr/0011-product-config-and-eval-profiles.md`；对齐记录 `.scratch/product-config/decisions.md`（方向 1–9、Q1–Q8，人逐条确认的原话）；spec `.scratch/product-config/spec.md`、`.scratch/cloud-deploy/spec.md`；取证 `docs/research/2026-11-27-product-config-audit.md`（审计）、`2026-11-27-config-layering-local-cloud.md`（分层与跑榜）、`2026-11-27-chatbot-agent-config.md`（Slack 类 bot 的配置）、`2026-11-27-skill-tool-spike.md`、`2026-11-27-sandbox-in-container-spike.md`。
-- **新会话的第一个对齐议题（人 2026-11-27 收尾时提出，未定细节）**：配置不能只靠服务器上的文件，要有**设置界面 + 数据库**，**身份与权限接 Slack**，照 Claude in Slack（调研笔记附录 B）：
-  - 工作区 / 频道 / 个人三层设置；`config.toml` 只在首次启动时播种数据库，之后以界面为准；`[policy]` 和密钥仍在文件与环境变量里。
-  - 网页用"Sign in with Slack"登录；Slack 工作区 Owner/Admin 改工作区层，频道层谁能改（成员还是频道管理者）待定，个人层自己改；Slack 里 `@bot !configure` 打开本频道设置。
-  - 一个 Slack 线程是一次会话，回复带"在网页打开"链接，按频道成员身份看。
-  - 数据访问先用共享服务身份。
-  - 主会话的方案草稿（未对齐）：`.scratch/product-config/proposal-settings-ui.md`，新会话从它的第 6 节逐条过。
-  - 这推翻 ADR-0011 第 5 条、`docs/plan.md` §1 的"不做登录、多用户、管理界面"、Q1（文件是唯一来源）、Q7（云端只做 Docker）。141、143、144、153、156 和 cloud-deploy spec 要重写或调整。先对齐，再改票。
+- **设置界面 + 数据库 + 平台身份（已对齐完）**：ADR-0012、spec `.scratch/settings/spec.md`、工单 `.scratch/settings/issues/157-162`；决定原话在 `decisions.md`"设置界面 + Slack 权限"一节（S1–S9）和"建 settings 工单时主会话定的细节"1–18；排在后面的事在"后续"清单。不再分一期二期。156 作废（wontfix），由 159、160 取代；144、151、153、155 已按 ADR-0012 调整。
 - **工单状态**（都在 `.scratch/product-config/issues/`、`.scratch/cloud-deploy/issues/`）：
   - 140 三处安全默认：PR #145，in-review。合并前要：Postgres 集成测试（`DATA_AGENT_TEST_POSTGRES_URL=... uv run pytest tests/test_run_scratch_schemas.py tests/test_db_facts.py -m integration -q`）、工单里写的两次真实运行、CI 和 Codex GitHub app 意见。
   - 142 Skill 工具实测：PR #146，in-review。DeepSeek 下能用（模型自己从列表选 Skill，$0.046）；147 要显式把 `"Skill"` 放进 `tools`；推荐 Skill 目录按原路径只读挂进沙箱。
   - 152 容器里起沙箱实测：PR #147，in-review。挂 Docker socket 可行，只能用同名路径挂载；**155 的阻塞点**：产品镜像里 Skill 目录在 Python 包内、宿主机上没有，沙箱挂不进去（改 `src/` 让 Skill 目录可配置或每次运行复制，或部署层绕开）；另有孤儿容器清理在容器 pid 命名空间里会误判。
-  - 141、143–151、153–156：已建票未派。起草时发现的问题已按 decisions.md Q8 处理；"留给下一个会话"四条见 decisions.md 末尾。
+  - 141、143–151、153–155、157–162：已建票未派。起草时发现的问题已按 decisions.md Q8 和 settings 细节 1–18 处理；"留给下一个会话"四条见 decisions.md。
+  - **派工顺序**（按依赖）：先 141（product-config 验收测试，人审合入）、140/142/152 的 PR 收尾；然后 143 → 144、145、146 → 147、148、149、150；cloud-deploy 151（等 143）→ 153（等 144、146）→ 154、155；settings 157（等 143）→ 158（等 144）→ 159（等 153、158）→ 160、161 → 162。验收测试工单（141、151、157）都要人审后合入，之后的实现工单不能改它们。
+  - 派工前要人审的契约：141、151、157 各自列出的契约（157 含临时覆盖的语法、Cookie 细节、路由）。
 - 派工前提醒：本机 main 不能有未推送提交（`-w` 从 `origin/main` 建 worktree）；工单 agent 写不了主 checkout，回复由主会话抄进工单；前端工单（149、156）不用 Codex，派 Opus 审。
 
 ### 要人处理的本机清理

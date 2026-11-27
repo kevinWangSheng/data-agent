@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 Blocked by: product-config 144, product-config 146, 151
-Spec: ../spec.md（Implementation Decisions（Q7））；决定：`.scratch/product-config/decisions.md` Q8
+Spec: ../spec.md（Implementation Decisions（Q7））；决定：`.scratch/product-config/decisions.md` Q8；`docs/adr/0012-settings-ui-and-platform-identity.md`；`.scratch/product-config/decisions.md`"建 settings 工单时主会话定的细节"第 1 条
 Claimed by: —
 Branch: —
 
@@ -10,14 +10,14 @@ Branch: —
 
 照 spec Q7 和 `decisions.md` Q8：
 - 部署模式：`[server].mode = "local" | "cloud"`，也可由环境变量 `DATA_AGENT_MODE` 给。
-- 网页的 bearer 令牌 `DATA_AGENT_WEB_TOKEN`：任何模式下，没令牌都拒绝监听非本机地址。
+- 网页的 bearer 令牌 `DATA_AGENT_ADMIN_TOKEN`（权限 = 组织管理员；没有单独的 `DATA_AGENT_WEB_TOKEN`，定的细节第 1 条）：任何模式下，没令牌都拒绝监听非本机地址。
 - cloud 下沙箱后端为 `local` 时拒绝启动。
 - 联网：cloud 默认关，配置文件可打开；单次运行不能超过配置，超过就拒绝（409，`run` 退出 2）。
 - cloud 下 `dbt_target` 锁定为 `scratch`；和命令行参数冲突时报错拒绝。
-- 运行子进程的环境去掉 `DATA_AGENT_WEB_TOKEN`。
+- 运行子进程的环境去掉 `DATA_AGENT_ADMIN_TOKEN`。
 - 两种模式都有 `GET /healthz`，返回 `{"ready": true}`。
 
-`local`（默认）其余行为不变。151 里标 `TICKET_153` 的测试全部转绿。Cookie 换取、前端输令牌页面、表单联网默认值是 156 的，不在本工单。
+`local`（默认）其余行为不变。151 里标 `TICKET_153` 的测试全部转绿。网页登录（Sign in with Slack、用 `DATA_AGENT_ADMIN_TOKEN` 换签名会话 Cookie）是 settings 159 的，登录页和表单联网默认值是 settings 160 的（ADR-0012；cloud-deploy 156 已作废），不在本工单。
 
 ## Authority
 
@@ -30,7 +30,7 @@ Branch: —
   - `tests/`（除 `tests/acceptance/`）。
 - Must not edit：
   - `tests/acceptance/`。唯一例外：删掉 151 文件里的 `TICKET_153` 标记，以及因此没用了的 import 或定义（AGENTS.md 硬规矩）。断言、夹具、输入一字不改。
-  - `web/src/`（前端归 156）、`evals/`、`skills/`、`sandbox-image/`。
+  - `web/src/`（前端归 settings 160）、`evals/`、`skills/`、`sandbox-image/`。
   - `src/data_agent/agent.py`：端点不在本工单（Q8 人定 5）；`config` 事件是 146 的。
   - `Dockerfile`、`deploy/`、`docs/`（文档归 155）。
   - 154 的 git 来源代码。
@@ -44,9 +44,10 @@ Branch: —
 
 - **决定**：
   - spec `.scratch/cloud-deploy/spec.md`"Implementation Decisions（Q7）"。
-  - `.scratch/product-config/decisions.md` Q7，以及 **Q8**（"人定的 5 个"第 3–5 条；"主会话定的实现细节"的 `[server]`、`[policy]`、云端三条）。两者不一致时以 Q8 为准。
+  - `.scratch/product-config/decisions.md` Q7，以及 **Q8**（"人定的 5 个"第 4、5 条；"主会话定的实现细节"的 `[server]`、`[policy]`、云端三条）。两者不一致时以 Q8 为准。
+  - **ADR-0012** 取代 Q7 的"网页：不登录"和 Q8"人定的 5 个"第 3 条（输令牌换 Cookie）：网页登录与会话 Cookie 是 settings 159 的；令牌只有一个 `DATA_AGENT_ADMIN_TOKEN`，既是 bearer 也是没接 Slack 时组织管理员的登录凭据（`.scratch/product-config/decisions.md`"建 settings 工单时主会话定的细节"第 1 条）。Q7、Q8 里写 `DATA_AGENT_WEB_TOKEN` 的地方都读作 `DATA_AGENT_ADMIN_TOKEN`。
   - ADR-0011 第 5 条；ADR-0010 Update 2026-11-27。
-- **验收测试**：151 的 `tests/acceptance/test_cloud_startup.py`、`test_cloud_web_token.py`、`test_cloud_locks.py` 里标 `TICKET_153` 的那些。契约 1、2 见 151 的测试 docstring；人审结论写在 151 的 Comments 里。标 `TICKET_156` 的不是本工单的。
+- **验收测试**：151 的 `tests/acceptance/test_cloud_startup.py`、`test_cloud_web_token.py`、`test_cloud_locks.py` 里标 `TICKET_153` 的那些。契约 1、2 见 151 的测试 docstring；人审结论写在 151 的 Comments 里。Cookie 与联网默认值的测试已按 ADR-0012 移到 settings 157（标 `TICKET_159`、`TICKET_160`），不是本工单的。
 - **配置层**：
   - `[server]` 的 host、port、runs_dir 由 144 接到 `data-agent web`（Q8）；本工单只加 `mode`。
   - `[policy]` 和命令行参数冲突时报错拒绝（Q8）。cloud 的收紧尽量落成"cloud 下 `[policy]` 等节的默认值不同"，复用 143/144 的锁定机制，不另写一套。
@@ -55,12 +56,12 @@ Branch: —
   - 监听地址常量是 `WEB_HOST`（`src/data_agent/cli.py:37-38`），在 `uvicorn.run` 处使用（`cli.py:608`），144 改成从 `[server].host` 读。启动错误都经 `parser.error` 退出 2（`serve_web`，`cli.py:534-600`）。
   - `create_app` 的签名被之前的验收测试钉住（`src/data_agent/web/app.py:73-79`），只能往后加带默认值的参数。
   - API 路由在 `app.py:107-198`。UI 兜底路由（`app.py:210-224`）会吃掉 `/healthz`，所以 `/healthz` 要注册在 `serve_ui`（`app.py:200`）之前。
-  - UI 页面和 `/assets/*` 不要凭据：156 的输令牌页面要能打开（151 契约 2）。
+  - UI 页面和 `/assets/*` 不要凭据：settings 159/160 的登录页要能打开（151 契约 2）。
   - 联网：请求体默认 `network=True`（`app.py:52`、`:61`）。launcher 拼 `--network`（`web/launcher.py:179`），对话拼 `--network`（`web/conversations.py:143`）。IM 的回合不传 `network`（`im/adapter.py:302`），落到 `conversations.py:97` 的默认 `True`。
   - 140 正在给 `data-agent web` 加 `--network/--no-network`：关时要求联网的请求得到 409，IM 跟随。cloud 的联网上限接在 140 的同一处，不另写；认领时看 140 合入的样子。
   - dbt：网页总传 `--dbt-target scratch`（`launcher.py:178`），`run` 的默认值 140 在改（`cli.py:344`）。
   - 沙箱：网页总用 docker（`launcher.py:50`）；`run` 的 `--sandbox` 默认 docker（`cli.py:343`）。
-  - 运行子进程由 `serve_web` 的 `start_run` 起（`cli.py:573-589`）。带 `--im` 时它已经用 `im_config.run_env` 去掉 IM 令牌的变量（`im/config.py:127-132`）。`DATA_AGENT_WEB_TOKEN` 照这个做法去掉，不带 `--im` 时也去掉。
+  - 运行子进程由 `serve_web` 的 `start_run` 起（`cli.py:573-589`）。带 `--im` 时它已经用 `im_config.run_env` 去掉 IM 令牌的变量（`im/config.py:127-132`）。`DATA_AGENT_ADMIN_TOKEN` 照这个做法去掉，不带 `--im` 时也去掉。
   - 端点：cloud 照旧认 `DATA_AGENT_BASE_URL`（`agent.py:1237-1246`，部署层）。单次运行现在本来就改不了端点，不改代码、不写测试（Q8 人定 5）。
   - IM 名单为空、缺 `${VAR}`：143 起在所有模式都拒绝（Q8），151 写成守门测试，本工单不用另做。
 - **上游先例**：
@@ -69,11 +70,11 @@ Branch: —
 - **令牌**：
   - 比较用常数时间（`hmac.compare_digest`）。
   - 令牌的值不进日志、错误信息、事件文件、运行子进程的参数和环境。
-  - 鉴权要写成一个函数，156 加 Cookie 时在同一处扩展。
+  - 鉴权要写成一个函数，settings 159 加 Cookie 会话时在同一处扩展。
 
 ## Acceptance
 
-- [ ] `tests/acceptance/test_cloud_startup.py`、`test_cloud_web_token.py`、`test_cloud_locks.py` 里标 `TICKET_153` 的测试去掉标记后通过；守门测试仍通过；`TICKET_156` 的仍是预期失败
+- [ ] `tests/acceptance/test_cloud_startup.py`、`test_cloud_web_token.py`、`test_cloud_locks.py` 里标 `TICKET_153` 的测试去掉标记后通过；守门测试仍通过
 - [ ] `local` 模式不变：已有的 `tests/acceptance/test_web_api.py`、`test_chat_api.py`、`test_im_*.py`、`test_seam_a_run_cli.py` 不改就通过。143/141 已改过调用方式的，以合入的为准
 - [ ] 令牌的常数时间比较、日志和异常文字不含令牌值，各有单元测试（`tests/` 下，不在 `tests/acceptance/`）
 - [ ] 最终回复列出每条收紧的实际表现（报错文字、409 的 detail、`/healthz` 响应），供 155 写进 `docs/deploy.md`
@@ -114,3 +115,5 @@ Branch: —
 ## Comments
 
 - 2026-11-27（主会话建票）：cloud-deploy 的部署模式开关。等 product-config 144、146 和本 spec 的验收测试 151 合入。改动在后端（`src/`），照常跑 `da-review` 和 `eng:code-review`。建票时发现的问题按 `decisions.md` Q8 定。
+- 2026-11-27（主会话）：按 ADR-0012 调整：网页鉴权里的浏览器登录与会话 Cookie 改由 settings 159 提供，登录页和联网默认值由 settings 160 做（156 作废）；本工单的 bearer `DATA_AGENT_WEB_TOKEN`、启动检查、联网与锁定、`/healthz` 不变。改了 Goal 末句、Authority 的 `web/src/` 归属、Context 里三处 156 的引用、Acceptance 去掉 `TICKET_156`。
+- 2026-11-27（主会话）：按 ADR-0012 调整：按"建 settings 工单时主会话定的细节"第 1 条，bearer 令牌改用 `DATA_AGENT_ADMIN_TOKEN`（权限 = 组织管理员），不再有 `DATA_AGENT_WEB_TOKEN`；运行子进程的环境去掉 `DATA_AGENT_ADMIN_TOKEN`。Context 里过时的 Q7"不登录"和 Q8 人定第 3 条改指 ADR-0012。

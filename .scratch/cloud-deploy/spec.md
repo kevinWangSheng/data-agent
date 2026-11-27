@@ -11,13 +11,13 @@
 - `[server].mode = "local" | "cloud"`（默认 `local`，行为照旧）。`cloud` 默认收紧有风险的选项。
 - 一个镜像和一份 `docker-compose.yml` 示例：data-agent 容器挂 Docker socket 起沙箱容器，运行记录放持久卷。
 - Skill、说明文件、数据源文档可以写成 git 地址，启动时拉、按间隔再拉。
-- 一期不做登录、多用户、管理界面加数据库。
+- 登录、设置界面、按平台身份的权限见 `.scratch/settings/spec.md`（ADR-0012）；本 spec 只管部署。
 
 ## Implementation Decisions（Q7）
 
 `mode = "cloud"` 时：
 
-- **网页**：要访问令牌 `DATA_AGENT_WEB_TOKEN`（请求带 `Authorization: Bearer`）；没设令牌时拒绝监听非本机地址（照 ktx `ktx mcp` 的做法，调研附录 A）。`local` 模式不变。
+- **网页**：要登录（ADR-0012：Sign in with Slack，或没接 Slack 时 `DATA_AGENT_ADMIN_TOKEN`；脚本用同一个令牌作 bearer）；没设令牌时拒绝监听非本机地址（照 ktx `ktx mcp` 的做法，调研附录 A）。`local` 模式不变。
 - **IM**：允许用户名单（`[im.<平台>]`）为空就拒绝启动。
 - **密钥**：配置里引用的 `${VAR}` 缺一个就拒绝启动，报出缺哪个变量。
 - **联网**：默认关，可在配置里打开；`local` 模式照 ADR-0010 默认开。
@@ -38,7 +38,7 @@
 | 153 | `[server].mode`：cloud 下的令牌、监听地址、联网默认、`policy` 锁定、`/healthz` | 144、146、151 |
 | 154 | 上下文从 git：git 地址 → 本地路径、浅克隆、`refresh`、原子切换、失败回退 | 143、151、152 |
 | 155 | 镜像、Compose 示例、`docs/deploy.md`；主会话在一台机器上按文档部署一次、IM 和网页各跑一题 | 152、153 |
-| 156 | 网页令牌与联网默认（前端为主）：输令牌页、HttpOnly Cookie、接口和事件流接受 Cookie 或 bearer；联网勾选默认值跟服务器配置；前端由 Opus 审 | 151、153 |
+| ~~156~~ | 作废（wontfix），由 settings 159、160 取代（ADR-0012）。原：网页令牌与联网默认（前端为主）：输令牌页、HttpOnly Cookie、接口和事件流接受 Cookie 或 bearer；联网勾选默认值跟服务器配置；前端由 Opus 审 | 151、153 |
 
 ## Testing Decisions
 
@@ -59,16 +59,16 @@
 
 ## Update 2026-11-27（建票后，`.scratch/product-config/decisions.md` Q8）
 
-- **网页令牌**：浏览器的 `EventSource`（`web/src/data/source.ts:207`）设不了请求头，所以打开网页先输一次令牌，服务器回 HttpOnly Cookie，接口接受 Cookie 或 bearer 请求头；前端在新工单 156。
-- **联网**：cloud 默认关，配置文件可打开；单次运行不能超过配置（关了联网时请求联网得 409，同工单 140）；表单默认值跟服务器配置（156）。
+- **网页令牌**（已被 ADR-0012 取代：网页登录改为 Sign in with Slack，没接 Slack 时用 `DATA_AGENT_ADMIN_TOKEN`；`DATA_AGENT_WEB_TOKEN` 取消，见 settings spec）：浏览器的 `EventSource`（`web/src/data/source.ts:207`）设不了请求头，所以打开网页先输一次令牌，服务器回 HttpOnly Cookie，接口接受 Cookie 或 bearer 请求头；前端在新工单 156。
+- **联网**：cloud 默认关，配置文件可打开；单次运行不能超过配置（关了联网时请求联网得 409，同工单 140）；表单默认值跟服务器配置（原 156，现 settings 160）。
 - **端点**：cloud 认 `DATA_AGENT_BASE_URL`（部署层）；"单次运行不能改端点"现在本来就成立，不单写测试。
-- **所有模式**：IM 名单为空、缺 `${VAR}` 都拒绝启动（守门测试）；监听非本机地址都要令牌；`/healthz` 返回 `{"ready": true}`；部署模式环境变量 `DATA_AGENT_MODE`；运行子进程的环境去掉 `DATA_AGENT_WEB_TOKEN`。
+- **所有模式**：IM 名单为空、缺 `${VAR}` 都拒绝启动（守门测试）；监听非本机地址都要令牌；`/healthz` 返回 `{"ready": true}`；部署模式环境变量 `DATA_AGENT_MODE`；运行子进程的环境去掉 `DATA_AGENT_ADMIN_TOKEN`、`DATA_AGENT_SESSION_KEY`、OIDC 密钥。
 - **git 来源**：克隆放 `<runs_dir>/.cache/git`，服务器进程统一拉，运行读这份；刷新先克隆到新目录再原子切换；令牌经 `GIT_ASKPASS`，不进 URL 和 `.git/config`；`[server].refresh` 由 154 补进配置格式；154 只负责 git 地址 → 本地路径。
 - **镜像**：Compose 同时构建产品镜像和沙箱镜像（`DockerSandbox` 用 `--pull never`）；产品镜像装 dbt。
 
 ## Out of Scope
 
-- 登录、多用户、权限、管理界面加数据库（ADR-0011 第 5 条）。
+- 登录、设置界面、权限：`.scratch/settings/spec.md`（ADR-0012 取代 ADR-0011 第 5 条）。
 - Kubernetes / Helm。
 - 托管的 secret 管理器（AWS、k8s secret 引用）；一期只用环境变量。
 

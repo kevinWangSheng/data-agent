@@ -134,7 +134,7 @@
 
 ## Out of Scope
 
-- 云端部署（cloud-deploy spec）。登录、多用户、管理界面加数据库。
+- 云端部署（cloud-deploy spec）。设置界面、数据库、登录与权限（settings spec，ADR-0012）。
 - 新数据库类型（只支持 DuckDB、Postgres，`docs/plan.md` §1）。
 - 改 Skill 内容提照做率（按轨迹另开）。
 

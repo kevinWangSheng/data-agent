@@ -1,6 +1,6 @@
 # 156 — 网页：输令牌换 HttpOnly Cookie；联网勾选跟随服务器配置
 
-Status: ready-for-agent
+Status: wontfix
 Blocked by: 151, 153
 Spec: ../spec.md（Implementation Decisions"网页"）；决定：`.scratch/product-config/decisions.md` Q8"人定的 5 个"第 3、4 条
 Claimed by: —
@@ -114,3 +114,4 @@ Branch: —
 ## Comments
 
 - 2026-11-27（主会话建票）：`decisions.md` Q8 人定第 3、4 条新增的工单：浏览器带不了 bearer 请求头（`EventSource`），改用输令牌换 HttpOnly Cookie；联网勾选跟随服务器配置。以前端为主，审查照前端工单（不用 Codex，主会话派干净上下文的 Opus 审 PR）。
+- 2026-11-27（主会话）：由 settings 159、160 取代（ADR-0012）。令牌换 Cookie 改为 159 的 Sign in with Slack / `DATA_AGENT_ADMIN_TOKEN` 换签名会话 Cookie；本票的"联网勾选跟随服务器配置"（`/api/options` 的联网默认值、`NewRun.tsx`、`Conversation.tsx` 的勾选默认值、409 的 `detail` 显示）并入 `.scratch/settings/issues/160-settings-page.md`（Goal 末条、Authority、Acceptance 的 vitest）；151 里原标 `TICKET_156` 的测试移到 `.scratch/settings/issues/157-settings-acceptance-tests.md`（`TICKET_159`、`TICKET_160`）。
