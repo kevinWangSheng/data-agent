@@ -9,12 +9,14 @@
                database table. Prints each database's count on each side, nothing else of a record
                (ADR-0004: holdout questions are not looked at)
     tasks      the Harbor tasks of the public JSONL into --out, the answers from --answers (an empty
-               file: no task can be scored); the write credential comes from $LSB_PG_WRITE_PASSWORD
+               file: no task can be scored); the write credential comes from $LSB_PG_WRITE_PASSWORD;
+               --inline-assets also writes each database's assets into the instructions (ticket 139)
     prepare    on the server (`da-remote benchmarks`): fetch, the dump (downloaded once, its sha256
                recorded then and compared on every later call; unpacked), the 18 database images
                and the `main` image (`docker build`, the write credential as a build secret from
                $LSB_PG_WRITE_PASSWORD), each image's table and column counts summed against
-               upstream's, then the tasks; steps already done are skipped
+               upstream's, then the tasks (ROOT/tasks) and the same tasks with the assets in their
+               instructions (ROOT/tasks-inline, ticket 139); steps already done are skipped
     check      on the server (`da-remote check`): readiness lines `ok`/`FAIL`
     readonly   on the server: the read-only checks of one database image (pass/fail lines only)
 
@@ -59,6 +61,10 @@ EXPECTED_COLUMNS = 2286
 # Written by Dockerfile.db's bootstrap into each image: "<tables> <columns>" of its template.
 COUNTS_FILE = "/opt/livesqlbench/counts.txt"
 NO_ANSWERS = "no gold answers: the tasks can only be smoke-tested, never scored"
+# Under prepare's ROOT: the tasks, and the same tasks with the assets in their instructions
+# (ticket 139, spec D3), for `ablate --tasks-dir`.
+TASKS_DIR = "tasks"
+INLINE_TASKS_DIR = "tasks-inline"
 
 type Run = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -144,14 +150,22 @@ def write_password() -> str:
     return password
 
 
-def generate(public: Path, answers: Path, db_assets: Path, out: Path) -> list[str]:
+def generate(
+    public: Path, answers: Path, db_assets: Path, out: Path, *, inline_assets: bool = False
+) -> list[str]:
     tasks = livesqlbench.generate_tasks(
-        public, answers, db_assets, out, write_password=write_password()
+        public,
+        answers,
+        db_assets,
+        out,
+        write_password=write_password(),
+        inline_assets=inline_assets,
     )
     gold = sum(livesqlbench.has_gold_answer(t) for t in tasks)
-    lines = [f"tasks: {len(tasks)} in {out}, {gold} with a gold answer"]
+    label = "inline tasks" if inline_assets else "tasks"
+    lines = [f"{label}: {len(tasks)} in {out}, {gold} with a gold answer"]
     if gold == 0:
-        lines.append(f"tasks: {NO_ANSWERS}")
+        lines.append(f"{label}: {NO_ANSWERS}")
     return lines
 
 
@@ -370,7 +384,11 @@ def prepare(root: Path, answers: Path, run: Run = subprocess.run) -> None:
     if not answers.is_file():
         answers = root / "no-answers.jsonl"
         answers.write_text("")
-    for line in generate(data / PUBLIC_FILE, answers, data, root / "tasks"):
+    for line in generate(data / PUBLIC_FILE, answers, data, root / TASKS_DIR):
+        say(line)
+    for line in generate(
+        data / PUBLIC_FILE, answers, data, root / INLINE_TASKS_DIR, inline_assets=True
+    ):
         say(line)
 
 
@@ -415,16 +433,21 @@ def check(root: Path, run: Run = subprocess.run) -> int:
             text=True,
         )
         line(probe.returncode == 0, f"LiveSQLBench image {main} imports psycopg and json_repair")
-    tasks = sorted(p for p in (root / "tasks").glob(f"{livesqlbench.TASK_PREFIX}*") if p.is_dir())
-    gold = sum(livesqlbench.has_gold_answer(t) for t in tasks)
-    line(
-        len(tasks) == livesqlbench.DEV_SIZE + livesqlbench.HOLDOUT_SIZE,
-        f"LiveSQLBench tasks: {len(tasks)} in {root / 'tasks'}, {gold} with a gold answer"
-        + ("" if gold else f" ({NO_ANSWERS})"),
-    )
-    # Tasks generated before the image files changed name images of the old tag.
-    stale = sum(task_image(t) != main for t in tasks)
-    line(not stale, f"LiveSQLBench tasks naming another image than {main}: {stale}")
+    # The inline tasks only once prepare has written them (ticket 139): a server prepared before
+    # that has none, and that is no failure.
+    for name, label in ((TASKS_DIR, "tasks"), (INLINE_TASKS_DIR, "inline tasks")):
+        if name == INLINE_TASKS_DIR and not (root / name).is_dir():
+            continue
+        tasks = sorted(p for p in (root / name).glob(f"{livesqlbench.TASK_PREFIX}*") if p.is_dir())
+        gold = sum(livesqlbench.has_gold_answer(t) for t in tasks)
+        line(
+            len(tasks) == livesqlbench.DEV_SIZE + livesqlbench.HOLDOUT_SIZE,
+            f"LiveSQLBench {label}: {len(tasks)} in {root / name}, {gold} with a gold answer"
+            + ("" if gold else f" ({NO_ANSWERS})"),
+        )
+        # Tasks generated before the image files changed name images of the old tag.
+        stale = sum(task_image(t) != main for t in tasks)
+        line(not stale, f"LiveSQLBench {label} naming another image than {main}: {stale}")
     return fails
 
 
@@ -645,7 +668,9 @@ def run_step(args: argparse.Namespace) -> int:
         ):
             say(line)
     elif args.step == "tasks":
-        for line in generate(args.public, args.answers, args.db_assets, args.out):
+        for line in generate(
+            args.public, args.answers, args.db_assets, args.out, inline_assets=args.inline_assets
+        ):
             say(line)
     elif args.step == "prepare":
         prepare(args.root, args.answers)
@@ -677,6 +702,12 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     p.add_argument("--answers", type=Path, required=True, help="JSONL of the hidden fields")
     p.add_argument("--db-assets", type=Path, required=True, help="<db>/<db>_*.{json,jsonl,txt}")
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument(
+        "--inline-assets",
+        action="store_true",
+        help="also write each database's schema, column meanings and knowledge base into its "
+        "tasks' instructions (ticket 139)",
+    )
     p = steps.add_parser("prepare", help="on the server: data, dump, images, tasks")
     p.add_argument("--root", type=Path, required=True)
     p.add_argument("--answers", type=Path, required=True, help="used when it exists")

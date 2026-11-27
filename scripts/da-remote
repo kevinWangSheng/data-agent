@@ -531,7 +531,9 @@ code=0
 
 echo "benchmarks: ready. data-eng-bench: --tasks-dir ../da-benchmarks/data-eng-bench/tasks;" \
   "DAB: --dab-root ../da-benchmarks/DataAgentBench;" \
-  "LiveSQLBench: --tasks-dir ../da-benchmarks/livesqlbench/tasks (paths from the repo, where runs start)"
+  "LiveSQLBench: --tasks-dir ../da-benchmarks/livesqlbench/tasks, or" \
+  "../da-benchmarks/livesqlbench/tasks-inline for its assets in the instructions" \
+  "(paths from the repo, where runs start)"
 EOF
 }
 

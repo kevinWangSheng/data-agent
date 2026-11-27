@@ -166,10 +166,33 @@ def toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def instruction(record: Mapping[str, Any]) -> str:
+def asset_sections(db_assets: Path, db: str) -> str:
+    """A database's public assets as upstream's baseline prompt gives them (LiveSQLBench
+    baseline/src/prompt.py `assistant_prompt` and prompt_generator.py `load_db_data_if_needed`,
+    MIT, written anew): the schema file as it is, the column meanings with their keys lower-cased,
+    and the knowledge base as a list of `id`, `knowledge`, `description` and `definition`, one
+    entry per knowledge name (upstream keys a dict by name, so a repeated name keeps its first
+    place and its last record), each `json.dumps(..., indent=2)` under upstream's headings."""
+    base = db_assets / db
+    schema = (base / f"{db}_schema.txt").read_text(encoding="utf-8")
+    raw = json.loads((base / f"{db}_column_meaning_base.json").read_text(encoding="utf-8"))
+    meanings = {str(k).lower(): v for k, v in raw.items()}  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType, reportUnknownMemberType]
+    by_name = {r["knowledge"]: r for r in read_jsonl(base / f"{db}_kb.jsonl")}
+    visible = ("id", "knowledge", "description", "definition")
+    knowledge = [{k: r[k] for k in visible if k in r} for r in by_name.values()]
+    return (
+        f"# Database Schema:\n{schema}\n\n"
+        f"# Column Meanings:\n{json.dumps(meanings, indent=2)}\n\n"
+        f"# External Knowledge:\n{json.dumps(knowledge, indent=2)}\n\n"
+    )
+
+
+def instruction(record: Mapping[str, Any], db_assets: Path | None = None) -> str:
     """The task text: the database, the question and the public assets, and upstream's answer
     format (README_TASK.md); nothing about how to solve it (spec U10), and no `conditions`,
-    `external_knowledge` or credential."""
+    `external_knowledge` or credential. With `db_assets` (ticket 139, spec D3) the assets' content
+    from there (`asset_sections`) also follows the files' list; without it the text is the one
+    before that ticket, byte for byte."""
     db, iid = record["selected_database"], record["instance_id"]
     example = json.dumps({"instance_id": iid, "predicted_sql": ["<SQL1>", "<SQL2>", "..."]})
     return (
@@ -180,7 +203,8 @@ def instruction(record: Mapping[str, Any]) -> str:
         f"- `/app/db_assets/{db}_schema.txt`: its schema and sample rows\n"
         f"- `/app/db_assets/{db}_column_meaning_base.json`: what its columns mean\n"
         f"- `/app/db_assets/{db}_kb.jsonl`: the knowledge base about the database\n\n"
-        "## Output format (mandatory)\n\n"
+        + ("" if db_assets is None else asset_sections(db_assets, db))
+        + "## Output format (mandatory)\n\n"
         "Write the SQL that answers the question to the file `/app/pred.json`, with exactly "
         "this JSON:\n\n"
         f"```json\n{example}\n```\n\n"
@@ -288,7 +312,12 @@ exec python3 /tests/livesqlbench_verifier.py
 
 
 def write_task(
-    out: Path, record: Mapping[str, Any], answer: Mapping[str, Any] | None, db_assets: Path
+    out: Path,
+    record: Mapping[str, Any],
+    answer: Mapping[str, Any] | None,
+    db_assets: Path,
+    *,
+    inline_assets: bool = False,
 ) -> Path:
     iid, db = str(record["instance_id"]), str(record["selected_database"])
     if not DATABASE_NAME.fullmatch(db):
@@ -312,7 +341,9 @@ def write_task(
     blob = "\n\n".join(str(s) for s in preprocess if str(s).strip())  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
     (environment / "db_init" / "preprocess.sql").write_text(blob + "\n")
     (environment / "docker-compose.yaml").write_text(compose(db))
-    (task_dir / "instruction.md").write_text(instruction(record))
+    (task_dir / "instruction.md").write_text(
+        instruction(record, db_assets if inline_assets else None)
+    )
     (task_dir / "task.toml").write_text(task_toml(record, answer is not None))
     tests = task_dir / "tests"
     tests.mkdir()
@@ -327,7 +358,13 @@ def write_task(
 
 
 def generate_tasks(
-    public: Path, answers: Path, db_assets: Path, out: Path, *, write_password: str
+    public: Path,
+    answers: Path,
+    db_assets: Path,
+    out: Path,
+    *,
+    write_password: str,
+    inline_assets: bool = False,
 ) -> list[Path]:
     """Write one Harbor task directory `out/<task_id>` per `Query` record of the public JSONL
     `public` and return their paths; a `Management` record gets none (spec Q2: no CRUD tasks).
@@ -348,13 +385,23 @@ def generate_tasks(
     `[verifier] env`, which Harbor resolves from the host when verifying; no task file holds it
     (checked here). The agent's container (`environment/`, `[environment] env`) gets neither it,
     nor that variable's name, nor upstream's default `123123` (spec U6).
+
+    `inline_assets` (ticket 139, spec D3; off by default) also writes the assets' content into
+    each instruction (`asset_sections`), the files staying where they are; every other file of
+    the task is the same as with it off.
     """
     if not write_password:
         raise ValueError("write_password is empty")
     hidden = answer_index(answers)
     out.mkdir(parents=True, exist_ok=True)
     tasks = [
-        write_task(out, record, hidden.get(str(record["instance_id"])), db_assets)
+        write_task(
+            out,
+            record,
+            hidden.get(str(record["instance_id"])),
+            db_assets,
+            inline_assets=inline_assets,
+        )
         for record in query_records(read_jsonl(public))
     ]
     for task_dir in tasks:
