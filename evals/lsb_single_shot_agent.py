@@ -25,12 +25,17 @@ of a `version` and a `result` event, the fields `evals spend` and `evals report`
 totalled and billed (off-peak half price) as the data agent's runs are.
 
 Errors: a failed model call raises Harbor's error for its HTTP status (evals.harbor_agent
-`status_error`) or, for a dropped connection, `ApiConnectionClosedError`, so the job config's retry
-list reruns the transient ones; a timed-out request is not retried, as for the data agent. No
-`pred.json` is written then. A reply with no SQL in it (one cut off while thinking) is the
-model's own failure: `pred.json` is written with an empty list, which the verifier scores 0.
+`status_error`; a 400, the endpoint refusing the parameters, as `UnsupportedModelParametersError`,
+a config error that stops the run), for a dropped connection `ApiConnectionClosedError`, and for a
+call that did not finish within `CALL_DEADLINE_S` (retries included, under the task's limit)
+`ApiResponseStalledError`, so the job config's retry list reruns the transient ones and a report
+counts them as infrastructure. Each is raised with the key masked and without the SDK's exception
+chained (Harbor writes it into the trial). No `pred.json` is written then. A reply with no SQL
+in it (one cut off while thinking) is the model's own failure: `pred.json` is written with an
+empty list, which the verifier scores 0.
 """
 
+import asyncio
 import json
 import re
 import tempfile
@@ -41,7 +46,11 @@ from typing import Any, override
 
 import anthropic
 from harbor.agents.base import BaseAgent
-from harbor.agents.installed.base import ApiConnectionClosedError, NonZeroAgentExitCodeError
+from harbor.agents.installed.base import (
+    ApiConnectionClosedError,
+    ApiResponseStalledError,
+    NonZeroAgentExitCodeError,
+)
 from harbor.agents.options import AgentOptions
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext, ModelUsage
@@ -68,8 +77,10 @@ THINKING: dict[str, Any] = {"type": "adaptive", "display": "updates"}
 OUTPUT_CONFIG: dict[str, Any] = {"effort": "high"}
 TEMPERATURE = 0
 MODEL_RETRIES = 2
-# Under the task's agent limit (evals.livesqlbench AGENT_TIMEOUT_SEC, 1800 s).
-MODEL_TIMEOUT_S = 1500.0
+# The whole call, retries included, ends under the task's agent limit (evals.livesqlbench
+# AGENT_TIMEOUT_SEC, 1800 s), leaving time to read the assets and write pred.json.
+CALL_DEADLINE_S = 1500.0
+MODEL_TIMEOUT_S = CALL_DEADLINE_S
 ASSETS_DIR = "/app/db_assets"
 PREDICTION = f"/app/{LSB_PREDICTION}"
 EVENTS_DIR = "events"
@@ -151,16 +162,23 @@ class SingleShot(BaseAgent):
         )
 
     async def _call(self, model: str, prompt: str) -> anthropic.types.Message:
+        create = self._client().messages.create(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+            thinking=THINKING,  # pyright: ignore[reportArgumentType]
+            output_config=OUTPUT_CONFIG,  # pyright: ignore[reportArgumentType]
+            # Not a parameter of this SDK's create(); the endpoint takes it in the body.
+            extra_body={"temperature": TEMPERATURE},
+        )
         try:
-            return await self._client().messages.create(
-                model=model,
-                max_tokens=MAX_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
-                thinking=THINKING,  # pyright: ignore[reportArgumentType]
-                output_config=OUTPUT_CONFIG,  # pyright: ignore[reportArgumentType]
-                # Not a parameter of this SDK's create(); the endpoint takes it in the body.
-                extra_body={"temperature": TEMPERATURE},
-            )
+            # One deadline over the SDK's retries too: past the task's limit Harbor would record
+            # AgentTimeoutError, which a report scores 0 (an agent failure) instead of rerunning.
+            return await asyncio.wait_for(create, timeout=CALL_DEADLINE_S)
+        except (TimeoutError, anthropic.APITimeoutError):
+            # The endpoint never answered: infrastructure, in the job config's retry list. Raised
+            # as Harbor's type, never as TimeoutError, which Harbor's own deadline catches.
+            error, message = ApiResponseStalledError, "the model call did not finish in time"
         # Harbor keeps the exception and its traceback in the trial (exception.txt): each is
         # raised again with the key masked and without the SDK's exception chained, which holds
         # the endpoint's response.
@@ -169,9 +187,6 @@ class SingleShot(BaseAgent):
                 UnsupportedModelParametersError if exc.status_code == 400 else RuntimeError
             )
             message = masked(f"HTTP {exc.status_code}: {exc}", self._api_key())
-        except anthropic.APITimeoutError:
-            # Not retried, as the data agent's timed-out request (evals.harbor_agent).
-            error, message = TimeoutError, "the model request timed out"
         except anthropic.APIConnectionError as exc:
             error, message = ApiConnectionClosedError, masked(str(exc), self._api_key())
         raise error(message) from None

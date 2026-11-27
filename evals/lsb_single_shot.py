@@ -59,16 +59,8 @@ from evals.ablate import (
     stop_reason,
 )
 from evals.harbor import Trial, event_files, load_trials, version_header
-from evals.harbor_agent import MANIFEST
 from evals.livesqlbench import BENCHMARK as LSB_BENCHMARK
-from evals.lsb_single_shot_agent import (
-    MAX_TOKENS,
-    OUTPUT_CONFIG,
-    TEMPERATURE,
-    THINKING,
-    dev_tasks,
-)
-from evals.report import TRIALS_PER_TASK, is_infra_error, verifier_failed
+from evals.report import REPO_MANIFEST, TRIALS_PER_TASK, is_infra_error, verifier_failed
 from evals.spend import STOP_FRACTION, STOP_PERCENT
 
 JOB = "single-shot"
@@ -81,7 +73,7 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
         "lsb-single-shot", help="LiveSQLBench's single-call baseline on the dev set (ticket 138)"
     )
     parser.add_argument("--tasks-dir", type=Path, required=True, help="the generated tasks")
-    parser.add_argument("--manifest", type=Path, default=MANIFEST)
+    parser.add_argument("--manifest", type=Path, default=REPO_MANIFEST)
     parser.add_argument("--split", choices=("dev",), required=True, help="dev only (ADR-0004)")
     parser.add_argument(
         "--task", action="append", default=[], help="a dev task to run (repeatable; default all)"
@@ -99,6 +91,8 @@ def tasks_to_run(args: argparse.Namespace) -> list[str]:
     task against the same list (`dev_tasks`, which refuses a manifest moving a held-out task into
     the dev set, ADR-0004)."""
     try:
+        from evals.lsb_single_shot_agent import dev_tasks  # imports Harbor: only when run
+
         tasks = dev_tasks(args.manifest)
     except ValueError as exc:
         raise Stop(str(exc)) from exc
@@ -113,6 +107,8 @@ def tasks_to_run(args: argparse.Namespace) -> list[str]:
 def check_request(out: Path, tasks: list[str], trials: int) -> None:
     """OUT holds one request: a finished job is reused, so other tasks or trials would meet a job
     that does not cover them."""
+    from evals.lsb_single_shot_agent import MAX_TOKENS, OUTPUT_CONFIG, TEMPERATURE, THINKING
+
     path = out / "request.json"
     now: dict[str, Any] = {
         "agent": "lsb-single-shot",

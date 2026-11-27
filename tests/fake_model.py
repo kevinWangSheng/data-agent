@@ -14,6 +14,7 @@ import csv
 import json
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ class FakeModel:
     stop_reason: str = "end_turn"
     thinking: str | None = None
     fail_status: int = 400  # the HTTP status of a failed batch
+    delay_s: float = 0.0  # how long the endpoint waits before it answers
     requests: list[dict[str, Any]] = field(default_factory=list)
     url: str = ""
 
@@ -50,6 +52,7 @@ def handler(model: FakeModel) -> type[BaseHTTPRequestHandler]:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             request = {"path": self.path, "headers": dict(self.headers), "body": body}
             model.requests.append(request)
+            time.sleep(model.delay_s)
             texts = model.texts(request)
             if not self.path.endswith("/v1/messages"):
                 self.reply(404, {"type": "error", "error": {"type": "not_found_error"}})

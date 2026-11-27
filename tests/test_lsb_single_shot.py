@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from harbor.agents.installed.base import ApiRateLimitError
+from harbor.agents.installed.base import ApiRateLimitError, ApiResponseStalledError
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import TaskConfig, TrialConfig
 
-from evals import ablate, lsb_baseline, lsb_single_shot, lsb_single_shot_agent
+from evals import ablate, lsb_baseline, lsb_single_shot, lsb_single_shot_agent, report
 from evals.ablate import evals_cli
 from evals.livesqlbench import instruction
 from evals.livesqlbench_verifier import read_prediction
@@ -247,6 +247,18 @@ def test_a_refused_call_is_a_config_error_without_the_key_or_the_response(tmp_pa
     assert "sk-fake" not in str(caught.value) and "HTTP 400" in str(caught.value)
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
     assert type(caught.value).__name__ in ablate.CONFIG_ERRORS
+
+
+def test_a_call_past_its_deadline_is_a_retried_infrastructure_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Not a TimeoutError, which Harbor's own deadline turns into AgentTimeoutError (scored 0)."""
+    monkeypatch.setattr(lsb_single_shot_agent, "CALL_DEADLINE_S", 0.3)
+    trial_dir, env, manifest = trial(tmp_path)
+    with serve(reply_with(REPLY, delay_s=2.0)) as fake, pytest.raises(ApiResponseStalledError):
+        run_agent(make_agent(trial_dir, manifest, fake.url), env)
+    assert "ApiResponseStalledError" not in report.NOT_RETRIED
+    assert not env.at("/app/pred.json").exists()
 
 
 def test_a_rate_limited_call_raises_harbors_retried_error_and_writes_no_prediction(
