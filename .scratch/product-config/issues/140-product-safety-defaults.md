@@ -3,8 +3,8 @@
 Status: ready-for-agent
 Blocked by: —
 Spec: 无（执行已有规矩的修正，不是新设计；人 2026-11-27 定先单独派，不等 product-config spec）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5.5) 2026-11-27
+Branch: worktree-140-product-safety-defaults
 
 ## Goal
 
@@ -15,10 +15,11 @@ Branch: —
 - May edit：
   - `src/data_agent/cli.py`：`run` 的 `--dbt-target` 默认值；`web` 子命令加服务器级联网开关；
   - `evals/harbor_agent.py`：dbt 任务显式传 `--dbt-target task`（只这一处）；
+  - `evals/jaffle.py`：`run` 命令显式传 `--dbt-target task`（只这一处，`:353-361`；2026-11-27 补）；
   - `src/data_agent/web/app.py`、`web/launcher.py`、`web/conversations.py`、`src/data_agent/im/adapter.py`：联网默认值从服务器设置来；
   - `src/data_agent/mcp_server.py`、`src/data_agent/db_facts.py`、`src/data_agent/context_tools.py`：目录查询排除别的运行的 `da_run_*`；
   - `tests/`（除 `tests/acceptance/`）；`docs/setup.md`、`README.md`：写明新的默认值和开关。
-- Must not edit：`tests/acceptance/`、`skills/`、`src/data_agent/agent.py`、`src/data_agent/configs/`、`evals/` 里除 `harbor_agent.py` 那一处以外的文件、`web/src/`（前端不动）、`.claude/`、`CODING_STANDARDS.md`、`AGENTS.md`、其他工单的文件。
+- Must not edit：`tests/acceptance/`、`skills/`、`src/data_agent/agent.py`、`src/data_agent/configs/`、`evals/` 里除 `harbor_agent.py`、`jaffle.py` 那两处以外的文件、`web/src/`（前端不动）、`.claude/`、`CODING_STANDARDS.md`、`AGENTS.md`、其他工单的文件。
 - Server access：none。
 - Spend cap：工单 agent $0（会话里不能 source 模型的 env 文件）；需要真实运行的部分交给主会话。
 
@@ -61,7 +62,7 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
+- Attempts: 1
 - Review rounds: 0
 - Model spend: $0
 - Outcome: —
@@ -70,3 +71,17 @@ Branch: —
 ## Comments
 
 - 2026-11-27（主会话建票）：审计（`docs/research/2026-11-27-product-config-audit.md`）查出的三处评测行为漏进产品。人定先单独派，不等 product-config spec。
+- 2026-11-27（工单 agent，opus-5.5）：碰到停止条件"发现别的评测入口靠 `task` 默认值，而改它要动 Authority 以外的文件"，没写代码就停下了。
+  - **已核实（读代码）：**
+    - `evals/jaffle.py:353-361` 拼的 `data-agent run` 命令不带 `--dbt-target`，也不带 `--sandbox`（所以用默认的 `docker`，dbt_execute 会挂上）。build 题走 `--type dbt`（`:45` `KINDS = {"query": "query", "build": "dbt"}`）。
+    - 每道题的 schema 是 `jaffle_<case id>`（`:343`），由题目工作区里的 `profiles.yml` 指定（`:344-345`）。判分在这个 schema 里查模型（`:376` `grade_model(gateway, schema, ...)`）。
+    - `scratch` 写到 `scratch_schema(run_id)` = `da_run_<run id>`（`src/data_agent/dbt_execute.py:73-78`、`DbtRun.of_run` `:217-222`）。
+  - **推断（没真实运行过）：** 默认值改成 `scratch` 后，jaffle 的 build 题会把模型建到 `da_run_*`，判分去 `jaffle_<id>` 找就找不到，所以会全挂。`check_outside` 不会报错：profiles 在 `case_dir/events/profiles`，工作区在 `case_dir/jaffle_shop`。
+  - **其他扫描：**
+    - `evals/`、`scripts/` 里只有 `harbor_agent.py` 和 `jaffle.py` 这两个 dbt 入口。
+    - `evals/` 里没有直接调用 `agent.run(...)` 的（引用 `data_agent.agent` 的都只拿 `git_commit`、`ConfigError` 之类）。另外，`agent.py:2134` 自己的默认值也是 `"task"`，改 CLI 默认值碰不到它。
+    - `tests/acceptance/` 和 `tests/test_eval_jaffle.py` 都没有钉住 `task` 默认值。
+  - **基线 `make check`（未改动）：** exit 0。pytest 3461 passed、3 skipped、79 deselected；web vitest 30 个文件、448 个测试全过。
+  - 第 2 项（服务器级联网开关）、第 3 项（隐藏别的运行的 `da_run_*`）和这个阻塞无关，主会话可以决定拆票还是一起放行。
+  - **建议修改 Authority：** 加一条"`evals/jaffle.py`：在 run 命令里显式传 `--dbt-target task`（只这一处）"。只改这一行就够，这次扫描没发现别的入口。
+- 2026-11-27（主会话）：建票时漏查 `evals/jaffle.py`，是建票的遗漏。Authority 补上 `evals/jaffle.py` 那一处（显式传 `--dbt-target task`），Status 回 `ready-for-agent`，在原分支 `worktree-140-product-safety-defaults` 上接着做全部三项。
