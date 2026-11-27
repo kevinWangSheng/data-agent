@@ -22,6 +22,8 @@ RUN uv sync --frozen --no-dev --no-install-project \
     && uv pip install --python /opt/venv \
         "dbt-core==1.10.23" "dbt-duckdb==1.10.0" "dbt-postgres==1.10.2"
 COPY src ./src
+# Baked Skills break the docker sandbox: DockerSandbox bind-mounts config.skills_dir, a path
+# the host daemon does not have (spike note, "155 的阻塞点"). Kept to show the gap.
 COPY skills ./skills
 # A named volume starts with the ownership of its mount point in the image.
 RUN mkdir /vol && chown 10001:10001 /vol

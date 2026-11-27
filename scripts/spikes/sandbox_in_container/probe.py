@@ -254,10 +254,11 @@ def q2_alternatives(skills: Path) -> None:
             workspace.mkdir(parents=True, exist_ok=True)
             (workspace / "marker.txt").write_text(f"{case}\n")
         except OSError as exc:
-            # The named volume lives on the Docker VM's disk (full on colima, 2026-11-27).
-            show(f"{case}: {label}", f"NOT RUN: could not write the workspace ({exc})")
-            not_run.append(f"Q2 ({case})")
-            continue
+            # The named volume lives on the Docker VM's disk (full on colima, 2026-11-27): no
+            # marker, so the sandbox gets the volume's root, which exists without a write.
+            show(f"{case}: could not write {workspace}", f"{exc}; using {workspace.parent}")
+            not_run.append("Q2 (volume-subpath)")
+            workspace = workspace.parent
         box = new_sandbox(case, workspace, skill_dir)
         try:
             done = box.execute("cat marker.txt; ls /skills | head -2", 30)
@@ -267,8 +268,7 @@ def q2_alternatives(skills: Path) -> None:
             ok, outcome = False, f"SandboxError: {exc}"
         show(f"{case}: {label}", outcome)
         answer(f"Q2 ({case})", ok, outcome.splitlines()[0][:200])
-    if "Q2 (vol)" in not_run:
-        not_run.append("Q2 (volume-subpath)")
+    if "Q2 (volume-subpath)" in not_run:
         return
     # A named volume does work when the mount names the volume, not a path: the change
     # DockerSandbox.start would need (`type=volume,...,volume-subpath=`, Docker API ≥ 1.45).
