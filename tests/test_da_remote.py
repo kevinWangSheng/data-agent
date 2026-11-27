@@ -1213,7 +1213,8 @@ def test_benchmarks_writes_the_livesqlbench_credential_and_prepares_its_tasks(be
     assert prepare in calls(bench, "uv")
     assert "LiveSQLBench answers: none at" in proc.stdout
     assert "tasks: 180 in tasks" in proc.stdout
-    assert "LiveSQLBench: --tasks-dir ../da-benchmarks/livesqlbench/tasks" in proc.stdout
+    assert "LiveSQLBench: --tasks-dir ../da-benchmarks/livesqlbench/tasks," in proc.stdout
+    assert "../da-benchmarks/livesqlbench/tasks-inline for its assets" in proc.stdout
 
 
 def test_benchmarks_keeps_the_livesqlbench_credential(bench: Env):
