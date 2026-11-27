@@ -251,6 +251,21 @@ def test_no_call_to_the_hidden_skill_leaves_its_refusal_unmeasured() -> None:
     assert "unlisted Skill kept out: failed=未实测" in probe.report([failed], [], "stub")
 
 
+def test_a_failed_container_cleanup_keeps_the_trials_and_removes_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_docker(names: list[str]) -> None:
+        raise probe.SandboxError("docker is not installed here")
+
+    monkeypatch.setattr(probe, "RUNS_DIR", tmp_path)
+    monkeypatch.setattr(probe, "sandbox_exec", lambda sandbox, command: (False, "no docker"))
+    monkeypatch.setattr(probe, "remove", no_docker)
+    trials = probe.sandbox_trials(["/p/skills/skill-probe"], "docker")
+    assert [t.label for t in trials][-1] == "cleanup"
+    assert len(trials) == 6  # local x2, docker x3, cleanup
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_the_precondition_reports_whether_the_skill_tool_came_without_tools_naming_it() -> None:
     bare = probe.Session("init-only", init={"tools": ["Read"]})
     text = probe.report([passing_session("a")], [], "stub", bare)

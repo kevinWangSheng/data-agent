@@ -445,12 +445,20 @@ def sandbox_trials(skill_dirs: Sequence[str], backend: str) -> list[SandboxTrial
             ("docker as today, mount path (B)", status_quo, mount),
             *((f"docker + same-path mount (A), {d}", same_path, command) for d, command in sdk),
         ]
+    trials: list[SandboxTrial] = []
     try:
-        return [SandboxTrial(label, cmd, *sandbox_exec(box, cmd)) for label, box, cmd in runs]
+        trials += [SandboxTrial(label, cmd, *sandbox_exec(box, cmd)) for label, box, cmd in runs]
     finally:
+        # A failed cleanup is one more row: it must not discard the trials or the sessions.
         if backend == "docker":
-            remove([container_name(status_quo.run_id), container_name(same_path.run_id)])
+            try:
+                remove([container_name(status_quo.run_id), container_name(same_path.run_id)])
+            except SandboxError as exc:
+                trials.append(
+                    SandboxTrial("cleanup", "remove the probe's containers", False, str(exc))
+                )
         shutil.rmtree(workspace, ignore_errors=True)
+    return trials
 
 
 # --- Verdicts --------------------------------------------------------------------------------
