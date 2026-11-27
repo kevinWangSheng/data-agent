@@ -51,7 +51,7 @@
 - SDK `skills` = 发现的全部减 `disabled`；`preload` 的全文照旧进系统提示词（`load_skills`）。默认 `preload` = 本任务类型的工作流 Skill（`sql-workflow` 或 `dbt-workflow`）；方言 Skill、`dbt-write`、`dbt-debugging` 按需。dbt-workflow 第 2 步"先加载辅助 Skill"（`agent.py:112` 的注释"as there is no Skill tool"）随之改成按需。
 - `${CLAUDE_SKILL_DIR}`：按需加载时 SDK 填宿主路径；Skill 目录按原路径挂进 Docker 沙箱，或 Skill 里统一写挂载路径——实测（工单 142）后定。
 - Skill 工具每次调用写一条事件（Skill 名、来源插件）。
-- MCP：`[mcp].servers` 挂给 agent，沿用工单 116 的放行清单和环境变量规则；`claude_code_config = true` 时另读使用者的 Claude Code MCP 配置（见"待确认"1）。产品运行不再设 `strict_mcp_config`，但只加载这两处来源，不让 SDK 自己去找本仓库的 `.mcp.json`。
+- MCP：`[mcp].servers` 挂给 agent，沿用工单 116 的放行清单和环境变量规则；`claude_code_config = true` 时另读使用者的 Claude Code MCP 配置（见"已定"1）。产品运行不再设 `strict_mcp_config`，但只加载这两处来源，不让 SDK 自己去找本仓库的 `.mcp.json`。
 - 插件：`[plugins].dirs` 每个作为本地插件加载，`enabled` 为空表示全部。
 - 禁用内置 Bash、不读本仓库 `.claude/`（`setting_sources` 不含 `project`）不变。
 
@@ -79,7 +79,7 @@
 - 第一步：评测配置文件复现现在的行为：`[skills].preload` = 现在注入的全部 Skill（查数：`sql-workflow` + 方言；dbt：4 个），并关掉 Skill 工具（`[skills].tool = false`，只评测用，产品默认开）；上限、提示词片段与现在相同。验收见 Testing Decisions"快照"。
 - 第二步（不是工单，主会话做）：评测配置文件改用产品新默认，在 LiveSQLBench、data-eng-bench 开发集上和第一步配对比较，结果写回本 spec，由人定跑榜用哪种。
 
-## 工单（待人确认拆分，Q8）
+## 工单（人 2026-11-27 确认）
 
 | # | 工单 | Blocked by |
 |---|---|---|
@@ -96,7 +96,7 @@
 
 ## Testing Decisions
 
-### 验收测试接缝（待人确认）
+### 验收测试接缝（人 2026-11-27 确认）
 
 - **配置加载**：`load_effective_config(paths, environ, cli_overrides) -> EffectiveConfig`（名字由 141 定）：分层优先级、`[policy]` 覆盖不了、显式文件不读用户级/项目级、未知键报错、明文密钥拒绝、`${VAR}` 缺失报错、每个键的来源。
 - **运行参数快照**：对一个任务和一份配置，构建出的 `ClaudeAgentOptions` 与系统提示词（`build_options`、`system_prompt`，`agent.py:1556`、`:1360`）序列化成快照。迁移第一步：每个榜单的样本题，新旧方式快照逐项相同。
@@ -113,10 +113,10 @@
 - 141–150 合入；迁移第一步快照逐项相同；每个榜单真跑 1 题冒烟（主会话）。
 - 文档：`docs/setup.md` 写配置文件、每一节、`config show`、评测配置文件；README 写产品默认与使用者的 MCP 不在只读保证之内。
 
-## 待确认
+## 已定（原"待确认"，人 2026-11-27 确认）
 
-1. **使用者的 Claude Code MCP 配置没有放行清单。** 工单 116 要求每个服务器写 `allowedTools`，并且环境变量用 `DATA_AGENT_MCP_` 前缀（`.scratch/mcp/spec.md`）。`claude_code_config = true` 读进来的服务器没有这两样。推荐：读进来的服务器默认放行它的全部工具（照 Claude Code 自己的行为），可以在 `[mcp]` 里按服务器名补 `allowedTools` 收窄；环境变量照 Claude Code 原样展开，不加前缀限制；`config show` 和运行开头的事件列出这些服务器和工具。
-2. 工单拆分与上面的接缝。
+1. **使用者的 Claude Code MCP 配置**：读进来的服务器默认放行它的全部工具（照 Claude Code 自己的行为），可在 `[mcp]` 里按服务器名补 `allowedTools` 收窄；环境变量照 Claude Code 原样展开，不加 `DATA_AGENT_MCP_` 前缀限制；`config show` 和运行开头的事件列出这些服务器和工具。`[mcp].servers` 里写的服务器仍照工单 116 的规矩（必须有放行清单、前缀）。
+2. 工单拆分（141–150）与"验收测试接缝"照上文。
 
 ## Out of Scope
 
