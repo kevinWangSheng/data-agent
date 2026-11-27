@@ -35,9 +35,10 @@
 |---|---|---|
 | 151 | 验收测试（人审后合入） | product-config 143 |
 | 152 | 实测：容器里挂 Docker socket 起沙箱、工作区路径能挂进沙箱、`dbt_execute` 和值字典在容器里可用；跑不通就停下回对齐 | — |
-| 153 | `[server].mode`：cloud 下的令牌、监听地址、缺密钥拒绝启动、IM 名单、联网默认、`policy` 锁定、端点不可覆盖、`/healthz` | 144、151 |
-| 154 | 上下文从 git：`git+https` 地址、浅克隆、`refresh`、失败回退 | 143、151 |
+| 153 | `[server].mode`：cloud 下的令牌、监听地址、联网默认、`policy` 锁定、`/healthz` | 144、146、151 |
+| 154 | 上下文从 git：git 地址 → 本地路径、浅克隆、`refresh`、原子切换、失败回退 | 143、151、152 |
 | 155 | 镜像、Compose 示例、`docs/deploy.md`；主会话在一台机器上按文档部署一次、IM 和网页各跑一题 | 152、153 |
+| 156 | 网页令牌与联网默认（前端为主）：输令牌页、HttpOnly Cookie、接口和事件流接受 Cookie 或 bearer；联网勾选默认值跟服务器配置；前端由 Opus 审 | 151、153 |
 
 ## Testing Decisions
 
@@ -55,6 +56,15 @@
 ## 验收
 
 - 151–155 合入；按 `docs/deploy.md` 在一台机器上部署，网页（带令牌）和一个 IM 平台各跑通一题。
+
+## Update 2026-11-27（建票后，`.scratch/product-config/decisions.md` Q8）
+
+- **网页令牌**：浏览器的 `EventSource`（`web/src/data/source.ts:207`）设不了请求头，所以打开网页先输一次令牌，服务器回 HttpOnly Cookie，接口接受 Cookie 或 bearer 请求头；前端在新工单 156。
+- **联网**：cloud 默认关，配置文件可打开；单次运行不能超过配置（关了联网时请求联网得 409，同工单 140）；表单默认值跟服务器配置（156）。
+- **端点**：cloud 认 `DATA_AGENT_BASE_URL`（部署层）；"单次运行不能改端点"现在本来就成立，不单写测试。
+- **所有模式**：IM 名单为空、缺 `${VAR}` 都拒绝启动（守门测试）；监听非本机地址都要令牌；`/healthz` 返回 `{"ready": true}`；部署模式环境变量 `DATA_AGENT_MODE`；运行子进程的环境去掉 `DATA_AGENT_WEB_TOKEN`。
+- **git 来源**：克隆放 `<runs_dir>/.cache/git`，服务器进程统一拉，运行读这份；刷新先克隆到新目录再原子切换；令牌经 `GIT_ASKPASS`，不进 URL 和 `.git/config`；`[server].refresh` 由 154 补进配置格式；154 只负责 git 地址 → 本地路径。
+- **镜像**：Compose 同时构建产品镜像和沙箱镜像（`DockerSandbox` 用 `--pull never`）；产品镜像装 dbt。
 
 ## Out of Scope
 

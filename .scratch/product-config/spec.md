@@ -118,6 +118,20 @@
 1. **使用者的 Claude Code MCP 配置**：读进来的服务器默认放行它的全部工具（照 Claude Code 自己的行为），可在 `[mcp]` 里按服务器名补 `allowedTools` 收窄；环境变量照 Claude Code 原样展开，不加 `DATA_AGENT_MCP_` 前缀限制；`config show` 和运行开头的事件列出这些服务器和工具。`[mcp].servers` 里写的服务器仍照工单 116 的规矩（必须有放行清单、前缀）。
 2. 工单拆分（141–150）与"验收测试接缝"照上文。
 
+## Update 2026-11-27（建票后，decisions.md Q8）
+
+建票时发现的问题已定，细节以 `decisions.md` Q8 为准。改变本 spec 的几条：
+
+- **141 同时改已合入的验收测试**：24 个 `tests/acceptance/` 文件钉着 `--config <消融名>`、`--data-sources`、`--mcp-servers`、`--im`；141 把它们改成新接口（只改调用，断言意思不变；和已定决定冲突的断言按新决定改），逐条列出给人审。
+- **过渡**：143 期间 `--config` 同时接受路径和旧消融名；146 改完评测入口后删掉旧名。`--config` 可写多次，后面覆盖前面；显式 `--config` 优先于 `DATA_AGENT_CONFIG`。
+- **Skill 文本不在迁移第一步改**：dbt-workflow 第 2 步等 Skill 改动推到迁移第二步一起量；147 只做机制。插件清单不计入 Skill 版本哈希。
+- **键名**：`[layers]` 用 `skill`、`verifiers`、`context`；`[skills].tool`（默认 true）。
+- **评测配置文件**：全部保留现在的答题规则（含 LiveSQLBench、jaffle）；只有产品换新版。`lsb-single-shot` 只读模型和价格。
+- **模型没填价格**：不传 SDK 的 `max_budget_usd`，开头警告。
+- **`[policy]` 和命令行参数冲突**：报错拒绝。
+- **`config` 事件**：第二条事件；`version.config` 照旧写配置名。快照覆盖任务提示词。
+- **`[server]` 的 host、port、runs_dir 和 `[trace]`** 归 144。
+
 ## Out of Scope
 
 - 云端部署（cloud-deploy spec）。登录、多用户、管理界面加数据库。
