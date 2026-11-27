@@ -23,6 +23,7 @@
   - 网页用"Sign in with Slack"登录；Slack 工作区 Owner/Admin 改工作区层，频道层谁能改（成员还是频道管理者）待定，个人层自己改；Slack 里 `@bot !configure` 打开本频道设置。
   - 一个 Slack 线程是一次会话，回复带"在网页打开"链接，按频道成员身份看。
   - 数据访问先用共享服务身份。
+  - 主会话的方案草稿（未对齐）：`.scratch/product-config/proposal-settings-ui.md`，新会话从它的第 6 节逐条过。
   - 这推翻 ADR-0011 第 5 条、`docs/plan.md` §1 的"不做登录、多用户、管理界面"、Q1（文件是唯一来源）、Q7（云端只做 Docker）。141、143、144、153、156 和 cloud-deploy spec 要重写或调整。先对齐，再改票。
 - **工单状态**（都在 `.scratch/product-config/issues/`、`.scratch/cloud-deploy/issues/`）：
   - 140 三处安全默认：PR #145，in-review。合并前要：Postgres 集成测试（`DATA_AGENT_TEST_POSTGRES_URL=... uv run pytest tests/test_run_scratch_schemas.py tests/test_db_facts.py -m integration -q`）、工单里写的两次真实运行、CI 和 Codex GitHub app 意见。
