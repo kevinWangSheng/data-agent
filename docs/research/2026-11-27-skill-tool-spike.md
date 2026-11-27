@@ -137,3 +137,24 @@ set -a && . ~/.config/data-agent/env && set +a && \
 5. 问题 3 照方案 A：`DockerSandbox` 为每个 Skill 目录加一条按原路径的只读挂载（`source` 取真实路径，`target` 取传给 SDK 的路径）；`load_skills` 统一替换成宿主路径；改 sandbox_exec 的工具说明。符号链接拼插件时，`target` 用链接路径，因为 SDK 不解析链接。
 6. 本次三段会话加载都成功，初始化消息里都没有 `plugin_errors` 键（SDK 文档：CLI 只在失败时带这个键，但缺键本身不证明加载干净，`types.py` `SystemInitData.plugin_errors`）；147 加载失败时应读它报错，失败项带 `path`。
 7. 本次没测：SDK 自带的 Skill 与我们的同名时谁优先；`skills=[]` 下插件是否仍加载（评测入口要关掉时，应同时不传 `plugins`）。
+
+
+### 主会话真实运行（DeepSeek，2026-11-27）
+
+命令：`uv run python scripts/spikes/skill_tool/probe.py --endpoint model --sandbox docker`（`deepseek-flash`，标价 cost_usd 0.046348）。模型模式下"listed to the model"记作未实测，是因为真实端点的请求体不由探针记录；列表这一项由 stub 模式核实（是 ×3）。没有阻塞性的"否"：`tools` 不含 Skill 时没有 Skill 工具（147 要显式加 `"Skill"`）；现在的 Docker 沙箱找不到 SDK 填的宿主路径（推荐方案 A，实测可用）。
+
+```
+## verdicts
+Q1 Skill tool, list, full SKILL.md — CLI side: 是; model follows it (model): 是; listed to the model: default-config-dir=未实测, conversation-config-dir=未实测, linked-plugin=未实测
+Q1 precondition — Skill tool in the session when `tools` omits it: 否
+Q2 local plugin found as spike-probe:skill-probe, per config dir: default-config-dir=是, conversation-config-dir=是, linked-plugin=是; unlisted Skill kept out: default-config-dir=是, conversation-config-dir=是, linked-plugin=是
+Q3 ${CLAUDE_SKILL_DIR} as filled: {"default-config-dir": "~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe", "conversation-config-dir": "~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe", "linked-plugin": "/var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe"}
+   sandbox local, SDK path ~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe: 是 — `python3 "~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe/where.py"` -> 'exit_code: 0\nstdout:\nWHERE-142 ran ~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe/where.py'
+   sandbox local, SDK path /var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe: 是 — `python3 "/var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe/where.py"` -> 'exit_code: 0\nstdout:\nWHERE-142 ran ~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe/where.py'
+   sandbox local, mount path (B): 否 — `python3 "/skills/skill-probe/where.py"` -> "exit_code: 2\nstderr:\npython3: can't open file '/skills/skill-probe/where.py': [Errno 2] No such file or directory"
+   sandbox docker as today, SDK path ~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe: 否 — `python3 "~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe/where.py"` -> "exit_code: 2\nstderr:\npython3: can't open file '~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe/where.py': [Errno 2] No such file or directory"
+   sandbox docker as today, SDK path /var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe: 否 — `python3 "/var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe/where.py"` -> "exit_code: 2\nstderr:\npython3: can't open file '/var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe/where.py': [Errno 2] No such file or directory"
+   sandbox docker as today, mount path (B): 是 — `python3 "/skills/skill-probe/where.py"` -> 'exit_code: 0\nstdout:\nWHERE-142 ran /skills/skill-probe/where.py'
+   sandbox docker + same-path mount (A), ~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe: 是 — `python3 "~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe/where.py"` -> 'exit_code: 0\nstdout:\nWHERE-142 ran ~/dev/AI/data-agent/.claude/worktrees/142-spike-skill-tool/scripts/spikes/skill_tool/plugin/skills/skill-probe/where.py'
+   sandbox docker + same-path mount (A), /var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe: 是 — `python3 "/var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe/where.py"` -> 'exit_code: 0\nstdout:\nWHERE-142 ran /var/folders/nh/02mxl3td7rxcyj70_y5t1xqr0000gn/T/spike-142-grsx_ygv/linked-plugin/skills/skill-probe/where.py'
+```
