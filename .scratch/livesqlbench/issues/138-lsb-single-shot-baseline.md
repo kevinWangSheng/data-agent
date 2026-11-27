@@ -1,10 +1,10 @@
 # 138 — LiveSQLBench：照官方 baseline 的单次调用对照（spec D2）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md（"Update 2026-11-27"一节，D2）
-Claimed by: —
-Branch: —
+Claimed by: claude-code (138 worktree session)
+Branch: worktree-138-lsb-single-shot-baseline
 
 ## Goal
 
@@ -76,12 +76,125 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2, plus one post-review fix (`b4fddfe`) that Codex has not seen
 - Model spend: $0
-- Outcome: —
+- Outcome: implemented; the local Harbor and Docker run is blocked by the full disk, and the server's 1-task run closes it
 - Human review minutes: —
 
 ## Comments
 
 - 2026-11-27（对齐会话建票）：人定 spec D1–D5（"Update 2026-11-27"）。本工单是 D2；和 139 互不依赖，可并行。
+- **2026-11-27 (ticket agent):**
+
+  **What was built.**
+  - **Command:** `python -m evals lsb-single-shot`, in `evals/lsb_single_shot.py`.
+    - It runs one Harbor job, `OUT/jobs/single-shot`, with `evals/configs/livesqlbench.single-shot.yaml`.
+    - The job's agent is `evals.lsb_single_shot_agent:SingleShot`, which runs on the host.
+  - **What the agent does in each trial:**
+    1. Reads the three asset files from `/app/db_assets/` through `environment.download_file`.
+    2. Builds upstream's prompt, from `evals/lsb_baseline.py`.
+    3. Calls `deepseek-flash` once.
+    4. Takes the SQL out of the reply the way upstream does.
+    5. Writes `/app/pred.json` through `upload_file`, and keeps a copy and the reply text in `agent/`.
+  - **Scoring:** the task's own verifier.
+  - **What the agent reads:** the task id comes from the trial's `config.json`, and the database and question are parsed back out of the instruction. A round-trip test against `evals.livesqlbench.instruction` pins that parsing. It never reads `tests/` or the answers.
+  - **Spend records:**
+    - Each trial writes `agent/events/run-*.jsonl` with a `version` event and a `result` event, in the fields `evals spend` and `evals report` already read; neither module changed.
+    - Tokens and cost also go into Harbor's `result.json`.
+  - **Dev only.** Held-out tasks are refused in three places:
+    - `--split dev` is the only choice;
+    - every `--task` must be a LiveSQLBench dev task of the manifest;
+    - both the command and the agent run `check_dev_list`, so a custom manifest cannot move a held-out task into `dev`.
+  - **Spend cap:**
+    - The billed-spend guard stops at 80% of `--budget` before Harbor starts, and a balance check runs first.
+    - While the job runs, a watcher stops Harbor at 80% billed, reusing ablate's `stop_reason` (config errors, usage limit, fail-fast).
+    - A rerun with the same `--out` resumes the job the way ablate does, but refuses a job whose trials ran at another commit.
+  - **Report:** `OUT/reports/<UTC>/report.json`, plus `tasks.json` as the manifest it read.
+  - **Upstream copy:** `assistant_prompt`, the asset loading, `parse_sql` and `extract_sql_from_response` are copied under the MIT header and registered in `NOTICE`.
+  - **Other edits:**
+    - `scripts/da-remote` sources the write credential for `lsb-single-shot` (that condition only).
+    - The server command is in `docs/setup.md`.
+
+  **Call settings and their basis.** I captured a request body from a local `data-agent run` against a fake endpoint ($0; `runs/138/requests.jsonl`). With no effort set, the CLI sent:
+  ```
+  "model": "deepseek-flash", "max_tokens": 32000, "thinking": {"type": "adaptive", "display": "updates"}, "output_config": {"effort": "high"}, "temperature": null
+  ```
+  The single call sends the same fields, plus `temperature: 0`.
+
+  | Setting | Upstream (`call_api.py`) | This run | Why |
+  |---|---|---|---|
+  | Thinking / effort | none | adaptive (`display: updates`), effort `high` | the human's 2026-11-27 decision: same model and settings as the agent |
+  | `max_tokens` | 6000 | 32000 | what the CLI sends; 6000 would be eaten by the thinking |
+  | Temperature | 0 | 0 | as the ticket says; the CLI sends none |
+  | No SQL in the reply | `[""]` or the raw text | `predicted_sql: []` | the verifier scores `[]` as 0 (`no_prediction`) without touching the database |
+
+  Whether DeepSeek accepts or ignores `temperature: 0` while thinking is on is **未确认**. If it refuses it with HTTP 400, the first call stops the whole run as a config error. The 1-task run must check this.
+
+  **Error handling.**
+  - An HTTP error raises Harbor's own error type for that status.
+  - A 400 raises `UnsupportedModelParametersError`, a config error, which stops the run for a human.
+  - A dropped connection raises `ApiConnectionClosedError`.
+  - The whole call, SDK retries included, has a 1500 s deadline, under the task's 1800 s limit. Past it, the agent raises `ApiResponseStalledError`, which is in the job's retry list and counts as infrastructure. A plain `TimeoutError` would have become Harbor's `AgentTimeoutError` and been scored 0.
+  - Each error is raised with the key masked and the SDK's exception chain dropped. No `pred.json` is written on any error.
+
+  **Local run: not done.** The local Docker VM is full: `overlay 30G 28G 0 100% /`, and the stand-in Postgres from ticket 128 fails with `initdb: error: could not create directory "/var/lib/postgresql/data/pg_wal": No space left on device`. I did not delete any images or volumes to make room.
+  - **Done instead, at $0:**
+    - Unit tests drive the real agent through a fake Harbor, a fake environment and a fake model endpoint; spend, report and compare all run for real on the output.
+    - Harbor 0.24 parsed the job config and built the agent from its import path: `built SingleShot lsb-single-shot`, with the retry list as configured.
+    - The real command on the real manifest refused a held-out `--task` (`exit 2`, "1 of the --task ids are not LiveSQLBench dev tasks", no id printed) and `--split holdout` (`invalid choice`).
+  - **Not checked against a real environment:**
+    - reading the assets and writing `/app/pred.json` through the Docker environment;
+    - Harbor collecting the artifact and handing it to the separate verifier.
+
+  **Checks.** `make check` passes: 3449 passed and 3 skipped, web 448 passed (`runs/138/make-check-r3.txt`). The baseline before any change was 3432 passed, 3 skipped.
+
+  **Reviews.**
+  - **`da-review main` (Codex), 3 findings, all fixed in `a3d112f`, each with a test that fails on the earlier code:**
+    - a custom manifest could move a held-out task into `dev`;
+    - an API error could leave the key and the endpoint's response in Harbor's trial files;
+    - a rerun could silently reuse trials made by other code.
+  - **`eng:code-review main`, Standards. Fixed in `0c4f33e`:**
+    - the version event lacked `sdk_version`;
+    - there were two separate dev-task lists;
+    - constants and helpers were redefined instead of reused (`Tokens`, the manifest path, `git_commit`);
+    - a private `ablate._log` was imported;
+    - one variable was renamed (`own` → `failed_itself`).
+  - **Standards findings not fixed:**
+    - `ensure_job` duplicates ablate's resume logic. Sharing it would mean editing `evals/ablate.py`, which Authority forbids.
+    - The budget travels as both a string and a `Decimal`, because ablate's `guard_spend` takes the string.
+  - **`eng:code-review main`, Spec:**
+    - the open local-run box, as above;
+    - temperature is unverified, as above;
+    - attempts the SDK retried internally are not priced. These are failed requests, normally unbilled, under a $3 cap. Not fixed.
+  - **After both review rounds, in `b4fddfe`:**
+    - the call deadline (from the advisor's check);
+    - `python -m evals` no longer loads Harbor at start (it had, through the new module).
+
+    Codex has not reviewed `0c4f33e` or `b4fddfe`.
+
+  **Also worth knowing.**
+  - `da-remote pull` of an `lsb-single-shot` run brings back only `reports/` and `run.log`, as for any subcommand except ablate. D4 doesn't read D2's trajectories.
+  - One 400 stops the whole run, and the message tells the human to delete the job.
+
+  **Server run order (main session).**
+  1. Push, then `da-remote setup <commit>` and `da-remote check`.
+  2. Run 1 task × 1 in its own `--out`:
+     ```
+     da-remote start lsb-ss-1 -- lsb-single-shot --tasks-dir ../da-benchmarks/livesqlbench/tasks --split dev --task <a dev task> --trials 1 --out runs/lsb-ss-1 --budget 0.5
+     ```
+     It must show:
+     - no 400 from temperature 0 with thinking on;
+     - `artifacts/app/pred.json` collected;
+     - a verifier outcome other than `verifier_error`;
+     - a non-zero `cost_usd` in `result.json`;
+     - the tasks are from `tasks/`, not 139's `tasks-inline`.
+  3. Run 60 × 3:
+     ```
+     da-remote start lsb-single-shot-3 -- lsb-single-shot --tasks-dir ../da-benchmarks/livesqlbench/tasks --split dev --out runs/lsb-single-shot-3 --budget 3
+     ```
+  4. Compare with D1 on the server:
+     ```
+     python -m evals compare --baseline runs/lsb-dev-3/jobs/no-verifiers --candidate runs/lsb-single-shot-3/jobs/single-shot --manifest evals/manifest.json --split dev --benchmark livesqlbench --trials 3
+     ```
+- 2026-11-27（主会话）：认领字段由主会话补写（工单会话写主 checkout 被拦）。合入 origin/main，NOTICE 冲突两条都留。未完成的验收项「本机跑通一题」改由服务器 1 题运行（`lsb-ss-1`）关闭，D1 跑完后做。
