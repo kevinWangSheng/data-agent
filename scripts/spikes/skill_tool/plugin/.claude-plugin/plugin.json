@@ -1,0 +1,5 @@
+{
+  "name": "spike-probe",
+  "version": "0.1.0",
+  "description": "Ticket 142 spike: one Skill to load through the Skill tool, one to stay hidden"
+}

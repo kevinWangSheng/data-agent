@@ -359,6 +359,9 @@ def run_case(
         *("--type", KINDS[case["kind"]], "--workspace", str(workspace)),
         *("--postgres-env", url_env, "--config", config),
         *("--events-dir", str(case_dir / "events")),
+        # dbt writes the schema the case's profile names, where it is graded (`grade_model`);
+        # the CLI's default `scratch` would write a schema of the run's own (ticket 140).
+        *("--dbt-target", "task"),
         *trace_args,
     ]
     proc = subprocess.run(command, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT)

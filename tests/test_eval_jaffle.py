@@ -332,3 +332,29 @@ def test_reset_drops_only_case_schemas() -> None:
         }
         con.execute("DROP SCHEMA IF EXISTS jafflebackup")
     assert left == {"jafflebackup"}
+
+
+@pytest.mark.parametrize("kind", ["build", "query"])
+def test_the_run_command_has_dbt_write_the_cases_own_schema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    """Ticket 140: the CLI's dbt default is `scratch` (a schema of the run's own), while a case is
+    graded in `jaffle_<case id>`, which its profile names; the command asks for `task`."""
+    monkeypatch.setenv("DA_TEST_URL", "postgresql://u:pw@db.example:6543/shop")
+    workspace = tmp_path / "case" / "jaffle_shop"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(jaffle, "prepare_case_dir", lambda *_: workspace)
+    for name in ("apply_edits", "reset_schemas", "dbt"):
+        monkeypatch.setattr(jaffle, name, lambda *_: None)
+    commands: list[list[str]] = []
+
+    def stop(command: list[str], **_: object) -> None:
+        commands.append(command)
+        raise RuntimeError("stop after the command")
+
+    monkeypatch.setattr(jaffle.subprocess, "run", stop)
+    case = {"id": "c1", "kind": kind, "prompt": "p.md", "grade": {"kind": "answer"}}
+    with pytest.raises(RuntimeError, match="stop after the command"):
+        jaffle.run_case(case, tmp_path, tmp_path / "out", "DA_TEST_URL", "full", 0.01)
+    [command] = commands
+    assert command[command.index("--dbt-target") + 1] == "task"

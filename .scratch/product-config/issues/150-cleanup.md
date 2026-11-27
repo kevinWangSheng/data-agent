@@ -1,10 +1,10 @@
 # 150 — 清理：审计第 6 节（`verify_model_values` 残留、`VERIFIER_MAX_TURNS` 重复、过时注释、`trace-check --runs-dir`；`large = 75` 保留）
 
-Status: ready-for-agent
+Status: done
 Blocked by: —
 Spec: ../spec.md（工单表 150："清理：审计第 6 节"）
-Claimed by: —
-Branch: —
+Claimed by: claude (implement session, 2026-11-27)
+Branch: worktree-150-cleanup
 
 ## Goal
 
@@ -59,13 +59,39 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 1
 - Model spend: $0
-- Outcome: —
+- Outcome: in-review
 - Human review minutes: —
 
 ## Comments
 
 - 2026-11-27（主会话建票）：审计第 6 节；不依赖别的工单，但和 145、146 改同一批文件。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：`large = 75` 保留，不再是本工单的清理项。
+- 2026-11-27 (ticket agent): done.
+  - **`verify_model_values`**: I first checked that the value verifier's prompt is gone. `src/data_agent/agents/` holds only `verifier.md`, and `VERIFIER_NAMES = ("verifier",)`.
+    - Deleted `verify_values` and every helper and constant only it used, about 620 lines. That includes `Relations.models_named`, which nothing called.
+    - Removed the 21 tests of that code in `tests/test_verifier_tools.py`, plus their dead fixtures.
+    - Rewrote the module docstring. The `ref()`/`source()` resolution note, which `map_columns` still uses, moved into the `map_columns` bullet.
+    - No other test or feature broke.
+  - **The grep that remains** finds only `im/progress.py:39`. I kept it on purpose: the `CHECK` set copies `web/src/run-page/tools.ts:17`, which this ticket forbids editing, and taking the name out would change how events from older runs are labelled. It now has a comment saying so.
+  - **`NOTICE:18`** still lists `verify_model_values`. `NOTICE` is outside Authority, so I left it; whoever owns it should drop that name.
+  - **`VERIFIER_MAX_TURNS`** is now defined once, in `verifiers.py:35`; `verifier_v2/hooks.py` imports it. The test now checks that `hooks.py` has no definition of its own; it would fail on the old code.
+  - **`classify.py:37-40`**: the comment now matches ticket 70 (20,000 rows, about $0.28 for short texts; long texts are stopped by the run budget).
+  - **`trace-check --runs-dir DIR`**: added to the CLI and passed through `trace_check.main`. Without the flag it still searches `./runs`. Two new tests in `tests/test_trace_check.py` drive it through `cli.main`: found at any depth under DIR, the error names DIR, and the default is unchanged.
+  - **Known limit**: `check()` tests the Langfuse settings before it looks for the event file. With the Langfuse variables unset, you get the settings error, not "not under DIR". I kept that order because the ticket says behaviour is unchanged, so the evidence run used placeholder variables. Looking up the file first is a one-line swap if the main session wants it.
+  - **`make check`**: exit 0. Ruff clean, basedpyright 0 errors, pytest 3442 passed, 3 skipped, web 448 passed. That is the 3461 baseline, minus 21 deleted tests, plus 2 new ones. After the second commit I re-ran only the touched tests, 105 passed; the full suite did not run again.
+  - **`git diff 07985b5...HEAD --stat`**: 10 files changed, 81 insertions, 1080 deletions.
+  - **Real run** (placeholder Langfuse variables, nothing contacted):
+    ```
+    $ DATA_AGENT_LANGFUSE_PUBLIC_KEY=pk DATA_AGENT_LANGFUSE_SECRET_KEY=sk DATA_AGENT_LANGFUSE_BASE_URL=http://127.0.0.1:9 \
+      uv run data-agent trace-check --runs-dir /tmp/150-cleanup/runs-demo run-does-not-exist
+    trace-check: no event file 'run-does-not-exist', and no run-does-not-exist.jsonl under /tmp/150-cleanup/runs-demo/
+    exit=2
+    ```
+  - **Reviews**:
+    - `da-review` (Codex): no actionable regressions. It confirmed that none of the 33 removed definitions has a caller left, and that the CLI passes `--runs-dir` through.
+    - `eng:code-review`, Spec axis: nothing missing, no scope creep. It flagged the Langfuse ordering, recorded above.
+    - `eng:code-review`, Standards axis: no hard violations. Fixed: the stale test name and its no-op assertion, and the missing comment in `progress.py`. Not fixed: `NOTICE` (outside Authority); `main()`'s `runs_dir` default (existing callers use it); `UNUSED UPSTREAMS` in tests (already dead before this branch).
+- 2026-11-27（主会话）：PR #148 CI 绿，Codex GitHub app 审 `021ade6` 没有意见，squash 合并。

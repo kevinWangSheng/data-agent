@@ -1,10 +1,10 @@
 # 141 — 产品配置：验收测试（配置加载、运行参数快照、产品默认、评测隔离、`config` 事件）
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: —
 Spec: ../spec.md（"Testing Decisions"的"验收测试接缝"）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5.5, worktree 141-config-acceptance-tests)
+Branch: worktree-141-config-acceptance-tests
 
 ## Goal
 

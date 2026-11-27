@@ -350,13 +350,14 @@ def test_a_trial_runs_without_the_network(local: Local) -> None:
 
 def test_a_trial_runs_its_commands_in_the_task_container(local: Local) -> None:
     """Ticket 100: the task container is the sandbox (`--sandbox local`), and dbt writes the
-    task's own database (the CLI's default `--dbt-target task`)."""
+    task's own database: `--dbt-target task`, given since ticket 140 made `scratch` the CLI's
+    default."""
     cls, tmp_path = local
     env = LocalEnvironment(container_env(tmp_path, 0, jsonl(result_event())))
     run(make_agent(cls, tmp_path), env)
     args = stub_args(tmp_path)
     assert args[args.index("--sandbox") + 1] == "local"
-    assert "--dbt-target" not in args
+    assert args[args.index("--dbt-target") + 1] == "task"
 
 
 @pytest.mark.parametrize("value", [0, -5])

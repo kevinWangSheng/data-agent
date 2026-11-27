@@ -1,8 +1,7 @@
 """The verifier subagents' tools (ADR-0002): map_columns, check_model_schema, audit_model_sources,
 and the verifier v2 tools model_diff, contract_check, grain_facts, compare_by_key (ADR-0009,
 ticket 45; implemented in `verifier_v2/`). list_tables and query_database, the other two, are
-base tools. verify_model_values is no longer registered (its value verifier went with ADR-0009);
-its code below stays until the value verifier's prompt is removed.
+base tools.
 
 Ported from SignalPilot's gateway (`gateway/mcp/tools/model_map.py` and `model_verify.py`, see
 NOTICE). Like upstream they report observations and leave the verdict to the verifier. Changes:
@@ -11,8 +10,7 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   this server's read-only gateway, and tables are found in the catalog (information_schema) and
   quoted from there, so names are never pasted into SQL unchecked.
 - Portable SQL instead of DuckDB-only forms: no `SHOW TABLES` or `PRAGMA table_info`, no
-  `COUNT(*) FILTER` (except in a model's own count, rewritten in the gateway's dialect); one
-  profiling statement per table instead of one per column.
+  `COUNT(*) FILTER`; one profiling statement per table instead of one per column.
 - map_columns reads only inside the run's workspace when the server is given one. It keeps
   upstream's lineage mode and its MAPPED / UNMAPPED-INCLUDE / UNMAPPED-EXCLUDE labels (the ones
   the copied Skill and verifier prompts use). Dropped: the pre-write `upstream_tables` mode, the
@@ -20,34 +18,9 @@ NOTICE). Like upstream they report observations and leave the verdict to the ver
   benchmark's projects). Sources resolve through their `schema:`; the YAML scan follows
   indentation instead of upstream's fixed 1-4 spaces for model names.
   A model's SQL is looked up only under the project's model-paths, so an analysis or snapshot
-  with the model's name is not taken for it.
-- verify_model_values takes the model's upstreams as `source_tables`, read by the verifier from
-  the model's SQL. Without them it compares against the nearest finer-grained table that has the
-  slice column, instead of upstream's three largest tables, which on a project with a fanned-out
-  sibling model put that sibling's doubled counts next to a correct model. The slice is every
-  text, date, timestamp or `id` / `*_id` column of the top row, NULLs matched with IS NULL
-  (upstream: the first), and a join to reach it goes only through a named upstream on a shared
-  `*_id` column unique there (upstream: any table sharing a column); a candidate it cannot
-  slice on every grouping column is marked inconclusive, a one-row model without dimensions is
-  compared with whole upstreams, and the output says the baselines do not apply the model's
-  own filters.
-  Given `project_dir` it reads the model's SQL with sqlglot (outermost SELECT, through CTEs and
-  subqueries): the slice is the GROUP BY outputs, numeric ones too, and never an aggregate such
-  as MAX(ordered_at); a metric is a count only when its outermost aggregate is COUNT under
-  CAST / COALESCE, and is held exactly against the same COUNT rewritten over each candidate, so
-  COUNT(DISTINCT x) meets COUNT(DISTINCT x) and a conditional count keeps its predicate. The
-  count's columns are traced to the upstream columns they read (sqlglot qualify against the
-  catalog); one the SQL computes, renames out of reach or takes from another table, or rows of
-  an aggregated CTE, make it inconclusive, as does a computed GROUP BY expression or a ROLLUP /
-  CUBE / GROUPING SETS key (subtotal NULLs) for the slice; a constant output is not sliced on.
-  ref() and source() resolve to the relations dbt builds and reads (a model's `alias`, a
-  source's `schema` and `identifier`; from target/manifest.json when dbt has compiled the
-  project), and an aliased model's SQL is found under its model name.
-  Without the SQL, or when it does not
-  parse (the output says so), dimensions come from column types and an integer named as a
-  count (n_*, num_*, count_*, *_count) is held exactly against COUNT(*); with the SQL read,
-  such a column whose aggregate the SQL does not show (a UNION) is inconclusive. Upstream also
-  held sums up against row counts.
+  with the model's name is not taken for it. ref() and source() resolve to the relations dbt
+  builds and reads (a model's `alias`, a source's `schema` and `identifier`; from
+  target/manifest.json when dbt has compiled the project).
 - check_model_schema also takes `name:data_type` pairs and compares the types by kind, DuckDB
   and Postgres aliases folded, nested types by their element and field types too.
 - A table profiled over a sample says so, its NULL shares are of the sample, and a column that
@@ -61,20 +34,15 @@ import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
-from typing import Any
 
-import sqlglot
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
-from sqlglot.optimizer.qualify import qualify
-from sqlglot.optimizer.scope import Scope, build_scope
 
 from data_agent import verifier_v2 as v2
-from data_agent.context_tools import RunQuery, Table, is_text, literal, quote
+from data_agent.context_tools import RunQuery, Table, is_text, quote
 from data_agent.db_facts import LoadCatalog
 from data_agent.tool_annotations import READ_ONLY
 from data_agent.verifier_v2.db import RunQueryable
@@ -90,23 +58,11 @@ SNAPSHOT_ENV = "DATA_AGENT_SNAPSHOT_DIR"
 
 SKIP_DIRS = frozenset({".claude", "dbt_packages", "target", "__pycache__", "logs"})
 BINARY_TYPES = frozenset({"BLOB", "BYTEA", "BINARY", "VARBINARY", "IMAGE"})
-INTEGER_TYPES = frozenset(
-    {
-        *("TINYINT", "SMALLINT", "INTEGER", "INT", "BIGINT", "HUGEINT"),
-        *("UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT", "INT2", "INT4", "INT8"),
-    }
-)
-NUMERIC_TYPES = INTEGER_TYPES | {
-    *("DECIMAL", "NUMERIC", "DOUBLE", "DOUBLE PRECISION", "FLOAT", "REAL", "FLOAT4", "FLOAT8"),
-}
-SLICE_TYPES = frozenset({"DATE", "TIME", "TIMETZ", "DATETIME", "BOOLEAN", "BOOL", "UUID"})
 # Types without equality on Postgres (json, xml, geometry) or whose values are opaque bytes:
 # count(DISTINCT) on one fails or says nothing, so their distinct counts are skipped.
 UNCOMPARABLE_TYPES = BINARY_TYPES | {
     *("JSON", "XML", "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE"),
 }
-# Names that say a metric counts rows: n_orders, order_count, num_orders, count_orders.
-COUNT_NAME_RE = re.compile(r"^(n|num|count)_\w+$|^\w+_count$", re.IGNORECASE)
 MAX_SOURCES = 10
 # Upstream's profiling bounds: aggregates per statement, and cells (rows x columns) above which a
 # table is profiled over a sample.
@@ -117,10 +73,6 @@ SAMPLE_ROWS = 200_000
 SCANNED_COLUMNS = 20
 LOW_CARDINALITY = 15
 LISTED_COLUMNS = 8
-# verify_model_values: `_id` columns counted per candidate; tables considered without
-# source_tables.
-ID_COLUMNS = 3
-SLICE_TABLES = 50
 
 REF_RE = re.compile(r"\{\{\s*ref\(\s*['\"](\w+)['\"]\s*\)\s*\}\}")
 SOURCE_RE = re.compile(r"\{\{\s*source\(\s*['\"](\w+)['\"]\s*,\s*['\"](\w+)['\"]\s*\)\s*\}\}")
@@ -128,8 +80,7 @@ CONFIG_ALIAS_RE = re.compile(
     r"\{\{\s*config\((?:[^()]|\([^()]*\))*?\balias\s*=\s*['\"](\w+)['\"]", re.DOTALL
 )
 NAME_LINE_RE = re.compile(r"-\s*name:\s*['\"]?([^'\"\s]+)")
-# Model SQL is parsed in the gateway's dialect and rewritten counts are run in it, so a Postgres run
-# reads `~` and to_char as Postgres does. DuckDB's where a caller names none.
+# Declared types are read in the gateway's dialect; DuckDB's where a caller names none.
 DIALECT = "duckdb"
 SQL_KEYWORDS = frozenset(
     {"THEN", "ELSE", "END", "WHEN", "CASE", "AND", "OR", "NOT", "NULL", "TRUE", "FALSE", "AS"}
@@ -148,36 +99,6 @@ class Profile:
 
 def base_type(data_type: str) -> str:
     return data_type.upper().split("(")[0].strip()
-
-
-def is_numeric(data_type: str) -> bool:
-    return base_type(data_type) in NUMERIC_TYPES
-
-
-def is_identifier(column: str) -> bool:
-    low = column.lower()
-    return low == "id" or low.endswith("_id")
-
-
-def is_dimension(column: str, data_type: str) -> bool:
-    """A grouping column the slice can match: text, a date or time, a boolean, a UUID, or an
-    identifier such as an integer customer_id."""
-    kind = base_type(data_type)
-    return (
-        is_text(data_type)
-        or kind in SLICE_TYPES
-        or kind.startswith(("TIMESTAMP", "TIME "))
-        or is_identifier(column)
-    )
-
-
-def equals(column_sql: str, value: Any) -> str:
-    """A predicate matching `value`; NULL matches through IS NULL, numbers stay unquoted."""
-    if value is None:
-        return f"{column_sql} IS NULL"
-    if isinstance(value, int | float | Decimal) and not isinstance(value, bool):
-        return f"{column_sql} = {value}"
-    return f"{column_sql} = {literal(str(value))}"
 
 
 def find(catalog: list[Table], name: str) -> list[Table]:
@@ -443,11 +364,6 @@ class Relations:
 
     def source(self, source: str, table: str) -> tuple[str, str]:
         return self.sources.get((source, table), (source, table))
-
-    def models_named(self, relation: str) -> list[str]:
-        """The models built as `relation`, the model of that name first."""
-        aliased = [m for m, alias in self.models.items() if alias.lower() == relation.lower()]
-        return [relation, *(m for m in aliased if m != relation)]
 
 
 def dbt_relations(project: Path) -> Relations:
@@ -717,628 +633,6 @@ def is_unique(run: RunQuery, table: Table, column: str, stats: Profile, rows: in
     return int(distinct) == int(non_null) == rows
 
 
-# --- verify_model_values (ported from model_verify.py) ---------------------------------------
-
-
-def column_map(table: Table) -> dict[str, str]:
-    return {name.lower(): name for name, _ in table.columns}
-
-
-def unique_key(run: RunQuery, candidate: Table, bridge: Table) -> str | None:
-    """A `*_id` column the candidate shares with `bridge` that is unique in `bridge`, so joining
-    on it cannot multiply the candidate's rows. A shared bare `id` is each table's own key, not a
-    link between them, and other shared columns need not be keys at all."""
-    bridge_keys = column_map(bridge)
-    for key in column_map(candidate):
-        if key in bridge_keys and key.endswith("_id"):
-            column = quote(bridge_keys[key])
-            sql = f"SELECT count(*), count(DISTINCT {column}) FROM {bridge.sql_name}"
-            rows, distinct = run(sql, 1).rows[0]
-            if rows == distinct:
-                return key
-    return None
-
-
-@dataclass(frozen=True)
-class Slice:
-    tail: str  # FROM-clause tail limiting the candidate, aliased c, to the slice
-    sliced_on: str
-    missing: list[str]  # slice columns it could not apply
-    bridge: Table | None  # the upstream joined as d to reach the other slice columns
-
-
-def slice_filter(
-    run: RunQuery, candidate: Table, slice_values: dict[str, Any], bridges: list[Table]
-) -> Slice | None:
-    """Slice columns the candidate has apply directly; the rest through one named upstream that
-    has them and a unique join column. None when no slice column applies at all."""
-    keys = column_map(candidate)
-    applied = [column for column in slice_values if column.lower() in keys]
-    tests = [equals(f"c.{quote(keys[c.lower()])}", slice_values[c]) for c in applied]
-    described = [", ".join(applied)] if applied else []
-    missing = [column for column in slice_values if column not in applied]
-    join, joined = "", None
-    for bridge in bridges if missing else []:
-        bridge_keys = column_map(bridge)
-        covered = [column for column in missing if column.lower() in bridge_keys]
-        if bridge == candidate or not covered:
-            continue
-        key = unique_key(run, candidate, bridge)
-        if key is None:
-            continue
-        join = f"JOIN {bridge.sql_name} AS d ON c.{quote(keys[key])} = d.{quote(bridge_keys[key])} "
-        tests += [equals(f"d.{quote(bridge_keys[c.lower()])}", slice_values[c]) for c in covered]
-        described.append(f"{', '.join(covered)} via {bridge.ref}.{bridge_keys[key]}")
-        missing = [column for column in missing if column not in covered]
-        joined = bridge
-        break
-    if not tests:
-        return None
-    return Slice(f"{join}WHERE {' AND '.join(tests)}", "; ".join(described), missing, joined)
-
-
-def nearest_finer_table(
-    run: RunQuery, catalog: list[Table], model: Table, column: str
-) -> list[Table]:
-    """The table with the slice column whose row count is the smallest above the model's."""
-    model_rows = row_count(run, model)
-    having = [table for table in catalog if table != model and column.lower() in column_map(table)][
-        :SLICE_TABLES
-    ]
-    finer = [(rows, table) for table in having if (rows := row_count(run, table)) > model_rows]
-    return [min(finer, key=lambda item: item[0])[1]] if finer else []
-
-
-def candidate_counts(
-    run: RunQuery, candidate: Table, tail: str, baselines: list[str]
-) -> tuple[int, list[tuple[str, int]], list[int]]:
-    """COUNT(*), COUNT(DISTINCT) of the first `_id` columns and the `baselines` over the slice."""
-    ids = [name for name, _ in candidate.columns if is_identifier(name)][:ID_COLUMNS]
-    parts = ["count(*)", *(f"count(DISTINCT c.{quote(name)})" for name in ids), *baselines]
-    values = run(f"SELECT {', '.join(parts)} FROM {candidate.sql_name} AS c {tail}", 1).rows[0]
-    distinct = [(name, int(v)) for name, v in zip(ids, values[1 : 1 + len(ids)], strict=True)]
-    return int(values[0]), distinct, [int(v or 0) for v in values[1 + len(ids) :]]
-
-
-# --- reading a model's SQL for verify_model_values (sqlglot) ---------------------------------
-
-
-@dataclass(frozen=True)
-class Output:
-    """How the model's SQL computes one output column, traced through CTEs and subqueries to the
-    SELECT that computes it."""
-
-    expression: exp.Expr
-    grouped: bool  # a GROUP BY expression of that SELECT: a dimension, whatever its type
-    aggregate: bool  # an aggregate outside a window: a metric, never a dimension
-    select: exp.Select
-
-
-@dataclass(frozen=True)
-class Parsed:
-    select: exp.Select  # the outermost SELECT
-    ctes: dict[str, exp.Expr]  # by lowercase name
-    root: Scope
-
-    def scope(self, query: exp.Expr) -> Scope | None:
-        return next((s for s in self.root.traverse() if s.expression is query), None)
-
-
-def parse_model(
-    sql: str, catalog: list[Table], relations: Relations | None, dialect: str
-) -> Parsed | None:
-    """The model's SQL with Jinja rendered away (ref and source become the relations dbt builds
-    and reads, by `relations`), its columns qualified with their tables from the catalog where
-    it can tell; None when it does not parse to one SELECT."""
-    relations = relations or Relations({}, {})
-    plain = re.sub(r"\{#.*?#\}", "", sql, flags=re.DOTALL)
-    plain = REF_RE.sub(lambda match: relations.model(match.group(1)), plain)
-    plain = SOURCE_RE.sub(lambda match: ".".join(relations.source(*match.groups())), plain)
-    plain = re.sub(r"\{%.*?%\}|\{\{.*?\}\}", "", plain, flags=re.DOTALL)
-    try:
-        tree = sqlglot.parse_one(plain, dialect=dialect)
-    except SqlglotError:
-        return None
-    tables: dict[str, dict[str, dict[str, str]]] = {}
-    for table in catalog:
-        # Only the names matter for qualifying; the types are not read.
-        columns = {column: "TEXT" for column, _ in table.columns}
-        tables.setdefault(table.schema, {})[table.name] = columns
-    schema: dict[str, object] = {**tables}
-    # Left unqualified on failure: then only a single-table SELECT's columns have a known table.
-    with contextlib.suppress(SqlglotError):
-        tree = qualify(
-            tree.copy(),
-            schema=schema,
-            dialect=dialect,
-            validate_qualify_columns=False,
-            identify=False,
-        )
-    root = build_scope(tree)
-    if not isinstance(tree, exp.Select) or root is None:
-        return None
-    return Parsed(tree, {cte.alias.lower(): cte.this for cte in tree.find_all(exp.CTE)}, root)
-
-
-def has_aggregate(expression: exp.Expr) -> bool:
-    """An aggregate outside windows and subqueries."""
-    nodes = expression.walk(prune=lambda node: isinstance(node, exp.Window | exp.Subquery))
-    return any(isinstance(node, exp.AggFunc) for node in nodes)
-
-
-def unqualified(expression: exp.Expr) -> exp.Expr:
-    return expression.transform(
-        lambda node: exp.column(node.this.copy()) if isinstance(node, exp.Column) else node
-    )
-
-
-def in_group_by(select: exp.Select, projection: exp.Expr) -> bool:
-    """Whether the projection is grouped on: GROUP BY ALL, its ordinal, its alias, or the same
-    expression with table qualifiers ignored."""
-    group = select.args.get("group")
-    if not group:
-        return False
-    expression = projection.unalias()
-    if group.args.get("all"):
-        return not has_aggregate(expression)
-    position = select.expressions.index(projection) + 1
-    target = unqualified(expression)
-    for item in group.expressions + subtotal_keys(group):
-        if isinstance(item, exp.Literal) and item.is_int and int(item.name) == position:
-            return True
-        alias = projection.alias_or_name.lower()
-        if isinstance(item, exp.Column) and not item.table and item.name.lower() == alias:
-            return True
-        if unqualified(item) == target:
-            return True
-    return False
-
-
-def subtotal_keys(group: exp.Group) -> list[exp.Expr]:
-    """The expressions grouped in ROLLUP, CUBE or GROUPING SETS, whose rows include subtotals
-    with NULL in their place."""
-    keys: list[exp.Expr] = []
-    for kind in ("rollup", "cube", "grouping_sets"):
-        for node in group.args.get(kind) or []:
-            for item in node.expressions:
-                item = item.unnest() if isinstance(item, exp.Paren) else item
-                keys.extend(item.expressions if isinstance(item, exp.Tuple) else [item])
-    return keys
-
-
-def derived(query: exp.Expr, parsed: Parsed) -> dict[str, exp.Expr | None]:
-    """The query's FROM and JOIN sources by lowercase alias, as sqlglot scopes them (so a CTE
-    named after the table it reads is not taken for itself): a CTE's or subquery's query (a
-    SELECT, or a set operation), or None for a table."""
-    scope = parsed.scope(query)
-    if scope is None:
-        return {}
-    return {
-        alias.lower(): source.expression if isinstance(source, Scope) else None
-        for alias, (_, source) in scope.selected_sources.items()
-    }
-
-
-def trace(parsed: Parsed, select: exp.Select, name: str, depth: int = 0) -> Output | None:
-    """How `select` computes output column `name`: a column taken from a CTE or subquery is
-    followed into it (under CAST, COALESCE or parentheses too, when it is grouped or aggregated
-    there), a star expanded through them. None when the column comes from a table's star or the
-    SQL nests deeper than the CTEs plausibly do."""
-    if depth > len(parsed.ctes) + 10:
-        return None
-    sources = derived(select, parsed)
-    for projection in select.expressions:
-        star = projection if isinstance(projection, exp.Star) else None
-        if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
-            star = projection
-        if star is not None:
-            table = star.table.lower() if isinstance(star, exp.Column) else ""
-            for alias, body in sources.items():
-                if isinstance(body, exp.Select) and table in ("", alias):
-                    found = trace(parsed, body, name, depth + 1)
-                    if found:
-                        return found
-            continue
-        if projection.alias_or_name.lower() != name.lower():
-            continue
-        expression = projection.unalias()
-        grouped = in_group_by(select, projection)
-        aggregate = not grouped and has_aggregate(expression)
-        inner = expression
-        while isinstance(inner, exp.Paren | exp.Cast | exp.Coalesce):
-            inner = inner.this
-        if not grouped and not aggregate and isinstance(inner, exp.Column):
-            table = inner.table.lower()
-            for alias, body in sources.items():
-                if isinstance(body, exp.Select) and table in ("", alias):
-                    found = trace(parsed, body, inner.name, depth + 1)
-                    # A wrapped pass-through column is computed here, not taken from there.
-                    if found and (inner is expression or found.grouped or found.aggregate):
-                        return found
-        return Output(expression, grouped, aggregate, select)
-    return None
-
-
-def count_of(output: Output) -> exp.Expr | None:
-    """The COUNT(...) (with its FILTER) when it is the outermost aggregate, under CAST, COALESCE
-    or parentheses only; None for any other metric, such as CAST(SUM(a) / COUNT(*) AS BIGINT)."""
-    node = output.expression if output.aggregate else None
-    while isinstance(node, exp.Paren | exp.Cast | exp.Coalesce):
-        node = node.this
-    if isinstance(node, exp.Filter) and isinstance(node.this, exp.Count):
-        return node
-    return node if isinstance(node, exp.Count) else None
-
-
-def origin(
-    scope: Scope, column: exp.Column, dialect: str, depth: int = 0
-) -> tuple[str, str, str] | str:
-    """(schema or "", table, column), lowercase, of the upstream column that `column` reads
-    unchanged through CTEs and subqueries, or why there is none."""
-    sources = {alias: source for alias, (_, source) in scope.selected_sources.items()}
-    source = sources.get(column.table) if column.table else None
-    if not column.table and len(sources) == 1:
-        source = next(iter(sources.values()))
-    if isinstance(source, exp.Table):
-        return source.db.lower(), source.name.lower(), column.name.lower()
-    if isinstance(source, Scope) and isinstance(source.expression, exp.Select) and depth < 50:
-        for projection in source.expression.expressions:
-            if projection.alias_or_name.lower() == column.name.lower():
-                inner = projection.unalias()
-                if isinstance(inner, exp.Column) and not isinstance(inner.this, exp.Star):
-                    return origin(source, inner, dialect, depth + 1)
-                computed = inner.sql(dialect=dialect)
-                return f"{column.name} is computed in the model's SQL ({computed})"
-    return f"cannot tell which upstream table {column.name} comes from"
-
-
-def portable(count: exp.Expr, scope: Scope, dialect: str) -> exp.Expr | str:
-    """The count with each column qualified by the upstream table it reads, or why it cannot be
-    counted over an upstream."""
-    problems: list[str] = []
-
-    def rewrite(node: exp.Expr) -> exp.Expr:
-        if not isinstance(node, exp.Column) or isinstance(node.this, exp.Star):
-            return node
-        found = origin(scope, node, dialect)
-        if isinstance(found, str):
-            problems.append(found)
-            return node
-        # Unquoted, for the label; baseline_sql quotes the catalog's names.
-        return exp.column(found[2], table=found[1], db=found[0] or None)
-
-    rewritten = count.transform(rewrite)
-    return problems[0] if problems else rewritten
-
-
-def keeps_rows(parsed: Parsed, query: exp.Expr, depth: int = 0) -> bool:
-    """Whether a CTE's or subquery's rows are its tables' rows, filtered at most: a single
-    SELECT without GROUP BY, aggregate or DISTINCT, down to the tables."""
-    if not isinstance(query, exp.Select) or depth > len(parsed.ctes) + 10:
-        return False
-    if query.args.get("group") or query.args.get("distinct"):
-        return False
-    if any(has_aggregate(projection) for projection in query.expressions):
-        return False
-    sources = derived(query, parsed).values()
-    return all(body is None or keeps_rows(parsed, body, depth + 1) for body in sources)
-
-
-def rows_problem(parsed: Parsed, select: exp.Select) -> str:
-    """Why the SELECT's rows are not upstream rows (it reads an aggregated CTE); "" when they
-    are."""
-    for alias, body in derived(select, parsed).items():
-        if body is not None and not keeps_rows(parsed, body):
-            return f"counts the rows of {alias}, which are not upstream rows"
-    return ""
-
-
-def counts_all_rows(count: exp.Expr) -> bool:
-    """COUNT(*) or COUNT(<constant>) without FILTER: the baseline is the slice's row count."""
-    return isinstance(count, exp.Count) and isinstance(count.this, exp.Star | exp.Literal)
-
-
-def label(count: exp.Expr, dialect: str) -> str:
-    return "COUNT(*)" if counts_all_rows(count) else unqualified(count).sql(dialect=dialect)
-
-
-def baseline_sql(
-    count: exp.Expr, candidate: Table, bridge: Table | None, dialect: str
-) -> str | list[str]:
-    """The model's count rewritten over the candidate (alias c) and the bridge it is sliced
-    through (alias d), or the columns neither has, which leave the count without a baseline."""
-    if count.find(exp.Select):
-        return [unqualified(count).sql(dialect=dialect)]
-    keys = column_map(candidate)
-    bridge_keys = column_map(bridge) if bridge else {}
-    missing: list[str] = []
-
-    def rewrite(node: exp.Expr) -> exp.Expr:
-        if not isinstance(node, exp.Column) or isinstance(node.this, exp.Star):
-            return node
-        name, table, schema = node.name.lower(), node.table.lower(), node.db.lower()
-
-        def reads(upstream: Table) -> bool:
-            return table in ("", upstream.name.lower()) and schema in ("", upstream.schema.lower())
-
-        if reads(candidate) and name in keys:
-            return exp.column(keys[name], table="c", quoted=True)
-        if bridge and reads(bridge) and name in bridge_keys:
-            return exp.column(bridge_keys[name], table="d", quoted=True)
-        missing.append(f"{node.table}.{node.name}" if node.table else node.name)
-        return node
-
-    rewritten = count.transform(rewrite)
-    return missing or rewritten.sql(dialect=dialect)
-
-
-ROW_COUNT = exp.Count(this=exp.Star())
-NESTED_TYPES = frozenset({"STRUCT", "MAP", "LIST", "UNION", "ARRAY"})
-
-
-def sliceable(data_type: str) -> bool:
-    """A type whose values the slice can match with `=`."""
-    return (
-        comparable(data_type) and "[" not in data_type and base_type(data_type) not in NESTED_TYPES
-    )
-
-
-@dataclass
-class Roles:
-    """The model's columns by role. From its SQL when it parses: a GROUP BY output is a
-    dimension, a numeric aggregate a metric and a count when its outermost aggregate is COUNT;
-    other columns, and every column without the SQL, by type and name (text, date and `*_id` are
-    dimensions; an integer named as a count is COUNT(*), inconclusive when the SQL parsed)."""
-
-    dimensions: list[str]
-    unsliceable: list[str]  # grouping columns the slice cannot match: every slice is too wide
-    metrics: list[str]
-    counts: dict[str, exp.Expr]  # metric -> the COUNT(...) to recompute over each candidate
-    opaque: dict[str, str]  # count metric -> why no upstream count is its baseline
-
-
-def column_roles(
-    model: Table,
-    sql: str | None,
-    catalog: list[Table],
-    relations: Relations | None,
-    dialect: str,
-) -> tuple[Roles, str]:
-    """The roles and a note on how they were read."""
-    parsed = parse_model(sql, catalog, relations, dialect) if sql is not None else None
-    if sql is None:
-        note = "Model SQL not read: only metrics named as counts are held against COUNT(*)"
-    elif parsed is None:
-        note = (
-            "Model SQL could not be parsed: dimensions and counts from column types and names; "
-            "only metrics named as counts are held against COUNT(*)"
-        )
-    else:
-        note = (
-            "Model SQL read: the slice is its GROUP BY columns, and a COUNT(...) metric is held "
-            "against the same COUNT over each candidate"
-        )
-    roles = Roles([], [], [], {}, {})
-    for name, data_type in model.columns:
-        output = trace(parsed, parsed.select, name) if parsed else None
-        scope = parsed.scope(output.select) if parsed and output else None
-        if output and output.grouped:
-            # A computed or renamed grouping column has no upstream column of its name to match.
-            column = output.expression
-            kept = (
-                isinstance(column, exp.Column)
-                and scope is not None
-                and origin(scope, column, dialect)[2:] == (name.lower(),)
-            )
-            # A ROLLUP's subtotal row has NULL there, which no upstream row matches.
-            subtotals = subtotal_keys(output.select.args["group"])
-            target = unqualified(column)
-            subtotal = any(
-                unqualified(key) == target
-                or (isinstance(key, exp.Column) and key.name.lower() == name.lower())
-                for key in subtotals
-            )
-            if kept and sliceable(data_type) and not subtotal:
-                roles.dimensions.append(name)
-            else:
-                roles.unsliceable.append(name)
-        elif output and output.aggregate:
-            if is_numeric(data_type):
-                roles.metrics.append(name)
-                count = count_of(output)
-                if count is not None and parsed and scope:
-                    rewritten = portable(count, scope, dialect)
-                    problem = rows_problem(parsed, output.select)
-                    if isinstance(rewritten, str) or problem:
-                        roles.counts[name] = count
-                        roles.opaque[name] = problem or str(rewritten)
-                    else:
-                        roles.counts[name] = rewritten
-        elif output and not output.expression.find(exp.Column, exp.Star):
-            # A constant: the same in every row, so neither a slice nor a measure.
-            continue
-        elif is_dimension(name, data_type):
-            roles.dimensions.append(name)
-        elif is_numeric(data_type):
-            # A sum, even of integers, or an average is compared by the verifier, not here.
-            roles.metrics.append(name)
-            # The name speaks only for a column the SQL does not compute (a window, arithmetic).
-            named = output is None or isinstance(output.expression, exp.Column)
-            if named and base_type(data_type) in INTEGER_TYPES and COUNT_NAME_RE.match(name):
-                roles.counts[name] = ROW_COUNT
-                if parsed:
-                    # Parsed SQL that does not show the column's aggregate (a UNION, a table's
-                    # star) gives the name no say.
-                    roles.opaque[name] = (
-                        "named as a count, but the model's SQL does not show how it is computed"
-                    )
-        else:
-            roles.unsliceable.append(name)
-    return roles, note
-
-
-@dataclass(frozen=True)
-class Measured:
-    candidate: Table
-    rows: int
-    found: Slice | None  # None: no slice column applies
-    count: int = 0
-    distinct: tuple[tuple[str, int], ...] = ()
-    baselines: tuple[tuple[str, int | list[str]], ...] = ()  # metric -> count, or missing columns
-
-
-def measure(
-    run: RunQuery,
-    candidate: Table,
-    found: Slice | None,
-    counts: dict[str, exp.Expr],
-    dialect: str,
-) -> Measured:
-    rows = row_count(run, candidate)
-    if found is None:
-        return Measured(candidate, rows, None)
-    rewritten = {
-        metric: baseline_sql(count, candidate, found.bridge, dialect)
-        for metric, count in counts.items()
-        if not counts_all_rows(count)
-    }
-    queried = [(metric, sql) for metric, sql in rewritten.items() if isinstance(sql, str)]
-    count, distinct, values = candidate_counts(run, candidate, found.tail, [s for _, s in queried])
-    baselines: dict[str, int | list[str]] = {
-        metric: sql for metric, sql in rewritten.items() if isinstance(sql, list)
-    }
-    baselines.update(zip([metric for metric, _ in queried], values, strict=True))
-    return Measured(candidate, rows, found, count, tuple(distinct), tuple(baselines.items()))
-
-
-def verify_values(
-    run: RunQuery,
-    load: LoadCatalog,
-    model: Table,
-    sources: list[str],
-    sql: str | None = None,
-    relations: Relations | None = None,
-    dialect: str = DIALECT,
-) -> list[str]:
-    catalog = load()
-    roles, note = column_roles(model, sql, catalog, relations, dialect)
-    metrics = roles.metrics
-    if not metrics:
-        return [f"No numeric metric columns in '{model.ref}'; nothing to verify."]
-    top = run(f"SELECT * FROM {model.sql_name} ORDER BY {quote(metrics[0])} DESC NULLS LAST", 1)
-    if not top.rows:
-        return [f"No rows in '{model.ref}'."]
-    row = dict(zip(top.columns, top.rows[0], strict=True))
-    # Every dimension of the top row, NULLs included: the model's full grouping grain.
-    slice_values = {name: row[name] for name in roles.dimensions}
-    unsliceable = roles.unsliceable
-    # A one-row model without dimensions is a scalar aggregate over its whole upstreams.
-    whole_table = not slice_values and bool(sources) and row_count(run, model) == 1
-    shown = ", ".join(
-        f"{name} IS NULL" if value is None else f"{name} = '{value}'"
-        for name, value in slice_values.items()
-    )
-    lines = [f"## Value Verification: {model.ref}", note]
-    if slice_values:
-        lines.append(f"Top row (by {metrics[0]}) slice: {shown}")
-    elif whole_table:
-        lines.append("One-row model with no dimension column: compared with whole upstreams")
-    else:
-        lines.append("No dimension column for slicing; candidates skipped")
-        return lines
-    candidates: list[Table] = []
-    if sources:
-        for name in sources[:MAX_SOURCES]:
-            try:
-                candidates.append(resolve(catalog, name))
-            except ToolError as exc:
-                lines.append(f"Source {name}: {exc}")
-        basis = "named upstreams"
-    else:
-        candidates = nearest_finer_table(run, catalog, model, next(iter(slice_values)))
-        basis = "no source_tables given; nearest finer-grained table with the slice column"
-    lines += [f"Candidates ({basis}): {', '.join(t.ref for t in candidates) or 'none'}", ""]
-
-    # Bridges only between the named upstreams: a join the model's lineage does not show could
-    # put unrelated rows into the count.
-    bridges = candidates if sources else []
-    measured = [
-        measure(
-            run,
-            candidate,
-            Slice("", "the whole table", [], None)
-            if whole_table
-            else slice_filter(run, candidate, slice_values, bridges),
-            {m: count for m, count in roles.counts.items() if m not in roles.opaque},
-            dialect,
-        )
-        for candidate in candidates
-    ]
-    lines += [
-        "Baselines apply the slice only, not the model's own filters (WHERE, join conditions);",
-        "for a model that filters rows, count with those filters before calling a mismatch.",
-        "",
-    ]
-
-    for metric in metrics:
-        value = row.get(metric)
-        if value is None:
-            continue
-        lines += [f"### Metric: {metric}", f"  Model value: {value}"]
-        count = roles.counts.get(metric)
-        for m in measured:
-            found = m.found
-            if found is None:
-                lines.append(
-                    f"  Candidate: {m.candidate.ref} ({m.rows} rows) — no slice column and no "
-                    "safe join to one; inconclusive, skipped"
-                )
-                continue
-            lines.append(
-                f"  Candidate: {m.candidate.ref} ({m.rows} rows), sliced on {found.sliced_on}"
-            )
-            if found.missing:
-                lines.append(
-                    f"    not sliced on {', '.join(found.missing)} (no such column or safe join): "
-                    "a wider slice than the model row; inconclusive"
-                )
-            if unsliceable:
-                lines.append(
-                    f"    not sliced on {', '.join(unsliceable)} (computed or renamed in the "
-                    "SQL, a ROLLUP / CUBE / GROUPING SETS key, or a type the slice cannot "
-                    "match): a wider slice than the model row; inconclusive"
-                )
-            counted = [f"    COUNT(*): {m.count}"]
-            counted += [f"    COUNT(DISTINCT {name}): {n}" for name, n in m.distinct]
-            lines += counted
-            if count is None:
-                continue
-            counted_as = label(count, dialect)
-            if metric in roles.opaque:
-                lines.append(f"    {counted_as}: {roles.opaque[metric]}; no baseline, inconclusive")
-                continue
-            baseline: int | list[str] = dict(m.baselines).get(metric, m.count)
-            if isinstance(baseline, list):
-                lines.append(
-                    f"    {counted_as}: uses {', '.join(baseline)}, not in {m.candidate.ref}; "
-                    "no baseline, inconclusive"
-                )
-                continue
-            if f"    {counted_as}: {baseline}" not in counted:
-                lines.append(f"    {counted_as}: {baseline}")
-            if found.missing or unsliceable:
-                continue
-            # A count is exact: a row too many or too few is a defect.
-            model_value = float(value)
-            if baseline == model_value:
-                lines.append(f"    → Model matches {counted_as}")
-            else:
-                ratio = f" ({baseline / model_value:.1f}x)" if model_value else ""
-                lines.append(f"    → MISMATCH vs {counted_as}{ratio}")
-        lines.append("")
-    return lines
-
-
 # --- check_model_schema ----------------------------------------------------------------------
 
 # Kinds the gateway's database treats as one type: DuckDB's VARCHAR is also TEXT and STRING, and
@@ -1404,7 +698,7 @@ def register_verifier_tools(
     """Add the verification tools to `server`; called only when the run config turns the verifier
     layer on. `load` is the server's cached catalog, shared with the base and context tools.
     With a `workspace`, map_columns reads only dbt projects inside it. `dialect` is the
-    gateway's: model SQL and declared types are read in it, and rewritten counts written in it."""
+    gateway's: model SQL and declared types are read in it."""
     root = workspace.resolve() if workspace else None
 
     def dbt_project(project_dir: str) -> Path:
