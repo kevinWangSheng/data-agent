@@ -133,8 +133,13 @@
 
 - S5 多个 Slack 工作区：照 Claude in Slack 分层、照 Onyx 接入。设置的数据结构现在就是 组织 → 工作区 → 频道 → 个人，每条设置带工作区 id；默认一个组织、可多个工作区。每个工作区一套 Bot token + App token，走 Socket Mode，不做 Slack OAuth 分发安装。token 现在在部署层（配置文件列工作区、只写 token 的环境变量名，同现有 IM 配置）；设置页里添加工作区和 S3 共用加密存储，排在后面。网页 Slack 登录后只看、只改自己所在工作区；组织层由部署的人或组织管理员改，组织管理员是配置文件里列出的 Slack 用户 id（Slack 普通工作区没有组织管理员角色；主会话补的细节）。
 
+- S6 Telegram、Discord：套进同一结构。工作区 = Discord 服务器 / Telegram 每个 bot 一个隐含工作区；频道 = Discord 频道 / Telegram 群；私聊 = 个人层。工作区和访问类设置由组织管理员改（配置文件列出的用户 id）；S4 临时覆盖频道里任何人可用；谁能用 bot 照现有允许名单（照 Hermes、OpenClaw）。网页登录先做 Sign in with Slack；没接 Slack 的部署，组织管理员用部署层的管理令牌登录设置页（原 156 的令牌，只给管理员）。
+
 ### 后续（排在后面，要做）
 
 - 界面里新增数据源连接（S3）。
 - 频道里用本人自己的连接器和凭据做本人任务（S2 的例外）。
 - 在设置页里添加 Slack 工作区（token 加密存储，和 S3 一起）。
+- Discord OAuth、Telegram Login Widget 登录网页。
+- 用平台自带的管理员角色（Discord Manage Server、Telegram 群管理员）决定谁能改设置。
+- 陌生人私聊的配对码批准（照 Hermes、OpenClaw）。
