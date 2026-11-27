@@ -139,3 +139,4 @@ Branch: worktree-140-product-safety-defaults
     2. `uv run data-agent web --runs-dir <目录> --data-sources sources.toml --no-network`，然后 `curl -s -X POST localhost:8765/api/runs -H 'content-type: application/json' -d '{"task":"t","task_type":"query","data_source":"<名字>","config":"full","network":true}'`：应返回 409。不带 `network` 再提交一次：应返回 201，运行参数里没有 `--network`。
   - 本地 `main` 已经走到 `e494e49`；三点 diff 对比的是合并基点，只含本工单的 3 个提交。
 - 2026-11-27（主会话）：抄入第 2 次的回复；push 分支、开 PR。合并前还要：Postgres 集成测试（本机 Docker 磁盘满，起不了临时 Postgres）、上面两次真实运行、CI 和 Codex GitHub app 的意见。
+- 2026-11-27（主会话）：Postgres 集成测试在服务器上跑（本机 Docker 磁盘满）。`da-remote setup cf57d35`；服务器上另起临时容器 `postgres:17`（只监听 127.0.0.1:55440、随机密码不打印、跑完删除，不碰 DAB/LiveSQLBench 的库）；`uv run pytest tests/test_run_scratch_schemas.py tests/test_db_facts.py -m integration -q` → `14 passed, 37 deselected in 10.09s`。之后确认无残留容器，`da-remote setup` 回到 main（`ecc3fe4`）。合并前还剩：工单里的两次真实运行、CI 和 Codex GitHub app 意见。

@@ -20,7 +20,7 @@
 - 依据：`docs/adr/0011-product-config-and-eval-profiles.md`；对齐记录 `.scratch/product-config/decisions.md`（方向 1–9、Q1–Q8，人逐条确认的原话）；spec `.scratch/product-config/spec.md`、`.scratch/cloud-deploy/spec.md`；取证 `docs/research/2026-11-27-product-config-audit.md`（审计）、`2026-11-27-config-layering-local-cloud.md`（分层与跑榜）、`2026-11-27-chatbot-agent-config.md`（Slack 类 bot 的配置）、`2026-11-27-skill-tool-spike.md`、`2026-11-27-sandbox-in-container-spike.md`。
 - **设置界面 + 数据库 + 平台身份（已对齐完）**：ADR-0012、spec `.scratch/settings/spec.md`、工单 `.scratch/settings/issues/157-162`；决定原话在 `decisions.md`"设置界面 + Slack 权限"一节（S1–S9）和"建 settings 工单时主会话定的细节"1–18；排在后面的事在"后续"清单。不再分一期二期。156 作废（wontfix），由 159、160 取代；144、151、153、155 已按 ADR-0012 调整。
 - **工单状态**（都在 `.scratch/product-config/issues/`、`.scratch/cloud-deploy/issues/`）：
-  - 140 三处安全默认：PR #145，in-review。合并前要：Postgres 集成测试（`DATA_AGENT_TEST_POSTGRES_URL=... uv run pytest tests/test_run_scratch_schemas.py tests/test_db_facts.py -m integration -q`）、工单里写的两次真实运行、CI 和 Codex GitHub app 意见。
+  - 140 三处安全默认：PR #145，in-review。Postgres 集成测试已在服务器上用临时容器跑过：14 passed（本机资源不够，以后这类测试都在服务器上跑，做法见工单 140 最后一条 Comment）。合并前还剩：工单里写的两次真实运行、CI 和 Codex GitHub app 意见。
   - 142 Skill 工具实测：PR #146，in-review。DeepSeek 下能用（模型自己从列表选 Skill，$0.046）；147 要显式把 `"Skill"` 放进 `tools`；推荐 Skill 目录按原路径只读挂进沙箱。
   - 152 容器里起沙箱实测：PR #147，in-review。挂 Docker socket 可行，只能用同名路径挂载；**155 的阻塞点**：产品镜像里 Skill 目录在 Python 包内、宿主机上没有，沙箱挂不进去（改 `src/` 让 Skill 目录可配置或每次运行复制，或部署层绕开）；另有孤儿容器清理在容器 pid 命名空间里会误判。
   - 141、143–151、153–155、157–162：已建票未派。起草时发现的问题已按 decisions.md Q8 和 settings 细节 1–18 处理；"留给下一个会话"四条见 decisions.md。
@@ -30,7 +30,7 @@
 
 ### 要人处理的本机清理
 
-- 本机 colima VM 磁盘满（29.4G 用了 29.3G）：140 的 Postgres 测试和 152 的一项实测因此没跑成。
+- 本机 colima VM 磁盘满（29.4G 用了 29.3G），本机资源不够：需要 Docker 的测试改在服务器上跑（见工单 140）。152 的 `volume-subpath` 一项实测因此没跑成。
 - 152 失败构建留下的：`docker rm jovial_dijkstra && docker rmi 52cbbf487b61 16b32c86f809 1ce9b35fba76 279e99c8cc08`；它还 pull 了 `docker:cli`（212 MB）。
 - `runs/spike-152-fast/`、`runs/spike-152-perm/`（`runs/` 不进 git）。
 - 已合并可删的 worktree：`.claude/worktrees/138-lsb-single-shot-baseline`、`139-lsb-inline-assets`（PR #144、#143 已 MERGED）。
