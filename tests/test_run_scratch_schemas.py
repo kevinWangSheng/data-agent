@@ -34,6 +34,10 @@ OWN_RUN = "mine-1234abcd"
 OWN = scratch_schema(OWN_RUN)
 OTHER = "da_run_other_5678"
 LOOKALIKE = "da_runxy"
+# A model with a custom schema materializes in `<scratch schema>_<custom>` (dbt's
+# generate_schema_name, `dbt_execute.tool_description`): the run's own stays, another's goes.
+OWN_CUSTOM = f"{OWN}_staging"
+OTHER_CUSTOM = f"{OTHER}_staging"
 
 
 def schema_sql(schema: str) -> str:
@@ -49,6 +53,8 @@ DUCKDB_SQL = [
     schema_sql(OTHER),
     schema_sql(LOOKALIKE),
     schema_sql(OWN),
+    schema_sql(OWN_CUSTOM),
+    schema_sql(OTHER_CUSTOM),
 ]
 
 
@@ -177,7 +183,7 @@ async def test_the_server_of_a_run_keeps_the_schema_its_run_id_names(
 # --- Postgres (DATA_AGENT_TEST_POSTGRES_URL) ---------------------------------------------------
 
 PG_URL_ENV = "DATA_AGENT_TEST_POSTGRES_URL"
-PG_SCHEMAS = (OTHER, LOOKALIKE, OWN, "shop140")
+PG_SCHEMAS = (OTHER, LOOKALIKE, OWN, OWN_CUSTOM, OTHER_CUSTOM, "shop140")
 
 
 @pytest.fixture
@@ -217,3 +223,16 @@ async def test_postgres_without_a_run_hides_every_scratch_schema(pg_url: str) ->
     assert "shop140.stage_shop140" in listed
     assert "da_run_" not in listed
     assert not any(ref.startswith("da_run_") for ref in dictionary_refs(gateway))
+
+
+async def test_the_runs_own_custom_schemas_stay_and_other_runs_go(db: Path) -> None:
+    """Codex review of ticket 140: a model with a custom schema is the run's own too."""
+    gateway = DuckDBGateway(db)
+    listed = await call(gateway, "list_tables", {"columns": False}, own_schema=OWN)
+    assert f"{OWN_CUSTOM}.stage_{OWN_CUSTOM}" in listed
+    assert OTHER not in listed
+    described = await call(
+        gateway, "describe_table", {"table": f"{OWN_CUSTOM}.stage_{OWN_CUSTOM}"}, OWN
+    )
+    assert "status" in described
+    assert f"{OWN_CUSTOM}.stage_{OWN_CUSTOM}" in dictionary_refs(gateway, own_schema=OWN)

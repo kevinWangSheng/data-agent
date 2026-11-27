@@ -78,7 +78,7 @@ refuses one inside). dbt writes only to a schema of the run's own (`da_run_<run 
 `--dbt-target scratch`), never the project's production schemas; `--dbt-target task` uses the
 project's own profile and writes where it points, as the benchmark entries do. The agent's table
 listing, catalog and value dictionary leave out other runs' `da_run_*` schemas (they are kept after
-each run) and show its own. `events/` gets one JSONL file per run with every tool call, SQL statement, token
+each run) and show its own, custom-schema variants included. `events/` gets one JSONL file per run with every tool call, SQL statement, token
 count and cost. `data-agent run` stays offline unless given `--network`, which gives the agent
 WebSearch, WebFetch and a container that can reach the network.
 

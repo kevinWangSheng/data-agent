@@ -144,8 +144,9 @@ SAFE_NAME = re.compile(r"[a-z0-9_]*")
 @dataclass(frozen=True)
 class HiddenSchemas:
     """The schemas a catalog leaves out: every one whose name starts with `prefix`, except
-    `kept`. Both are lower case [a-z0-9_] (as `dbt_execute.scratch_schema` names), so they go
-    into SQL as they are."""
+    `kept` and its `kept_<suffix>` schemas (dbt builds a model with a custom schema in
+    `<schema>_<custom>`). Both are lower case [a-z0-9_] (as `dbt_execute.scratch_schema`
+    names), so they go into SQL as they are."""
 
     prefix: str
     kept: str | None = None
@@ -158,7 +159,12 @@ class HiddenSchemas:
     def shown(self, column: str) -> str:
         """A SQL condition on the schema-name `column`, true for a schema shown. No LIKE: its `_`
         matches any character, so `da_run_%` would take `da_runxy` too."""
-        kept = "" if self.kept is None else f" OR lower({column}) = '{self.kept}'"
+        kept = (
+            ""
+            if self.kept is None
+            else f" OR lower({column}) = '{self.kept}'"
+            f" OR left(lower({column}), {len(self.kept) + 1}) = '{self.kept}_'"
+        )
         return f"(left(lower({column}), {len(self.prefix)}) <> '{self.prefix}'{kept})"
 
 
