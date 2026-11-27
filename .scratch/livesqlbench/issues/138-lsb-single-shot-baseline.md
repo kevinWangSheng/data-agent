@@ -1,6 +1,6 @@
 # 138 — LiveSQLBench：照官方 baseline 的单次调用对照（spec D2）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（"Update 2026-11-27"一节，D2）
 Claimed by: claude-code (138 worktree session)
@@ -198,3 +198,5 @@ Branch: worktree-138-lsb-single-shot-baseline
      python -m evals compare --baseline runs/lsb-dev-3/jobs/no-verifiers --candidate runs/lsb-single-shot-3/jobs/single-shot --manifest evals/manifest.json --split dev --benchmark livesqlbench --trials 3
      ```
 - 2026-11-27（主会话）：认领字段由主会话补写（工单会话写主 checkout 被拦）。合入 origin/main，NOTICE 冲突两条都留。未完成的验收项「本机跑通一题」改由服务器 1 题运行（`lsb-ss-1`）关闭，D1 跑完后做。
+- 2026-11-27（主会话）：PR #144 CI 绿；Codex GitHub app 未自动审查，评论 `@codex review` 后审查 `318c4a9` 无意见；squash 合并为 `aec89d6`。
+- 2026-11-27（主会话）：服务器 1 题运行关闭「本机跑通一题」：`da-remote setup aec89d6`、`check` 0 failure；`da-remote start lsb-ss-1 -- lsb-single-shot --tasks-dir ../da-benchmarks/livesqlbench/tasks --split dev --task lsb-alien_1 --trials 1 --out runs/lsb-ss-1 --budget 0.5` → `dev: accuracy 100.0% ± 0.0% over 1 trials`；`artifacts/app/pred.json` 已收集；`verifier_result` reward 1.0、无 exception；`cost_usd` 0.0058（实扣 $0.0029）；日志无 400，temperature 0 加思考被接受。
