@@ -34,10 +34,12 @@ from data_agent.context_tools import (
     Dictionary,
     DictionaryBuild,
     build_interruptible,
+    other_runs,
     register_context_tools,
 )
 from data_agent.db_facts import (
     CatalogCache,
+    HiddenSchemas,
     LoadCatalog,
     describe,
     plan_text,
@@ -70,6 +72,7 @@ from data_agent.tool_annotations import CHAT_ENV, READ_ONLY, SANDBOX, database_t
 from data_agent.verifier_tools import register_verifier_tools
 
 # One row per table, column names in order; plain SELECTs, so they pass the gateway like any other.
+# The hidden schemas (`Database.hidden`) are left out in the SQL, so they take none of the MAX_ROWS.
 LIST_TABLES_SQL = """
 SELECT t.table_schema, t.table_name, t.table_type,
        string_agg(c.column_name, ', ' ORDER BY c.ordinal_position) AS columns,
@@ -79,7 +82,7 @@ JOIN information_schema.columns AS c
   ON c.table_catalog = t.table_catalog
  AND c.table_schema = t.table_schema
  AND c.table_name = t.table_name
-WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
+WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog') AND {shown}
 GROUP BY t.table_schema, t.table_name, t.table_type
 ORDER BY t.table_schema, t.table_name
 """
@@ -221,19 +224,22 @@ def table_lines(
 @dataclass(frozen=True)
 class Database:
     """One database the server reaches, with what its tools keep of it: a catalog cached per
-    database, shared by every tool that looks one of its tables up, and its label tables."""
+    database, shared by every tool that looks one of its tables up, and its label tables. The
+    listing and the catalog leave out the `hidden` schemas: other runs' scratch schemas
+    (`context_tools.other_runs`)."""
 
     gateway: Gateway
     catalog: LoadCatalog
     labels: LabelTables
+    hidden: HiddenSchemas
 
     def run(self, sql: str, row_limit: int) -> QueryResult:
         return run_query(self.gateway, sql, row_limit)
 
 
-def open_database(gateway: Gateway, labels: LabelTables) -> Database:
-    catalog = CatalogCache(partial(run_query, gateway), gateway.catalog_key).get
-    return Database(gateway, catalog, labels)
+def open_database(gateway: Gateway, labels: LabelTables, hidden: HiddenSchemas) -> Database:
+    catalog = CatalogCache(partial(run_query, gateway), gateway.catalog_key, hidden=hidden).get
+    return Database(gateway, catalog, labels, hidden)
 
 
 def build_server(
@@ -245,6 +251,7 @@ def build_server(
     sandbox: Sandbox | None = None,
     dbt: DbtExecutor | None = None,
     charts: bool = False,
+    own_schema: str | None = None,
 ) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
     `config` turns that layer on, so a run with it off cannot see them; `verifier_tools=False`
@@ -255,9 +262,13 @@ def build_server(
     database the tools take no `database` argument (`database_tools`). With `sandbox` the server
     also serves sandbox_exec (`register_sandbox_tool`); without it the tools are as before. With
     `dbt` (a dbt run with a sandbox) it serves dbt_execute too (`register_dbt_tool`). With
-    `charts` (ticket 119) it serves display_chart (`register_chart_tool`)."""
+    `charts` (ticket 119) it serves display_chart (`register_chart_tool`). `own_schema` is the
+    run's own scratch schema (ticket 140): it stays in the tools' view, and no other run's does
+    (`context_tools.other_runs`)."""
     dictionaries = {"": dictionary} if dictionary is not None else {}
-    server, databases = data_server({"": gateway}, config, workspace, dictionaries, sandbox, charts)
+    server, databases = data_server(
+        {"": gateway}, config, workspace, dictionaries, sandbox, charts, own_schema
+    )
     if config.verifiers and verifier_tools:
         db = databases[""]
         register_verifier_tools(server, db.run, db.catalog, workspace, gateway.dialect)
@@ -273,13 +284,16 @@ def build_multi_server(
     dictionaries: Mapping[str, Dictionary] | None = None,
     sandbox: Sandbox | None = None,
     charts: bool = False,
+    own_schema: str | None = None,
 ) -> MCPServer:
     """A server over several databases by name (ticket 89): every query and context tool takes
     a required `database` argument, one of the names, and works on that database alone; each
     database has its own catalog, facts, dictionary and label tables. As `build_server`
     otherwise, with a dictionary built now for a database `dictionaries` has none for. No
     verifier tools: they check dbt runs, which have one database."""
-    server, _ = data_server(gateways, config, workspace, dictionaries or {}, sandbox, charts)
+    server, _ = data_server(
+        gateways, config, workspace, dictionaries or {}, sandbox, charts, own_schema
+    )
     return server
 
 
@@ -290,6 +304,7 @@ def data_server(
     dictionaries: Mapping[str, Dictionary],
     sandbox: Sandbox | None,
     charts: bool = False,
+    own_schema: str | None = None,
 ) -> tuple[MCPServer, dict[str, Database]]:
     """The base tools and, when `config` turns that layer on, the context tools, over `gateways`
     by name (`database_tools`); a database `dictionaries` has no dictionary for gets one built
@@ -297,11 +312,12 @@ def data_server(
     served in conversation mode only (spec decision 8), which `data-agent run --chat` switches
     on through the environment (`CHAT_ENV`). With `sandbox`, sandbox_exec too; with `charts`,
     display_chart. Either one keeps every query_database result under an id, one store for
-    both tools."""
+    both tools. No other run's scratch schema is in any database's view; `own_schema` is."""
     server = MCPServer("data-agent")
     numbers = itertools.count(1)
+    hidden = other_runs(own_schema)
     databases = {
-        name: open_database(gateway, LabelTables(workspace, numbers))
+        name: open_database(gateway, LabelTables(workspace, numbers), hidden)
         for name, gateway in gateways.items()
     }
     results = (
@@ -321,7 +337,7 @@ def data_server(
         for name, db in databases.items():
             dictionary = dictionaries.get(name)
             if dictionary is None:
-                dictionary = build_interruptible(DictionaryBuild(db.gateway))
+                dictionary = build_interruptible(DictionaryBuild(db.gateway, own_schema=own_schema))
             contexts[name] = ContextDatabase(db.run, db.catalog, db.gateway.dialect, dictionary)
         register_context_tools(server, contexts)
     return server, databases
@@ -471,7 +487,9 @@ def register_base_tools(
         """
         if max_tables < 1:
             raise ToolError("max_tables must be at least 1")
-        tables = db.run(LIST_TABLES_SQL, MAX_ROWS).rows
+        tables = db.run(
+            LIST_TABLES_SQL.format(shown=db.hidden.shown("t.table_schema")), MAX_ROWS
+        ).rows
         estimates = row_estimates(db.run, db.gateway.dialect)
         wanted_schema = (schema or "").strip().lower()
         needle = (name_contains or "").strip().lower()

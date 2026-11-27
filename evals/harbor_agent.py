@@ -392,9 +392,9 @@ class DataAgent(BaseInstalledAgent):
             '--duckdb "${DUCKDB_PATH:-/app/database/retail.duckdb}" '
             f"--config {shlex.quote(self.options.run_config)} "
             # The task container is the isolated environment (ADR-0010): sandbox_exec runs in it.
-            # No --network and no --dbt-target: an evaluation stays offline and dbt writes the
-            # task's own database.
-            "--sandbox local "
+            # No --network: an evaluation stays offline. --dbt-target task: dbt writes the task's
+            # own database, where it is graded (the CLI's default is scratch, ticket 140).
+            "--sandbox local --dbt-target task "
             f"--events-dir {shlex.quote(str(logs / self.EVENTS_DIR))} "
             f"--agent-timeout-sec {shlex.quote(str(self.options.agent_timeout_sec))} "
             f"--task {shlex.quote(instruction)} "

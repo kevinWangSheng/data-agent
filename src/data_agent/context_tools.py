@@ -31,6 +31,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from data_agent.db_facts import (
+    HiddenSchemas,
     LoadCatalog,
     RunQuery,
     Table,
@@ -42,6 +43,7 @@ from data_agent.db_facts import (
     quote,
     table_facts,
 )
+from data_agent.dbt_execute import SCHEMA_PREFIX
 from data_agent.gateway import Gateway, QueryBlocked, QueryFailed, QueryInterrupted, Session
 from data_agent.tool_annotations import READ_ONLY, database_tools
 
@@ -330,6 +332,14 @@ def sample_table(session: Session, table: Table) -> TableSample:
     return sampled
 
 
+def other_runs(own_schema: str | None) -> HiddenSchemas:
+    """Other runs' scratch schemas (`dbt_execute.scratch_schema`; they stay after their run):
+    what the agent's catalog and dictionary leave out (ticket 140). `own_schema`, the run's own,
+    stays in view: the agent queries the models it builds there. None, as for a server with no
+    run id or a dictionary built before the run writes anything: every scratch schema is out."""
+    return HiddenSchemas(SCHEMA_PREFIX, own_schema)
+
+
 class DictionaryCancelled(Exception):
     """`cancel` was called: the statement was interrupted and the connection is closed."""
 
@@ -339,7 +349,7 @@ class DictionaryBuild:
     read or `time_limit` runs out. The limit holds mid-statement: a timer interrupts the session
     when it is reached, and what was built by then is kept. `cancel` (from any thread, before or
     during `run`) interrupts the running statement; `run` then closes the session and raises
-    DictionaryCancelled."""
+    DictionaryCancelled. No other run's scratch schema is sampled (`other_runs`)."""
 
     def __init__(
         self,
@@ -347,8 +357,10 @@ class DictionaryBuild:
         time_limit: float = TIME_LIMIT_SECONDS,
         statement_timeout: float = STATEMENT_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        own_schema: str | None = None,
     ) -> None:
         self.gateway = gateway
+        self.hidden = other_runs(own_schema)
         self.time_limit = time_limit
         self.statement_timeout = statement_timeout
         self.clock = clock
@@ -387,7 +399,8 @@ class DictionaryBuild:
         try:
             if self._expired.is_set():
                 return self.failed("the time limit ran out while connecting", started)
-            tables = [t for t in load_catalog(session.query) if t.kind == "table"]
+            catalog = load_catalog(session.query, self.hidden)
+            tables = [t for t in catalog if t.kind == "table"]
             return self.sample(session, sorted(tables, key=lambda t: (t.schema, t.name)), started)
         except QueryInterrupted:
             if self._cancel.is_set():

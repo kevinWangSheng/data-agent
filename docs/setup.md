@@ -84,7 +84,10 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 命令不查 `--old` 是不是上一次合入的版本，由调用者保证。ADR-0008 的验收就是 `--trials 3`；别的值只用来试跑（如 k=1 的 `runs/dev-2`）。工单 29 之前的 `--out`（dev-2、dev-3）里，续跑删掉的、没写事件文件的 trial 没在 `dropped/` 留下 `result.json`，这种基础设施报错查不出来。
 - 结论：`pass`（退出 0）；`fail`、`rerun-regression`、`rerun-old`（退出 1）。回归题已判退步时，不管旧版能否复用都是 `fail`。
 
-本地网页的后端（工单 77、78）：`uv run data-agent web --runs-dir runs/web [--port 8765] [--data-sources sources.toml]`，只听 `127.0.0.1`。
+本地网页的后端（工单 77、78）：`uv run data-agent web --runs-dir runs/web [--port 8765] [--data-sources sources.toml] [--no-network]`，只听 `127.0.0.1`。
+
+- 联网开关（工单 140）：默认开（ADR-0010），网页、对话的每次运行照请求里的 `network` 决定，不传时联网；IM 的回合不传，跟随服务器。`--no-network` 时所有运行都不联网（没有 WebSearch、WebFetch，沙箱容器没有网络）；请求里 `network=true` 返回 409，不会悄悄改成不联网。网页的联网勾选框默认是勾上的，所以这时要先取消勾选再提交。
+- `data-agent run --type dbt` 的 `--dbt-target` 默认 `scratch`（工单 140）：dbt 只写本次运行自己的 `da_run_<run id>` schema，profile 生成在工作区外（`--events-dir` 下的 `profiles/`，所以 `--events-dir` 不能在工作区里）。`task` 用项目自己的 profile、写它指向的库，只给评测入口用（`evals/harbor_agent.py`、`evals/jaffle.py` 显式传）。临时 schema 跑完不删；agent 的 `list_tables`、目录和值字典不显示别的运行留下的 `da_run_*`，只显示本次运行自己的那个（和 dbt 自定义 schema 生成的 `<它>_<custom>`）。
 
 - 数据源文件只在给了 `--data-sources` 时才读，没有默认路径。不给时表单没有数据源，列出运行、读事件照常，提交运行返回 400。写法（相对路径从文件所在目录算）：
 
