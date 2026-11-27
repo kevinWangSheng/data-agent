@@ -16,9 +16,9 @@ Branch: —
   - `src/data_agent/config.py`（141 的空壳）：加载、合并、校验、来源、TOML 全文与 sha256。spec Q2 全部分节的类型定义都放这里（键名、类型、默认值），各节的**行为**由 144–148 接。
   - `src/data_agent/cli.py`：`run` 的 `--config`（`cli.py:290`）改成可省、可重复的文件路径，过渡期也接受旧消融名；`mcp-server --config`（`:244`）同样接受路径或旧名；新增 `config show` 子命令；去掉 `run --data-sources`（`cli.py:93-98`，`file_task` `:212-236`）、`run --mcp-servers`（`:345-350`）、`web --data-sources`、`web --mcp-servers`、`web --im`（`:363-379`），`serve_web`（`:534-608`）改从生效配置拿数据源、外部 MCP、IM。
   - `src/data_agent/run_config.py`：`load_config`（`run_config.py:41-56`）改成从生效配置得出 `RunConfig`（或换掉 `RunConfig`，保持 `agent.py`、`mcp_server.py`、`verifier_v2/hooks.py` 的读法能用）。
-  - `src/data_agent/web/sources.py`、`src/data_agent/external_mcp.py`、`src/data_agent/im/config.py`：解析函数改成吃配置里的那一节（行为和校验不变）。
+  - `src/data_agent/web/sources.py`、`src/data_agent/external_mcp.py`、`src/data_agent/im/config.py`：解析函数改成吃配置里的那一节（行为和校验不变）。141 的 `test_im_config.py` 钉着 `im.config.load_config(path, environ)`、`product_config_support.run_config_of` 钉着 `run_config.load_config(<EffectiveConfig>)`：这两个签名保留（吃配置那一节的解析可以另加函数，旧签名转调它）。
   - `src/data_agent/web/app.py`、`web/launcher.py`、`web/conversations.py`：只改"子进程拿到哪份配置"（141 契约第 4 项）和去掉 `--data-sources`、`--mcp-servers` 的拼法（`launcher.py:162-183`、`conversations.py:138-143`）。
-  - `tests/acceptance/` 里 141 标了 `TICKET_143` 的文件（`test_config_load.py`、`test_config_cli.py`，以及 141 改写过的已有文件，清单见 141 最终回复）：**只删** `TICKET_143` 标记，以及因此没用的定义和 import。
+  - `tests/acceptance/` 里 141 标了 `TICKET_143` 的文件（`test_config_load.py`、`test_config_cli.py`、`test_config_wiring.py::test_a_run_without_any_config_has_every_layer_on`，以及 141 改写过的已有文件，清单见 141 的 Comments "逐文件改动"表）：**只删** `TICKET_143` 标记，以及因此没用的定义和 import。
   - `tests/`（除 `tests/acceptance/`）：新增或修改单元测试。
   - `docs/setup.md`：配置文件位置、分层、`config show`、三个旧参数改成哪一节。
 - Must not edit：
