@@ -2,13 +2,13 @@
 
 日期：2026-11-27。本机 colima（macOS arm64，VM 为 Ubuntu 24.04，2 CPU、2 GiB 内存，virtiofs，Docker server 29.2.1，client 29.10.1）。没调模型（$0）。探针直接调 data-agent 自己的代码：`DockerSandbox`、`execute_tool`（`sandbox_exec`）、`DuckDBGateway`/`PostgresGateway`、`DictionaryBuild`（值字典）、`DbtExecutor`（`dbt_execute`），不起 agent 会话。
 
-复现：`scripts/spikes/sandbox_in_container/probe.sh`（一条命令。输出 tee 到 `runs/spike-152-output.txt`，跑完删掉自己起的 `da-spike-152-*` 容器、卷、网络和 `runs/spike-152/`）。下面引的都是这次运行的真实输出。
+复现：`scripts/spikes/sandbox_in_container/probe.sh`（一条命令。输出 tee 到 `runs/spike-152-output.txt`，每次运行有自己的标签 `da-spike-152-<tag>`，跑完只删这次起的容器、卷、网络和 `runs/da-spike-152-<tag>/`）。下面引的都是真实输出：最后一次运行（标签 `629a3f`，容器以调用者 uid `501:20` 运行），加上之前一次以 `--user 10001:10001` 运行的结果（同样全部通过，这次改成调用者 uid 是为了 Linux 上清理时删得掉，见 Codex 审查）。
 
 ## 结论
 
 | # | 问题 | 答案 | 证据（探针输出） |
 |---|---|---|---|
-| 1 | 容器里挂 socket，`DockerSandbox` 能起沙箱、`sandbox_exec` 能执行 | **是** | `Q1: YES — container 7883486e7b19 started via the mounted socket; exit_code 0`。data-agent 容器以 uid 10001 运行，`--group-add 991`（socket 的组），沙箱 `Config.User` 为 `10001:10001` |
+| 1 | 容器里挂 socket，`DockerSandbox` 能起沙箱、`sandbox_exec` 能执行 | **是** | `Q1: YES — container d0677da30330 started via the mounted socket; exit_code 0`。data-agent 容器不以 root 运行（`--user 501:20`，之前一次 `10001:10001`），加 `--group-add 991`（socket 的组）；沙箱 `Config.User` 和它相同 |
 | 2 | 工作区、Skill 目录、运行目录能挂进沙箱 | **是，前提是用同名路径挂载** | 见下节 |
 | 3 | 沙箱拿不到 data-agent 容器的环境变量和凭据，默认无网络 | **是** | 沙箱 `env` 里没有任何金丝雀变量（`ANTHROPIC_API_KEY`、`DATA_AGENT_WEB_TOKEN`、Postgres URL，值每次随机生成）；`Mounts` 只有工作区（rw）和 `/skills`（ro）两项；`NetworkMode=none`；沙箱里没有 `/var/run/docker.sock`；`/workspace/..` 是容器根，没有运行目录里的 `profiles/`。网络探测在沙箱里对 Postgres 和 `pypi.org` 都是 `Temporary failure in name resolution`，同一段探测在 data-agent 容器里两个都 `REACHABLE`（对照组） |
 | 4 | `dbt_execute`、值字典、只读网关在 data-agent 容器里照常 | **是** | DuckDB 和 Postgres 网关都返回分组结果，`DELETE` 都是 `QueryBlocked: ... (read-only mode)`；值字典两边都是 `Coverage: 9 of 9 base tables sampled`，`search('gold')` 命中 `raw.customers.tier: 'Gold' (2), 'GOLD' (1), 'gold_tier' (1)`；`dbt_execute run`（scratch）两边都是 `exit_code: 0`、`PASS=3`、`target_schema: da_run_spike152duckdb` / `da_run_spike152postgres` |
@@ -20,7 +20,7 @@
 | 做法 | 结果 | 证据 |
 |---|---|---|
 | 同名路径挂载：宿主机目录 X 挂到容器里同一个 X（`-v X:X`），工作区、Skill 目录、`profiles/` 都在 X 下 | **可行** | agent 侧写的 `data/query_1.csv` 在沙箱里读得到；沙箱写的 `outputs/report.txt` 在 agent 侧读到 `from-sandbox`，并出现在回复的 `output_files:`；`/skills` 只读（`touch: cannot touch '/skills/x': Read-only file system`） |
-| 容器内路径 ≠ 宿主机路径（宿主机 `runs/spike-152/diff` 挂到容器 `/srv/da-spike-152-diff`） | **不可行** | `SandboxError: ... invalid mount config for type "bind": bind source path does not exist: /srv/da-spike-152-diff/workspace` |
+| 容器内路径 ≠ 宿主机路径（宿主机 `runs/da-spike-152-<tag>/diff` 挂到容器 `/srv/da-spike-152-<tag>-diff`） | **不可行** | `SandboxError: ... invalid mount config for type "bind": bind source path does not exist: /srv/da-spike-152-629a3f-diff/workspace` |
 | Skill 目录只在 data-agent 容器自己的文件系统里（镜像里自带，或 git 克隆到容器内路径；探针用容器的 tmpfs 模拟） | **不可行**（整个沙箱起不来，不只是 Skill 缺失） | `SandboxError: ... bind source path does not exist: /baked/skills` |
 | 命名卷挂到容器 `/vol`，工作区放 `/vol/...` | **未实测**（VM 磁盘满，见"本次环境问题"），按机制推断不可行 | 写卷时 `[Errno 28] No space left on device`。容器里看到卷的真实位置是 `/docker/volumes/da-spike-152-vol/_data`（mountinfo），bind 的源 `/vol/...` 在宿主机上不存在，和上面"路径不同"是同一个原因 |
 | 命名卷 + `type=volume,source=<卷>,volume-subpath=<子目录>`（Docker API ≥ 1.45） | **未实测**（同上），且要改 `src/` | `DockerSandbox.start` 现在只发 bind |
@@ -36,8 +36,8 @@
 ## 给 153 / 155 的注意事项
 
 1. **挂 socket 等于宿主机 root 权限**：容器里的进程能用 socket 起任意容器、挂宿主机任意路径。`docs/deploy.md` 要写明（spec 已要求）。
-2. **socket 权限**：data-agent 不必以 root 运行。探针用 `--user 10001:10001 --group-add <socket 的 gid>` 跑通了。gid 要在部署机上取：`stat -c %g /var/run/docker.sock`（colima VM 里是 991；Linux 宿主机上是 `docker` 组的 gid，各机器不同，**未确认**具体值）。Compose 里用 `group_add`。rootless Docker 的 socket 路径不同（`$XDG_RUNTIME_DIR/docker.sock`），**未实测**。
-3. **沙箱的 uid 就是 data-agent 容器的 uid**（`--user os.getuid():os.getgid()`，实测 `10001:10001`）。Linux 宿主机上，同名挂载的宿主机目录要让这个 uid 可写（如 `chown 10001:10001 /srv/data-agent`）。colima/Docker Desktop 的 virtiofs 会映射所有权，所以本机测不出这个问题；Linux 上的行为**未确认**。
+2. **socket 权限**：data-agent 不必以 root 运行。探针用 `--user <非 root uid:gid> --group-add <socket 的 gid>` 跑通了（`10001:10001` 和 `501:20` 各一次）。gid 要在部署机上取：`stat -c %g /var/run/docker.sock`（colima VM 里是 991；Linux 宿主机上是 `docker` 组的 gid，各机器不同，**未确认**具体值）。Compose 里用 `group_add`。rootless Docker 的 socket 路径不同（`$XDG_RUNTIME_DIR/docker.sock`），**未实测**。
+3. **沙箱的 uid 就是 data-agent 容器的 uid**（`--user os.getuid():os.getgid()`，实测 `10001:10001`、`501:20`）。Linux 宿主机上，同名挂载的宿主机目录要让这个 uid 可写（如 `chown 10001:10001 /srv/data-agent`）。colima/Docker Desktop 的 virtiofs 会映射所有权，所以本机测不出这个问题；Linux 上的行为**未确认**。
 4. **孤儿清理在容器里会出错（要改 `src/`，归 153/155 判断）**：`OWNER_LABEL` 记的是 `os.getpid()`，容器里 data-agent 是 PID 1（实测沙箱标签 `data-agent.sandbox.owner: "1"`）。`remove_orphaned_containers` 用本进程 PID 命名空间里的 `alive()` 判断，而它列的是守护进程上所有带标签的容器。两种后果：(a) 同一守护进程上另一个 data-agent（宿主机上的开发进程，或另一个容器）看到 owner=1 会当作活着（宿主机 PID 1 永远在），这些沙箱永远不会被清；(b) 容器里的 data-agent 看到别处起的沙箱时，owner PID 在它的命名空间里多半不存在，会把别人正在用的沙箱删掉。探针刻意没调这个函数。建议：每台部署机只跑一个用 docker 后端的 data-agent，或者 owner 标签再加一个实例 id、只清自己实例的。
 5. **`--pull never`**：沙箱镜像 `data-agent-sandbox` 必须事先在宿主机守护进程上 build 或 pull 好。155 的部署文档要有这一步（或者 Compose 里加一个只 build 的 service）。
 6. **产品镜像要自带**：docker CLI（探针从 `docker:cli` 拷贝；client 29.10.1 对 server 29.2.1 能自动协商 API 版本）；dbt-core 和 dbt-duckdb、dbt-postgres（`pyproject.toml` 里它们是 dev 依赖，`dbt_execute` 在 agent 侧执行，要用到；探针用 uv.lock 的版本 1.10.23 / 1.10.0 / 1.10.2）。草稿见 `scripts/spikes/sandbox_in_container/Dockerfile`，**没有 build 成功过**（见下）。

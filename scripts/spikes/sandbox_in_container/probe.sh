@@ -10,13 +10,15 @@
 # so almost nothing lands on the Docker VM's disk (colima's was full on 2026-11-27; Dockerfile
 # here is the image draft for ticket 155). Postgres keeps its data in tmpfs.
 #
-# Everything it starts is named da-spike-152-*; the trap removes those containers, the volume, the
-# network and runs/spike-152/. The output is kept in runs/spike-152-output.txt.
+# Everything it starts is named da-spike-152-<tag>-*; the trap removes those containers, the
+# volume, the network and runs/da-spike-152-<tag>/. The output is kept in runs/spike-152-output.txt.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../../.." && pwd)
 HERE="$REPO/scripts/spikes/sandbox_in_container"
-PREFIX=da-spike-152
+# Each invocation has its own tag: two probes at once (other worktrees) never share a name, and
+# the trap removes only this one's containers, volume, network and directory.
+PREFIX=da-spike-152-$(openssl rand -hex 3)
 NET=$PREFIX-net
 VOLUME=$PREFIX-vol
 PG=$PREFIX-pg
@@ -24,7 +26,7 @@ AGENT=$PREFIX-agent
 BASE_IMAGE=python:3.12-slim
 UV_IMAGE=ghcr.io/astral-sh/uv:0.10.8
 # Under $HOME: colima shares the home directory with its VM at the same path, and /tmp not.
-BASE="$REPO/runs/spike-152"
+BASE="$REPO/runs/$PREFIX"
 APP="$BASE/app"
 TOOLS="$BASE/tools"
 VENV="$BASE/venv"
@@ -32,7 +34,11 @@ SAME="$BASE/same"
 DIFF_HOST="$BASE/diff"
 DIFF_IN=/srv/$PREFIX-diff
 OUT="$REPO/runs/spike-152-output.txt"
-AGENT_USER=10001:10001
+# The invoking user: the files the containers make under $BASE stay removable by the trap (on a
+# Linux host bind mounts keep the container's uid).
+AGENT_UID=$(id -u)
+AGENT_GID=$(id -g)
+AGENT_USER=$AGENT_UID:$AGENT_GID
 
 cleanup() {
   echo "== cleanup"
@@ -74,7 +80,7 @@ main() {
   # uv's cache is in tmpfs: extracting a wheel into it on colima's virtiofs mount failed
   # ("failed to set permissions", 2026-11-27).
   docker run --rm --name "$PREFIX-venv" --user "$AGENT_USER" -v "$BASE:$BASE" -w "$APP" \
-    --tmpfs /uv-cache:uid=10001,gid=10001 \
+    --tmpfs "/uv-cache:uid=$AGENT_UID,gid=$AGENT_GID" \
     -e HOME=/tmp -e UV_CACHE_DIR=/uv-cache -e UV_PROJECT_ENVIRONMENT="$VENV" \
     -e UV_LINK_MODE=copy "$BASE_IMAGE" sh -c "
       $TOOLS/uv sync -q --frozen --no-dev --no-install-project --python /usr/local/bin/python3 &&
@@ -106,11 +112,11 @@ main() {
     --group-add "$sock_gid" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$BASE:$BASE" -v "$DIFF_HOST:$DIFF_IN" -v "$VOLUME:/vol" \
-    --tmpfs /baked:uid=10001,gid=10001 -e SPIKE_BAKED=/baked \
+    --tmpfs "/baked:uid=$AGENT_UID,gid=$AGENT_GID" -e SPIKE_BAKED=/baked \
     -e HOME=/tmp -e PATH="$VENV/bin:$TOOLS:/usr/local/bin:/usr/bin:/bin" \
     -e PYTHONPATH="$APP/src" -e SPIKE_APP="$APP" \
     -e SPIKE_SAME="$SAME" -e SPIKE_DIFF="$DIFF_IN" -e SPIKE_VOL=/vol -e SPIKE_VOLUME="$VOLUME" \
-    -e SPIKE_PG_HOST="$PG" \
+    -e SPIKE_PG_HOST="$PG" -e SPIKE_PREFIX="$PREFIX" \
     -e DA_SPIKE_PG_URL="postgresql://spike:$pw@$PG:5432/shop" \
     -e ANTHROPIC_API_KEY="canary-anthropic-$canary" \
     -e DATA_AGENT_WEB_TOKEN="canary-web-$canary" \

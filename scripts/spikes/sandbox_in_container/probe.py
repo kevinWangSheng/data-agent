@@ -3,15 +3,16 @@
 It calls data-agent's own code with no agent session and no model: DockerSandbox and
 execute_tool (sandbox_exec), the read-only gateways, DictionaryBuild (the value dictionary) and
 DbtExecutor (dbt_execute). It prints a yes/no and evidence for each of the ticket's four
-questions. Every sandbox container it starts is named `da-spike-152-sandbox-<case>` and removed
+questions. Every sandbox container it starts is named `da-spike-152-<tag>-sandbox-<case>`, removed
 by run id (remove_run_containers) at the end; it never calls remove_orphaned_containers, which
 would remove other runs' containers on the shared daemon (see the research note).
 
-Environment (set by probe.sh): SPIKE_APP (the staged code), SPIKE_SAME (a host directory
-mounted at the same path), SPIKE_DIFF (a host directory mounted at another path), SPIKE_VOL
-(a named volume's mount point), SPIKE_VOLUME (its name), SPIKE_PG_HOST, DA_SPIKE_PG_URL,
-SPIKE_BAKED (a tmpfs of the data-agent container), and canary variables whose values must never
-reach a sandbox (SPIKE_CANARIES lists their names).
+Environment (set by probe.sh): SPIKE_APP (the staged code), SPIKE_PREFIX
+(`da-spike-152-<tag>`), SPIKE_SAME (a host directory mounted at the same path), SPIKE_DIFF
+(a host directory mounted at another path), SPIKE_VOL (a named volume's mount point),
+SPIKE_VOLUME (its name), SPIKE_PG_HOST, DA_SPIKE_PG_URL, SPIKE_BAKED (a tmpfs of the
+data-agent container), and canary variables whose values must never reach a sandbox
+(SPIKE_CANARIES lists their names).
 """
 
 import json
@@ -33,8 +34,10 @@ from data_agent.dbt_execute import DbtExecutor
 from data_agent.gateway import DuckDBGateway, PostgresGateway, QueryBlocked
 from data_agent.sandbox import DockerSandbox, QueryResults, SandboxError, execute_tool
 
-# The ticket's name prefix for everything the spike starts; sandbox.container_name reads it.
-sandbox.NAME_PREFIX = "da-spike-152-sandbox-"
+# The ticket's name prefix for everything the spike starts: the run id carries the invocation's
+# prefix (its sandboxes' run label is unique, and so is the name container_name makes from it).
+PREFIX = os.environ["SPIKE_PREFIX"]
+sandbox.NAME_PREFIX = ""
 
 APP = Path(os.environ["SPIKE_APP"])
 SAME = Path(os.environ["SPIKE_SAME"])
@@ -93,7 +96,7 @@ def inspect(name: str) -> dict[str, object]:
 
 
 def new_sandbox(case: str, workspace: Path, skills: Path) -> DockerSandbox:
-    run_id = case
+    run_id = f"{PREFIX}-sandbox-{case}"
     run_ids.append(run_id)
     return DockerSandbox(workspace=workspace, skills_dir=skills, run_id=run_id)
 
@@ -276,7 +279,7 @@ def q2_alternatives(skills: Path) -> None:
     # A named volume does work when the mount names the volume, not a path: the change
     # DockerSandbox.start would need (`type=volume,...,volume-subpath=`, Docker API ≥ 1.45).
     out = docker(
-        "run", "--rm", "--name", "da-spike-152-volume-subpath", "--network", "none",
+        "run", "--rm", "--name", f"{PREFIX}-volume-subpath", "--network", "none",
         "--mount", f"type=volume,source={VOLUME},volume-subpath=workspace,target=/workspace",
         "alpine", "cat", "/workspace/marker.txt",
     )  # fmt: skip
