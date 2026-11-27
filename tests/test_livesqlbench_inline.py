@@ -320,3 +320,21 @@ def test_check_reports_the_inline_tasks_only_when_they_are_there(
     assert livesqlbench_server.check(root, docker) == fails + 2
     printed = capsys.readouterr().out
     assert f"FAIL  LiveSQLBench inline tasks naming another image than {main}: 1" in printed
+
+
+def test_check_adds_no_failure_for_a_complete_inline_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(livesqlbench, "DEV_SIZE", 1)
+    monkeypatch.setattr(livesqlbench, "HOLDOUT_SIZE", 1)  # the fixture's 2 Query tasks: all
+    root = tmp_path / "root"
+    root.mkdir()
+    generate(root, "tasks", inline=False)
+    docker = Docker({livesqlbench.main_image()})
+    fails = livesqlbench_server.check(root, docker)
+    capsys.readouterr()
+    generate(root, INLINE, inline=True)
+    assert livesqlbench_server.check(root, docker) == fails
+    printed = capsys.readouterr().out
+    assert f"ok    LiveSQLBench inline tasks: 2 in {root / INLINE}" in printed
+    assert "FAIL  LiveSQLBench inline" not in printed
