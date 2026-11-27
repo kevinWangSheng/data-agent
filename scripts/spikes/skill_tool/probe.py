@@ -27,7 +27,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,9 @@ from data_agent.agent import BUILTIN_TOOLS, DENIED_TOOLS, ModelSettings
 from data_agent.sandbox import (
     CPUS,
     MEMORY,
+    OWNER_LABEL,
+    RUN_LABEL,
+    SKILLS_MOUNT,
     WORKDIR,
     DockerSandbox,
     LocalSandbox,
@@ -80,7 +83,8 @@ LISTING_HEAD = "The following skills are available for use with the Skill tool:"
 
 SYSTEM_PROMPT = "You are a probe for a test of the Skill tool. Follow the user's steps exactly."
 USER_PROMPT = """\
-1. Call the Skill tool with skill "{probe}" and do what the Skill says.
+1. Run the skill probe: pick its Skill from your Skill list, load it with the Skill tool, and
+do what the Skill says.
 2. Then call the Skill tool once with skill "{hidden}", and add a fourth line to your reply:
 HIDDEN: <the Skill tool's reply to that call, in one line>
 Do not call any other tool."""
@@ -165,8 +169,9 @@ def scripted_reply(body: dict[str, Any], probe: str, hidden: str) -> tuple[list[
     step = tool_results(body)
     if step < 2:
         skill = probe if step == 0 else hidden
-        call = {"type": "tool_use", "id": f"toolu_{step}", "name": SKILL_TOOL, "input": {}}
-        return [call | {"input": {"skill": skill}}], "tool_use"
+        call: dict[str, Any] = {"type": "tool_use", "id": f"toolu_{step}", "name": SKILL_TOOL}
+        call["input"] = {"skill": skill}
+        return [call], "tool_use"
     return [{"type": "text", "text": "stub answer"}], "end_turn"
 
 
@@ -265,6 +270,11 @@ def sent_listing(requests: Sequence[dict[str, Any]]) -> list[str]:
     return [m.group(1) for m in re.finditer(r"^- (\S+?):\s", block, re.MULTILINE)]
 
 
+def sent_tools(requests: Sequence[dict[str, Any]]) -> list[str]:
+    """The tool names in the CLI's first request to the model."""
+    return [t.get("name") for t in requests[0]["body"].get("tools", [])] if requests else []
+
+
 # --- A session and what it showed ------------------------------------------------------------
 
 
@@ -273,6 +283,7 @@ class SkillCall:
     skill: str
     result: str
     is_error: bool
+    meta: Any = None  # the UserMessage's tool_use_result
 
 
 @dataclass
@@ -285,6 +296,7 @@ class Session:
     cost_usd: float | None = None
     error: str | None = None
     listing: list[str] = field(default_factory=list)  # stub only: what the model was sent
+    sent_tools: list[str] = field(default_factory=list)  # stub only: the tools the model was sent
 
     def probe_init(self, plugin: str) -> dict[str, Any]:
         """The init message's entries for the probe plugin only."""
@@ -293,7 +305,9 @@ class Session:
             "tools_has_Skill": SKILL_TOOL in self.init.get("tools", []),
             "skills": [s for s in self.init.get("skills", []) if s.startswith(prefix)],
             "plugins": [p for p in self.init.get("plugins", []) if p.get("name") == plugin],
-            "plugin_errors": self.init.get("plugin_errors", []),
+            "skills_total": len(self.init.get("skills", [])),
+            # None when the CLI left the key out (it does on a clean load), [] when it sent none.
+            "plugin_errors": self.init.get("plugin_errors"),
         }
 
 
@@ -305,7 +319,10 @@ def text_of(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-async def run_session(label: str, options: ClaudeAgentOptions, prompt: str) -> Session:
+async def run_session(
+    label: str, options: ClaudeAgentOptions, prompt: str, init_only: bool = False
+) -> Session:
+    """One session's evidence; `init_only` disconnects at the init message."""
     session = Session(label)
     names: dict[str, str] = {}
     async with ClaudeSDKClient(options) as client:
@@ -313,6 +330,8 @@ async def run_session(label: str, options: ClaudeAgentOptions, prompt: str) -> S
         async for message in client.receive_response():
             if isinstance(message, SystemMessage) and message.subtype == "init":
                 session.init = message.data
+                if init_only:
+                    break
             elif isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, ToolUseBlock) and block.name == SKILL_TOOL:
@@ -328,6 +347,7 @@ async def run_session(label: str, options: ClaudeAgentOptions, prompt: str) -> S
                                 names[block.tool_use_id],
                                 text_of(block.content),
                                 bool(block.is_error),
+                                message.tool_use_result,
                             )
                         )
                     elif isinstance(block, TextBlock) and block.text.startswith(BASE_DIR_LINE):
@@ -354,7 +374,8 @@ def skill_dir_in(text: str) -> str | None:
 class SamePathDockerSandbox(DockerSandbox):
     """Candidate A: `DockerSandbox` plus each Skill directory mounted read-only at its host path
     (`paths`: the path the CLI fills in -> the directory it names), so `${CLAUDE_SKILL_DIR}` as the
-    SDK fills it is also a path in the container. Its `docker run` mirrors `DockerSandbox.start`."""
+    SDK fills it is also a path in the container. Its `docker run` is a copy of
+    `DockerSandbox.start`'s (src/ is out of this spike's reach) with those mounts added."""
 
     paths: dict[str, Path] = field(default_factory=dict)
 
@@ -367,10 +388,12 @@ class SamePathDockerSandbox(DockerSandbox):
         ]
         argv = [
             *("run", "-d", "--init", "--pull", "never", "--name", name),
-            *("--user", f"{os.getuid()}:{os.getgid()}", "--network", "none"),
+            *("--label", f"{RUN_LABEL}={self.run_id}", "--label", f"{OWNER_LABEL}={os.getpid()}"),
+            *("--user", f"{os.getuid()}:{os.getgid()}"),
+            *(() if self.network else ("--network", "none")),
             *("--cpus", CPUS, "--memory", MEMORY),
             *("--mount", f"type=bind,source={self.workspace.resolve()},target={WORKDIR}"),
-            *("--mount", f"type=bind,source={self.skills_dir},target=/skills,readonly"),
+            *("--mount", f"type=bind,source={self.skills_dir},target={SKILLS_MOUNT},readonly"),
             *same_path,
             *("-w", WORKDIR, self.image, "sleep", "infinity"),
         ]
@@ -405,7 +428,7 @@ def sandbox_trials(skill_dirs: Sequence[str], backend: str) -> list[SandboxTrial
     workspace = Path(tempfile.mkdtemp(prefix="workspace-", dir=RUNS_DIR))
     skills_dir = PLUGIN_DIR / "skills"
     sdk = [(d, f'python3 "{d}/where.py"') for d in dict.fromkeys(skill_dirs)]
-    mount = f'python3 "/skills/{PROBE_SKILL}/where.py"'
+    mount = f'python3 "{SKILLS_MOUNT}/{PROBE_SKILL}/where.py"'
     local = LocalSandbox(workspace, skills_dir)
     run_id = f"spike-142-{uuid.uuid4().hex[:8]}"
     status_quo = DockerSandbox(workspace, skills_dir, f"{run_id}-a")
@@ -437,17 +460,34 @@ def verdict(ok: bool, measured: bool = True) -> str:
     return "未实测" if not measured else ("是" if ok else "否")
 
 
-def report(sessions: Sequence[Session], trials: Sequence[SandboxTrial], endpoint: str) -> str:
+def report(
+    sessions: Sequence[Session],
+    trials: Sequence[SandboxTrial],
+    endpoint: str,
+    without_tool: Session | None = None,
+) -> str:
+    """The evidence and verdicts. `without_tool`: the init of a session whose `tools` leave the
+    Skill tool out while `skills` is set (always on the stub)."""
     plugin = plugin_name(PLUGIN_DIR)
     probe, hidden = f"{plugin}:{PROBE_SKILL}", f"{plugin}:{HIDDEN_SKILL}"
     lines: list[str] = [f"endpoint: {endpoint}"]
+    if without_tool is not None:
+        lines.append(
+            "\n## init only: skills set, tools without Skill (stub)\n"
+            f"init tools: {without_tool.init.get('tools')}; error: {without_tool.error}"
+        )
     for s in sessions:
         lines.append(f"\n## session {s.label}")
         lines.append(f"init (probe plugin only): {json.dumps(s.probe_init(plugin))}")
         if s.listing:
             lines.append(f"Skills listed to the model: {s.listing}")
+        if s.sent_tools:
+            lines.append(f"tools sent to the model: {s.sent_tools}")
         for call in s.calls:
-            lines.append(f"Skill({call.skill}) -> is_error={call.is_error}: {call.result[:300]!r}")
+            lines.append(
+                f"Skill({call.skill}) -> is_error={call.is_error}: {call.result[:300]!r}"
+                f" tool_use_result={json.dumps(call.meta)}"
+            )
         for text in s.loaded:
             lines.append("loaded Skill text:\n    " + text.strip().replace("\n", "\n    "))
         if endpoint == "model":
@@ -467,7 +507,7 @@ def report(sessions: Sequence[Session], trials: Sequence[SandboxTrial], endpoint
         if not called:
             return verdict(False, measured=False)
         refused = all(c.is_error for c in called) and not any(HIDDEN_CANARY in t for t in s.loaded)
-        return verdict(refused and (hidden not in s.listing))
+        return verdict(refused and (endpoint != "stub" or hidden not in s.listing))
 
     def listed(s: Session) -> str:
         """Only the stub records the requests, so only a stub run shows what was listed."""
@@ -485,6 +525,13 @@ def report(sessions: Sequence[Session], trials: Sequence[SandboxTrial], endpoint
         f"model follows it ({endpoint}): {verdict(model_ok, endpoint == 'model')}; "
         "listed to the model: " + ", ".join(f"{s.label}={listed(s)}" for s in sessions)
     )
+    if without_tool is not None:
+        present = SKILL_TOOL in without_tool.init.get("tools", [])
+        measured = bool(without_tool.init)
+        lines.append(
+            "Q1 precondition — Skill tool in the session when `tools` omits it: "
+            f"{verdict(present, measured)}"
+        )
     lines.append(
         f"Q2 local plugin found as {probe}, per config dir: "
         + ", ".join(f"{s.label}={verdict(plugin_found(s))}" for s in sessions)
@@ -504,7 +551,7 @@ def report(sessions: Sequence[Session], trials: Sequence[SandboxTrial], endpoint
 async def probe(endpoint: str, backend: str) -> str:
     plugin = plugin_name(PLUGIN_DIR)
     probe_skill, hidden = f"{plugin}:{PROBE_SKILL}", f"{plugin}:{HIDDEN_SKILL}"
-    prompt = USER_PROMPT.format(probe=probe_skill, hidden=hidden)
+    prompt = USER_PROMPT.format(hidden=hidden)
     stub = StubEndpoint(probe_skill, hidden)
     stderr: list[str] = []
     sessions: list[Session] = []
@@ -537,11 +584,31 @@ async def probe(endpoint: str, backend: str) -> str:
             except Exception as exc:  # a spike reports every failure and goes on
                 session = Session(label, error=f"{type(exc).__name__}: {exc}")
             session.listing = sent_listing(stub.requests[before:])
+            session.sent_tools = sent_tools(stub.requests[before:])
             sessions.append(session)
+        bare_tools = list(BUILTIN_TOOLS)
+        bare = replace(
+            probe_options(
+                ModelSettings(stub.url, "stub-no-key", "deepseek-flash"),
+                [PLUGIN_DIR],
+                [probe_skill],
+                root,
+                root / "init-only" / "claude-config",
+            ),
+            tools=bare_tools,
+            allowed_tools=bare_tools,
+        )
+        (root / "init-only" / "claude-config").mkdir(parents=True)
+        try:
+            without_tool = await asyncio.wait_for(
+                run_session("init-only", bare, prompt, init_only=True), SESSION_TIMEOUT_S
+            )
+        except Exception as exc:  # reported, like the sessions above
+            without_tool = Session("init-only", error=f"{type(exc).__name__}: {exc}")
         filled = [d for s in sessions if (d := skill_dir_in("\n".join(s.loaded)))]
         skill_dirs = filled or [str(PLUGIN_DIR / "skills" / PROBE_SKILL)]
         trials = [] if backend == "none" else sandbox_trials(skill_dirs, backend)
-    text = report(sessions, trials, endpoint)
+    text = report(sessions, trials, endpoint, without_tool)
     errors = [line for line in stderr if "error" in line.lower()]
     return text + ("\n\nCLI stderr errors:\n" + "\n".join(errors[-10:]) if errors else "")
 

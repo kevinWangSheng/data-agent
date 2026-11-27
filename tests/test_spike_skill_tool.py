@@ -194,7 +194,8 @@ def test_init_evidence_keeps_only_the_probe_plugins_entries() -> None:
         "tools_has_Skill": True,
         "skills": [PROBE, HIDDEN],
         "plugins": [{"name": "spike-probe"}],
-        "plugin_errors": [],
+        "skills_total": 3,
+        "plugin_errors": None,
     }
 
 
@@ -248,3 +249,12 @@ def test_no_call_to_the_hidden_skill_leaves_its_refusal_unmeasured() -> None:
     assert "unlisted Skill kept out: a=未实测" in probe.report([session], [], "model")
     failed = probe.Session("failed", error="TimeoutError")
     assert "unlisted Skill kept out: failed=未实测" in probe.report([failed], [], "stub")
+
+
+def test_the_precondition_reports_whether_the_skill_tool_came_without_tools_naming_it() -> None:
+    bare = probe.Session("init-only", init={"tools": ["Read"]})
+    text = probe.report([passing_session("a")], [], "stub", bare)
+    assert "Skill tool in the session when `tools` omits it: 否" in text
+    failed = probe.Session("init-only", error="TimeoutError")
+    text = probe.report([passing_session("a")], [], "stub", failed)
+    assert "Skill tool in the session when `tools` omits it: 未实测" in text

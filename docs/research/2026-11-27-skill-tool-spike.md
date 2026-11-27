@@ -18,9 +18,17 @@
 
 ### 1.1 `skills=` 不会把 Skill 工具加进 `tools`
 
-`build_options` 传的是显式的 `tools=[...]`（`src/data_agent/agent.py:1636`、`:1706`）。SDK 的 `skills` 只往 `--allowedTools` 加 `Skill(<名字>)`（`claude_agent_sdk/_internal/transport/subprocess_cli.py:476-517`），不动 `--tools`。CLI 以 `--tools` 为准，所以只设 `skills` 时会话里没有 Skill 工具。
+`build_options` 传的是显式的 `tools=[...]`（`src/data_agent/agent.py:1636`、`:1706`）。SDK 的 `skills` 只改 `--allowedTools`：列表时加 `Skill(<名字>)`，`"all"` 时加不带名字的 `Skill`（`claude_agent_sdk/_internal/transport/subprocess_cli.py:476-517`），不动 `--tools`。CLI 以 `--tools` 为准，所以只设 `skills` 时会话里没有 Skill 工具。
 
-离线矩阵（一次性脚本，没入库：端点指向关着的本机端口，读到初始化消息就断开，不发出模型请求）：
+探针每次都跑一段只读初始化消息的会话（假端点，`tools` 是 `build_options` 的内置工具、不含 `Skill`，`skills=["spike-probe:skill-probe"]`），输出：
+
+```text
+## init only: skills set, tools without Skill (stub)
+init tools: ['Edit', 'Glob', 'Grep', 'Read', 'Write']; error: None
+Q1 precondition — Skill tool in the session when `tools` omits it: 否
+```
+
+之前另用一次性脚本（没入库：端点指向关着的本机端口，读到初始化消息就断开）跑过整个矩阵，结论相同：
 
 | `tools` | `skills` | 初始化消息 `tools` 里有 `Skill` |
 |---|---|---|
@@ -35,9 +43,9 @@
 
 假端点按脚本先调 `Skill(skill="spike-probe:skill-probe")`，再调没放进列表的 `spike-probe:hidden-probe`，并记下 CLI 发出的每个请求。三段会话结果一样：
 
-- 发给模型的工具：`['Read', 'DeferredToolPlaceholder', 'Skill']`；Skill 工具的入参 `{"skill": string, "args"?: string}`。
+- 发给模型的工具（探针输出 `tools sent to the model`）：`['Edit', 'Glob', 'Grep', 'Read', 'Skill', 'DeferredToolPlaceholder', 'Write']`，内置工具都在，`DeferredToolPlaceholder` 是 CLI 自己加的；Skill 工具的入参 `{"skill": string, "args"?: string}`。
 - 列表在第一条 user 消息的 system-reminder 里，不在系统提示词里：`The following skills are available for use with the Skill tool:` 下面只有 `- spike-probe:skill-probe: Spike probe. Load this Skill when asked to run the skill probe.`。
-- 工具结果只是一句确认：`Launching skill: spike-probe:skill-probe`（`tool_use_result={'success': True, 'commandName': 'spike-probe:skill-probe'}`）。
+- 工具结果只是一句确认：`Launching skill: spike-probe:skill-probe`（`tool_use_result={"success": true, "commandName": "spike-probe:skill-probe"}`）。
 - **SKILL.md 全文另作一条 user 消息注入**（SDK 流里是 `UserMessage` 的 `TextBlock`），去掉了 frontmatter，开头一行是目录，占位符已替换：
 
 ```text
@@ -53,7 +61,7 @@ PLUGIN_ROOT: <wt>/scripts/spikes/skill_tool/plugin
 The probe script is `python3 "<wt>/scripts/spikes/skill_tool/plugin/skills/skill-probe/where.py"`.
 ```
 
-金丝雀只在正文里（frontmatter 和 description 里没有，单元测试钉住），所以看到它就说明全文进了上下文。模型是否会自己去调、是否照着做，只有真实运行能回答（第 4 节）。
+金丝雀只在正文里（frontmatter 和 description 里没有，单元测试钉住），所以看到它就说明全文进了上下文。模型能否从列表里自己找到 Skill、是否照着做，只有真实运行能回答（第 4 节；真实运行的提示词只说"run the skill probe"，不给 Skill 名，模型要从列表里挑）。
 
 ## 2. 问题 2：本地插件
 
@@ -61,13 +69,13 @@ The probe script is `python3 "<wt>/scripts/spikes/skill_tool/plugin/skills/skill
 
 | 会话 | 初始化消息 `plugins`（只列探针插件） | `plugin_errors` | Skill 名 |
 |---|---|---|---|
-| 默认配置目录 | `{"name": "spike-probe", "path": "<wt>/scripts/spikes/skill_tool/plugin", "source": "spike-probe@inline", "version": "0.1.0"}` | 无 | `spike-probe:skill-probe`、`spike-probe:hidden-probe` |
-| 新建 `CLAUDE_CONFIG_DIR`（同对话的 `ConversationTurn.config_dir`） | 同上 | 无 | 同上 |
-| 符号链接插件（`<tmp>/linked-plugin`，清单复制、每个 Skill 是指向原目录的链接） | `path` 是 `<tmp>/linked-plugin` | 无 | 同上 |
+| 默认配置目录 | `{"name": "spike-probe", "path": "<wt>/scripts/spikes/skill_tool/plugin", "source": "spike-probe@inline", "version": "0.1.0"}` | 键缺失（输出 `null`） | `spike-probe:skill-probe`、`spike-probe:hidden-probe` |
+| 新建 `CLAUDE_CONFIG_DIR`（同对话的 `ConversationTurn.config_dir`） | 同上 | 键缺失 | 同上 |
+| 符号链接插件（`<tmp>/linked-plugin`，清单复制、每个 Skill 是指向原目录的链接） | `path` 是 `<tmp>/linked-plugin` | 键缺失 | 同上 |
 
 - `setting_sources=["user"]` 不影响：插件走 `--plugin-dir`，与设置来源无关；SDK 只在 `setting_sources is None` 时才补 `["user", "project"]`，我们显式传了就保持不读本仓库 `.claude/`。
 - **初始化消息的 `skills` 不按 `skills=[...]` 过滤**：没列进去的 `hidden-probe` 也在里面。过滤发生在发给模型的列表和 Skill 工具上：列表里没有它，调用被拒，`is_error=True`：`<tool_use_error>Skill spike-probe:hidden-probe is not in this session's skills allowlist</tool_use_error>`，全文没有注入（隐藏金丝雀没出现）。
-- 初始化消息 `skills` 里还有 CLI 自带的 Skill：新建的 `CLAUDE_CONFIG_DIR` 下共 18 个（如 `dataviz`、`deep-research`、`claude-api`），默认配置目录下 64 个（加上使用者 `~/.claude` 里的 Skill 和插件）。用 `skills=[...]` 列表时它们都不进模型的列表；用 `"all"` 会全部进。
+- 初始化消息 `skills` 里还有 CLI 自带的 Skill：新建的 `CLAUDE_CONFIG_DIR` 下共 18 个（探针输出 `skills_total`）（如 `dataviz`、`deep-research`、`claude-api`），默认配置目录下 64 个（加上使用者 `~/.claude` 里的 Skill 和插件）。用 `skills=[...]` 列表时它们都不进模型的列表；用 `"all"` 会全部进。
 
 ## 3. 问题 3：`${CLAUDE_SKILL_DIR}` 与沙箱
 
@@ -103,7 +111,7 @@ The probe script is `python3 "<wt>/scripts/spikes/skill_tool/plugin/skills/skill
 - 容器里能看到宿主机的目录结构（如家目录名）。只读挂载，不含凭据；沙箱本来就挂了工作区。
 - 挂载的 `source` 要在 Docker 能共享的目录里：colima 默认只共享家目录，所以 `source` 用真实路径（`Path.resolve()`），`target` 用 SDK 填的路径（可以是 `/var/folders/...`，只在容器里存在）。本次符号链接插件在 `/var/folders` 下也跑通了，就是因为 `source` 解析到了家目录下的真实路径。Linux 服务器没有这个限制。
 - `--mount` 的值以逗号分隔，路径里有逗号会出错；`-v` 以冒号分隔，也有同类问题；147 应拒绝含逗号的路径，或在文档里写明。
-- sandbox_exec 的工具说明里"Skill 目录在 `/skills` 下"（`src/data_agent/sandbox.py:689`）要改成按原路径。
+- sandbox_exec 的工具说明里"Skill 目录在 `/skills` 下"（`src/data_agent/sandbox.py:689-690`）要改成按原路径。
 
 ## 4. 待主会话真实运行（DeepSeek）
 
@@ -114,7 +122,7 @@ set -a && . ~/.config/data-agent/env && set +a && \
 
 预计 < $0.05（三段短会话，每段 3 次请求）。看输出末尾 `## verdicts`：
 
-- `Q1 ... model follows it (model): 是` = 三段会话的回答里都有金丝雀 `CANARY-142-plum-orbit`；每段的 `answer:` 里 `SKILL_DIR:` 应是宿主路径。
+- `Q1 ... model follows it (model): 是` = 三段会话里模型都从列表里找到了 `spike-probe:skill-probe`（提示词不给名字），回答里都有金丝雀 `CANARY-142-plum-orbit`；每段的 `answer:` 里 `SKILL_DIR:` 应是宿主路径。
 - `HIDDEN:` 一行应是 allowlist 的拒绝信息；`unlisted Skill kept out` 全是 `是`。模型没调隐藏 Skill 时这一项是 `未实测`（不算通过）；`listed to the model` 只有假端点能看到请求，真实运行恒为 `未实测`，以第 1.2 节为准。
 - 任一项 `否`：按 decisions.md Q3 停下回对齐。
 
@@ -127,5 +135,5 @@ set -a && . ~/.config/data-agent/env && set +a && \
 3. Skill 工具事件：`ToolUseBlock(name="Skill")` 的 `input["skill"]` 是名字，`:` 前是来源插件；结果是 `Launching skill: <名字>`，被拒时 `is_error=True`；全文另有一条以 `Base directory for this skill: ` 开头的 user 消息，要记"加载了哪个目录"可以从这里取。
 4. `preload` 的 Skill 已在系统提示词里；要不要同时留在 `skills` 列表里（模型可能再调一次，把全文重复注入一遍）由 147 定，本次没测重复加载。
 5. 问题 3 照方案 A：`DockerSandbox` 为每个 Skill 目录加一条按原路径的只读挂载（`source` 取真实路径，`target` 取传给 SDK 的路径）；`load_skills` 统一替换成宿主路径；改 sandbox_exec 的工具说明。符号链接拼插件时，`target` 用链接路径，因为 SDK 不解析链接。
-6. 初始化消息没有 `plugin_errors` 键就是加载成功（CLI 只在失败时带这个键）；147 加载失败时应读它报错，失败项带 `path`。
+6. 本次三段会话加载都成功，初始化消息里都没有 `plugin_errors` 键（SDK 文档：CLI 只在失败时带这个键，但缺键本身不证明加载干净，`types.py` `SystemInitData.plugin_errors`）；147 加载失败时应读它报错，失败项带 `path`。
 7. 本次没测：SDK 自带的 Skill 与我们的同名时谁优先；`skills=[]` 下插件是否仍加载（评测入口要关掉时，应同时不传 `plugins`）。
