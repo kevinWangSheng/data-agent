@@ -1,6 +1,6 @@
 # 139 — LiveSQLBench：可选把 schema、列含义、知识库写进任务说明（spec D3）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（"Update 2026-11-27"一节，D3）
 Claimed by: claude (139 worktree)
@@ -134,3 +134,4 @@ Branch: worktree-139-lsb-inline-assets
 
   **给主会话的服务器顺序：** push → `da-remote setup <commit>` → `da-remote benchmarks`（会生成 `tasks-inline/`）→ `da-remote check`（应为 0 failure，多出两行 `LiveSQLBench inline tasks`）→ `da-remote start lsb-dev-inline-3 -- ablate --benchmark livesqlbench --tasks-dir ../da-benchmarks/livesqlbench/tasks-inline --manifest evals/manifest.json --split dev --config no-verifiers --reference no-verifiers --trials 3 --out runs/lsb-dev-inline-3 --budget 5` → 用 `evals compare` 和 D1 配对。
 - 2026-11-27（主会话）：接受两处偏离（prepare 总是生成两套；check 多报内联任务两行），都不改现有任务和产品默认。push、开 PR。
+- 2026-11-27（主会话）：PR #143 CI 绿，Codex GitHub app 审查无意见（👍），squash 合并为 `be919ec`。
