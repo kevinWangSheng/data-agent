@@ -26,3 +26,21 @@
 - 合并：按节按键合并，同一个键后面的层整个替换，列表不拼接。
 - `--config` 改成配置文件路径；现有 6 个消融配置名变成 `evals/profiles/*.toml`（Q4）。
 - 密钥只写 `${VAR}` 引用；出现明文密钥拒绝加载。
+
+## Q2 配置文件分节（已定）
+
+- 节：`[layers]`（skills/verifiers/context，默认全开）、`[models.<名字>]`（base_url、`api_key = "${VAR}"`、单价、context_window、compact_window、effort 取值）、`[roles]`（main/small/classify/verifier，只填 main 时都用它）、`[limits]`（花费、轮数、agent 超时、effort）、`[sandbox]`（后端、镜像、CPU、内存、network、sandbox_exec 最长时间）、`[sources.<名字>]`（现有字段 + description、docs、schemas.include/exclude、查询超时、行数上限、DuckDB 内存/溢写、dbt 超时）、`[skills]`（dirs、disabled、preload）、`[instructions]`（files）、`[mcp]`（servers 内联或 file；claude_code_config）、`[plugins]`（dirs、enabled）、`[prompts]`（answer_rule 等片段；评测配置文件写评测版）、`[im.<平台>]`、`[trace]`、`[server]`（host、port、runs_dir、mode）、`[policy]`（disabled_models、network、dbt_target，覆盖不了）。
+- 有类型，未知键报错；`data-agent config show` 打印每个键的值和来源；内部调参常量不开放。
+- `[prompts]` 在评测配置文件里写榜单的官方答题格式，不算违反 ADR-0005（复现官方提示、不在 Skill 里、产品默认不受影响）。
+- 模型没填价格：没有实扣上限，`classify_text` 照常可用，花费记"未知"。
+
+## Q3 Skill 按需加载（已定）
+
+- 内置 `skills/` 打包成本地插件 `data-agent`（Skill 名 `data-agent:sql-workflow` 等），照 SignalPilot 产品版。
+- 使用者 `[skills].dirs` 每个目录运行时包成本地插件；本地、云端、对话（各自的 `CLAUDE_CONFIG_DIR`）同一条路，不依赖 `~/.claude`。
+- SDK `skills` = 发现的全部减 `disabled`，模型见名字和描述，经 Skill 工具按需读全文；`preload` 的全文照旧进系统提示词。
+- 默认常驻只有工作流 Skill（`sql-workflow`、`dbt-workflow`）；方言 Skill、`dbt-write`、`dbt-debugging` 按需；dbt-workflow 第 2 步"先加载辅助 Skill"随之改。
+- Skill 脚本路径：`${CLAUDE_SKILL_DIR}` 由 SDK 填宿主路径，沙箱看不到；Skill 目录按原路径挂进沙箱或统一写挂载路径，先实测再定。
+- Skill 工具每次调用记进事件文件，供按轨迹调照做率。
+- 评测配置文件写死 Skill 列表和 `preload`，Skill 版本照旧记哈希。
+- 本块第一张工单是实测：DeepSeek 经 Anthropic 兼容接口能否调 Skill 工具、本地插件里的 Skill 能否被发现、脚本路径；任一不行就停下回对齐。
