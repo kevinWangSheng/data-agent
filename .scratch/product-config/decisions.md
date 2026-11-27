@@ -77,3 +77,32 @@
 - 上下文从 git：`[skills].dirs`、`[instructions].files`、`[sources.*].docs` 可写 git 地址加分支或提交，启动拉一次，按 `refresh` 间隔再拉（照 nao）。
 - `runs_dir` 放持久卷；加 `/healthz`；交付镜像和 `docker-compose.yml` 示例，文档写清每个环境变量。
 - 本块第一张工单是实测：容器里挂 Docker socket 起沙箱、工作区路径能否挂进沙箱（容器内外路径不同）；跑不通就停下回对齐。
+
+## Q8 建票时发现的问题（2026-11-27）
+
+### 人定的 5 个
+
+1. 已合入的验收测试钉住旧接口（24 个 `tests/acceptance/` 文件用 `--config <消融名>`、`--data-sources`、`--mcp-servers`、`--im`、`load_config`、`CONFIG_NAMES`）：授权 141 把它们改成新接口，只改调用方式、断言意思不变；和已定决定直接冲突的断言（如 `test_web_api.py:354-357` 表单能选 `baseline`）按新决定改；141 逐条列出，人审后合并。
+2. dbt-workflow 第 2 步改写、以及任何 Skill 文本改动，推到迁移第二步，和"评测改用产品新默认"一起在开发集上量；插件清单文件不计入 Skill 版本哈希。
+3. 云端网页令牌：新增前端工单 156。打开网页先输一次令牌，服务器回 HttpOnly Cookie；接口接受 Cookie 或 bearer 请求头。前端工单由 Opus 审（不用 Codex）。
+4. 云端联网：默认关，配置文件可打开；单次运行不能超过配置（配置关了联网，请求联网拒绝 409，同 140）。表单的联网勾选默认值跟服务器配置走（放进 156）。
+5. 云端认环境变量 `DATA_AGENT_BASE_URL`（部署层）；"不能改端点"只针对单次运行，现在单次运行本来就改不了，不单写测试。
+
+### 主会话定的实现细节
+
+- `--config` 可写多次，后面覆盖前面（照 harbor）；显式 `--config` 优先于 `DATA_AGENT_CONFIG`。评测入口传"基础配置 + 层文件"两次 `--config`。
+- 过渡：143 期间 `--config` 同时接受路径和旧消融名（`data-agent run`、`mcp-server`）；146 把评测入口都改完后删掉旧名。
+- `config` 事件是第二条（在 `version` 之后）；`version.config` 照旧写配置名：评测写层名，产品写配置文件名（无文件时 `default`）。
+- 快照比较覆盖任务提示词（`ANSWER_RULE`、`DB_TYPE`、`TASK_FILE_NOTE` 在任务提示里，`agent.py:2292-2302`）。
+- `[layers]` 的键用 `skill`（单数，和 `RunConfig`、`version.layers` 一致）、`verifiers`、`context`。`[skills].tool`（默认 true）补进 Q2 清单。
+- 已有的 `bot_token_env`、`[sources.*].env = "WAREHOUSE_URL"` 写的是变量名，保留；"只写 `${VAR}`"指值本身是密钥的键。
+- 迁移第一步：所有评测配置文件（含 LiveSQLBench、jaffle）保留现在的答题规则；只有产品用新版。
+- `lsb-single-shot` 只从 `livesqlbench.toml` 读 `[models]`/`[roles]`（模型、价格），不套层文件。
+- Harbor 容器里的配置文件：146 自选打进 wheel 或在 `install` 时上传。
+- 模型没填价格：不传 SDK 的 `max_budget_usd`，开头给一条警告。
+- `[server]`：host、port、runs_dir 归 144（`data-agent web` 读它们，`--runs-dir`/`--port` 作为覆盖保留）；mode 归 153；refresh 由 154 补进配置格式。`[trace]`（base_url、tier；密钥仍是环境变量）归 144。
+- `[policy]` 和命令行参数冲突：报错拒绝，不悄悄改成锁定值。
+- `max_turns.large` 保留在 `[limits]`（DAB 用）；150 不删。
+- 云端：IM 名单为空、缺 `${VAR}` 在所有模式都拒绝，写守门测试；153 加 Blocked by 146；`/healthz` 返回 `{"ready": true}`，两种模式都有；部署模式环境变量 `DATA_AGENT_MODE`；运行子进程的环境去掉 `DATA_AGENT_WEB_TOKEN`；任何模式监听非本机地址都要令牌。
+- git 来源：克隆放 `<runs_dir>/.cache/git`；服务器进程统一拉，运行读这份；刷新先克隆到新目录再原子切换，正在跑的运行用旧目录；令牌经 `GIT_ASKPASS`，不进 URL、`.git/config`；154 只负责"git 地址 → 本地路径"，接入由 147、148 用；154 加 Blocked by 152（克隆出的 Skill 目录要能挂进沙箱）。
+- 镜像：Compose 同时构建产品镜像和沙箱镜像（`DockerSandbox` 用 `--pull never`）；产品镜像装 dbt。
