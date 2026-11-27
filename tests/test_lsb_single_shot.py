@@ -6,6 +6,7 @@ tests/fake_model.py), and the `lsb-single-shot` command with Harbor replaced at 
 seam."""
 
 import asyncio
+import importlib.metadata
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -189,6 +190,8 @@ def test_the_trial_events_are_ones_the_spend_guard_counts(tmp_path: Path):
     version, result = lines
     assert version["model"] == "deepseek-flash"
     assert version["config"] == "single-shot"
+    # CODING_STANDARDS.md: the version event carries the SDK version too (here, the call's SDK).
+    assert version["sdk_version"] == importlib.metadata.version("anthropic")
     assert result["cost_basis"] == "price_table"
     assert (result["uncached_input_tokens"], result["cached_input_tokens"]) == (1000, 200)
     assert result["output_tokens"] == 50
@@ -377,7 +380,7 @@ def command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manifest.write_text(json.dumps(SPLIT))
     monkeypatch.setattr(lsb_single_shot, "check_balance", lambda out, budget: None)
     monkeypatch.setattr(lsb_single_shot_agent, "git_commit", lambda: "c0ffee")
-    monkeypatch.setattr(lsb_single_shot, "agent_commit", lambda: "c0ffee")
+    monkeypatch.setattr(lsb_single_shot, "git_commit", lambda: "c0ffee")
     out = tmp_path / "out"
     args = [
         "lsb-single-shot",
@@ -498,7 +501,7 @@ def test_a_rerun_under_other_code_does_not_reuse_the_job(
         harbor = HarborRunningTheAgent(model)
         monkeypatch.setattr(lsb_single_shot, "run_harbor", harbor)
         assert evals_cli(args)[0] == 0
-        monkeypatch.setattr(lsb_single_shot, "agent_commit", lambda: "beef00")
+        monkeypatch.setattr(lsb_single_shot, "git_commit", lambda: "beef00")
         code, _, err = evals_cli(args)
     assert code == 2 and "c0ffee" in err and "another --out" in err
     assert len(harbor.calls) == 1

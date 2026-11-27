@@ -42,10 +42,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from data_agent.agent import git_commit
 from data_agent.run_config import REPO_ROOT
 from evals.ablate import (
     Stop,
-    _log,  # pyright: ignore[reportPrivateUsage]
     check_account_errors,
     check_balance,
     check_config_errors,
@@ -59,21 +59,20 @@ from evals.ablate import (
     stop_reason,
 )
 from evals.harbor import Trial, event_files, load_trials, version_header
+from evals.harbor_agent import MANIFEST
 from evals.livesqlbench import BENCHMARK as LSB_BENCHMARK
-from evals.lsb_single_shot_agent import MAX_TOKENS, OUTPUT_CONFIG, TEMPERATURE, THINKING
-from evals.lsb_single_shot_agent import git_commit as agent_commit
-from evals.report import (
-    TRIALS_PER_TASK,
-    benchmark_tasks,
-    check_dev_list,
-    is_infra_error,
-    verifier_failed,
+from evals.lsb_single_shot_agent import (
+    MAX_TOKENS,
+    OUTPUT_CONFIG,
+    TEMPERATURE,
+    THINKING,
+    dev_tasks,
 )
+from evals.report import TRIALS_PER_TASK, is_infra_error, verifier_failed
 from evals.spend import STOP_FRACTION, STOP_PERCENT
 
 JOB = "single-shot"
 JOB_CONFIG = REPO_ROOT / "evals" / "configs" / "livesqlbench.single-shot.yaml"
-MANIFEST = REPO_ROOT / "evals" / "manifest.json"
 FAIL_FAST = 5
 
 
@@ -95,15 +94,14 @@ def add_parser(commands: "argparse._SubParsersAction[argparse.ArgumentParser]") 
     parser.set_defaults(run=run)
 
 
-def dev_tasks(args: argparse.Namespace) -> list[str]:
-    """The tasks to run: the manifest's LiveSQLBench dev tasks, or the `--task`s among them."""
-    manifest = json.loads(args.manifest.read_text())
+def tasks_to_run(args: argparse.Namespace) -> list[str]:
+    """The manifest's LiveSQLBench dev tasks, or the `--task`s among them. The agent checks its
+    task against the same list (`dev_tasks`, which refuses a manifest moving a held-out task into
+    the dev set, ADR-0004)."""
     try:
-        # Another manifest cannot move a held-out task into the dev set (ADR-0004).
-        check_dev_list(manifest, args.manifest)
+        tasks = dev_tasks(args.manifest)
     except ValueError as exc:
         raise Stop(str(exc)) from exc
-    tasks = benchmark_tasks(manifest, "dev", LSB_BENCHMARK)
     if not args.task:
         return tasks
     others = sum(1 for t in args.task if t not in tasks)
@@ -145,7 +143,7 @@ def check_versions(job: Path, trials: list[Trial]) -> None:
     """A job is reused (skipped or resumed) only under the code its trials ran (the commit in
     their event files' version headers), as evals.ablate `check_conditions` does: a changed
     prompt or setting is another run. Infrastructure errors are dropped by the resume."""
-    now = agent_commit()
+    now = git_commit()
     if now.endswith("-dirty"):
         raise Stop(
             "this checkout has uncommitted changes, so it cannot be matched to the existing job; "
@@ -193,7 +191,7 @@ def ensure_job(args: argparse.Namespace, tasks: list[str], budget: Decimal) -> N
     `ensure_job`, without its run-config checks: this agent has no run config)."""
     job = args.out / "jobs" / JOB
     dropped: list[Path] = []
-    own: list[Path] = []
+    failed_itself: list[Path] = []
     if (job / "config.json").is_file():
         trials = load_trials(job) if any(job.glob("*/result.json")) else []
         check_config_errors(JOB, job, trials)
@@ -201,8 +199,12 @@ def ensure_job(args: argparse.Namespace, tasks: list[str], budget: Decimal) -> N
         if problem(trials, tasks, "dev", args.trials) is None:
             return
         errored = [t for t in trials if is_infra_error(t)]
-        own = sorted({t.dir for t in errored if verifier_failed(t)})
-        infra = sorted({str(t.exception_type) for t in errored if t.dir not in set(own)})
+        # A verifier that failed itself leaves RewardFileNotFoundError, which is also an agent's
+        # own missing reward: `-f` would rerun those too, so these trials are deleted here and
+        # `-f` gets the other errors' types (evals.ablate `ensure_job`, ticket 136).
+        failed_itself = sorted({t.dir for t in errored if verifier_failed(t)})
+        infra = sorted({str(t.exception_type) for t in errored if t.dir not in set(failed_itself)})
+        # Both are deleted by the resume and run again; what they cost was billed all the same.
         dropped = [*(t.dir for t in errored), *interrupted(job)]
         command = ["job", "resume", "-p", str(job), *(a for e in infra for a in ("-f", e))]
     else:
@@ -210,7 +212,7 @@ def ensure_job(args: argparse.Namespace, tasks: list[str], budget: Decimal) -> N
     guard_spend(args.out, args.budget)
     check_balance(args.out, budget)
     keep_spend(args.out, JOB, dropped)  # after the guard, which would count them twice
-    for trial_dir in own:
+    for trial_dir in failed_itself:  # kept by keep_spend; the resume runs the missing attempt
         shutil.rmtree(trial_dir)
     log = args.out / "logs" / f"{JOB}.log"
     print(f"{JOB}: harbor {' '.join(command[:2])} -> {log}", flush=True)
@@ -239,7 +241,8 @@ def write_report(args: argparse.Namespace, tasks: list[str]) -> Path:
     if reason:
         raise Stop(f"not ready to score ({reason}); rerun with the same --out to redo them")
     code, printed, err = evals_cli(["scrub", str(job)])
-    _log(args.out / "logs" / "guards.log", printed, err)
+    with (args.out / "logs" / "guards.log").open("a") as log:
+        log.write(printed + err)
     if code != 0:
         raise Stop(f"scrub could not check every file of the job, so no report; see {job}")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -270,7 +273,7 @@ def run(args: argparse.Namespace) -> int:
         )
         return 2
     try:
-        tasks = dev_tasks(args)
+        tasks = tasks_to_run(args)
         (args.out / "logs").mkdir(parents=True, exist_ok=True)
         check_request(args.out, tasks, args.trials)
         ensure_job(args, tasks, budget)

@@ -47,7 +47,15 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext, ModelUsage
 from pydantic import Field
 
-from data_agent.agent import DEFAULT_BASE_URL, DEFAULT_MODEL, PRICES, git_commit, priced_usd
+from data_agent.agent import (
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL,
+    PRICES,
+    Tokens,
+    git_commit,
+    priced_usd,
+    usage_tokens,
+)
 from evals.harbor_agent import LSB_PREDICTION, MANIFEST, status_error, task_name
 from evals.livesqlbench import TASK_PREFIX
 from evals.lsb_baseline import build_prompt, extract_sql_from_response
@@ -189,27 +197,24 @@ class SingleShot(BaseAgent):
         started = datetime.now(UTC)
         message = await self._call(model, prompt)
         text = "".join(block.text for block in message.content if block.type == "text")
-        usage = message.usage
-        uncached = usage.input_tokens + (usage.cache_creation_input_tokens or 0)
-        cached = usage.cache_read_input_tokens or 0
-        output = usage.output_tokens
+        tokens = usage_tokens(message.usage.model_dump())
         price = PRICES.get(model)
         if price is None:
             raise ValueError(f"no price for model {model!r} (data_agent.agent.PRICES)")
-        cost = priced_usd(price, uncached, cached, output)
+        cost = priced_usd(price, *tokens)
 
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / RESPONSE_FILE).write_text(text)
-        self._write_events(started, model, message.stop_reason, (uncached, cached, output), cost)
-        context.n_input_tokens = uncached + cached
-        context.n_cache_tokens = cached
-        context.n_output_tokens = output
+        self._write_events(started, model, message.stop_reason, tokens, cost)
+        context.n_input_tokens = tokens.uncached + tokens.cached
+        context.n_cache_tokens = tokens.cached
+        context.n_output_tokens = tokens.output
         context.cost_usd = cost
         context.model_usage = {
             model: ModelUsage(
-                n_input_tokens=uncached + cached,
-                n_cache_tokens=cached,
-                n_output_tokens=output,
+                n_input_tokens=tokens.uncached + tokens.cached,
+                n_cache_tokens=tokens.cached,
+                n_output_tokens=tokens.output,
                 cost_usd=cost,
             )
         }
@@ -227,10 +232,9 @@ class SingleShot(BaseAgent):
         started: datetime,
         model: str,
         stop_reason: str | None,
-        tokens: tuple[int, int, int],
+        tokens: Tokens,
         cost: float,
     ) -> None:
-        uncached, cached, output = tokens
         events = self.logs_dir / EVENTS_DIR
         events.mkdir(parents=True, exist_ok=True)
         name = f"run-{started.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}.jsonl"
@@ -242,15 +246,17 @@ class SingleShot(BaseAgent):
                 "git_commit": git_commit(),
                 "skill_version": "none",
                 "config": CONFIG_NAME,
+                # The SDK that makes the call (CODING_STANDARDS.md: the version event's fields).
+                "sdk_version": anthropic.__version__,
             },
             {
                 "type": "result",
                 "ts": stamp(datetime.now(UTC)),
                 "num_turns": 1,
                 "stop_reason": stop_reason,
-                "uncached_input_tokens": uncached,
-                "cached_input_tokens": cached,
-                "output_tokens": output,
+                "uncached_input_tokens": tokens.uncached,
+                "cached_input_tokens": tokens.cached,
+                "output_tokens": tokens.output,
                 "cost_usd": cost,
                 "cost_basis": "price_table",
             },
