@@ -3,7 +3,8 @@ classify_text tests (no network, no real model).
 
 It answers `POST .../v1/messages` as the endpoint does. The labels come from `label` (text ->
 category, or None to leave the text out of the reply); a batch for which `fail` is true gets an
-HTTP 400 whose message quotes the request's Authorization header, as a careless endpoint might.
+HTTP 400 (or `fail_status`) whose message quotes the request's Authorization header, as a careless
+endpoint might.
 `rewrite` changes the labels' JSON before it is sent (a reply cut short, say), `stop_reason` is the
 reply's, and `thinking`, when set, comes first as a thinking block, as an endpoint that thinks by
 default answers. Every request is kept in `requests`.
@@ -34,6 +35,7 @@ class FakeModel:
     rewrite: Callable[[str], str] = lambda text: text
     stop_reason: str = "end_turn"
     thinking: str | None = None
+    fail_status: int = 400  # the HTTP status of a failed batch
     requests: list[dict[str, Any]] = field(default_factory=list)
     url: str = ""
 
@@ -54,7 +56,7 @@ def handler(model: FakeModel) -> type[BaseHTTPRequestHandler]:
             elif model.fail(texts):
                 message = f"fake failure for {self.headers.get('Authorization')}"
                 error = {"type": "invalid_request_error", "message": message}
-                self.reply(400, {"type": "error", "error": error})
+                self.reply(model.fail_status, {"type": "error", "error": error})
             else:
                 labels = {
                     str(n): label

@@ -1,0 +1,39 @@
+# LiveSQLBench Base-Lite (Query tasks) — the official single-call baseline (evals/lsb_single_shot_agent.py),
+# ticket 138, spec D2
+#
+# The same generated tasks and verifier as livesqlbench.data-agent.yaml; only the agent differs: it
+# runs on the host, reads the task's database assets from the agent environment, calls the model
+# once with upstream's prompt and writes /app/pred.json. Run from the repo root (PYTHONPATH=. puts
+# evals/ on the import path) with the DATA_AGENT_* variables set and the verifiers' write
+# credential in the host environment (`da-remote start` sources it for an lsb-single-shot run); as
+# for the data agent, this config never sets it.
+#
+#   PYTHONPATH=. uv run harbor run --config evals/configs/livesqlbench.single-shot.yaml \
+#     --path <generated tasks> -i lsb-<instance_id> -y
+#
+# `evals lsb-single-shot` runs this config on the dev set (dev only, ADR-0004).
+
+name: livesqlbench-single-shot
+
+n_attempts: 3
+n_concurrent_trials: 3
+quiet: true
+
+# As the data agent's job config: retry the model API's transient errors only
+# (evals.harbor_agent.TRANSIENT_ERRORS); Harbor's default exclusions apply.
+retry:
+  max_retries: 3
+  include_exceptions:
+    - ApiRateLimitError
+    - ApiInternalServerError
+    - ApiOverloadedError
+    - ApiConnectionClosedError
+    - ApiResponseStalledError
+
+environment:
+  type: docker         # the task's compose: the local main image and its database image
+
+agents:
+  - import_path: evals.lsb_single_shot_agent:SingleShot
+    model_name: deepseek/deepseek-flash
+    # No tools and no network for the model: one call with the prompt (evals.lsb_baseline).
