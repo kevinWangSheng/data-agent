@@ -66,6 +66,9 @@ def run_agent(
             *("--task", task, "--type", task_type, "--workspace", str(workspace)),
             *("--duckdb", str(db), "--config", str(layer_config(config))),
             *("--events-dir", str(events_dir)),
+            # dbt writes the task database's own schema, where the test reads the model; the CLI's
+            # default `scratch` would write a schema of the run's own (ticket 140, ADR-0010).
+            *(("--dbt-target", "task") if task_type == "dbt" else ()),
         ],
         env=dict(os.environ),
         capture_output=True,
