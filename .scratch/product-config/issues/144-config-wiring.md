@@ -1,6 +1,6 @@
 # 144 — 配置接到运行上：`[limits]`、`[sandbox]`、`[sources.*]` 新字段、`[policy]`、网页和 IM 的 effort/超时、产品默认 `full`、表单不列消融配置、值字典缓存
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 143
 Spec: ../spec.md（"分节（Q2）"的 `[limits]`、`[sandbox]`、`[sources.<名字>]`、`[policy]`；"产品默认与入口"）
 Claimed by: claude (opus 5.5, worktree 144-config-wiring) 2026-11-28
@@ -172,3 +172,9 @@ Branch: worktree-144-config-wiring
   **分支状态**：本地 main 多了 ticket 164 的一个提交 `8449231`，本分支不含它，合并前要先并入 main。我没有 rebase，也没有 push。
 
   **遗留**：前一次中断的会话跑测试时，在真实的 `~/.cache/data-agent/dictionaries` 写了 10 个缓存文件（时间是今天 02:34–02:40）。我没有删，可以删掉。
+- 2026-11-28（主会话）：合并前核查：CI 绿；服务器真实运行（`7f77a0e`）全过：`max_turns.query = 5` 时 `turn_budget` 记 `max_turns: 5`、到 5 轮停下（`error_max_turns`）；`max_rows = 10` 时 `query_database` 返回 10 行加 `[ROW CAP]`；`web --config` 不给 `--runs-dir`/`--port` 监听 8799，`/api/options` 带配置摘要，带 `config` 的 POST 422，表单运行三层都开、答案 37；花费约 $0.008。前端部分由上下文干净的 Opus 子 agent 审（不走 Codex）。**退回（第 1 轮）：原因如下，在原分支 `worktree-144-config-wiring` 上接着修**。
+  1. **Codex P2（属实，即本工单自己写的已知限制）**：同名、同结构但数据不同的 DuckDB 数据源（两个项目都叫 `shop`）缓存键相同，第二个项目的运行会读到第一个项目的取样值，`dictionary_search` 返回无关库的值（`src/data_agent/agent.py:500` 附近）。键里加上原始配置的数据库身份（解析后的原文件路径，不是每次运行的副本；Postgres 已有 URL 哈希），网页 dbt 运行复制库文件后仍要命中缓存。配修复前会失败的单元测试。
+  2. **前端 should-fix**：配置摘要不显示轮数上限（`web/src/local/NewRun.tsx:131-139`，注释 `:128-129` 说显示"它设的上限"）：显示 `max_turns` 的 query、dbt、large，配测试。
+  3. **前端 should-fix**：服务器关了联网时复选框置 false 并禁用（`NewRun.tsx:29`、`:97`）没有测试：抽成纯函数或在选项已加载时渲染，配测试。
+  4. 前端小问题（可顺手）：禁用的联网框旁写一句原因（如"本服务器已关闭"），去掉 `cursor-pointer`；`NewRun.test.ts:30` 的 `not.toContain('Config')` 太弱，删掉或改成匹配旧标签原文。
+  - 合并 main 时注意：145（PR #154）删了 `sdk_budget_usd`，两边都改 `build_options` 的 `max_budget_usd=`，后合入的一方 rebase，改成 `backstop_usd(budget, spend.price)`。
