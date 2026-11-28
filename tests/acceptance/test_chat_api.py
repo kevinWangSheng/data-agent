@@ -98,13 +98,18 @@ from data_agent.web.app import DataSource, create_app
 TICKET_143 = pytest.mark.xfail(
     strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
 )
+# The run form without a `config` field (contract item 5) is ticket 144's.
+TICKET_144 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 144: the config is not wired to the run yet"
+)
 
 CHAT_FIXTURES = FIXTURES / "chat"
 FAKE_CHAT_RUN = CHAT_FIXTURES / "fake_chat_run.py"
 QUERY_SHOP = FIXTURES / "web" / "real" / "query-shop" / "events.jsonl"
 NEW_FIELDS = FIXTURES / "web" / "new-fields" / "events.jsonl"
 # A run from the run form.
-FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders", "config": "full"}
+# No `config`: the form picks no ablation (product-config ticket 141 contract item 5).
+FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders"}
 
 PG_ENV = "DA_TEST_WAREHOUSE_URL"
 # A connection string the server holds in its environment; no byte of it may leave the server.
@@ -405,6 +410,7 @@ def test_after_a_cancel_the_next_message_starts_a_new_turn(chat: Chat) -> None:
 # --- One run at a time ---------------------------------------------------------------------
 
 
+@TICKET_144
 def test_one_run_at_a_time_across_conversations_and_the_run_form(chat: Chat) -> None:
     a, b = new_conversation(chat), new_conversation(chat)
     run_a = start_turn(chat, a, "How many orders are there?")
@@ -432,6 +438,7 @@ def test_one_run_at_a_time_across_conversations_and_the_run_form(chat: Chat) -> 
 # --- Single runs ---------------------------------------------------------------------------
 
 
+@TICKET_144
 def test_single_runs_list_as_one_turn_conversations_without_follow_up(chat: Chat) -> None:
     write_run(chat.runs_dir, "20261115T143153Z-old", read_events(QUERY_SHOP))
     write_run(chat.runs_dir, "20261115T090000Z-dbt", read_events(NEW_FIELDS))

@@ -24,7 +24,7 @@ External interface fixed here (`data_agent.web.app.create_app(runs_dir, data_sou
 - `POST /api/runs` with `{"task", "task_type", "data_source"}` -> 201 `{"id"}`, the run started
   through `start_run` with `--events-dir <runs_dir>/<id>` and `--config <file>`, the server's
   config, its layers all on by default (ticket 141 contract items 4 and 5; was a `config` field
-  and `--config <name>`); the other tests here still send `"config": "full"`. 4xx with a
+  and `--config <name>`); no test here sends `config`. 4xx with a
   `detail` saying why when the data source is unknown; 409 while another run is going.
 - `POST /api/runs/{id}/cancel` stops a running run this server started; 4xx for any other run.
 - `data-agent web --runs-dir DIR --port N` serves the app on the loopback address only; there is
@@ -207,7 +207,6 @@ def submit(web: Web, **overrides: str) -> Any:
         "task": "How many orders are there?",
         "task_type": "query",
         "data_source": "shop",
-        "config": "full",
         **overrides,
     }
     return web.client.post("/api/runs", json=body)
@@ -342,6 +341,7 @@ def test_read_endpoints_hold_no_connection_string(web: Web) -> None:
         assert_no_connection_string(web.client.get(url).text)
 
 
+@TICKET_144
 def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> None:
     response = submit(web, data_source="warehouse")
     assert response.status_code == 201, response.text
@@ -396,6 +396,7 @@ def test_a_submitted_run_appears_and_streams(web: Web) -> None:
     wait_until(lambda: runs_by_id(web)[run_id]["status"] == "success")
 
 
+@TICKET_144
 def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     run_id = submit_ok(web)
     wait_until(
@@ -411,6 +412,7 @@ def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     )
 
 
+@TICKET_144
 def test_an_unknown_data_source_is_refused(web: Web) -> None:
     response = submit(web, data_source="no-such-source")
     assert 400 <= response.status_code < 500
@@ -419,6 +421,7 @@ def test_an_unknown_data_source_is_refused(web: Web) -> None:
     assert runs_by_id(web) == {}
 
 
+@TICKET_144
 def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     first = submit_ok(web)
     response = submit(web, task="Another question")
@@ -434,6 +437,7 @@ def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     assert set(runs_by_id(web)) == {first, second}
 
 
+@TICKET_144
 def test_cancel_stops_only_the_run_this_server_started(web: Web) -> None:
     write_run(web.runs_dir, "cli-run", read_events(NEW_FIELDS)[:20])
     bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])

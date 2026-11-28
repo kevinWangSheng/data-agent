@@ -14,8 +14,12 @@ The contract fixed here (for the human review):
    task prompt instead.
 2. `[instructions].files`: each file's text is in the system prompt.
 3. `[sources.<name>].description` is in what the agent is told (the system prompt or the task
-   prompt); `[sources.<name>].docs` (a directory) is readable in the run's workspace: a file of it
-   is somewhere under the workspace, its text unchanged, while the session runs.
+   prompt). `[sources.<name>].docs` (a directory) stays where it is, outside the workspace, and
+   the agent only reads it (decisions.md "调研后定" 3): no file of it is under the run's
+   workspace while the session runs; the system prompt names the directory's path; the run's
+   workspace guard (the options' `PreToolUse` hook for the file tools) lets Read, Glob and Grep
+   into it and denies Write and Edit there. The Docker sandbox's read-only mount and small files
+   going into the prompt are ticket 148's own tests'.
 4. A product dbt run's task prompt has no `DB_TYPE` sentence, and always has the task file note
    (`The task above is also saved, read-only, at ...`), the verifier layer off too.
 
@@ -23,10 +27,13 @@ The evaluations keep today's prompts (`DB_TYPE` on data-eng-bench only; the answ
 LiveSQLBench and jaffle): tests/acceptance/test_config_snapshot.py guards that.
 """
 
+import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+from claude_agent_sdk import ClaudeAgentOptions
 from product_config_support import (
     INSTRUCTIONS,
     INSTRUCTIONS_MARKER,
@@ -38,6 +45,7 @@ from product_config_support import (
     assert_session,
     dbt_args,
     fake_home,
+    key_of,
     query_args,
     run_cli,
     stop_sessions,
@@ -107,25 +115,65 @@ def docs_in_workspace(workspace: Path) -> list[str]:
     return [path.read_text() for path in workspace.rglob(SOURCE_DOCS_FILE) if path.is_file()]
 
 
-def test_a_sources_description_and_docs_reach_the_agent(
-    tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
-) -> None:
+def sources_config(tmp_path: Path) -> Path:
     db = build_shop_duckdb(tmp_path / "shop.duckdb")
-    config = write_file(
+    return write_file(
         tmp_path / "sources.toml",
         f'[sources.shop]\nkind = "duckdb"\npath = {toml_path(db)}\n'
         f"description = {json.dumps(DESCRIPTION)}\ndocs = {toml_path(SOURCE_DOCS)}\n",
     )
-    argv, _ = query_args(tmp_path / "run", "--config", str(config), database=False)
+
+
+def test_a_sources_description_reaches_the_agent(
+    tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv, _ = query_args(
+        tmp_path / "run", "--config", str(sources_config(tmp_path)), database=False
+    )
+    session = assert_session(run_cli(capsys, argv), capture)
+
+    assert DESCRIPTION in system_prompt_of(session.options) + session.prompt
+
+
+def guard_decision(options: ClaudeAgentOptions, tool: str, tool_input: dict[str, Any]) -> str:
+    """What the run's file-tool hook decides for one call: `deny`, or `none` when it lets the
+    call through (tests/test_task_file.py asks the guard the same way)."""
+    matchers = key_of(options.hooks or {}, "PreToolUse")
+    [guard] = [m.hooks[0] for m in matchers if m.matcher and tool in m.matcher.split("|")]
+    hook_input: Any = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}
+    output: Any = asyncio.run(guard(hook_input, "u", {"signal": None}))
+    return output.get("hookSpecificOutput", {}).get("permissionDecision", "none")
+
+
+def test_a_sources_docs_stay_outside_the_workspace_and_are_only_read(
+    tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv, _ = query_args(
+        tmp_path / "run", "--config", str(sources_config(tmp_path)), database=False
+    )
     workspace = Path(argv[argv.index("--workspace") + 1])
     capture.probe = lambda options: docs_in_workspace(Path(str(options.cwd or workspace)))
     session = assert_session(run_cli(capsys, argv), capture)
+    options = session.options
 
-    told = system_prompt_of(session.options) + session.prompt
-    assert DESCRIPTION in told
-    docs = session.probed
-    assert isinstance(docs, list), f"the probe failed: {docs!r}"
-    assert any(SOURCE_DOCS_MARKER in text for text in docs), "the docs are not in the workspace"
+    assert session.probed == [], (
+        f"the docs are in the workspace (or the probe failed): {session.probed!r}"
+    )
+    assert docs_in_workspace(workspace) == []
+    prompt = system_prompt_of(options)
+    assert str(SOURCE_DOCS) in prompt or str(SOURCE_DOCS.resolve()) in prompt, (
+        "the system prompt does not name the docs directory"
+    )
+    doc = SOURCE_DOCS / SOURCE_DOCS_FILE
+    assert guard_decision(options, "Read", {"file_path": str(doc)}) == "none"
+    assert guard_decision(options, "Glob", {"pattern": "*.md", "path": str(SOURCE_DOCS)}) == "none"
+    grep = {"pattern": SOURCE_DOCS_MARKER, "path": str(SOURCE_DOCS)}
+    assert guard_decision(options, "Grep", grep) == "none"
+    write = {"file_path": str(SOURCE_DOCS / "new.md"), "content": "x"}
+    assert guard_decision(options, "Write", write) == "deny"
+    edit = {"file_path": str(doc), "old_string": SOURCE_DOCS_MARKER, "new_string": "x"}
+    assert guard_decision(options, "Edit", edit) == "deny"
+    assert SOURCE_DOCS_MARKER in doc.read_text()
 
 
 @pytest.mark.parametrize("verifiers", [True, False], ids=["verifiers-on", "verifiers-off"])

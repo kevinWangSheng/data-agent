@@ -47,7 +47,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from mcp_support import flag_value, write_config
-from product_config_support import fake_home, key_of
+from product_config_support import fake_home, flag_values, key_of
 from product_config_support import mcp_config as mcp_config_file
 from seam_support import FIXTURES
 
@@ -59,9 +59,14 @@ from data_agent.web.app import DataSource, create_app
 TICKET_143 = pytest.mark.xfail(
     strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
 )
+# The run form without a `config` field (contract item 5) is ticket 144's: a form run waits for it.
+TICKET_144 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 144: the config is not wired to the run yet"
+)
 
 FAKE_CHAT_RUN = FIXTURES / "chat" / "fake_chat_run.py"
-FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders", "config": "full"}
+# No `config`: the form picks no ablation (product-config ticket 141 contract item 5).
+FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders"}
 # In the server's environment: it must never reach a run's command line.
 GITHUB_TOKEN = "tok-" + "Pe40" + "-fake"
 TIMEOUT = 60
@@ -181,8 +186,9 @@ def start_turn(web: Web) -> list[str]:
 ROUTES = {"form": submit_form, "turn": start_turn}
 
 
-@TICKET_143
-@pytest.mark.parametrize("route", list(ROUTES))
+@pytest.mark.parametrize(
+    "route", [pytest.param("form", marks=TICKET_144), pytest.param("turn", marks=TICKET_143)]
+)
 def test_every_web_run_gets_the_config_path_and_no_expanded_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
@@ -191,16 +197,26 @@ def test_every_web_run_gets_the_config_path_and_no_expanded_value(
     with make_web(tmp_path, mcp_config(tmp_path)) as mounted:
         args = ROUTES[route](mounted)
         given = run_config(args).value("mcp.file")
+        config_text = Path(flag_value(args, "--config")).read_text()
     assert given is not None, "the run's config names no MCP servers file"
     assert str(given) == str(mounted.config)
     assert GITHUB_TOKEN not in json.dumps(args)
+    # The file the server writes for the run holds references, never an expanded value.
+    assert GITHUB_TOKEN not in config_text
 
 
-@pytest.mark.parametrize("route", list(ROUTES))
+@pytest.mark.parametrize("route", [pytest.param("form", marks=TICKET_144), "turn"])
 def test_without_a_config_no_web_run_gets_mcp_servers(plain: Web, route: str) -> None:
     args = ROUTES[route](plain)
     assert "--type" in args
     assert not [arg for arg in args if arg == "--mcp-servers" or arg.startswith("--mcp-servers=")]
+    # Today `--config` is an ablation name; once it is the file the server writes (ticket 143),
+    # that file names no MCP servers either.
+    files = [Path(value) for value in flag_values(args, "--config") if Path(value).is_file()]
+    if files:
+        given = load_config(files)
+        assert not given.value("mcp.file"), given.value("mcp.file")
+        assert not given.value("mcp.servers"), given.value("mcp.servers")
 
 
 # --- `data-agent web --config` (was `--mcp-servers`) -----------------------------------------

@@ -2,9 +2,14 @@
 "Testing Decisions": 运行参数快照; decisions.md Q5, Q8), across the product-config migration.
 
 Written by ticket 141. The guard tests (`test_guard_...`) pass now and must keep passing through
-tickets 143-148: no ticket edits them or re-records their snapshots. The tests marked TICKET_146
-are xfail(strict) until ticket 146 moves the evaluation entries to config files and removes the
-marker, changing nothing else.
+tickets 143-148: no ticket edits them or re-records their snapshots. What they prove
+(decisions.md "调研后定" 4): the first step of the migration leaves the run parameters as they
+were, the old and the new mechanism on the same Skill files. Once ticket 146 is merged that job
+is done; after that the main session records the snapshots again when the second step of the
+migration or a deliberate Skill change moves them, reviews the diff and notes it in that ticket
+(how: product_config_support.py's docstring). The tests marked TICKET_146 are xfail(strict) until
+ticket 146 moves the evaluation entries to config files and removes the marker, changing nothing
+else.
 
 Each entry is driven the way the evaluation drives it, its session stopped at the SDK's client
 (tests/acceptance/product_config_support.py, "截停接缝"):
@@ -24,7 +29,10 @@ What a snapshot holds (Q5): the system prompt and the task prompt, in full; `too
 environment); `skills`, `plugins`, `setting_sources`, `strict_mcp_config`; `max_turns`,
 `max_budget_usd`; the CLI's `env`, keys and values; the `version` event's `skill_version`,
 `skills`, `config` and `layers`. Normalized only where every run or machine differs
-(`product_config_support.text_rules`): never prompt text, tool lists, variable names or caps.
+(`product_config_support.text_rules`, paths on path boundaries only): never prompt text, tool
+lists, variable names or caps. `skill_version` is recorded as the Skill directory it hashes and
+that directory's content hash, ignored files left out (`product_config_support.skill_fingerprint`):
+a change to any Skill file, a script too, changes the snapshot.
 
 The recorded entries and layers (`SNAPSHOT_CASES`): each benchmark at the layer it runs (DAB at
 `no-context`: its tool server has no context tools, so `full` is refused there), and
@@ -38,6 +46,9 @@ Ticket 141's readings, for the human review (ticket 141 "spec 里的解读"):
    config file paths. A snapshot keeps the arguments in order with each `--config VALUE` as one
    `--config <config>` (`config_arg_rule`). Which layers the server runs is pinned by the
    `version` event's `config` and `layers` and by `--no-verifier-tools`, compared as they are.
+   Where the values point is asserted apart (`assert_server_configs`): each is the ablation name
+   the `version` event's `config` names, or a path under `evals/profiles/` or the temp dir, and
+   none is under the fake home or the workspace.
 2. LiveSQLBench and jaffle run on Postgres, and `make check` has none. Nothing connects before
    the session except the value dictionary build (a Postgres gateway connects on first use),
    so the build reads the shop DuckDB instead (`dictionary_from_duckdb`); the dictionary's

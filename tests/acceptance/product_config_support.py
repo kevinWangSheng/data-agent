@@ -22,9 +22,15 @@ Recording the snapshots (tests/fixtures/product_config/snapshots/): from main, w
     DATA_AGENT_RECORD_SNAPSHOTS=1 uv run pytest tests/acceptance/test_config_snapshot.py -k guard
 
 writes one JSON file per entry and layer instead of comparing; then run the file again without
-the variable. The files are recorded once, by ticket 141; no later ticket records them again.
+the variable. What the guard proves (decisions.md "调研后定" 4): that the first step of the
+migration (tickets 143-148) leaves the evaluation entries' run parameters as they were, the old
+and the new mechanism on the same Skill files. No ticket agent records them again. Once ticket 146
+is merged the guard has done its job; after that the main session records them again when the
+second step of the migration or a deliberate Skill change moves them, reviews the diff and notes
+it in that ticket. Until ticket 146 is merged no commit that changes `skills/` is merged.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -398,12 +404,41 @@ def snapshot(session: Session, version: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def assert_server_configs(
+    values: Sequence[str], version_config: Any, home: Path, workspace: Path | None
+) -> None:
+    """What the data server's `--config` values may be, beside the snapshot that collapses them
+    (`config_arg_rule`): each is the ablation name the `version` event's `config` names, or a path
+    under the checkout's `evals/profiles/` or the temp dir (a file the run wrote), never under the
+    fake home or the workspace (a user's or a project's config file read in)."""
+    profiles = (REPO_ROOT / "evals" / "profiles").resolve()
+    temp = Path(tempfile.gettempdir()).resolve()
+    assert values, "the data server is given no --config"
+    for value in values:
+        if value == version_config and "/" not in value:
+            continue
+        path = Path(value)
+        assert path.is_absolute(), (
+            f"the data server's --config {value!r} is neither the version's config nor a path"
+        )
+        path = path.resolve()
+        for kept_out in (home, workspace):
+            if kept_out is not None:
+                assert not path.is_relative_to(kept_out.resolve()), (
+                    f"the data server's --config {value} is under {kept_out}"
+                )
+        assert path.is_relative_to(profiles) or path.is_relative_to(temp), (
+            f"the data server's --config {value} is under neither evals/profiles/ nor the temp dir"
+        )
+
+
 def config_arg_rule(args: list[str]) -> list[str]:
     """The data server's `--config` values (ticket 141 "spec 里的解读" 1). Today one ablation
     name, after the migration one or more config file paths (a temp file of the run's, maybe).
     Each `--config VALUE` pair becomes one `--config <config>`, repeats collapsed: what the
     server's layers are is pinned by the `version` event's `config` and `layers` and by
-    `--no-verifier-tools`, which stay compared as they are."""
+    `--no-verifier-tools`, which stay compared as they are; where the values may point is
+    asserted apart (`assert_server_configs`)."""
     out: list[str] = []
     i = 0
     while i < len(args):
@@ -419,7 +454,7 @@ def config_arg_rule(args: list[str]) -> list[str]:
 
 def text_rules(roots: Sequence[Path]) -> list[tuple[str, str]]:
     """Literal replacements, longest first, each for a part that differs on every run or
-    machine:
+    machine; a path only where it is a whole path or a path's first part (`normalize_text`):
     - the test's own directories (`roots`: tmp_path and the like), as given and resolved (macOS
       resolves /var to /private/var): `<tmp>`;
     - the temp dir (`tempfile.gettempdir()`), where a run keeps its task file, snapshot, ledger
@@ -447,9 +482,24 @@ def text_rules(roots: Sequence[Path]) -> list[tuple[str, str]]:
     return sorted(pairs.items(), key=lambda pair: len(pair[0]), reverse=True)
 
 
+# A path replaced must not run on into more of a name (`/work` in `/workspace`, `/work-tree`,
+# `/work.d`; a full stop ending a sentence is not one), nor be the tail of a longer word or path
+# (`/tmp` in `/private/tmp`).
+PATH_BEFORE = r"(?<![\w.-])"
+PATH_AFTER = r"(?![\w-]|\.[\w-])"
+
+
+def is_path(text: str) -> bool:
+    return text.startswith("/")
+
+
 def normalize_text(text: str, rules: Sequence[tuple[str, str]]) -> str:
     for old, new in rules:
-        text = text.replace(old, new)
+        if is_path(old):
+            pattern = PATH_BEFORE + re.escape(old) + PATH_AFTER
+            text = re.sub(pattern, lambda _, new=new: new, text)
+        else:
+            text = text.replace(old, new)
     # mkdtemp's random suffix and the run's ids: different on every run.
     text = MKDTEMP.sub(r"\1<random>", text)
     return EVENT_FILE.sub("run-<stamp>", text)
@@ -470,33 +520,79 @@ def normalized_snapshot(
 ) -> dict[str, Any]:
     raw = snapshot(session, version)
     rules = text_rules(roots)
-    for server in raw["mcp_servers"].values():
+    for name, server in raw["mcp_servers"].items():
         if isinstance(server.get("args"), list):
             args = [str(arg) for arg in server["args"]]
             # The sandbox's run id: the events dir's name and a random part (`SandboxRun.of_run`).
             rules += [(run_id, "<run-id>") for run_id in flag_values(args, "--run-id")]
+            # Our own server; DAB's (`evals.dab_server`) takes no `--config`.
+            if name == DATA_SERVER and "mcp-server" in args:
+                cwd = session.options.cwd
+                assert_server_configs(
+                    flag_values(args, "--config"),
+                    version.get("config"),
+                    Path(os.environ["HOME"]),
+                    Path(str(cwd)) if cwd is not None else None,
+                )
             server["args"] = config_arg_rule(args)
     if "skill_version" in raw["version"]:
-        raw["version"]["skill_version"] = skill_version_label(raw["version"]["skill_version"])
+        raw["version"]["skill_version"] = skill_fingerprint(raw["version"]["skill_version"])
     return normalize(raw, rules)
 
 
-def skill_version_label(value: str) -> str:
+# What a content hash leaves out (Harbor's `Packager.DEFAULT_IGNORES`, harbor
+# `publisher/packager.py`), with the checkout's `.gitignore` besides.
+CONTENT_IGNORES = ("__pycache__/", "*.pyc", ".DS_Store", "*.swp", "*.swo", "*~")
+
+
+def content_files(directory: Path) -> list[Path]:
+    """The files under `directory` a content hash takes in, sorted: every file but those
+    `.gitignore` or CONTENT_IGNORES match (Harbor's `Packager.collect_files`), so a
+    `__pycache__/` a test leaves when it imports a Skill's script counts for nothing."""
+    import pathspec
+
+    gitignore = REPO_ROOT / ".gitignore"
+    lines = [*CONTENT_IGNORES, *(gitignore.read_text().splitlines() if gitignore.is_file() else [])]
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", lines)
+    root = REPO_ROOT.resolve()
+    files = [
+        path
+        for path in directory.rglob("*")
+        if path.is_file() and not spec.match_file(path.resolve().relative_to(root).as_posix())
+    ]
+    return sorted(files, key=lambda path: path.relative_to(directory).as_posix())
+
+
+def content_sha256(directory: Path) -> str:
+    """Harbor's content hash (`Packager.compute_content_hash`): sha256 over each file's path
+    under `directory` and its own sha256."""
+    outer = hashlib.sha256()
+    for path in content_files(directory):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        outer.update(f"{path.relative_to(directory).as_posix()}\0{digest}\n".encode())
+    return outer.hexdigest()
+
+
+def skill_fingerprint(value: str) -> Any:
     """The `version` event's Skill version as the Skill directory it is the hash of
-    (`skills/`, `skills-frozen/<version>/`), the hash taken with the agent's own
-    `skill_version` now; `none` as it is; any other value as it is (so it differs). Not the
-    hash itself: it takes in every file under the directory, ignored ones too, such as the
-    `__pycache__/` written when a test imports a Skill's script, so two checkouts with the same
-    Skill files may give different hashes. Which directory was hashed stays compared, and the
-    system prompt holds the injected Skills' text."""
+    (`skills/`, `skills-frozen/<version>/`, found with the agent's own `skill_version` now) and
+    that directory's content hash (`content_sha256`); `none` as it is; any other value as it is
+    (so it differs). The agent's hash itself is not recorded: it takes in every file under the
+    directory, ignored ones too, so two checkouts with the same Skill files may give different
+    ones (`agent.skill_version`). The content hash changes with any Skill file, scripts too."""
     from data_agent.agent import skill_version
 
     if value == "none":
         return value
-    directories = [REPO_ROOT / "skills", *sorted((REPO_ROOT / "skills-frozen").iterdir())]
-    for directory in directories:
+    frozen = sorted(
+        p for p in (REPO_ROOT / "skills-frozen").iterdir() if not p.name.startswith(".")
+    )
+    for directory in [REPO_ROOT / "skills", *frozen]:
         if directory.is_dir() and skill_version(directory) == value:
-            return f"<skill_version of {directory.relative_to(REPO_ROOT).as_posix()}/>"
+            return {
+                "directory": f"{directory.relative_to(REPO_ROOT).as_posix()}/",
+                "content_sha256": content_sha256(directory),
+            }
     return value
 
 

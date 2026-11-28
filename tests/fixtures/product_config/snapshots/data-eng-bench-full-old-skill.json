@@ -93,7 +93,10 @@
       "skill": true,
       "verifiers": true
     },
-    "skill_version": "<skill_version of skills-frozen/fa6028eef62b/>",
+    "skill_version": {
+      "content_sha256": "e74dc701d4e8a1e09800f582bfe60bff4faf80185e0065ddfe43c0294743f944",
+      "directory": "skills-frozen/fa6028eef62b/"
+    },
     "skills": [
       "dbt-workflow",
       "dbt-write",

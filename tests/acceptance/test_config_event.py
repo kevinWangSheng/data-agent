@@ -15,7 +15,9 @@ The contract fixed here (ticket 141 Context contract item 6; for the human revie
    - `files`: the config files merged, in merge order, as strings;
    - `file_hashes`: `{path: sha256 hex}` for every file under the run's Skill directories, its
      instructions files and its plugin directories, each path as a string of the file's absolute
-     path.
+     path. The files expected leave out what `.gitignore` and Harbor's default ignores match
+     (`__pycache__/`, `*.pyc`, ...; `product_config_support.content_files`): whether the event
+     lists those too is not pinned.
    No resolved secret is anywhere in the event file.
 2. `evals.ablate.check_request(out, model, split, tasks, agent_kwargs, benchmark=...,
    config_sha256=None)`: `config_sha256` (the evaluation's effective config hash) is part of the
@@ -33,6 +35,7 @@ from product_config_support import (
     INSTRUCTIONS,
     Capture,
     assert_session,
+    content_files,
     event_at,
     events_text,
     fake_home,
@@ -89,7 +92,7 @@ def test_the_second_event_records_the_effective_config(
     assert key_of(recorded, "sha256") == hashlib.sha256(text.encode()).hexdigest()
     assert key_of(recorded, "files") == [str(config)]
     hashes = key_of(recorded, "file_hashes")
-    skill_files = sorted(path for path in SKILLS.rglob("*") if path.is_file())
+    skill_files = content_files(SKILLS)
     assert skill_files
     for path in skill_files:
         assert hashes.get(str(path)) == sha256(path), f"no or another hash for {path}"

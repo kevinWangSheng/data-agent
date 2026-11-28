@@ -27,8 +27,8 @@ The contract fixed here (ticket 141 Context contract items 4 and 5; for the huma
    `create_app(runs_dir, sources, start_run)` call stays valid.
 5. `GET /api/options` has no `configs`; `POST /api/runs` takes no `config` (the form picks no
    ablation) and succeeds without it, the run getting the server config's layers (all on by
-   default). A body that still sends `config` (the earlier acceptance files' runs do) is taken,
-   the field ignored.
+   default). What happens to a body that still sends `config` is not pinned (decisions.md
+   "调研后定": refuse, never quietly change, Q8); no test here sends one.
 6. `[limits]`: `max_turns.dbt`/`max_turns.query` are the options' `max_turns`; `max_budget_usd` is
    the spend cap (the options' `max_budget_usd` scales with it); `effort` is the options' `effort`
    and `CLAUDE_CODE_EFFORT_LEVEL`; `agent_timeout_sec` is the run's deadline, as
@@ -269,19 +269,6 @@ def test_the_run_form_offers_no_ablation_and_runs_with_every_layer_on(
         events_dir = replayed(capsys, args, capture, tmp_path / "replayed")
 
     assert "configs" not in options
-    assert layers_of(events_dir) == FULL_LAYERS
-
-
-@TICKET_144
-def test_a_form_body_that_still_names_an_ablation_runs_the_servers_config(
-    tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Contract item 5: a stray `config` (the earlier acceptance files still send one) is taken
-    and ignored; `baseline` would turn every layer off if it were honoured."""
-    with web_app(tmp_path / "web") as web:
-        args = submit_form(web, config="baseline")
-        events_dir = replayed(capsys, args, capture, tmp_path / "replayed")
-
     assert layers_of(events_dir) == FULL_LAYERS
 
 

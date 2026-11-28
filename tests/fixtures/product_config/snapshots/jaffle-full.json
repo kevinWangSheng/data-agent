@@ -94,7 +94,10 @@
       "skill": true,
       "verifiers": true
     },
-    "skill_version": "<skill_version of skills/>",
+    "skill_version": {
+      "content_sha256": "7ee7389973f3d196e10815b7d2def82d3425c2e08bd3bb3e15cf85fd730f04e6",
+      "directory": "skills/"
+    },
     "skills": [
       "dbt-workflow",
       "dbt-write",
