@@ -2498,27 +2498,27 @@ async def run(
             data_source=data_source,
             **conversation,
         )
-        for model in settings.unpriced():
-            warning = (
-                f"the model {model} has no price ([models.{model}] input_price, "
-                "cache_read_price, output_price): the run's spend is unknown and has no cap"
-            )
+
+        def warn(warning: str, **fields: Any) -> None:
+            """A warning at the run's start: a stderr line and a `warning` event."""
             print(f"warning: {warning}", file=sys.stderr)
-            log.emit("warning", model=model, warning=warning)
+            log.emit("warning", **fields, warning=warning)
+
+        for model in settings.unpriced():
+            warn(
+                f"the model {model} has no price ([models.{model}] input_price, "
+                "cache_read_price, output_price): the run's spend is unknown and has no cap",
+                model=model,
+            )
         if settings.main_overridden is not None:
             written, file = settings.main_overridden
-            warning = (
+            warn(
                 f"{MODEL_ENV}={settings.model} overrides [roles].main = {written!r} in {file}: "
-                f"the run's main model is {settings.model}"
-            )
-            print(f"warning: {warning}", file=sys.stderr)
-            log.emit(
-                "warning",
+                f"the run's main model is {settings.model}",
                 variable=MODEL_ENV,
                 model=settings.model,
                 overridden=written,
                 file=file,
-                warning=warning,
             )
         cli_trace = None
         if export is not None:
