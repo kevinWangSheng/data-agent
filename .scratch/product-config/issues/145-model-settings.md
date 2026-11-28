@@ -40,6 +40,7 @@ Branch: —
 - **和 144 的分工**：`build_options` 的 `max_budget_usd=`（`agent.py:1723-1727`）两张都碰：144 管预算的值从哪来（`[limits].max_budget_usd`），本工单管按模型价格的缩放和没价格时的处理（`sdk_budget_usd`、`spend_cap`）。
 - **评测不变**：评测配置文件（146）写死模型；代码默认值必须让 141 的快照守门组仍相等（`sdk_env` 的每个键和值不变）。
 - **并行工单**：143（基础）、144、147、148 都改 `agent.py`，后合入的一方 rebase。
+- **数据服务器里的主模型**（143 交回）：数据服务器里 `tool_env()` 给的 `DATA_AGENT_MODEL` 会覆盖 `roles.main`，`DATA_AGENT_BASE_URL` 于是落到 `[models.<模型 id>]` 表上；今天无害，本工单把 `[roles]` 接到模型时核对这一点。数据服务器的临时配置文件已经不带 `[models.*].api_key`（模型设置从 `tool_env()` 来）。
 
 ## Acceptance
 
@@ -79,3 +80,4 @@ Branch: —
 
 - 2026-11-27（主会话建票）：审计第 3 节（只适配 DeepSeek 的按模型设置）。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：没填价格时不传 SDK 的 `max_budget_usd`、开头警告；去掉对应的停止条件。
+- 2026-11-28（主会话）：按 143 交回补 Context：数据服务器里 `DATA_AGENT_MODEL` 覆盖 `roles.main`。
