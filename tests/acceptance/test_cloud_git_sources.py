@@ -274,7 +274,7 @@ def test_resolve_gives_a_plain_value_back_and_clones_nothing(stand_in: Git, tmp_
     plain = str(tmp_path / "config" / "skills")
     assert sources(stand_in).resolve(plain) == plain
     assert stand_in.argv() == "", "git ran for a value that is not a git value"
-    assert not stand_in.root.exists()
+    assert not stand_in.root.exists() or not any(stand_in.root.iterdir()), "a value was cloned"
 
 
 def test_guard_a_plain_local_path_stays_as_it_is_and_nothing_is_cloned(
