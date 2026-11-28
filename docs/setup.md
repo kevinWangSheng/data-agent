@@ -86,7 +86,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
 ## 配置文件（工单 143）
 
-所有产品入口（`data-agent run`、`data-agent web`、对话、IM）读同一个分层的 `config.toml`（spec "配置文件与分层"，ADR-0011）。类型定义（每一节的键、类型、默认值）在 `src/data_agent/config.py` 的 `SCHEMA`；各节的行为由后续工单接上（`[limits]`、`[sandbox]`、`[policy]` 的接线 144，`[models]`/`[roles]` 145，评测配置文件 146，`[skills]`/`[mcp]`/`[plugins]` 147，`[prompts]`/`[instructions]` 148）。本工单接上的是 `[layers]`、`[sources.*]`、`[mcp]`、`[im.*]`。
+所有产品入口（`data-agent run`、`data-agent web`、对话、IM）读同一个分层的 `config.toml`（spec "配置文件与分层"，ADR-0011）。类型定义（每一节的键、类型、默认值）在 `src/data_agent/config.py` 的 `SCHEMA`；各节的行为由后续工单接上（`[limits]`、`[sandbox]`、`[policy]` 的接线 144，`[models]`/`[roles]` 145，评测配置文件 146，`[skills]`/`[mcp]`/`[plugins]` 147，`[prompts]`/`[instructions]` 148）。本工单接上的是 `[layers]`、`[sources.*]`、`[mcp]`、`[im.*]`；`[models.*]`、`[roles]` 见下面的"模型"（145）。
 
 - **位置**：用户级 `~/.data-agent/config.toml`；项目级 `<工作区>/.data-agent/config.toml`（`run` 的工作区是 `--workspace`，`web` 是启动时的当前目录；项目级文件不放密钥，可以进 git）。不放 `~/.config/data-agent/`：那是密钥目录。
 - **显式文件**：`--config <路径>` 可写多次，后面的覆盖前面的；这时只读这些文件，不找用户级、项目级。没有 `--config` 时，环境变量 `DATA_AGENT_CONFIG` 指的那一个文件代替用户级和项目级；`--config` 优先于它。
@@ -131,6 +131,57 @@ file = "mcp-github.json"        # Claude Code / Cursor 的 mcpServers JSON，每
 bot_token_env = "DATA_AGENT_SLACK_BOT_TOKEN"
 app_token_env = "DATA_AGENT_SLACK_APP_TOKEN"
 allowed_users = ["U012ABCDEF"]
+```
+
+### 模型：`[models.<名字>]`、`[roles]`（工单 145）
+
+`[models.<名字>]` 描述一个模型，`<名字>` 就是发给端点的模型名（带点的名字加引号：`[models."gpt-4.1"]`）。每个键都可省：
+
+| 键 | 含义 | 省了 |
+|---|---|---|
+| `base_url` | Anthropic 格式的端点 | `https://api.deepseek.com/anthropic` |
+| `api_key` | 只能写 `${VAR}` | 环境变量 `DATA_AGENT_API_KEY`；两个都没有就在运行前退出 2 |
+| `input_price`、`cache_read_price`、`output_price` | 美元 / 百万 token：未缓存输入（含写缓存）、读缓存、输出 | 花费"未知"，见下 |
+| `context_window` | 上下文窗口，进 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `1000000` |
+| `compact_window` | 自动压缩窗口，进 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（CLI 在它减 33000 处压缩） | `400000` |
+| `efforts` | 这个模型收的 effort 取值 | 不校验 |
+
+三个价格要么都写，要么都不写；只写一部分在运行前退出 2。代码默认有两个模型：`[models.deepseek-flash]`（0.30 / 0.006 / 1.2）和 `[models.deepseek-v4-pro]`（1.32 / 1.32 / 3.96），端点都是 DeepSeek，`efforts = ["low", "high", "max"]`；在自己的文件里写同名表只替换写到的键（比如只加 `api_key`）。
+
+`[roles]` 给每个用途选一个模型（写 `[models.*]` 里的名字；没有这张表的名字也行，就是没价格、用默认端点）：
+
+| 键 | 用在哪 | 省了 |
+|---|---|---|
+| `main` | 主会话：选项的 `model`、`ANTHROPIC_MODEL`，CLI 的端点和密钥（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`），上下文和压缩窗口，effort 校验 | `deepseek-flash` |
+| `small` | CLI 的后台小模型：`ANTHROPIC_SMALL_FAST_MODEL`、`ANTHROPIC_DEFAULT_HAIKU_MODEL` | 等于 `main` |
+| `verifier` | 验证器子 agent：`CLAUDE_CODE_SUBAGENT_MODEL`（它压过子 agent 定义里的 `inherit`） | 等于 `main` |
+| `classify` | `classify_text` 的模型调用，用它自己的 `base_url` 和 `api_key` | 等于 `main` |
+
+- **`small`、`verifier` 只换模型名**：Claude Code CLI 一次会话只连一个端点、用一个密钥，所以这两个角色的模型发到 `main` 的端点；它们表里的 `base_url`、`api_key` 不起作用。`classify` 是我们自己的 MCP server 调的，端点和密钥都按它自己的。
+- **`DATA_AGENT_MODEL`、`DATA_AGENT_BASE_URL`** 照旧覆盖主模型（`roles.main` 和它的 `base_url`）。
+- **花费**：运行用到的模型（`main`、`small`、`verifier`、`classify`）都有价格时，花费按价格表算（`result` 事件 `cost_basis: "price_table"`），上限是 `[limits].max_budget_usd`（默认 $1）；几个模型价格不同时每一项取其中最高的，花费只会高估。交给 SDK 的 `max_budget_usd` 是按 CLI 兜底价放大的备用上限（`agent.backstop_usd`）。
+- **没填价格的后果**：只要其中一个模型没价格，这次运行就没有任何花费上限（不传 SDK 的 `max_budget_usd`；否则 SDK 按兜底价约 1/30 预算就停）；运行开头在 stderr 写一行 `warning: the model <名字> has no price ...`，事件文件记一条 `warning` 事件（`model` 是名字）；`result` 事件 `cost_basis: "unknown"`、`cost_usd: null`（SDK 自己的数字留在 `sdk_cost_usd`）。`classify_text` 照常可用，回复里写花费未知。
+- **effort**：`--effort` 和 `[limits].effort` 的值要在主模型的 `efforts` 里，不在就在运行前退出 2，报错写出模型、取值和可选值；主模型没写 `efforts` 就不校验。
+
+```toml
+[models.acme-large]
+base_url = "https://llm.example/anthropic"
+api_key = "${ACME_API_KEY}"
+input_price = 2.0
+cache_read_price = 0.2
+output_price = 8.0
+context_window = 200000
+compact_window = 160000
+efforts = ["low", "medium", "high"]
+
+[models.acme-small]
+input_price = 0.2
+cache_read_price = 0.02
+output_price = 0.8
+
+[roles]
+main = "acme-large"
+small = "acme-small"
 ```
 
 本地网页的后端（工单 77、78）：`uv run data-agent web --runs-dir runs/web [--port 8765] [--config FILE]... [--no-network]`，只听 `127.0.0.1`；数据源、外部 MCP、IM 从配置文件来（上一节）。

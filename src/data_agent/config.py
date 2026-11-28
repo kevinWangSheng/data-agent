@@ -144,7 +144,8 @@ MODEL = Table(
     {
         "base_url": Leaf("str"),
         "api_key": Leaf("str"),
-        # Per million tokens (spec Q2); left out, the spend is unknown (ticket 145).
+        # Per million tokens (spec Q2): all three or none; none, the spend is unknown
+        # (`agent.ModelSettings`, ticket 145).
         "input_price": Leaf("number"),
         "cache_read_price": Leaf("number"),
         "output_price": Leaf("number"),
@@ -241,7 +242,8 @@ SCHEMA = Table(
                     }
                 ),
                 "agent_timeout_sec": Leaf("number"),
-                # Not checked against `agent.EFFORTS` here: a model's `efforts` decides (145).
+                # Checked against the main model's `efforts` by `data-agent run`
+                # (`cli.model_settings`), not here.
                 "effort": Leaf("str"),
             }
         ),

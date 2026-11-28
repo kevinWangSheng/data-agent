@@ -633,20 +633,22 @@ def model_settings(
 ) -> ModelSettings:
     """The run's models: the effective config's, or without one (an old run config's name) the
     code defaults' and the environment's. Exit 2 when the main model's `efforts` do not take
-    `--effort` or `[limits].effort`, before any session starts."""
+    `--effort` or `[limits].effort`, before any session starts. A missing key is the run's to
+    refuse (`agent.run`), after the arguments are checked."""
     try:
         models = (
-            ModelSettings.from_env(os.environ)
+            ModelSettings.from_env(os.environ, require_key=False)
             if config is None
-            else ModelSettings.from_config(config, os.environ)
+            else ModelSettings.from_config(config, os.environ, require_key=False)
         )
     except ConfigError as exc:
         parser.error(str(exc))
     if effort is not None and (error := models.effort_error(effort)):
         parser.error(f"--effort: {error}")
-    if config is not None and (configured := config.value("limits.effort")) is not None:
-        if error := models.effort_error(str(configured)):
-            parser.error(f"{config.source('limits.effort')}: limits.effort: {error}")
+    configured = None if config is None else config.value("limits.effort")
+    error = None if configured is None else models.effort_error(str(configured))
+    if config is not None and error:
+        parser.error(f"{config.source('limits.effort')}: limits.effort: {error}")
     return models
 
 

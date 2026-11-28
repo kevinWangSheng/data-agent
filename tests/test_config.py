@@ -52,6 +52,7 @@ def test_the_code_defaults_match_the_modules_they_stand_for() -> None:
         assert defaults.value(f"models.{name}.cache_read_price") == price.cached_input
         assert defaults.value(f"models.{name}.output_price") == price.output
         assert defaults.value(f"models.{name}.base_url") == agent.DEFAULT_BASE_URL
+        assert defaults.value(f"models.{name}.efforts") == list(agent.EFFORTS)
     assert defaults.value("roles.main") == agent.DEFAULT_MODEL
     old = run_config.load_config("full")
     assert dict(old.max_turns) == {

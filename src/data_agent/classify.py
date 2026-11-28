@@ -5,8 +5,9 @@ here; each fetches the rows through its read-only path and stores the label tabl
 The model and its endpoint are the run's `classify` role's (`ModelSettings.tool_env`, set for the
 server's process); every call's tokens go into the run's spend ledger (`tool_spend`), and no batch
 starts once the run's spend has reached its budget. A run whose models have no price has no
-ledger and no budget (decisions.md Q8): the calls are made and their cost is unknown. Labels are facts: a label outside the categories, a row the
-reply left out, or a failed call is reported as such and gets no category.
+ledger and no budget (decisions.md Q8): the calls are made and their cost is unknown. Labels are
+facts: a label outside the categories, a row the reply left out, or a failed call is reported as
+such and gets no category.
 
 Ticket 106 (ideas from Stela's `semantic-analysis`: its unresolved outcome and `resume=`): with
 `allow_unresolved` the model may answer UNRESOLVED_MARK for a text it cannot place, and the row is

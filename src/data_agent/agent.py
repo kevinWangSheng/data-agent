@@ -1290,7 +1290,7 @@ class ModelSettings:
     prices: Mapping[str, Price | None] | None = None
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str]) -> "ModelSettings":
+    def from_env(cls, env: Mapping[str, str], require_key: bool = True) -> "ModelSettings":
         """The code defaults' models, `DATA_AGENT_MODEL` and `DATA_AGENT_BASE_URL` over them; the
         key is `DATA_AGENT_API_KEY`."""
         given = {name: env[name] for name in (MODEL_ENV, BASE_URL_ENV) if env.get(name)}
@@ -1298,15 +1298,17 @@ class ModelSettings:
             config = load_effective_config((), given, {})
         except ConfigFileError as exc:
             raise ConfigError(str(exc)) from exc
-        return cls.from_config(config, env)
+        return cls.from_config(config, env, require_key)
 
     @classmethod
-    def from_config(cls, config: EffectiveConfig, env: Mapping[str, str]) -> "ModelSettings":
+    def from_config(
+        cls, config: EffectiveConfig, env: Mapping[str, str], require_key: bool = True
+    ) -> "ModelSettings":
         """The models `[roles]` names, each from its `[models.<name>]` table (`DATA_AGENT_MODEL`
         and `DATA_AGENT_BASE_URL` already over them, `config.load_effective_config`). A model
         without a table, or a table without `base_url` or `api_key`, gets the default endpoint
-        and `DATA_AGENT_API_KEY`. ConfigError for a role with no key, or a table with only some
-        of the three prices."""
+        and `DATA_AGENT_API_KEY`. ConfigError for a table with only some of the three prices, and
+        for a role with no key (`check_key`; with `require_key` False, left to the run)."""
         main = str(config.value("roles.main"))
         roles = {
             role: str(config.value(f"roles.{role}") or main)
@@ -1327,17 +1329,12 @@ class ModelSettings:
         def endpoint(name: str) -> tuple[str, str]:
             table = tables[name]
             api_key = str(table.get("api_key") or env.get("DATA_AGENT_API_KEY") or "")
-            if not api_key:
-                raise ConfigError(
-                    f"DATA_AGENT_API_KEY is not set (nor [models.{name}].api_key, the key of "
-                    "the model the run uses)"
-                )
             return str(table.get("base_url") or DEFAULT_BASE_URL), api_key
 
         table = tables[main]
         efforts = table.get("efforts")
         classify = roles["classify"]
-        return cls(
+        settings = cls(
             *endpoint(main),
             main,
             small="" if roles["small"] == main else roles["small"],
@@ -1348,6 +1345,18 @@ class ModelSettings:
             efforts=None if efforts is None else tuple(efforts),
             prices=prices,
         )
+        if require_key:
+            settings.check_key()
+        return settings
+
+    def check_key(self) -> None:
+        """ConfigError when the main or the `classify` model has no key."""
+        for model in (self, self.classify):
+            if model is not None and not model.api_key:
+                raise ConfigError(
+                    f"DATA_AGENT_API_KEY is not set (nor [models.{model.model}].api_key, the key "
+                    "of the model the run uses)"
+                )
 
     def models(self) -> list[str]:
         """The models the run calls: main, small, verifier, classify; each once."""
@@ -1385,7 +1394,8 @@ class ModelSettings:
 
     def secrets(self) -> list[str]:
         """The keys, masked out of the event file whatever variable they came from."""
-        return [self.api_key] + ([] if self.classify is None else [self.classify.api_key])
+        keys = [self.api_key] + ([] if self.classify is None else [self.classify.api_key])
+        return [key for key in keys if key]
 
     def tool_env(self) -> dict[str, str]:
         """The model settings for the tool servers' own model calls (classify_text): the
@@ -2326,6 +2336,7 @@ async def run(
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env) if models is None else models
+    settings.check_key()
     langfuse = LangfuseSettings.from_env(env)
     if sandbox == "docker":
         # Looked up on the module, so a test can stand in for the docker CLI (fake_docker.py).
