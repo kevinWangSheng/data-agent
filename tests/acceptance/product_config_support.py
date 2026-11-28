@@ -563,11 +563,19 @@ def content_files(directory: Path) -> list[Path]:
     return sorted(files, key=lambda path: path.relative_to(directory).as_posix())
 
 
+# Where a Claude Code plugin keeps its manifest (`plugin.json`). Ticket 147 adds one to `skills/`;
+# it is no Skill, and the Skill version leaves it out (decisions.md Q8 人定 2).
+PLUGIN_MANIFEST_DIR = ".claude-plugin"
+
+
 def content_sha256(directory: Path) -> str:
     """Harbor's content hash (`Packager.compute_content_hash`): sha256 over each file's path
-    under `directory` and its own sha256."""
+    under `directory` and its own sha256. The plugin manifest (PLUGIN_MANIFEST_DIR) is left
+    out, as the Skill version leaves it out; the `config` event's file hashes keep it."""
     outer = hashlib.sha256()
     for path in content_files(directory):
+        if PLUGIN_MANIFEST_DIR in path.relative_to(directory).parts:
+            continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         outer.update(f"{path.relative_to(directory).as_posix()}\0{digest}\n".encode())
     return outer.hexdigest()
