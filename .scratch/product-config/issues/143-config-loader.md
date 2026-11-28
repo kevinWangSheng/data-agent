@@ -1,6 +1,6 @@
 # 143 — 配置加载：分层合并、`${VAR}`、未知键、明文密钥、`config show`、`--config` 路径、三个旧参数并入
 
-Status: in-progress
+Status: in-review
 Blocked by: 141
 Spec: ../spec.md（"配置文件与分层（Q1）""分节（Q2）"）
 Claimed by: claude (opus-5-5) 2026-11-27
@@ -81,10 +81,10 @@ Branch: worktree-143-config-loader
 
 ## Ledger
 
-- Attempts: 1
-- Review rounds: 2, plus one fix commit after them
+- Attempts: 2 (return round 1)
+- Review rounds: 4 in total (2 before the return, 2 this round)
 - Model spend: $0
-- Outcome: implemented, `in-review`
+- Outcome: return round 1 fixed, `in-review`
 
 ## Comments
 
@@ -164,3 +164,57 @@ Branch: worktree-143-config-loader
 - 2026-11-28（主会话）：合并前真实运行（服务器，`322d38d`）：冒烟通过（答案 37 与 DuckDB 一致；`version.config = "product"`；`sql` 事件；`ps` 看到数据服务器 `--config /tmp/data-agent-config-*/product.toml`，文件里没有 `api_key`，运行后已删；$0.0032 ×2）。集成测试 31 个：30 passed，1 failed（`test_seam_a_run_cli.py::test_dbt_model_built_with_correct_values`，模型建在 `da_run_*` 临时 schema、测试查 `main`；140 改默认 `scratch` 时漏了这个测试的 `run_agent`，不是本工单的问题，开 164 修）。花费约 $0.16。
 - 2026-11-28（主会话）：PR #150 CI 绿；Codex GitHub app 1 条 P2，核实属实。**退回（第 1 轮）：原因如下，在原分支 `worktree-143-config-loader` 上接着修**。
   1. **`subtree` 按扁平字符串前缀匹配**（`src/data_agent/config.py:604-618`）：数据源 `shop` 和 `shop.archive` 同时存在时，查 `sources.shop` 也会匹配 `sources.shop.archive.*`；它的键段是 `["sources", "shop.archive", ...]`，没有哪段前缀等于 `sources.shop`，`next()` 抛 `StopIteration`，`web` 和用配置文件的 `run` 都起不来。改成按键段（表边界）匹配，不靠扁平字符串前缀；配一个修复前会失败的单元测试（`shop` 与 `shop.archive` 两个数据源都能取到、互不混入），同类检查 `[mcp.servers.*]`、`[models.*]`、`[im.*]` 等用 `subtree` 的地方。
+- 2026-11-28（工单 agent，退回第 1 轮；`96918d9`、`ff27757`、`1649a70`）：
+  - 2026-11-28 (ticket agent, opus-5.5; branch `worktree-143-config-loader`, `96918d9`…`1649a70`; return round 1):
+
+    **The returned bug**
+    - **Fix** (`96918d9`): `subtree` now matches tables by key parts instead of a string prefix. A new helper, `table_depth` in `config.py`, does the matching:
+      - A `Key` matches on its own parts.
+      - A dotted string matches when its first parts joined with dots equal it.
+    - **Callers:** `web/sources.py` `config_sources` now looks a source up by `Key(("sources", name))`.
+    - **Same bug in the launcher:** `web/launcher.py` `config_args` also selected keys by the prefix `sources.<name>.`. When the run's data sources included only `shop`, it still copied in all of `sources."shop.archive"`. It now uses `table_depth` too.
+    - **Tests, both failing before the fix:**
+      - `test_a_name_that_starts_another_names_table_stays_apart` covers the three named sections: sources `shop`/`shop.archive`, mcp.servers `gh`/`gh.mirror`, models `gpt`/`gpt.4`. It failed with `StopIteration`.
+      - `test_a_runs_config_file_keeps_another_sources_keys_out` failed with `['shop', 'shop.archive'] == ['shop']`.
+    - **`[im.*]` needs no change:** its three names (slack, telegram, discord) are fixed in the schema, so one can't be the start of another.
+    - **The other string-key callers** (`mcp.servers`, `mcp.file`, `im`, `layers.*`) all name fixed sections.
+
+    **Evidence**
+    - `make check`: exit 0; 3580 passed, 3 skipped, 62 xfailed; basedpyright 0 errors; web 448 passed (`runs/143/check-6.txt`).
+    - `pytest tests/acceptance/test_config_load.py tests/acceptance/test_config_cli.py`: 38 passed.
+    - This round changed no file in `tests/acceptance` or `tests/fixtures`. The diff against origin/main there is still only deleted mark lines, plus the 2 replacement lines recorded last round.
+    - Real run ($0), a project-level file with sources `shop` and `"shop.archive"`, `HOME=<tmp>/home uv run data-agent config show --workspace <tmp>/ws`, exit 0:
+      ```
+      sources.shop.kind = "duckdb"  # <tmp>/ws/.data-agent/config.toml
+      sources.shop.path = "<tmp>/ws/.data-agent/shop.duckdb"  # <tmp>/ws/.data-agent/config.toml
+      sources."shop.archive".kind = "duckdb"  # <tmp>/ws/.data-agent/config.toml
+      sources."shop.archive".path = "<tmp>/ws/.data-agent/old.duckdb"  # <tmp>/ws/.data-agent/config.toml
+      ```
+      `config_sources` on the same file returned two sources, `shop` → `shop.duckdb` and `shop.archive` → `old.duckdb`. Before the fix, this path raised `StopIteration`.
+
+    **`da-review`: 4 × P2, all fixed in `ff27757`, each with a test that failed first**
+    1. **Leaf and table with the same text.** With sources `shop` and `"shop.path"`, looking up the table `sources."shop.path"` returned `shop`'s `path` leaf, and `config_sources` crashed. A `Key` lookup in `value`/`raw_value` now matches leaves by their parts.
+    2. **Credential in `DATA_AGENT_BASE_URL`.** The URL could carry a credential, and it was copied as-is into the TOML text, which `config show` prints and web runs write to disk. The text now holds `${DATA_AGENT_BASE_URL}`, while the value is still the expanded URL with source `env:DATA_AGENT_BASE_URL`. Child processes inherit the environment, so a reload still works:
+       - Web runs are started with `os.environ`.
+       - The data server runs in the SDK subprocess, which inherits the environment, and `sdk_env()` does not blank this variable.
+
+       For that reason I changed the existing `test_a_name_with_a_dot_survives_the_text` so its reload passes the same environment. Its assertions are unchanged.
+    3. **Base URL applied to the wrong model.** With `roles.main = "${CHOSEN_MODEL}"`, `DATA_AGENT_BASE_URL` was set on a model literally named `${CHOSEN_MODEL}`. It now goes to the model named after the reference is expanded.
+    4. **Data server would not start.** It runs under `sdk_env()`, which blanks `ANTHROPIC_API_KEY`. A config with `api_key = "${ANTHROPIC_API_KEY}"` made it fail with "variable not set". Its config file (`cli.server_config`) now leaves out every `[models.*].api_key`; the server gets its model settings from `tool_env()`.
+
+    **`eng:code-review`**
+    - **Spec axis:** the return is fully fixed, nothing is missing, and there is no scope creep. Of its three notes:
+      - Fixed in `1649a70`: `config show` printed dotted names unquoted, so `sources.shop.path.path` could not be told apart. It now writes each part as TOML does, e.g. `sources."shop.path".kind`; test `test_config_show_quotes_a_name_with_a_dot`, which failed first. Names without a dot print as before, so the format pinned in 141 is unchanged.
+      - Not fixed: "a `${...}` in `DATA_AGENT_MODEL` crashes with KeyError." It does not reproduce: it already gives `ConfigFileError environment: roles.main: the variable NOPE it references is not set`.
+      - For 145: inside the data server, `tool_env()`'s `DATA_AGENT_MODEL` overrides `roles.main`, so the base URL lands on a `[models.<model id>]` table. This is harmless today; 145 should check it when it connects `[roles]` to models.
+    - **Standards axis:** no hard violations. Fixed in `1649a70`:
+      - `is not None` instead of a truthiness test on the depth.
+      - The api_key test is now a named `is_model_key`.
+      - One module-level `from data_agent.config import ...` in `sources.py` replaces two local imports. There is no import cycle; I checked that `config.py` imports nothing from `data_agent`.
+      - Review history removed from test docstrings.
+
+      Not fixed, with reasons:
+      - The string vs `Key` matching rules in `lookup`/`table_depth` stay split. Turning every string into `Key` parts would change what a plain dotted string means, and that would break the existing dotted-name lookups (`value("sources.a.b")`, which is `[sources."a.b"]`).
+      - Not sharing one "filter leaves, then write the file" helper between `cli.server_config` and `launcher.config_file`: there are two call sites, each with a different filter. That is a judgement call.
+      - `launcher` keeps `startswith(("sources.", "im."))` for top-level sections, whose names are fixed, so it is correct.
+    - **Known limit:** a leaf could collide with another entry's leaf only in a contrived case, e.g. server `gh` with header `url` and server `"gh.headers"` with `url`. Both are the string `mcp.servers.gh.headers.url`, and the config's dicts are keyed by that string. Fixing it would mean keying every dict by a tuple of parts, which is a refactor outside this return.
