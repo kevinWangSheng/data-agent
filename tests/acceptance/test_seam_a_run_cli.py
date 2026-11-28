@@ -6,7 +6,12 @@ the DATA_AGENT_* variables) and each run is shared where possible.
 External interface fixed here:
 
 - `data-agent run (--task TEXT | --task-file PATH) --type dbt|query --workspace DIR
-  (--duckdb PATH | --postgres-env VAR) --config NAME --events-dir DIR`
+  (--duckdb PATH | --postgres-env VAR) [--config FILE]... --events-dir DIR`. Ticket 141 changed
+  `--config NAME` (a run config's name) to config files (.scratch/product-config/spec.md,
+  decisions.md Q8): optional, repeatable, later files win; the runs here give the run config's
+  layers as a file (tests/acceptance/product_config_support.py `layer_config`), whose name
+  without `.toml` is the old name, so the `version` event's `config` is unchanged. These tests are
+  `TICKET_143` until ticket 143 reads config files.
 - The final answer goes to stdout. Exit codes: 0 success, 1 agent did not finish, 2 config or
   infrastructure error.
 - Each run writes one append-only `*.jsonl` event file into the events dir. Every event has an
@@ -25,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from product_config_support import layer_config
 from seam_support import (
     CONTEXT_TOOLS,
     DATA_AGENT,
@@ -34,6 +40,9 @@ from seam_support import (
 )
 
 pytestmark = pytest.mark.integration
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 
 QUERY_TASK = (
     "What is the total amount of all completed orders? Order status values are inconsistent: "
@@ -58,7 +67,8 @@ def run_agent(
             str(DATA_AGENT),
             "run",
             *("--task", task, "--type", task_type, "--workspace", str(workspace)),
-            *("--duckdb", str(db), "--config", config, "--events-dir", str(events_dir)),
+            *("--duckdb", str(db), "--config", str(layer_config(config))),
+            *("--events-dir", str(events_dir)),
         ],
         env=dict(os.environ),
         capture_output=True,
@@ -89,6 +99,7 @@ def query_run(
     return proc, db, events_dir
 
 
+@TICKET_143
 def test_query_answer_within_tolerance(
     query_run: tuple[subprocess.CompletedProcess[str], Path, Path],
 ) -> None:
@@ -107,6 +118,7 @@ def test_query_answer_within_tolerance(
     )
 
 
+@TICKET_143
 def test_event_file_header_sequence_and_cost(
     query_run: tuple[subprocess.CompletedProcess[str], Path, Path],
 ) -> None:
@@ -136,6 +148,7 @@ def test_event_file_header_sequence_and_cost(
             assert value not in text, f"{name} leaked into the event file"
 
 
+@TICKET_143
 def test_dbt_model_built_with_correct_values(tmp_path: Path) -> None:
     project, db = make_dbt_workspace(tmp_path)
     proc = run_agent(DBT_TASK, "dbt", project, db, "full", tmp_path / "events")
@@ -164,6 +177,7 @@ def test_dbt_model_built_with_correct_values(tmp_path: Path) -> None:
         assert abs(Decimal(str(value)) - want_value) <= Decimal("0.01"), cid
 
 
+@TICKET_143
 def test_baseline_leaves_no_verifier_or_context_trace(tmp_path: Path) -> None:
     project, db = make_dbt_workspace(tmp_path)
     events_dir = tmp_path / "events"
@@ -178,6 +192,7 @@ def test_baseline_leaves_no_verifier_or_context_trace(tmp_path: Path) -> None:
         assert not [tool for tool in used if tool.endswith(name)], f"{name} used in a baseline run"
 
 
+@TICKET_143
 def test_write_request_is_blocked_without_crashing(tmp_path: Path) -> None:
     """The data must stay unchanged whichever path the agent tries, and the run must finish."""
     project, db = make_dbt_workspace(tmp_path)

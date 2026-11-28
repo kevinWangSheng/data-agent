@@ -18,6 +18,8 @@ then fails on the assertion, which counts as the expected failure, and not on a 
 `ValueError`, which would be reported as a failure.
 """
 
+import contextlib
+import io
 import json
 import re
 import shutil
@@ -30,6 +32,7 @@ from typing import Any
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+from product_config_support import layer_config, layer_file, mcp_config
 from seam_support import FIXTURES, build_shop_duckdb
 
 from data_agent import cli
@@ -119,6 +122,29 @@ def run_cli(capsys: pytest.CaptureFixture[str], argv: Sequence[str], events_dir:
     return CliRun(code, out.out, out.err, events_dir)
 
 
+def config_file(name: str) -> str:
+    """The config file holding the layers of the old run config `name`, for `--config` (ticket
+    141): `product_config_support.layer_file`, the product layer file or, for `full-old-skill`,
+    ticket 146's evaluation layer file, asserted to be there first."""
+    return str(layer_file(name))
+
+
+def assert_cli_accepts(args: Sequence[str]) -> None:
+    """The CLI's parser takes `args` (`data-agent <args> --help` exits 0; argparse handles
+    `--help` where it stands, after the arguments before it). For a command a test then starts
+    as a process (`mcp-server --config <file>`, ticket 141): an argument the CLI does not take
+    yet fails here, on an assertion, and not inside the MCP client with a closed connection."""
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            cli.main([*args, "--help"])
+    except SystemExit as exc:
+        code = exc.code
+    else:
+        code = 0
+    assert code == 0, f"data-agent does not take {list(args)}: {err.getvalue()[-2000:]!r}"
+
+
 def run_args(
     root: Path,
     database: Sequence[str] | None = None,
@@ -126,19 +152,21 @@ def run_args(
     config: str = "full",
 ) -> tuple[list[str], Path]:
     """A query run's arguments under `root` (its own workspace and events dir), on a fresh copy of
-    the shop DuckDB unless `database` names another; with `--mcp-servers` when given."""
+    the shop DuckDB unless `database` names another; with the MCP servers file when given. Ticket
+    141 moved it to the config files (tests/acceptance/product_config_support.py): the run config
+    `config` is its layer file, the servers file a config file's `[mcp]`, each given with
+    `--config` (layers first)."""
     workspace = root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     events_dir = root / "events"
     if database is None:
         database = ("--duckdb", str(build_shop_duckdb(root / "shop.duckdb")))
+    mcp = ("--config", str(mcp_config(root, mcp_servers))) if mcp_servers is not None else ()
     argv = [
         "run",
         *("--task", "How many orders are there?", "--type", "query"),
-        *("--workspace", str(workspace), *database),
-        *("--config", config, "--events-dir", str(events_dir)),
-        *("--sandbox", "local"),
-        *(("--mcp-servers", str(mcp_servers)) if mcp_servers is not None else ()),
+        *("--workspace", str(workspace), "--config", str(layer_config(config)), *database),
+        *("--events-dir", str(events_dir), "--sandbox", "local", *mcp),
     ]
     return argv, events_dir
 

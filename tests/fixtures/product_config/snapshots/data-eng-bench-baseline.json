@@ -1,0 +1,95 @@
+{
+  "allowed_tools": [
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Edit",
+    "mcp__data"
+  ],
+  "disallowed_tools": [
+    "Bash",
+    "WebSearch",
+    "WebFetch"
+  ],
+  "env": {
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_AUTH_TOKEN": "<api-key>",
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash",
+    "ANTHROPIC_MODEL": "deepseek-flash",
+    "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-flash",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
+    "CLAUDE_CODE_OAUTH_TOKEN": "",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+    "DATA_AGENT_API_KEY": "<api-key>",
+    "DATA_AGENT_BASE_URL": "https://api.deepseek.com/anthropic",
+    "DATA_AGENT_CHAT": "",
+    "DATA_AGENT_LANGFUSE_BASE_URL": "",
+    "DATA_AGENT_LANGFUSE_PUBLIC_KEY": "",
+    "DATA_AGENT_LANGFUSE_SECRET_KEY": "",
+    "DATA_AGENT_MODEL": "deepseek-flash",
+    "DATA_AGENT_SPEND_DIR": "<tempdir>/data-agent-spend-<random>",
+    "DISABLE_AUTO_COMPACT": "",
+    "DISABLE_COMPACT": ""
+  },
+  "max_budget_usd": 83.33333333333333,
+  "max_turns": 200,
+  "mcp_servers": {
+    "data": {
+      "args": [
+        "-m",
+        "data_agent",
+        "mcp-server",
+        "--config",
+        "<config>",
+        "--duckdb",
+        "<tmp>/trial/shop.duckdb",
+        "--no-verifier-tools",
+        "--workspace",
+        "<tmp>/trial/dbt_shop",
+        "--sandbox",
+        "local",
+        "--run-id",
+        "<run-id>",
+        "--dbt-target",
+        "task"
+      ],
+      "command": "<python>",
+      "env": null,
+      "type": "stdio",
+      "url": null
+    }
+  },
+  "permission_mode": "dontAsk",
+  "plugins": [],
+  "prompt": "Task type: dbt\nDatabase: DuckDB. dbt writes to it only through the `dbt_execute` tool; you read it only through the `data` MCP tools.\nWorkspace (your working directory; the dbt project is this directory or one inside it): <tmp>/trial/dbt_shop\nRun dbt against the database with `dbt_execute`, which finds the project in the workspace (name it with `project_dir` when the workspace holds several). Run every other command (Python, scripts, `dbt parse`, `dbt ls`, `dbt deps`) with `sandbox_exec`, which starts in the workspace. Do not edit an existing `profiles.yml`; create one when the task asks for it. When the task asks you to print `DB_TYPE`, run `echo $DB_TYPE` as a sandbox_exec call of its own. List, read and search files with the Glob, Read and Grep tools, and change them with Write and Edit, not with shell commands.\n\n<task>\nAdd a dbt model named customer_ltv with one row per customer.\n</task>\n\nEnd with a final message that lists the models you created or changed, how the last dbt run went, then the assumptions you made.\n",
+  "setting_sources": [
+    "user"
+  ],
+  "skills": [],
+  "strict_mcp_config": true,
+  "system_prompt": "You are a data agent. You build and fix the models of a user's dbt project, materialize them with `dbt run`, and check the results.\n\nAll database access goes through the `data` MCP tools, which are read-only. The only way to change data is to edit the dbt project and run dbt with the `dbt_execute` tool. Work only from what the tools and the project files show you; do not guess table names, column names or values.\n",
+  "tools": [
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Edit"
+  ],
+  "version": {
+    "config": "baseline",
+    "layers": {
+      "context": false,
+      "skill": false,
+      "verifiers": false
+    },
+    "skill_version": "none",
+    "skills": []
+  }
+}

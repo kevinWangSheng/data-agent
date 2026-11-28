@@ -2,14 +2,16 @@
 checks, `${VAR}` expansion, the allow list, the `run` entry, the `version` event).
 
 Written by ticket 115. Every test here is xfail(strict) until ticket 116 makes it pass and removes
-the marker, changing nothing else. The seam: `data-agent run ... --mcp-servers FILE`, in-process,
-stopped at the SDK's transport (tests/acceptance/mcp_support.py), so no model is called.
+the marker, changing nothing else. The seam: `data-agent run ... --config <a config file whose
+`[mcp]` names FILE>` (ticket 141 moved it off `--mcp-servers FILE`), in-process, stopped at the
+SDK's transport (tests/acceptance/mcp_support.py), so no model is called. The tests ticket 141
+moved are `TICKET_143` until ticket 143 folds `--mcp-servers` into the config.
 
 The contract fixed here (ticket 115 Context, items 1, 3, 4, 5; human-reviewed):
 
-1. CLI: `data-agent run ... --mcp-servers FILE` and `data-agent web ... --mcp-servers FILE`.
-   FILE is a Claude Code / Cursor `mcpServers` JSON with an `allowedTools` list per server.
-   Evaluations never pass it.
+1. CLI: `data-agent run ... --config C` and `data-agent web ... --config C`, C's `[mcp]` naming
+   FILE (`file = ...`; product-config spec Q2, ticket 141). FILE is a Claude Code / Cursor
+   `mcpServers` JSON with an `allowedTools` list per server. Evaluations never pass it.
 3. Config errors: `run` ends before any session starts, exit code 2, stderr naming the server
    (and, for a `${VAR}` error, the variable). A server whose `allowedTools` is missing or empty
    gets a warning: a line of stderr holding `warning` and the server's name.
@@ -25,9 +27,10 @@ The contract fixed here (ticket 115 Context, items 1, 3, 4, 5; human-reviewed):
      tests/acceptance/test_mcp_launch.py), and no expanded value is in its `command` or `args`.
    - `allowed_tools` is what it was plus `mcp__<server>__<tool>` or `mcp__<server>__*`, the
      earlier entries unchanged and in their order.
-   - `tools` and `disallowed_tools` unchanged, `permission_mode == "dontAsk"`,
-     `strict_mcp_config is True` (the user's `.mcp.json` and `~/.claude.json` still never join a
-     run; ticket 115 "spec 里的解读" 3, for the human to confirm).
+   - `tools`, `disallowed_tools` and `strict_mcp_config` unchanged, `permission_mode ==
+     "dontAsk"`. Ticket 141 dropped `strict_mcp_config is True` (ticket 115 "spec 里的解读" 3):
+     product-config spec "Skill、MCP、插件" has a product run no longer set it, while a
+     `.mcp.json` still never joins (tests/acceptance/test_config_skills.py, ticket 147).
 
 What is not asserted (ticket 115 "spec 里的解读"):
 - The SDK serialises `mcp_servers` whole into the CLI's `--mcp-config` argument (research note
@@ -62,6 +65,10 @@ from mcp_support import (
     version_event,
     warning_naming,
     write_config,
+)
+
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
 )
 
 # Fake values, built here so no file holds them.
@@ -126,6 +133,7 @@ def run_with(
 # --- Parsing and checks ----------------------------------------------------------------------
 
 
+@TICKET_143
 def test_run_mounts_stdio_and_http_servers_from_the_file(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -146,9 +154,9 @@ def test_run_mounts_stdio_and_http_servers_from_the_file(
     assert http["type"] == "http"
     assert http["url"] == GITHUB_URL
     assert options.permission_mode == "dontAsk"
-    assert options.strict_mcp_config is True
 
 
+@TICKET_143
 @pytest.mark.parametrize(
     ("name", "server"),
     [
@@ -172,6 +180,7 @@ def test_a_bad_server_is_refused_before_the_session_naming_it(
     assert_refused_before_session(run, capture, name)
 
 
+@TICKET_143
 @pytest.mark.parametrize("allowed", [None, []], ids=["missing", "empty"])
 def test_a_server_without_an_allow_list_gets_none_of_its_tools_and_a_warning(
     tmp_path: Path,
@@ -197,6 +206,7 @@ def test_a_server_without_an_allow_list_gets_none_of_its_tools_and_a_warning(
 # --- `${VAR}` expansion ----------------------------------------------------------------------
 
 
+@TICKET_143
 def test_variables_are_expanded_into_http_headers(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -207,6 +217,7 @@ def test_variables_are_expanded_into_http_headers(
     assert http["headers"] == {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
 
+@TICKET_143
 @pytest.mark.parametrize(
     ("variable", "value", "where"),
     [
@@ -240,6 +251,7 @@ def test_a_bad_variable_is_refused_before_the_session_naming_it_and_the_server(
     assert_refused_before_session(run, capture, name, variable)
 
 
+@TICKET_143
 def test_expanded_values_stay_out_of_events_output_and_the_stdio_command_line(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -259,6 +271,7 @@ def test_expanded_values_stay_out_of_events_output_and_the_stdio_command_line(
 # --- The allow list --------------------------------------------------------------------------
 
 
+@TICKET_143
 def test_allowed_tools_become_mcp_names_and_nothing_else_changes(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -276,12 +289,13 @@ def test_allowed_tools_become_mcp_names_and_nothing_else_changes(
     assert mounted.tools == plain.tools
     assert mounted.disallowed_tools == plain.disallowed_tools
     assert mounted.permission_mode == plain.permission_mode == "dontAsk"
-    assert mounted.strict_mcp_config is plain.strict_mcp_config is True
+    assert mounted.strict_mcp_config == plain.strict_mcp_config
 
 
 # --- The `version` event ---------------------------------------------------------------------
 
 
+@TICKET_143
 def test_the_version_event_names_the_servers_and_their_allow_lists_only(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:

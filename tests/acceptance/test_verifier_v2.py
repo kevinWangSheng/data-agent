@@ -80,11 +80,12 @@ from claude_agent_sdk import query as sdk_query
 from claude_agent_sdk.types import HookEvent
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp_support import assert_cli_accepts, config_file
+from product_config_support import RUN_CONFIG_NAMES, run_config_of
 
 from data_agent import agent, verifier_v2
 from data_agent.agent import ModelSettings, Task
 from data_agent.gateway import DuckDBGateway
-from data_agent.run_config import CONFIG_NAMES, load_config
 from data_agent.verifier_v2 import (
     compare_by_key,
     contract_check,
@@ -99,6 +100,20 @@ from data_agent.verifier_v2 import (
     take_snapshot,
 )
 from data_agent.workspace_guard import outside_paths
+
+# Ticket 141 moved the in-process `load_config(<name>)` and `CONFIG_NAMES` (ticket 146 removes
+# both) to the new reading: `run_config.load_config` given the effective config of the run
+# config's layer file (tests/acceptance/product_config_support.py `run_config_of`), and the six
+# names written out. Those tests are `TICKET_143` until ticket 143 reads config files, or
+# `TICKET_146` when they take `full-old-skill`, whose layer file ticket 146 adds.
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
+TICKET_146 = pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="ticket 146: the evaluation entries do not read config files yet",
+)
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "verifier_v2"
 BEFORE = FIXTURES / "project_before"
@@ -628,13 +643,14 @@ async def call_hooks(
     return merged
 
 
+@TICKET_143
 async def test_stop_lets_the_run_end_after_two_blocks_and_records_it(
     two_models: tuple[Path, Path], tmp_path: Path
 ) -> None:
     workspace, snapshot = two_models
     events: list[dict[str, Any]] = []
     hooks = run_hooks(
-        load_config("full"),
+        run_config_of("full"),
         workspace=workspace,
         snapshot=snapshot,
         task_file=tmp_path / "task.md",
@@ -666,10 +682,11 @@ async def test_stop_lets_the_run_end_after_two_blocks_and_records_it(
     assert "bravo" in unresolved["reason"] and "alpha" not in unresolved["reason"]
 
 
+@TICKET_146
 def test_hooks_follow_the_verifiers_switch(two_models: tuple[Path, Path], tmp_path: Path) -> None:
     workspace, snapshot = two_models
-    for name in CONFIG_NAMES:
-        config = load_config(name)
+    for name in RUN_CONFIG_NAMES:
+        config = run_config_of(name)
         hooks = run_hooks(
             config,
             workspace=workspace,
@@ -689,23 +706,24 @@ def test_hooks_follow_the_verifiers_switch(two_models: tuple[Path, Path], tmp_pa
 
 @asynccontextmanager
 async def mcp_server(config: str, db: Path) -> AsyncIterator[ClientSession]:
-    params = StdioServerParameters(
-        command=str(DATA_AGENT),
-        args=["mcp-server", "--config", config, "--duckdb", str(db)],
-        env=dict(os.environ),
-    )
+    # Ticket 141: the run config's layers as a config file (`--config <file>`), the arguments
+    # checked first so a missing feature fails on an assertion, not in the MCP client.
+    args = ["mcp-server", "--config", config_file(config), "--duckdb", str(db)]
+    assert_cli_accepts(args)
+    params = StdioServerParameters(command=str(DATA_AGENT), args=args, env=dict(os.environ))
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         yield session
 
 
+@TICKET_146
 async def test_new_tools_follow_the_verifiers_switch(db: Path) -> None:
-    for name in CONFIG_NAMES:
+    for name in RUN_CONFIG_NAMES:
         async with mcp_server(name, db) as session:
             names = {tool.name for tool in (await session.list_tools()).tools}
         # The value verifier's tool goes with it (spec "工具": 保留的旧工具).
         assert "verify_model_values" not in names, name
-        if load_config(name).verifiers:
+        if run_config_of(name).verifiers:
             assert names >= NEW_TOOLS, name
         else:
             assert not names & NEW_TOOLS, name
@@ -717,6 +735,7 @@ def dbt_task(tmp_path: Path, db: Path) -> Task:
     return Task(text="build the models", type="dbt", workspace=workspace, duckdb=db)
 
 
+@TICKET_146
 async def test_snapshot_only_in_verifier_configs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, db: Path
 ) -> None:
@@ -741,18 +760,19 @@ async def test_snapshot_only_in_verifier_configs(
     monkeypatch.setattr(verifier_v2, "take_snapshot", spy)
     monkeypatch.setattr(agent, "query", fake_query)
     env = {"DATA_AGENT_API_KEY": "sk-test", "PATH": os.environ["PATH"]}
-    for name in CONFIG_NAMES:
+    for name in RUN_CONFIG_NAMES:
         taken.clear()
         task = dbt_task(tmp_path / name, db)
-        await agent.run(task, load_config(name), tmp_path / name / "events", env)
-        assert bool(taken) == load_config(name).verifiers, name
+        await agent.run(task, run_config_of(name), tmp_path / name / "events", env)
+        assert bool(taken) == run_config_of(name).verifiers, name
 
 
+@TICKET_146
 def test_verifier_configs_define_one_verifier(tmp_path: Path, db: Path) -> None:
     settings = ModelSettings.from_env({"DATA_AGENT_API_KEY": "sk-test"})
     for name in VERIFIER_CONFIGS:
         options = agent.build_options(
-            dbt_task(tmp_path / name, db), load_config(name), settings, [], noop
+            dbt_task(tmp_path / name, db), run_config_of(name), settings, [], noop
         )
         assert options.agents is not None, name
         assert set(options.agents) == {"verifier"}, name
@@ -773,6 +793,7 @@ def visible_text(messages: Sequence[Any]) -> str:
     return "\n".join(parts)
 
 
+@TICKET_143
 @pytest.mark.integration
 async def test_updated_input_replaces_the_prompt_end_to_end(
     edited: tuple[Path, Path], tmp_path: Path
@@ -783,7 +804,11 @@ async def test_updated_input_replaces_the_prompt_end_to_end(
     task_file = tmp_path / "task-v2-marker.md"
     task_file.write_text("Build customer_ltv.\n")
     hooks = run_hooks(
-        load_config("full"), workspace=workspace, snapshot=snapshot, task_file=task_file, emit=noop
+        run_config_of("full"),
+        workspace=workspace,
+        snapshot=snapshot,
+        task_file=task_file,
+        emit=noop,
     )
     settings = ModelSettings.from_env(os.environ)
     options = ClaudeAgentOptions(

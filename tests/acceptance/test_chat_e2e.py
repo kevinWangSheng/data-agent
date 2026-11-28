@@ -15,6 +15,13 @@ fixtures (ADR-0005); each expected value notes the SQL that gives it.
 Written by ticket 88. Scenarios a-d and g are xfail(strict) until ticket 93 (the chat backend,
 merged after 89-92) makes them pass and removes the marker, changing nothing else. Scenario f
 runs today's `data-agent run` and has no marker: it guards the evaluation path.
+
+Ticket 141 moved the calls to the config files (.scratch/product-config/spec.md, decisions.md
+Q8): the server gets its sources file as `--config` (the same `[sources.<name>]` TOML; was
+`--data-sources`), scenario f the `full` layers as a config file (was `--config full`). Every
+scenario is `TICKET_143` until ticket 143 reads config files. A server that does not come up is
+recorded, and the first call of each test asserts on it, so that is a test's assertion and not a
+fixture error.
 """
 
 import contextlib
@@ -35,9 +42,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from product_config_support import layer_config
 from seam_support import DATA_AGENT, FIXTURES
 
 pytestmark = pytest.mark.integration
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 
 # Each scenario three times; all three must pass.
 THREE_TIMES = pytest.mark.parametrize("attempt", [1, 2, 3])
@@ -121,8 +132,11 @@ class Server:
     runs_dir: Path
     sources_dir: Path
     process: "subprocess.Popen[bytes]"
+    # Why the server did not come up; None once it answers.
+    start_error: str | None = None
 
     def call(self, method: str, path: str, body: Any = None) -> tuple[int, Any]:
+        assert self.start_error is None, f"data-agent web did not come up: {self.start_error}"
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(
             self.url + path, data=data, method=method, headers={"Content-Type": "application/json"}
@@ -164,7 +178,7 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
     process = subprocess.Popen(
         [
             *(str(DATA_AGENT), "web", "--runs-dir", str(runs_dir), "--port", str(port)),
-            *("--data-sources", str(sources_file)),
+            *("--config", str(sources_file)),
         ],
         env=dict(os.environ),
     )
@@ -179,7 +193,10 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
             return False
 
         # Alive and answering: whatever fails later is the chat's, not the server's start.
-        wait_until(answers, START_TIMEOUT, "data-agent web to answer", RuntimeError)
+        try:
+            wait_until(answers, START_TIMEOUT, "data-agent web to answer", RuntimeError)
+        except RuntimeError as exc:
+            up.start_error = str(exc)
         yield up
     finally:
         process.send_signal(signal.SIGTERM)
@@ -314,6 +331,7 @@ def choose(options: list[str]) -> tuple[str, Decimal]:
 # --- a: follow-up --------------------------------------------------------------------------
 
 
+@TICKET_143
 @THREE_TIMES
 def test_a_follow_up_resumes_the_session(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -336,6 +354,7 @@ def test_a_follow_up_resumes_the_session(server: Server, attempt: int) -> None:
 # --- b: clarification ----------------------------------------------------------------------
 
 
+@TICKET_143
 @THREE_TIMES
 def test_b_an_ambiguous_question_is_clarified_and_answered_as_chosen(
     server: Server, attempt: int
@@ -360,6 +379,7 @@ def test_b_an_ambiguous_question_is_clarified_and_answered_as_chosen(
     assert turn_2["message"] == option and turn_1["message"] == REVENUE_QUESTION
 
 
+@TICKET_143
 @THREE_TIMES
 def test_b_a_plain_question_is_answered_without_clarification(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -371,6 +391,7 @@ def test_b_a_plain_question_is_answered_without_clarification(server: Server, at
 # --- c: steering ---------------------------------------------------------------------------
 
 
+@TICKET_143
 @THREE_TIMES
 def test_c_a_message_sent_while_the_agent_works_is_followed(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -398,6 +419,7 @@ def test_c_a_message_sent_while_the_agent_works_is_followed(server: Server, atte
 # --- d: cancel, then go on -----------------------------------------------------------------
 
 
+@TICKET_143
 @THREE_TIMES
 def test_d_after_a_cancelled_turn_the_next_one_is_answered(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -415,6 +437,7 @@ def test_d_after_a_cancelled_turn_the_next_one_is_answered(server: Server, attem
 # --- f: the evaluation path ----------------------------------------------------------------
 
 
+@TICKET_143
 @THREE_TIMES
 def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
     tmp_path: Path, attempt: int
@@ -429,7 +452,7 @@ def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
         [
             *(str(DATA_AGENT), "run", "--task", REVENUE_QUESTION, "--type", "query"),
             *("--workspace", str(workspace), "--duckdb", str(sources / "orders.duckdb")),
-            *("--config", "full", "--events-dir", str(events_dir)),
+            *("--config", str(layer_config("full")), "--events-dir", str(events_dir)),
         ],
         env=dict(os.environ),
         capture_output=True,
@@ -450,6 +473,7 @@ def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
 # --- g: the agent picks the database, and uses both when it must ----------------------------
 
 
+@TICKET_143
 @THREE_TIMES
 def test_g_a_question_across_both_databases_queries_each(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -460,6 +484,7 @@ def test_g_a_question_across_both_databases_queries_each(server: Server, attempt
     assert set(queried) <= {"orders", "customers"}, queried
 
 
+@TICKET_143
 @THREE_TIMES
 def test_g_a_question_on_one_database_queries_only_it(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)

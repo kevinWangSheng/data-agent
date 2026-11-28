@@ -6,18 +6,28 @@ Written by ticket 115. The tests marked TICKET_116 are xfail(strict) until ticke
 pass and removes the marker, changing nothing else. The tests without it hold today and must keep
 holding: without a config, no run gets `--mcp-servers`.
 
+Ticket 141 moved the calls to the config files (.scratch/product-config/spec.md, decisions.md Q8;
+tests/acceptance/test_config_wiring.py contract items 4 and 5): the MCP servers file is named by a
+config file's `[mcp]` (`file = ...`), given to `data-agent web` with `--config` and to `create_app`
+as the server's `EffectiveConfig` (`config=`); each web run gets `--config <file>`, a file holding
+the server's config, never `--mcp-servers`. The tests it moved are `TICKET_143` until ticket 143
+reads config files. The run form sends no `config` field (test_config_wiring.py contract item
+5), so the form's cases are `TICKET_144` until ticket 144 drops that field from `POST /api/runs`.
+
 The app is built with `create_app` and a `start_run` that records the arguments; the run it starts
 is tests/fixtures/chat/fake_chat_run.py (reused read-only), which ignores arguments it does not
 know and waits on a gate file, so a test reads the arguments while the run is going.
 
 The contract fixed here (ticket 115 Context items 1 and 2; human-reviewed):
 
-1. `data-agent web --runs-dir D ... --mcp-servers FILE` hands FILE to `create_app`.
-2. `create_app(runs_dir, data_sources, start_run, ui_dir=UI_DIR, mcp_servers=None)`. Given a
-   file, the run form's runs (`POST /api/runs`) and every conversation turn
-   (`POST /api/conversations/{id}/messages`) are started with `--mcp-servers <path>`, the path
-   exactly as given to `create_app` (the tests give an absolute one); never an expanded value.
-   Without it, neither has `--mcp-servers`.
+1. `data-agent web --runs-dir D ... --config C`, C's `[mcp]` naming FILE, hands `create_app` a
+   config whose `mcp.file` is FILE (ticket 141; was `--mcp-servers FILE`).
+2. `create_app(runs_dir, data_sources, start_run, ui_dir=UI_DIR, config=None)` (ticket 141; was
+   `mcp_servers=None`). Given a config naming the file, the run form's runs (`POST /api/runs`)
+   and every conversation turn (`POST /api/conversations/{id}/messages`) are started with
+   `--config <file>`, a file whose `mcp.file` is the path exactly as the server's config has it
+   (the tests give an absolute one); never an expanded value. Without it, neither has
+   `--mcp-servers`.
 
 Not asserted: whether `data-agent web` checks the config when it starts (ticket 115 "spec 里的解读"
 6; the spec says nothing).
@@ -25,9 +35,11 @@ Not asserted: whether `data-agent web` checks the config when it starts (ticket 
 
 import inspect
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,14 +47,26 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from mcp_support import flag_value, write_config
+from product_config_support import fake_home, flag_values, key_of
+from product_config_support import mcp_config as mcp_config_file
 from seam_support import FIXTURES
 
 from data_agent import cli
+from data_agent.config import EffectiveConfig, load_effective_config
 from data_agent.web import app as web_app
 from data_agent.web.app import DataSource, create_app
 
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
+# The run form without a `config` field (contract item 5) is ticket 144's: a form run waits for it.
+TICKET_144 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 144: the config is not wired to the run yet"
+)
+
 FAKE_CHAT_RUN = FIXTURES / "chat" / "fake_chat_run.py"
-FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders", "config": "full"}
+# No `config`: the form picks no ablation (product-config ticket 141 contract item 5).
+FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders"}
 # In the server's environment: it must never reach a run's command line.
 GITHUB_TOKEN = "tok-" + "Pe40" + "-fake"
 TIMEOUT = 60
@@ -57,7 +81,7 @@ class Started:
 @dataclass
 class Web:
     client: TestClient
-    # The file given to create_app; None for an app built without one.
+    # The MCP servers file the config given to create_app names; None for an app built without one.
     config: Path | None
     started: list[Started]
 
@@ -66,6 +90,7 @@ class Web:
         return self.started[0].args
 
 
+@contextmanager
 def make_web(tmp_path: Path, mcp_servers: Path | None) -> Iterator[Web]:
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
@@ -84,12 +109,16 @@ def make_web(tmp_path: Path, mcp_servers: Path | None) -> Iterator[Web]:
         started.append(Started(list(args), process))
         return process
 
-    # Without a file the app is built as every caller before ticket 115 builds it.
-    app = (
-        create_app(runs_dir, sources, start_run)
-        if mcp_servers is None
-        else create_app(runs_dir, sources, start_run, mcp_servers=mcp_servers)
-    )
+    # Without a file the app is built as every caller before ticket 115 builds it. With one, the
+    # server's config, whose `[mcp]` names it (ticket 141), and `create_app` takes it as `config`.
+    if mcp_servers is None:
+        app = create_app(runs_dir, sources, start_run)
+    else:
+        server_config = load_config([mcp_config_file(tmp_path, mcp_servers)])
+        assert "config" in inspect.signature(create_app).parameters, "create_app takes no config"
+        # By name through a mapping: today's signature has no `config` for the type checker.
+        given: dict[str, Any] = {"config": server_config}
+        app = create_app(runs_dir, sources, start_run, **given)
     try:
         with TestClient(app) as client:
             # The app is up and its run API answers: whatever fails below is the MCP wiring's.
@@ -102,6 +131,18 @@ def make_web(tmp_path: Path, mcp_servers: Path | None) -> Iterator[Web]:
             if run.process.poll() is None:
                 run.process.terminate()
             run.process.wait(timeout=TIMEOUT)
+
+
+def load_config(paths: Sequence[Path]) -> EffectiveConfig:
+    """The config of these files, as a server or a run loads it."""
+    return load_effective_config(list(paths), dict(os.environ), {})
+
+
+def run_config(args: Sequence[str]) -> EffectiveConfig:
+    """The config file a web run is given (`--config <file>`), loaded."""
+    path = Path(flag_value(args, "--config"))
+    assert path.is_file(), f"the run's --config is not a file: {path}"
+    return load_config([path])
 
 
 def mcp_config(tmp_path: Path) -> Path:
@@ -119,15 +160,10 @@ def mcp_config(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def mounted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Web]:
-    monkeypatch.setenv("DATA_AGENT_MCP_GITHUB_TOKEN", GITHUB_TOKEN)
-    yield from make_web(tmp_path, mcp_config(tmp_path))
-
-
-@pytest.fixture
 def plain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Web]:
     monkeypatch.setenv("DATA_AGENT_MCP_GITHUB_TOKEN", GITHUB_TOKEN)
-    yield from make_web(tmp_path, None)
+    with make_web(tmp_path, None) as web:
+        yield web
 
 
 def submit_form(web: Web) -> list[str]:
@@ -150,21 +186,40 @@ def start_turn(web: Web) -> list[str]:
 ROUTES = {"form": submit_form, "turn": start_turn}
 
 
-@pytest.mark.parametrize("route", list(ROUTES))
-def test_every_web_run_gets_the_config_path_and_no_expanded_value(mounted: Web, route: str) -> None:
-    args = ROUTES[route](mounted)
-    assert flag_value(args, "--mcp-servers") == str(mounted.config)
+@pytest.mark.parametrize(
+    "route", [pytest.param("form", marks=TICKET_144), pytest.param("turn", marks=TICKET_143)]
+)
+def test_every_web_run_gets_the_config_path_and_no_expanded_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    monkeypatch.setenv("DATA_AGENT_MCP_GITHUB_TOKEN", GITHUB_TOKEN)
+    # Built in the test, not a fixture: today's `create_app` takes no config (an assertion).
+    with make_web(tmp_path, mcp_config(tmp_path)) as mounted:
+        args = ROUTES[route](mounted)
+        given = run_config(args).value("mcp.file")
+        config_text = Path(flag_value(args, "--config")).read_text()
+    assert given is not None, "the run's config names no MCP servers file"
+    assert str(given) == str(mounted.config)
     assert GITHUB_TOKEN not in json.dumps(args)
+    # The file the server writes for the run holds references, never an expanded value.
+    assert GITHUB_TOKEN not in config_text
 
 
-@pytest.mark.parametrize("route", list(ROUTES))
+@pytest.mark.parametrize("route", [pytest.param("form", marks=TICKET_144), "turn"])
 def test_without_a_config_no_web_run_gets_mcp_servers(plain: Web, route: str) -> None:
     args = ROUTES[route](plain)
     assert "--type" in args
     assert not [arg for arg in args if arg == "--mcp-servers" or arg.startswith("--mcp-servers=")]
+    # Today `--config` is an ablation name; once it is the file the server writes (ticket 143),
+    # that file names no MCP servers either.
+    files = [Path(value) for value in flag_values(args, "--config") if Path(value).is_file()]
+    if files:
+        given = load_config(files)
+        assert not given.value("mcp.file"), given.value("mcp.file")
+        assert not given.value("mcp.servers"), given.value("mcp.servers")
 
 
-# --- `data-agent web --mcp-servers` ----------------------------------------------------------
+# --- `data-agent web --config` (was `--mcp-servers`) -----------------------------------------
 
 
 def serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: Sequence[str]) -> dict[str, Any]:
@@ -184,27 +239,39 @@ def serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: Sequence[str])
 
     # Set, so a `data-agent web` that checks the config when it starts finds it valid.
     monkeypatch.setenv("DATA_AGENT_MCP_GITHUB_TOKEN", GITHUB_TOKEN)
+    # No user-level config file of this machine's (ticket 141: `data-agent web` reads one).
+    monkeypatch.setenv("HOME", str(fake_home(tmp_path)))
+    monkeypatch.delenv("DATA_AGENT_CONFIG", raising=False)
     monkeypatch.setattr(web_app, "create_app", fake_create_app)
     monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    cli.main(["web", "--runs-dir", str(runs_dir), *extra])
+    try:
+        cli.main(["web", "--runs-dir", str(runs_dir), *extra])
+    except SystemExit as exc:
+        raise AssertionError(f"data-agent web exited {exc.code!r}") from exc
     assert len(seen) == 1, "create_app was not called once"
     return seen[0]
 
 
+@TICKET_143
 def test_data_agent_web_hands_the_config_file_to_create_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = mcp_config(tmp_path)
-    called = serve(tmp_path, monkeypatch, ["--mcp-servers", str(config)])
-    given = called["mcp_servers"]
-    assert given is not None, "create_app got no mcp_servers"
+    called = serve(tmp_path, monkeypatch, ["--config", str(mcp_config_file(tmp_path, config))])
+    server_config = key_of(called, "config")
+    assert server_config is not None, "create_app got no config"
+    given = server_config.value("mcp.file")
+    assert given is not None, "create_app got no mcp servers file"
     assert Path(given).resolve() == config
 
 
+@TICKET_143
 def test_data_agent_web_without_the_option_gives_create_app_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     called = serve(tmp_path, monkeypatch, [])
-    assert called["mcp_servers"] is None
+    server_config = key_of(called, "config")
+    # No config at all (the code defaults), or one that names no MCP servers.
+    assert server_config is None or server_config.value("mcp.file") is None

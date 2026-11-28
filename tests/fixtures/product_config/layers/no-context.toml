@@ -1,0 +1,5 @@
+# The [layers] of the `no-context` run config, as a product config file (ticket 141).
+[layers]
+skill = true
+verifiers = true
+context = false

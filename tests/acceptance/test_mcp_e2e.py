@@ -6,6 +6,12 @@ Written by ticket 115. Both tests are xfail(strict) until ticket 116 makes them 
 the marker, changing nothing else. Run them the way seam A runs (`data-agent run` as a
 subprocess, tests/acceptance/test_seam_a_run_cli.py).
 
+Ticket 141 moved the run's options to config files (.scratch/product-config/spec.md,
+decisions.md Q8): the `full` layers as a config file (was `--config full`) and a config file whose
+`[mcp]` names the servers file (was `--mcp-servers`). Both tests are `TICKET_143` until ticket 143
+reads config files; the command line is checked first (`mcp_support.assert_cli_accepts`), so
+today's refusal of it is the expected failure and not the environment's.
+
 Each test starts its own docker network and mongo container (names with a random suffix), loads
 tests/fixtures/mcp/support_tickets.json into `support.tickets` (one document per support ticket,
 `customer_id` as in tests/fixtures/shop.sql's `raw.customers`), and removes both afterwards. The
@@ -48,10 +54,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from mcp_support import SUPPORT_TICKETS, write_config
+from mcp_support import SUPPORT_TICKETS, assert_cli_accepts, write_config
+from product_config_support import layer_config, mcp_config
 from seam_support import DATA_AGENT, build_shop_duckdb, duckdb_rows
 
 pytestmark = pytest.mark.integration
+TICKET_143 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
+)
 
 
 MCP_IMAGE = "mongodb/mongodb-mcp-server:3.3.0"
@@ -194,14 +204,16 @@ def run_agent(
     events_dir = tmp_path / "events"
     db = build_shop_duckdb(tmp_path / "shop.duckdb")
     config = mongo_config(tmp_path / "config" / "mcp.json", demo, read_only)
+    args = [
+        "run",
+        *("--task", task, "--type", "query", "--workspace", str(workspace)),
+        *("--duckdb", str(db), "--config", str(layer_config("full"))),
+        *("--events-dir", str(events_dir)),
+        *("--config", str(mcp_config(tmp_path / "config", config))),
+    ]
+    assert_cli_accepts(args)
     proc = subprocess.run(
-        [
-            str(DATA_AGENT),
-            "run",
-            *("--task", task, "--type", "query", "--workspace", str(workspace)),
-            *("--duckdb", str(db), "--config", "full", "--events-dir", str(events_dir)),
-            *("--mcp-servers", str(config)),
-        ],
+        [str(DATA_AGENT), *args],
         env={**os.environ, "DATA_AGENT_MCP_MONGO_URL": demo.url},
         capture_output=True,
         text=True,
@@ -253,6 +265,7 @@ def expected_join_answer(db: Path) -> tuple[str, Decimal]:
     return top, total
 
 
+@TICKET_143
 def test_a_question_across_mongodb_and_duckdb_is_answered_with_the_external_tools(
     tmp_path: Path, mongo: Mongo
 ) -> None:
@@ -268,6 +281,7 @@ def test_a_question_across_mongodb_and_duckdb_is_answered_with_the_external_tool
     assert customer in proc.stdout
 
 
+@TICKET_143
 def test_a_write_the_allow_list_leaves_out_is_refused_and_the_collection_is_unchanged(
     tmp_path: Path, mongo: Mongo
 ) -> None:

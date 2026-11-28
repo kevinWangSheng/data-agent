@@ -10,7 +10,8 @@ External interface fixed here (`data_agent.web.app.create_app(runs_dir, data_sou
 
 - A run is a subdirectory of `runs_dir` holding one event file (`*.jsonl`); its id is the
   directory name. Runs written by `data-agent run --events-dir <runs_dir>/<id>` list like any other.
-- `GET /api/options` -> `{"data_sources": [name, ...], "task_types": [...], "configs": [...]}`.
+- `GET /api/options` -> `{"data_sources": [name, ...], "task_types": [...]}`; no `configs`
+  (ticket 141: the form picks no ablation, product-config ticket 141 contract item 5).
 - `GET /api/runs` -> a list of `{"id", "task", "task_type", "config", "status", "started_at",
   "duration_ms", "cost_usd"}`; status is `running`, `success`, `failure` or `cancelled`;
   `started_at` is the first event's `ts`.
@@ -20,9 +21,11 @@ External interface fixed here (`data_agent.web.app.create_app(runs_dir, data_sou
   `id: <seq>` and `data: <event JSON>`; it first sends what is already written after the cursor,
   then each new event, and closes once the run has ended and everything is sent. A reconnect
   resumes after its `Last-Event-ID`. Comment lines (keepalives) carry no data.
-- `POST /api/runs` with `{"task", "task_type", "data_source", "config"}` -> 201 `{"id"}`, the
-  run started through `start_run` with `--events-dir <runs_dir>/<id>`. 4xx with a `detail` saying
-  why when the data source is unknown; 409 while another run is going.
+- `POST /api/runs` with `{"task", "task_type", "data_source"}` -> 201 `{"id"}`, the run started
+  through `start_run` with `--events-dir <runs_dir>/<id>` and `--config <file>`, the server's
+  config, its layers all on by default (ticket 141 contract items 4 and 5; was a `config` field
+  and `--config <name>`); no test here sends `config`. 4xx with a
+  `detail` saying why when the data source is unknown; 409 while another run is going.
 - `POST /api/runs/{id}/cancel` stops a running run this server started; 4xx for any other run.
 - `data-agent web --runs-dir DIR --port N` serves the app on the loopback address only; there is
   no option to change the address.
@@ -31,6 +34,7 @@ External interface fixed here (`data_agent.web.app.create_app(runs_dir, data_sou
 import contextlib
 import ipaddress
 import json
+import os
 import re
 import signal
 import socket
@@ -48,7 +52,12 @@ import pytest
 from fastapi.testclient import TestClient
 from seam_support import DATA_AGENT, FIXTURES
 
+from data_agent.config import load_effective_config
 from data_agent.web.app import DataSource, create_app
+
+TICKET_144 = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="ticket 144: the config is not wired to the run yet"
+)
 
 WEB_FIXTURES = FIXTURES / "web"
 FAKE_RUN = WEB_FIXTURES / "fake_run.py"
@@ -198,7 +207,6 @@ def submit(web: Web, **overrides: str) -> Any:
         "task": "How many orders are there?",
         "task_type": "query",
         "data_source": "shop",
-        "config": "full",
         **overrides,
     }
     return web.client.post("/api/runs", json=body)
@@ -321,17 +329,19 @@ def assert_no_connection_string(text: str) -> None:
         assert secret not in text
 
 
+@TICKET_144
 def test_read_endpoints_hold_no_connection_string(web: Web) -> None:
     write_run(web.runs_dir, "r1", read_events(NEW_FIELDS))
     options = web.client.get("/api/options")
     assert options.status_code == 200, options.text
     assert options.json()["data_sources"] == ["shop", "warehouse"]
     assert {"query", "dbt"} <= set(options.json()["task_types"])
-    assert "full" in options.json()["configs"]
+    assert "configs" not in options.json()
     for url in ("/api/options", "/api/runs", "/api/runs/r1/events"):
         assert_no_connection_string(web.client.get(url).text)
 
 
+@TICKET_144
 def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> None:
     response = submit(web, data_source="warehouse")
     assert response.status_code == 201, response.text
@@ -350,11 +360,26 @@ def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> N
 # --- Submitting runs -----------------------------------------------------------------------
 
 
+@TICKET_144
 def test_a_submitted_run_appears_and_streams(web: Web) -> None:
-    run_id = submit_ok(web, task="How many orders are there?", config="baseline")
+    # No `config` field: the form picks no ablation; the run gets the server's config, every layer
+    # on by default (ticket 141 contract item 5; was `config="baseline"` and `--config baseline`).
+    response = web.client.post(
+        "/api/runs",
+        json={"task": "How many orders are there?", "task_type": "query", "data_source": "shop"},
+    )
+    assert response.status_code == 201, response.text
+    run_id = response.json()["id"]
     [run] = web.started
     assert Path(flag(run.args, "--events-dir")) == web.runs_dir / run_id
-    assert flag(run.args, "--config") == "baseline"
+    config = Path(flag(run.args, "--config"))
+    assert config.is_file(), f"the run's --config is not a file: {config}"
+    layers = load_effective_config([config], dict(os.environ), {})
+    assert [layers.value(f"layers.{name}") for name in ("skill", "verifiers", "context")] == [
+        True,
+        True,
+        True,
+    ]
     assert flag(run.args, "--type") == "query"
     assert run.cwd.is_dir()
 
@@ -371,6 +396,7 @@ def test_a_submitted_run_appears_and_streams(web: Web) -> None:
     wait_until(lambda: runs_by_id(web)[run_id]["status"] == "success")
 
 
+@TICKET_144
 def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     run_id = submit_ok(web)
     wait_until(
@@ -386,6 +412,7 @@ def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     )
 
 
+@TICKET_144
 def test_an_unknown_data_source_is_refused(web: Web) -> None:
     response = submit(web, data_source="no-such-source")
     assert 400 <= response.status_code < 500
@@ -394,6 +421,7 @@ def test_an_unknown_data_source_is_refused(web: Web) -> None:
     assert runs_by_id(web) == {}
 
 
+@TICKET_144
 def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     first = submit_ok(web)
     response = submit(web, task="Another question")
@@ -409,6 +437,7 @@ def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     assert set(runs_by_id(web)) == {first, second}
 
 
+@TICKET_144
 def test_cancel_stops_only_the_run_this_server_started(web: Web) -> None:
     write_run(web.runs_dir, "cli-run", read_events(NEW_FIELDS)[:20])
     bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
