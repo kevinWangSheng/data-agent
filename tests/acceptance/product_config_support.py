@@ -30,6 +30,7 @@ second step of the migration or a deliberate Skill change moves them, reviews th
 it in that ticket. Until ticket 146 is merged no commit that changes `skills/` is merged.
 """
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -405,12 +406,13 @@ def snapshot(session: Session, version: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def assert_server_configs(
-    values: Sequence[str], version_config: Any, home: Path, workspace: Path | None
+    values: Sequence[str], version_config: Any, kept_out: Sequence[Path]
 ) -> None:
     """What the data server's `--config` values may be, beside the snapshot that collapses them
     (`config_arg_rule`): each is the ablation name the `version` event's `config` names, or a path
-    under the checkout's `evals/profiles/` or the temp dir (a file the run wrote), never under the
-    fake home or the workspace (a user's or a project's config file read in)."""
+    under the checkout's `evals/profiles/` or the temp dir (a file the run wrote), never under
+    `kept_out`: the fake home, the workspace and the test's own directories (a user's or a
+    project's config file read in; pytest's tmp_path is under the temp dir too)."""
     profiles = (REPO_ROOT / "evals" / "profiles").resolve()
     temp = Path(tempfile.gettempdir()).resolve()
     assert values, "the data server is given no --config"
@@ -422,11 +424,10 @@ def assert_server_configs(
             f"the data server's --config {value!r} is neither the version's config nor a path"
         )
         path = path.resolve()
-        for kept_out in (home, workspace):
-            if kept_out is not None:
-                assert not path.is_relative_to(kept_out.resolve()), (
-                    f"the data server's --config {value} is under {kept_out}"
-                )
+        for directory in kept_out:
+            assert not path.is_relative_to(directory.resolve()), (
+                f"the data server's --config {value} is under {directory}"
+            )
         assert path.is_relative_to(profiles) or path.is_relative_to(temp), (
             f"the data server's --config {value} is under neither evals/profiles/ nor the temp dir"
         )
@@ -528,11 +529,11 @@ def normalized_snapshot(
             # Our own server; DAB's (`evals.dab_server`) takes no `--config`.
             if name == DATA_SERVER and "mcp-server" in args:
                 cwd = session.options.cwd
+                kept_out = [Path(os.environ["HOME"]), *roots]
+                if cwd is not None:
+                    kept_out.append(Path(str(cwd)))
                 assert_server_configs(
-                    flag_values(args, "--config"),
-                    version.get("config"),
-                    Path(os.environ["HOME"]),
-                    Path(str(cwd)) if cwd is not None else None,
+                    flag_values(args, "--config"), version.get("config"), kept_out
                 )
             server["args"] = config_arg_rule(args)
     if "skill_version" in raw["version"]:
@@ -540,25 +541,36 @@ def normalized_snapshot(
     return normalize(raw, rules)
 
 
-# What a content hash leaves out (Harbor's `Packager.DEFAULT_IGNORES`, harbor
-# `publisher/packager.py`), with the checkout's `.gitignore` besides.
-CONTENT_IGNORES = ("__pycache__/", "*.pyc", ".DS_Store", "*.swp", "*.swo", "*~")
+# What a content hash leaves out: Harbor's `Packager.DEFAULT_IGNORES` (harbor
+# `publisher/packager.py`) and the caches the checkout's `.gitignore` names that a Skill
+# directory can hold (`*.py[cod]`, `.ruff_cache/`, `.pytest_cache/`). A fixed list, not the
+# `.gitignore` itself: an edit there must not move the snapshots, and the project does not
+# depend on `pathspec`. Each pattern is matched against every part of a file's path.
+CONTENT_IGNORES = (
+    "__pycache__",
+    ".ruff_cache",
+    ".pytest_cache",
+    "*.py[cod]",
+    ".DS_Store",
+    "*.swp",
+    "*.swo",
+    "*~",
+)
 
 
 def content_files(directory: Path) -> list[Path]:
-    """The files under `directory` a content hash takes in, sorted: every file but those
-    `.gitignore` or CONTENT_IGNORES match (Harbor's `Packager.collect_files`), so a
-    `__pycache__/` a test leaves when it imports a Skill's script counts for nothing."""
-    import pathspec
-
-    gitignore = REPO_ROOT / ".gitignore"
-    lines = [*CONTENT_IGNORES, *(gitignore.read_text().splitlines() if gitignore.is_file() else [])]
-    spec = pathspec.PathSpec.from_lines("gitwildmatch", lines)
-    root = REPO_ROOT.resolve()
+    """The files under `directory` a content hash takes in, sorted: every file but those with a
+    path part CONTENT_IGNORES matches (Harbor's `Packager.collect_files`), so a `__pycache__/` a
+    test leaves when it imports a Skill's script counts for nothing."""
     files = [
         path
         for path in directory.rglob("*")
-        if path.is_file() and not spec.match_file(path.resolve().relative_to(root).as_posix())
+        if path.is_file()
+        and not any(
+            fnmatch.fnmatch(part, pattern)
+            for part in path.relative_to(directory).parts
+            for pattern in CONTENT_IGNORES
+        )
     ]
     return sorted(files, key=lambda path: path.relative_to(directory).as_posix())
 

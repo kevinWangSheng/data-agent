@@ -15,8 +15,8 @@ The contract fixed here (ticket 141 Context contract item 6; for the human revie
    - `files`: the config files merged, in merge order, as strings;
    - `file_hashes`: `{path: sha256 hex}` for every file under the run's Skill directories, its
      instructions files and its plugin directories, each path as a string of the file's absolute
-     path. The files expected leave out what `.gitignore` and Harbor's default ignores match
-     (`__pycache__/`, `*.pyc`, ...; `product_config_support.content_files`): whether the event
+     path. The files expected leave out caches and editor files (`__pycache__/`, `*.pyc`, ...;
+     `product_config_support.content_files`, after Harbor's default ignores): whether the event
      lists those too is not pinned.
    No resolved secret is anywhere in the event file.
 2. `evals.ablate.check_request(out, model, split, tasks, agent_kwargs, benchmark=...,

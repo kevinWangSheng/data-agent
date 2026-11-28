@@ -136,13 +136,20 @@ def test_a_sources_description_reaches_the_agent(
 
 
 def guard_decision(options: ClaudeAgentOptions, tool: str, tool_input: dict[str, Any]) -> str:
-    """What the run's file-tool hook decides for one call: `deny`, or `none` when it lets the
-    call through (tests/test_task_file.py asks the guard the same way)."""
+    """What the run's `PreToolUse` hooks for `tool` decide for one call: `deny` when any of them
+    denies it, else `allow` or `none` (let through). Every hook whose matcher names the tool is
+    asked, however many there are (tests/test_task_file.py asks the guard the same way)."""
     matchers = key_of(options.hooks or {}, "PreToolUse")
-    [guard] = [m.hooks[0] for m in matchers if m.matcher and tool in m.matcher.split("|")]
+    hooks = [
+        hook for m in matchers if m.matcher and tool in m.matcher.split("|") for hook in m.hooks
+    ]
+    assert hooks, f"no PreToolUse hook for {tool}"
     hook_input: Any = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}
-    output: Any = asyncio.run(guard(hook_input, "u", {"signal": None}))
-    return output.get("hookSpecificOutput", {}).get("permissionDecision", "none")
+    decisions: list[str] = []
+    for hook in hooks:
+        output: Any = asyncio.run(hook(hook_input, "u", {"signal": None}))
+        decisions.append(output.get("hookSpecificOutput", {}).get("permissionDecision", "none"))
+    return "deny" if "deny" in decisions else ("allow" if "allow" in decisions else "none")
 
 
 def test_a_sources_docs_stay_outside_the_workspace_and_are_only_read(
@@ -165,10 +172,10 @@ def test_a_sources_docs_stay_outside_the_workspace_and_are_only_read(
         "the system prompt does not name the docs directory"
     )
     doc = SOURCE_DOCS / SOURCE_DOCS_FILE
-    assert guard_decision(options, "Read", {"file_path": str(doc)}) == "none"
-    assert guard_decision(options, "Glob", {"pattern": "*.md", "path": str(SOURCE_DOCS)}) == "none"
+    assert guard_decision(options, "Read", {"file_path": str(doc)}) != "deny"
+    assert guard_decision(options, "Glob", {"pattern": "*.md", "path": str(SOURCE_DOCS)}) != "deny"
     grep = {"pattern": SOURCE_DOCS_MARKER, "path": str(SOURCE_DOCS)}
-    assert guard_decision(options, "Grep", grep) == "none"
+    assert guard_decision(options, "Grep", grep) != "deny"
     write = {"file_path": str(SOURCE_DOCS / "new.md"), "content": "x"}
     assert guard_decision(options, "Write", write) == "deny"
     edit = {"file_path": str(doc), "old_string": SOURCE_DOCS_MARKER, "new_string": "x"}
