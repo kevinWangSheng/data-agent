@@ -45,6 +45,8 @@ from typing import Any
 TARGETS = ("scratch", "task")
 BACKENDS = ("docker", "local")
 TRACE_TIERS = ("full", "structure")
+# `gateway.MAX_ROWS`, written out for the same reason: a data source's `max_rows` cannot pass it.
+MAX_ROWS = 10_000
 
 CONFIG_DIR = ".data-agent"
 CONFIG_FILE = "config.toml"
@@ -117,6 +119,10 @@ class Leaf:
     kind: str
     default: Any = UNSET
     choices: tuple[str, ...] = ()
+    # A number's range (ticket 144): above 0 when `positive`; `minimum`/`maximum` inclusive.
+    positive: bool = False
+    minimum: float | None = None
+    maximum: float | None = None
 
 
 @dataclass(frozen=True)
@@ -180,10 +186,10 @@ SOURCE = Table(
         "description": Leaf("str"),
         "docs": Leaf("path"),
         "schemas": Table({"include": Leaf("list[str]"), "exclude": Leaf("list[str]")}),
-        "query_timeout_seconds": Leaf("number"),
-        "max_rows": Leaf("int"),
+        "query_timeout_seconds": Leaf("number", positive=True),
+        "max_rows": Leaf("int", minimum=1, maximum=MAX_ROWS),
         "duckdb": Table({"memory_limit": Leaf("str"), "max_temp_directory_size": Leaf("str")}),
-        "dbt_timeout_seconds": Leaf("number"),
+        "dbt_timeout_seconds": Leaf("number", positive=True),
     }
 )
 # Ticket 116's fields (`external_mcp.FIELDS`), which `external_mcp` checks further.
@@ -225,15 +231,15 @@ SCHEMA = Table(
         ),
         "limits": Table(
             {
-                "max_budget_usd": Leaf("number", 1.0),
+                "max_budget_usd": Leaf("number", 1.0, positive=True),
                 "max_turns": Table(
                     {
-                        "dbt": Leaf("int", 200),
-                        "query": Leaf("int", 50),
-                        "large": Leaf("int", 75),
+                        "dbt": Leaf("int", 200, minimum=1),
+                        "query": Leaf("int", 50, minimum=1),
+                        "large": Leaf("int", 75, minimum=1),
                     }
                 ),
-                "agent_timeout_sec": Leaf("number"),
+                "agent_timeout_sec": Leaf("number", positive=True),
                 # Not checked against `agent.EFFORTS` here: a model's `efforts` decides (145).
                 "effort": Leaf("str"),
             }
@@ -242,10 +248,11 @@ SCHEMA = Table(
             {
                 "backend": Leaf("enum", choices=BACKENDS),
                 "image": Leaf("str"),
-                "cpus": Leaf("number"),
+                "cpus": Leaf("number", positive=True),
                 "memory": Leaf("str"),
                 "network": Leaf("bool"),
-                "exec_max_seconds": Leaf("number"),
+                # sandbox_exec's `timeout_seconds` is a whole number of seconds from 1.
+                "exec_max_seconds": Leaf("number", minimum=1),
             }
         ),
         "sources": Named(SOURCE),
@@ -280,7 +287,7 @@ SCHEMA = Table(
         "server": Table(
             {
                 "host": Leaf("str", "127.0.0.1"),
-                "port": Leaf("int", 8765),
+                "port": Leaf("int", 8765, minimum=1, maximum=65535),
                 "runs_dir": Leaf("path"),
                 "mode": Leaf("enum", "local", choices=("local", "cloud")),
             }
@@ -472,10 +479,12 @@ def leaf_value(leaf: Leaf, key: str, value: Any, origin: Origin, environ: Mappin
     if kind == "int":
         if isinstance(value, bool) or not isinstance(value, int):
             raise origin.error(key, "must be an integer")
+        check_range(leaf, key, value, origin)
         return value
     if kind == "number":
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise origin.error(key, "must be a number")
+        check_range(leaf, key, value, origin)
         return float(value)
     if kind == "enum":
         if not isinstance(value, str) or value not in leaf.choices:
@@ -507,6 +516,22 @@ def leaf_value(leaf: Leaf, key: str, value: Any, origin: Origin, environ: Mappin
         return list(value)
     assert kind == "list[path]", kind
     return [path_value(key, item, origin) for item in value]
+
+
+def check_range(leaf: Leaf, key: str, value: float, origin: Origin) -> None:
+    """ConfigFileError naming the range a number must be in (ticket 144)."""
+    if leaf.positive and not value > 0:
+        raise origin.error(key, "must be greater than 0")
+    low, high = leaf.minimum, leaf.maximum
+    if (low is not None and value < low) or (high is not None and value > high):
+        bounds = (
+            f"from {low:g} to {high:g}"
+            if low is not None and high is not None
+            else f"at least {low:g}"
+            if low is not None
+            else f"at most {high:g}"
+        )
+        raise origin.error(key, f"must be {bounds}")
 
 
 def path_value(key: str, value: Any, origin: Origin) -> str:

@@ -242,6 +242,8 @@ class DbtExecutor:
     profiles_dir: Path | None = None
     duckdb: Path | None = None
     postgres_env: str | None = None
+    # How long a dbt command may run (`[sources.<name>].dbt_timeout_seconds`, ticket 144).
+    timeout_seconds: float = TIMEOUT_S
 
     def __post_init__(self) -> None:
         if self.target == "scratch":
@@ -319,13 +321,13 @@ class DbtExecutor:
             raise DbtExecuteError("dbt is not on PATH")
         dbt_command[0] = executable
         started = time.time()
-        done = run_dbt(dbt_command, TIMEOUT_S, project, dbt_env)
+        done = run_dbt(dbt_command, self.timeout_seconds, project, dbt_env)
         output = done.stdout + (f"\n{done.stderr}" if done.stderr else "")
         output = output[-MAX_OUTPUT_CHARS:].strip()
         if done.timed_out:
             raise DbtExecuteError(
-                f"dbt timed out after {TIMEOUT_S} seconds and was killed. Its output until "
-                f"then:\n{output}"
+                f"dbt timed out after {self.timeout_seconds:g} seconds and was killed. Its "
+                f"output until then:\n{output}"
             )
         sections = [f"target_schema: {self.schema}"] if self.target == "scratch" else []
         sections += [f"exit_code: {done.exit_code}", f"output:\n{output}"]
@@ -433,4 +435,4 @@ selector syntax (no flags); `full_refresh` rebuilds incremental models; `threads
 it empty when the workspace has one project, and pass it when there are several. Other dbt \
 commands (parse, ls, deps, debug) run in sandbox_exec with a stub profile. The output shows its \
 last {MAX_OUTPUT_CHARS:,} characters, then the node statuses from run_results.json. A command is \
-killed after {TIMEOUT_S} seconds."""
+killed after {executor.timeout_seconds:g} seconds."""

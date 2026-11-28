@@ -7,6 +7,7 @@ app through it); tickets 77 and 78 implement it.
 import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 
@@ -20,10 +21,9 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
-from data_agent.config import EffectiveConfig
-from data_agent.run_config import CONFIG_NAMES
+from data_agent.config import EffectiveConfig, default_config
 from data_agent.web.conversations import Conversations
 from data_agent.web.launcher import TASK_TYPES, Launcher, Refused, StartRun
 from data_agent.web.runs import RunsDir
@@ -46,10 +46,15 @@ KEEPALIVE_SECONDS = 15.0
 
 
 class Submit(BaseModel):
+    """A run from the run form. It picks no config (ticket 144): the run gets the server's, and
+    a request still naming one (`config`, or any other field) is refused (422), never quietly
+    run with another (decisions.md Q8)."""
+
+    model_config = ConfigDict(extra="forbid")
+
     task: str
     task_type: str
     data_source: str
-    config: str
     # Unset: as the server's switch is (`data-agent web --no-network`, ticket 140).
     network: bool | None = None
 
@@ -72,13 +77,36 @@ class Service(Protocol):
     async def stop(self) -> None: ...
 
 
+def config_summary(config: EffectiveConfig, network: bool) -> dict[str, Any]:
+    """What the run form shows of the server's config: its name, layers, main model, effort,
+    limits and the network switch. Names and numbers only: no path, URL or variable."""
+
+    def value(key: str) -> Any:
+        return config.value(key)
+
+    return {
+        "name": config.name(),
+        "layers": {
+            name: bool(value(f"layers.{name}")) for name in ("skill", "verifiers", "context")
+        },
+        "model": value("roles.main"),
+        "effort": value("limits.effort"),
+        "max_budget_usd": value("limits.max_budget_usd"),
+        "max_turns": {
+            kind: value(f"limits.max_turns.{kind}") for kind in ("query", "dbt", "large")
+        },
+        "agent_timeout_sec": value("limits.agent_timeout_sec"),
+        "network": network,
+    }
+
+
 def create_app(
     runs_dir: Path,
     data_sources: Sequence[DataSource],
     start_run: StartRun,
     ui_dir: Path = UI_DIR,
     config: EffectiveConfig | None = None,
-    network: bool = True,
+    network: bool | None = None,
 ) -> FastAPI:
     """The app serving the runs under `runs_dir` (one subdirectory per run, named by run id, holding
     its event file), starting new runs through `start_run`, and serving the built web UI from
@@ -88,7 +116,14 @@ def create_app(
     file of it in its directory as `--config` (`Launcher.config_args`), so its `[mcp]` servers
     too (ticket 116), its `${VAR}` references as written. With `network` off (`data-agent web
     --no-network`, ticket 140) no run has the network, and a request asking for it is refused
-    (409); on, a run has it unless its request turns it off."""
+    (409); on, a run has it unless its request turns it off. None: the config's
+    `[sandbox].network`, on when it says nothing (ADR-0010); ValueError when it is on against
+    the config's `policy.network = false`."""
+    config = default_config() if config is None else config
+    if network is None:
+        network = config.value("sandbox.network") is not False
+    elif network and config.value("policy.network") is False:
+        raise ValueError("policy.network: the config's policy turns the network off")
     runs = RunsDir(runs_dir)
     launcher = Launcher(runs, data_sources, start_run, config, network)
     conversations = Conversations(runs, launcher, data_sources)
@@ -111,13 +146,17 @@ def create_app(
     app.state.conversations = conversations
     app.state.services = services
 
+    summary = config_summary(config, network)
+
     @app.get("/api/options")
-    def options() -> dict[str, list[str]]:
-        """What the run form offers: data sources by name only, never their connections."""
+    def options() -> dict[str, Any]:
+        """What the run form offers: data sources by name only, never their connections; and
+        the summary of the server's config every run gets (`config_summary`), which the form
+        shows in place of a config to pick (ticket 144)."""
         return {
             "data_sources": [source.name for source in data_sources],
             "task_types": list(TASK_TYPES),
-            "configs": list(CONFIG_NAMES),
+            "config": summary,
         }
 
     @app.get("/api/runs")
@@ -149,12 +188,10 @@ def create_app(
         """Starts a run; the data source is named, never given as a connection."""
         try:
             run_id = await to_thread.run_sync(
-                launcher.submit,
+                partial(launcher.submit, network=body.network),
                 body.task,
                 body.task_type,
                 body.data_source,
-                body.config,
-                body.network,
             )
         except Refused as exc:
             raise HTTPException(exc.status, exc.detail) from exc

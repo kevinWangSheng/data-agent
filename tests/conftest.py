@@ -22,3 +22,12 @@ def no_real_docker(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
         from fake_docker import install
 
         install(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def own_dictionary_cache(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Product runs keep value dictionaries under `$XDG_CACHE_HOME` (`agent.dictionary_cache_dir`,
+    ticket 144): each test gets its own, so no test reads one another test (or a real run) left."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))

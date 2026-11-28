@@ -22,7 +22,7 @@ import signal
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -332,12 +332,22 @@ def sample_table(session: Session, table: Table) -> TableSample:
     return sampled
 
 
-def other_runs(own_schema: str | None) -> HiddenSchemas:
+def other_runs(
+    own_schema: str | None, include: Sequence[str] = (), exclude: Sequence[str] = ()
+) -> HiddenSchemas:
     """Other runs' scratch schemas (`dbt_execute.scratch_schema`; they stay after their run):
     what the agent's catalog and dictionary leave out (ticket 140). `own_schema`, the run's own,
     stays in view: the agent queries the models it builds there. None, as for a server with no
-    run id or a dictionary built before the run writes anything: every scratch schema is out."""
-    return HiddenSchemas(SCHEMA_PREFIX, own_schema)
+    run id or a dictionary built before the run writes anything: every scratch schema is out.
+    `include`/`exclude` are the data source's `schemas.include`/`schemas.exclude` (ticket 144)."""
+    return HiddenSchemas(SCHEMA_PREFIX, own_schema, tuple(include), tuple(exclude))
+
+
+def dictionary_timeout(gateway: Gateway) -> float:
+    """A dictionary statement's timeout: STATEMENT_TIMEOUT_SECONDS, or the data source's own
+    statement timeout (`[sources.<name>].query_timeout_seconds`, ticket 144) when shorter."""
+    own = getattr(gateway, "timeout_seconds", None)
+    return STATEMENT_TIMEOUT_SECONDS if own is None else min(STATEMENT_TIMEOUT_SECONDS, own)
 
 
 class DictionaryCancelled(Exception):
@@ -358,9 +368,11 @@ class DictionaryBuild:
         statement_timeout: float = STATEMENT_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         own_schema: str | None = None,
+        hidden: HiddenSchemas | None = None,
     ) -> None:
         self.gateway = gateway
-        self.hidden = other_runs(own_schema)
+        # `hidden` given (the data source's schema choice, ticket 144) is the whole rule.
+        self.hidden = other_runs(own_schema) if hidden is None else hidden
         self.time_limit = time_limit
         self.statement_timeout = statement_timeout
         self.clock = clock

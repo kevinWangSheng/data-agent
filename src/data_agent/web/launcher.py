@@ -41,7 +41,6 @@ from data_agent.config import (
     table_depth,
     toml_text,
 )
-from data_agent.run_config import CONFIG_NAMES, load_config, skills_path
 from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap, source_leaves
@@ -53,6 +52,9 @@ from data_agent.workspace_guard import (
 )
 
 TASK_TYPES = ("query", "dbt")
+# What every product run is (spec "产品默认与入口"): the server's config, every layer on unless
+# the config turns one off. The only config name `Launcher.submit` takes.
+PRODUCT_CONFIG = "full"
 # The only sandbox backend the web backend gives a run: `local` would run the agent's commands on
 # this machine (ADR-0010).
 SANDBOX: Backend = "docker"
@@ -166,13 +168,16 @@ class Launcher:
         # conversation.
         self.lock = threading.Lock()
 
-    def config_args(self, run_dir: Path) -> list[str]:
+    def config_args(self, run_dir: Path, network: bool) -> list[str]:
         """`--config <file>`: the server's config written into the run's directory (ticket 141
         contract item 4), an explicit file, so the run merges no user-level file in again. Its
         `[sources.*]` are the server's sources, in their order, never a connection string; its
         `[im.*]` are left out (the run has none of their tokens); every `${VAR}` reference is as
         written, never expanded. Named after the server's config (`<name>.toml`), so the run's
-        `version.config` is the server's."""
+        `version.config` is the server's. Its `sandbox.network` is `network`, what `network_for`
+        decided for this run (ticket 144: the run reads its network from the config). The one
+        place every web run's config is made: the run form's, a conversation's and the IM
+        bot's."""
         raw = self.config.raw
         leaves = {
             key: value for key, value in raw.items() if not key.startswith(("sources.", "im."))
@@ -185,15 +190,8 @@ class Launcher:
                 if table_depth(parts_of(key), table) is not None
             }
             leaves |= source_leaves([source])
+        leaves[Key(("sandbox", "network"))] = network
         return config_file(run_dir / CONFIG_DIR / f"{self.config.name()}.toml", leaves)
-
-    def layers_args(self, run_dir: Path, name: str) -> list[str]:
-        """The layers of the old run config the run form picked (`full`, `baseline`, ...), as a
-        second `--config` file over the server's (`<name>.toml`, so `version.config` stays the
-        name). Ticket 144 drops the form's pick."""
-        layers = load_config(name).layers()
-        leaves = {f"layers.{key}": on for key, on in layers.items()}
-        return config_file(run_dir / CONFIG_DIR / "layers" / f"{name}.toml", leaves)
 
     def network_for(self, asked: bool | None) -> bool:
         """Whether a run gets the network: as the request asks, else as the server's switch is.
@@ -208,14 +206,22 @@ class Launcher:
         task: str,
         task_type: str,
         source_name: str,
-        config: str,
+        config: str = PRODUCT_CONFIG,
         network: bool | None = None,
     ) -> str:
         """Checks the request, prepares the run's directories and starts it; returns its id. The
         run has the web tools and a sandbox with the network (`data-agent run --network`, tickets
-        98 and 100) as `network_for` decides."""
+        98 and 100) as `network_for` decides. Its layers, limits and effort are the server
+        config's (ticket 144): the form picks no ablation. `config` stays for callers that still
+        name one: `PRODUCT_CONFIG` only, any other name refused (400), never run as asked."""
+        if config != PRODUCT_CONFIG:
+            raise Refused(
+                400,
+                f"config {config!r}: a web run gets the server's config; only evaluations "
+                "run an ablation",
+            )
         network = self.network_for(network)
-        source = self.check(task, task_type, source_name, config)
+        source = self.check(task, task_type, source_name)
 
         def prepare(run_dir: Path) -> tuple[list[str], Path]:
             workspace = run_dir / WORKSPACE
@@ -224,8 +230,7 @@ class Launcher:
                 f"--task={task}",
                 "--type",
                 task_type,
-                *self.config_args(run_dir),
-                *self.layers_args(run_dir, config),
+                *self.config_args(run_dir, network),
                 "--events-dir",
                 str(run_dir),
                 "--workspace",
@@ -244,7 +249,7 @@ class Launcher:
             return args, workspace
 
         with self.lock:
-            return self.launch(task, task_type, config, prepare).run_id
+            return self.launch(task, task_type, prepare).run_id
 
     def active(self) -> Running | None:
         """The run whose process is still going; a run seen to have exited is finished first.
@@ -258,12 +263,7 @@ class Launcher:
         return None
 
     def launch(
-        self,
-        task: str,
-        task_type: str,
-        config: str,
-        prepare: Prepare,
-        conversation: str | None = None,
+        self, task: str, task_type: str, prepare: Prepare, conversation: str | None = None
     ) -> Running:
         """Starts a run, refused with 409 while another is going. Its directory is made first, so
         its events read as an empty list from the moment it is started; `prepare` fills it, then
@@ -280,7 +280,8 @@ class Launcher:
             "id": run_id,
             "task": task,
             "task_type": task_type,
-            "config": config,
+            # The server config's name, as the run's `version.config` (`config_args`).
+            "config": self.config.name(),
             "status": "running",
             "started_at": started_at.isoformat(),
             "duration_ms": None,
@@ -301,7 +302,7 @@ class Launcher:
         threading.Thread(target=self.watch, args=(running,), daemon=True).start()
         return running
 
-    def check(self, task: str, task_type: str, source_name: str, config: str) -> DataSource:
+    def check(self, task: str, task_type: str, source_name: str) -> DataSource:
         self.check_configured()
         source = self.sources.get(source_name)
         if source is None:
@@ -312,14 +313,6 @@ class Launcher:
         if task_type not in TASK_TYPES:
             raise Refused(
                 400, f"unknown task type {task_type!r}; choose from {', '.join(TASK_TYPES)}"
-            )
-        if config not in CONFIG_NAMES:
-            raise Refused(400, f"unknown config {config!r}; choose from {', '.join(CONFIG_NAMES)}")
-        if load_config(config).skills_dir != skills_path("skills"):
-            # A form run takes the picked config's layers only (`layers_args`), not another Skill
-            # directory, so it would be named for Skills it does not run (until ticket 144).
-            raise Refused(
-                400, f"config {config!r} swaps the Skill version; only evaluations run it"
             )
         if not task.strip():
             raise Refused(400, "the task is empty")

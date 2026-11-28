@@ -56,11 +56,6 @@ from data_agent.config import EffectiveConfig, load_effective_config
 from data_agent.web import app as web_app
 from data_agent.web.app import DataSource, create_app
 
-# The run form without a `config` field (contract item 5) is ticket 144's: a form run waits for it.
-TICKET_144 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 144: the config is not wired to the run yet"
-)
-
 FAKE_CHAT_RUN = FIXTURES / "chat" / "fake_chat_run.py"
 # No `config`: the form picks no ablation (product-config ticket 141 contract item 5).
 FORM = {"task": "Count orders", "task_type": "query", "data_source": "orders"}
@@ -183,7 +178,7 @@ def start_turn(web: Web) -> list[str]:
 ROUTES = {"form": submit_form, "turn": start_turn}
 
 
-@pytest.mark.parametrize("route", [pytest.param("form", marks=TICKET_144), "turn"])
+@pytest.mark.parametrize("route", ["form", "turn"])
 def test_every_web_run_gets_the_config_path_and_no_expanded_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
@@ -200,7 +195,7 @@ def test_every_web_run_gets_the_config_path_and_no_expanded_value(
     assert GITHUB_TOKEN not in config_text
 
 
-@pytest.mark.parametrize("route", [pytest.param("form", marks=TICKET_144), "turn"])
+@pytest.mark.parametrize("route", ["form", "turn"])
 def test_without_a_config_no_web_run_gets_mcp_servers(plain: Web, route: str) -> None:
     args = ROUTES[route](plain)
     assert "--type" in args

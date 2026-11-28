@@ -54,7 +54,14 @@ from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent import sandbox as sandboxes
 from data_agent import tracing, verifier_v2
-from data_agent.context_tools import DictionaryBuild, build_interruptible
+from data_agent.context_tools import (
+    Dictionary,
+    DictionaryBuild,
+    build_interruptible,
+    dictionary_timeout,
+    other_runs,
+)
+from data_agent.db_facts import HiddenSchemas, load_catalog
 from data_agent.dbt_execute import DbtExecuteError, DbtRun, Target, check_outside
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
 from data_agent.external_mcp import ExternalServers
@@ -64,6 +71,8 @@ from data_agent.gateway import (
     DuckDBGateway,
     Gateway,
     PostgresGateway,
+    QueryFailed,
+    SourceLimits,
 )
 from data_agent.run_config import REPO_ROOT, RunConfig, skills_path
 from data_agent.sandbox import (
@@ -354,21 +363,45 @@ def taken_snapshot(workspace: Path) -> Iterator[Path]:
 
 @contextmanager
 def prebuilt_dictionary(
-    gateway: Gateway, workspace: Path, emit: Emit, database: str | None = None
+    gateway: Gateway,
+    workspace: Path,
+    emit: Emit,
+    database: str | None = None,
+    hidden: HiddenSchemas | None = None,
+    cache: Path | None = None,
+    source: str | None = None,
+    origin: str | None = None,
 ) -> Iterator[Path]:
     """The value dictionary (ticket 42), built before the agent starts and written as JSON
     outside the workspace for the MCP server to read; its coverage is recorded as the
     `dictionary` event, which names the `database` of a run with several. The build counts
     toward the run's time, not the agent's first tool call; a signal during it cancels the
-    build and ends the run."""
+    build and ends the run. `hidden` is the data source's schema choice (`other_runs` when
+    None). With `cache` (a product run's, ticket 144; never an evaluation's) a dictionary built
+    before on the same catalog of the same data source (`source`, its name, and `origin`, the
+    database the config names for it) is reused (`cached_dictionary`), and the event says
+    `cached`."""
     with run_directory(workspace, "data-agent-dictionary-") as directory:
-        dictionary = build_interruptible(DictionaryBuild(gateway))
+        hidden = other_runs(None) if hidden is None else hidden
+        cached = (
+            None if cache is None else cached_dictionary(gateway, hidden, cache, source, origin)
+        )
+        dictionary = None if cached is None else cached.load()
+        if dictionary is None:
+            dictionary = build_interruptible(
+                DictionaryBuild(
+                    gateway, statement_timeout=dictionary_timeout(gateway), hidden=hidden
+                )
+            )
+            if cached is not None:
+                cached.save(dictionary)
         coverage = dictionary.coverage
         emit(
             "dictionary",
             **({"database": database} if database is not None else {}),
             **{k: v for k, v in asdict(coverage).items() if k != "not_profiled"},
             tables_not_profiled=len(coverage.not_profiled),
+            **({} if cached is None else {"cached": cached.hit}),
         )
         path = directory / "dictionary.json"
         dictionary.save(path)
@@ -377,16 +410,126 @@ def prebuilt_dictionary(
 
 @contextmanager
 def prebuilt_dictionaries(
-    sources: Sequence[DataSource], workspace: Path, env: Mapping[str, str], emit: Emit
+    sources: Sequence[DataSource],
+    workspace: Path,
+    env: Mapping[str, str],
+    emit: Emit,
+    limits: Mapping[str, SourceLimits] | None = None,
+    cache: Path | None = None,
+    origins: Mapping[str, str] | None = None,
 ) -> Iterator[dict[str, Path]]:
     """`prebuilt_dictionary` for each of several data sources, in order: the files by name."""
     with ExitStack() as stack:
         yield {
             source.name: stack.enter_context(
-                prebuilt_dictionary(source_gateway(source, env), workspace, emit, source.name)
+                prebuilt_dictionary(
+                    source_gateway(source, env, source_limit(limits, source.name)),
+                    workspace,
+                    emit,
+                    source.name,
+                    schema_choice(source_limit(limits, source.name)),
+                    cache,
+                    source.name,
+                    (origins or {}).get(source.name),
+                )
             )
             for source in sources
         }
+
+
+def source_limit(limits: Mapping[str, SourceLimits] | None, name: str | None) -> SourceLimits:
+    """A data source's limits by name; the code's when it has none."""
+    return (limits or {}).get(name or "", SourceLimits())
+
+
+def schema_choice(limits: SourceLimits) -> HiddenSchemas:
+    """What the dictionary built before the run leaves out: every scratch schema (the run has
+    written none yet) and the data source's schema choice."""
+    return other_runs(None, limits.include_schemas, limits.exclude_schemas)
+
+
+# Bumped when a cached dictionary of an earlier version would no longer do.
+DICTIONARY_CACHE_VERSION = 1
+
+
+@dataclass
+class CachedDictionary:
+    """A dictionary file in the cache directory, named by its catalog's hash (spec "产品默认与
+    入口": by data source, keyed by the catalog's hash). `hit` once it was read."""
+
+    path: Path
+    hit: bool = False
+
+    def load(self) -> Dictionary | None:
+        try:
+            dictionary = Dictionary.load(self.path)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        self.hit = True
+        return dictionary
+
+    def save(self, dictionary: Dictionary) -> None:
+        """Kept only when the build read every table it meant to: a failed or cut-off build, or
+        one that left a table out (its statement failed or timed out), is built again next time.
+        Written whole or not at all. It holds sampled values, so the directory is the user's alone
+        (0700) and the file too (0600), whatever the umask."""
+        coverage = dictionary.coverage
+        if coverage.error is not None or coverage.timed_out or coverage.not_profiled:
+            return
+        try:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.path.parent.chmod(0o700)
+            partial = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}")
+            os.close(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            dictionary.save(partial)
+            partial.chmod(0o600)
+            partial.replace(self.path)
+        except OSError:
+            return
+
+
+def cached_dictionary(
+    gateway: Gateway,
+    hidden: HiddenSchemas,
+    cache: Path,
+    source: str | None = None,
+    origin: str | None = None,
+) -> CachedDictionary | None:
+    """The cache entry of the data source's catalog as the agent sees it (its schema choice
+    applied): the data source, its database, the schema choice and every table and column. None
+    when the catalog cannot be read; the build then goes on without the cache. The data source
+    is its name (spec: by data source) and its database: `origin`, the database the config names
+    for it (a DuckDB source's file, so a web dbt run's per-run copy reuses the source's
+    dictionary, and two configs' sources of one name at other files keep their own), else the
+    gateway's own identity (the file, the URL's hash)."""
+    identity = getattr(gateway, "identity", None)
+    if identity is None:
+        return None
+    try:
+        catalog = load_catalog(gateway.query, hidden)
+    except QueryFailed:
+        return None
+    key = {
+        "version": DICTIONARY_CACHE_VERSION,
+        "source": source,
+        "database": identity() if origin is None else origin,
+        "shown": hidden.shown("schema"),
+        "catalog": [
+            [table.schema, table.name, table.kind, [list(column) for column in table.columns]]
+            for table in catalog
+        ],
+    }
+    digest = hashlib.sha256(json.dumps(key, default=str).encode()).hexdigest()
+    return CachedDictionary(cache / f"{digest}.json")
+
+
+def dictionary_cache_dir(env: Mapping[str, str]) -> Path | None:
+    """Where product runs keep their value dictionaries: `$XDG_CACHE_HOME/data-agent/
+    dictionaries`, else `~/.cache/...` under `env["HOME"]`; None without either."""
+    base = env.get("XDG_CACHE_HOME") or (
+        str(Path(env["HOME"]) / ".cache") if env.get("HOME") else ""
+    )
+    return Path(base) / "data-agent" / "dictionaries" if base else None
 
 
 @dataclass(frozen=True)
@@ -1112,12 +1255,21 @@ def source_location(source: DataSource) -> str:
     return str(source.duckdb.resolve())
 
 
-def source_gateway(source: DataSource, env: Mapping[str, str]) -> Gateway:
-    """A gateway to `source`; a Postgres source's URL is read from `env` under its variable."""
+def source_gateway(
+    source: DataSource, env: Mapping[str, str], limits: SourceLimits | None = None
+) -> Gateway:
+    """A gateway to `source`; a Postgres source's URL is read from `env` under its variable.
+    `limits` (`[sources.<name>]`, ticket 144) set its statement timeout and DuckDB limits."""
+    limits = SourceLimits() if limits is None else limits
     if source.postgres_env:
-        return PostgresGateway(env[source.postgres_env])
+        return PostgresGateway(env[source.postgres_env], limits.query_timeout_seconds)
     assert source.duckdb is not None, "a data source names a DuckDB file or a Postgres variable"
-    return DuckDBGateway(source.duckdb)
+    return DuckDBGateway(
+        source.duckdb,
+        limits.query_timeout_seconds,
+        limits.memory_limit,
+        limits.max_temp_directory_size,
+    )
 
 
 @dataclass(frozen=True)
@@ -2136,27 +2288,36 @@ async def run(
     trace_tier: TraceTier = "full",
     external_mcp: ExternalServers | None = None,
     charts: bool = False,
+    deadline_margin: float = DEADLINE_MARGIN_S,
+    source_limits: Mapping[str, SourceLimits] | None = None,
+    dictionary_cache: Path | None = None,
+    dictionary_origins: Mapping[str, str] | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
-    run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
-    with `terminal_reason: "deadline"`; the outcome is an unfinished agent. `turn` makes the run a
-    turn of a conversation (`ConversationTurn`): its `task` event names the conversation and the
-    turn. `steering`, a `--chat` run's stdin lines, is sent into the running turn (`query`).
-    `sandbox` gives the agent sandbox_exec on that backend (`SandboxRun.of_run` gives the run its
-    id); `docker` needs the docker CLI. With `docker` the run removes its container when it ends,
-    and the containers of killed runs before it starts (`docker_lifecycle`). `network` gives the
-    agent the web tools (`build_options`) and the docker sandbox the network. A dbt run with
-    `sandbox` also gets dbt_execute, writing to `dbt_target` (`DbtRun.of_run`: `scratch` keeps
-    its profile in `<events_dir>/profiles/`, which must be outside the workspace). `effort`
-    (ticket 104) is the session's reasoning effort, recorded in the `version` event when given.
-    With all three Langfuse variables in `env` (`tracing.LangfuseSettings`, ticket 112) the run is
-    exported at `trace_tier`: a relay the CLI exports to, the parent span `data-agent.run` around
-    the session, and a `trace` event (with a `trace_export_error` per dropped batch) just before
-    `result`; without them none of it is built.
+    run stops itself `deadline_margin` (DEADLINE_MARGIN_S unless given) before it, closing the SDK
+    session, and records a `result` with `terminal_reason: "deadline"`; the outcome is an unfinished
+    agent. `turn` makes the run a turn of a conversation (`ConversationTurn`): its `task` event
+    names the conversation and the turn. `steering`, a `--chat` run's stdin lines, is sent into the
+    running turn (`query`). `sandbox` gives the agent sandbox_exec on that backend
+    (`SandboxRun.of_run` gives the run its id); `docker` needs the docker CLI. With `docker` the run
+    removes its container when it ends, and the containers of killed runs before it starts
+    (`docker_lifecycle`). `network` gives the agent the web tools (`build_options`) and the docker
+    sandbox the network. A dbt run with `sandbox` also gets dbt_execute, writing to `dbt_target`
+    (`DbtRun.of_run`: `scratch` keeps its profile in `<events_dir>/profiles/`, which must be outside
+    the workspace). `effort` (ticket 104) is the session's reasoning effort, recorded in the
+    `version` event when given. With all three Langfuse variables in `env`
+    (`tracing.LangfuseSettings`, ticket 112) the run is exported at `trace_tier`: a relay the CLI
+    exports to, the parent span `data-agent.run` around the session, and a `trace` event (with a
+    `trace_export_error` per dropped batch) just before `result`; without them none of it is built.
     `external_mcp` (ticket 116) mounts the user's MCP servers (`build_options`); the `version`
     event names them and their allow lists, and the event log masks the values they expand.
     `charts` (ticket 119) gives the agent display_chart and the charting rule (`build_options`)
-    and, in a query run, `CHARTS_SANDBOX_RULE` in place of SANDBOX_RULE."""
+    and, in a query run, `CHARTS_SANDBOX_RULE` in place of SANDBOX_RULE.
+    `source_limits` (ticket 144) are the data sources' limits by name (`Task.data_source_name`
+    for one), for the value dictionary built before the run; `dictionary_cache` is the
+    directory a product run reuses value dictionaries from (`prebuilt_dictionary`), None (every
+    evaluation) to build each afresh; `dictionary_origins` are the databases the config names for
+    the data sources, by name, which key their cached dictionaries (`cached_dictionary`)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -2302,13 +2463,34 @@ async def run(
         )
         tools: dict[str, str] = {}
         guarded: set[str] = set()
+        # The one database's (`Task.databases`); a run of several builds each one's below.
+        own = task.databases[0]
+        own_limits = source_limit(source_limits, own.name)
         building = (
-            prebuilt_dictionary(task.gateway(env), task.workspace, log.emit)
+            prebuilt_dictionary(
+                source_gateway(own, env, own_limits),
+                task.workspace,
+                log.emit,
+                hidden=schema_choice(own_limits),
+                cache=dictionary_cache,
+                # Only a name given (a config's source): a bare `--duckdb` file's name is no data
+                # source, so its dictionary is keyed by the file.
+                source=task.data_source,
+                origin=(dictionary_origins or {}).get(own.name),
+            )
             if config.context and not task.several
             else nullcontext()
         )
         building_each = (
-            prebuilt_dictionaries(task.sources, task.workspace, env, log.emit)
+            prebuilt_dictionaries(
+                task.sources,
+                task.workspace,
+                env,
+                log.emit,
+                source_limits,
+                dictionary_cache,
+                dictionary_origins,
+            )
             if config.context and task.several
             else nullcontext()
         )
@@ -2349,7 +2531,7 @@ async def run(
             timer = asyncio.timeout(
                 None
                 if deadline is None
-                else max(0.0, deadline - DEADLINE_MARGIN_S - time.monotonic())
+                else max(0.0, deadline - deadline_margin - time.monotonic())
             )
             # The parent span is current while the SDK starts the CLI, which it hands the span to.
             current = nullcontext() if export is None else export.active()

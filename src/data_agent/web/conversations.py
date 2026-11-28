@@ -39,9 +39,8 @@ from data_agent.web.sources import DataSource
 INDEX = "conversation.json"
 CLAUDE_CONFIG = "claude-config"
 # A conversation only queries (spec decision 3), with the server's config (every layer on by
-# default); `CONFIG` is what its turns' records show.
+# default).
 TASK_TYPE = "query"
-CONFIG = "full"
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +135,7 @@ class Conversations:
             # The server's config, its sources the server's: every one, by name and kind.
             args = [
                 f"--task={text}",
-                *("--type", TASK_TYPE, *self.launcher.config_args(run_dir)),
+                *("--type", TASK_TYPE, *self.launcher.config_args(run_dir, network)),
                 *("--events-dir", str(run_dir), "--workspace", str(workspace)),
                 *("--chat", "--conversation-dir", str(directory), "--turn", str(number)),
                 *("--sandbox", SANDBOX),
@@ -147,7 +146,7 @@ class Conversations:
                 args += ["--resume", resume]
             return args, workspace
 
-        running = self.launcher.launch(text, TASK_TYPE, CONFIG, prepare, index["id"])
+        running = self.launcher.launch(text, TASK_TYPE, prepare, index["id"])
         index["turns"].append(
             {"turn": number, "run_id": running.run_id, "message": text, "steers": []}
         )

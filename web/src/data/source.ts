@@ -33,10 +33,24 @@ export type RunRow = {
   cost_usd: number | null
 }
 
-/** What the run form offers (`GET /api/options`): data sources by name only. */
-export type RunOptions = { data_sources: string[]; task_types: TaskType[]; configs: string[] }
+/** The server's config every web run gets (`GET /api/options` `config`): the form shows it and
+ *  picks none (product-config ticket 144). Names and numbers only. */
+export type ConfigSummary = {
+  name: string
+  layers: { skill: boolean; verifiers: boolean; context: boolean }
+  model: string | null
+  effort: string | null
+  max_budget_usd: number | null
+  max_turns: { query: number | null; dbt: number | null; large: number | null }
+  agent_timeout_sec: number | null
+  /** The server's network switch: off, no run may have the network. */
+  network: boolean
+}
 
-export type Submission = { task: string; task_type: TaskType; data_source: string; config: string; network?: boolean }
+/** What the run form offers (`GET /api/options`): data sources by name only, and the config. */
+export type RunOptions = { data_sources: string[]; task_types: TaskType[]; config: ConfigSummary }
+
+export type Submission = { task: string; task_type: TaskType; data_source: string; network?: boolean }
 
 /** A turn of a conversation row: the index's turn plus its run's status as `/api/runs` gives it. */
 export type ConversationTurn = IndexTurn & { status: RunStatus }

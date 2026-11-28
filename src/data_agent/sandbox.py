@@ -43,6 +43,10 @@ SKILLS_MOUNT = "/skills"
 # Limits on each container, after a data-eng-bench task's 2 cores (plan §5); memory is a cap.
 CPUS = "2"
 MEMORY = "4g"
+# sandbox_exec's limits: SignalPilot's default command timeout, and its execution and dbt limit
+# (900 s) as the most a call may ask for (`[sandbox].exec_max_seconds` sets that, ticket 144).
+DEFAULT_TIMEOUT_S = 300
+MAX_TIMEOUT_S = 900
 # A command runs under sandbox_supervisor.py (as `python -I -c`, in the container or here): at
 # its limit, every process it started gets TERM, and KILL this many seconds later, whatever
 # process group it is in. The supervisor then exits 124, which is a timeout only once the limit
@@ -207,6 +211,8 @@ class LocalSandbox:
 
     workspace: Path
     skills_dir: Path
+    # The longest a sandbox_exec call may ask for (`[sandbox].exec_max_seconds`, ticket 144).
+    max_seconds: float = MAX_TIMEOUT_S
 
     @property
     def workdir(self) -> str:
@@ -252,7 +258,11 @@ class DockerSandbox:
     skills_dir: Path
     run_id: str
     network: bool = False
+    # `[sandbox]`'s `image`, `cpus`, `memory` and `exec_max_seconds` (ticket 144).
     image: str = SANDBOX_IMAGE
+    cpus: str = CPUS
+    memory: str = MEMORY
+    max_seconds: float = MAX_TIMEOUT_S
     container: str | None = field(default=None, init=False)
     lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
@@ -273,7 +283,7 @@ class DockerSandbox:
             # (on a Linux host; Docker Desktop and colima map ownership anyway).
             *("--user", f"{os.getuid()}:{os.getgid()}"),
             *(() if self.network else ("--network", "none")),
-            *("--cpus", CPUS, "--memory", MEMORY),
+            *("--cpus", self.cpus, "--memory", self.memory),
             *("--mount", f"type=bind,source={self.workspace.resolve()},target={WORKDIR}"),
             *("--mount", f"type=bind,source={self.skills_dir},target={SKILLS_MOUNT},readonly"),
             *("-w", WORKDIR, self.image, "sleep", "infinity"),
@@ -304,6 +314,7 @@ class DockerSandbox:
 class Sandbox(Protocol):
     workspace: Path
     skills_dir: Path
+    max_seconds: float
 
     @property
     def workdir(self) -> str: ...
@@ -417,10 +428,7 @@ def docker_lifecycle(run_id: str) -> Iterator[None]:
         clean_up("removing the run's container", lambda: remove_run_containers(run_id))
 
 
-# sandbox_exec's limits: SignalPilot's default command timeout, and its execution and dbt limit
-# (900 s) as the most a call may ask for; its output cap, on stdout and stderr together.
-DEFAULT_TIMEOUT_S = 300
-MAX_TIMEOUT_S = 900
+# sandbox_exec's output cap, on stdout and stderr together.
 OUTPUT_CHARS = 30_000
 # Cap on the inline `output_files:` manifest; past either limit the full list is saved in LOGS_DIR.
 MAX_OUTPUT_FILES = 100
@@ -652,8 +660,10 @@ def execute_tool(
     """sandbox_exec: write the `data_files` results, run `command`, and reply."""
     if not command.strip():
         raise SandboxError("command must not be blank")
-    if not 1 <= timeout_seconds <= MAX_TIMEOUT_S:
-        raise SandboxError(f"timeout_seconds must be 1 to {MAX_TIMEOUT_S}, got {timeout_seconds}")
+    if not 1 <= timeout_seconds <= sandbox.max_seconds:
+        raise SandboxError(
+            f"timeout_seconds must be 1 to {sandbox.max_seconds:g}, got {timeout_seconds}"
+        )
     for result_id, result in results.picked(data_files).items():
         data = csv_text(result).encode()
         write_file(sandbox.workspace, DATA_DIR, f"{result_id}.csv", data, True)
@@ -670,6 +680,12 @@ def execute_tool(
     return text
 
 
+def default_timeout(sandbox: Sandbox) -> int:
+    """sandbox_exec's default `timeout_seconds`: DEFAULT_TIMEOUT_S, or the sandbox's longest
+    when that is shorter."""
+    return min(DEFAULT_TIMEOUT_S, max(1, int(sandbox.max_seconds)))
+
+
 def tool_description(sandbox: Sandbox) -> str:
     """sandbox_exec's description, as this sandbox runs commands."""
     if isinstance(sandbox, DockerSandbox):
@@ -681,6 +697,7 @@ def tool_description(sandbox: Sandbox) -> str:
         )
     else:
         where, net = "this machine, itself an isolated container", ""
+    default = default_timeout(sandbox)
     return f"""\
 Run a shell command (`bash -c`) in this run's sandbox and return its exit code, stdout and stderr.
 
@@ -694,7 +711,7 @@ ids (query_database gives each successful result one) in `data_files`: each is w
 `{DATA_DIR}/<id>.csv` (a header row, every row the query returned, NULL as an empty field) \
 before the command runs.
 
-If the command runs past `timeout_seconds` (default {DEFAULT_TIMEOUT_S}, at most \
-{MAX_TIMEOUT_S}), it and every process it started are killed. Past \
+If the command runs past `timeout_seconds` (default {default}, at most \
+{sandbox.max_seconds:g}), it and every process it started are killed. Past \
 {OUTPUT_CHARS:,} characters of output in all, the reply shows the start of stdout and the end of \
 stderr, and names the files under `{LOGS_DIR}/` that hold all of it."""
