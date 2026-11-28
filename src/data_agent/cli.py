@@ -28,9 +28,9 @@ from data_agent.agent import (
     stdin_lines,
 )
 from data_agent.config import (
-    SCHEMA,
     ConfigFileError,
     EffectiveConfig,
+    in_section_order,
     load_effective_config,
     toml_value,
 )
@@ -616,9 +616,7 @@ def main(argv: list[str] | None = None) -> None:
 def show_config(config: EffectiveConfig) -> None:
     """`data-agent config show`: `<key> = <value as TOML>  # <source>` per key, every `${VAR}`
     reference as written."""
-    order = list(SCHEMA.keys)
-    keys = sorted(config.raw, key=lambda key: order.index(key.split(".", 1)[0]))
-    for key in keys:
+    for key in in_section_order(config.raw):
         print(f"{key} = {toml_value(config.raw[key])}  # {config.source(key)}")
 
 

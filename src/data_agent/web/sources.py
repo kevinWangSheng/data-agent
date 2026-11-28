@@ -1,8 +1,8 @@
 """The data sources the run form offers (spec "本地运行的数据源", Q38).
 
-`data-agent web --data-sources FILE` reads them from a TOML file, and only when that option is
-given: there is no default path. One table per source, keyed by its name; relative paths count from
-the file's directory:
+They are the config's `[sources.<name>]` tables (data_agent.config, ticket 143; `config_sources`).
+One table per source, keyed by its name; relative paths count from the directory of the config
+file that sets them:
 
     [sources.shop]
     kind = "duckdb"
@@ -13,7 +13,7 @@ the file's directory:
     env = "WAREHOUSE_URL"          # the variable holding the connection string, not the string
     dbt_project = "warehouse_dbt"  # optional; dbt runs copy it
 
-The connection string stays in the server's environment; the file, responses, run arguments and
+The connection string stays in the server's environment; the config, responses, run arguments and
 events carry only the variable's name.
 
 The runs directory and a dbt project do not contain each other (`check_layout`): each dbt run
@@ -22,9 +22,7 @@ the project or anywhere else: a dbt run gets its own copy of it beside the works
 of its own (ticket 99, `data_agent.web.launcher.prepare_workspace`).
 """
 
-import json
 import re
-import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,25 +48,6 @@ class DataSource:
     dbt_project: Path | None = None
 
 
-def load_data_sources(path: Path) -> list[DataSource]:
-    """The sources in the file, in file order; ValueError naming the first problem."""
-    if not path.is_file():
-        raise ValueError(f"data-source file not found: {path}")
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"{path} is not valid TOML: {exc}") from exc
-    other = set(data) - {"sources"}
-    if other:
-        raise ValueError(f"{path}: unknown tables {sorted(other)}; only [sources.<name>] is read")
-    sources = data.get("sources")
-    if not isinstance(sources, dict) or not sources:
-        raise ValueError(f"{path} names no data source; add a [sources.<name>] table")
-    # Absolute: runs start in their own working directory.
-    base = path.resolve().parent
-    return [parse_source(name, entry, base) for name, entry in sources.items()]
-
-
 # The `[sources.<name>]` keys a source is built from; the config's other keys of a source
 # (`description`, `query_timeout_seconds`, ...) act elsewhere (tickets 144, 148).
 SOURCE_KEYS = {"kind", "path", "env", "dbt_project"}
@@ -76,7 +55,7 @@ SOURCE_KEYS = {"kind", "path", "env", "dbt_project"}
 
 def config_sources(config: "EffectiveConfig") -> list[DataSource]:
     """The config's `[sources.<name>]` tables, in order (paths already absolute); ValueError naming
-    the first problem, checked as `load_data_sources` checks a file's."""
+    the first problem."""
     sources: list[DataSource] = []
     for name in config.names("sources"):
         entry = config.value(f"sources.{name}") or {}
@@ -86,8 +65,8 @@ def config_sources(config: "EffectiveConfig") -> list[DataSource]:
 
 
 def source_leaves(sources: Sequence[DataSource]) -> dict[str, str]:
-    """The sources as the config's dotted keys (`sources.shop.kind`, ...), as `dump_data_sources`
-    writes them: never a connection string; `dbt_project` too when set."""
+    """The sources as the config's dotted keys (`sources.shop.kind`, ...), DuckDB paths absolute:
+    the file or the variable's name, never a connection string; `dbt_project` too when set."""
     leaves: dict[str, str] = {}
     for source in sources:
         prefix = f"sources.{source.name}"
@@ -101,28 +80,6 @@ def source_leaves(sources: Sequence[DataSource]) -> dict[str, str]:
         if source.dbt_project is not None:
             leaves[f"{prefix}.dbt_project"] = str(source.dbt_project.resolve())
     return leaves
-
-
-def dump_data_sources(sources: Sequence[DataSource]) -> str:
-    """The sources as `load_data_sources` reads them, with absolute DuckDB paths: name, kind and
-    the file or the variable's name, never a connection string; `dbt_project` is left out."""
-    lines: list[str] = []
-    for source in sources:
-        lines.append(f"[sources.{toml_string(source.name)}]")
-        if source.duckdb is not None:
-            lines += ['kind = "duckdb"', f"path = {toml_string(str(source.duckdb.resolve()))}"]
-        else:
-            assert source.postgres_env is not None
-            lines += ['kind = "postgres"', f"env = {toml_string(source.postgres_env)}"]
-        lines.append("")
-    return "\n".join(lines)
-
-
-def toml_string(value: str) -> str:
-    """A TOML basic string. A JSON string with its non-ASCII characters left as they are is one
-    (`\\"`, `\\\\`, `\\n`, `\\u00XX` mean the same in both), once DEL, which TOML does not allow
-    unescaped, is escaped too."""
-    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def parse_source(name: str, entry: Any, base: Path) -> DataSource:

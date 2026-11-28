@@ -2,8 +2,8 @@
 and 8 of ticket 130). The platforms are the config's `[im.<platform>]` tables (`load_section`,
 ticket 143); `load_config` still reads the old `--im` file's format.
 
-The file is TOML, outside the repository, given by `data-agent web --im FILE` (no default path).
-One table per platform; the bot starts on each platform the file has a table for:
+The tables are the config's `[im.<platform>]` (shown here as the old file wrote them, without
+the `im.`); the bot starts on each platform the config has a table for:
 
     [slack]
     bot_token_env = "DATA_AGENT_SLACK_BOT_TOKEN"
@@ -27,7 +27,7 @@ One table per platform; the bot starts on each platform the file has a table for
 - `allowed_users` is missing or empty;
 - any other key is in the table.
 
-No error text, log line or `repr` carries a token's value. Without `--data-sources` the file is
+No error text, log line or `repr` carries a token's value. Without `[sources.*]` the platforms are
 still accepted; each turn is then refused (`Refused(400)`) and the bot says so in the thread.
 """
 

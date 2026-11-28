@@ -174,22 +174,15 @@ class Launcher:
             prefix = f"sources.{name}."
             leaves |= {key: value for key, value in raw.items() if key.startswith(prefix)}
             leaves |= source_leaves([source])
-        directory = run_dir / CONFIG_DIR
-        directory.mkdir(exist_ok=True)
-        path = directory / f"{self.config.name()}.toml"
-        path.write_text(toml_text(leaves), encoding="utf-8")
-        return ["--config", str(path)]
+        return config_file(run_dir / CONFIG_DIR / f"{self.config.name()}.toml", leaves)
 
     def layers_args(self, run_dir: Path, name: str) -> list[str]:
         """The layers of the old run config the run form picked (`full`, `baseline`, ...), as a
         second `--config` file over the server's (`<name>.toml`, so `version.config` stays the
         name). Ticket 144 drops the form's pick."""
         layers = load_config(name).layers()
-        directory = run_dir / CONFIG_DIR / "layers"
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"{name}.toml"
-        path.write_text(toml_text({f"layers.{key}": on for key, on in layers.items()}))
-        return ["--config", str(path)]
+        leaves = {f"layers.{key}": on for key, on in layers.items()}
+        return config_file(run_dir / CONFIG_DIR / "layers" / f"{name}.toml", leaves)
 
     def network_for(self, asked: bool | None) -> bool:
         """Whether a run gets the network: as the request asks, else as the server's switch is.
@@ -386,6 +379,13 @@ class Launcher:
         if not wait_stopped(process, group, deadline):
             signal_run(process, group, signal.SIGKILL)
             wait_stopped(process, group, time.monotonic() + STOP_GRACE_SECONDS)
+
+
+def config_file(path: Path, leaves: dict[str, Any]) -> list[str]:
+    """`--config <path>`, the file written with `leaves` (dotted keys)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(toml_text(leaves), encoding="utf-8")
+    return ["--config", str(path)]
 
 
 def check_source(source: DataSource) -> None:

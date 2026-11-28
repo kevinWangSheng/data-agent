@@ -106,6 +106,16 @@ def test_a_command_line_value_the_policy_already_has_is_taken(tmp_path: Path) ->
     assert loaded.source("sandbox.network") == "policy"
 
 
+def test_the_first_explicit_file_holds_the_policy(tmp_path: Path) -> None:
+    a = write(tmp_path / "a.toml", '[policy]\ndbt_target = "scratch"\n')
+    b = write(tmp_path / "b.toml", '[policy]\ndbt_target = "task"\nnetwork = false\n')
+    loaded = load(a, b)
+    assert loaded.value("policy.dbt_target") == "scratch"
+    # A key the first file leaves alone the next one may lock.
+    assert loaded.value("policy.network") is False
+    assert loaded.source("policy.dbt_target") == "policy"
+
+
 def test_relative_paths_count_from_the_file_that_sets_them(tmp_path: Path) -> None:
     path = write(
         tmp_path / "conf" / "c.toml",

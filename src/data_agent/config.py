@@ -35,7 +35,7 @@ business of the code that reads it (tickets 144-148).
 import hashlib
 import json
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,7 +53,7 @@ MODEL_ENV = "DATA_AGENT_MODEL"
 BASE_URL_ENV = "DATA_AGENT_BASE_URL"
 # The `version` event's `config` when no file is read (decisions.md Q8).
 DEFAULT_NAME = "default"
-DEFAULT = "default"
+DEFAULT_SOURCE = "default"
 CLI = "cli"
 POLICY = "policy"
 
@@ -80,9 +80,8 @@ SECRET_VALUES = (
 REFERENCE = re.compile(r"\$\{([^}]*)\}")
 WHOLE_REFERENCE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-# The name of a `[models.<name>]`, `[sources.<name>]`, `[mcp.servers.<name>]` table.
-ENTRY_NAME = re.compile(r"[A-Za-z0-9_-]+")
-BARE_KEY = ENTRY_NAME
+# A key TOML takes unquoted.
+BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 # Values kept as written in `value`, for the code reading them to expand (module docstring).
 UNEXPANDED = ("mcp.servers.",)
 
@@ -122,9 +121,11 @@ class Leaf:
 
 @dataclass(frozen=True)
 class Table:
-    """A table with these keys only."""
+    """A table with these keys only. With `entries`, each of its tables is an entry that may
+    not be empty (`[im.<platform>]`), as a `Named` table's are."""
 
     keys: Mapping[str, "Node"]
+    entries: bool = False
 
 
 @dataclass(frozen=True)
@@ -272,7 +273,8 @@ SCHEMA = Table(
                 "slack": im_platform("bot_token_env", "app_token_env"),
                 "telegram": im_platform("bot_token_env"),
                 "discord": im_platform("bot_token_env"),
-            }
+            },
+            entries=True,
         ),
         "trace": Table({"base_url": Leaf("str"), "tier": Leaf("enum", choices=TRACE_TIERS)}),
         "server": Table(
@@ -312,8 +314,13 @@ def default_leaves() -> dict[str, Any]:
         for key, value in entry.items():
             leaves[f"models.{name}.{key}"] = value
     # In schema order: `[models.*]` after `[layers]`.
+    return {key: leaves[key] for key in in_section_order(leaves)}
+
+
+def in_section_order(keys: Iterable[str]) -> list[str]:
+    """Dotted keys by their section's place in `SCHEMA`, in their own order within a section."""
     order = list(SCHEMA.keys)
-    return dict(sorted(leaves.items(), key=lambda item: order.index(item[0].split(".")[0])))
+    return sorted(keys, key=lambda key: order.index(key.split(".", 1)[0]))
 
 
 def node_at(key: str) -> Leaf | None:
@@ -390,10 +397,9 @@ def walk_table(
                 raise origin.error(dotted, "unknown key" if prefix else "unknown section")
             child = node.keys[key]
         else:
-            if not node.free_names and not ENTRY_NAME.fullmatch(key):
-                raise origin.error(dotted, "a name has only letters, digits, '-' and '_'")
-            if "." in key:
-                raise origin.error(dotted, "a key may not hold '.'")
+            # Keys are dotted; any other name (quoted in TOML) is kept as it is.
+            if not key or "." in key:
+                raise origin.error(dotted, "a name may not be empty or hold '.'")
             child = node.entry
         if isinstance(child, Leaf):
             check_secret(dotted, value, origin)
@@ -401,7 +407,9 @@ def walk_table(
         else:
             # An entry by name (`[sources.shop]`, `[mcp.servers.gh]`) or an IM platform with no
             # key would leave no trace once flattened, as if it were not there.
-            if value == {} and (isinstance(node, Named) or prefix == "im"):
+            if value == {} and (
+                isinstance(node, Named) or (isinstance(node, Table) and node.entries)
+            ):
                 raise origin.error(dotted, "an empty table; give its keys or leave it out")
             walk_table(child, value, dotted, origin, environ, leaves)
 
@@ -592,18 +600,19 @@ def subtree(leaves: Mapping[str, Any], key: str) -> dict[str, Any] | None:
 
 def config_files(
     paths: Sequence[Path], environ: Mapping[str, str], workspace: Path | None
-) -> tuple[list[Path], bool]:
-    """The files to merge, in order, and whether they must exist (explicit ones do)."""
+) -> list[Path]:
+    """The files to merge, in order: explicit ones must exist (`read_file`), the user-level and
+    project-level ones only when they do."""
     if paths:
-        return list(paths), True
+        return list(paths)
     if environ.get(CONFIG_ENV):
-        return [Path(environ[CONFIG_ENV])], True
+        return [Path(environ[CONFIG_ENV])]
     found: list[Path] = []
     if environ.get("HOME"):
         found.append(Path(environ["HOME"]) / CONFIG_DIR / CONFIG_FILE)
     if workspace is not None:
         found.append(workspace / CONFIG_DIR / CONFIG_FILE)
-    return [path for path in found if path.is_file()], False
+    return [path for path in found if path.is_file()]
 
 
 def load_effective_config(
@@ -616,11 +625,11 @@ def load_effective_config(
     (under `environ["HOME"]`) < `<workspace>/.data-agent/config.toml` < environment <
     `cli_overrides`, with `[policy]` over all; or, given `paths` (or `DATA_AGENT_CONFIG`), those
     files only, later ones winning. ConfigFileError on any error."""
-    files, _ = config_files(paths, environ, workspace)
+    files = config_files(paths, environ, workspace)
     raw: dict[str, Any] = {}
     sources: dict[str, str] = {}
     for key, value in default_leaves().items():
-        raw[key], sources[key] = value, DEFAULT
+        raw[key], sources[key] = value, DEFAULT_SOURCE
     # policy key -> (raw value, the file that set it)
     policy: dict[str, tuple[Any, Path]] = {}
     for path in files:
@@ -689,7 +698,9 @@ def default_config() -> EffectiveConfig:
 
 
 def toml_string(value: str) -> str:
-    """A TOML basic string (as `web.sources.toml_string`)."""
+    """A TOML basic string. A JSON string with its non-ASCII characters left as they are is one
+    (`\\"`, `\\\\`, `\\n`, `\\u00XX` mean the same in both), once DEL, which TOML does not allow
+    unescaped, is escaped too."""
     return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
@@ -721,20 +732,20 @@ def toml_text(leaves: Mapping[str, Any]) -> str:
         node = tree
         for part in table:
             node = node.setdefault(part, {})
-        node[last] = Value(value)
+        node[last] = TomlLeaf(value)
     blocks: list[str] = []
 
     def emit(node: Mapping[str, Any], path: list[str]) -> None:
         lines = [
             f"{toml_key(k)} = {toml_value(v.value)}"
             for k, v in node.items()
-            if isinstance(v, Value)
+            if isinstance(v, TomlLeaf)
         ]
         if lines and path:
             header = ".".join(toml_key(part) for part in path)
             blocks.append(f"[{header}]\n" + "\n".join(lines) + "\n")
         for key, child in node.items():
-            if not isinstance(child, Value):
+            if not isinstance(child, TomlLeaf):
                 emit(child, [*path, key])
 
     emit(tree, [])
@@ -742,7 +753,7 @@ def toml_text(leaves: Mapping[str, Any]) -> str:
 
 
 @dataclass(frozen=True)
-class Value:
+class TomlLeaf:
     """A leaf of `toml_text`'s tree (a value may itself be a dict-free list or scalar)."""
 
     value: Any
