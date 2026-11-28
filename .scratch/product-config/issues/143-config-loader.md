@@ -1,6 +1,6 @@
 # 143 — 配置加载：分层合并、`${VAR}`、未知键、明文密钥、`config show`、`--config` 路径、三个旧参数并入
 
-Status: in-review
+Status: done
 Blocked by: 141
 Spec: ../spec.md（"配置文件与分层（Q1）""分节（Q2）"）
 Claimed by: claude (opus-5-5) 2026-11-27
@@ -218,3 +218,4 @@ Branch: worktree-143-config-loader
       - Not sharing one "filter leaves, then write the file" helper between `cli.server_config` and `launcher.config_file`: there are two call sites, each with a different filter. That is a judgement call.
       - `launcher` keeps `startswith(("sources.", "im."))` for top-level sections, whose names are fixed, so it is correct.
     - **Known limit:** a leaf could collide with another entry's leaf only in a contrived case, e.g. server `gh` with header `url` and server `"gh.headers"` with `url`. Both are the string `mcp.servers.gh.headers.url`, and the config's dicts are keyed by that string. Fixing it would mean keying every dict by a tuple of parts, which is a refactor outside this return.
+- 2026-11-28（主会话）：退回第 1 轮核查：CI 绿、Codex 当前 head 无意见（`1649a70`）。服务器真实运行：两次冒烟通过（`shop`；`shop` + `"shop.archive"`），数据服务器临时配置文件没有 `api_key`，主模型的 `base_url` 是 `${DATA_AGENT_BASE_URL}` 引用；集成测试 28 passed、3 failed：164 的已知失败，加 `test_chat_e2e.py::test_b_an_ambiguous_question_is_clarified_and_answered_as_chosen` 第 1、3 次（模型没用 net/gross 的字眼、或没提问），单独重跑 3/3 通过，`322d38d` 时也 3/3，判为模型波动（deepseek-flash）。花费约 $0.34。PR #150 squash 合并（`c50e82b`）。Status done。
