@@ -51,6 +51,8 @@ Branch: —
 - **保留 `run_config.load_config(<EffectiveConfig>)`**：141 的 `product_config_support.run_config_of` 和约 98 个迁移过的验收测试经它取 RunConfig；Authority 里"删掉 `load_config(<名>)`"只删按名字取的那种用法，这个签名保留。
 - **快照守门的用途**（人 2026-11-27 定，`decisions.md`"调研后定"第 4 条）：只证明迁移第一步新旧机制一致。本工单合入后快照守门完成任务；之后的重录归主会话（迁移第二步或有意的 Skill 改动），重录要审 diff 并记进工单。本工单合入前不合入改 `skills/` 的提交。
 
+- **数据服务器 `--config` 的形状**（141 契约复核第 5 条，`product_config_support.py` 的 `assert_server_configs`、`config_arg_rule`）：评测里给我们自己的 `mcp-server` 传的 `--config` 每个值要么是等于 `version` 事件 `config` 的消融名，要么是 `evals/profiles/` 下或临时目录（不在测试自己的目录、假家目录、工作区下）的绝对路径；写成两个参数 `--config X`，不用 `--config=X`；重复的 `--config` 要相邻。合并后的配置不能写进 jaffle 的 `out/` 或事件目录。
+
 ## Acceptance
 
 - [ ] `TICKET_146` 标记全部删掉；`git diff main -- tests/acceptance tests/fixtures` 只有这些删除行。
@@ -97,3 +99,4 @@ Branch: —
 - 2026-11-27（主会话建票）：迁移第一步，只换机制不换行为；第二步（评测改用产品新默认、配对比较）不是工单，主会话做。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：两次 `--config`、`version.config` 写层名、`config` 事件第二条、lsb-single-shot 只读 `[models]`/`[roles]`、删过渡期的旧名；去掉"已有验收测试""lsb-single-shot 待定""`version.config` 得不到消融名"三条停止条件。
 - 2026-11-27（主会话）：按 141 合并前审查和调研后的决定补 Context：保留 `load_config(EffectiveConfig)`、守门依赖的接口、快照守门的用途与失效点。
+- 2026-11-27（主会话）：按 141 退回第 1 轮后的契约复核补 Context：数据服务器 `--config` 的形状（快照守门依赖）。

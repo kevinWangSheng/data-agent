@@ -178,10 +178,10 @@ spec "验收测试接缝"的五组行为都有验收测试，写在约定的接�
 
 ## Ledger
 
-- Attempts: 2（第 1 个会话被 print 模式的后台等待上限截停，第 2 个接续）
-- Review rounds: 2
+- Attempts: 3 (this session is the return round 1 fix)
+- Review rounds: 2 + return round 1 (Codex 1 + eng:code-review 1)
 - Model spend: $0
-- Outcome: in-review；`python:3.12-slim` 容器那次由主会话在服务器上补
+- Outcome: in-review; the `/work` container run is left to the main session
 - Human review minutes: —
 
 ## Comments
@@ -323,3 +323,79 @@ spec "验收测试接缝"的五组行为都有验收测试，写在约定的接�
   8. **数据服务器 `--config` 的旁路断言**（`config_arg_rule`，`product_config_support.py:401`）：不重录快照，另断言每个值要么是等于 `version.config` 的消融名，要么是 `evals/profiles/` 或运行临时目录下的路径，不在假家目录或工作区下。
   9. **`docs` 的测试**（`test_config_prompts.py:110-128`；`decisions.md`"调研后定"第 3 条）：改成钉"`docs` 留在工作区外、agent 只读"：不出现在 `--workspace` 下；系统提示词写出 `docs` 路径；`workspace_guard` 放行读、拒绝写。标 `TICKET_148`。
   - 契约逐项清单、spec 解读、逐文件改动表在交回时照上次的格式更新。修复轮次另算：这是 PR 的第 1 轮退回。
+2026-11-27 (ticket agent, opus-5.5; return round 1; branch `worktree-141-config-acceptance-tests`; commits `f14aa72`, `3c11e55`, `1d95eef`; merged `origin/main` `5c6c570` first, which only changed `.scratch/`, `docs/research/` and `HANDOFF.md`):
+
+  **1. Each return reason**
+
+  | # | Fix | Evidence |
+  |---|---|---|
+  | 1 | `normalize_text` only replaces a path when it stands as a whole path or the start of one (`PATH_BEFORE`/`PATH_AFTER`); placeholder values are still replaced as plain text | Direct calls: `/workspace/a` is unchanged, `/work/skills/x` becomes `<repo>/skills/x`, `at /work.` becomes `at <repo>.`, `/work-tree`, `/work.d` and `/private/tmp/y` are unchanged. Snapshots differ only in `skill_version` (row 2). The `/work` container re-run is still for the main session |
+  | 2 | The snapshot's `skill_version` becomes `{"directory": "skills/", "content_sha256": …}`. The directory is still found with the agent's own `skill_version`. The content hash follows Harbor: sha256 over each file's path plus its own sha256, leaving out a fixed list (Harbor's `DEFAULT_IGNORES` plus `__pycache__`, `*.py[cod]`, `.ruff_cache`, `.pytest_cache`). The 5 snapshot files were re-recorded; only that field changed | The hash equals one computed over `git ls-files skills` (`7ee73899…`), and the same for `skills-frozen/fa6028eef62b` (`e74dc701…`). Reverse check: one line added to `skills/dbt-workflow/scan_project.py` made 4 guards fail (the cases that use `skills/`); restored afterwards, `skills/` has no diff |
+  | 2 (extra) | The plugin manifest (`.claude-plugin/`) is left out of the snapshot hash (`3c11e55`, Codex's finding) | With a probe `skills/.claude-plugin/plugin.json` in place the 6 guards still pass; probe removed |
+  | 3 | `test_config_event.py` builds its expected `file_hashes` set with the same `content_files` (no `__pycache__`/`*.pyc`); whether the event also lists those files is not pinned | — |
+  | 4 | The re-record rule is in the `product_config_support.py` docstring and in `test_config_snapshot.py:4-12`: the guard only proves the first migration step keeps old and new the same; after 146 merges, the main session re-records, reviews the diff and notes it in that ticket; no commit that changes `skills/` merges before 146 | — |
+  | 5 | Deleted `test_a_form_body_that_still_names_an_ablation_runs_the_servers_config`. Wiring contract item 5 now says how a stray `config` field is handled is not pinned. Removed `config` from `FORM` in `test_chat_api.py` and `test_mcp_web.py` and from the `submit()` helper in `test_web_api.py` | The 8 tests that send the form now fail today (the API still requires `config`, e.g. a 422 detail); they are marked `TICKET_144` (list below) |
+  | 6 | `test_mcp_web.py::test_every_web_run_gets_the_config_path_and_no_expanded_value` also asserts `GITHUB_TOKEN` is not in the text of the run's `--config` file. `test_chat_api.py` already had `assert_no_connection_string(sources_file.read_text())` (`:324`), so nothing was added there | — |
+  | 7 | `test_without_a_config_no_web_run_gets_mcp_servers`: when `--config` is a file, neither its `mcp.file` nor its `mcp.servers` may be set. Passes today (`--config` is still a name); has teeth once 143 lands | The reference loader returns `'/x/mcp.json'` for a config with `[mcp].file` and `None`/`None` for an empty one |
+  | 8 | New `assert_server_configs`, called from `normalized_snapshot` for our own `mcp-server`. Each `--config` value is either the ablation name in the `version` event's `config`, or a path under `evals/profiles/` or the temp dir. It may not be under the fake home, the workspace, or the test's own directories (pytest's `tmp_path` is inside the temp dir too). Snapshots were not re-recorded for this | Direct calls: the matching name, a profiles path and a run temp file pass; another ablation name, a path under the home, the workspace or the test's own directory, another repo file, and no `--config` at all each fail |
+  | 9 | `test_config_prompts.py` has two tests now. (a) The description reaches the agent. (b) `docs` stays outside the workspace and is only read: no docs file in the workspace during or after the session; the system prompt names the `docs` path; the guard does not deny Read, Glob or Grep there and denies Write and Edit; the docs file is unchanged. Still `TICKET_148`; contract item 3 rewritten | Against the 143 reference the failure is `[sources.shop]: unknown keys ['description', 'docs']`, i.e. the feature is missing. With a throwaway 148 stand-in (in /tmp only; prompt names the path, guard allows reads in docs) (b) passes. Two reverse checks fail as they should: guard also allows Write gives `'none' == 'deny'`; docs copied into the workspace gives `the docs are in the workspace` |
+
+  **2. Checks**
+  - `make check` (after the last commit): exit 0. pytest 3391 passed, 3 skipped, 198 xfailed; basedpyright 0 errors; web 448 passed. Before: 3399 passed, 190 xfailed. The difference is the 8 tests that moved from PASSED to XFAIL in item 5.
+  - `pytest tests/acceptance/test_config_*.py`: 14 passed (the guard tests), 83 xfailed.
+  - Non-integration acceptance tests before this round: 279 passed, 190 xfailed.
+  - Scrub: `changed 0 file(s) of 16`. Pre-commit secret and public-IP scan passed.
+  - `git diff main...HEAD --stat -- src/ evals/` lists only `src/data_agent/config.py`.
+  - Real run: this ticket calls no model, so there is nothing to run.
+  - The old 143 reference in `/tmp/141-ref/repo` has no web part (`create_app` still takes `mcp_servers`). So the `TICKET_143` web tests in `test_mcp_web`/`test_chat_api` cannot be shown to turn green on it; last round's "177 passed" run also deselected them. What was checked directly is listed in the table.
+
+  **3. Reviews**
+  - `da-review main` (Codex), 1 finding. **Fixed** (`3c11e55`): the manifest 147 adds under `skills/` would have moved the snapshot hash although Q8 leaves it out. Now excluded; verified with a probe manifest.
+  - `eng:code-review main` (Standards + Spec). Spec found no blockers. **Fixed** (`1d95eef`):
+    - The temp-dir allowance in item 8 also let through config files under the test's own directories. They are now kept out too.
+    - `guard_decision` treated an explicit `allow` as a failure. Now Read/Glob/Grep only have to be not denied.
+    - The guard lookup expected exactly one hook. It now asks every matching hook and reports a missing hook as an AssertionError.
+    - `content_files` relied on `pathspec`, a transitive dependency we don't declare, and on the root `.gitignore`. It now uses a fixed ignore list; the snapshot hash did not change.
+  - **Not fixed, with reasons:**
+    - `guard_decision` repeats `tests/test_task_file.py`. Sharing it would mean editing a file outside the Authority.
+    - The re-record rule appears in two docstrings. Both are the places that rule is meant to be written.
+    - `normalized_snapshot` also runs an assertion. It needs the server args before they are collapsed.
+    - The item 7 check is conditional. That is how item 7 is worded, and the turn case of `test_every_web_run…` (`TICKET_143`) pins contract item 4.
+    - The `TICKET_144`/`FORM` definitions are repeated per file, following the one-mark-per-file pattern.
+  - Fix rounds: 1 (Codex) + 1 (eng:code-review).
+
+  ### Contracts 1–7 (changes this round only; the rest as in the last reply)
+
+  | Item | Change | Where |
+  |---|---|---|
+  | 3 (prompts) | `docs` stays outside the workspace: not under `--workspace`; the system prompt names its path; the file-tool guard lets reads in and denies writes. Docker read-only mounting and small files going into the prompt are left to 148's own tests | `test_config_prompts.py` |
+  | 5 (web) | `POST /api/runs` takes no `config`; how a stray one is handled is not pinned; no test sends one | `test_config_wiring.py`, `test_web_api.py` |
+  | 6 (`config` event) | The expected `file_hashes` set leaves out caches and editor files | `test_config_event.py` |
+  | Snapshot | `skill_version` is recorded as directory plus content hash (manifest and caches left out); the server's `--config` values are checked by `assert_server_configs` | `product_config_support.py` |
+
+  ### Spec readings
+  1. Interpretation 1 now has an extra side assertion (item 8).
+  2. Items 2 and 3 are unchanged.
+
+  ### File-by-file changes, this round's additions (the rest of the 24-file table as in the last reply)
+
+  | File | Before → after | Assertions | Marks (PASSED→XFAIL) |
+  |---|---|---|---|
+  | `test_web_api.py` | `submit()` sends no `config`; docstring updated | unchanged | `TICKET_144` added to 5: `test_a_run_gets_the_variable_name_never_the_connection_string`, `test_a_live_stream_resumes_from_last_event_id`, `test_an_unknown_data_source_is_refused`, `test_a_second_run_is_refused_while_one_is_going`, `test_cancel_stops_only_the_run_this_server_started` |
+  | `test_chat_api.py` | `FORM` has no `config`; `TICKET_144` defined | unchanged | `TICKET_144` added to 2: `test_one_run_at_a_time_across_conversations_and_the_run_form`, `test_single_runs_list_as_one_turn_conversations_without_follow_up` |
+  | `test_mcp_web.py` | `FORM` has no `config`; `TICKET_144` defined; route marks set per case; asserts added for items 6 and 7 | item 6/7 asserts added | `test_without_a_config…[form]` gets `TICKET_144` (1). `test_every_web_run…`: `[form]` changes from 143 to 144, `[turn]` stays 143 |
+
+  PASSED→XFAIL this round: 8, all `TICKET_144`. Running total: 143 → 98, 144 → 10, 146 → 7.
+
+  ### For the main session
+  1. Run the container check on the server: `python:3.12-slim` with the checkout mounted at `/work` (`runs/141/linux-pytest.sh <export dir>`), snapshot and isolation guards. This is item 1's pass condition.
+  2. 144 now has 8 more `TICKET_144` marks to remove, in `test_web_api.py`, `test_chat_api.py` and `test_mcp_web.py`. Its Authority already names this ("141 改写过的已有文件"); the list is above.
+  3. The rule that no commit changing `skills/` merges before 146 is written only in the test docstrings and in `decisions.md`. If it should also appear in HANDOFF or plan, the main session adds it.
+- 2026-11-27（主会话）：第 1 轮修复的核查：CI 绿（2 pass，`1d95eef`）；Codex GitHub app 在当前 head 无意见；服务器 `python:3.12-slim` 容器、导出挂在 `/work`：14 passed、0 failed（第 1 条的通过条件达成）；上下文干净的 Opus 子 agent 复核契约：9 条退回原因都已在代码里修好，1 个阻塞项。
+- 2026-11-27（主会话）：**退回（第 2 轮）：原因如下，在原分支 `worktree-141-config-acceptance-tests` 上接着修**。
+  1. **阻塞：spec"产品默认……Skill 工具开"没有真正的断言**。`test_config_skills.py:132-170` 的默认查数、dbt、对话三条测试只查 `options.skills`；142 实测 CLI 以 `--tools` 为准，只设 `skills` 时会话里没有 Skill 工具（`docs/research/2026-11-27-skill-tool-spike.md:21`）。三条测试（都已标 `TICKET_147`）加 `assert "Skill" in (options.tools or [])`。评测快照里的 `tools` 不含 `Skill`，已覆盖 `[skills].tool = false` 一侧，不用改。
+  2. **`normalize_text` 会连锁替换**（`product_config_support.py:489-501`）：前看界不排除 `>`，仓库在 `/work`、临时目录 `/tmp` 时 `/work/tmp/x` 变成 `<repo><tempdir>/x`。改成一次替换（或把 `>` 加进前看界的字符类），配一个直接调用的检查。
+  3. **过时的 docstring**：`test_mcp_web.py:14-15` 还说"运行表单的 `config` 字段保持原样"，`FORM` 已没有这个字段。合入后这个文件不再改，现在修。
+  4. `test_config_skills.py:9-11` 的 docstring 还写"until ticket 142 settles them"，142 已 done，顺手改掉。
+  - 不在本工单改（主会话已处理）：143 加"`policy.disabled_models` 不在加载时拒绝"；146 加数据服务器 `--config` 形状的约束；147 加"先验证插件根目录是 `skills/`"和"Skill 工具进 `tools`"；148 的 `docs` 旧写法；158 的 `config show --workspace` 旗标冲突（派 158 前由人定）。插件路径钉在 `skills/` 本身照 spec 原文保留，可行性由 147 先验证。
+  - 修复轮次另算：这是 PR 的第 2 轮退回（AGENTS.md 第 7 步每个 PR 最多退回 2 轮）。

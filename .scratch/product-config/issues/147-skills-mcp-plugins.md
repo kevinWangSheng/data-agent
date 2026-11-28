@@ -46,6 +46,9 @@ Branch: —
 - **并行工单**：148 改系统提示词的其他段、145 改模型设置、144 改上限，都在 `agent.py`；后合入的一方 rebase。
 - **沙箱里的 Skill**（人 2026-11-27 定，`decisions.md`"调研后定"第 1 条）：Docker 后端改成每次运行用 tar 流把 Skill 复制进沙箱，归新工单 cloud-deploy 163，不在本工单。本工单照原计划让使用者 Skill 目录在本机模式下能用，不另做容器内的方案。
 
+- **先验证插件根目录就是 `skills/`**（141 契约复核第 2 条）：`test_config_skills.py` 要求本地插件路径解析到 `skills/` 本身（Skill 在 `skills/<名字>/SKILL.md`，清单在 `skills/.claude-plugin/`）。142 只实测过 `<插件>/skills/<名字>/SKILL.md` 的布局。动手前先用打包的 CLI 确认这种布局能列出 Skill（清单里的 `skills` 路径字段）；不行就停下交回，不改测试。
+- **Skill 工具要进 `tools`**：142 实测 CLI 以 `--tools` 为准，只设 `skills` 时没有 Skill 工具；141 第 2 轮退回后验收测试会钉 `"Skill" in options.tools`。
+
 ## Acceptance
 
 - [ ] 开工前读了 142 的结论文档，最终回复写明照它的哪个方案做的。
@@ -92,3 +95,4 @@ Branch: —
 - 2026-11-27（主会话建票）：方向 1、3 和 Q3 的实现；照 142 的结论（`docs/research/2026-11-27-skill-tool-spike.md`，建票时还没有）。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：Skill 文本（含 dbt-workflow 第 2 步）不改，推到迁移第二步；插件清单不计入 `skill_version`，由本工单做；去掉"加清单或改 Skill 让快照失败"的停止条件。
 - 2026-11-27（主会话）：按调研后的决定补 Context：沙箱里 Skill 的复制方案归 cloud-deploy 163。
+- 2026-11-27（主会话）：按 141 退回第 1 轮后的契约复核补 Context：先验证插件根目录是 `skills/` 的布局；Skill 工具要进 `tools`。
