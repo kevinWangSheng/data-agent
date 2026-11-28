@@ -172,9 +172,9 @@ async def test_every_config_gets_the_same_turns_budget_and_mcp_server(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config: str
 ) -> None:
     options, _ = await run_scripted(monkeypatch, tmp_path, config)
-    # deepseek-flash: the SDK gets the backstop for the configured $1 (agent.sdk_budget_usd).
+    # deepseek-flash: the SDK gets the backstop for the configured $1 (agent.backstop_usd).
     assert options.max_turns == 50
-    assert options.max_budget_usd == agent.sdk_budget_usd(1.0, agent.DEFAULT_MODEL)
+    assert options.max_budget_usd == agent.backstop_usd(1.0, agent.PRICES[agent.DEFAULT_MODEL])
     args = options.mcp_servers[agent.MCP_SERVER]["args"]
     assert args[args.index("--config") + 1] == config
 

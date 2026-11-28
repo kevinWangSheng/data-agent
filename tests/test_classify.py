@@ -28,6 +28,7 @@ from test_agent_outcomes import TOOL_RESULT, call, result, run_with
 from test_dab import call_local, dab_server, local_dab, logged_calls, make_dab
 
 from data_agent import agent, classify
+from data_agent.config import load_effective_config
 from data_agent.gateway import DuckDBGateway
 from data_agent.mcp_server import build_server
 from data_agent.run_config import load_config
@@ -452,9 +453,11 @@ async def test_an_empty_result_classifies_nothing(
     assert fake.requests == []
 
 
-async def test_without_a_ledger_the_tool_calls_no_model(
+async def test_without_a_ledger_the_tool_classifies_and_its_cost_is_unknown(
     monkeypatch: pytest.MonkeyPatch, articles_db: Path, workspace: Path
 ) -> None:
+    """A run whose models have no price gives the server no ledger (decisions.md Q8): the tool
+    still calls the model, and its reply says the cost is unknown."""
     with serve(FakeModel(by_fixture)) as model:
         for name, value in model_env(model, None).items():
             monkeypatch.setenv(name, value)
@@ -462,9 +465,60 @@ async def test_without_a_ledger_the_tool_calls_no_model(
         outcome = await call_tool(
             product_server(articles_db, workspace), "classify_text", classify_args()
         )
+    text = text_of(outcome)
+    assert not outcome.is_error, text
+    assert model.requests
+    assert f"{len(fixture_rows())} labeled with a category" in text
+    assert "the cost is unknown: the model has no price" in text
+    assert "Run spend so far" not in text
+
+
+async def test_a_ledger_without_the_runs_state_calls_no_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    """A priced run's ledger it has not written to yet: the calls could not be counted."""
+    empty = tmp_path / "spend"
+    empty.mkdir()
+    with serve(FakeModel(by_fixture)) as model:
+        for name, value in model_env(model, None).items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setenv(LEDGER_ENV, str(empty))
+        outcome = await call_tool(
+            product_server(articles_db, workspace), "classify_text", classify_args()
+        )
     assert outcome.is_error
-    assert "no spend ledger" in text_of(outcome)
+    assert "spend ledger has no state" in text_of(outcome)
     assert model.requests == []
+
+
+async def test_the_classify_role_is_the_model_the_tool_calls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, articles_db: Path, workspace: Path
+) -> None:
+    """`[roles].classify` names a model with its own endpoint and key: the run gives the server
+    those (`ModelSettings.tool_env`), and the tool's calls go there, for that model."""
+    monkeypatch.setenv("DATA_AGENT_TEST_CLASSIFY_KEY", "classify-" + "Zq81")
+    with serve(FakeModel(by_fixture)) as model:
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[models.acme-label]\n"
+            f'base_url = "{model.url}"\n'
+            'api_key = "${DATA_AGENT_TEST_CLASSIFY_KEY}"\n\n'
+            '[roles]\nclassify = "acme-label"\n'
+        )
+        config = load_effective_config([path], os.environ, {})
+        settings = agent.ModelSettings.from_config(config, {"DATA_AGENT_API_KEY": API_KEY})
+        assert settings.model == MODEL
+        for name, value in settings.tool_env().items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.delenv(LEDGER_ENV, raising=False)
+        outcome = await call_tool(
+            product_server(articles_db, workspace), "classify_text", classify_args()
+        )
+    assert not outcome.is_error, text_of(outcome)
+    assert model.requests
+    assert {request["body"]["model"] for request in model.requests} == {"acme-label"}
+    headers = [{k.lower(): v for k, v in r["headers"].items()} for r in model.requests]
+    assert {h.get("authorization") for h in headers} == {"Bearer classify-" + "Zq81"}
 
 
 SWITCHES = list(itertools.product([False, True], repeat=3))

@@ -115,14 +115,17 @@ async def test_cost_is_priced_from_tokens_at_the_models_upper_list_price(
     assert events[-1]["cost_basis"] == "price_table"
 
 
-async def test_cost_of_a_model_without_a_price_is_the_sdk_figure(
+async def test_cost_of_a_model_without_a_price_is_unknown(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """decisions.md Q8: the SDK's figure (Claude rates) is kept, but it is not the cost."""
     final = result(usage=MILLION_TOKENS, total_cost_usd=9.9)
     env = ENV | {"DATA_AGENT_MODEL": "some-unpriced-model"}
     _, events = await run_with(monkeypatch, tmp_path, scripted(final), env)
-    assert (events[-1]["cost_usd"], events[-1]["sdk_cost_usd"]) == (9.9, 9.9)
-    assert events[-1]["cost_basis"] == "sdk"
+    assert (events[-1]["cost_usd"], events[-1]["sdk_cost_usd"]) == (None, 9.9)
+    assert events[-1]["cost_basis"] == "unknown"
+    warned = [event for event in events if event["type"] == "warning"]
+    assert [event["model"] for event in warned] == ["some-unpriced-model"]
 
 
 async def test_turn_limit_is_an_unfinished_agent_with_its_errors_kept(
@@ -634,12 +637,12 @@ async def test_transcript_failure_falls_back_to_the_sdks_model_usage(
 async def test_unpriced_model_is_not_stopped_by_the_price_table(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Without a price, the SDK's own cap (set to the configured value) is the only one."""
+    """Without a price there is no cap at all (decisions.md Q8)."""
     fake = capped_script(*call("m1", 5_000_000), TOOL_RESULT, *call("m2", 5_000_000), result())
     env = ENV | {"DATA_AGENT_MODEL": "some-unpriced-model"}
     outcome, events = await run_with(monkeypatch, tmp_path, fake, env)
     assert outcome.finished
-    assert events[-1]["cost_basis"] == "sdk"
+    assert events[-1]["cost_basis"] == "unknown"
 
 
 async def sdk_cap(
@@ -670,10 +673,11 @@ async def test_sdk_cap_of_a_priced_model_is_a_backstop_scaled_to_claude_rates(
     assert pro == pytest.approx(2.0 * 25 / 3.96)
 
 
-async def test_sdk_cap_of_an_unpriced_model_is_the_configured_cap(
+async def test_an_unpriced_model_passes_the_sdk_no_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    assert await sdk_cap(monkeypatch, tmp_path, "some-unpriced-model", 1.0) == 1.0
+    """decisions.md Q8: the SDK would price it at its fallback rates, about 30 times ours."""
+    assert await sdk_cap(monkeypatch, tmp_path, "some-unpriced-model", 1.0) is None
 
 
 async def test_closing_the_query_ends_the_sdk_session_before_it_returns(

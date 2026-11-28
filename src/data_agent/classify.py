@@ -2,10 +2,12 @@
 sent to the run's own model. Both tool servers (`mcp_server`, `evals.dab_server`) serve it from
 here; each fetches the rows through its read-only path and stores the label table its own way.
 
-The model and its endpoint are the run's (`ModelSettings.tool_env`, set for the server's process);
-every call's tokens go into the run's spend ledger (`tool_spend`), and no batch starts once the
-run's spend has reached its budget. Labels are facts: a label outside the categories, a row the
-reply left out, or a failed call is reported as such and gets no category.
+The model and its endpoint are the run's `classify` role's (`ModelSettings.tool_env`, set for the
+server's process); every call's tokens go into the run's spend ledger (`tool_spend`), and no batch
+starts once the run's spend has reached its budget. A run whose models have no price has no
+ledger and no budget (decisions.md Q8): the calls are made and their cost is unknown. Labels are
+facts: a label outside the categories, a row the reply left out, or a failed call is reported as
+such and gets no category.
 
 Ticket 106 (ideas from Stela's `semantic-analysis`: its unresolved outcome and `resume=`): with
 `allow_unresolved` the model may answer UNRESOLVED_MARK for a text it cannot place, and the row is
@@ -162,7 +164,7 @@ def anthropic_model(base_url: str, api_key: str, model: str) -> ModelCall:
 @dataclass(frozen=True)
 class Setup:
     model: ModelCall
-    ledger: Ledger
+    ledger: Ledger | None  # None: the run's models have no price, the spend is unknown
     secrets: list[str]  # masked out of every error the tool returns
 
 
@@ -176,22 +178,22 @@ def run_ledger(env: Mapping[str, str]) -> tuple[Ledger, RunState] | None:
 
 
 def setup_from_env(env: Mapping[str, str]) -> Setup:
-    """The run's model and spend ledger, from the variables the run gives the server. A server not
-    started by a run (or a run whose model has no price, so no budget the tool could keep to)
-    has no ledger, and the tool refuses to call a model."""
+    """The run's model and spend ledger, from the variables the run gives the server. Without
+    a ledger (a run whose models have no price, or a server not started by a run) there is no
+    budget to keep to and the spend is unknown. A ledger the run has not written its state to
+    yet would leave a priced run's calls uncounted: the tool refuses to call a model."""
     found = run_ledger(env)
-    if found is None:
+    if env.get(LEDGER_ENV) and found is None:
         raise ToolError(
-            f"{TOOL} is unavailable: this tool server has no spend ledger from a data-agent run "
-            "(the run's model needs a price in the price table), so its model calls could not "
-            "count toward the run's budget"
+            f"{TOOL} is unavailable: the run's spend ledger has no state yet, so its model "
+            "calls could not count toward the run's budget"
         )
     try:
         settings = ModelSettings.from_env(env)
     except ConfigError as exc:
         raise ToolError(f"{TOOL} is unavailable: {exc} for the tool server") from exc
     model = anthropic_model(settings.base_url, settings.api_key, settings.model)
-    return Setup(model, found[0], known_secrets(env))
+    return Setup(model, None if found is None else found[0], known_secrets(env))
 
 
 def description(source: str, stored: str, resumed: str, env: Mapping[str, str]) -> str:
@@ -378,7 +380,7 @@ class Classification:
     budget_usd: float | None  # the budget, when it stopped the classification
     calls: int
     tokens: ToolTokens
-    cost_usd: float
+    cost_usd: float | None  # None: the run's models have no price
     run_spent_usd: float | None  # the run's spend after the last batch, every tool call's included
     run_budget_usd: float | None
     unresolved_allowed: bool = False
@@ -403,7 +405,8 @@ def run_batch(
         error = mask(f"{type(exc).__name__}: {exc}", setup.secrets)
         failed = Outcome(None, FAILED, None)
         return BatchResult({index: failed for index, _ in batch}, error=error)
-    setup.ledger.record(TOOL, reply.tokens)
+    if setup.ledger is not None:
+        setup.ledger.record(TOOL, reply.tokens)
     try:
         labels = parse_labels(reply.text)
     except ValueError as exc:
@@ -431,9 +434,11 @@ def run_batch(
     return BatchResult(outcomes, reply.tokens)
 
 
-def over_budget(ledger: Ledger, reserved: float) -> tuple[bool, float | None]:
+def over_budget(ledger: Ledger | None, reserved: float) -> tuple[bool, float | None]:
     """Whether the run's spend so far plus `reserved` (for the calls still running) has reached
-    its budget; and the budget."""
+    its budget; and the budget. Without a ledger there is no budget."""
+    if ledger is None:
+        return False, None
     state = ledger.run_state()
     if state is None:
         return True, None
@@ -536,7 +541,7 @@ def classify(
     errors: list[str] = []
     budget: float | None = None
     stopped = False
-    state = setup.ledger.run_state()
+    state = None if setup.ledger is None else setup.ledger.run_state()
     per_call: float | None = None  # the costliest call so far
     with ThreadPoolExecutor(MAX_CONCURRENT_BATCHES) as pool:
         running: set[Future[BatchResult]] = set()
@@ -590,7 +595,7 @@ def classify(
             if outcome == OUTSIDE and model_label is not None:
                 outside[model_label] += 1
     total = ToolTokens(*tokens)
-    after = setup.ledger.run_state()
+    after = None if setup.ledger is None else setup.ledger.run_state()
     return Classification(
         columns=columns,
         rows=rows,
@@ -604,8 +609,8 @@ def classify(
         budget_usd=budget if stopped else None,  # not_run or not_retried rows left
         calls=calls,
         tokens=total,
-        cost_usd=state.priced_usd(total) if state else 0.0,
-        run_spent_usd=setup.ledger.spent_usd(after) if after else None,
+        cost_usd=state.priced_usd(total) if state else None,
+        run_spent_usd=setup.ledger.spent_usd(after) if setup.ledger and after else None,
         run_budget_usd=after.budget_usd if after else None,
         unresolved_allowed=allow_unresolved,
         resume=resume,
@@ -656,9 +661,14 @@ def report(c: Classification, stored: str) -> str:
         f"`{OUTCOME}` is one of {LABELED}, {', '.join(notes)}."
     )
     t = c.tokens
+    cost = (
+        "the cost is unknown: the model has no price"
+        if c.cost_usd is None
+        else f"${c.cost_usd:.4f}, counted in the run's spend"
+    )
     lines.append(
         f"Model calls: {c.calls} ({t.uncached} input, {t.cached} cached input, {t.output} output "
-        f"tokens; ${c.cost_usd:.4f}, counted in the run's spend)."
+        f"tokens; {cost})."
     )
     if c.run_spent_usd is not None:
         lines.append(

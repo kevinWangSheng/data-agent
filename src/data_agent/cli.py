@@ -21,6 +21,7 @@ from data_agent.agent import (
     EFFORTS,
     ConfigError,
     ConversationTurn,
+    ModelSettings,
     Outcome,
     Task,
     run,
@@ -427,11 +428,12 @@ def main(argv: list[str] | None = None) -> None:
         help="give the agent WebSearch and WebFetch, and the docker sandbox the network "
         "(never on an evaluation run)",
     )
-    # Run-level too (ticket 104): unset, the CLI's own default holds (`agent.EFFORTS`).
+    # Run-level too (ticket 104): unset, the CLI's own default holds. A value of the main model's
+    # `efforts` (`model_settings`), any value for a model without them.
     run_cmd.add_argument(
         "--effort",
-        choices=EFFORTS,
-        help="the model's reasoning effort (default: the Claude Code CLI's)",
+        help="the model's reasoning effort, one of its [models.<name>].efforts (the default "
+        f"models take {', '.join(EFFORTS)}; default: the Claude Code CLI's)",
     )
     # Run-level too (ticket 112): the export happens only with the three Langfuse variables set;
     # this picks what it carries. The evaluation entries pass it by the task's split.
@@ -582,6 +584,7 @@ def main(argv: list[str] | None = None) -> None:
         ).run("stdio")
         return
 
+    models = model_settings(run_cmd, effective, args.effort)
     if args.agent_timeout_sec is not None and not args.agent_timeout_sec > 0:
         run_cmd.error(f"--agent-timeout-sec must be positive, got {args.agent_timeout_sec}")
     if not args.workspace.is_dir():
@@ -612,7 +615,7 @@ def main(argv: list[str] | None = None) -> None:
         if effective is not None and scratch is not None:
             external = config_mcp(run_cmd, effective, scratch)
             config = server_config(config, effective, scratch)
-        outcome = run_task(run_cmd, args, task, config, started, turn, external)
+        outcome = run_task(run_cmd, args, task, config, started, turn, external, models)
     finally:
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -625,12 +628,40 @@ def main(argv: list[str] | None = None) -> None:
     sys.exit(EXIT_OK if outcome.finished else EXIT_UNFINISHED)
 
 
+def model_settings(
+    parser: argparse.ArgumentParser, config: EffectiveConfig | None, effort: str | None
+) -> ModelSettings:
+    """The run's models: the effective config's, or without one (an old run config's name) the
+    code defaults' and the environment's. Exit 2 when the main model's `efforts` do not take
+    `--effort` or `[limits].effort`, before any session starts. A missing key is the run's to
+    refuse (`agent.run`), after the arguments are checked."""
+    try:
+        models = (
+            ModelSettings.from_env(os.environ, require_key=False)
+            if config is None
+            else ModelSettings.from_config(config, os.environ, require_key=False)
+        )
+    except ConfigError as exc:
+        parser.error(str(exc))
+    if effort is not None and (error := models.effort_error(effort)):
+        parser.error(f"--effort: {error}")
+    configured = None if config is None else config.value("limits.effort")
+    error = None if configured is None else models.effort_error(str(configured))
+    if config is not None and error:
+        parser.error(f"{config.source('limits.effort')}: limits.effort: {error}")
+    return models
+
+
 def show_config(config: EffectiveConfig) -> None:
     """`data-agent config show`: `<key> = <value as TOML>  # <source>` per key, every `${VAR}`
-    reference as written."""
+    reference as written; a file's value the environment overrides follows the source."""
     for key in in_section_order(config.raw):
         dotted = ".".join(toml_key(part) for part in parts_of(key))
-        print(f"{dotted} = {toml_value(config.raw[key])}  # {config.source(key)}")
+        note = ""
+        if key in config.overridden:
+            written, file = config.overridden[key]
+            note = f" (overrides {toml_value(written)} from {file})"
+        print(f"{dotted} = {toml_value(config.raw[key])}  # {config.source(key)}{note}")
 
 
 def run_task(
@@ -641,6 +672,7 @@ def run_task(
     started: float,
     turn: ConversationTurn | None,
     external: ExternalServers | None,
+    models: ModelSettings,
 ) -> Outcome:
     try:
         deadline = None if args.agent_timeout_sec is None else started + args.agent_timeout_sec
@@ -663,6 +695,7 @@ def run_task(
                 trace_tier=args.trace_tier,
                 external_mcp=external,
                 charts=args.charts,
+                models=models,
             )
         )
     except ConfigError as exc:

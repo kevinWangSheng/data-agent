@@ -144,7 +144,8 @@ MODEL = Table(
     {
         "base_url": Leaf("str"),
         "api_key": Leaf("str"),
-        # Per million tokens (spec Q2); left out, the spend is unknown (ticket 145).
+        # Per million tokens (spec Q2): all three or none; none, the spend is unknown
+        # (`agent.ModelSettings`, ticket 145).
         "input_price": Leaf("number"),
         "cache_read_price": Leaf("number"),
         "output_price": Leaf("number"),
@@ -153,23 +154,30 @@ MODEL = Table(
         "efforts": Leaf("list[str]"),
     }
 )
-# Today's prices (`agent.PRICES`, `agent.DEFAULT_BASE_URL`; tests/test_config.py keeps them
-# equal) as the code defaults' `[models.*]` (spec Q2).
+# The code defaults' `[models.*]` (spec Q2), which `agent.PRICES` is built from. Prices: ADR-0001
+# Update (official pages, 2026-10-05), upper end of each range so spend is never understated.
+# DeepSeek bills cache writes as plain input. deepseek-v4-pro has no published cache-read price
+# there, so cache reads are charged at its input price. Efforts: the values DeepSeek's Anthropic
+# format takes as `output_config.effort` (`agent.EFFORTS`; tests/test_config.py keeps them equal).
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
+DEEPSEEK_EFFORTS = ["low", "high", "max"]
 DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     "deepseek-flash": {
         "base_url": DEFAULT_BASE_URL,
         "input_price": 0.30,
         "cache_read_price": 0.006,
         "output_price": 1.2,
+        "efforts": DEEPSEEK_EFFORTS,
     },
     "deepseek-v4-pro": {
         "base_url": DEFAULT_BASE_URL,
         "input_price": 1.32,
         "cache_read_price": 1.32,
         "output_price": 3.96,
+        "efforts": DEEPSEEK_EFFORTS,
     },
 }
+PRICE_KEYS = ("input_price", "cache_read_price", "output_price")
 SOURCE = Table(
     {
         "kind": Leaf("enum", choices=("duckdb", "postgres")),
@@ -234,7 +242,8 @@ SCHEMA = Table(
                     }
                 ),
                 "agent_timeout_sec": Leaf("number"),
-                # Not checked against `agent.EFFORTS` here: a model's `efforts` decides (145).
+                # Checked against the main model's `efforts` by `data-agent run`
+                # (`cli.model_settings`), not here.
                 "effort": Leaf("str"),
             }
         ),
@@ -312,7 +321,7 @@ def default_leaves() -> dict[str, Any]:
     walk(SCHEMA, ())
     for name, entry in DEFAULT_MODELS.items():
         for key, value in entry.items():
-            leaves[Key(("models", name, key))] = value
+            leaves[Key(("models", name, key))] = list(value) if isinstance(value, list) else value
     # In schema order: `[models.*]` after `[layers]`.
     return {key: leaves[key] for key in in_section_order(leaves)}
 
@@ -567,6 +576,9 @@ class EffectiveConfig:
     values: Mapping[str, Any] = field(default_factory=dict[str, Any], repr=False)
     sources: Mapping[str, str] = field(default_factory=dict[str, str])
     raw: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    # A file's value the environment replaced, as written, and the file: `roles.main` under
+    # `DATA_AGENT_MODEL` (decisions.md "145 实测后定" 4: the run warns, `config show` marks it).
+    overridden: Mapping[str, tuple[Any, str]] = field(default_factory=dict[str, tuple[Any, str]])
 
     def value(self, key: str) -> Any | None:
         """The key's effective value; for a table (`mcp.servers`, `sources.shop`) its keys as
@@ -679,7 +691,10 @@ def load_effective_config(
                 policy[key] = (value, path)
             raw[key], sources[key] = value, str(path)
     env_origin = Origin("environment")
+    overridden: dict[str, tuple[Any, str]] = {}
     if environ.get(MODEL_ENV):
+        if sources["roles.main"] != DEFAULT_SOURCE and raw["roles.main"] != environ[MODEL_ENV]:
+            overridden["roles.main"] = (raw["roles.main"], sources["roles.main"])
         raw["roles.main"] = leaf_value(
             Leaf("str"), "roles.main", environ[MODEL_ENV], env_origin, {}
         )
@@ -710,6 +725,8 @@ def load_effective_config(
         raw[key], sources[key] = value, CLI
     for key, (value, _, _) in locked.items():
         raw[key], sources[key] = value, POLICY
+    # Only what the environment's value still holds: a command-line override replaced both.
+    overridden = {key: was for key, was in overridden.items() if sources[key] == f"env:{MODEL_ENV}"}
     values = {key: expand(key, value, environ) for key, value in raw.items()}
     text = toml_text(raw)
     return EffectiveConfig(
@@ -719,6 +736,7 @@ def load_effective_config(
         values=values,
         sources=sources,
         raw=raw,
+        overridden=overridden,
     )
 
 
