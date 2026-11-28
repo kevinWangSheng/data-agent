@@ -48,6 +48,7 @@ Branch: —
 - **类型**：pydantic（仓库已用，`web/app.py:23`）或 dataclass 加校验，未知键报错。
 - **用到 `--config <消融名>` 的地方**（本工单之后它们都要换）：`mcp-server --config`（`cli.py:244`，由 `build_options` 拼进 MCP server 参数，`agent.py:1621`）；评测入口（`harbor_agent.py:393`、`:421`，`jaffle.py:360`，`dab.py:814`，`ablate.py:511`，`board.py:178`；146 改）；网页（`launcher.py:166-167`、`conversations.py:138`）。过渡办法（Q8）：本工单让 `--config` 同时接受路径和旧消融名（名字照旧从 `src/data_agent/configs/` 读），评测入口不用改；146 改完评测入口后删掉旧名。
 - **并行工单**：144、145、147、148 都改 `cli.py`、`agent.py`，后合入的一方 rebase。
+- **`policy.disabled_models` 不在加载时拒绝**（141 契约复核第 6 条）：`test_config_wiring.py` 里这条 policy 测试标 `TICKET_144`；本工单的加载器在读文件时就拒绝会让它提前 XPASS。加载器只记下锁定和禁用集合，拒绝发生在 144 接线的地方。
 - **`--dbt-target`、`--network` 不接进 `cli_overrides`**（141 合并前审查第 10 条）：这两个的接线归 144。本工单接了会让 `test_config_wiring.py` 里标 `TICKET_144` 的 policy 测试提前 XPASS，而本工单删不掉 144 的标记。
 
 ## Acceptance
@@ -90,3 +91,4 @@ Branch: —
 - 2026-11-27（主会话建票）：配置层的第一张实现工单，144–148 都建在它上面。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：`--config` 可重复、过渡期接受旧名（`run`、`mcp-server`）、层键 `skill`、保留变量名写法、产品 `version.config`；去掉"已有验收测试""评测入口还传消融名"两条停止条件（141 改写已有验收测试，过渡期接受旧名）。
 - 2026-11-27（主会话）：按 141 合并前审查补 Context：`--dbt-target`、`--network` 不接进 `cli_overrides`（归 144）。
+- 2026-11-27（主会话）：按 141 退回第 1 轮后的契约复核补 Context：`policy.disabled_models` 不在加载时拒绝（否则 144 的标记提前 XPASS）。

@@ -1,6 +1,6 @@
 # 141 — 产品配置：验收测试（配置加载、运行参数快照、产品默认、评测隔离、`config` 事件）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md（"Testing Decisions"的"验收测试接缝"）
 Claimed by: claude (opus-5.5, worktree 141-config-acceptance-tests)
@@ -391,3 +391,11 @@ spec "验收测试接缝"的五组行为都有验收测试，写在约定的接�
   1. Run the container check on the server: `python:3.12-slim` with the checkout mounted at `/work` (`runs/141/linux-pytest.sh <export dir>`), snapshot and isolation guards. This is item 1's pass condition.
   2. 144 now has 8 more `TICKET_144` marks to remove, in `test_web_api.py`, `test_chat_api.py` and `test_mcp_web.py`. Its Authority already names this ("141 改写过的已有文件"); the list is above.
   3. The rule that no commit changing `skills/` merges before 146 is written only in the test docstrings and in `decisions.md`. If it should also appear in HANDOFF or plan, the main session adds it.
+- 2026-11-27（主会话）：第 1 轮修复的核查：CI 绿（2 pass，`1d95eef`）；Codex GitHub app 在当前 head 无意见；服务器 `python:3.12-slim` 容器、导出挂在 `/work`：14 passed、0 failed（第 1 条的通过条件达成）；上下文干净的 Opus 子 agent 复核契约：9 条退回原因都已在代码里修好，1 个阻塞项。
+- 2026-11-27（主会话）：**退回（第 2 轮）：原因如下，在原分支 `worktree-141-config-acceptance-tests` 上接着修**。
+  1. **阻塞：spec"产品默认……Skill 工具开"没有真正的断言**。`test_config_skills.py:132-170` 的默认查数、dbt、对话三条测试只查 `options.skills`；142 实测 CLI 以 `--tools` 为准，只设 `skills` 时会话里没有 Skill 工具（`docs/research/2026-11-27-skill-tool-spike.md:21`）。三条测试（都已标 `TICKET_147`）加 `assert "Skill" in (options.tools or [])`。评测快照里的 `tools` 不含 `Skill`，已覆盖 `[skills].tool = false` 一侧，不用改。
+  2. **`normalize_text` 会连锁替换**（`product_config_support.py:489-501`）：前看界不排除 `>`，仓库在 `/work`、临时目录 `/tmp` 时 `/work/tmp/x` 变成 `<repo><tempdir>/x`。改成一次替换（或把 `>` 加进前看界的字符类），配一个直接调用的检查。
+  3. **过时的 docstring**：`test_mcp_web.py:14-15` 还说"运行表单的 `config` 字段保持原样"，`FORM` 已没有这个字段。合入后这个文件不再改，现在修。
+  4. `test_config_skills.py:9-11` 的 docstring 还写"until ticket 142 settles them"，142 已 done，顺手改掉。
+  - 不在本工单改（主会话已处理）：143 加"`policy.disabled_models` 不在加载时拒绝"；146 加数据服务器 `--config` 形状的约束；147 加"先验证插件根目录是 `skills/`"和"Skill 工具进 `tools`"；148 的 `docs` 旧写法；158 的 `config show --workspace` 旗标冲突（派 158 前由人定）。插件路径钉在 `skills/` 本身照 spec 原文保留，可行性由 147 先验证。
+  - 修复轮次另算：这是 PR 的第 2 轮退回（AGENTS.md 第 7 步每个 PR 最多退回 2 轮）。

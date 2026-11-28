@@ -8,7 +8,7 @@ Branch: —
 
 ## Goal
 
-产品提示词不再带评测的东西，使用者能放自己的业务上下文：`[prompts]` 可覆盖提示词片段，至少 `answer_rule`；产品默认用产品版答题规则（允许表格、可以写假设）；所有评测配置文件（DAB、LiveSQLBench、jaffle 用的）保留现在的答题规则（`decisions.md` Q8）。`DB_TYPE` 那句只写进 `evals/profiles/data-eng-bench.toml`。任务文件提示产品运行总是加，评测配置文件照现在的条件（只在验证器开时）。`[instructions].files` 的内容进系统提示词；`[sources.<名字>].description` 进提示词，`docs` 目录复制或只读挂进工作区。141 的快照守门组（评测运行参数）照旧逐项相同；`TICKET_148` 验收测试全部转绿（只删标记）。
+产品提示词不再带评测的东西，使用者能放自己的业务上下文：`[prompts]` 可覆盖提示词片段，至少 `answer_rule`；产品默认用产品版答题规则（允许表格、可以写假设）；所有评测配置文件（DAB、LiveSQLBench、jaffle 用的）保留现在的答题规则（`decisions.md` Q8）。`DB_TYPE` 那句只写进 `evals/profiles/data-eng-bench.toml`。任务文件提示产品运行总是加，评测配置文件照现在的条件（只在验证器开时）。`[instructions].files` 的内容进系统提示词；`[sources.<名字>].description` 进提示词，`docs` 留在工作区外、agent 只读（见 Context"`docs` 放哪"）。141 的快照守门组（评测运行参数）照旧逐项相同；`TICKET_148` 验收测试全部转绿（只删标记）。
 
 ## Authority
 
@@ -39,7 +39,7 @@ Branch: —
   - 5.2 查数运行的工作区是空目录（`launcher.py:411-413`）；数据源条目没有文档目录或描述字段（`web/sources.py:33` `KEYS`）。
 - **ADR-0005 与 `[prompts]`**：`decisions.md` Q2 定评测配置文件的 `[prompts]` 写榜单官方答题格式不算违反 ADR-0005（复现官方提示、不在 Skill 里、产品默认不受影响）。
 - **评测不变**：141 的快照守门组含任务提示词全文。LiveSQLBench 和 jaffle 的查数题今天也经 `QUERY_PROMPT` 拿到 `ANSWER_RULE`；Q8 定所有评测配置文件都保留现在的答题规则，只有产品用新版。
-- **`docs` 的做法**：spec 写"复制或只读挂进工作区"，两种由本工单选、写明理由。挂进 Docker 沙箱时注意 `check_databases_outside`/`check_no_credentials`（`agent.py:2100-2121`）和工作区守卫（`workspace_guard`）对新文件的处理。
+- **`docs` 挂进 Docker 沙箱**：只读挂载时注意 `check_databases_outside`/`check_no_credentials`（`agent.py:2100-2121`）和工作区守卫（`workspace_guard`）对新文件的处理。
 - **并行工单**：147 改 `system_prompt` 的 Skill 段、145 改模型设置、144 改上限，都在 `agent.py`；后合入的一方 rebase。
 - **`docs` 放哪**（人 2026-11-27 定，`decisions.md`"调研后定"第 3 条，取证 `docs/research/2026-11-27-context-docs-and-snapshot-guards.md`）：`docs` 留在工作区外，不复制进工作区（CLI 的 `--workspace` 是使用者自己的目录）。agent 只读：系统提示词写出每个数据源的 `docs` 路径；`workspace_guard` 放行读、拒绝写；Docker 沙箱只读挂载；小文件可直接进提示词。CLI 和网页运行一样做。141 退回后会按这个改 `test_config_prompts.py` 的那条测试。
 
@@ -82,3 +82,4 @@ Branch: —
 - 2026-11-27（主会话建票）：审计第 2.3–2.5、5.1、5.2 节。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：所有评测配置文件（含 LiveSQLBench、jaffle）保留现在的答题规则；去掉对应的停止条件。
 - 2026-11-27（主会话）：按调研后的决定改 Authority 和 Context：`docs` 留在工作区外只读，Authority 加 `workspace_guard.py`、`sandbox.py`，去掉 `prepare_workspace` 复制。
+- 2026-11-27（主会话）：按 141 退回第 1 轮后的契约复核补 Context：Goal 和 Context 里"复制或只读挂进工作区"的旧写法改成"调研后定"第 3 条（留在工作区外、只读）。
