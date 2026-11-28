@@ -1,6 +1,6 @@
 # 143 — 配置加载：分层合并、`${VAR}`、未知键、明文密钥、`config show`、`--config` 路径、三个旧参数并入
 
-Status: in-review
+Status: in-progress
 Blocked by: 141
 Spec: ../spec.md（"配置文件与分层（Q1）""分节（Q2）"）
 Claimed by: claude (opus-5-5) 2026-11-27
@@ -162,3 +162,5 @@ Branch: worktree-143-config-loader
      It passes if the answer is right, the `version` event has `config: "product"`, and there is a `sql` event. The `sql` event shows the data server started from the temp config file.
 - 2026-11-27（主会话）：`agent.py:1621` 一行超出 May-edit，接受：Context 点名了这里要改（`version.config` 改成文件名后数据服务器按名字找不到）；Spec 审查也判在意图内。README 里旧参数的说明转给 144（下面）。
 - 2026-11-28（主会话）：合并前真实运行（服务器，`322d38d`）：冒烟通过（答案 37 与 DuckDB 一致；`version.config = "product"`；`sql` 事件；`ps` 看到数据服务器 `--config /tmp/data-agent-config-*/product.toml`，文件里没有 `api_key`，运行后已删；$0.0032 ×2）。集成测试 31 个：30 passed，1 failed（`test_seam_a_run_cli.py::test_dbt_model_built_with_correct_values`，模型建在 `da_run_*` 临时 schema、测试查 `main`；140 改默认 `scratch` 时漏了这个测试的 `run_agent`，不是本工单的问题，开 164 修）。花费约 $0.16。
+- 2026-11-28（主会话）：PR #150 CI 绿；Codex GitHub app 1 条 P2，核实属实。**退回（第 1 轮）：原因如下，在原分支 `worktree-143-config-loader` 上接着修**。
+  1. **`subtree` 按扁平字符串前缀匹配**（`src/data_agent/config.py:604-618`）：数据源 `shop` 和 `shop.archive` 同时存在时，查 `sources.shop` 也会匹配 `sources.shop.archive.*`；它的键段是 `["sources", "shop.archive", ...]`，没有哪段前缀等于 `sources.shop`，`next()` 抛 `StopIteration`，`web` 和用配置文件的 `run` 都起不来。改成按键段（表边界）匹配，不靠扁平字符串前缀；配一个修复前会失败的单元测试（`shop` 与 `shop.archive` 两个数据源都能取到、互不混入），同类检查 `[mcp.servers.*]`、`[models.*]`、`[im.*]` 等用 `subtree` 的地方。
