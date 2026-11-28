@@ -1,6 +1,6 @@
 # 144 — 配置接到运行上：`[limits]`、`[sandbox]`、`[sources.*]` 新字段、`[policy]`、网页和 IM 的 effort/超时、产品默认 `full`、表单不列消融配置、值字典缓存
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 143
 Spec: ../spec.md（"分节（Q2）"的 `[limits]`、`[sandbox]`、`[sources.<名字>]`、`[policy]`；"产品默认与入口"）
 Claimed by: claude (opus 5.5, worktree 144-config-wiring) 2026-11-28
@@ -78,10 +78,10 @@ Branch: worktree-144-config-wiring
 
 ## Ledger
 
-- Attempts: 3（前两次因本机内存不足中断）
-- Review rounds: 2（round 1 修 Codex 的 4 条；round 2 修 eng:code-review 的 2 条，"不带名字的 `--duckdb` 按文件存"是 round 2 修复的补完，不算第 3 轮）
+- Attempts: 3（前两次因本机内存不足中断）；退回第 1 轮修复 1 次
+- Review rounds: 初版 2 轮；退回第 1 轮修复后 da-review 1 轮（2 条，都修）、eng:code-review 1 轮（修 4 条，余下写理由）
 - Model spend: $0
-- Outcome: 实现完成，待合并前审查
+- Outcome: 退回第 1 轮 1–4 条全修，待合并前审查
 - Human review minutes: —
 
 ## Comments
@@ -178,3 +178,42 @@ Branch: worktree-144-config-wiring
   3. **前端 should-fix**：服务器关了联网时复选框置 false 并禁用（`NewRun.tsx:29`、`:97`）没有测试：抽成纯函数或在选项已加载时渲染，配测试。
   4. 前端小问题（可顺手）：禁用的联网框旁写一句原因（如"本服务器已关闭"），去掉 `cursor-pointer`；`NewRun.test.ts:30` 的 `not.toContain('Config')` 太弱，删掉或改成匹配旧标签原文。
   - 合并 main 时注意：145（PR #154）删了 `sdk_budget_usd`，两边都改 `build_options` 的 `max_budget_usd=`，后合入的一方 rebase，改成 `backstop_usd(budget, spend.price)`。
+- 2026-11-28（工单 agent，opus 5.5，退回第 1 轮修复）：
+  先 merge origin/main（`cccba64`，无冲突）；145 还没合入，`backstop_usd` 的 rebase 留给后合入的一方。提交 `26cee27`、`ffe89ae`、`a12fa78`。
+
+  **退回各条**
+  1. 值字典缓存键加上数据源在配置里的库：`cli.dictionary_origins` 取 `[sources.<名字>].path` 解析后的原文件，经 `run(dictionary_origins=…)` 传到 `agent.cached_dictionary`。键里的 `database` 是它，没有时用 gateway 自己的 identity（文件；Postgres 用 URL 哈希）。
+     - 网页 dbt 运行用的是库文件副本，仍命中缓存：配置里的 `path` 是原文件（`web/sources.py:77`）。
+     - 两个项目都叫 `shop`、指向不同文件时各存一份。
+     - 修复前会失败的测试：`test_two_projects_sources_of_one_name_keep_their_own_dictionaries`（断言每个项目只拿到自己的取样值）和 `test_a_runs_dictionary_origin_is_its_sources_file_not_the_copy`。
+     - `test_a_copy_of_a_sources_file_reuses_its_dictionary` 改为传 `origin`。
+     - 删掉原 Comment 里的已知限制"同名同结构数据源共用一份"，`docs/setup.md` 同步改。
+  2. 摘要显示轮数上限：`max turns query 50, dbt 200, large 75`，值为 null 的那项不写；配测试。
+  3. 联网框抽成 `NetworkBox`，提交的值抽成纯函数 `askedNetwork`；服务器关了联网时，复选框不勾、禁用，请求不带联网。两处都配了测试。
+  4. 禁用时旁边写"(off on this server)"，去掉 `cursor-pointer`；`not.toContain('Config')` 改成匹配旧标签 `>Config<`。
+
+  **审查**
+  - `da-review main`：2 条 P2，都属实，都修了并配测试：
+    - 缓存的值字典含取样值，目录改为 0700、文件 0600（不管 umask）；
+    - 手动起的 `mcp-server --sandbox docker` 不读 `[sandbox].network`，现在 `--network` 或配置任一开就开；`[policy].network = false` 仍由加载器锁住。
+  - `eng:code-review main`：
+    - Spec 轴：
+      - 新的两项目测试不稳：整数列不进值字典，断言靠运气，5 次败 2 次。已改成文本列，并确认值进了 `entries`。
+      - 提交联网值的规则没测：已抽成 `askedNetwork` 并配测试。
+      - 带 `--data-source-name` 的 `--duckdb` 按那个数据源配置里的文件做键，不管实际给的是哪个文件：这是网页 dbt 副本要的行为，已写进 `docs/setup.md` 和 docstring。
+    - Standards 轴：
+      - 没有硬违规。
+      - 键格式 `duckdb:<路径>` 写了两处：已改为调用 `DuckDBGateway(...).identity()`，只留一处定义。
+      - 判断题没改，理由：
+        - cache/source/origin 三个参数一起传：现在只有 4 个函数签名，包成一个键对象是本工单不需要的重构。
+        - `Mapping | None = None`：沿用文件里 `source_limits` 的写法，保持一致。
+        - 起名字的 origin 只按名字查、limits 还按位置查：设计如此，bare `--duckdb` 按文件做键（docstring 写了）。
+        - `NetworkBox` 里又写了一次 `checked && !off`：组件自己保证禁用时不勾，单独渲染时也成立。
+        - 测试里函数内 import：沿用文件已有写法。
+        - 每次保存都 chmod 缓存目录：有意如此，docstring 写了。
+
+  **测试与检查**
+  - `make check` 退出 0（输出存在 `/tmp/144-check-final.txt`）：basedpyright 0 errors；pytest 3659 passed、37 xfailed；vitest 454 passed。
+  - `git diff main...HEAD -- tests/acceptance tests/fixtures`：43 行删除，2 行新增，就是上轮说明过的两行 `parametrize`。
+
+  **前端改动**（本轮）：`web/src/local/NewRun.tsx`、`web/src/local/NewRun.test.ts`。
