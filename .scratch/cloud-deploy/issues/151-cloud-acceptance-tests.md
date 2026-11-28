@@ -1,6 +1,6 @@
 # 151 — 云端部署：验收测试（启动检查、网页 bearer 令牌、联网与锁定、`/healthz`、git 来源）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: product-config 143
 Spec: ../spec.md（Testing Decisions"验收测试接缝"）；决定：`.scratch/product-config/decisions.md` Q7、Q8；`docs/adr/0012-settings-ui-and-platform-identity.md`；`.scratch/product-config/decisions.md`"建 settings 工单时主会话定的细节"第 1 条
 Claimed by: claude (opus-5-5) 2026-11-28
@@ -274,3 +274,10 @@ spec"验收测试接缝"的四组行为都有验收测试，写在约定的接�
     - **小问题，属于判断题：** `ask_turn` 与 `message` 相近；名字 `Git`、`pulled`、`run_`；`served` 正常返回时退出码是 `None`（`run_cli` 是 `0`）；`write_run` 的返回值没人用；两处 `config()` 重复；连续三元表达式；`server.created.state.conversations` 链式访问；`KeyError` 和 `AttributeError` 可能出现的两处。最后这两处出事时，在 `raises=AssertionError` 下会直接报 FAILED，不会藏成 XFAIL。第二轮 Standards 审查没有硬违规。
 
   **给主会话：** 自 merge-base `1535551` 以来，main 上碰 `src/` 或 `tests/acceptance/` 的提交只有 `8449231`，只改了 `test_seam_a_run_cli.py`，不影响这些 strict xfail。
+- 2026-11-28（主会话）：PR #152 CI 绿；Codex GitHub app 无意见；上下文干净的 Opus 子 agent 复核契约：2 个阻塞项（主会话已对照代码核实）。下游的注意点已写进 153、159、161。**退回（第 1 轮）：原因如下，在原分支 `worktree-151-cloud-acceptance-tests` 上接着修**。
+  1. **阻塞：PATH 上 git 的检查恒真**（`test_cloud_git_sources.py:263-267`）：夹具把包装脚本放上 PATH（`:145`），测试自己的 `stand_in.repo.commit("v3")` 也经过它，所以 `stand_in.argv()` 永远不空；直接调 `/usr/bin/git` 并把令牌放进参数的实现照样通过"令牌不在命令参数里"。改成断言日志里有 `clone` 或 `fetch` 行（或在 `repo.commit` 前记下日志长度，只看之后 GitSources 的调用）。
+  2. **阻塞：令牌测试没覆盖全部 `/api/*`**（`test_cloud_web_token.py:122-130`）：契约和 spec 说 cloud 下所有 `/api/*` 不带或带错令牌都 401，`REQUESTS` 漏了 `POST /api/runs/{id}/cancel`（`app.py:163`）、`GET /api/conversations/{id}`（`:176`，返回对话全文）、`POST /api/conversations`（`:183`）、`POST /api/conversations/{id}/cancel`（`:199`）。把这四个加进 `REQUESTS`；带对的令牌时只要求不是 401。
+  3. `test_cloud_git_sources.py:293` 普通路径守门写的是 0 字节的 `shop.duckdb`（不是合法 DuckDB 文件，`serve_web` 启动时会校验数据源，以后收紧就误报）：改用 `build_shop_duckdb` 或 `shop_source`。
+  4. `test_cloud_web_token.py:149-151`：错凭据循环之后加 `cloud.started == []`（401 时没起运行）。
+  5. `test_cloud_startup.py:108, 119, 130`：`assert_names(…, "backend", "local")` 会被任何含 "local" 的文字（如 localhost）满足，收紧成只认 `backend`（退出码 2、不起服务照旧）。
+  - 不在本工单改：local 表单联网守门（归 153 验收标准）；159 不能让 `public_url` 在没接 Slack 时必填；161 保持 `send(conversation, text)` 接缝。
