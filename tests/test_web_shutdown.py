@@ -140,7 +140,7 @@ class Server:
                 "web",
                 "--runs-dir",
                 str(runs_dir),
-                "--data-sources",
+                "--config",
                 str(sources),
                 "--port",
                 str(self.port),

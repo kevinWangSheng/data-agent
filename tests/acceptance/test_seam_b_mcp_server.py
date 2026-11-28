@@ -44,9 +44,6 @@ from seam_support import (
     duckdb_rows,
 )
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
 TICKET_146 = pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
@@ -57,7 +54,7 @@ TICKET_146 = pytest.mark.xfail(
 def by_config(name: str, *values: object) -> Any:
     """A case of a test parametrized by config, marked by the ticket its config file waits
     for."""
-    return pytest.param(name, *values, marks=TICKET_146 if name == EVAL_ONLY_LAYER else TICKET_143)
+    return pytest.param(name, *values, marks=TICKET_146 if name == EVAL_ONLY_LAYER else ())
 
 
 CONFIGS = [
@@ -205,7 +202,6 @@ async def test_verifier_tools_follow_config(config: str, layer_on: bool, shop_du
 # --- Read-only gateway ----------------------------------------------------------------------
 
 
-@TICKET_143
 async def test_select_executes(db_args: list[str]) -> None:
     async with mcp_server("--config", config_file("full"), *db_args) as session:
         result = await call(
@@ -225,7 +221,6 @@ DDL = [
 ]
 
 
-@TICKET_143
 async def test_ddl_blocked(db_args: list[str]) -> None:
     async with mcp_server("--config", config_file("full"), *db_args) as session:
         before = await orders_count(session)
@@ -251,7 +246,6 @@ DML = {
 }
 
 
-@TICKET_143
 async def test_dml_blocked(db_args: list[str], dialect: str) -> None:
     async with mcp_server("--config", config_file("full"), *db_args) as session:
         before = await orders_count(session)
@@ -278,7 +272,6 @@ DANGEROUS = {
 }
 
 
-@TICKET_143
 async def test_dangerous_functions_blocked(db_args: list[str], dialect: str) -> None:
     async with mcp_server("--config", config_file("full"), *db_args) as session:
         for sql in DANGEROUS[dialect]:
@@ -306,7 +299,6 @@ async def discover_web_events(session: Any) -> tuple[Any, str]:
     return result, matches[0]
 
 
-@TICKET_143
 async def test_discover_returns_refs_and_short_summaries(shop_duckdb: Path) -> None:
     async with mcp_server("--config", config_file("full"), "--duckdb", str(shop_duckdb)) as session:
         result, _ = await discover_web_events(session)
@@ -321,7 +313,6 @@ async def test_discover_returns_refs_and_short_summaries(shop_duckdb: Path) -> N
     assert not all(column in text for column in columns), "discover dumped the full schema"
 
 
-@TICKET_143
 async def test_hydrate_returns_full_object(shop_duckdb: Path) -> None:
     async with mcp_server("--config", config_file("full"), "--duckdb", str(shop_duckdb)) as session:
         _, ref = await discover_web_events(session)
@@ -332,7 +323,6 @@ async def test_hydrate_returns_full_object(shop_duckdb: Path) -> None:
     assert not missing, f"hydrate left out columns: {missing}"
 
 
-@TICKET_143
 async def test_dictionary_search_returns_real_values(shop_duckdb: Path) -> None:
     async with mcp_server("--config", config_file("full"), "--duckdb", str(shop_duckdb)) as session:
         result = await call(session, "dictionary_search", {"keyword": "gold"})
@@ -346,7 +336,6 @@ async def test_dictionary_search_returns_real_values(shop_duckdb: Path) -> None:
 # --- The six tools the verifiers use (2 base, 4 verifier-only): a passing and a failing case each
 
 
-@TICKET_143
 async def test_list_tables(db_args: list[str]) -> None:
     async with mcp_server("--config", config_file("full"), *db_args) as session:
         everything = await call(session, "list_tables", {})
@@ -359,7 +348,6 @@ async def test_list_tables(db_args: list[str]) -> None:
         assert table not in text_of(nothing)
 
 
-@TICKET_143
 async def test_query_database(db_args: list[str]) -> None:
     async with mcp_server("--config", config_file("full"), *db_args) as session:
         ok = await call(session, "query_database", {"sql": "SELECT count(*) AS n FROM raw.orders"})
@@ -371,7 +359,6 @@ async def test_query_database(db_args: list[str]) -> None:
     assert "Traceback" not in text_of(bad)
 
 
-@TICKET_143
 async def test_map_columns(db_args: list[str], tmp_path: Path) -> None:
     project = tmp_path / "dbt_shop"
     shutil.copytree(DBT_SHOP, project)
@@ -389,7 +376,6 @@ async def test_map_columns(db_args: list[str], tmp_path: Path) -> None:
     assert "no_such_model" in text_of(bad)
 
 
-@TICKET_143
 async def test_check_model_schema(db_args: list[str]) -> None:
     async with mcp_server("--config", config_file("full"), *db_args) as session:
         ok = await call(
@@ -415,7 +401,6 @@ async def test_check_model_schema(db_args: list[str]) -> None:
     assert "lifetime_value" in text_of(bad)
 
 
-@TICKET_143
 async def test_audit_model_sources(db_args: list[str]) -> None:
     async with mcp_server("--config", config_file("full"), *db_args) as session:
         ok = await call(

@@ -63,11 +63,6 @@ from data_agent import cli
 from data_agent.im import service
 from data_agent.web import app as web_app
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
-pytestmark = TICKET_143
-
 TEST_KEY = "test-" + "Jm42" + "-key"
 GITHUB_TOKEN = "tok-" + "Ve18" + "-fake"
 SLACK_BOT = "sb-" + "Rt6n" + "-made-up-bot"

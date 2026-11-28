@@ -95,9 +95,6 @@ from seam_support import FIXTURES
 
 from data_agent.web.app import DataSource, create_app
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
 # The run form without a `config` field (contract item 5) is ticket 144's.
 TICKET_144 = pytest.mark.xfail(
     strict=True, raises=AssertionError, reason="ticket 144: the config is not wired to the run yet"
@@ -303,7 +300,6 @@ def test_a_new_conversation_takes_no_task_type_or_data_source(chat: Chat) -> Non
 # --- What a turn's run gets ----------------------------------------------------------------
 
 
-@TICKET_143
 def test_a_turn_gets_every_data_source_by_name_and_kind(chat: Chat) -> None:
     conversation = new_conversation(chat)
     start_turn(chat, conversation, "How many orders are there?")

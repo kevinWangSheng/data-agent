@@ -84,12 +84,61 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 命令不查 `--old` 是不是上一次合入的版本，由调用者保证。ADR-0008 的验收就是 `--trials 3`；别的值只用来试跑（如 k=1 的 `runs/dev-2`）。工单 29 之前的 `--out`（dev-2、dev-3）里，续跑删掉的、没写事件文件的 trial 没在 `dropped/` 留下 `result.json`，这种基础设施报错查不出来。
 - 结论：`pass`（退出 0）；`fail`、`rerun-regression`、`rerun-old`（退出 1）。回归题已判退步时，不管旧版能否复用都是 `fail`。
 
-本地网页的后端（工单 77、78）：`uv run data-agent web --runs-dir runs/web [--port 8765] [--data-sources sources.toml] [--no-network]`，只听 `127.0.0.1`。
+## 配置文件（工单 143）
+
+所有产品入口（`data-agent run`、`data-agent web`、对话、IM）读同一个分层的 `config.toml`（spec "配置文件与分层"，ADR-0011）。类型定义（每一节的键、类型、默认值）在 `src/data_agent/config.py` 的 `SCHEMA`；各节的行为由后续工单接上（`[limits]`、`[sandbox]`、`[policy]` 的接线 144，`[models]`/`[roles]` 145，评测配置文件 146，`[skills]`/`[mcp]`/`[plugins]` 147，`[prompts]`/`[instructions]` 148）。本工单接上的是 `[layers]`、`[sources.*]`、`[mcp]`、`[im.*]`。
+
+- **位置**：用户级 `~/.data-agent/config.toml`；项目级 `<工作区>/.data-agent/config.toml`（`run` 的工作区是 `--workspace`，`web` 是启动时的当前目录；项目级文件不放密钥，可以进 git）。不放 `~/.config/data-agent/`：那是密钥目录。
+- **显式文件**：`--config <路径>` 可写多次，后面的覆盖前面的；这时只读这些文件，不找用户级、项目级。没有 `--config` 时，环境变量 `DATA_AGENT_CONFIG` 指的那一个文件代替用户级和项目级；`--config` 优先于它。
+- **优先级**：代码默认值 < 用户级 < 项目级（或显式文件）< 环境变量（`DATA_AGENT_MODEL` 改 `roles.main`，`DATA_AGENT_BASE_URL` 改主模型的 `base_url`）< 命令行参数。按节按键合并：同一个键后面的层整个替换，列表不拼接。
+- **`[policy]`**（`network`、`dbt_target`、`disabled_models`）在最上面：第一个写了某个锁定键的文件说了算（用户级先于项目级，第一个显式文件先于后面的），后面的文件改不了；`policy.network = false` 同时把 `sandbox.network` 锁成 false。`config show` 里这些键的来源记 `policy`。
+- **相对路径**从写它的那个文件所在目录算（`sources.*.path`、`dbt_project`、`docs`，`mcp.file`，`skills.dirs` 等）；生效配置里都是绝对路径。
+- **密钥只写 `${VAR}`**：以 `api_key`、`token`、`password`、`secret` 结尾的键（不分大小写，含 `[mcp.servers.*.env]` 里的变量）值不是 `${变量名}` 就拒绝加载；任何值里出现像 DeepSeek key 的串（`.gitleaks.toml` 的 `deepseek-api-key` 规则）也拒绝。写变量名的键照旧写名字，不算密钥：`[im.<平台>].bot_token_env`、`[sources.<名字>].env`。`${VAR}` 引用的变量没设也拒绝。展开后的值只在运行里用，不进 `config show`、报错、运行目录里写的配置文件。`[mcp.servers.*]` 里的引用照工单 116 的规矩由外部 MCP 那边展开（只认 `DATA_AGENT_MCP_*`，只在 `env`、`headers` 里）。
+- **报错**：未知的节或键、类型不对、明文密钥、缺变量，都在开始运行前退出 2，stderr 写 `<文件>: <键>: <原因>`，不带值。
+- **看生效配置**：`uv run data-agent config show [--config FILE]... [--workspace DIR]`，每行一个键：`<键> = <TOML 值>  # <来源>`，来源是 `default`、文件路径、`env:<变量>`、`cli` 或 `policy`；密钥显示 `${VAR}` 原文。
+- **`version` 事件的 `config`**：最后合并的那个文件名去掉 `.toml`（`product.toml` 记 `product`，`~/.data-agent/config.toml` 记 `config`），没有文件时记 `default`。
+- **旧消融名（过渡期）**：`data-agent run --config` 和 `mcp-server --config` 在工单 146 改完评测入口之前，同时接受旧的消融配置名（`full`、`baseline`、`no-skill`、`no-verifiers`、`no-context`、`full-old-skill`）。规则：值正好是其中一个名字时就是名字，而且只能单独给一个 `--config`（这时不读任何配置文件，评测入口的运行不变）；其他一律当路径。真有一个叫 `full` 的文件，写成 `./full`。
+- **三个旧参数去掉了，不做兼容**：
+  - `run --data-sources`、`web --data-sources` → `[sources.<名字>]`。`run` 不给 `--duckdb`/`--postgres-env` 时用配置里的数据源（一个就当它跑，几个就都交给 agent）；给了就用给的。
+  - `run --mcp-servers`、`web --mcp-servers` → `[mcp]`：`file = "<mcpServers JSON 的路径>"`，或者内联 `[mcp.servers.<名字>]`（字段同 JSON 里的一个 server），两种只能选一种。
+  - `web --im` → `[im.slack]`、`[im.telegram]`、`[im.discord]`，键和原来 `--im` 文件里 `[slack]` 等表相同。
+- **网页的每次运行**拿到服务器的生效配置：服务器把它写进运行目录 `<runs-dir>/<id>/config/<名字>.toml`（数据源是服务器的数据源，不含连接串；不含 `[im.*]`；`${VAR}` 照原文），运行参数用 `--config` 指向它。表单选的消融配置（144 之前还在）另写一个只有 `[layers]` 的 `config/layers/<名字>.toml` 叠在后面。`create_app(config=None)` 等于代码默认，不读任何文件。
+
+示例（`~/.data-agent/config.toml`，只带 `${VAR}`）：
+
+```toml
+[layers]
+skill = true
+verifiers = true
+context = true
+
+[sources.shop]
+kind = "duckdb"
+path = "shop.duckdb"            # 从本文件所在目录算
+
+[sources.warehouse]
+kind = "postgres"
+env = "WAREHOUSE_URL"           # 存连接串的环境变量名
+
+[models.my-model]
+base_url = "https://llm.example/anthropic"
+api_key = "${MY_MODEL_API_KEY}"
+
+[mcp]
+file = "mcp-github.json"        # Claude Code / Cursor 的 mcpServers JSON，每个 server 带 allowedTools
+
+[im.slack]
+bot_token_env = "DATA_AGENT_SLACK_BOT_TOKEN"
+app_token_env = "DATA_AGENT_SLACK_APP_TOKEN"
+allowed_users = ["U012ABCDEF"]
+```
+
+本地网页的后端（工单 77、78）：`uv run data-agent web --runs-dir runs/web [--port 8765] [--config FILE]... [--no-network]`，只听 `127.0.0.1`；数据源、外部 MCP、IM 从配置文件来（上一节）。
 
 - 联网开关（工单 140）：默认开（ADR-0010），网页、对话的每次运行照请求里的 `network` 决定，不传时联网；IM 的回合不传，跟随服务器。`--no-network` 时所有运行都不联网（没有 WebSearch、WebFetch，沙箱容器没有网络）；请求里 `network=true` 返回 409，不会悄悄改成不联网。网页的联网勾选框默认是勾上的，所以这时要先取消勾选再提交。
 - `data-agent run --type dbt` 的 `--dbt-target` 默认 `scratch`（工单 140）：dbt 只写本次运行自己的 `da_run_<run id>` schema，profile 生成在工作区外（`--events-dir` 下的 `profiles/`，所以 `--events-dir` 不能在工作区里）。`task` 用项目自己的 profile、写它指向的库，只给评测入口用（`evals/harbor_agent.py`、`evals/jaffle.py` 显式传）。临时 schema 跑完不删；agent 的 `list_tables`、目录和值字典不显示别的运行留下的 `da_run_*`，只显示本次运行自己的那个（和 dbt 自定义 schema 生成的 `<它>_<custom>`）。
 
-- 数据源文件只在给了 `--data-sources` 时才读，没有默认路径。不给时表单没有数据源，列出运行、读事件照常，提交运行返回 400。写法（相对路径从文件所在目录算）：
+- 数据源是配置里的 `[sources.<名字>]`。配置里没有时表单没有数据源，列出运行、读事件照常，提交运行返回 400。写法（相对路径从写它的配置文件所在目录算）：
 
   ```toml
   [sources.shop]
@@ -105,7 +154,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 - 启动时校验：`kind` 只能是 `duckdb` 或 `postgres`；`duckdb` 要 `path`，`postgres` 要 `env`（必须是变量名，像连接串的拒绝）；`dbt_project` 给了就要存在；未知的表和键都拒绝；配了 `dbt_project` 的 DuckDB 数据源，库文件的路径必须写在 `dbt_project` 里面（按写的路径算，不跟符号链接：项目里的链接或链接目录下的文件都算在里面）；`--runs-dir` 和任何一个 `dbt_project` 互相包含（含相同）时拒绝启动，否则复制项目时会把工作目录复制进自己。提交时再查 DuckDB 文件存在、环境变量已设置。
 - 每条运行 `<runs-dir>/<id>/` 放事件文件，`<runs-dir>/<id>/workspace/` 是工作目录：查数运行是空目录，DuckDB 原地只读；dbt 运行复制 `dbt_project`（不含 `target/`、`logs/`；符号链接复制成它指向的内容），DuckDB 文件一起复制，留在原相对位置（`profiles.yml` 用相对路径才会指向副本）。复制会跟进目录链接，所以项目里有指向 `--runs-dir`（或它的上级、下级）的目录链接时，这次提交返回 400，不复制。
 - 同时只跑一条，再提交返回 409。取消只对本服务启动、还在跑的那条有效：按记录的进程号发 SIGTERM（运行在自己的进程组里，连同它起的工具进程），10 秒不退再 SIGKILL；返回运行结束时的概况。服务给自己启动的运行写 `<id>/web-run.json`（提交时的概况）；进程退出时组里剩下的进程一并停掉，没写 `result` 事件的记成"已取消"（本服务停的）或"失败"。服务正常退出时同样停掉在跑的那条。已知限制：服务被强杀时没机会记，那条运行一直显示运行中。
-- 对话（工单 93，接口见 `tests/acceptance/test_chat_api.py` 开头的契约）：新建对话不选类型和数据源，每一轮把 `--data-sources` 里的全部数据源交给 agent（写成 `<runs-dir>/<run_id>/data-sources.toml`，只有名字、种类、DuckDB 路径或环境变量名）。对话目录是 `<runs-dir>/conversations/<id>/`：`conversation.json` 索引、各轮共用的 `workspace/`、会话存档 `claude-config/`（不进 `~/.claude`）。一条消息一轮、一个运行目录，运行列表、读事件、三栏运行页照常能看；第二轮起接着上一轮的 session。某轮在跑时再发的消息写进那个子进程的 stdin（插话），不开新一轮；"同时只跑一条"对表单和所有对话一起算，取消、服务退出时停进程的办法同上。命令行和表单跑的单次运行在对话列表里显示成只有一轮、不能追问的对话。已知限制：子进程写完 `result`、还没退出时发的消息仍算插话（返回 202），送不到。
+- 对话（工单 93，接口见 `tests/acceptance/test_chat_api.py` 开头的契约）：新建对话不选类型和数据源，每一轮把服务器配置里的全部数据源交给 agent（写进这一轮的配置文件 `<runs-dir>/<run_id>/config/<名字>.toml`，数据源只有名字、种类、DuckDB 路径或环境变量名）。对话目录是 `<runs-dir>/conversations/<id>/`：`conversation.json` 索引、各轮共用的 `workspace/`、会话存档 `claude-config/`（不进 `~/.claude`）。一条消息一轮、一个运行目录，运行列表、读事件、三栏运行页照常能看；第二轮起接着上一轮的 session。某轮在跑时再发的消息写进那个子进程的 stdin（插话），不开新一轮；"同时只跑一条"对表单和所有对话一起算，取消、服务退出时停进程的办法同上。命令行和表单跑的单次运行在对话列表里显示成只有一轮、不能追问的对话。已知限制：子进程写完 `result`、还没退出时发的消息仍算插话（返回 202），送不到。
 
 密钥只放在仓库外的 `~/.config/data-agent/env`（照 `.env.example` 填，`chmod 600`），`make test-integration` 读取；不放仓库里的 `.env`，不贴进对话或文档。
 
@@ -113,7 +162,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
 ## 外部 MCP server（工单 116）
 
-用法、校验规则和风险见 README 的 "External MCP servers"。配置文件放在仓库外，示例里只写 `${DATA_AGENT_MCP_*}` 引用，不写任何真实值。变量的值写进 `~/.config/data-agent/env`，运行前加载：`set -a && . ~/.config/data-agent/env && set +a`。
+用法、校验规则和风险见 README 的 "External MCP servers"。server 由配置的 `[mcp]` 给出（`file = "<JSON 路径>"` 或内联 `[mcp.servers.<名字>]`，见"配置文件"一节）。JSON 文件放在仓库外，示例里只写 `${DATA_AGENT_MCP_*}` 引用，不写任何真实值。变量的值写进 `~/.config/data-agent/env`，运行前加载：`set -a && . ~/.config/data-agent/env && set +a`。
 
 ### MongoDB（stdio，本机 docker）
 
@@ -154,7 +203,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
    - 这个 server 默认发遥测，`MDB_MCP_TELEMETRY=disabled` 把它关掉。
    - 以上三条都在工单 115 用 MCP 客户端实测过。
    - 用 `DOCKER_HOST` 找 daemon 的机器，要在 `env` 里加 `"DOCKER_HOST": "..."`，因为包装命令不带这个变量。colima 靠 `~/.docker` 下的 context 找 daemon，不需要它。
-5. 运行：`uv run data-agent run --type query --config full --duckdb shop.duckdb --workspace work --events-dir events --mcp-servers ~/.config/data-agent/mcp-mongo.json --task "..."`。
+5. 运行：`uv run data-agent run --type query --config mcp-mongo.toml --duckdb shop.duckdb --workspace work --events-dir events --task "..."`，`mcp-mongo.toml` 里写 `[mcp]` 一行 `file = "~/.config/data-agent/mcp-mongo.json"`。
 6. 用完清理：`docker rm -f da-mcp-mongo && docker network rm da-mcp-demo`。
 
 ### GitHub（http，只读）
@@ -180,7 +229,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
    - [README](https://github.com/github/github-mcp-server) 的 "Using a GitHub PAT"：PAT 用请求头 `"Authorization": "Bearer <PAT>"` 传。
 
    用 `/readonly` 端点时 `["*"]` 也只包括读工具。要更窄，就列出具体工具名（官方示例里有 `issue_read`、`get_file_contents`）。完整工具清单本工单没有核实（未确认）。
-3. 运行示例：`uv run data-agent run --type query --config full --duckdb shop.duckdb --workspace work --events-dir events --mcp-servers ~/.config/data-agent/mcp-github.json --task "..."`。
+3. 运行示例：`uv run data-agent run --type query --config mcp-github.toml --duckdb shop.duckdb --workspace work --events-dir events --task "..."`，`mcp-github.toml` 里写 `[mcp]` 一行 `file = "~/.config/data-agent/mcp-github.json"`。
 
 ### 已知限制
 
@@ -252,7 +301,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
    ```
 
    启动前加载：`set -a && . ~/.config/data-agent/env && set +a`。
-9. **填允许名单**：自己的 member id 的找法是在 Slack 里打开自己的 profile，点 ⋮，选 Copy member ID（[App Home](https://docs.slack.dev/surfaces/app-home) 里的说法）。把它填进仓库外的 `im.toml` 的 `allowed_users`（格式见 README）。
+9. **填允许名单**：自己的 member id 的找法是在 Slack 里打开自己的 profile，点 ⋮，选 Copy member ID（[App Home](https://docs.slack.dev/surfaces/app-home) 里的说法）。把它填进配置文件 `[im.<平台>]` 的 `allowed_users`（格式见 README）。
 10. **把机器人拉进频道**：在频道里 `/invite @<机器人名>`。机器人只看得到它在的频道（这一步没查到官方出处，未确认）。
 
 第 8 步只是本仓库自己的约定，没有外部出处。
@@ -276,7 +325,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
    启动前加载：`set -a && . ~/.config/data-agent/env && set +a`。变量名是本仓库自己的约定（前缀 `DATA_AGENT_TELEGRAM_`），没有外部出处。
 2. **关掉 Group Privacy**（要在群里用时）：默认的隐私模式下，机器人在群里只保证收到给它的命令和回复它消息的消息（[Privacy mode](https://core.telegram.org/bots/features#privacy-mode)："only see relevant messages and commands"），文档没写普通的 `@机器人` 能不能收到。所以在 BotFather 里发 `/setprivacy`，选这个 bot，选 Disable（[Edit settings](https://core.telegram.org/bots/features#edit-settings) 只写了 "/setprivacy – set which messages your bot will receive when added to a group"，选项的名字未确认）；也可以发 `/mybots` → 选 bot → Bot Settings → Group Privacy → Turn off（这条菜单路径官方文档没写，未确认）。另一种做法是把机器人设为群管理员：文档写 "bot admins always receive all messages"（同一节）。
 3. **已经在群里的机器人要移出再拉回**：改了隐私模式后，"the bot will need to be re-added to the group for this change to take effect"（[Privacy mode](https://core.telegram.org/bots/features#privacy-mode)）。
-4. **填允许名单**：用 `data-agent web --im` 起来后，私聊机器人一次。不在名单里的人私聊它，会收到一条"未授权"的回复，里面有自己的数字用户 id。把这个数字填进仓库外的 `im.toml` 的 `allowed_users`（格式见 README），重启。这一步是本仓库的行为（`src/data_agent/im/adapter.py`），没有外部出处。
+4. **填允许名单**：用带 `[im.telegram]` 的配置起 `data-agent web` 后，私聊机器人一次。不在名单里的人私聊它，会收到一条"未授权"的回复，里面有自己的数字用户 id。把这个数字填进配置文件 `[im.<平台>]` 的 `allowed_users`（格式见 README），重启。这一步是本仓库的行为（`src/data_agent/im/adapter.py`），没有外部出处。
 
 几点说明：
 
@@ -298,7 +347,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
    权限的出处是 [Permissions](https://docs.discord.com/developers/topics/permissions)。那一页只列 API 的名字，并写明客户端里的叫法可能不同；上面括号前的界面名称未确认。"URL 生成器"这个界面名在文档里也没查到（未确认），以开发者后台的页面为准。
 4. **邀请进测试服务器**：在浏览器里打开生成的链接，选 Add to server，选测试服务器，照提示装好（[Getting started → Installing your app](https://docs.discord.com/developers/quick-start/getting-started)）。机器人只能经 OAuth2 加进服务器，不能接受普通邀请（[OAuth2](https://docs.discord.com/developers/topics/oauth2)：“Bots are added to guilds through the OAuth2 API, and cannot accept normal invites.”）。
-5. **填允许名单**：在 Discord 的用户设置 → 高级（Advanced）里打开开发者模式（Developer Mode），然后右键自己的头像或名字，选 Copy User ID。把这个数字 id 写成字符串，填进仓库外 `im.toml` 的 `allowed_users`（格式见 README）。这一步的菜单路径未确认：Discord 帮助中心的文章（support.discord.com）拒绝了自动抓取，没读到原文。
+5. **填允许名单**：在 Discord 的用户设置 → 高级（Advanced）里打开开发者模式（Developer Mode），然后右键自己的头像或名字，选 Copy User ID。把这个数字 id 写成字符串，填进配置文件 `[im.discord]` 的 `allowed_users`（格式见 README）。这一步的菜单路径未确认：Discord 帮助中心的文章（support.discord.com）拒绝了自动抓取，没读到原文。
 6. **写进 env 文件**：`~/.config/data-agent/env` 里加一行（`chmod 600`）：
 
    ```bash

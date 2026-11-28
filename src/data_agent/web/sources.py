@@ -28,7 +28,10 @@ import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from data_agent.config import EffectiveConfig
 
 KEYS = {"duckdb": {"kind", "path", "dbt_project"}, "postgres": {"kind", "env", "dbt_project"}}
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -64,6 +67,40 @@ def load_data_sources(path: Path) -> list[DataSource]:
     # Absolute: runs start in their own working directory.
     base = path.resolve().parent
     return [parse_source(name, entry, base) for name, entry in sources.items()]
+
+
+# The `[sources.<name>]` keys a source is built from; the config's other keys of a source
+# (`description`, `query_timeout_seconds`, ...) act elsewhere (tickets 144, 148).
+SOURCE_KEYS = {"kind", "path", "env", "dbt_project"}
+
+
+def config_sources(config: "EffectiveConfig") -> list[DataSource]:
+    """The config's `[sources.<name>]` tables, in order (paths already absolute); ValueError naming
+    the first problem, checked as `load_data_sources` checks a file's."""
+    sources: list[DataSource] = []
+    for name in config.names("sources"):
+        entry = config.value(f"sources.{name}") or {}
+        known = {key: str(value) for key, value in entry.items() if key in SOURCE_KEYS}
+        sources.append(parse_source(name, known, Path("/")))
+    return sources
+
+
+def source_leaves(sources: Sequence[DataSource]) -> dict[str, str]:
+    """The sources as the config's dotted keys (`sources.shop.kind`, ...), as `dump_data_sources`
+    writes them: never a connection string; `dbt_project` too when set."""
+    leaves: dict[str, str] = {}
+    for source in sources:
+        prefix = f"sources.{source.name}"
+        if source.duckdb is not None:
+            leaves[f"{prefix}.kind"] = "duckdb"
+            leaves[f"{prefix}.path"] = str(source.duckdb.resolve())
+        else:
+            assert source.postgres_env is not None
+            leaves[f"{prefix}.kind"] = "postgres"
+            leaves[f"{prefix}.env"] = source.postgres_env
+        if source.dbt_project is not None:
+            leaves[f"{prefix}.dbt_project"] = str(source.dbt_project.resolve())
+    return leaves
 
 
 def dump_data_sources(sources: Sequence[DataSource]) -> str:

@@ -47,10 +47,6 @@ from data_agent.im.config import ImConfigError, PlatformConfig, load_config
 from data_agent.web import app as web_app
 from data_agent.web.app import create_app
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
-
 SLACK_BOT_ENV = "DATA_AGENT_SLACK_BOT_TOKEN"
 SLACK_APP_ENV = "DATA_AGENT_SLACK_APP_TOKEN"
 TELEGRAM_ENV = "DATA_AGENT_TELEGRAM_BOT_TOKEN"
@@ -196,7 +192,6 @@ def serve(
     return seen[0], app, started
 
 
-@TICKET_143
 def test_data_agent_web_im_starts_the_adapters_with_the_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tokens: dict[str, str]
 ) -> None:
@@ -215,7 +210,6 @@ def test_data_agent_web_without_im_starts_no_adapter(
     assert started == []
 
 
-@TICKET_143
 def test_a_run_starts_without_the_im_tokens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tokens: dict[str, str]
 ) -> None:

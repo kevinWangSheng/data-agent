@@ -1618,7 +1618,7 @@ def build_options(
         "command": sys.executable,
         "args": [
             *("-m", "data_agent", "mcp-server"),
-            *("--config", config.name, *task.database_args()),
+            *("--config", config.server_arg(), *task.database_args()),
             # A run without the verifier subagents gets no verifier tools either (the ablation).
             *(() if uses_verifiers(task.type, config) else ("--no-verifier-tools",)),
             *("--workspace", str(task.workspace.resolve())),

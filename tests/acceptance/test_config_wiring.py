@@ -83,9 +83,6 @@ from product_config_support import (
     write_file,
 )
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
 TICKET_144 = pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
@@ -247,7 +244,6 @@ def test_policy_refuses_a_disabled_model(
 
 # Ticket 143's: it makes `--config` optional (test_config_cli.py) with every layer on by default
 # (test_config_load.py), so this passes with it; a `TICKET_144` mark would XPASS there.
-@TICKET_143
 def test_a_run_without_any_config_has_every_layer_on(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:

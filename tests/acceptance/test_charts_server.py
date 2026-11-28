@@ -43,10 +43,6 @@ from mcp_support import assert_cli_accepts
 from product_config_support import layer_config
 from seam_support import DATA_AGENT, FIXTURES
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
-
 RUN = FIXTURES / "charts" / "run"
 # The web UI's pattern for the line (web/src/run-view/model.ts, RESULT_ID_NOTE).
 RESULT_ID_NOTE = r"^\[result id: [^\]]+\]$"
@@ -154,7 +150,6 @@ def points(rows: int) -> str:
 # --- query ids ---------------------------------------------------------------------------------
 
 
-@TICKET_143
 async def test_without_a_sandbox_each_query_gets_the_next_id(empty_duckdb: list[str]) -> None:
     async with mcp_server(*empty_duckdb) as session:
         first = await call(session, "query_database", {"sql": "SELECT 1 AS one"})
@@ -166,7 +161,6 @@ async def test_without_a_sandbox_each_query_gets_the_next_id(empty_duckdb: list[
     assert text_of(first).splitlines()[:4] == ["one", "---", "1", "(1 rows)"]
 
 
-@TICKET_143
 async def test_with_a_sandbox_each_query_gets_one_id_the_chart_tool_reads(
     empty_duckdb: list[str], tmp_path: Path
 ) -> None:
@@ -199,7 +193,6 @@ def two_sources(tmp_path: Path) -> list[str]:
     return args
 
 
-@TICKET_143
 async def test_several_databases_share_one_numbering_and_one_chart_tool(
     two_sources: list[str],
 ) -> None:
@@ -243,7 +236,6 @@ def types_of(schema: dict[str, Any], node: dict[str, Any]) -> set[str]:
     return set(kind) if isinstance(kind, list) else {kind} if kind else set()
 
 
-@TICKET_143
 async def test_display_chart_takes_the_agreed_parameters(empty_duckdb: list[str]) -> None:
     async with mcp_server(*empty_duckdb) as session:
         listed = await session.list_tools()
@@ -285,7 +277,6 @@ def bar(query_id: str, x: str, *columns: str, **extra: Any) -> dict[str, Any]:
     }
 
 
-@TICKET_143
 async def test_an_unknown_query_id_is_named(empty_duckdb: list[str]) -> None:
     async with mcp_server(*empty_duckdb) as session:
         await query(session, SALES)
@@ -293,7 +284,6 @@ async def test_an_unknown_query_id_is_named(empty_duckdb: list[str]) -> None:
     assert "query_9" in text
 
 
-@TICKET_143
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -311,7 +301,6 @@ async def test_a_column_not_in_the_result_lists_the_results_columns(
         assert column in text, f"{column} missing from {text!r}"
 
 
-@TICKET_143
 async def test_a_series_column_that_is_not_numeric_is_named(empty_duckdb: list[str]) -> None:
     async with mcp_server(*empty_duckdb) as session:
         await query(session, SALES)
@@ -319,7 +308,6 @@ async def test_a_series_column_that_is_not_numeric_is_named(empty_duckdb: list[s
     assert "tier" in text
 
 
-@TICKET_143
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -354,7 +342,6 @@ async def test_a_chart_the_type_cannot_show_is_refused(
         await chart(session, {**arguments, **control})
 
 
-@TICKET_143
 async def test_more_than_500_points_are_refused_and_500_pass(empty_duckdb: list[str]) -> None:
     async with mcp_server(*empty_duckdb) as session:
         at_limit = await query(session, points(250))
@@ -454,7 +441,6 @@ CASES: list[Any] = [
 ]
 
 
-@TICKET_143
 @pytest.mark.parametrize(("sql", "arguments", "checked", "data"), CASES)
 async def test_a_chart_returns_its_definition_and_only_its_columns(
     empty_duckdb: list[str],
@@ -498,7 +484,6 @@ def fixture_calls() -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
     ]
 
 
-@TICKET_143
 async def test_the_fixture_run_replays_on_a_real_server(empty_duckdb: list[str]) -> None:
     calls = fixture_calls()
     charts = [entry for entry in calls if entry[0] == "display_chart"]

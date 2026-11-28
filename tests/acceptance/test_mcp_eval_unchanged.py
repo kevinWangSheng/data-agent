@@ -44,10 +44,6 @@ from evals import __main__ as evals_main
 from evals import dab
 from evals.harbor_agent import DataAgent
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
-
 DEMO_TOKEN = "demo-" + "Rj52" + "-fake"
 # The config the DAB tests use (DAB's tool server has no context tools).
 DAB_CONFIG = "no-context"
@@ -59,7 +55,6 @@ def capture(monkeypatch: pytest.MonkeyPatch) -> Capture:
     return stop_at_transport(monkeypatch)
 
 
-@TICKET_143
 def test_a_run_without_mcp_servers_has_only_our_server(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:

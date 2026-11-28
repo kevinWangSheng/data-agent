@@ -217,14 +217,19 @@ def test_a_run_logs_no_expanded_value(
     db = tmp_path / "shop.duckdb"
     duckdb.connect(str(db)).execute("CREATE TABLE orders (id INTEGER)").close()
     (tmp_path / "work").mkdir()
-    config = write(tmp_path, {"mongo": stdio(), "remote": http()})
+    servers = write(tmp_path, {"mongo": stdio(), "remote": http()})
+    config = tmp_path / "no-context.toml"
+    config.write_text(
+        "[layers]\nskill = true\nverifiers = true\ncontext = false\n\n"
+        f"[mcp]\nfile = {json.dumps(str(servers))}\n"
+    )
     with pytest.raises(SystemExit):
         cli.main(
             [
                 *("run", "--task", "How many orders?", "--type", "query"),
                 *("--workspace", str(tmp_path / "work"), "--duckdb", str(db)),
-                *("--config", "no-context", "--events-dir", str(tmp_path / "events")),
-                *("--sandbox", "local", "--mcp-servers", str(config)),
+                *("--config", str(config), "--events-dir", str(tmp_path / "events")),
+                *("--sandbox", "local"),
             ]
         )
     out = capsys.readouterr()
@@ -352,9 +357,11 @@ def test_data_agent_web_refuses_a_bad_config_before_serving(
     monkeypatch.delenv("DATA_AGENT_MCP_TOKEN", raising=False)
     runs = tmp_path / "runs"
     runs.mkdir()
-    config = write(tmp_path, {"remote": http()})
+    servers = write(tmp_path, {"remote": http()})
+    config = tmp_path / "config.toml"
+    config.write_text(f"[mcp]\nfile = {json.dumps(str(servers))}\n")
     with pytest.raises(SystemExit) as exited:
-        cli.main(["web", "--runs-dir", str(runs), "--mcp-servers", str(config)])
+        cli.main(["web", "--runs-dir", str(runs), "--config", str(config)])
     assert exited.value.code == 2
     err = capsys.readouterr().err
     assert "'remote'" in err and "DATA_AGENT_MCP_TOKEN" in err

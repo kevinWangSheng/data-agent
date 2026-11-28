@@ -33,10 +33,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from data_agent.run_config import CONFIG_NAMES
+from data_agent.config import EffectiveConfig, default_config, toml_text
+from data_agent.run_config import CONFIG_NAMES, load_config
 from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
-from data_agent.web.sources import DataSource, check_layout, overlap
+from data_agent.web.sources import DataSource, check_layout, overlap, source_leaves
 from data_agent.workspace_guard import (
     is_credential,
     is_duckdb_name,
@@ -51,6 +52,8 @@ SANDBOX: Backend = "docker"
 # How long a run being stopped has to exit after SIGTERM before it gets SIGKILL.
 STOP_GRACE_SECONDS = 10.0
 WORKSPACE = "workspace"
+# Where a run's config files go, in the run's directory (`Launcher.config_args`).
+CONFIG_DIR = "config"
 # A dbt run's copy of the project leaves out the build output and logs of earlier runs, and
 # every dbt profile in it, which holds the connection.
 NOT_COPIED = ("target", "logs")
@@ -138,7 +141,7 @@ class Launcher:
         runs: RunsDir,
         sources: Sequence[DataSource],
         start_run: StartRun,
-        mcp_servers: Path | None = None,
+        config: EffectiveConfig | None = None,
         network: bool = True,
     ) -> None:
         check_layout(runs.path, sources)
@@ -146,11 +149,8 @@ class Launcher:
         # The server's network switch (`data-agent web --no-network`, ticket 140), for the run
         # form's runs and every conversation's turns alike.
         self.network = network
-        # Every run's `--mcp-servers` (ticket 116), conversations' too: the file's path only, so
-        # no value it expands is on a command line.
-        self.mcp_args: tuple[str, ...] = (
-            () if mcp_servers is None else ("--mcp-servers", str(mcp_servers))
-        )
+        # The server's config, which every run gets a file of (`config_args`).
+        self.config = default_config() if config is None else config
         self.sources = {source.name: source for source in sources}
         self.start_run = start_run
         self.current: Running | None = None
@@ -158,6 +158,38 @@ class Launcher:
         # (data_agent.web.conversations): one run at a time across the run form and every
         # conversation.
         self.lock = threading.Lock()
+
+    def config_args(self, run_dir: Path) -> list[str]:
+        """`--config <file>`: the server's config written into the run's directory (ticket 141
+        contract item 4), an explicit file, so the run merges no user-level file in again. Its
+        `[sources.*]` are the server's sources, in their order, never a connection string; its
+        `[im.*]` are left out (the run has none of their tokens); every `${VAR}` reference is as
+        written, never expanded. Named after the server's config (`<name>.toml`), so the run's
+        `version.config` is the server's."""
+        raw = self.config.raw
+        leaves = {
+            key: value for key, value in raw.items() if not key.startswith(("sources.", "im."))
+        }
+        for name, source in self.sources.items():
+            prefix = f"sources.{name}."
+            leaves |= {key: value for key, value in raw.items() if key.startswith(prefix)}
+            leaves |= source_leaves([source])
+        directory = run_dir / CONFIG_DIR
+        directory.mkdir(exist_ok=True)
+        path = directory / f"{self.config.name()}.toml"
+        path.write_text(toml_text(leaves), encoding="utf-8")
+        return ["--config", str(path)]
+
+    def layers_args(self, run_dir: Path, name: str) -> list[str]:
+        """The layers of the old run config the run form picked (`full`, `baseline`, ...), as a
+        second `--config` file over the server's (`<name>.toml`, so `version.config` stays the
+        name). Ticket 144 drops the form's pick."""
+        layers = load_config(name).layers()
+        directory = run_dir / CONFIG_DIR / "layers"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{name}.toml"
+        path.write_text(toml_text({f"layers.{key}": on for key, on in layers.items()}))
+        return ["--config", str(path)]
 
     def network_for(self, asked: bool | None) -> bool:
         """Whether a run gets the network: as the request asks, else as the server's switch is.
@@ -188,8 +220,8 @@ class Launcher:
                 f"--task={task}",
                 "--type",
                 task_type,
-                "--config",
-                config,
+                *self.config_args(run_dir),
+                *self.layers_args(run_dir, config),
                 "--events-dir",
                 str(run_dir),
                 "--workspace",
@@ -202,7 +234,6 @@ class Launcher:
                 *("--sandbox", SANDBOX),
                 *(("--dbt-target", "scratch") if task_type == "dbt" else ()),
                 *(("--network",) if network else ()),
-                *self.mcp_args,
                 # Every run from the form may chart its answer (charts spec "开关"), dbt too.
                 "--charts",
             ]
@@ -290,7 +321,8 @@ class Launcher:
     def check_configured(self) -> None:
         if not self.sources:
             raise Refused(
-                400, "no data source is configured; start the server with --data-sources FILE"
+                400,
+                "no data source is configured; give the server's config a [sources.<name>] table",
             )
 
     def cancel(self, run_id: str) -> dict[str, Any]:

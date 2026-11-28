@@ -52,11 +52,6 @@ from product_config_support import toml_path, write_config, write_file
 
 from data_agent import config as product_config
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
-pytestmark = TICKET_143
-
 # Placeholders, built from parts so no scanner takes them for real keys.
 TEST_KEY = "test-" + "Kd83" + "-key"
 # What `.gitleaks.toml`'s deepseek-api-key rule matches (`\bsk-[0-9a-f]{32}\b`).

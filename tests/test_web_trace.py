@@ -97,7 +97,8 @@ def test_the_web_backend_starts_runs_in_its_own_environment(
         runs_dir: Path,
         sources: Any,
         start_run: Any,
-        mcp_servers: Path | None = None,
+        ui_dir: Any = None,
+        config: Any = None,
         network: bool = True,
     ) -> object:
         captured["start_run"] = start_run
@@ -105,6 +106,8 @@ def test_the_web_backend_starts_runs_in_its_own_environment(
 
     monkeypatch.setattr(app, "create_app", create)
     monkeypatch.setattr(uvicorn, "run", lambda *_, **__: None)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DATA_AGENT_CONFIG", raising=False)
     cli.main(["web", "--runs-dir", str(tmp_path)])
     popen: dict[str, Any] = {}
 

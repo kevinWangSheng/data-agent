@@ -6,9 +6,13 @@ limit stopped it), 2 config or infrastructure error.
 
 import argparse
 import asyncio
+import dataclasses
+import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -17,23 +21,50 @@ from data_agent.agent import (
     EFFORTS,
     ConfigError,
     ConversationTurn,
+    Outcome,
     Task,
     run,
     source_gateway,
     stdin_lines,
 )
+from data_agent.config import (
+    SCHEMA,
+    ConfigFileError,
+    EffectiveConfig,
+    load_effective_config,
+    toml_value,
+)
 from data_agent.context_tools import Dictionary
 from data_agent.dbt_execute import TARGETS, DbtExecuteError, DbtExecutor, scratch_schema
-from data_agent.external_mcp import LAUNCH_COMMAND, ExternalServers, McpConfigError, launch
+from data_agent.external_mcp import (
+    LAUNCH_COMMAND,
+    ExternalServers,
+    McpConfigError,
+    launch,
+    load_servers,
+)
 from data_agent.external_mcp import load as load_mcp_servers
 from data_agent.gateway import DuckDBGateway, Gateway, PostgresGateway
 from data_agent.mcp_server import build_multi_server, build_server
 from data_agent.run_config import CONFIG_NAMES, RunConfig, load_config
 from data_agent.sandbox import BACKENDS, DockerSandbox, LocalSandbox, Sandbox
 from data_agent.tracing import TRACE_TIERS
-from data_agent.web.sources import DataSource, load_data_sources
+from data_agent.web.sources import DataSource, config_sources
 
 EXIT_OK, EXIT_UNFINISHED, EXIT_ERROR = 0, 1, 2
+# `--config` (ticket 143, decisions.md Q8): a config file, repeatable. Until ticket 146 moves the
+# evaluation entries to config files, `run` and `mcp-server` also take an old run config's name:
+# a value that is exactly one of `CONFIG_NAMES` is the name (given alone), anything else a path
+# (`./full` for a file named `full`).
+CONFIG_HELP = (
+    "a config file (TOML); repeat for several, later ones winning. Without it, "
+    "~/.data-agent/config.toml and <workspace>/.data-agent/config.toml are merged, or the one "
+    "file DATA_AGENT_CONFIG names is read"
+)
+OLD_CONFIG_HELP = (
+    CONFIG_HELP + ". Until the evaluation entries move to config files it also takes an old run "
+    "config's name, alone: " + ", ".join(CONFIG_NAMES)
+)
 # `data-agent web` listens here only; no option changes it (spec "后端接口", user story 35).
 WEB_HOST = "127.0.0.1"
 WEB_PORT = 8765
@@ -73,9 +104,9 @@ DBT_TARGET_HELP = (
 def add_database(parser: argparse.ArgumentParser, server: bool) -> None:
     """The data source: a DuckDB file, or a Postgres connection string read from the environment
     variable `--postgres-env` names, so the string (password included) stays out of argv. Or
-    several (ticket 89): `run` reads them from a data-source file, and the MCP server `run`
-    starts gets them as `--source` entries."""
-    database = parser.add_mutually_exclusive_group(required=True)
+    several (ticket 89): `run` reads them from the config's `[sources.<name>]` tables (then
+    neither option is given), and the MCP server `run` starts gets them as `--source` entries."""
+    database = parser.add_mutually_exclusive_group(required=server)
     database.add_argument("--duckdb", type=Path, help="DuckDB file to query")
     database.add_argument(
         "--postgres-env", metavar="VAR", help="environment variable holding a Postgres URL"
@@ -88,13 +119,6 @@ def add_database(parser: argparse.ArgumentParser, server: bool) -> None:
             metavar=("NAME", "KIND", "LOCATION"),
             help="one of several databases: its name, duckdb or postgres, and the DuckDB file "
             "or the variable holding the Postgres URL; repeat for each",
-        )
-    else:
-        database.add_argument(
-            "--data-sources",
-            type=Path,
-            help="TOML file naming the data sources, as `data-agent web --data-sources` reads; "
-            "with several, the agent picks the one each query runs on",
         )
 
 
@@ -217,17 +241,25 @@ def serve_sources(
     ).run("stdio")
 
 
-def file_task(parser: argparse.ArgumentParser, args: argparse.Namespace, text: str) -> Task:
-    """The task of `run --data-sources FILE`. A file with one source runs as `--duckdb` or
-    `--postgres-env` would, under the source's name; with several, the agent sees them all."""
+def sources_task(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, text: str, config: EffectiveConfig
+) -> Task:
+    """The task of a run whose data source is the config's `[sources.<name>]`. One source runs as
+    `--duckdb` or `--postgres-env` would, under the source's name; with several, the agent sees
+    them all."""
     if args.data_source_name is not None:
         parser.error(
-            "--data-source-name goes with --duckdb or --postgres-env; the file names its sources"
+            "--data-source-name goes with --duckdb or --postgres-env; the config names its sources"
         )
     try:
-        sources = load_data_sources(args.data_sources)
+        sources = config_sources(config)
     except ValueError as exc:
         parser.error(str(exc))
+    if not sources:
+        parser.error(
+            "no data source: give --duckdb or --postgres-env, or a [sources.<name>] table in the "
+            "config"
+        )
     check_sources(parser, sources)
     if len(sources) == 1:
         [only] = sources
@@ -240,8 +272,76 @@ def file_task(parser: argparse.ArgumentParser, args: argparse.Namespace, text: s
             data_source=only.name,
         )
     if args.type == "dbt":
-        parser.error("a dbt run takes one data source; --data-sources names several")
+        parser.error("a dbt run takes one data source; the config names several")
     return Task(text=text, type=args.type, workspace=args.workspace, sources=tuple(sources))
+
+
+def effective_config(
+    parser: argparse.ArgumentParser, given: Sequence[str], workspace: Path | None
+) -> EffectiveConfig:
+    """The effective config of the `--config` files (without any, the user-level and
+    project-level files, or `DATA_AGENT_CONFIG`); exit 2 naming the file and the key on an
+    error."""
+    try:
+        return load_effective_config([Path(p) for p in given], os.environ, {}, workspace)
+    except ConfigFileError as exc:
+        parser.error(str(exc))
+
+
+def run_config(
+    parser: argparse.ArgumentParser, given: Sequence[str], workspace: Path | None
+) -> tuple[RunConfig, EffectiveConfig | None]:
+    """The run config `--config` asks for: an old run config's name (then no config file is
+    read, so the evaluation entries' runs stay as they were), or the effective config's."""
+    names = [value for value in given if value in CONFIG_NAMES]
+    if names:
+        if len(given) > 1:
+            parser.error(
+                f"--config {names[0]} is an old run config's name, which goes alone; give a "
+                f"file of that name as ./{names[0]}"
+            )
+        try:
+            return load_config(names[0]), None
+        except ValueError as exc:
+            parser.error(str(exc))
+    config = effective_config(parser, given, workspace)
+    return load_config(config), config
+
+
+def server_config(config: RunConfig, effective: EffectiveConfig, scratch: Path) -> RunConfig:
+    """`config` naming the file our own MCP server gets as `--config`: the effective config
+    written to the run's scratch directory, `${VAR}` references as written."""
+    path = scratch / f"{config.name}.toml"
+    path.write_text(effective.text, encoding="utf-8")
+    return dataclasses.replace(config, server_config=str(path))
+
+
+def config_mcp(
+    parser: argparse.ArgumentParser, config: EffectiveConfig, scratch: Path | None
+) -> ExternalServers | None:
+    """The config's `[mcp]` servers by ticket 116's rules, checked before any session starts:
+    `[mcp].file` as it is; `[mcp.servers]` written to `scratch` as an `mcpServers` file for the
+    stdio wrapper to read (only checked when `scratch` is None). None when it names none."""
+    path = config.value("mcp.file")
+    servers = config.raw_value("mcp.servers")
+    if path is not None and servers:
+        parser.error("[mcp]: give the servers inline ([mcp.servers.<name>]) or as a file, not both")
+    if path is not None:
+        return external_servers(parser, Path(path))
+    if not servers:
+        return None
+    if scratch is None:
+        target = Path("[mcp.servers]")
+    else:
+        target = scratch / "mcp-servers.json"
+        target.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    try:
+        external = load_servers(servers, target, os.environ)
+    except McpConfigError as exc:
+        parser.error(f"[mcp]: {exc}")
+    for warning in external.warnings:
+        print(warning, file=sys.stderr)
+    return external
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -249,7 +349,7 @@ def main(argv: list[str] | None = None) -> None:
     commands = parser.add_subparsers(dest="command", required=True)
 
     serve = commands.add_parser("mcp-server", help="serve the data tools over MCP stdio")
-    serve.add_argument("--config", required=True, choices=CONFIG_NAMES)
+    serve.add_argument("--config", required=True, action="append", help=OLD_CONFIG_HELP)
     add_database(serve, server=True)
     serve.add_argument(
         "--workspace", type=Path, help="keep the tools' file reads inside this directory"
@@ -295,7 +395,7 @@ def main(argv: list[str] | None = None) -> None:
     run_cmd.add_argument("--type", required=True, choices=("dbt", "query"))
     run_cmd.add_argument("--workspace", required=True, type=Path, help="working directory")
     add_database(run_cmd, server=False)
-    run_cmd.add_argument("--config", required=True, choices=CONFIG_NAMES)
+    run_cmd.add_argument("--config", action="append", default=[], help=OLD_CONFIG_HELP)
     run_cmd.add_argument("--events-dir", required=True, type=Path, help="where the event file goes")
     run_cmd.add_argument(
         "--data-source-name",
@@ -357,12 +457,6 @@ def main(argv: list[str] | None = None) -> None:
         default="scratch",
         help=DBT_TARGET_HELP + " (default: scratch)",
     )
-    run_cmd.add_argument(
-        "--mcp-servers",
-        type=Path,
-        help="JSON file of external MCP servers: Claude Code / Cursor `mcpServers`, plus an "
-        "`allowedTools` list per server (never on an evaluation run)",
-    )
     run_cmd.add_argument("--charts", action="store_true", help=CHARTS_HELP)
 
     check = commands.add_parser(
@@ -381,22 +475,13 @@ def main(argv: list[str] | None = None) -> None:
     web = commands.add_parser("web", help="serve the web UI on this machine's loopback address")
     web.add_argument("--runs-dir", required=True, type=Path, help="one subdirectory per run")
     web.add_argument("--port", type=int, default=WEB_PORT)
+    # The data sources the run form offers, every run's external MCP servers and the IM
+    # platforms the bot starts on come from the config: `[sources.*]`, `[mcp]`, `[im.*]`.
     web.add_argument(
-        "--data-sources",
-        type=Path,
-        help="TOML file naming the data sources the run form offers (none without it)",
-    )
-    web.add_argument(
-        "--mcp-servers",
-        type=Path,
-        help="JSON file of external MCP servers for every run: Claude Code / Cursor "
-        "`mcpServers`, plus an `allowedTools` list per server",
-    )
-    web.add_argument(
-        "--im",
-        type=Path,
-        help="TOML file of the IM platforms (Slack, Telegram, Discord) to start the bot on: "
-        "per platform, the names of the token variables and the allowed users",
+        "--config",
+        action="append",
+        default=[],
+        help=CONFIG_HELP + " (the project-level file is looked for in the working directory)",
     )
     # The server's network switch (ticket 140, ADR-0010: on by default, off in the settings).
     web.add_argument(
@@ -418,6 +503,19 @@ def main(argv: list[str] | None = None) -> None:
     mcp_launch.add_argument("--mcp-servers", required=True, type=Path)
     mcp_launch.add_argument("--server", required=True, help="the server's name in the file")
 
+    config_cmd = commands.add_parser("config", help="look at the config")
+    config_cmds = config_cmd.add_subparsers(dest="config_command", required=True)
+    show = config_cmds.add_parser(
+        "show", help="print every key of the effective config and where its value comes from"
+    )
+    show.add_argument("--config", action="append", default=[], help=CONFIG_HELP)
+    show.add_argument(
+        "--workspace",
+        type=Path,
+        help="where the project-level .data-agent/config.toml is looked for (default: the "
+        "working directory)",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "trace-check":
         # Imported here, like the web stack: no other command needs it.
@@ -426,24 +524,17 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(trace_check.main(args.run, os.environ, args.runs_dir or trace_check.RUNS_DIR))
     if args.command == LAUNCH_COMMAND:
         launch(args.mcp_servers, args.server, os.environ)
+    if args.command == "config":
+        show_config(effective_config(show, args.config, args.workspace or Path.cwd()))
+        return
     if args.command == "web":
-        serve_web(
-            web,
-            args.runs_dir,
-            args.port,
-            args.data_sources,
-            args.mcp_servers,
-            args.im,
-            args.network,
-        )
+        config = effective_config(web, args.config, Path.cwd())
+        serve_web(web, args.runs_dir, args.port, config, args.network)
         return
     # The deadline counts from the earliest point the process can see (ticket 54).
     started = time.monotonic()
     command = serve if args.command == "mcp-server" else run_cmd
-    try:
-        config = load_config(args.config)
-    except ValueError as exc:
-        command.error(str(exc))
+    config, effective = run_config(command, args.config, args.workspace)
     check_database(command, args)
     if args.command == "mcp-server":
         if args.workspace is not None and not args.workspace.is_dir():
@@ -489,9 +580,10 @@ def main(argv: list[str] | None = None) -> None:
             run_cmd.error(f"task file not found: {args.task_file}")
         text = args.task_file.read_text()
     turn = conversation_turn(run_cmd, args)
-    external = external_servers(run_cmd, args.mcp_servers)
-    if args.data_sources is not None:
-        task = file_task(run_cmd, args, text)
+    if args.duckdb is None and args.postgres_env is None:
+        if effective is None:
+            run_cmd.error("an old run config's name takes --duckdb or --postgres-env")
+        task = sources_task(run_cmd, args, text, effective)
     else:
         task = Task(
             text=text,
@@ -501,6 +593,44 @@ def main(argv: list[str] | None = None) -> None:
             postgres_env=args.postgres_env,
             data_source=args.data_source_name,
         )
+    # The run's own files from the config, which our MCP server and the stdio wrapper read.
+    scratch = None if effective is None else Path(tempfile.mkdtemp(prefix="data-agent-config-"))
+    try:
+        external = None
+        if effective is not None and scratch is not None:
+            external = config_mcp(run_cmd, effective, scratch)
+            config = server_config(config, effective, scratch)
+        outcome = run_task(run_cmd, args, task, config, started, turn, external)
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+    print(outcome.answer)
+    for error in outcome.errors:
+        print(f"error: {error}", file=sys.stderr)
+    print(f"events: {outcome.events_path}", file=sys.stderr)
+    if outcome.infra_error:
+        sys.exit(EXIT_ERROR)
+    sys.exit(EXIT_OK if outcome.finished else EXIT_UNFINISHED)
+
+
+def show_config(config: EffectiveConfig) -> None:
+    """`data-agent config show`: `<key> = <value as TOML>  # <source>` per key, every `${VAR}`
+    reference as written."""
+    order = list(SCHEMA.keys)
+    keys = sorted(config.raw, key=lambda key: order.index(key.split(".", 1)[0]))
+    for key in keys:
+        print(f"{key} = {toml_value(config.raw[key])}  # {config.source(key)}")
+
+
+def run_task(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    task: Task,
+    config: RunConfig,
+    started: float,
+    turn: ConversationTurn | None,
+    external: ExternalServers | None,
+) -> Outcome:
     try:
         deadline = None if args.agent_timeout_sec is None else started + args.agent_timeout_sec
         # A turn of a conversation is steered through stdin (contract item 6); a single run never
@@ -525,14 +655,8 @@ def main(argv: list[str] | None = None) -> None:
             )
         )
     except ConfigError as exc:
-        run_cmd.error(str(exc))
-    print(outcome.answer)
-    for error in outcome.errors:
-        print(f"error: {error}", file=sys.stderr)
-    print(f"events: {outcome.events_path}", file=sys.stderr)
-    if outcome.infra_error:
-        sys.exit(EXIT_ERROR)
-    sys.exit(EXIT_OK if outcome.finished else EXIT_UNFINISHED)
+        parser.error(str(exc))
+    return outcome
 
 
 def conversation_turn(
@@ -557,8 +681,8 @@ def conversation_turn(
 
 
 def external_servers(parser: argparse.ArgumentParser, path: Path | None) -> ExternalServers | None:
-    """The `--mcp-servers` file's servers, checked before any session starts (exit code 2 on an
-    error); its warnings go to stderr. None without the option, as on every evaluation."""
+    """The servers of the `mcpServers` file `[mcp].file` names, checked before any session starts
+    (exit code 2 on an error); its warnings go to stderr. None without a file."""
     if path is None:
         return None
     try:
@@ -574,31 +698,25 @@ def serve_web(
     parser: argparse.ArgumentParser,
     runs_dir: Path,
     port: int,
-    sources_file: Path | None,
-    mcp_servers: Path | None = None,
-    im: Path | None = None,
+    config: EffectiveConfig,
     network: bool = True,
 ) -> None:
-    """With `mcp_servers`, every run gets the file's path (as `--mcp-servers`), never a value
-    from it. The file is checked here first, so a bad one stops the server from starting; each
-    run checks it again. With `im` (data_agent.im.service), the bot starts on the file's
-    platforms, and no run gets their tokens' variables. With `network` off no run has the
-    network (`create_app`)."""
+    """The server's config gives the run form its `[sources.*]`, every run its `[mcp]` servers
+    (each run gets a file of the server's config, never a value expanded from it;
+    `create_app`) and the bot its `[im.*]` platforms (data_agent.im.service), whose tokens'
+    variables no run gets. The config's sources, servers and platforms are checked here first,
+    so a bad one stops the server from starting. With `network` off no run has the network
+    (`create_app`)."""
     if not runs_dir.is_dir():
         parser.error(f"runs directory not found: {runs_dir}")
-    if mcp_servers is not None:
-        # Absolute: the runs start in their own workspaces.
-        mcp_servers = mcp_servers.resolve()
-        external_servers(parser, mcp_servers)
+    config_mcp(parser, config, None)
     # Imported here so `data-agent run` does not load the web stack.
     import uvicorn
 
     from data_agent.web.app import create_app
-    from data_agent.web.sources import load_data_sources
 
-    # Read only when given: there is no default path (spec "本地运行的数据源").
     try:
-        sources = load_data_sources(sources_file) if sources_file is not None else []
+        sources = config_sources(config)
     except ValueError as exc:
         parser.error(str(exc))
     # Imported here too, for the stand-in of the acceptance tests (data_agent.im.service). No
@@ -606,15 +724,16 @@ def serve_web(
     from data_agent.im import config as im_config
     from data_agent.im import service
 
+    im_section = config.raw_value("im")
     try:
-        im_configs = im_config.load_config(im, os.environ) if im is not None else None
+        im_configs = im_config.load_section(im_section, os.environ) if im_section else None
     except im_config.ImConfigError as exc:
         parser.error(str(exc))
 
     def start_run(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
         # Its own session, so cancelling can stop the run with the tools it started. A stdin pipe
         # of its own: a conversation's turn is steered through it (data_agent.web.conversations),
-        # and no run reads the server's. With `--im`, no IM token.
+        # and no run reads the server's. With `[im.*]`, no IM token.
         if im_configs is None:
             return subprocess.Popen(
                 [sys.executable, "-m", "data_agent", "run", *args],
@@ -631,9 +750,7 @@ def serve_web(
         )
 
     try:
-        app = create_app(
-            runs_dir.resolve(), sources, start_run, mcp_servers=mcp_servers, network=network
-        )
+        app = create_app(runs_dir.resolve(), sources, start_run, config=config, network=network)
     except ValueError as exc:
         parser.error(str(exc))
     if im_configs is not None:

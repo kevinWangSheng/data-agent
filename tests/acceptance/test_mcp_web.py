@@ -56,9 +56,6 @@ from data_agent.config import EffectiveConfig, load_effective_config
 from data_agent.web import app as web_app
 from data_agent.web.app import DataSource, create_app
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
 # The run form without a `config` field (contract item 5) is ticket 144's: a form run waits for it.
 TICKET_144 = pytest.mark.xfail(
     strict=True, raises=AssertionError, reason="ticket 144: the config is not wired to the run yet"
@@ -186,9 +183,7 @@ def start_turn(web: Web) -> list[str]:
 ROUTES = {"form": submit_form, "turn": start_turn}
 
 
-@pytest.mark.parametrize(
-    "route", [pytest.param("form", marks=TICKET_144), pytest.param("turn", marks=TICKET_143)]
-)
+@pytest.mark.parametrize("route", [pytest.param("form", marks=TICKET_144), "turn"])
 def test_every_web_run_gets_the_config_path_and_no_expanded_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
@@ -254,7 +249,6 @@ def serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: Sequence[str])
     return seen[0]
 
 
-@TICKET_143
 def test_data_agent_web_hands_the_config_file_to_create_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -267,7 +261,6 @@ def test_data_agent_web_hands_the_config_file_to_create_app(
     assert Path(given).resolve() == config
 
 
-@TICKET_143
 def test_data_agent_web_without_the_option_gives_create_app_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

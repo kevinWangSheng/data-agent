@@ -1,5 +1,6 @@
-"""The `--im` file and the environment a run gets (.scratch/im/spec.md "配置"; contract items 4
-and 8 of ticket 130).
+"""The IM platforms and the environment a run gets (.scratch/im/spec.md "配置"; contract items 4
+and 8 of ticket 130). The platforms are the config's `[im.<platform>]` tables (`load_section`,
+ticket 143); `load_config` still reads the old `--im` file's format.
 
 The file is TOML, outside the repository, given by `data-agent web --im FILE` (no default path).
 One table per platform; the bot starts on each platform the file has a table for:
@@ -69,27 +70,38 @@ def load_config(path: Path, environ: Mapping[str, str]) -> dict[str, PlatformCon
         raise ImConfigError(f"--im file {path}: cannot read it: {exc.strerror}") from None
     except tomllib.TOMLDecodeError as exc:
         raise ImConfigError(f"--im file {path}: not valid TOML: {exc}") from None
+    return load_tables(data, environ, f"--im file {path}")
+
+
+def load_section(
+    section: Mapping[str, Any], environ: Mapping[str, str]
+) -> dict[str, PlatformConfig]:
+    """As `load_config`, for the config's `[im]` section (data_agent.config, ticket 143): its
+    `[im.<platform>]` tables, keys and checks as the file's."""
+    return load_tables(section, environ, "config", "im.")
+
+
+def load_tables(
+    data: Mapping[str, Any], environ: Mapping[str, str], where: str, prefix: str = ""
+) -> dict[str, PlatformConfig]:
     configs: dict[str, PlatformConfig] = {}
     for name, table in data.items():
         if name not in PLATFORMS:
             raise ImConfigError(
-                f"--im file {path}: [{name}] is no platform; the platforms are "
+                f"{where}: [{prefix}{name}] is no platform; the platforms are "
                 + ", ".join(PLATFORMS)
             )
         if not isinstance(table, dict):
-            raise ImConfigError(f"--im file {path}: {name} must be a table ([{name}])")
-        configs[name] = read_table(path, name, table, environ)
+            raise ImConfigError(f"{where}: {name} must be a table ([{prefix}{name}])")
+        configs[name] = read_table(f"{where}, [{prefix}{name}]", name, table, environ)
     if not configs:
-        raise ImConfigError(
-            f"--im file {path}: no platform table; give one of " + ", ".join(PLATFORMS)
-        )
+        raise ImConfigError(f"{where}: no platform table; give one of " + ", ".join(PLATFORMS))
     return configs
 
 
 def read_table(
-    path: Path, platform: str, table: dict[str, Any], environ: Mapping[str, str]
+    where: str, platform: str, table: dict[str, Any], environ: Mapping[str, str]
 ) -> PlatformConfig:
-    where = f"--im file {path}, [{platform}]"
     keys = TOKEN_KEYS[platform]
     unknown = sorted(set(table) - {*keys, "allowed_users"})
     if unknown:
