@@ -1,10 +1,10 @@
 # 151 — 云端部署：验收测试（启动检查、网页 bearer 令牌、联网与锁定、`/healthz`、git 来源）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: product-config 143
 Spec: ../spec.md（Testing Decisions"验收测试接缝"）；决定：`.scratch/product-config/decisions.md` Q7、Q8；`docs/adr/0012-settings-ui-and-platform-identity.md`；`.scratch/product-config/decisions.md`"建 settings 工单时主会话定的细节"第 1 条
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-28
+Branch: worktree-151-cloud-acceptance-tests
 
 ## Goal
 
@@ -167,14 +167,110 @@ spec"验收测试接缝"的四组行为都有验收测试，写在约定的接�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 3（前两次因本机内存不足中断）
+- Review rounds: 2
+- Model spend: $0
+- Outcome: —
 
 ## Comments
 
 - 2026-11-27（主会话建票）：cloud-deploy 的验收测试工单，人审后合入。等 product-config 143（配置加载器）合入后才能领。建票时发现的问题已由人和主会话在 `decisions.md` Q8 定下，本票照 Q8 写。
 - 2026-11-27（主会话）：按 ADR-0012 调整：原 `TICKET_156` 的测试（用令牌换 Cookie、只带 Cookie 的 API 与 SSE、Cookie 值不是令牌原文、伪造或过期的 Cookie、`/api/options` 联网默认值）移到 settings 157，分别标 `TICKET_159`、`TICKET_160`；契约 3、4 移到 settings 157 的契约 5、6，编号保留不重排（154 引用契约 5、6）；标题、Goal、Authority、Acceptance 去掉 156。bearer、启动检查、联网与锁定、git 来源不变。
 - 2026-11-27（主会话）：按 ADR-0012 调整：按"建 settings 工单时主会话定的细节"第 1 条，测试里的令牌变量从 `DATA_AGENT_WEB_TOKEN` 改为 `DATA_AGENT_ADMIN_TOKEN`（bearer，权限 = 组织管理员）。
+- 2026-11-28（工单 agent，第二次中断后接续；分支 `worktree-151-cloud-acceptance-tests`，`6a4f60e`…`55ddb85`）：
+  **`make check`（在 `55ddb85` 上）：** 通过。
+  - ruff：`All checks passed!`；格式：`547 files already formatted`；basedpyright：`0 errors, 0 warnings, 0 notes`。
+  - pytest：`3589 passed, 3 skipped, 81 deselected, 92 xfailed in 988.85s`。
+  - web：`Test Files 30 passed`、`Tests 448 passed`。
+
+  **`uv run pytest tests/acceptance/test_cloud_*.py -v`：** `9 passed, 30 xfailed`，没有被跳过的。
+  - **PASSED（9 个守门测试）：**
+    - 启动：不写 `[server]` 时监听 `127.0.0.1` 且不要令牌；缺 `${VAR}` 拒绝启动（local、cloud 各一）；IM 名单为空拒绝启动（local、cloud 各一）。
+    - 令牌：local、本机地址、不设令牌，不带凭据照旧 200。
+    - 联网：local 的 `run --network` 有 web 工具；local 网页的一轮带 `network: true` 照旧带 `--network`。
+    - git：普通本地路径原样不变，也不去 clone。
+  - **XFAIL（30 个）：** 其余全部。
+    - `TICKET_153`：启动 5 个、令牌 10 个、联网 9 个。
+    - `TICKET_154`：git 6 个，其中 `test_resolve_gives_a_plain_value_back_and_clones_nothing` 是本轮新加的。
+
+  **`--runxfail` 下的真实失败原因（30 个都是 AssertionError，都是"功能没做"）：**
+  - **启动：**
+    - `the server started (host … {'host': '127.0.0.1', …}) despite the problem`
+    - `assert '127.0.0.1' == '0.0.0.0'`
+    - cloud 下 `run` 用 local 后端：`a session started despite the refusal`
+  - **令牌：**
+    - `assert {'none': 200, …} == {'none': 401, …}`
+    - `/healthz`：`503: 'The web UI is not built …'`（它落进了 UI 的兜底路由）
+  - **联网与锁定：**
+    - `run --network`、`--dbt-target task`：`a session started despite the refusal`
+    - 对话的一轮：`201: {"kind":"turn",…}`（应得 409）
+    - IM 的一轮：`'--network' not in [...]`
+    - 运行环境：`the run's environment has DATA_AGENT_ADMIN_TOKEN`
+  - **git：**
+    - `no module data_agent.git_sources`
+    - 令牌那条：`the config is refused: … server.git_token: unknown key`
+  - **已知的依赖：** 走表单的 153 测试今天得到 `422 … "config" Field required`。表单按 144 的契约不再带 `config` 字段，而 153 本来就 Blocked by 144。
+
+  **参考实现（临时写，没提交，已删）：**
+  - 范围：`cli.py`、`web/app.py`、`config.py`，加一个新的 `git_sources.py`。
+  - 去掉标记后 39 个全过。
+  - 下面每个反向检查都让目标测试失败：
+
+  | 改坏的地方 | 目标测试的失败 |
+  |---|---|
+  | 令牌比较对空令牌放行 | `[200, 401, …] == [401, …]` |
+  | `/healthz` 要令牌 | `401` |
+  | SSE 流不认 bearer | `{'none': 200, …}` |
+  | cloud 下 `run --network` 照旧联网 | `a session started` |
+  | 网页联网不锁 | 拿到 201，没有 409 |
+  | 运行环境带着管理令牌 | `has DATA_AGENT_ADMIN_TOKEN` |
+  | 监听地址留在本机 | `'127.0.0.1' == '0.0.0.0'` |
+  | 忽略 `DATA_AGENT_MODE` | `server started` |
+  | 放行 `dbt_target task` | `a session started` |
+  | 刷新时原地改写旧目录 | 新旧路径相同 |
+  | 拉失败时清空旧内容 | `no demo/SKILL.md` |
+  | 令牌拼进 URL | 测试失败 |
+  | 普通路径也去 clone | `a value was cloned` |
+
+  联网的两项是在联网键改成 `[sandbox].network` 之后重跑的结果。
+
+  **契约（供人审）：**
+  1. **启动拒绝：** 退出码 2；stderr 点名变量或键；`uvicorn.run` 没被调用。`run` 一侧同样退出码 2、stderr 点名、不起会话。docstring 在 `test_cloud_startup.py`。
+  2. **bearer：** cloud 模式，或监听非本机地址时：
+     - 所有 `/api/*` 都只认 `Authorization: Bearer <DATA_AGENT_ADMIN_TOKEN>`，整串比较，先于其他检查返回 401。
+     - 401 的响应体和日志里都没有令牌的值。
+     - `/healthz` 不要凭据，返回 200 且等于 `{"ready": true}`。
+     - UI 页面和 `/assets/*` 不要凭据。
+     - docstring 在 `test_cloud_web_token.py`。
+  3. 契约 3、4 已移到 settings 157。
+  4. （同上）
+  5. **git 模块：** `data_agent.git_sources.GitSources(root, environ, token=None)`，带 `resolve(value) -> str` 和 `refresh() -> None`。
+     - 令牌来自 `[server].git_token = "${VAR}"`，只经 `GIT_ASKPASS` 交给 git。
+     - 每次刷新克隆到新目录；拉失败时保留上一次的内容，记一条 ERROR 日志，不抛异常。
+     - 本文件不测两件事：服务器是否真把 `<runs_dir>/.cache/git` 交给 `GitSources`，以及首次拉取失败时怎么办。
+     - docstring 在 `test_cloud_git_sources.py`。
+  6. 实现要接受 `git+file://`，当作 `git+https://` 的替身。
+
+  另有两项本工单自定的选择，请人一并审：
+  - **"配置文件打开联网"写作 `[sandbox].network = true`**。依据是 settings 160 第 46 行把 `[sandbox].network` 定为联网的设置键；而 143 的加载器里，`policy.network = true` 只表示"不锁"，不表示"打开"。第一轮里原来写的是 `[policy].network = true`。
+  - **git 令牌只有一个全局的 `[server].git_token`**，不按来源分别配。
+
+  **审查：**
+  - **`da-review main`：** 两轮都是 "No actionable defects"。
+  - **`eng:code-review main` 第一轮，已修（`a4cfe18`、`3b87da5`）：**
+    - 删掉没人用的 `key_of`（唯一的硬违规）。
+    - 新加 `resolve(普通值)` 原样返回的测试。
+    - cloud 测试都设上会话密钥，这样拒绝原因只会是被测的那一项。
+    - 联网键改为 `[sandbox].network`。
+    - `Served` 里的重复代码合并；去掉没用的 `name` 参数；改正一条误导的注释。
+    - 克隆根目录允许存在但为空，不过度约束 154。
+  - **`eng:code-review main` 第二轮，已修（`55ddb85`）：**
+    - 普通路径的守门测试同样放宽到"`.cache/git` 不存在或为空"。
+    - git 契约里写明本文件不断言什么，并说明钉提交要按提交 id 拉取。
+  - **不修的理由：**
+    - **local 表单联网的守门测试：** 今天表单请求得到 422；标成 xfail 的话，144 合入后它会意外通过、让 144 的 CI 变红。这条留给 144/153。
+    - **运行环境里的 `DATA_AGENT_SESSION_KEY`、OIDC 密钥：** spec.md:66 要求去掉它们，本工单只要求管理令牌。这一项属于 settings。
+    - **git 守门测试钉住了加载器把相对路径解析成绝对路径：** 这是 143 已合入的行为，钉住它是守门测试的本意。
+    - **小问题，属于判断题：** `ask_turn` 与 `message` 相近；名字 `Git`、`pulled`、`run_`；`served` 正常返回时退出码是 `None`（`run_cli` 是 `0`）；`write_run` 的返回值没人用；两处 `config()` 重复；连续三元表达式；`server.created.state.conversations` 链式访问；`KeyError` 和 `AttributeError` 可能出现的两处。最后这两处出事时，在 `raises=AssertionError` 下会直接报 FAILED，不会藏成 XFAIL。第二轮 Standards 审查没有硬违规。
+
+  **给主会话：** 自 merge-base `1535551` 以来，main 上碰 `src/` 或 `tests/acceptance/` 的提交只有 `8449231`，只改了 `test_seam_a_run_cli.py`，不影响这些 strict xfail。
