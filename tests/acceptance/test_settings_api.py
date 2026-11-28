@@ -55,6 +55,7 @@ from settings_support import (
     shop_config,
     signed_in,
     stop_sessions,
+    user,
 )
 
 TICKET_160 = pytest.mark.xfail(
@@ -209,6 +210,7 @@ def test_a_layer_s_history_lists_its_changes(
         signed_in(alice, slack, ALICE)
         for text in ("first", "second"):
             assert write(alice, channel(SALES), "instructions.text", text).status_code == 200
+        assert write(alice, user(ALICE), "instructions.text", "elsewhere").status_code == 200
         response = alice.get("/api/settings/history", params={"scope": channel(SALES)})
         assert response.status_code == 200, response.text
         rows = response.json()

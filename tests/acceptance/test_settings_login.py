@@ -47,6 +47,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from settings_support import (
@@ -187,6 +188,7 @@ def test_a_registered_workspace_signs_in_and_another_does_not(
         client = https_client(server.app())
         response = sign_in(client, slack, ALICE, TEAM)
         assert response.status_code in REDIRECTS, response.text
+        assert urlsplit(response.headers.get("location", "")).path == "/", response.headers
         assert [cookie_attributes(c)[0] for c in set_cookies(response)] == [COOKIE]
         [(_, exchange)] = [call for call in slack.calls if call[0] == "openid.connect.token"]
         assert exchange.get("redirect_uri") == f"{PUBLIC_URL}{CALLBACK}"
@@ -328,13 +330,18 @@ def test_the_admin_token_signs_in_an_org_admin_and_nothing_else_does(
 
 
 @TICKET_159
+@pytest.mark.parametrize("token", ["", None], ids=["empty", "unset"])
 def test_an_empty_or_unset_admin_token_lets_no_one_in(
     tmp_path: Path,
     slack: FakeSlack,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    token: str | None,
 ) -> None:
-    monkeypatch.setenv(ADMIN_TOKEN_ENV, "")
+    if token is None:
+        monkeypatch.delenv(ADMIN_TOKEN_ENV, raising=False)
+    else:
+        monkeypatch.setenv(ADMIN_TOKEN_ENV, token)
     with served(tmp_path / "srv", monkeypatch, capsys, cloud_argv(tmp_path)) as server:
         client = https_client(server.app())
         for body in ({"token": ""}, {"token": " "}, {}):

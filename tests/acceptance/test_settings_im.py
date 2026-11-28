@@ -85,6 +85,7 @@ from settings_support import (
     build_shop_duckdb,
     channel,
     finish_im_run,
+    has_field,
     incoming,
     load_config,
     open_store,
@@ -573,3 +574,24 @@ async def test_without_settings_a_channel_message_still_needs_the_mention(tmp_pa
         Incoming("slack", SALES, "T9", ALICE, direct=False, mentioned=True, text="Orders?")
     )
     assert len(bot.conversations.created) == 1
+
+
+@TICKET_161
+def test_slack_s_message_event_gives_its_team_as_the_workspace_id() -> None:
+    from data_agent.im.platform import Incoming
+    from data_agent.im.slack import to_incoming
+
+    has_field(Incoming, "workspace_id")
+    bot = "U0BOT0001"
+    event = {
+        "type": "message",
+        "channel": SALES,
+        "channel_type": "channel",
+        "user": ALICE,
+        "ts": "1700000000.000100",
+        "team": TEAM,
+        "text": f"<@{bot}> How many orders?",
+    }
+    got = to_incoming(event, bot)
+    assert got is not None
+    assert getattr(got, "workspace_id", None) == TEAM

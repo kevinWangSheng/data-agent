@@ -62,6 +62,10 @@ TICKET_160 = pytest.mark.xfail(
 )
 
 SEEDED = '[roles]\nmain = "deepseek-v4-pro"\n\n[limits]\neffort = "high"\n'
+# Deployment keys beside the settings, which seeding leaves out of the store.
+DEPLOYMENT = (
+    '\n[server]\nport = 9123\n\n[prompts]\nanswer_rule = "Short."\n\n[layers]\nskill = false\n'
+)
 EDITED = '[roles]\nmain = "deepseek-v4-pro"\n\n[limits]\neffort = "low"\nmax_budget_usd = 0.5\n'
 
 
@@ -86,7 +90,7 @@ def test_the_first_start_seeds_the_org_layer_and_the_second_does_not(
 ) -> None:
     stop_sessions(monkeypatch, tmp_path / "home")
     settings_attr("store", "open_store")
-    config = shop_config(tmp_path, SEEDED)
+    config = shop_config(tmp_path, SEEDED + DEPLOYMENT)
     root = tmp_path / "srv"
     db = root / "runs" / "settings.sqlite"
     assert not db.exists()
@@ -97,7 +101,8 @@ def test_the_first_start_seeds_the_org_layer_and_the_second_does_not(
     org = store.overrides(ORG)
     assert org.get("roles.main") == "deepseek-v4-pro"
     assert org.get("limits.effort") == "high"
-    assert not [key for key in org if key.startswith(("sources.", "server.", "models."))], org
+    deployment = ("sources.", "server.", "models.", "policy.", "im.", "layers.", "prompts.")
+    assert not [key for key in org if key.startswith(deployment)], org
 
     # The file edited, the server started again: the store keeps what it had.
     write_file(config, config.read_text().replace(SEEDED, EDITED))

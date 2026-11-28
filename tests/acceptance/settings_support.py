@@ -37,7 +37,6 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-import uuid
 from collections.abc import AsyncIterable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, fields
@@ -56,7 +55,6 @@ from data_agent import cli
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
-SETTINGS_FIXTURES = FIXTURES / "settings"
 SHOP_SQL = FIXTURES / "shop.sql"
 DBT_SHOP = FIXTURES / "dbt_shop"
 FAKE_DAB = FIXTURES / "fake_dab"
@@ -117,9 +115,6 @@ SLACK_ACCESS_TOKEN = "user-access-" + "Tt5n" + "-placeholder"
 MCP_TOKEN_ENV = "DATA_AGENT_MCP_ACME_TOKEN"
 MCP_TOKEN = "acme-" + "Wz81" + "-fake"
 PUBLIC_URL = "https://data-agent.example"
-EXIT_CONFIG_ERROR = 2
-CONFIG_DIR = ".data-agent"
-CONFIG_FILE = "config.toml"
 AMBIENT_ENV = (
     "DATA_AGENT_BASE_URL",
     "DATA_AGENT_MODEL",
@@ -253,11 +248,6 @@ def write_file(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
-
-
-def write_config(directory: Path, text: str) -> Path:
-    """`<directory>/.data-agent/config.toml`."""
-    return write_file(directory / CONFIG_DIR / CONFIG_FILE, text)
 
 
 def fake_home(root: Path) -> Path:
@@ -1614,7 +1604,3 @@ def drive_entry(
     if entry != "jaffle":
         raise RuntimeError(f"no entry {entry}")
     return jaffle_entry(root, layer, capsys, capture, monkeypatch)
-
-
-def new_id() -> str:
-    return uuid.uuid4().hex[:8]

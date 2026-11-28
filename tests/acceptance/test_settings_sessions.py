@@ -6,9 +6,10 @@ pass and removes the marker, changing nothing else.
 
 The runs are made the way the product makes them, on a cloud server with Sign in with Slack
 (contract 5): a Slack channel's turn and a Slack direct chat's turn through the IM adapter
-(ticket 161 records them in the session index, contract 9), a Telegram group's turn the same
-way, a run from the web form by a signed-in person (ticket 162 records its owner), and a run the
-index does not know (one from the command line, or from before the index).
+(ticket 161 records them in the session index, contract 9), a Telegram group's and a Discord
+channel's turn the same way, a run from the web form by a signed-in person (ticket 162 records
+its owner), and a run the index does not know (one from the command line, or from before the
+index).
 
 Contract 9, viewing (human-reviewed with ticket 157), one rule for a run's events
 (`GET /api/runs/{id}/events`, JSON and `text/event-stream`), the run list (`GET /api/runs`) and
@@ -33,6 +34,9 @@ import pytest
 from settings_support import (
     ALICE,
     BOB,
+    DISCORD_CHANNEL,
+    DISCORD_GUILD,
+    DISCORD_USER,
     EVE,
     FORM,
     ROOT,
@@ -66,7 +70,7 @@ TICKET_162 = pytest.mark.xfail(
 )
 
 UNKNOWN_RUN = "20261120T090000Z-cli00001"
-ALLOWED = (ALICE, BOB, EVE, ROOT, TELEGRAM_USER)
+ALLOWED = (ALICE, BOB, EVE, ROOT, TELEGRAM_USER, DISCORD_USER)
 
 
 @dataclass
@@ -132,6 +136,22 @@ async def world(
         runs["telegram"] = last_run(web)
         web.finish()
 
+        discord_bot = await start_bot_on(
+            root, FakePlatform("discord"), conversations, store, config
+        )
+        await deliver(
+            discord_bot,
+            incoming(
+                "Orders?",
+                person=DISCORD_USER,
+                chat=DISCORD_CHANNEL,
+                platform="discord",
+                workspace_id=DISCORD_GUILD,
+            ),
+        )
+        runs["discord"] = last_run(web)
+        web.finish()
+
         bob = https_client(web.app)
         signed_in(bob, slack, BOB)
         response = bob.post("/api/runs", json=FORM)
@@ -160,7 +180,7 @@ SEES = {
     ALICE: {"channel", "direct"},
     BOB: {"channel", "web"},
     EVE: set[str](),
-    ROOT: {"channel", "direct", "telegram", "web", "unknown"},
+    ROOT: {"channel", "direct", "telegram", "discord", "web", "unknown"},
 }
 
 
