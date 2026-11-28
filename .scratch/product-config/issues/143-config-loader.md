@@ -60,6 +60,7 @@ Branch: —
 - [ ] spec Q1 每条都有单元测试或验收测试；验收测试没钉的（例如 `${VAR}` 展开后的值不进 `repr` 和报错文字）有新单元测试。
 - [ ] `docs/setup.md` 写了配置文件的位置、分层、`config show`、三个旧参数改成哪一节，示例只带 `${VAR}`。
 - [ ] `make check` 通过。
+- [ ] `create_app(config=None)` 等于代码默认、不读任何配置文件（包括用户级 `~/.data-agent/config.toml`）；单元测试用假 HOME 钉住（141 第 2 轮复核 N1：`test_mcp_web.py` 的 `make_web`、`plain` 没有假 HOME）。
 
 ## Evidence required
 
@@ -92,3 +93,4 @@ Branch: —
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：`--config` 可重复、过渡期接受旧名（`run`、`mcp-server`）、层键 `skill`、保留变量名写法、产品 `version.config`；去掉"已有验收测试""评测入口还传消融名"两条停止条件（141 改写已有验收测试，过渡期接受旧名）。
 - 2026-11-27（主会话）：按 141 合并前审查补 Context：`--dbt-target`、`--network` 不接进 `cli_overrides`（归 144）。
 - 2026-11-27（主会话）：按 141 退回第 1 轮后的契约复核补 Context：`policy.disabled_models` 不在加载时拒绝（否则 144 的标记提前 XPASS）。
+- 2026-11-27（主会话）：按 141 第 2 轮契约复核补验收标准：`create_app(config=None)` 不读用户级文件。

@@ -64,6 +64,7 @@ Branch: —
 - [ ] `evals/configs/*.yaml` 里不再有 agent 行为的值（只剩 job 字段）。
 - [ ] `docs/setup.md` 写了评测配置文件、层文件、`config` 事件。
 - [ ] `make check` 通过。
+- [ ] `config` 事件不记逐键来源（Q6；单元测试，141 第 2 轮复核 N3）。
 
 ## Evidence required
 
@@ -100,3 +101,4 @@ Branch: —
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：两次 `--config`、`version.config` 写层名、`config` 事件第二条、lsb-single-shot 只读 `[models]`/`[roles]`、删过渡期的旧名；去掉"已有验收测试""lsb-single-shot 待定""`version.config` 得不到消融名"三条停止条件。
 - 2026-11-27（主会话）：按 141 合并前审查和调研后的决定补 Context：保留 `load_config(EffectiveConfig)`、守门依赖的接口、快照守门的用途与失效点。
 - 2026-11-27（主会话）：按 141 退回第 1 轮后的契约复核补 Context：数据服务器 `--config` 的形状（快照守门依赖）。
+- 2026-11-27（主会话）：按 141 第 2 轮契约复核补验收标准：`config` 事件不记逐键来源。

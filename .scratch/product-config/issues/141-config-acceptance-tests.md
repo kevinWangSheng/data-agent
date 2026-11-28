@@ -1,6 +1,6 @@
 # 141 — 产品配置：验收测试（配置加载、运行参数快照、产品默认、评测隔离、`config` 事件）
 
-Status: in-review
+Status: in-progress
 Blocked by: —
 Spec: ../spec.md（"Testing Decisions"的"验收测试接缝"）
 Claimed by: claude (opus-5.5, worktree 141-config-acceptance-tests)
@@ -446,3 +446,6 @@ PASSED→XFAIL this round: 0. Running total unchanged: 143 → 98, 144 → 10, 1
 ### For the main session
 1. The `normalize_text` change did not alter any recorded snapshot. Re-running the `python:3.12-slim` `/work` container check (`runs/141/linux-pytest.sh <export dir>`) would confirm that on Linux: this round's fix targets the `/work` + `/tmp` layout.
 2. Web single-run and IM Skill-tool asserts: add them to 147's acceptance criteria if wanted (see the review item above).
+- 2026-11-27（主会话）：第 2 轮修复的核查：CI 绿（`2bf9266`）；Codex GitHub app 当前 head 无意见；服务器 `python:3.12-slim`、`/work` 挂载：24 passed、0 failed；上下文干净的 Opus 子 agent 复核契约：两轮退回原因都已修好，1 个阻塞项（下面）。非阻塞 N1–N3 已写进 143、147、146 的验收标准。从 spec 推不出的新选择：`[policy]` 先设的文件锁定（用户级先于项目级、先给的 `--config` 先于后给的）；明文密钥检查对键后缀不分大小写，也查 `[mcp.servers.*.env]`。
+- 2026-11-27（主会话）：**退回（第 3 轮，人 2026-11-27 批准破例超过"最多 2 轮"，只修这一条）**：
+  1. **阻塞：停会话的假 `connect` 不让出事件循环**（`product_config_support.py:125-126`）。运行时限是 `asyncio.timeout`（`agent.py:2349`），只在让出控制时触发；假 `connect` 直接返回、假 `query` 立刻抛错，所以 `[limits].agent_timeout_sec` 的 4 条 `TICKET_144` 测试（`test_config_wiring.py::test_the_agent_timeout_is_the_runs_deadline`、`test_web_and_im_runs_take_the_effort_and_time_limit_from_the_config[form|turn|im]`）在正确的 144 下也会失败。复核的探针：今天 `run --config full --agent-timeout-sec 1` 记下 1 个会话、`terminal_reason` 为 None。修法：假 `connect` 里加 `await asyncio.sleep(0)`；探针应得 0 个会话、最后一个事件 `result` 的 `terminal_reason: "deadline"`。不改任何断言；确认快照与隔离守门不受影响。
