@@ -1,10 +1,10 @@
 # 157 — 设置界面：验收测试（生效设置解析、权限、登录、播种与不一致、IM、会话查看、评测隔离）
 
-Status: ready-for-agent
+Status: ready-for-human
 Blocked by: product-config 143
 Spec: ../spec.md（Testing Decisions"验收测试接缝"）；决定：`docs/adr/0012-settings-ui-and-platform-identity.md`、`.scratch/product-config/decisions.md`"设置界面 + Slack 权限"S1–S9 与 Q8
-Claimed by: —
-Branch: —
+Claimed by: claude-opus-5-5 (eng:implement, 2026-11-28)
+Branch: worktree-157-settings-acceptance-tests
 
 ## Goal
 
@@ -182,13 +182,105 @@ spec"验收测试接缝"的七组行为都有验收测试，写在约定的接�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
-- Model spend: $0 (data-agent model calls only, read from run event files; Claude Code / Codex subscription usage is not recorded)
-- Outcome: — (accepted | returned)
-- Human review minutes: — (filled by the human at merge, optional)
+- Attempts: 3（中断两次后第三次完成）
+- Review rounds: 2
+- Model spend: $0
+- Outcome: —
 
 ## Comments
 
 - 2026-11-27（主会话建票）：settings spec 的验收测试工单，人审后合入；158–162 照它转绿。原 cloud-deploy 151 的 `TICKET_156` 测试（Cookie 换取与鉴权、`/api/options` 联网默认值）移到这里，分别标 `TICKET_159`、`TICKET_160`。建票时发现的问题已由主会话定（`decisions.md`"建 settings 工单时主会话定的细节"第 1–14 条），本票照它写。
 - 2026-11-27（主会话）：按"建 settings 工单时主会话定的细节"改票：单一令牌 `DATA_AGENT_ADMIN_TOKEN`（也是 bearer）、`DATA_AGENT_SESSION_KEY` 与 OIDC 变量、`[server].public_url`、local 不发 Cookie、覆盖都对整个线程生效并记进 `config` 事件、网页运行的作用域与所有者、运行列表同一可见性规则、会话索引由 161 写、`[im.slack.workspaces.<名字>]`、"是否要 @"、Telegram 私信回退、单独 `run` 与 `config show` 的作用域。
+- 2026-11-28（工单 agent，第二次中断后续做；分支 `worktree-157-settings-acceptance-tests`，最后 `417ad3a`；交人：`config show --workspace` 与 143 冲突；覆盖记进 `config` 事件要等 146）：
+  **续做**
+  - 第二次中断后，先 merge 了 origin/main（`c111624`，没有冲突）。
+  - 上次的 8 个提交都是本票的测试文件。没提交的 `src/` 改动是临时参考实现：验证完、备份后已从工作区移除，`git status src/` 干净。
+
+  **范围**
+  - `git diff main...HEAD -- src/` 为空。
+  - `tests/acceptance` 下只有 9 个新文件：`settings_support.py` 和 8 个 `test_settings_*.py`，没有修改任何已有文件。
+  - 没有新建 `tests/fixtures/settings/`，示例配置都在测试里现写。
+
+  **`make check`**（最后一次跑在 `3d5c90d` 上，存为 `/tmp/ref157b/make_check2.txt`；之后的 `417ad3a` 只调了一处 import 顺序，单独跑过 ruff、basedpyright 和设置测试）
+  - ruff：`All checks passed!`
+  - basedpyright：`0 errors, 0 warnings, 0 notes`
+  - pytest：`3589 passed, 3 skipped, 81 deselected, 146 xfailed, 1 warning`
+  - web：`Test Files 30 passed`，`Tests 448 passed`，exit 0
+
+  **`pytest tests/acceptance/test_settings_*.py -v`**（在 `417ad3a` 上）
+  - 结果：`9 passed, 84 xfailed`，没有跳过的。每个测试名和结果在 `/tmp/ref157b/final_verbose.txt`。
+  - 9 条守门测试都通过、都不带标记：
+    - 评测隔离 6 条：`test_an_evaluation_entry_ignores_a_sqlite_file_where_settings_would_be`，6 个评测入口各一条。
+    - `test_settings_im.py::test_without_settings_a_channel_message_still_needs_the_mention`
+    - `test_settings_login.py::test_local_mode_needs_no_credentials_for_the_settings_page_s_options`
+    - `test_settings_login.py::test_local_mode_sets_no_cookie`
+
+  **`--runxfail`**
+  - `84 failed`，84 条全是 `AssertionError`。中间出现的 `ModuleNotFoundError` 只是被包在里面的原因。
+  - 每个标记一条真实失败原因：
+    - `TICKET_158`：`AssertionError: no module data_agent.settings.resolve yet`（生效设置解析）；评测隔离那条是 `no module data_agent.settings.store yet`。
+    - `TICKET_159`：`AssertionError: no module data_agent.settings.access yet`（权限）；`stderr does not name DATA_AGENT_SESSION_KEY`（cloud 启动检查：今天的报错是 `server.public_url: unknown key`）。
+    - `TICKET_160`：`the server did not start (exit 2) … server.public_url: unknown key`（`/api/options` 的联网默认值）。
+    - `TICKET_161`：`AssertionError: Incoming has no field 'workspace_id'`
+    - `TICKET_162`：`AssertionError: no module data_agent.settings.store yet`（会话查看要用的会话索引还不存在）。
+
+  **参考实现与反向检查**
+  - 参考实现覆盖 158 的全部和 159 的大部分：存储、解析、权限、登录。去掉标记后：
+    - 158 组的测试全部通过。
+    - 159 组只有 `test_a_signed_in_persons_web_run_has_their_workspace_and_personal_settings` 仍然失败，因为参考实现没按登录的人解析网页运行的设置。
+    - 160–162 没有一条 XPASS，说明这几组不会在自己的工单合入前提前转绿。
+    - 结果：58 XPASS(strict)，26 xfailed，没有别的失败。
+  - 反向检查（对参考实现做一处改动，再用 `--runxfail` 跑对应测试）：
+
+  | 改动 | 结果 |
+  |---|---|
+  | 频道里也叠了个人层 | `test_in_a_channel_the_personal_layer_is_left_out` 失败 |
+  | `[policy]` 越界时悄悄改成锁定值 | `test_a_value_outside_the_policy_is_refused_naming_the_key` 6 条都失败 |
+  | 改文件后数据库被覆盖 | `test_a_file_edited_after_seeding_leaves_the_store_and_is_flagged` 失败 |
+  | 缓存不过期 | `test_slack_answers_are_kept_five_minutes_and_a_revoked_admin_loses_the_right` 失败 |
+  | 没登记的工作区也拿到 Cookie | `test_a_registered_workspace_signs_in_and_another_does_not` 失败 |
+  | Cookie 值是令牌原文 | `test_the_admin_token_signs_in_an_org_admin_and_nothing_else_does` 失败；只走 Slack 登录的 Cookie 测试抓不到这个改动 |
+  | 评测入口读了默认位置的库（`run_config.load_config`） | livesqlbench 和 dab 两个入口报 `differs from the recorded snapshot in ['max_turns', 'prompt']`；6 个入口里只有这 2 个能抓到 |
+  | 只有一个 schema 版本（`SCHEMA_VERSION = 1`） | 迁移测试报 `no older version to upgrade from` |
+
+  - **160、161、162 组没做反向检查**：参考实现里没有这几组的代码。工单举的例子"越界的覆盖被悄悄替换""非成员能看频道会话"都没真跑，只靠今天的行为当反例：没凭据也是 200、谁都能看运行。这一项验收**不能算完全满足**。
+
+  **审查（2 轮）**
+  - **`da-review main`（Codex）**，3 条：
+    - 修了：允许的覆盖和频道默认值相同，测不出 `source=`/`mcp=` 是否真的生效。改为选频道开放范围里的一个子集，再断言 `=default` 能撤销。
+    - 修了：迁移测试在只有一个版本时也能通过。加了 `SCHEMA_VERSION > 1` 的断言，并写进契约。
+    - 不修：没断言真实的 `config` 事件。理由是 146 还没建，见上面第 2 条，交人定。
+  - **`eng:code-review main`**：
+    - 修了：
+      - 删掉 4 个没用到的辅助：`SETTINGS_FIXTURES`、`EXIT_CONFIG_ERROR`、`write_config`、`new_id`。
+      - 加一条测试：真实的 Slack 消息事件经 `to_incoming`，`team` 进到 `workspace_id`。
+      - 会话查看测试补了一个 Discord 运行。
+      - 管理令牌补了"变量没设"的情形。
+      - 登录回调断言跳转到 `/`。
+      - 播种测试带上部署层键（`[server]`、`[prompts]`、`[layers]`），并断言它们不进库。
+      - 改动历史断言别的层的改动不会列进来。
+    - 不修，理由：
+      - 迁移经 `open_store` 而不是启动整个服务：`open_store` 就是启动时调的接缝。
+      - "不另存角色表"只查新库的表结构：要查服务运行之后的库，得等 159 有了真实的写路径才能写。
+      - `run_reads_only_the_file…` 实际起的是守门作用：它的正向断言靠准备步骤（存储、`db_path` 键）在今天失败，符合本票规则。
+      - `settings_support.py` 有 1600 行：工单要求照抄而不是 import，所以大。
+      - `drive_entry` 的 if 链、`Any` 类型：属于判断项，改动小，不值得动。
+
+  **交人审的契约**：契约 1–9 全文在各测试文件的文件说明里：
+
+  | 契约 | 位置 |
+  |---|---|
+  | 1、2、3 | `test_settings_resolve.py` |
+  | 1 的权限部分 | `test_settings_permissions.py` |
+  | 5 | `test_settings_login.py` |
+  | 6 | `test_settings_api.py`、`test_settings_seed.py` |
+  | 4、7、8、9 | `test_settings_im.py` |
+  | 9 的查看部分 | `test_settings_sessions.py` |
+
+  - 按定的细节第 17 条，下面这些细节由 157 提出、人审时定：
+    - 路由：`/auth/slack/login`、`/auth/slack/callback`、`/auth/token`、`GET /api/me`、`/api/settings`（含 `/history`、`/use-file`）。
+    - OIDC `state` 不对时回 400；没登记的工作区回 403。
+    - Cookie `data_agent_session`：`HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`。
+    - 覆盖语法：消息开头写 `model= / effort= / source= / mcp=a,b`，空格分隔，`=default` 撤销；只有覆盖、没有正文的消息只确认，不起回合。
+    - 看不到的运行回 403；会话索引里没有的运行只有组织管理员能看（同第 18 条）。
+  - 新提议的键：`chat.sources`、`chat.mcp`、`chat.require_mention`、`instructions.text`、`[server].db_path`、`[server].org_admins`、`[server].public_url`、`[policy].max_budget_usd`、`[policy].behavior_admins_only`、`[im.slack].team_id`。
