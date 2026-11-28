@@ -1,6 +1,6 @@
 # 145 — 模型：`[models.*]`、`[roles]`、价格可省、上下文窗口、effort 取值、小模型/分类/验证器模型
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: 143
 Spec: ../spec.md（"分节（Q2）"的 `[models.<名字>]`、`[roles]`）
 Claimed by: claude (opus-5-5) 2026-11-28
@@ -117,3 +117,7 @@ Branch: worktree-145-model-settings
      - **`[limits].effort`**（144 交回后新加的验收项）：`cli.model_settings` 按主模型的 `efforts` 校验，新测试 `test_a_limits_effort_outside_the_models_efforts_names_the_file_and_the_value`。`policy.disabled_models` 没重复做。
      - **`[limits].effort` 的值进到 SDK options**（141 留下的缺口）：144 还没合入（`origin/main` 上 `5285275` 是 144 in-review），这个单元测试交给后合入的一方。
      - **和 144 的冲突**：两边都改 `agent.py` 的 `build_options` 里 `max_budget_usd=` 那段，本工单已删掉 `sdk_budget_usd`，后合入的一方 rebase。
+- 2026-11-28（主会话）：合并前核查：CI 绿；Codex GitHub app 无意见。服务器真实运行（`0d36bd4`，env 加载后 `unset DATA_AGENT_MODEL`）：(a) `main = deepseek-v4-pro` → `version.model` 和转录里全是 `deepseek-v4-pro`，`cost_basis: price_table`（$0.037），答案 37；(b) 无价格模型（用 `DeepSeek-Flash`，端点不认 `ds-alias`）→ stderr 首行和 `warning` 事件都有"has no price"，`cost_basis: unknown`、`cost_usd: null`，正常完成没被 SDK 兜底停下；(c) dbt 任务、`main = deepseek-v4-pro`、`verifier = deepseek-flash` → 两个验证器子 agent 的转录 assistant 消息全是 `deepseek-v4-pro`，代码设了 `CLAUDE_CODE_SUBAGENT_MODEL=deepseek-flash`，CLI 2.1.330 不让它盖过定义里的 `inherit`。花费约 $0.64（(c) 的 `[limits].max_budget_usd = 0.20` 没生效，因为 `[limits]` 接线在 144，未合入）。第 6 条三条新规则人已确认（`decisions.md`"145 实测后定"1–3）。**退回（第 1 轮）：原因如下，在原分支 `worktree-145-model-settings` 上接着修**。
+  1. **阻塞：`[roles].verifier` 不生效**：验证器定义写 `model="inherit"`（`src/data_agent/verifiers.py:103`），CLI 不让 `CLAUDE_CODE_SUBAGENT_MODEL` 盖过它，验证器总跑主模型。改成把验证器角色的模型 ID 直接写进 `AgentDefinition.model`（SDK 收完整模型 ID，`claude_agent_sdk/types.py:116`）；没设 `[roles].verifier` 时等于主模型。改正 `agent.py:1464` 附近说"变量盖过 `inherit`"的注释；`CLAUDE_CODE_SUBAGENT_MODEL` 留不留按是否还有用处定、写明理由。单元测试钉住 `options.agents` 里每个验证器的 `model` 等于 verifier 角色的模型。`verifiers.py` 若不在 Authority，照"把功能接上必需"处理并在回复里写明。
+  2. **`DATA_AGENT_MODEL` 盖过文件的 `[roles].main` 时打警告**（`decisions.md`"145 实测后定"第 4 条）：stderr 一行 `warning:`（点名变量和被盖掉的值与文件）加一个 `warning` 事件；`config show` 在 `roles.main` 那行标出被盖过；优先级不变。没有文件设 `[roles].main` 时不警告。配修复前会失败的测试。
+  - 合并 main 时注意：144（PR #153）在退回第 1 轮修复中，两边都改 `build_options` 的 `max_budget_usd=`，后合入的一方 rebase。
