@@ -1,6 +1,6 @@
 # 141 — 产品配置：验收测试（配置加载、运行参数快照、产品默认、评测隔离、`config` 事件）
 
-Status: in-progress
+Status: in-review
 Blocked by: —
 Spec: ../spec.md（"Testing Decisions"的"验收测试接缝"）
 Claimed by: claude (opus-5.5, worktree 141-config-acceptance-tests)
@@ -183,6 +183,7 @@ spec "验收测试接缝"的五组行为都有验收测试，写在约定的接�
 - Model spend: $0
 - Outcome: in-review; the `/work` container re-run is left to the main session
 - Human review minutes: —
+- 2026-11-27 return round 3 (human-approved exception): the fake `connect` yields to the event loop, so a run's deadline can fire; the probe went from 1 session / `terminal_reason` None to 0 sessions / `deadline`; no assertion changed; `make check` green; Codex had no findings; eng:code-review gave 2 comment nits, both fixed. Commits `ae8101d` and `c8067a6`.
 
 ## Comments
 
@@ -449,3 +450,43 @@ PASSED→XFAIL this round: 0. Running total unchanged: 143 → 98, 144 → 10, 1
 - 2026-11-27（主会话）：第 2 轮修复的核查：CI 绿（`2bf9266`）；Codex GitHub app 当前 head 无意见；服务器 `python:3.12-slim`、`/work` 挂载：24 passed、0 failed；上下文干净的 Opus 子 agent 复核契约：两轮退回原因都已修好，1 个阻塞项（下面）。非阻塞 N1–N3 已写进 143、147、146 的验收标准。从 spec 推不出的新选择：`[policy]` 先设的文件锁定（用户级先于项目级、先给的 `--config` 先于后给的）；明文密钥检查对键后缀不分大小写，也查 `[mcp.servers.*.env]`。
 - 2026-11-27（主会话）：**退回（第 3 轮，人 2026-11-27 批准破例超过"最多 2 轮"，只修这一条）**：
   1. **阻塞：停会话的假 `connect` 不让出事件循环**（`product_config_support.py:125-126`）。运行时限是 `asyncio.timeout`（`agent.py:2349`），只在让出控制时触发；假 `connect` 直接返回、假 `query` 立刻抛错，所以 `[limits].agent_timeout_sec` 的 4 条 `TICKET_144` 测试（`test_config_wiring.py::test_the_agent_timeout_is_the_runs_deadline`、`test_web_and_im_runs_take_the_effort_and_time_limit_from_the_config[form|turn|im]`）在正确的 144 下也会失败。复核的探针：今天 `run --config full --agent-timeout-sec 1` 记下 1 个会话、`terminal_reason` 为 None。修法：假 `connect` 里加 `await asyncio.sleep(0)`；探针应得 0 个会话、最后一个事件 `result` 的 `terminal_reason: "deadline"`。不改任何断言；确认快照与隔离守门不受影响。
+- 2026-11-27 (ticket agent, opus-5.5; return round 3, a human-approved exception covering only the one item; branch `worktree-141-config-acceptance-tests`; commits `ae8101d` and `c8067a6`; `origin/main` `aa58293` merged first as `a381f6c`, which only changed `.scratch/`):
+
+**1. The return item**
+
+| # | Fix | Evidence |
+|---|---|---|
+| 1 (blocking) | In `tests/acceptance/product_config_support.py`, the fake `connect` (`:127-131`) used to `return None`. It now does `await asyncio.sleep(0)`, with `import asyncio` (`:34`). The comment says why: the deadline is an `asyncio.timeout` and only fires when the run yields. The module docstring now says `connect` "only yields to the event loop (so a run's deadline can fire)". No assertion, fixture, mark or snapshot changed. | Probe (not committed: `runs/141/probe/test_probe_deadline.py`): `run --config full --agent-timeout-sec 1` under `stop_sessions`. **Before** (`runs/141/probe-before.txt`): `exit=2 sessions=1 last_type=result terminal_reason=None`. **After** (`probe-after.txt`): `exit=1 sessions=0 last_type=result terminal_reason=deadline`. |
+
+The 4 timeout tests still fail for 144 reasons only. With `--runxfail`, `test_the_agent_timeout_is_the_runs_deadline` and `test_web_and_im_runs_take_the_effort_and_time_limit_from_the_config[form|turn|im]` give these 4 failures:
+- `--config` does not load a file yet, so there is no event file.
+- `POST /api/runs` still requires `config`.
+- The web turn has no data source from the config (this one also covers the IM case).
+
+None of them fails because of the stub any more.
+
+**2. Checks**
+- `make check` on `ae8101d`: exit 0. pytest 3401 passed, 3 skipped, 198 xfailed; basedpyright 0 errors; web 448 passed. These counts are the same as round 2, so no test moved between PASSED and XFAIL. `c8067a6` only changes comments and the docstring; after it, ruff, format and pre-commit passed and the acceptance suite was re-run.
+- Non-integration acceptance tests after the last commit: 281 passed, 198 xfailed, **0 XPASS** (`runs/141/accept-r3-final.txt`).
+- Snapshot and isolation guards (`test_config_snapshot.py`, `test_config_eval_isolation.py`, `test_config_skills.py`): 22 passed, 15 xfailed, the same as round 2. No snapshot was re-recorded.
+- `git diff main...HEAD --stat -- src/ evals/` still lists only `src/data_agent/config.py` (+57). This round touched 1 file: `tests/acceptance/product_config_support.py`, +15/−10.
+- Real run: this ticket calls no model, so the probe above is the run.
+
+**3. Reviews**
+- `da-review main` (Codex): no findings. It read the `connect` change and re-checked that the Skill content hashes in the snapshots match the checkout (`runs/141/da-review-r3.txt`).
+- `eng:code-review main`: no blockers on either axis.
+  - **Fixed** (`c8067a6`): Standards pointed out that the comment said "Yields once, as a real connect does", but the SDK's `connect` yields many times (it starts the CLI and does the initialize handshake). The comment now says "Yields to the event loop, as a real connect does". Both Standards and Spec also flagged that the docstring re-wrap had split the `tests/acceptance/test_chat_eval_unchanged.py` path across two lines; the paragraph is re-wrapped.
+  - **Not fixed, with reason:** Spec noticed that `user_config_text()` sets `agent_timeout_sec = 60` (`product_config_support.py:983`), which is under `DEADLINE_MARGIN_S` (150 s). Once 144 is in, an eval entry that wrongly reads the user's config would still fail the isolation guard, but with `expected one session, got 0` instead of a snapshot diff. The guard still catches it; only the failure message gets less clear. Fixing it means changing a fixture value, which is outside this round's single item. If wanted, the main session can raise that value above 150 in 144's acceptance criteria.
+- Fix rounds: Codex 0; eng:code-review 1 (comments only).
+
+### File-by-file changes, this round
+
+| File | Before → after | Assertions | Marks (PASSED→XFAIL) |
+|---|---|---|---|
+| `tests/acceptance/product_config_support.py` | the fake `connect` yields once with `asyncio.sleep(0)`; `import asyncio`; the comment and the seam docstring are updated | unchanged | — |
+
+PASSED→XFAIL this round: 0. Running total unchanged: 143 → 98, 144 → 10, 146 → 7.
+
+### For the main session
+1. If wanted, add to 144's acceptance criteria: raise `user_config_text()`'s `agent_timeout_sec` to a value of 150 or more, so the isolation guard fails with a snapshot diff again (see the review item above).
+- 2026-11-27（主会话）：已知限制（不修）：`user_config_text()` 的 `agent_timeout_sec = 60` 低于 `DEADLINE_MARGIN_S`，144 之后评测入口若误读用户配置，隔离守门仍会失败，但报"expected one session, got 0"而不是快照差异。夹具合入后不改。
