@@ -1,6 +1,6 @@
 # 145 — 模型：`[models.*]`、`[roles]`、价格可省、上下文窗口、effort 取值、小模型/分类/验证器模型
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 143
 Spec: ../spec.md（"分节（Q2）"的 `[models.<名字>]`、`[roles]`）
 Claimed by: claude (opus-5-5) 2026-11-28
@@ -71,10 +71,10 @@ Branch: worktree-145-model-settings
 
 ## Ledger
 
-- Attempts: 3（前两次被内存不足中断）
-- Review rounds: 2（da-review 1 轮，eng:code-review 1 轮外加 1 次后续修复）
+- Attempts: 4（前两次被内存不足中断；退回第 1 轮修复 1 次）
+- Review rounds: 4（首轮：da-review 1 轮，eng:code-review 1 轮加 1 次后续修复；退回第 1 轮：da-review 1 轮，eng:code-review 1 轮）
 - Model spend: $0
-- Outcome: 验收测试转绿、`make check` 通过；两次真实运行待主会话代跑
+- Outcome: 两条退回项已修，da-review 的 2 条已修；`make check` 通过；(c)(d) 真实运行待主会话代跑
 - Human review minutes: —
 
 ## Comments
@@ -121,3 +121,41 @@ Branch: worktree-145-model-settings
   1. **阻塞：`[roles].verifier` 不生效**：验证器定义写 `model="inherit"`（`src/data_agent/verifiers.py:103`），CLI 不让 `CLAUDE_CODE_SUBAGENT_MODEL` 盖过它，验证器总跑主模型。改成把验证器角色的模型 ID 直接写进 `AgentDefinition.model`（SDK 收完整模型 ID，`claude_agent_sdk/types.py:116`）；没设 `[roles].verifier` 时等于主模型。改正 `agent.py:1464` 附近说"变量盖过 `inherit`"的注释；`CLAUDE_CODE_SUBAGENT_MODEL` 留不留按是否还有用处定、写明理由。单元测试钉住 `options.agents` 里每个验证器的 `model` 等于 verifier 角色的模型。`verifiers.py` 若不在 Authority，照"把功能接上必需"处理并在回复里写明。
   2. **`DATA_AGENT_MODEL` 盖过文件的 `[roles].main` 时打警告**（`decisions.md`"145 实测后定"第 4 条）：stderr 一行 `warning:`（点名变量和被盖掉的值与文件）加一个 `warning` 事件；`config show` 在 `roles.main` 那行标出被盖过；优先级不变。没有文件设 `[roles].main` 时不警告。配修复前会失败的测试。
   - 合并 main 时注意：144（PR #153）在退回第 1 轮修复中，两边都改 `build_options` 的 `max_budget_usd=`，后合入的一方 rebase。
+- 2026-11-28（工单 agent，opus-5-5，退回第 1 轮修复）：
+  1. **先 merge 了 origin/main**：`3cf6bf1`，修完又合了一次，是 `9a6e71a`。两次都没有冲突。
+  2. **退回第 1 条（阻塞）：`[roles].verifier` 不生效**，修在 `ac3affe`。
+     - 改法：`verifiers.load_definition` 和 `verifier_agents` 加了 `model` 参数，`build_options` 传 `settings.verifier or settings.model`。每个验证器的 `AgentDefinition.model` 现在是完整模型 ID，没设 `[roles].verifier` 时等于主模型。
+     - `agent.py` 里说"变量盖过 `inherit`"的注释已改正。
+     - `CLAUDE_CODE_SUBAGENT_MODEL` 留着。理由一：141 的快照守门组（`tests/fixtures/product_config/snapshots/*.json`）钉住了它，去掉就触发停止条件。理由二：它仍给没写模型的子 agent 用。`docs/setup.md` 也写了。
+     - 修复前会失败的测试：`test_every_verifier_runs_on_the_verifier_roles_model`，修复前实际值是 `{'inherit'}`。
+     - `verifiers.py:103` 本来就在 Authority 里。
+  3. **退回第 2 条：`DATA_AGENT_MODEL` 盖过文件的 `[roles].main` 时警告**，修在 `ac3affe`。
+     - 打警告：stderr 一行 `warning: DATA_AGENT_MODEL=<值> overrides [roles].main = '<原值>' in <文件>: ...`，再加一个 `warning` 事件，字段是 `variable`、`model`、`overridden`、`file`。
+     - `config show` 那行显示成 `roles.main = "x"  # env:DATA_AGENT_MODEL (overrides "<原值>" from <文件>)`。
+     - 优先级不变。下面三种情况不警告：没有文件设 `[roles].main`；值相同；命令行又覆盖了它。
+     - 测试：`test_data_agent_model_over_the_files_main_role_warns` 和 `test_config_show_marks_the_main_role_the_environment_overrides`，两个修复前都失败。另有 `..._without_a_files_main_role_does_not_warn` 守不警告的情况。
+     - **超出 Authority 的改动**：`config.py` 在 `load_effective_config` 里给 `EffectiveConfig` 加了 `overridden` 字段，只记录、不改合并结果。环境变量盖过以后文件里的值就没了，不记录的话警告点不出原值。
+  4. **证据**：
+     - `make check`：`3620 passed, 3 skipped, 81 deselected, 90 xfailed`；web `448 passed`；`exit=0`。输出存在 `/tmp/145-check.txt`。
+     - `uv run pytest tests/acceptance/test_config_models.py -v`：6 个全部 PASSED，0 xfail。
+     - `git diff origin/main...HEAD -- tests/acceptance tests/fixtures | grep '^[-+]' | grep -v '^[-+][-+]'`：只有 `TICKET_145 = pytest.mark.xfail(...)` 那 5 行、`pytestmark = TICKET_145` 和一个空行被删。
+     - $0 真实运行，配置是 `[roles]\nmain = "deepseek-v4-pro"\n`：
+       - `HOME=$(mktemp -d) DATA_AGENT_MODEL=deepseek-flash uv run data-agent config show --config <该文件>` 输出 `roles.main = "deepseek-flash"  # env:DATA_AGENT_MODEL (overrides "deepseek-v4-pro" from <文件>)`。
+       - 不设这个变量时输出 `roles.main = "deepseek-v4-pro"  # <文件>`。
+  5. **审查**：
+     - **`da-review main`** 给了 2 条 P2，都属实，都已修（`40d1a15`），修复前会失败的测试走真实的 `Launcher.config_args` 往返：
+       - 网页、对话、IM 运行收到的配置文件写全了所有键，代码默认值也写进去。读回来时 `deepseek-flash` 的默认端点被当成用户写的，于是 `DATA_AGENT_BASE_URL=代理`、`main = v4-pro`、`small = flash` 被拒，退出 2。这是本工单上一轮 `55117d5` 引入的回归。改法：等于代码默认值（`DEFAULT_MODELS`）的 `base_url`/`api_key` 不算用户写的。
+       - 网页启动的运行丢了覆盖警告。改法：`web/launcher.py` 的 `config_args` 对被盖过的键写回文件原值。运行子进程继承服务器的环境（`cli.py:778-795`，`im/config.py:139` 只去掉 IM 令牌），所以会重新应用覆盖并警告，模型不变。**`web/launcher.py` 不在 Authority 里**，这是把功能接上必需的改动。
+     - **`eng:code-review main`**：
+       - Spec 一路：两条退回项都齐了，三处超范围改动判定为必需。另有三条低优先级意见，都不修（见第 6 条）。
+       - Standards 一路：没有违反硬规则。两处打警告代码重复，已修（`d431c3d`，抽成 `warn` 函数）。
+       - 其余 Standards 意见不修：
+         - `from_config` 太长、元组该换成命名类型、`spend_cap` 收字符串、`unknown_cost` 调了两次、`price or ...`：都是前几轮已合进分支的代码，不是本轮改动。其中 `spend_cap` 收字符串是因为 `evals/dab.py` 在用，`evals/` 不在 Authority 里。
+         - `DEFAULT_BASE_URL` 和 effort 取值在 `agent.py`、`config.py` 各有一份：`evals/` 从 `agent` 导入这些名字，要合并得同时保证这些名字照旧可用，超出本轮范围。
+  6. **已知限制**（不修，写明理由）：
+     - 用户在默认模型的表里显式写了默认的 DeepSeek 端点、而 main 用别的端点时，不再拒绝。读回后的配置分不出"写了默认值"和"代码默认"，而且效果和省略一样（setup.md："省了或写得一样就行"）。
+     - 网页、对话、IM 运行里，覆盖警告点名的是运行目录里的配置快照（`runs/<id>/config/<名字>.toml`），不是服务器原来的文件。值是对的。
+  7. **交给主会话的真实运行**（`[roles].verifier` 只在单元测试层面钉住了 `options.agents`，CLI 2.1.330 认不认定义里的非 Claude 模型 ID 要实测）：
+     - (c) 重跑：dbt 任务，配置 `[roles]\nmain = "deepseek-v4-pro"\nverifier = "deepseek-flash"\n`。命令 `uv run data-agent run --type dbt --config <该文件> --workspace <ws> --events-dir runs/145-c2 --task "<dbt 任务>"`。确认验证器子 agent 转录里 assistant 消息的 `model` 是 `deepseek-flash`，主会话是 `deepseek-v4-pro`。
+     - (d) 同一任务，配置里不写 `[roles].verifier`（评测现在给定义传显式 ID，以前传 `inherit`）。`--events-dir runs/145-d`，确认验证器跑主模型、能正常完成。
+     - (e) 可选：env 里留着 `DATA_AGENT_MODEL`，配置写不同的 `[roles].main`，跑一次查数。确认 stderr 和事件文件里有覆盖警告。
