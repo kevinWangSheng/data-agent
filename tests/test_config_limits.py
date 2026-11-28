@@ -536,3 +536,39 @@ def test_the_dictionarys_statements_take_a_shorter_source_timeout(
     workspace.mkdir()
     build_dictionary(gateway, workspace, None)
     assert seen and set(seen) == {expected}
+
+
+def test_a_copy_of_a_sources_file_reuses_its_dictionary(
+    tmp_path: Path, shop: Path, counted: list[int]
+) -> None:
+    """Spec: by data source. A web dbt run works on its own copy of the source's DuckDB file;
+    keyed by the file it would never reuse a dictionary and would add one per run."""
+    import shutil
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cache = tmp_path / "cache"
+    copies = []
+    for run in ("r1", "r2"):
+        copy = tmp_path / run / "shop.duckdb"
+        copy.parent.mkdir()
+        shutil.copy(shop, copy)
+        copies.append(copy)
+    events: list[dict[str, Any]] = []
+    for copy in copies:
+        with agent.prebuilt_dictionary(
+            cli.DuckDBGateway(copy),
+            workspace,
+            lambda kind, **fields: events.append(fields),
+            cache=cache,
+            source="shop",
+        ):
+            pass
+    assert [event["cached"] for event in events] == [False, True]
+    assert len(counted) == 1 and len(list(cache.iterdir())) == 1
+    # Another source of the same catalog keeps its own.
+    with agent.prebuilt_dictionary(
+        cli.DuckDBGateway(copies[0]), workspace, lambda *_, **__: None, cache=cache, source="crm"
+    ):
+        pass
+    assert len(counted) == 2

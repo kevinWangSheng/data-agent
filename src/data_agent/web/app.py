@@ -92,7 +92,9 @@ def config_summary(config: EffectiveConfig, network: bool) -> dict[str, Any]:
         "model": value("roles.main"),
         "effort": value("limits.effort"),
         "max_budget_usd": value("limits.max_budget_usd"),
-        "max_turns": {kind: value(f"limits.max_turns.{kind}") for kind in ("query", "dbt")},
+        "max_turns": {
+            kind: value(f"limits.max_turns.{kind}") for kind in ("query", "dbt", "large")
+        },
         "agent_timeout_sec": value("limits.agent_timeout_sec"),
         "network": network,
     }

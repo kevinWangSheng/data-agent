@@ -369,6 +369,7 @@ def prebuilt_dictionary(
     database: str | None = None,
     hidden: HiddenSchemas | None = None,
     cache: Path | None = None,
+    source: str | None = None,
 ) -> Iterator[Path]:
     """The value dictionary (ticket 42), built before the agent starts and written as JSON
     outside the workspace for the MCP server to read; its coverage is recorded as the
@@ -376,10 +377,11 @@ def prebuilt_dictionary(
     toward the run's time, not the agent's first tool call; a signal during it cancels the
     build and ends the run. `hidden` is the data source's schema choice (`other_runs` when
     None). With `cache` (a product run's, ticket 144; never an evaluation's) a dictionary built
-    before on the same catalog is reused (`cached_dictionary`), and the event says `cached`."""
+    before on the same catalog of the same data source (`source`, its name) is reused
+    (`cached_dictionary`), and the event says `cached`."""
     with run_directory(workspace, "data-agent-dictionary-") as directory:
         hidden = other_runs(None) if hidden is None else hidden
-        cached = None if cache is None else cached_dictionary(gateway, hidden, cache)
+        cached = None if cache is None else cached_dictionary(gateway, hidden, cache, source)
         dictionary = None if cached is None else cached.load()
         if dictionary is None:
             dictionary = build_interruptible(
@@ -422,6 +424,7 @@ def prebuilt_dictionaries(
                     source.name,
                     schema_choice(source_limit(limits, source.name)),
                     cache,
+                    source.name,
                 )
             )
             for source in sources
@@ -476,11 +479,14 @@ class CachedDictionary:
 
 
 def cached_dictionary(
-    gateway: Gateway, hidden: HiddenSchemas, cache: Path
+    gateway: Gateway, hidden: HiddenSchemas, cache: Path, source: str | None = None
 ) -> CachedDictionary | None:
     """The cache entry of the data source's catalog as the agent sees it (its schema choice
-    applied): the database's identity, the schema choice and every table and column. None when
-    the catalog cannot be read; the build then goes on without the cache."""
+    applied): the data source, the schema choice and every table and column. None when the
+    catalog cannot be read; the build then goes on without the cache. The data source is its
+    name (spec: by data source) and, for Postgres, its URL's hash; a DuckDB source is its name
+    alone, not its file, so a web dbt run's per-run copy of the file reuses the source's
+    dictionary. Without a name, the database's identity (the file, the URL's hash)."""
     identity = getattr(gateway, "identity", None)
     if identity is None:
         return None
@@ -490,7 +496,8 @@ def cached_dictionary(
         return None
     key = {
         "version": DICTIONARY_CACHE_VERSION,
-        "database": identity(),
+        "source": source,
+        "database": identity() if source is None or gateway.dialect == "postgres" else None,
         "shown": hidden.shown("schema"),
         "catalog": [
             [table.schema, table.name, table.kind, [list(column) for column in table.columns]]
@@ -2449,6 +2456,7 @@ async def run(
                 log.emit,
                 hidden=schema_choice(own_limits),
                 cache=dictionary_cache,
+                source=own.name,
             )
             if config.context and not task.several
             else nullcontext()

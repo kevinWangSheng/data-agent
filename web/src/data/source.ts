@@ -41,7 +41,7 @@ export type ConfigSummary = {
   model: string | null
   effort: string | null
   max_budget_usd: number | null
-  max_turns: { query: number | null; dbt: number | null }
+  max_turns: { query: number | null; dbt: number | null; large: number | null }
   agent_timeout_sec: number | null
   /** The server's network switch: off, no run may have the network. */
   network: boolean

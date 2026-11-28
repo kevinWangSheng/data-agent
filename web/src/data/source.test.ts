@@ -259,7 +259,7 @@ describe('localSource', () => {
       model: 'deepseek-flash',
       effort: null,
       max_budget_usd: 1,
-      max_turns: { query: 50, dbt: 200 },
+      max_turns: { query: 50, dbt: 200, large: 75 },
       agent_timeout_sec: null,
       network: true,
     }
