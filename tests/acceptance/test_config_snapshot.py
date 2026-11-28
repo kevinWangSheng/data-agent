@@ -129,10 +129,17 @@ def test_guard_an_evaluation_entry_gives_the_recorded_parameters(
         ("/work.d", "/work.d"),
         ("/private/tmp/y", "/private/tmp/y"),
         ("sk-secret in /tmp", "<api-key> in <tempdir>"),
+        # The longest rule wins wherever it stands in the list (rules added after `text_rules`).
+        ("/work/run-1/x", "<run-id>/x"),
     ],
 )
 def test_guard_normalize_text_replaces_each_path_once(text: str, expected: str) -> None:
-    rules = [("/work", "<repo>"), ("/tmp", "<tempdir>"), ("sk-secret", "<api-key>")]
+    rules = [
+        ("/work", "<repo>"),
+        ("/tmp", "<tempdir>"),
+        ("sk-secret", "<api-key>"),
+        ("/work/run-1", "<run-id>"),
+    ]
     assert normalize_text(text, rules) == expected
 
 

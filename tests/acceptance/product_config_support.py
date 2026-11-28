@@ -496,15 +496,17 @@ def is_path(text: str) -> bool:
 
 def normalize_text(text: str, rules: Sequence[tuple[str, str]]) -> str:
     # One pass over the text, so a placeholder already put in is not searched again (`/work/tmp/x`
-    # with the repo at `/work` stays `<repo>/tmp/x`). At each place the first rule that matches
-    # wins: `text_rules` lists the longest first.
-    if rules:
+    # with the repo at `/work` stays `<repo>/tmp/x`). At each place the longest rule that matches
+    # wins, wherever it stands in `rules`; for a string listed twice, its first placeholder.
+    placeholder_of: dict[str, str] = {}
+    for old, new in rules:
+        placeholder_of.setdefault(old, new)
+    if placeholder_of:
         pattern = "|".join(
             PATH_BEFORE + re.escape(old) + PATH_AFTER if is_path(old) else re.escape(old)
-            for old, _ in rules
+            for old in sorted(placeholder_of, key=len, reverse=True)
         )
-        new_of = dict(rules)
-        text = re.sub(pattern, lambda match: new_of[match.group(0)], text)
+        text = re.sub(pattern, lambda match: placeholder_of[match.group(0)], text)
     # mkdtemp's random suffix and the run's ids: different on every run.
     text = MKDTEMP.sub(r"\1<random>", text)
     return EVENT_FILE.sub("run-<stamp>", text)
