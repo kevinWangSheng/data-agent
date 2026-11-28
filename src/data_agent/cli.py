@@ -724,7 +724,8 @@ def serve_web(
     from data_agent.im import config as im_config
     from data_agent.im import service
 
-    im_section = config.raw_value("im")
+    # Expanded (an `allowed_users` entry may be a `${VAR}`); the token keys hold names only.
+    im_section = config.value("im")
     try:
         im_configs = im_config.load_section(im_section, os.environ) if im_section else None
     except im_config.ImConfigError as exc:

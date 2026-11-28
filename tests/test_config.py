@@ -402,3 +402,103 @@ def test_inline_mcp_servers_are_checked_when_the_web_server_starts(
     assert exit_code(["web", "--runs-dir", str(runs), "--config", str(path)]) == 2
     err = capsys.readouterr().err
     assert "DATA_AGENT_MCP_" in err and SECRET not in err
+
+
+# --- Review round 1 (Codex) -----------------------------------------------------------------
+
+GITHUB_PAT = "ghp" + "_" + "Zq1x" * 9
+SLACK_BOT = "xoxb" + "-" + "1234567890-abcdefghij"
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        (
+            '[mcp.servers.gh]\ntype = "http"\nurl = "https://mcp.example"\n'
+            f'headers = {{ Authorization = "Bearer {GITHUB_PAT}" }}\n',
+            "mcp.servers.gh.headers.Authorization",
+        ),
+        (
+            '[mcp.servers.gh]\ntype = "http"\nurl = "https://mcp.example"\n'
+            'headers = { Authorization = "Bearer made-up-literal" }\n',
+            "mcp.servers.gh.headers.Authorization",
+        ),
+        (
+            '[mcp.servers.gh]\ntype = "http"\nurl = "https://mcp.example"\n'
+            'headers = { X-Api-Key = "made-up-literal" }\n',
+            "mcp.servers.gh.headers.X-Api-Key",
+        ),
+        (f'[prompts]\nanswer_rule = "use {SLACK_BOT}"\n', "prompts.answer_rule"),
+    ],
+)
+def test_a_recognisable_secret_is_refused_under_any_key(
+    tmp_path: Path, text: str, key: str
+) -> None:
+    error = error_of(write(tmp_path / "c.toml", text))
+    assert error.key == key and "${" in str(error)
+    assert GITHUB_PAT not in str(error) and SLACK_BOT not in str(error)
+
+
+def test_an_authorization_header_with_a_reference_is_taken(tmp_path: Path) -> None:
+    path = write(
+        tmp_path / "c.toml",
+        '[mcp.servers.gh]\ntype = "http"\nurl = "https://mcp.example"\n'
+        'headers = { Authorization = "Bearer ${DATA_AGENT_MCP_GH_TOKEN}" }\n',
+    )
+    loaded = load(path, environ={"DATA_AGENT_MCP_GH_TOKEN": SECRET})
+    assert loaded.value("mcp.servers.gh.headers.Authorization") == (
+        "Bearer ${DATA_AGENT_MCP_GH_TOKEN}"
+    )
+
+
+def test_a_user_id_reference_is_checked_and_expanded(tmp_path: Path) -> None:
+    path = write(
+        tmp_path / "c.toml",
+        '[im.slack]\nbot_token_env = "DATA_AGENT_SLACK_BOT_TOKEN"\n'
+        'app_token_env = "DATA_AGENT_SLACK_APP_TOKEN"\nallowed_users = ["${SLACK_USER}", 7]\n',
+    )
+    error = error_of(path)
+    assert error.key == "im.slack.allowed_users" and "SLACK_USER" in str(error)
+    loaded = load(path, environ={"SLACK_USER": "U012ABCDEF"})
+    assert loaded.value("im.slack.allowed_users") == ["U012ABCDEF", 7]
+
+
+def test_the_web_server_gives_the_bot_the_expanded_user_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import uvicorn
+
+    from data_agent.im import service
+
+    started: list[Any] = []
+    monkeypatch.setattr(uvicorn, "run", lambda *_, **__: None)
+    monkeypatch.setattr(service, "start", lambda app, configs: started.append(configs))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for name, value in (
+        ("DATA_AGENT_SLACK_BOT_TOKEN", "bot-made-up"),
+        ("DATA_AGENT_SLACK_APP_TOKEN", "app-made-up"),
+        ("SLACK_USER", "U012ABCDEF"),
+    ):
+        monkeypatch.setenv(name, value)
+    path = write(
+        tmp_path / "c.toml",
+        '[im.slack]\nbot_token_env = "DATA_AGENT_SLACK_BOT_TOKEN"\n'
+        'app_token_env = "DATA_AGENT_SLACK_APP_TOKEN"\nallowed_users = ["${SLACK_USER}"]\n',
+    )
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    cli.main(["web", "--runs-dir", str(runs), "--config", str(path)])
+    assert started[0]["slack"].allowed_users == frozenset({"U012ABCDEF"})
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        ("[im.slack]\n", "im.slack"),
+        ("[mcp.servers.github]\n", "mcp.servers.github"),
+        ("[sources.shop]\n", "sources.shop"),
+    ],
+)
+def test_an_empty_entry_is_refused(tmp_path: Path, text: str, key: str) -> None:
+    error = error_of(write(tmp_path / "c.toml", text))
+    assert error.key == key and "empty" in str(error)

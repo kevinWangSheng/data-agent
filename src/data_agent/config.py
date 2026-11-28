@@ -58,11 +58,25 @@ CLI = "cli"
 POLICY = "policy"
 
 # A key whose value is a secret: it may only be a `${VAR}` reference (spec Q1). Matched on the
-# key's last part, case-insensitively, so an MCP server's `env.DATA_AGENT_MCP_GH_TOKEN` counts.
-SECRET_SUFFIXES = ("api_key", "token", "password", "secret")
-# What a gitleaks rule of the repo's catches in any value (`.gitleaks.toml` `deepseek-api-key`;
-# the IPv4 rule is about the repo, not secrets).
-SECRET_VALUES = (re.compile(r"\bsk-[0-9a-f]{32}\b"),)
+# key's last part, case-insensitively and with `-` read as `_`, so an MCP server's
+# `env.DATA_AGENT_MCP_GH_TOKEN` and a `headers.X-Api-Key` count.
+SECRET_SUFFIXES = ("api_key", "apikey", "token", "password", "secret")
+# A key whose value carries a secret beside other text (`Bearer ${VAR}`): it must reference one.
+CREDENTIAL_KEYS = ("authorization", "proxy_authorization", "cookie")
+# What a gitleaks rule catches in any value: the repo's own (`.gitleaks.toml` `deepseek-api-key`;
+# its IPv4 rule is about the repo, not secrets) and the shapes of the default rules for the
+# credentials a config of ours is likeliest to hold (GitHub, Slack, Anthropic and OpenAI keys,
+# AWS access keys, private keys).
+SECRET_VALUES = (
+    re.compile(r"\bsk-[0-9a-f]{32}\b"),
+    re.compile(r"\b(?:gh[pousr]_[0-9A-Za-z]{36}|github_pat_\w{82})\b"),
+    re.compile(r"\bxox[abposr]-[0-9A-Za-z-]{10,}"),
+    re.compile(r"\bxapp-\d-[0-9A-Za-z-]{10,}"),
+    re.compile(r"\bsk-ant-[0-9A-Za-z_-]{20,}"),
+    re.compile(r"\bsk-(?:proj-)?[0-9A-Za-z_-]{40,}"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
 REFERENCE = re.compile(r"\$\{([^}]*)\}")
 WHOLE_REFERENCE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -385,11 +399,19 @@ def walk_table(
             check_secret(dotted, value, origin)
             leaves[dotted] = leaf_value(child, dotted, value, origin, environ)
         else:
+            # An entry by name (`[sources.shop]`, `[mcp.servers.gh]`) or an IM platform with no
+            # key would leave no trace once flattened, as if it were not there.
+            if value == {} and (isinstance(node, Named) or prefix == "im"):
+                raise origin.error(dotted, "an empty table; give its keys or leave it out")
             walk_table(child, value, dotted, origin, environ, leaves)
 
 
+def key_name(key: str) -> str:
+    return key.rsplit(".", 1)[-1].lower().replace("-", "_")
+
+
 def is_secret_key(key: str) -> bool:
-    return key.rsplit(".", 1)[-1].lower().endswith(SECRET_SUFFIXES)
+    return key_name(key).endswith(SECRET_SUFFIXES)
 
 
 def check_secret(key: str, value: Any, origin: Origin) -> None:
@@ -397,6 +419,10 @@ def check_secret(key: str, value: Any, origin: Origin) -> None:
     hint = "a secret is written as a ${VAR} reference to an environment variable"
     if is_secret_key(key) and not (isinstance(value, str) and WHOLE_REFERENCE.fullmatch(value)):
         raise origin.error(key, f"looks like a plaintext secret; {hint}")
+    if key_name(key) in CREDENTIAL_KEYS and not (
+        isinstance(value, str) and REFERENCE.search(value)
+    ):
+        raise origin.error(key, f"holds a credential without a reference; {hint}")
     for text in strings_in(value):
         if any(pattern.search(text) for pattern in SECRET_VALUES):
             raise origin.error(key, f"holds what looks like an API key; {hint}")
@@ -442,6 +468,9 @@ def leaf_value(leaf: Leaf, key: str, value: Any, origin: Origin, environ: Mappin
             isinstance(item, str | int) and not isinstance(item, bool) for item in value
         ):
             raise origin.error(key, "must be a list of user ids (strings or integers)")
+        for item in value:
+            if isinstance(item, str):
+                check_references(key, item, origin, environ)
         return list(value)
     if not isinstance(value, list):
         raise origin.error(key, "must be a list")
