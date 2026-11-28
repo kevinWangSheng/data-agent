@@ -285,8 +285,8 @@ def test_guard_a_plain_local_path_stays_as_it_is_and_nothing_is_cloned(
         f'[sources.shop]\nkind = "duckdb"\npath = {toml_path(db)}\ndocs = "docs"\n',
     )
     config = load_effective_config([path], dict(os.environ), {})
-    assert [str(p) for p in config.value("skills.dirs")] == [str(skills.resolve())]
-    assert [str(p) for p in config.value("instructions.files")] == [str(notes.resolve())]
+    assert [str(p) for p in config.value("skills.dirs") or []] == [str(skills.resolve())]
+    assert [str(p) for p in config.value("instructions.files") or []] == [str(notes.resolve())]
     assert str(config.value("sources.shop.docs")) == str(docs.resolve())
     with served(tmp_path / "server", monkeypatch, capsys, ["--config", str(path)]) as server:
         assert server.ran, f"data-agent web did not start: {server.stderr[-2000:]!r}"
