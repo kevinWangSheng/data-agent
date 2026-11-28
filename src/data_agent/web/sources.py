@@ -67,18 +67,23 @@ def config_sources(config: "EffectiveConfig") -> list[DataSource]:
 def source_leaves(sources: Sequence[DataSource]) -> dict[str, str]:
     """The sources as the config's dotted keys (`sources.shop.kind`, ...), DuckDB paths absolute:
     the file or the variable's name, never a connection string; `dbt_project` too when set."""
+    from data_agent.config import Key
+
     leaves: dict[str, str] = {}
     for source in sources:
-        prefix = f"sources.{source.name}"
+
+        def key(name: str, source: DataSource = source) -> Key:
+            return Key(("sources", source.name, name))
+
         if source.duckdb is not None:
-            leaves[f"{prefix}.kind"] = "duckdb"
-            leaves[f"{prefix}.path"] = str(source.duckdb.resolve())
+            leaves[key("kind")] = "duckdb"
+            leaves[key("path")] = str(source.duckdb.resolve())
         else:
             assert source.postgres_env is not None
-            leaves[f"{prefix}.kind"] = "postgres"
-            leaves[f"{prefix}.env"] = source.postgres_env
+            leaves[key("kind")] = "postgres"
+            leaves[key("env")] = source.postgres_env
         if source.dbt_project is not None:
-            leaves[f"{prefix}.dbt_project"] = str(source.dbt_project.resolve())
+            leaves[key("dbt_project")] = str(source.dbt_project.resolve())
     return leaves
 
 

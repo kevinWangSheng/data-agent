@@ -83,7 +83,7 @@ VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # A key TOML takes unquoted.
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 # Values kept as written in `value`, for the code reading them to expand (module docstring).
-UNEXPANDED = ("mcp.servers.",)
+UNEXPANDED = ("mcp", "servers")
 
 
 class ConfigFileError(ValueError):
@@ -300,19 +300,19 @@ def default_leaves() -> dict[str, Any]:
     """The code defaults, as dotted keys to values."""
     leaves: dict[str, Any] = {}
 
-    def walk(node: Node, prefix: str) -> None:
+    def walk(node: Node, prefix: tuple[str, ...]) -> None:
         if isinstance(node, Leaf):
             if node.default is not UNSET:
                 default = node.default
-                leaves[prefix] = list(default) if isinstance(default, list) else default
+                leaves[Key(prefix)] = list(default) if isinstance(default, list) else default
         elif isinstance(node, Table):
             for key, child in node.keys.items():
-                walk(child, f"{prefix}.{key}" if prefix else key)
+                walk(child, (*prefix, key))
 
-    walk(SCHEMA, "")
+    walk(SCHEMA, ())
     for name, entry in DEFAULT_MODELS.items():
         for key, value in entry.items():
-            leaves[f"models.{name}.{key}"] = value
+            leaves[Key(("models", name, key))] = value
     # In schema order: `[models.*]` after `[layers]`.
     return {key: leaves[key] for key in in_section_order(leaves)}
 
@@ -323,10 +323,28 @@ def in_section_order(keys: Iterable[str]) -> list[str]:
     return sorted(keys, key=lambda key: order.index(key.split(".", 1)[0]))
 
 
+class Key(str):
+    """A dotted key (`sources.shop.kind`) that keeps its parts: a name may hold a dot
+    (`[models."gpt-4.1"]`), so splitting the string would not give them back. Equal to, and
+    found in a dict by, its dotted string."""
+
+    parts: tuple[str, ...]
+
+    def __new__(cls, parts: Sequence[str]) -> "Key":
+        key = super().__new__(cls, ".".join(parts))
+        key.parts = tuple(parts)
+        return key
+
+
+def parts_of(key: str) -> tuple[str, ...]:
+    """A key's parts: a `Key`'s own, else the dotted string split (a key written in code)."""
+    return key.parts if isinstance(key, Key) else tuple(key.split("."))
+
+
 def node_at(key: str) -> Leaf | None:
     """The leaf a dotted key names, None when there is none."""
     node: Node = SCHEMA
-    for part in key.split("."):
+    for part in parts_of(key):
         if isinstance(node, Table):
             if part not in node.keys:
                 return None
@@ -376,30 +394,29 @@ def file_leaves(data: Mapping[str, Any], origin: Origin, environ: Mapping[str, s
     """The file's values as dotted keys to raw values (paths absolute), checked against
     `SCHEMA`; ConfigFileError on the first problem."""
     leaves: dict[str, Any] = {}
-    walk_table(SCHEMA, data, "", origin, environ, leaves)
+    walk_table(SCHEMA, data, (), origin, environ, leaves)
     return leaves
 
 
 def walk_table(
     node: Table | Named,
     data: Any,
-    prefix: str,
+    prefix: tuple[str, ...],
     origin: Origin,
     environ: Mapping[str, str],
     leaves: dict[str, Any],
 ) -> None:
     if not isinstance(data, dict):
-        raise origin.error(prefix, "must be a table")
+        raise origin.error(Key(prefix), "must be a table")
     for key, value in data.items():
-        dotted = f"{prefix}.{key}" if prefix else key
+        dotted = Key((*prefix, key))
         if isinstance(node, Table):
             if key not in node.keys:
                 raise origin.error(dotted, "unknown key" if prefix else "unknown section")
             child = node.keys[key]
         else:
-            # Keys are dotted; any other name (quoted in TOML) is kept as it is.
-            if not key or "." in key:
-                raise origin.error(dotted, "a name may not be empty or hold '.'")
+            if not key:
+                raise origin.error(dotted, "a name may not be empty")
             child = node.entry
         if isinstance(child, Leaf):
             check_secret(dotted, value, origin)
@@ -411,11 +428,11 @@ def walk_table(
                 isinstance(node, Named) or (isinstance(node, Table) and node.entries)
             ):
                 raise origin.error(dotted, "an empty table; give its keys or leave it out")
-            walk_table(child, value, dotted, origin, environ, leaves)
+            walk_table(child, value, dotted.parts, origin, environ, leaves)
 
 
 def key_name(key: str) -> str:
-    return key.rsplit(".", 1)[-1].lower().replace("-", "_")
+    return parts_of(key)[-1].lower().replace("-", "_")
 
 
 def is_secret_key(key: str) -> bool:
@@ -519,7 +536,7 @@ def check_references(key: str, value: str, origin: Origin, environ: Mapping[str,
 def expand(key: str, value: Any, environ: Mapping[str, str]) -> Any:
     """`value` with its references expanded (checked set by `check_references`), except under
     `UNEXPANDED`; paths as `Path`."""
-    if key.startswith(UNEXPANDED):
+    if parts_of(key)[:2] == UNEXPANDED:
         return value
     leaf = node_at(key)
     kind = leaf.kind if leaf is not None else ""
@@ -573,10 +590,9 @@ class EffectiveConfig:
         """The entries of a named section (`sources`, `models`, `im`), in order."""
         found: list[str] = []
         for key in self.values:
-            if key.startswith(f"{section}."):
-                name = key[len(section) + 1 :].split(".", 1)[0]
-                if name not in found:
-                    found.append(name)
+            parts = parts_of(key)
+            if parts[0] == section and len(parts) > 1 and parts[1] not in found:
+                found.append(parts[1])
         return found
 
     def name(self) -> str:
@@ -586,15 +602,21 @@ class EffectiveConfig:
 
 
 def subtree(leaves: Mapping[str, Any], key: str) -> dict[str, Any] | None:
+    """The leaves under `key` (a dotted table name: `sources.shop`, `mcp.servers`) as nested
+    dicts, None when there are none."""
     prefix = f"{key}."
     found: dict[str, Any] = {}
     for dotted, value in leaves.items():
-        if dotted.startswith(prefix):
-            node = found
-            *parents, last = dotted[len(prefix) :].split(".")
-            for part in parents:
-                node = node.setdefault(part, {})
-            node[last] = value
+        if not dotted.startswith(prefix):
+            continue
+        parts = parts_of(dotted)
+        # The parts the table's name takes (a name may hold a dot).
+        depth = next(n for n in range(1, len(parts)) if ".".join(parts[:n]) == key)
+        node = found
+        *parents, last = parts[depth:]
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[last] = value
     return found or None
 
 
@@ -647,11 +669,12 @@ def load_effective_config(
         )
         sources["roles.main"] = f"env:{MODEL_ENV}"
     if environ.get(BASE_URL_ENV):
-        key = f"models.{raw['roles.main']}.base_url"
+        key = Key(("models", raw["roles.main"], "base_url"))
         raw[key], sources[key] = environ[BASE_URL_ENV], f"env:{BASE_URL_ENV}"
     locked = locks(policy)
     cli_origin = Origin("command line")
     for key, value in cli_overrides.items():
+        key = Key(key.split("."))
         leaf = node_at(key)
         if leaf is None:
             raise cli_origin.error(key, "unknown key")
@@ -728,7 +751,7 @@ def toml_text(leaves: Mapping[str, Any]) -> str:
     the text of a config loaded from this text is this text."""
     tree: dict[str, Any] = {}
     for key, value in leaves.items():
-        *table, last = key.split(".")
+        *table, last = parts_of(key)
         node = tree
         for part in table:
             node = node.setdefault(part, {})

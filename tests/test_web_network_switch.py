@@ -180,6 +180,9 @@ def test_data_agent_web_takes_the_switch(
     lets through is refused for that (400) and starts nothing."""
     served: list[FastAPI] = []
     monkeypatch.setattr(uvicorn, "run", lambda app, **_: served.append(app))
+    # No config file of this machine's (ticket 143: without --config, ~/.data-agent/ is read).
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DATA_AGENT_CONFIG", raising=False)
     runs = tmp_path / "runs"
     runs.mkdir()
     cli.main(["web", "--runs-dir", str(runs), *flags])

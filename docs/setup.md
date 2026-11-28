@@ -102,7 +102,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
   - `run --data-sources`、`web --data-sources` → `[sources.<名字>]`。`run` 不给 `--duckdb`/`--postgres-env` 时用配置里的数据源（一个就当它跑，几个就都交给 agent）；给了就用给的。
   - `run --mcp-servers`、`web --mcp-servers` → `[mcp]`：`file = "<mcpServers JSON 的路径>"`，或者内联 `[mcp.servers.<名字>]`（字段同 JSON 里的一个 server），两种只能选一种。
   - `web --im` → `[im.slack]`、`[im.telegram]`、`[im.discord]`，键和原来 `--im` 文件里 `[slack]` 等表相同。
-- **网页的每次运行**拿到服务器的生效配置：服务器把它写进运行目录 `<runs-dir>/<id>/config/<名字>.toml`（数据源是服务器的数据源，不含连接串；不含 `[im.*]`；`${VAR}` 照原文），运行参数用 `--config` 指向它。表单选的消融配置（144 之前还在）另写一个只有 `[layers]` 的 `config/layers/<名字>.toml` 叠在后面。`create_app(config=None)` 等于代码默认，不读任何文件。
+- **网页的每次运行**拿到服务器的生效配置：服务器把它写进运行目录 `<runs-dir>/<id>/config/<名字>.toml`（数据源是服务器的数据源，不含连接串；不含 `[im.*]`；`${VAR}` 照原文），运行参数用 `--config` 指向它。表单选的消融配置（144 之前还在）另写一个只有 `[layers]` 的 `config/layers/<名字>.toml` 叠在后面。只换层开关，不换 Skill 版本，所以表单选 `full-old-skill` 返回 400（只有评测入口跑它）。`create_app(config=None)` 等于代码默认，不读任何文件。
 
 示例（`~/.data-agent/config.toml`，只带 `${VAR}`）：
 

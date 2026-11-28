@@ -260,7 +260,13 @@ def test_data_agent_web_from_the_wheel_serves_the_ui(tmp_path: Path, installed_w
     server = subprocess.Popen(
         [sys.executable, "-m", "data_agent", "web", "--runs-dir", str(runs), "--port", str(port)],
         cwd=tmp_path,
-        env=os.environ | {"PYTHONPATH": str(installed_wheel)},
+        # No config file of this machine's (ticket 143: without --config, ~/.data-agent/ is read).
+        env={
+            **os.environ,
+            "PYTHONPATH": str(installed_wheel),
+            "HOME": str(tmp_path / "home"),
+            "DATA_AGENT_CONFIG": "",
+        },
     )
     base = f"http://127.0.0.1:{port}"
     try:

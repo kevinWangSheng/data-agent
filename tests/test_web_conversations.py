@@ -113,13 +113,12 @@ def test_an_unreadable_index_leaves_the_other_conversations_listed(
 
 def test_the_config_file_a_turn_gets_reads_back_as_the_same_sources(tmp_path: Path) -> None:
     """Names and paths that TOML must escape: quotes, backslashes, non-ASCII and characters
-    outside the Basic Multilingual Plane. (A name may no longer hold a dot: the config's keys are
-    dotted, ticket 143.)"""
+    outside the Basic Multilingual Plane, a dot."""
     folder = tmp_path / 'dir "q" \\ 数据 🦆'
     folder.mkdir()
     file = folder / "a.duckdb"
     sources = [
-        DataSource('or"ders v2', duckdb=file),
+        DataSource('or"ders.v2', duckdb=file),
         DataSource("客户 🦆", postgres_env="CRM_URL"),
     ]
     runs = tmp_path / "runs"
@@ -129,7 +128,7 @@ def test_the_config_file_a_turn_gets_reads_back_as_the_same_sources(tmp_path: Pa
     run_dir.mkdir()
     [_, path] = launcher.config_args(run_dir)
     assert config_sources(load_effective_config([Path(path)], {}, {})) == [
-        DataSource('or"ders v2', duckdb=file.resolve()),
+        DataSource('or"ders.v2', duckdb=file.resolve()),
         DataSource("客户 🦆", postgres_env="CRM_URL"),
     ]
 

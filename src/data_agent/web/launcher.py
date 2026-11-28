@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from data_agent.config import EffectiveConfig, default_config, toml_text
-from data_agent.run_config import CONFIG_NAMES, load_config
+from data_agent.run_config import CONFIG_NAMES, load_config, skills_path
 from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
 from data_agent.web.sources import DataSource, check_layout, overlap, source_leaves
@@ -304,6 +304,12 @@ class Launcher:
             )
         if config not in CONFIG_NAMES:
             raise Refused(400, f"unknown config {config!r}; choose from {', '.join(CONFIG_NAMES)}")
+        if load_config(config).skills_dir != skills_path("skills"):
+            # A form run takes the picked config's layers only (`layers_args`), not another Skill
+            # directory, so it would be named for Skills it does not run (until ticket 144).
+            raise Refused(
+                400, f"config {config!r} swaps the Skill version; only evaluations run it"
+            )
         if not task.strip():
             raise Refused(400, "the task is empty")
         if task_type == "dbt" and source.dbt_project is None:

@@ -160,9 +160,22 @@ def test_mcp_servers_stay_as_written_for_their_own_rules(tmp_path: Path) -> None
     assert SECRET not in json.dumps(loaded.value("mcp.servers"))
 
 
-def test_a_name_with_a_dot_is_refused(tmp_path: Path) -> None:
-    error = error_of(write(tmp_path / "c.toml", '[sources."a.b"]\nkind = "duckdb"\n'))
-    assert error.key == "sources.a.b"
+def test_a_name_with_a_dot_survives_the_text(tmp_path: Path) -> None:
+    """Names are kept by their parts: a model or source name with a dot (`gpt-4.1`) writes out
+    and loads back, as our MCP server and every web run load the config's text."""
+    path = write(
+        tmp_path / "c.toml",
+        '[sources."a.b"]\nkind = "duckdb"\npath = "a.duckdb"\n\n'
+        '[models."gpt-4.1"]\nbase_url = "https://llm.example"\n',
+    )
+    first = load(path, environ={"DATA_AGENT_MODEL": "gpt-4.2", "DATA_AGENT_BASE_URL": "https://x"})
+    again = load(write(tmp_path / "again.toml", first.text))
+
+    assert again.names("sources") == ["a.b"]
+    assert again.value("sources.a.b") == {"kind": "duckdb", "path": tmp_path / "a.duckdb"}
+    assert again.value("models.gpt-4.1.base_url") == "https://llm.example"
+    assert again.value("models.gpt-4.2.base_url") == "https://x"
+    assert again.text == first.text
 
 
 def test_a_missing_explicit_file_is_refused(tmp_path: Path) -> None:
@@ -512,3 +525,15 @@ def test_the_web_server_gives_the_bot_the_expanded_user_ids(
 def test_an_empty_entry_is_refused(tmp_path: Path, text: str, key: str) -> None:
     error = error_of(write(tmp_path / "c.toml", text))
     assert error.key == key and "empty" in str(error)
+
+
+def test_the_form_refuses_a_config_that_swaps_the_skill_version(tmp_path: Path) -> None:
+    from data_agent.web.launcher import Refused
+
+    db = tmp_path / "shop.duckdb"
+    db.write_bytes(b"")
+    with pytest.raises(Refused) as refused:
+        launcher(tmp_path, None, [DataSource("shop", duckdb=db)]).check(
+            "t", "query", "shop", "full-old-skill"
+        )
+    assert refused.value.status == 400 and "Skill version" in refused.value.detail
