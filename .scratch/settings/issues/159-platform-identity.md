@@ -65,6 +65,7 @@ Branch: —
 - [ ] 单元测试：Cookie 签名的验证、篡改与过期；令牌常数时间比较且空令牌不放行；日志和异常文字不含令牌、access token；缓存的过期与按键隔离；运行子进程的环境里没有 OIDC 密钥和 `DATA_AGENT_SESSION_KEY`；local 下任何响应都没有 `Set-Cookie`
 - [ ] 最终回复列出部署层新增的键和环境变量（名字、用途、缺了时的报错文字），供 155 写进 `docs/deploy.md`
 - [ ] `make check` 通过
+- [ ] 151 的 cloud 验收测试（`tests/acceptance/test_cloud_*.py`）照旧通过：cloud 服务器在只设 `DATA_AGENT_ADMIN_TOKEN`、`DATA_AGENT_SESSION_KEY`、没接 Slack 时能启动；`[server].public_url` 只在接了 Slack 登录时才是必填。
 
 ## Evidence required
 
@@ -102,3 +103,4 @@ Branch: —
 
 - 2026-11-27（主会话建票）：settings 的身份与权限。等 cloud-deploy 153 和 157 合入。改动在后端，照常跑 `da-review` 和 `eng:code-review`。取代 cloud-deploy 156 的令牌换 Cookie（ADR-0012）。
 - 2026-11-27（主会话）：按"建 settings 工单时主会话定的细节"第 1、5、7、12、13 条改票：Blocked by 加 158；`DATA_AGENT_ADMIN_TOKEN` 同时是 bearer；签名密钥 `DATA_AGENT_SESSION_KEY`、OIDC 变量、`[server].public_url`；local 不发 Cookie；网页运行按登录的人解析设置；用 `im` extra 的 slack_sdk。去掉"签名密钥等没定"的停止条件。
+- 2026-11-28（主会话）：按 151 契约复核补：151 的 cloud 测试不能被 public_url 必填打破。
