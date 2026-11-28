@@ -572,3 +572,39 @@ def test_a_copy_of_a_sources_file_reuses_its_dictionary(
     ):
         pass
     assert len(counted) == 2
+
+
+async def test_two_unnamed_files_of_one_name_keep_their_own_dictionaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, counted: list[int]
+) -> None:
+    """A bare `--duckdb` run names no data source: its dictionary is keyed by the file, so two
+    `shop.duckdb` files of one schema and other values never share one."""
+    seen: list[str | None] = []
+    real = agent.cached_dictionary
+
+    def cached(gateway: Any, hidden: Any, cache: Path, source: str | None = None) -> Any:
+        seen.append(source)
+        return real(gateway, hidden, cache, source)
+
+    monkeypatch.setattr(agent, "cached_dictionary", cached)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cache = tmp_path / "cache"
+    events: list[dict[str, Any]] = []
+    for place, value in (("a", 1), ("b", 2)):
+        db = tmp_path / place / "shop.duckdb"
+        db.parent.mkdir()
+        con = duckdb.connect(str(db))
+        con.execute(f"CREATE TABLE items AS SELECT {value} AS i")
+        con.close()
+        task = agent.Task(text="q", type="query", workspace=workspace, duckdb=db)
+        with agent.prebuilt_dictionary(
+            cli.DuckDBGateway(db),
+            workspace,
+            lambda kind, **fields: events.append(fields),
+            cache=cache,
+            source=task.data_source,
+        ):
+            pass
+    assert seen == [None, None]
+    assert [event["cached"] for event in events] == [False, False] and len(counted) == 2

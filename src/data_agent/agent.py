@@ -2456,7 +2456,9 @@ async def run(
                 log.emit,
                 hidden=schema_choice(own_limits),
                 cache=dictionary_cache,
-                source=own.name,
+                # Only a name given (a config's source): a bare `--duckdb` file's name is no data
+                # source, so its dictionary is keyed by the file.
+                source=task.data_source,
             )
             if config.context and not task.several
             else nullcontext()
