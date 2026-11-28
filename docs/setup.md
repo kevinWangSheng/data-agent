@@ -167,8 +167,8 @@ allowed_users = ["U012ABCDEF"]
 
 - **截止余量**：运行在截止时间前停下，余量是它所有数据源 `query_timeout_seconds` 里最长的（不写时 150 秒），保证截止前刚发出的查询也能跑完。
 - **`max_rows` 和网关自己的上限**：网关的 10,000 行仍是框架读目录、`classify_text` 分页的大小；`max_rows` 只限 agent 调 `query_database` 拿到的行数。
-- **哪个数据源的值**：运行按名字找 `[sources.<名字>]`；`--duckdb`/`--postgres-env` 给的库按位置（文件路径或变量名）找配置里同一个数据源，MCP server 也这样找，所以两边的上限一致。
-- **值字典缓存**：产品运行把值字典存在 `$XDG_CACHE_HOME/data-agent/dictionaries/`（没设时 `~/.cache/data-agent/dictionaries/`），文件名是库的标识、schema 过滤和全部表与列的哈希；目录变了就重建，只有完整建成的才存。目录没变而数据变了时会复用旧的值字典（已知限制）。**评测**照旧每次重建：评测入口传旧消融名（`--config full` 等，见上一节），这种运行不用缓存；`run --no-dictionary-cache` 也不用。`dictionary` 事件里 `cached` 写这次是否复用（评测运行没有这个字段）。
+- **哪个数据源的值**：运行按名字找 `[sources.<名字>]`；`--duckdb`/`--postgres-env` 给的库按位置（文件路径或变量名）找配置里同一个数据源，MCP server 也这样找，所以两边的上限一致。按名字找到的运行，交给 MCP server 的配置文件只留这一个数据源，两个数据源指向同一个库时也不会拿错。直接起 `mcp-server` 时，它的 `--network`、`--dbt-target` 同样按 `[policy]` 检查。
+- **值字典缓存**：产品运行把值字典存在 `$XDG_CACHE_HOME/data-agent/dictionaries/`（没设时 `~/.cache/data-agent/dictionaries/`），文件名是库的标识、schema 过滤和全部表与列的哈希；目录变了就重建；只有每张表都读到的才存（某张表的语句失败或超时，下次重建）。值字典的语句超时是 10 秒，数据源的 `query_timeout_seconds` 更短时用它。目录没变而数据变了时会复用旧的值字典（已知限制）。**评测**照旧每次重建：评测入口传旧消融名（`--config full` 等，见上一节），这种运行不用缓存；`run --no-dictionary-cache` 也不用。`dictionary` 事件里 `cached` 写这次是否复用（评测运行没有这个字段）。
 
 本地网页的后端（工单 77、78）：`uv run data-agent web [--runs-dir runs/web] [--port 8765] [--config FILE]... [--no-network]`，只听本机回环；运行目录、端口、地址从 `[server]` 来，数据源、外部 MCP、IM 从配置文件来（上两节）。表单不选消融配置，显示服务器配置的摘要（名字、层开关、主模型、effort、上限、联网），`/api/options` 的 `config` 字段就是这份摘要。
 

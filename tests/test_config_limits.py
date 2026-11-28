@@ -432,3 +432,107 @@ def test_the_row_bound_is_the_gateways() -> None:
     from data_agent import config, gateway
 
     assert config.MAX_ROWS == gateway.MAX_ROWS
+
+
+# --- Codex review, round 1 --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("flags", "policy", "key"),
+    [
+        (["--network"], "[policy]\nnetwork = false\n", "policy.network"),
+        (["--dbt-target", "task"], '[policy]\ndbt_target = "scratch"\n', "policy.dbt_target"),
+    ],
+)
+def test_mcp_server_flags_against_the_policy_are_refused(
+    tmp_path: Path,
+    shop: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    policy: str,
+    key: str,
+) -> None:
+    """Started by hand, `mcp-server` may not open what `[policy]` locks, as `run` may not."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DATA_AGENT_CONFIG", raising=False)
+    config = write(tmp_path / "config.toml", policy)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    argv = [
+        *("mcp-server", "--config", str(config), "--duckdb", str(shop)),
+        *("--sandbox", "local", "--workspace", str(workspace), *flags),
+    ]
+    assert exit_of(argv) == 2
+    assert key in capsys.readouterr().err
+
+
+def test_a_runs_server_file_holds_its_source_alone(tmp_path: Path, shop: Path) -> None:
+    """Two sources on one file: the server of a run on the second finds the second's limits,
+    not the first's (`served_source` matches by location)."""
+    config = load(
+        write(
+            tmp_path / "config.toml",
+            '[sources.a]\nkind = "duckdb"\npath = "shop.duckdb"\nmax_rows = 3\n\n'
+            '[sources.b]\nkind = "duckdb"\npath = "shop.duckdb"\nmax_rows = 7\n',
+        )
+    )
+    task = agent.Task(text="q", type="query", workspace=tmp_path, duckdb=shop, data_source="b")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    served_config = cli.server_config(load_config(config), config, scratch, task)
+    assert served_config.server_config is not None
+    given = load(Path(served_config.server_config))
+    assert given.names("sources") == ["b"]
+    assert given.value("sources.b.max_rows") == 7
+
+
+def test_a_dictionary_that_left_a_table_out_is_not_cached(
+    tmp_path: Path, shop: Path, counted: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A table whose sampling failed is `not_profiled`: the next run builds again, so the table
+    is read once the database answers."""
+    from data_agent import context_tools
+    from data_agent.gateway import QueryFailed
+
+    real = context_tools.sample_table
+    failing = [True]
+
+    def sample_table(session: Any, table: Any) -> Any:
+        if table.name == "items" and failing[0]:
+            raise QueryFailed("statement timeout")
+        return real(session, table)
+
+    monkeypatch.setattr(context_tools, "sample_table", sample_table)
+    gateway = cli.DuckDBGateway(shop)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cache = tmp_path / "cache"
+    first = build_dictionary(gateway, workspace, cache)
+    assert first["tables_not_profiled"] == 1
+    failing[0] = False
+    second = build_dictionary(gateway, workspace, cache)
+    assert second["cached"] is False and second["tables_not_profiled"] == 0
+    third = build_dictionary(gateway, workspace, cache)
+    assert third["cached"] is True and len(counted) == 2
+
+
+@pytest.mark.parametrize(("timeout", "expected"), [(0.5, 0.5), (150, 10.0)])
+def test_the_dictionarys_statements_take_a_shorter_source_timeout(
+    tmp_path: Path, shop: Path, timeout: float, expected: float
+) -> None:
+    """`[sources.<name>].query_timeout_seconds` under the dictionary's own 10 s bounds its
+    statements too; a longer one leaves the 10 s."""
+    seen: list[float] = []
+    gateway = cli.DuckDBGateway(shop, timeout)
+    real = gateway.session
+
+    def session(timeout_seconds: float) -> Any:
+        seen.append(timeout_seconds)
+        return real(timeout_seconds)
+
+    gateway.session = session  # type: ignore[method-assign]
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    build_dictionary(gateway, workspace, None)
+    assert seen and set(seen) == {expected}

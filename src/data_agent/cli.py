@@ -442,6 +442,16 @@ def check_policy(parser: argparse.ArgumentParser, config: EffectiveConfig) -> No
             )
 
 
+def server_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    """`mcp-server`'s `--network` and `--dbt-target` given, as the config keys `run`'s set."""
+    overrides: dict[str, Any] = {}
+    if args.network:
+        overrides["sandbox.network"] = True
+    if args.dbt_target is not None:
+        overrides["policy.dbt_target"] = args.dbt_target
+    return overrides
+
+
 def given_overrides(args: argparse.Namespace) -> dict[str, Any]:
     """The `RUN_OVERRIDES` options given on the command line, as config keys."""
     overrides: dict[str, Any] = {}
@@ -503,12 +513,20 @@ def server_config(
     `[models.*].api_key`s. The server runs under `sdk_env()`, which blanks `ANTHROPIC_API_KEY`,
     and takes its model settings from `tool_env()`. A run of one data source the config names
     (`--data-source-name`) on a DuckDB file of its own (a web dbt run's copy) has that source's
-    `path` be the file, so the server finds the source's limits by it (`served_source`)."""
+    `path` be the file, so the server finds the source's limits by it (`served_source`). Such a
+    run's file holds that source alone, so another source at the same location cannot lend the
+    server its limits."""
     leaves = {key: value for key, value in effective.raw.items() if not is_model_key(key)}
-    if task is not None and not task.several and task.duckdb is not None:
-        path = Key(("sources", task.data_source_name, "path"))
-        if effective.value(path) is not None:
-            leaves[path] = str(task.duckdb.resolve())
+    if task is not None and not task.several:
+        name = task.data_source_name
+        if effective.value(Key(("sources", name))) is not None:
+            leaves = {
+                key: value
+                for key, value in leaves.items()
+                if parts_of(key)[0] != "sources" or parts_of(key)[1] == name
+            }
+            if task.duckdb is not None:
+                leaves[Key(("sources", name, "path"))] = str(task.duckdb.resolve())
     path = scratch / f"{config.name}.toml"
     path.write_text(toml_text(leaves), encoding="utf-8")
     return dataclasses.replace(config, server_config=str(path))
@@ -754,8 +772,10 @@ def main(argv: list[str] | None = None) -> None:
     # The deadline counts from the earliest point the process can see (ticket 54).
     started = time.monotonic()
     command = serve if args.command == "mcp-server" else run_cmd
-    # The MCP server's options are `run`'s choices, already checked against the policy there.
-    overrides = given_overrides(args) if args.command == "run" else {}
+    # The MCP server's own `--network` and `--dbt-target` are checked against the policy as
+    # `run`'s are: started by hand, it may not open what the policy locks (a run's server gets
+    # the choices `run` already checked, so it passes the same check).
+    overrides = given_overrides(args) if args.command == "run" else server_overrides(args)
     config, effective, settings = run_config(command, args.config, args.workspace, overrides)
     check_database(command, args)
     if args.command == "mcp-server":

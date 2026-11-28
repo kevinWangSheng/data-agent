@@ -54,7 +54,13 @@ from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
 
 from data_agent import sandbox as sandboxes
 from data_agent import tracing, verifier_v2
-from data_agent.context_tools import Dictionary, DictionaryBuild, build_interruptible, other_runs
+from data_agent.context_tools import (
+    Dictionary,
+    DictionaryBuild,
+    build_interruptible,
+    dictionary_timeout,
+    other_runs,
+)
 from data_agent.db_facts import HiddenSchemas, load_catalog
 from data_agent.dbt_execute import DbtExecuteError, DbtRun, Target, check_outside
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
@@ -376,7 +382,11 @@ def prebuilt_dictionary(
         cached = None if cache is None else cached_dictionary(gateway, hidden, cache)
         dictionary = None if cached is None else cached.load()
         if dictionary is None:
-            dictionary = build_interruptible(DictionaryBuild(gateway, hidden=hidden))
+            dictionary = build_interruptible(
+                DictionaryBuild(
+                    gateway, statement_timeout=dictionary_timeout(gateway), hidden=hidden
+                )
+            )
             if cached is not None:
                 cached.save(dictionary)
         coverage = dictionary.coverage
@@ -450,10 +460,11 @@ class CachedDictionary:
         return dictionary
 
     def save(self, dictionary: Dictionary) -> None:
-        """Kept only when the build read every table it meant to: a failed or cut-off build is
-        built again next time. Written whole or not at all."""
+        """Kept only when the build read every table it meant to: a failed or cut-off build, or
+        one that left a table out (its statement failed or timed out), is built again next time.
+        Written whole or not at all."""
         coverage = dictionary.coverage
-        if coverage.error is not None or coverage.timed_out:
+        if coverage.error is not None or coverage.timed_out or coverage.not_profiled:
             return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)

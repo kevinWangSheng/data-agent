@@ -343,6 +343,13 @@ def other_runs(
     return HiddenSchemas(SCHEMA_PREFIX, own_schema, tuple(include), tuple(exclude))
 
 
+def dictionary_timeout(gateway: Gateway) -> float:
+    """A dictionary statement's timeout: STATEMENT_TIMEOUT_SECONDS, or the data source's own
+    statement timeout (`[sources.<name>].query_timeout_seconds`, ticket 144) when shorter."""
+    own = getattr(gateway, "timeout_seconds", None)
+    return STATEMENT_TIMEOUT_SECONDS if own is None else min(STATEMENT_TIMEOUT_SECONDS, own)
+
+
 class DictionaryCancelled(Exception):
     """`cancel` was called: the statement was interrupted and the connection is closed."""
 

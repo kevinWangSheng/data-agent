@@ -34,6 +34,7 @@ from data_agent.context_tools import (
     Dictionary,
     DictionaryBuild,
     build_interruptible,
+    dictionary_timeout,
     other_runs,
     register_context_tools,
 )
@@ -373,7 +374,9 @@ def data_server(
         for name, db in databases.items():
             dictionary = dictionaries.get(name)
             if dictionary is None:
-                dictionary = build_interruptible(DictionaryBuild(db.gateway, hidden=db.hidden))
+                timeout = dictionary_timeout(db.gateway)
+                build = DictionaryBuild(db.gateway, statement_timeout=timeout, hidden=db.hidden)
+                dictionary = build_interruptible(build)
             contexts[name] = ContextDatabase(db.run, db.catalog, db.gateway.dialect, dictionary)
         register_context_tools(server, contexts)
     return server, databases
