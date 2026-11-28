@@ -21,7 +21,7 @@ scratch schemas (ticket 140, `context_tools.other_runs`).
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -150,6 +150,11 @@ class HiddenSchemas:
 
     prefix: str
     kept: str | None = None
+    # A data source's `schemas.include`/`schemas.exclude` (ticket 144): with `include`, only those
+    # schemas are shown; `exclude`d ones never are. Matched ignoring case; `kept` stays shown
+    # either way (the run queries the models it builds there). Any text: written as literals.
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # An empty prefix would hide every schema.
@@ -166,7 +171,19 @@ class HiddenSchemas:
             else f" OR lower({column}) = '{self.kept}'"
             f" OR left(lower({column}), {len(self.kept) + 1}) = '{self.kept}_'"
         )
+        if self.include or self.exclude:
+            chosen = [
+                *([f"lower({column}) IN ({names_sql(self.include)})"] if self.include else []),
+                *([f"lower({column}) NOT IN ({names_sql(self.exclude)})"] if self.exclude else []),
+            ]
+            not_runs = f"left(lower({column}), {len(self.prefix)}) <> '{self.prefix}'"
+            return f"(({not_runs} AND {' AND '.join(chosen)}){kept})"
         return f"(left(lower({column}), {len(self.prefix)}) <> '{self.prefix}'{kept})"
+
+
+def names_sql(names: Sequence[str]) -> str:
+    """Schema names, lower-cased, as a list of SQL string literals."""
+    return ", ".join(literal(name.lower()) for name in names)
 
 
 def shown_sql(column: str, hidden: HiddenSchemas | None) -> str:

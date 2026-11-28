@@ -6,6 +6,7 @@ connection.
 """
 
 import contextlib
+import hashlib
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,25 @@ TIMEOUT_SECONDS = 150  # upstream query_database's timeout_seconds
 # processes peaked at 1762 MiB; 64G disk free. Binary units: DuckDB's "GB" means 1000^3.
 DUCKDB_MEMORY_LIMIT = "2GiB"
 DUCKDB_MAX_TEMP_DIRECTORY_SIZE = "4GiB"
+# How long a Postgres connect may take (libpq `connect_timeout`).
+POSTGRES_CONNECT_TIMEOUT_SECONDS = 10
+
+
+@dataclass(frozen=True)
+class SourceLimits:
+    """A data source's limits (`[sources.<name>]`, ticket 144), each the code's own when the
+    config leaves it out. `query_timeout_seconds` bounds each statement; `max_rows` is the most
+    rows query_database returns (the gateway's own cap, MAX_ROWS, stays the page size the
+    harness reads the catalog and classify_text's rows in); the DuckDB limits go into each
+    connection's configuration; `include_schemas`/`exclude_schemas` narrow the schemas the
+    agent's catalog, listing and dictionary see (`db_facts.HiddenSchemas`)."""
+
+    query_timeout_seconds: float = TIMEOUT_SECONDS
+    max_rows: int = MAX_ROWS
+    memory_limit: str = DUCKDB_MEMORY_LIMIT
+    max_temp_directory_size: str = DUCKDB_MAX_TEMP_DIRECTORY_SIZE
+    include_schemas: tuple[str, ...] = ()
+    exclude_schemas: tuple[str, ...] = ()
 
 
 # How the MCP tools word a statement the gateway refused (`mcp_server.tool_error`); the run's
@@ -102,9 +122,17 @@ def explain_statement(sql: str, dialect: str, row_limit: int = MAX_ROWS) -> str:
 class DuckDBGateway:
     dialect = "duckdb"
 
-    def __init__(self, path: Path, timeout_seconds: float = TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        path: Path,
+        timeout_seconds: float = TIMEOUT_SECONDS,
+        memory_limit: str = DUCKDB_MEMORY_LIMIT,
+        max_temp_directory_size: str = DUCKDB_MAX_TEMP_DIRECTORY_SIZE,
+    ) -> None:
         self.path = path
         self.timeout_seconds = timeout_seconds
+        self.memory_limit = memory_limit
+        self.max_temp_directory_size = max_temp_directory_size
 
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
         return self._execute(check(sql, self.dialect, row_limit))
@@ -119,20 +147,30 @@ class DuckDBGateway:
             file_stamp(path) for path in (self.path, self.path.with_name(self.path.name + ".wal"))
         )
 
+    def identity(self) -> str:
+        """Which database this is, for a cache key (`agent.cached_dictionary`)."""
+        return f"duckdb:{self.path.resolve()}"
+
     def session(self, timeout_seconds: float) -> "DuckDBSession":
-        return DuckDBSession(self.path, timeout_seconds)
+        return DuckDBSession(
+            self.path, timeout_seconds, self.memory_limit, self.max_temp_directory_size
+        )
 
     def _execute(self, governed: str) -> QueryResult:
         # A connection per statement: DuckDB lets one process hold the write lock, and holding a
         # read-only connection open would keep `dbt run` (the only write path) from writing.
-        con = connect_duckdb(self.path)
+        con = connect_duckdb(self.path, self.memory_limit, self.max_temp_directory_size)
         try:
             return run_duckdb(con, governed, self.timeout_seconds)
         finally:
             con.close()
 
 
-def connect_duckdb(path: Path) -> duckdb.DuckDBPyConnection:
+def connect_duckdb(
+    path: Path,
+    memory_limit: str = DUCKDB_MEMORY_LIMIT,
+    max_temp_directory_size: str = DUCKDB_MAX_TEMP_DIRECTORY_SIZE,
+) -> duckdb.DuckDBPyConnection:
     """A read-only connection. External access off: a file or network reader the denylist
     misses still cannot run. Memory and spill limits go in here: the configuration is locked."""
     try:
@@ -141,8 +179,8 @@ def connect_duckdb(path: Path) -> duckdb.DuckDBPyConnection:
             read_only=True,
             config={
                 "enable_external_access": False,
-                "memory_limit": DUCKDB_MEMORY_LIMIT,
-                "max_temp_directory_size": DUCKDB_MAX_TEMP_DIRECTORY_SIZE,
+                "memory_limit": memory_limit,
+                "max_temp_directory_size": max_temp_directory_size,
                 "lock_configuration": True,
             },
         )
@@ -174,10 +212,16 @@ class DuckDBSession:
 
     dialect = "duckdb"
 
-    def __init__(self, path: Path, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        path: Path,
+        timeout_seconds: float,
+        memory_limit: str = DUCKDB_MEMORY_LIMIT,
+        max_temp_directory_size: str = DUCKDB_MAX_TEMP_DIRECTORY_SIZE,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
         self._interrupted = False
-        self._con = connect_duckdb(path)
+        self._con = connect_duckdb(path, memory_limit, max_temp_directory_size)
 
     def query(self, sql: str, row_limit: int = MAX_ROWS) -> QueryResult:
         governed = check(sql, self.dialect, row_limit)
@@ -233,6 +277,10 @@ class PostgresGateway:
             if con.closed:
                 self._con = None
 
+    def identity(self) -> str:
+        """Which database this is, for a cache key: the URL's hash, never the URL."""
+        return "postgres:" + hashlib.sha256(self._url.encode()).hexdigest()
+
     def session(self, timeout_seconds: float) -> "PostgresSession":
         return PostgresSession(self._url, timeout_seconds)
 
@@ -250,7 +298,9 @@ def connect_postgres(url: str, timeout_seconds: float) -> psycopg.Connection[tup
         # Added to the URL's own options (a search_path, say) rather than replacing them.
         given = str(conninfo_to_dict(url).get("options") or "")
         options = f"{given} -c statement_timeout={timeout_ms}".strip()
-        con = psycopg.connect(url, options=options, connect_timeout=10)
+        con = psycopg.connect(
+            url, options=options, connect_timeout=POSTGRES_CONNECT_TIMEOUT_SECONDS
+        )
     except psycopg.Error as exc:
         raise QueryFailed(f"Could not connect to the Postgres database: {reason(exc)}") from exc
     con.read_only = True

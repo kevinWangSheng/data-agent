@@ -57,14 +57,15 @@ from data_agent.gateway import (
     QueryFailed,
     QueryResult,
     QueryTimedOut,
+    SourceLimits,
 )
 from data_agent.label_tables import LABELS_DIR, LabelTables
 from data_agent.run_config import RunConfig
 from data_agent.sandbox import (
-    DEFAULT_TIMEOUT_S,
     QueryResults,
     Sandbox,
     SandboxError,
+    default_timeout,
     execute_tool,
     tool_description,
 )
@@ -146,6 +147,17 @@ DISPLAY_MAX_ROWS = 400
 # catalog.py). It sits under Claude Code's 25,000-token MCP output cap.
 LIST_TABLES_CHAR_BUDGET = 36_000
 LIST_TABLES_DEFAULT_MAX = 200
+
+
+def capped_note(result: QueryResult, asked: int, max_rows: int) -> str:
+    """What a result cut off at the data source's row cap says of it; nothing otherwise (the
+    gateway's own cap, MAX_ROWS, says nothing, as before)."""
+    if max_rows >= MAX_ROWS or asked <= max_rows or len(result.rows) < max_rows:
+        return ""
+    return (
+        f"\n[ROW CAP] This data source returns at most {max_rows} rows per query (its max_rows); "
+        "there may be more. Narrow the query or aggregate."
+    )
 
 
 def format_rows(result: QueryResult) -> str:
@@ -232,14 +244,18 @@ class Database:
     catalog: LoadCatalog
     labels: LabelTables
     hidden: HiddenSchemas
+    # The most rows query_database returns (`[sources.<name>].max_rows`, ticket 144).
+    max_rows: int = MAX_ROWS
 
     def run(self, sql: str, row_limit: int) -> QueryResult:
         return run_query(self.gateway, sql, row_limit)
 
 
-def open_database(gateway: Gateway, labels: LabelTables, hidden: HiddenSchemas) -> Database:
+def open_database(
+    gateway: Gateway, labels: LabelTables, hidden: HiddenSchemas, max_rows: int = MAX_ROWS
+) -> Database:
     catalog = CatalogCache(partial(run_query, gateway), gateway.catalog_key, hidden=hidden).get
-    return Database(gateway, catalog, labels, hidden)
+    return Database(gateway, catalog, labels, hidden, max_rows)
 
 
 def build_server(
@@ -252,6 +268,7 @@ def build_server(
     dbt: DbtExecutor | None = None,
     charts: bool = False,
     own_schema: str | None = None,
+    limits: SourceLimits | None = None,
 ) -> MCPServer:
     """The base tools are served in every config. A layer's tools are registered only when
     `config` turns that layer on, so a run with it off cannot see them; `verifier_tools=False`
@@ -264,10 +281,18 @@ def build_server(
     `dbt` (a dbt run with a sandbox) it serves dbt_execute too (`register_dbt_tool`). With
     `charts` (ticket 119) it serves display_chart (`register_chart_tool`). `own_schema` is the
     run's own scratch schema (ticket 140): it stays in the tools' view, and no other run's does
-    (`context_tools.other_runs`)."""
+    (`context_tools.other_runs`). `limits` are the data source's (`[sources.<name>]`, ticket 144):
+    its row cap and schema choice; None, the code's."""
     dictionaries = {"": dictionary} if dictionary is not None else {}
     server, databases = data_server(
-        {"": gateway}, config, workspace, dictionaries, sandbox, charts, own_schema
+        {"": gateway},
+        config,
+        workspace,
+        dictionaries,
+        sandbox,
+        charts,
+        own_schema,
+        {} if limits is None else {"": limits},
     )
     if config.verifiers and verifier_tools:
         db = databases[""]
@@ -285,14 +310,16 @@ def build_multi_server(
     sandbox: Sandbox | None = None,
     charts: bool = False,
     own_schema: str | None = None,
+    limits: Mapping[str, SourceLimits] | None = None,
 ) -> MCPServer:
     """A server over several databases by name (ticket 89): every query and context tool takes
     a required `database` argument, one of the names, and works on that database alone; each
     database has its own catalog, facts, dictionary and label tables. As `build_server`
     otherwise, with a dictionary built now for a database `dictionaries` has none for. No
-    verifier tools: they check dbt runs, which have one database."""
+    verifier tools: they check dbt runs, which have one database. `limits` by name, as
+    `build_server`'s."""
     server, _ = data_server(
-        gateways, config, workspace, dictionaries or {}, sandbox, charts, own_schema
+        gateways, config, workspace, dictionaries or {}, sandbox, charts, own_schema, limits or {}
     )
     return server
 
@@ -305,6 +332,7 @@ def data_server(
     sandbox: Sandbox | None,
     charts: bool = False,
     own_schema: str | None = None,
+    limits: Mapping[str, SourceLimits] | None = None,
 ) -> tuple[MCPServer, dict[str, Database]]:
     """The base tools and, when `config` turns that layer on, the context tools, over `gateways`
     by name (`database_tools`); a database `dictionaries` has no dictionary for gets one built
@@ -312,12 +340,20 @@ def data_server(
     served in conversation mode only (spec decision 8), which `data-agent run --chat` switches
     on through the environment (`CHAT_ENV`). With `sandbox`, sandbox_exec too; with `charts`,
     display_chart. Either one keeps every query_database result under an id, one store for
-    both tools. No other run's scratch schema is in any database's view; `own_schema` is."""
+    both tools. No other run's scratch schema is in any database's view; `own_schema` is. A
+    database's `limits` (by name; the code's when it has none) give its row cap and the schemas
+    its catalog, listing and dictionary see."""
     server = MCPServer("data-agent")
     numbers = itertools.count(1)
-    hidden = other_runs(own_schema)
+    each = {name: (limits or {}).get(name, SourceLimits()) for name in gateways}
+    hidden = {
+        name: other_runs(own_schema, limit.include_schemas, limit.exclude_schemas)
+        for name, limit in each.items()
+    }
     databases = {
-        name: open_database(gateway, LabelTables(workspace, numbers), hidden)
+        name: open_database(
+            gateway, LabelTables(workspace, numbers), hidden[name], each[name].max_rows
+        )
         for name, gateway in gateways.items()
     }
     results = (
@@ -337,7 +373,7 @@ def data_server(
         for name, db in databases.items():
             dictionary = dictionaries.get(name)
             if dictionary is None:
-                dictionary = build_interruptible(DictionaryBuild(db.gateway, own_schema=own_schema))
+                dictionary = build_interruptible(DictionaryBuild(db.gateway, hidden=db.hidden))
             contexts[name] = ContextDatabase(db.run, db.catalog, db.gateway.dialect, dictionary)
         register_context_tools(server, contexts)
     return server, databases
@@ -372,7 +408,7 @@ def register_sandbox_tool(
     @server.tool(name="sandbox_exec", annotations=SANDBOX, description=tool_description(sandbox))
     def sandbox_exec(
         command: str,
-        timeout_seconds: int = DEFAULT_TIMEOUT_S,
+        timeout_seconds: int = default_timeout(sandbox),
         data_files: list[str] | None = None,
     ) -> str:
         try:
@@ -453,6 +489,8 @@ def register_base_tools(
         fails with the query's plan (EXPLAIN) and the indexes on the tables it reads.
         """
         gateway = db.gateway
+        # The data source's cap (`[sources.<name>].max_rows`); the gateway's own is MAX_ROWS.
+        asked, row_limit = row_limit, min(row_limit, db.max_rows)
         try:
             result = gateway.query(sql, row_limit)
         except QueryTimedOut as exc:
@@ -461,9 +499,10 @@ def register_base_tools(
             raise ToolError(failure) from exc
         except (QueryBlocked, QueryFailed) as exc:
             raise tool_error(exc) from exc
+        text = format_rows(result) + capped_note(result, asked, db.max_rows)
         if results is None:
-            return format_rows(result)
-        return f"{format_rows(result)}\n{results.note(results.add(result))}"
+            return text
+        return f"{text}\n{results.note(results.add(result))}"
 
     @tool(annotations=READ_ONLY)
     def list_tables(
