@@ -3,8 +3,8 @@
 Status: ready-for-agent
 Blocked by: 143
 Spec: ../spec.md（"分节（Q2）"的 `[limits]`、`[sandbox]`、`[sources.<名字>]`、`[policy]`；"产品默认与入口"）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus 5.5, worktree 144-config-wiring) 2026-11-28
+Branch: worktree-144-config-wiring
 
 ## Goal
 
@@ -78,10 +78,10 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 3（前两次因本机内存不足中断）
+- Review rounds: 2（round 1 修 Codex 的 4 条；round 2 修 eng:code-review 的 2 条，"不带名字的 `--duckdb` 按文件存"是 round 2 修复的补完，不算第 3 轮）
 - Model spend: $0
-- Outcome: —
+- Outcome: 实现完成，待合并前审查
 - Human review minutes: —
 
 ## Comments
@@ -91,3 +91,90 @@ Branch: —
 - 2026-11-27（主会话）：按 ADR-0012 调整："文件 + 数据库"的生效设置交给 settings 158，本工单只做文件层；Context 加"只做文件层"一条，要求运行的生效配置经一处解析入口，供 158 叠数据库。本工单原本就没有数据库的范围，Authority、Acceptance 不变。
 - 2026-11-27（主会话）：按 141 合并前审查补 Context：守门测试依赖的接口保留名字和签名。
 - 2026-11-27（主会话）：按 143 交回补：README 旧参数归本工单；`[policy]` 冲突的拒绝 143 已做，别重复。
+- 2026-11-28（工单 agent，opus 5.5）：
+
+  **已完成的接线**
+  - `[limits]`：轮数（含 `large`）、`max_budget_usd`、`agent_timeout_sec`、`effort` 接到运行上。
+  - `[sandbox]`：image、cpus、memory、network、`exec_max_seconds` 接到沙箱。
+  - `[sources.<名字>]`：`schemas.include`/`exclude`、`query_timeout_seconds`、`max_rows`（截断时结果末尾写 `[ROW CAP]`）、`duckdb.memory_limit`/`max_temp_directory_size`、`dbt_timeout_seconds`。
+  - `[policy]`：冲突的拒绝沿用 143 的加载器，没有重写一遍。
+  - `[server]`：`host`、`port`、`runs_dir` 接到 `data-agent web`。
+  - `[trace]`：`tier`、`base_url` 接上，密钥仍只从环境变量来。
+  - 网页表单不再有配置下拉，改成显示服务器配置的摘要。请求里带 `config` 字段返回 422。网页、对话、IM 的运行都经 `Launcher.config_args` 这一处拿配置。
+  - 值字典缓存，`config.py` 补了取值范围校验，`docs/setup.md` 和 README 改好了。
+
+  **写明的约定**
+  - 截止余量取运行所有数据源 `query_timeout_seconds` 里最长的；不写时 150 秒，等于原来的 `DEADLINE_MARGIN_S`。
+  - 网关自己的 `MAX_ROWS` 仍是框架读目录和 `classify_text` 分页的大小；`max_rows` 只限 `query_database` 返回的行数，上限 10000。
+  - "评测"的认法：`--config` 给旧消融名（`evals/` 现在就这样传），或者给 `--no-dictionary-cache`。这两种运行不用缓存。
+  - 缓存放在 `$XDG_CACHE_HOME/data-agent/dictionaries`，按数据源存：键是数据源名、schema 过滤和目录哈希，Postgres 再加 URL 的哈希。不带名字的 `--duckdb` 运行按文件路径存。只有每张表都读到的值字典才存。
+  - 已知限制：
+    - 目录不变而数据变了时，复用旧的值字典。
+    - 两份配置里同名、同结构的 DuckDB 数据源（比如 dev 和 prod 都叫 `shop`）会共用一份。
+
+  **给 153**：`[server].host` 不是本机回环地址时，`cli.web_host` 退出 2，点名 153。153 接上令牌后在那里放开。
+
+  **给 146**：评测入口改成 `--config <路径>` 以后必须同时传 `--no-dictionary-cache`，否则评测会悄悄用缓存。请写进 146 的验收标准。
+
+  **给 145**：
+  - `check_policy` 已经会拒绝 `policy.disabled_models` 里的 `[roles]` 模型。
+  - `limits.effort` 没按 `EFFORTS` 校验，留给 145 的 `efforts`。
+
+  **`Launcher.submit` 保留第 4 个位置参数 `config`**：`tests/acceptance/test_charts_switch.py:212` 这样调用，验收文件又不能改。现在这个参数只接受 `"full"`，其他名字返回 400。
+
+  **第 3 步：真实运行（$0）**
+  - `data-agent config show --config product.toml` 显示了全部生效值和来源，例如：
+    ```
+    limits.max_turns.query = 5  # …/product.toml
+    sandbox.exec_max_seconds = 120.0  # …/product.toml
+    sources.shop.max_rows = 10  # …/product.toml
+    server.port = 8799  # …/product.toml
+    policy.dbt_target = "scratch"  # policy
+    ```
+  - `data-agent web --config product.toml`（不给 `--runs-dir`/`--port`）监听 8799。`curl -s localhost:8799/api/options` 输出：
+    ```
+    {"data_sources":["shop"],"task_types":["query","dbt"],"config":{"name":"product","layers":{"skill":true,"verifiers":true,"context":true},"model":"deepseek-flash","effort":"high","max_budget_usd":0.5,"max_turns":{"query":5,"dbt":200,"large":75},"agent_timeout_sec":600.0,"network":true}}
+    ```
+  - 带 `config` 的 `POST /api/runs` 返回 422。`[server].host = "0.0.0.0"` 时退出 2，报错点名 153。
+
+  **测试与检查**
+  - `make check` 退出 0：basedpyright 0 errors；pytest 3653 passed、37 xfailed；web vitest 450 passed。
+  - `test_config_wiring.py -v`：17 PASSED。
+  - `git diff main...HEAD -- tests/acceptance tests/fixtures`：43 行删除。只有 2 行新增，就是 `test_mcp_web.py` 的两行 `@pytest.mark.parametrize("route", ["form", "turn"])`，由原来的 `pytest.param("form", marks=TICKET_144)` 改写而来，也只是去掉标记。
+  - 新单元测试在 `tests/test_config_limits.py`（44 个），另有 `tests/test_dbt_execute.py` 的 dbt 超时测试。覆盖内容：
+    - DuckDB 内存与溢写上限真进了连接；
+    - `max_rows` 截断并写 `[ROW CAP]`；
+    - include/exclude 生效；
+    - dbt 超时真杀掉 dbt；
+    - `exec_max_seconds` 真限住了 `sandbox_exec`；
+    - 缓存命中、评测不复用、库副本复用；
+    - host 拒绝；
+    - 取值范围；
+    - 三档轮数上限都从 `[limits]` 来。
+  - 测试里加了 autouse 夹具把 `XDG_CACHE_HOME` 指到临时目录。
+
+  **审查**
+  - `da-review main` 4 条（P2），都属实，都修了并配了测试：
+    - 直接起 `mcp-server` 时，`--network`、`--dbt-target` 绕过了 `[policy]`；
+    - 两个数据源指向同一个库时，MCP server 拿错上限；
+    - 有表没读到的值字典也进了缓存；
+    - 值字典的语句不受更短的 `query_timeout_seconds` 限制。
+  - `eng:code-review main`：
+    - Spec 轴指出网页 dbt 运行每次复制库文件，缓存永远不命中，缓存目录无限增长。已改为按数据源名做键，并修正了不带名字的 `--duckdb` 也被当成数据源的问题。
+    - Spec 轴指出摘要缺 `max_turns.large`，已补上。
+    - Standards 轴没有硬违规。下面这些判断题没改，理由是行为不变、本工单不做无关重构：`cli.py` 变大、`getattr` 鸭子类型、`setting`/`entry` 等几处重复、`source_limit` 和 `source_limits` 名字太像、`config.MAX_ROWS` 是 `gateway.MAX_ROWS` 的抄本（有测试保持两者相等）。
+  - 我自己找到并修掉两个 bug：
+    - 多数据源运行在 `Task.data_source_name` 处断言崩溃；
+    - `--duckdb` 指向某个 `[sources.<名字>]` 的文件时，运行这边没拿到该数据源的上限。
+
+  **前端改动**（主会话决定要不要另加前端审查）：`web/src/local/NewRun.tsx`、`web/src/local/NewRun.test.ts`（新建）、`web/src/data/source.ts`、`web/src/data/source.test.ts`。
+
+  **分支状态**：本地 main 多了 ticket 164 的一个提交 `8449231`，本分支不含它，合并前要先并入 main。我没有 rebase，也没有 push。
+
+  **遗留**：前一次中断的会话跑测试时，在真实的 `~/.cache/data-agent/dictionaries` 写了 10 个缓存文件（时间是今天 02:34–02:40）。我没有删，可以删掉。
+- 2026-11-28（主会话）：合并前核查：CI 绿；服务器真实运行（`7f77a0e`）全过：`max_turns.query = 5` 时 `turn_budget` 记 `max_turns: 5`、到 5 轮停下（`error_max_turns`）；`max_rows = 10` 时 `query_database` 返回 10 行加 `[ROW CAP]`；`web --config` 不给 `--runs-dir`/`--port` 监听 8799，`/api/options` 带配置摘要，带 `config` 的 POST 422，表单运行三层都开、答案 37；花费约 $0.008。前端部分由上下文干净的 Opus 子 agent 审（不走 Codex）。**退回（第 1 轮）：原因如下，在原分支 `worktree-144-config-wiring` 上接着修**。
+  1. **Codex P2（属实，即本工单自己写的已知限制）**：同名、同结构但数据不同的 DuckDB 数据源（两个项目都叫 `shop`）缓存键相同，第二个项目的运行会读到第一个项目的取样值，`dictionary_search` 返回无关库的值（`src/data_agent/agent.py:500` 附近）。键里加上原始配置的数据库身份（解析后的原文件路径，不是每次运行的副本；Postgres 已有 URL 哈希），网页 dbt 运行复制库文件后仍要命中缓存。配修复前会失败的单元测试。
+  2. **前端 should-fix**：配置摘要不显示轮数上限（`web/src/local/NewRun.tsx:131-139`，注释 `:128-129` 说显示"它设的上限"）：显示 `max_turns` 的 query、dbt、large，配测试。
+  3. **前端 should-fix**：服务器关了联网时复选框置 false 并禁用（`NewRun.tsx:29`、`:97`）没有测试：抽成纯函数或在选项已加载时渲染，配测试。
+  4. 前端小问题（可顺手）：禁用的联网框旁写一句原因（如"本服务器已关闭"），去掉 `cursor-pointer`；`NewRun.test.ts:30` 的 `not.toContain('Config')` 太弱，删掉或改成匹配旧标签原文。
+  - 合并 main 时注意：145（PR #154）删了 `sdk_budget_usd`，两边都改 `build_options` 的 `max_budget_usd=`，后合入的一方 rebase，改成 `backstop_usd(budget, spend.price)`。

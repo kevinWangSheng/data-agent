@@ -60,6 +60,7 @@ Branch: —
 - **"是否要 @ 才回复"**：归本工单（定的细节第 8 条）。在作用域解析之后读它，接在 `handle_message` 的触发判断（`adapter.py:243`）上；默认值保持现在的触发规则。
 - **取证**：`docs/research/2026-11-27-chatbot-agent-config.md` 第 3 条结论（Dust `+Agent`、Cursor `repo=`/`model=`、Devin `!org` 的消息内覆盖）；线程内换模型照 Claude in Slack（`decisions.md` S4 原文）；`docs/research/2026-11-23-im-gateway-designs.md`（Hermes、OpenClaw 的命令与权限）。
 - 只用 uv。
+- **151 钉住的接缝**（151 契约复核 N4）：`tests/acceptance/test_cloud_locks.py:172-182` 用了 `app.state.conversations`、`Conversations.create()`、`send(conversation, text)`（不带 `network` 参数）和 `data_agent.web.launcher.Refused`；本工单改 IM 时保持 `send(conversation, text)` 用默认值可调用。
 
 ## Acceptance
 
@@ -107,3 +108,4 @@ Branch: —
 
 - 2026-11-27（主会话建票）：IM 里的设置。等 158 合入。改动在后端，照常跑 `da-review` 和 `eng:code-review`。`!configure` 的链接按 157 契约的地址格式拼，不依赖 160 已合入；IM 里只有覆盖（任何人可用，S4），没有写频道设置的命令，所以不需要 159 的权限检查。公告挂在频道层的写路径上：160 没合入时，挂在 158 存储的写函数上（或留一个回调），最终回复写明。
 - 2026-11-27（主会话）：按"建 settings 工单时主会话定的细节"第 3、6–10、14 条改票：本工单写会话索引；`[im.slack.workspaces.<名字>]`；"是否要 @"归本工单；覆盖都对整个线程生效、记进 `config` 事件；链接用 `[server].public_url`；Telegram 私信回退。去掉"公开地址没定""多工作区形状没定""记覆盖要改 `agent.py`"三条停止条件（最后一条改成"进不了 `config` 事件"）。
+- 2026-11-28（主会话）：按 151 契约复核补：保持 151 钉住的 IM 接缝。
