@@ -222,3 +222,36 @@ def test_a_small_or_verifier_model_with_another_endpoint_is_refused(
     same = model("acme-large", PRICED) + model("acme-other", PRICED)
     same += f'[roles]\nmain = "acme-large"\n{role} = "acme-other"\n'
     assert getattr(settings(tmp_path, same), role) == "acme-other"
+
+
+def test_a_code_default_endpoint_of_the_small_model_is_not_refused(tmp_path: Path) -> None:
+    """Only a `base_url` or `api_key` the user wrote is compared: `DATA_AGENT_BASE_URL` moves the
+    main model's endpoint, and the other default model's code-default one does not count."""
+    text = '[roles]\nmain = "deepseek-v4-pro"\nsmall = "deepseek-flash"\n'
+    proxy = {"DATA_AGENT_BASE_URL": "https://proxy.example/anthropic", "DATA_AGENT_API_KEY": KEY}
+    run = settings(tmp_path, text, proxy)
+    assert (run.base_url, run.small) == ("https://proxy.example/anthropic", "deepseek-flash")
+    custom = (
+        model("acme-large", PRICED) + '[roles]\nmain = "acme-large"\nsmall = "deepseek-flash"\n'
+    )
+    assert settings(tmp_path, custom).small == "deepseek-flash"
+
+
+def test_a_limits_effort_outside_the_models_efforts_names_the_file_and_the_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`[limits].effort` is checked like `--effort` (144 left the values to this ticket)."""
+    monkeypatch.setenv(KEY_ENV, KEY)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for name in ("DATA_AGENT_MODEL", "DATA_AGENT_BASE_URL", "DATA_AGENT_CONFIG"):
+        monkeypatch.delenv(name, raising=False)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        model("acme-large", PRICED + 'efforts = ["low", "medium"]\n')
+        + '[roles]\nmain = "acme-large"\n\n[limits]\neffort = "max"\n'
+    )
+    argv = ["run", "--type", "query", "--events-dir", str(tmp_path / "events"), "--task", "x"]
+    code, err = run_cli(capsys, [*argv, "--config", str(path), "--workspace", str(tmp_path)])
+    assert code == 2
+    assert "limits.effort" in err and str(path) in err
+    assert "'max'" in err and "acme-large" in err and "low, medium" in err

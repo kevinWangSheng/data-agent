@@ -1337,14 +1337,19 @@ class ModelSettings:
             return str(table.get("base_url") or DEFAULT_BASE_URL), api_key
 
         # The CLI sends every call to one endpoint with one key: a `small` or `verifier` model
-        # whose table gives another would be sent to main's, so it is refused, not ignored.
+        # whose table gives another would be sent to main's, so it is refused, not ignored. Only
+        # what the user wrote counts: a code default (the default models' `base_url`) does not.
         base_url, api_key = endpoint(main)
         for role in ("small", "verifier"):
             name = roles[role]
-            given = tables[name]
+            written = {
+                key: tables[name].get(key)
+                for key in ("base_url", "api_key")
+                if config.source(Key(("models", name, key))) not in (None, "default")
+            }
             if name != main and (
-                given.get("base_url") not in (None, base_url)
-                or given.get("api_key") not in (None, api_key)
+                written.get("base_url") not in (None, base_url)
+                or written.get("api_key") not in (None, api_key)
             ):
                 raise ConfigError(
                     f"[roles].{role} = {name!r}: [models.{name}] gives a base_url or api_key "
