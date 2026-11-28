@@ -161,3 +161,4 @@ Branch: worktree-143-config-loader
      Run: `uv run data-agent run --type query --workspace /tmp/143-smoke/ws --config /tmp/143-smoke/product.toml --events-dir runs/143-smoke --task "How many orders are there?"`
      It passes if the answer is right, the `version` event has `config: "product"`, and there is a `sql` event. The `sql` event shows the data server started from the temp config file.
 - 2026-11-27（主会话）：`agent.py:1621` 一行超出 May-edit，接受：Context 点名了这里要改（`version.config` 改成文件名后数据服务器按名字找不到）；Spec 审查也判在意图内。README 里旧参数的说明转给 144（下面）。
+- 2026-11-28（主会话）：合并前真实运行（服务器，`322d38d`）：冒烟通过（答案 37 与 DuckDB 一致；`version.config = "product"`；`sql` 事件；`ps` 看到数据服务器 `--config /tmp/data-agent-config-*/product.toml`，文件里没有 `api_key`，运行后已删；$0.0032 ×2）。集成测试 31 个：30 passed，1 failed（`test_seam_a_run_cli.py::test_dbt_model_built_with_correct_values`，模型建在 `da_run_*` 临时 schema、测试查 `main`；140 改默认 `scratch` 时漏了这个测试的 `run_agent`，不是本工单的问题，开 164 修）。花费约 $0.16。
