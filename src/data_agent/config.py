@@ -571,15 +571,11 @@ class EffectiveConfig:
     def value(self, key: str) -> Any | None:
         """The key's effective value; for a table (`mcp.servers`, `sources.shop`) its keys as
         nested dicts; None when unset."""
-        if key in self.values:
-            return self.values[key]
-        return subtree(self.values, key)
+        return lookup(self.values, key)
 
     def raw_value(self, key: str) -> Any | None:
         """As `value`, every `${VAR}` reference as written."""
-        if key in self.raw:
-            return self.raw[key]
-        return subtree(self.raw, key)
+        return lookup(self.raw, key)
 
     def source(self, key: str) -> str | None:
         """Where the key's value came from: `default`, a file's path, `env:<VAR>`, `cli` or
@@ -599,6 +595,18 @@ class EffectiveConfig:
         """The `version` event's `config`: the last file's name without `.toml`, or `default`
         (decisions.md Q8)."""
         return self.files[-1].stem if self.files else DEFAULT_NAME
+
+
+def lookup(leaves: Mapping[str, Any], key: str) -> Any | None:
+    """The leaf `key` names, else the table (`subtree`). A `Key` is matched by its parts: as a
+    string `sources."shop.path"` equals `sources.shop.path`, which is `[sources.shop]`'s `path`."""
+    if isinstance(key, Key):
+        found = next((value for at, value in leaves.items() if parts_of(at) == key.parts), None)
+        if found is not None:
+            return found
+    elif key in leaves:
+        return leaves[key]
+    return subtree(leaves, key)
 
 
 def subtree(leaves: Mapping[str, Any], key: str) -> dict[str, Any] | None:
@@ -677,8 +685,11 @@ def load_effective_config(
         )
         sources["roles.main"] = f"env:{MODEL_ENV}"
     if environ.get(BASE_URL_ENV):
-        key = Key(("models", raw["roles.main"], "base_url"))
-        raw[key], sources[key] = environ[BASE_URL_ENV], f"env:{BASE_URL_ENV}"
+        # The model the role names once its references are expanded; the URL kept a reference
+        # in the text (`config show`, the files runs get), as it may carry a credential.
+        main = expand("roles.main", raw["roles.main"], environ)
+        key = Key(("models", main, "base_url"))
+        raw[key], sources[key] = f"${{{BASE_URL_ENV}}}", f"env:{BASE_URL_ENV}"
     locked = locks(policy)
     cli_origin = Origin("command line")
     for key, value in cli_overrides.items():

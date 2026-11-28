@@ -16,7 +16,7 @@ from data_agent.config import ConfigFileError, EffectiveConfig, load_effective_c
 from data_agent.web.app import create_app
 from data_agent.web.launcher import Launcher
 from data_agent.web.runs import RunsDir
-from data_agent.web.sources import DataSource
+from data_agent.web.sources import DataSource, config_sources
 
 # Built from parts so no scanner takes it for a key.
 SECRET = "val-" + "Qx71" + "-made-up"
@@ -168,8 +168,10 @@ def test_a_name_with_a_dot_survives_the_text(tmp_path: Path) -> None:
         '[sources."a.b"]\nkind = "duckdb"\npath = "a.duckdb"\n\n'
         '[models."gpt-4.1"]\nbase_url = "https://llm.example"\n',
     )
-    first = load(path, environ={"DATA_AGENT_MODEL": "gpt-4.2", "DATA_AGENT_BASE_URL": "https://x"})
-    again = load(write(tmp_path / "again.toml", first.text))
+    environ = {"DATA_AGENT_MODEL": "gpt-4.2", "DATA_AGENT_BASE_URL": "https://x"}
+    first = load(path, environ=environ)
+    # A run's children inherit the environment, `DATA_AGENT_BASE_URL` with it.
+    again = load(write(tmp_path / "again.toml", first.text), environ=environ)
 
     assert again.names("sources") == ["a.b"]
     assert again.value("sources.a.b") == {"kind": "duckdb", "path": tmp_path / "a.duckdb"}
@@ -211,6 +213,71 @@ def test_a_name_that_starts_another_names_table_stays_apart(tmp_path: Path) -> N
     assert loaded.value("models.gpt.4.base_url") == "https://b.example"
     assert (loaded.value("models.gpt") or {}).get("base_url") == "https://a.example"
     assert "4" not in (loaded.value("models.gpt") or {})
+
+
+def test_a_table_named_like_another_entrys_key_is_its_own(tmp_path: Path) -> None:
+    """Review round 3 (Codex): `sources."shop.path"` is a table, not `sources.shop`'s `path`."""
+    path = write(
+        tmp_path / "c.toml",
+        '[sources.shop]\nkind = "duckdb"\npath = "shop.duckdb"\n\n'
+        '[sources."shop.path"]\nkind = "duckdb"\npath = "other.duckdb"\n',
+    )
+    loaded = load(path)
+
+    assert loaded.value(config.Key(("sources", "shop.path"))) == {
+        "kind": "duckdb",
+        "path": tmp_path / "other.duckdb",
+    }
+    assert loaded.value(config.Key(("sources", "shop", "path"))) == tmp_path / "shop.duckdb"
+    assert [source.name for source in config_sources(loaded)] == ["shop", "shop.path"]
+
+
+def test_the_base_url_from_the_environment_stays_a_reference_in_the_text(tmp_path: Path) -> None:
+    """Review round 3 (Codex): `DATA_AGENT_BASE_URL` may carry a credential; the text (`config
+    show`, the files runs get) holds `${DATA_AGENT_BASE_URL}`, the value is expanded."""
+    url = "https://llm.example/" + SECRET
+    path = write(tmp_path / "c.toml", '[roles]\nmain = "m"\n\n[models.m]\ncontext_window = 1\n')
+    loaded = load(path, environ={"DATA_AGENT_BASE_URL": url})
+
+    assert loaded.value("models.m.base_url") == url
+    assert loaded.raw_value("models.m.base_url") == "${DATA_AGENT_BASE_URL}"
+    assert SECRET not in loaded.text
+    assert loaded.source("models.m.base_url") == "env:DATA_AGENT_BASE_URL"
+    again = load(write(tmp_path / "again.toml", loaded.text), environ={"DATA_AGENT_BASE_URL": url})
+    assert again.value("models.m.base_url") == url
+
+
+def test_the_base_url_goes_to_the_model_a_referenced_role_names(tmp_path: Path) -> None:
+    """Review round 3 (Codex): `[roles].main = "${CHOSEN_MODEL}"` names the model the variable
+    holds, so `DATA_AGENT_BASE_URL` sets that model's endpoint."""
+    path = write(
+        tmp_path / "c.toml",
+        '[roles]\nmain = "${CHOSEN_MODEL}"\n\n[models.custom]\nbase_url = "https://old"\n',
+    )
+    loaded = load(path, environ={"CHOSEN_MODEL": "custom", "DATA_AGENT_BASE_URL": "https://new"})
+
+    assert loaded.value("roles.main") == "custom"
+    assert loaded.value("models.custom.base_url") == "https://new"
+    assert loaded.raw_value("roles.main") == "${CHOSEN_MODEL}"
+
+
+def test_our_servers_file_holds_no_model_key(tmp_path: Path) -> None:
+    """Review round 3 (Codex): the data server runs under `sdk_env()`, which blanks
+    `ANTHROPIC_API_KEY`; its file leaves `[models.*].api_key` out, so a model key referenced as
+    `${ANTHROPIC_API_KEY}` does not stop it. It gets its model settings from `tool_env()`."""
+    path = write(
+        tmp_path / "product.toml",
+        '[models.claude]\nbase_url = "https://api.example"\napi_key = "${ANTHROPIC_API_KEY}"\n',
+    )
+    effective = load(path, environ={"ANTHROPIC_API_KEY": SECRET})
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    given = cli.server_config(run_config.load_config(effective), effective, scratch)
+    served = load(Path(given.server_config), environ={"ANTHROPIC_API_KEY": ""})
+
+    assert served.value("models.claude.base_url") == "https://api.example"
+    assert served.value("models.claude.api_key") is None
+    assert "ANTHROPIC_API_KEY" not in Path(given.server_config).read_text()
 
 
 def test_a_missing_explicit_file_is_refused(tmp_path: Path) -> None:

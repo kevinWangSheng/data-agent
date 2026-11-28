@@ -32,6 +32,8 @@ from data_agent.config import (
     EffectiveConfig,
     in_section_order,
     load_effective_config,
+    parts_of,
+    toml_text,
     toml_value,
 )
 from data_agent.context_tools import Dictionary
@@ -310,9 +312,16 @@ def run_config(
 
 def server_config(config: RunConfig, effective: EffectiveConfig, scratch: Path) -> RunConfig:
     """`config` naming the file our own MCP server gets as `--config`: the effective config
-    written to the run's scratch directory, `${VAR}` references as written."""
+    written to the run's scratch directory, `${VAR}` references as written, without the
+    `[models.*].api_key`s. The server runs under `sdk_env()`, which blanks `ANTHROPIC_API_KEY`,
+    and takes its model settings from `tool_env()`."""
+    leaves = {
+        key: value
+        for key, value in effective.raw.items()
+        if not (parts_of(key)[0] == "models" and parts_of(key)[-1] == "api_key")
+    }
     path = scratch / f"{config.name}.toml"
-    path.write_text(effective.text, encoding="utf-8")
+    path.write_text(toml_text(leaves), encoding="utf-8")
     return dataclasses.replace(config, server_config=str(path))
 
 
