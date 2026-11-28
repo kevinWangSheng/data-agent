@@ -1,6 +1,6 @@
 # 144 — 配置接到运行上：`[limits]`、`[sandbox]`、`[sources.*]` 新字段、`[policy]`、网页和 IM 的 effort/超时、产品默认 `full`、表单不列消融配置、值字典缓存
 
-Status: in-review
+Status: done
 Blocked by: 143
 Spec: ../spec.md（"分节（Q2）"的 `[limits]`、`[sandbox]`、`[sources.<名字>]`、`[policy]`；"产品默认与入口"）
 Claimed by: claude (opus 5.5, worktree 144-config-wiring) 2026-11-28
@@ -217,3 +217,4 @@ Branch: worktree-144-config-wiring
   - `git diff main...HEAD -- tests/acceptance tests/fixtures`：43 行删除，2 行新增，就是上轮说明过的两行 `parametrize`。
 
   **前端改动**（本轮）：`web/src/local/NewRun.tsx`、`web/src/local/NewRun.test.ts`。
+- 2026-11-28（主会话）：退回第 1 轮核查：CI 绿、Codex 当前 head 无意见（`a12fa78`）；前端这一轮的改动由上下文干净的 Opus 子 agent 审：无 must-fix/should-fix（可选 nit：表单层没测关了联网时实际提交的请求体）。上一轮服务器真实运行（`7f77a0e`）已全过，本轮改动是缓存键、权限位和手动 mcp-server 的联网，单元测试覆盖。PR #153 squash 合并（`5927c699f3a8fb765318684e245b1ebd232f1b48`）。Status done。
