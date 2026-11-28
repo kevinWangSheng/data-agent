@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -437,15 +438,19 @@ def priced_usd(price: Price, uncached: int, cached: int, output: int) -> float:
 def backstop_usd(budget: float, price: Price) -> float | None:
     """The cap handed to the SDK for a run capped by `Spend` at `price`: a backstop, scaled by the
     largest ratio of the SDK's rate to ours, so the SDK's figure cannot reach it while ours is
-    under `budget`. A rate of 0 bounds nothing; with every rate 0 there is no backstop (None)."""
+    under `budget`. No factor bounds the SDK's charge for tokens free at `price`: with any rate 0
+    there is no backstop (None), and `Spend` is the only cap."""
     sdk = SDK_UNKNOWN_MODEL_PRICE
-    rates = zip(
-        (sdk.input, sdk.cached_input, sdk.output),
-        (price.input, price.cached_input, price.output),
-        strict=True,
+    rates = list(
+        zip(
+            (sdk.input, sdk.cached_input, sdk.output),
+            (price.input, price.cached_input, price.output),
+            strict=True,
+        )
     )
-    ratios = [sdk_rate / rate for sdk_rate, rate in rates if rate > 0]
-    return budget * max(ratios) if ratios else None
+    if any(rate <= 0 for _, rate in rates):
+        return None
+    return budget * max(sdk_rate / rate for sdk_rate, rate in rates)
 
 
 def sdk_budget_usd(budget: float, model: str) -> float | None:
@@ -1324,6 +1329,13 @@ class ModelSettings:
                     f"[models.{name}] gives {', '.join(given)} but not {', '.join(missing)}: "
                     "give all three prices, or none (the spend is then unknown)"
                 )
+            for key in given:
+                value = float(table[key])
+                if not math.isfinite(value) or value < 0:
+                    raise ConfigError(
+                        f"[models.{name}].{key} is {table[key]!r}: a price is a finite number "
+                        "of dollars per million tokens, 0 or more"
+                    )
             prices[name] = price_of(table)
 
         def endpoint(name: str) -> tuple[str, str]:
@@ -1393,9 +1405,18 @@ class ModelSettings:
         )
 
     def secrets(self) -> list[str]:
-        """The keys, masked out of the event file whatever variable they came from."""
-        keys = [self.api_key] + ([] if self.classify is None else [self.classify.api_key])
-        return [key for key in keys if key]
+        """The keys, and the endpoints with their hosts (`events.known_secrets`) but the code
+        default's public one: masked out of the event file whatever variable or table they came
+        from."""
+        secrets: list[str] = []
+        for model in (self, self.classify):
+            if model is None:
+                continue
+            if model.api_key:
+                secrets.append(model.api_key)
+            if model.base_url != DEFAULT_BASE_URL:
+                secrets += known_secrets({BASE_URL_ENV: model.base_url})
+        return list(dict.fromkeys(secrets))
 
     def tool_env(self) -> dict[str, str]:
         """The model settings for the tool servers' own model calls (classify_text): the

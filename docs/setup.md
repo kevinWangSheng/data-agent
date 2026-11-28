@@ -146,7 +146,7 @@ allowed_users = ["U012ABCDEF"]
 | `compact_window` | 自动压缩窗口，进 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（CLI 在它减 33000 处压缩） | `400000` |
 | `efforts` | 这个模型收的 effort 取值 | 不校验 |
 
-三个价格要么都写，要么都不写；只写一部分在运行前退出 2。代码默认有两个模型：`[models.deepseek-flash]`（0.30 / 0.006 / 1.2）和 `[models.deepseek-v4-pro]`（1.32 / 1.32 / 3.96），端点都是 DeepSeek，`efforts = ["low", "high", "max"]`；在自己的文件里写同名表只替换写到的键（比如只加 `api_key`）。
+三个价格要么都写，要么都不写；只写一部分，或写了负数、`nan`、`inf`，在运行前退出 2。代码默认有两个模型：`[models.deepseek-flash]`（0.30 / 0.006 / 1.2）和 `[models.deepseek-v4-pro]`（1.32 / 1.32 / 3.96），端点都是 DeepSeek，`efforts = ["low", "high", "max"]`；在自己的文件里写同名表只替换写到的键（比如只加 `api_key`）。
 
 `[roles]` 给每个用途选一个模型（写 `[models.*]` 里的名字；没有这张表的名字也行，就是没价格、用默认端点）：
 
@@ -158,8 +158,8 @@ allowed_users = ["U012ABCDEF"]
 | `classify` | `classify_text` 的模型调用，用它自己的 `base_url` 和 `api_key` | 等于 `main` |
 
 - **`small`、`verifier` 只换模型名**：Claude Code CLI 一次会话只连一个端点、用一个密钥，所以这两个角色的模型发到 `main` 的端点；它们表里的 `base_url`、`api_key` 不起作用。`classify` 是我们自己的 MCP server 调的，端点和密钥都按它自己的。
-- **`DATA_AGENT_MODEL`、`DATA_AGENT_BASE_URL`** 照旧覆盖主模型（`roles.main` 和它的 `base_url`）。
-- **花费**：运行用到的模型（`main`、`small`、`verifier`、`classify`）都有价格时，花费按价格表算（`result` 事件 `cost_basis: "price_table"`），上限是 `[limits].max_budget_usd`（默认 $1）；几个模型价格不同时每一项取其中最高的，花费只会高估。交给 SDK 的 `max_budget_usd` 是按 CLI 兜底价放大的备用上限（`agent.backstop_usd`）。
+- **`DATA_AGENT_MODEL`、`DATA_AGENT_BASE_URL`** 照旧覆盖主模型（`roles.main` 和它的 `base_url`）。非代码默认的端点（`main`、`classify` 的 `base_url`）和它的主机名跟密钥一样，在事件文件里打码。
+- **花费**：运行用到的模型（`main`、`small`、`verifier`、`classify`）都有价格时，花费按价格表算（`result` 事件 `cost_basis: "price_table"`），上限是 `[limits].max_budget_usd`（默认 $1）；几个模型价格不同时每一项取其中最高的，花费只会高估。交给 SDK 的 `max_budget_usd` 是按 CLI 兜底价放大的备用上限（`agent.backstop_usd`）；有一项单价是 0 时不给 SDK 备用上限（没有倍数能兜住免费的那项），只剩价格表的上限。
 - **没填价格的后果**：只要其中一个模型没价格，这次运行就没有任何花费上限（不传 SDK 的 `max_budget_usd`；否则 SDK 按兜底价约 1/30 预算就停）；运行开头在 stderr 写一行 `warning: the model <名字> has no price ...`，事件文件记一条 `warning` 事件（`model` 是名字）；`result` 事件 `cost_basis: "unknown"`、`cost_usd: null`（SDK 自己的数字留在 `sdk_cost_usd`）。`classify_text` 照常可用，回复里写花费未知。
 - **effort**：`--effort` 和 `[limits].effort` 的值要在主模型的 `efforts` 里，不在就在运行前退出 2，报错写出模型、取值和可选值；主模型没写 `efforts` 就不校验。
 

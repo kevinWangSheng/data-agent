@@ -139,9 +139,12 @@ def test_the_classify_role_has_its_own_endpoint_and_key(tmp_path: Path) -> None:
     assert run.sdk_env()["ANTHROPIC_SMALL_FAST_MODEL"] == "acme-large"
 
 
-def test_a_backstop_skips_a_free_rate() -> None:
-    assert agent.backstop_usd(1.0, Price(input=0.0, cached_input=0.5, output=25.0)) == 1.0
+def test_a_free_rate_leaves_no_backstop() -> None:
+    """No factor bounds the SDK's charge for tokens that are free at our price: the price-table
+    cap (`Spend`) is the only one."""
+    assert agent.backstop_usd(1.0, Price(input=0.0, cached_input=0.5, output=25.0)) is None
     assert agent.backstop_usd(1.0, Price(input=0.0, cached_input=0.0, output=0.0)) is None
+    assert agent.backstop_usd(1.0, Price(input=6.25, cached_input=0.5, output=25.0)) == 1.0
 
 
 def run_cli(capsys: pytest.CaptureFixture[str], argv: list[str]) -> tuple[int, str]:
@@ -174,3 +177,28 @@ def test_an_effort_outside_the_models_efforts_names_the_model_and_the_value(
     code, err = run_cli(capsys, [*run, "--workspace", str(tmp_path), "--effort", "medium"])
     assert code == 2
     assert "'medium'" in err and agent.DEFAULT_MODEL in err
+
+
+def test_the_configured_endpoints_and_their_hosts_are_secrets(tmp_path: Path) -> None:
+    """Like `DATA_AGENT_BASE_URL` (`events.known_secrets`): an endpoint from `[models.*]` and its
+    host are masked too, the `classify` role's among them; the code default's is public."""
+    text = (
+        model("acme-large", PRICED, "https://llm.example/a")
+        + model("acme-label", PRICED, "https://labels.example/v1")
+        + '[roles]\nmain = "acme-large"\nclassify = "acme-label"\n'
+    )
+    secrets = settings(tmp_path, text).secrets()
+    for value in (KEY, "https://llm.example/a", "llm.example", "https://labels.example/v1"):
+        assert value in secrets
+    assert "labels.example" in secrets
+    defaults = ModelSettings.from_env({"DATA_AGENT_API_KEY": "k"})
+    assert defaults.secrets() == ["k"]
+
+
+@pytest.mark.parametrize("value", ["-1.0", "nan", "inf"])
+def test_a_price_that_is_negative_or_not_finite_is_refused(tmp_path: Path, value: str) -> None:
+    prices = f"input_price = {value}\ncache_read_price = 0.2\noutput_price = 8.0\n"
+    text = model("acme", prices) + '[roles]\nmain = "acme"\n'
+    with pytest.raises(ConfigError) as caught:
+        settings(tmp_path, text)
+    assert "[models.acme].input_price" in str(caught.value)
