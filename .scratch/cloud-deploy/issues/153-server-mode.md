@@ -79,6 +79,8 @@ Branch: —
 - [ ] 令牌的常数时间比较、日志和异常文字不含令牌值，各有单元测试（`tests/` 下，不在 `tests/acceptance/`）
 - [ ] 最终回复列出每条收紧的实际表现（报错文字、409 的 detail、`/healthz` 响应），供 155 写进 `docs/deploy.md`
 - [ ] `make check` 通过
+- [ ] local 模式下网页表单带 `network: true` 的运行照旧带 `--network`（单元测试；151 没钉表单这一侧，因为 144 之前表单返回 422）。
+- [ ] cloud 下带错或不带令牌的 `POST /api/runs` 不起运行（单元测试，151 复核 N2 若没进 151 则在这里补）。
 
 ## Evidence required
 
@@ -117,3 +119,4 @@ Branch: —
 - 2026-11-27（主会话建票）：cloud-deploy 的部署模式开关。等 product-config 144、146 和本 spec 的验收测试 151 合入。改动在后端（`src/`），照常跑 `da-review` 和 `eng:code-review`。建票时发现的问题按 `decisions.md` Q8 定。
 - 2026-11-27（主会话）：按 ADR-0012 调整：网页鉴权里的浏览器登录与会话 Cookie 改由 settings 159 提供，登录页和联网默认值由 settings 160 做（156 作废）；本工单的 bearer `DATA_AGENT_WEB_TOKEN`、启动检查、联网与锁定、`/healthz` 不变。改了 Goal 末句、Authority 的 `web/src/` 归属、Context 里三处 156 的引用、Acceptance 去掉 `TICKET_156`。
 - 2026-11-27（主会话）：按 ADR-0012 调整：按"建 settings 工单时主会话定的细节"第 1 条，bearer 令牌改用 `DATA_AGENT_ADMIN_TOKEN`（权限 = 组织管理员），不再有 `DATA_AGENT_WEB_TOKEN`；运行子进程的环境去掉 `DATA_AGENT_ADMIN_TOKEN`。Context 里过时的 Q7"不登录"和 Q8 人定第 3 条改指 ADR-0012。
+- 2026-11-28（主会话）：按 151 契约复核补：local 表单联网、401 时不起运行。
