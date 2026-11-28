@@ -88,9 +88,12 @@ or when your turns run out. Do not change models after that.
 Emit = Callable[..., None]
 
 
-def load_definition(name: str, server: str, task_file: Path | None = None) -> AgentDefinition:
+def load_definition(
+    name: str, server: str, task_file: Path | None = None, model: str = "inherit"
+) -> AgentDefinition:
     """One verifier from its markdown file: frontmatter description, body as the prompt, and the
-    path of the run's task file (`agent.saved_task`), which the prompt's checks judge against."""
+    path of the run's task file (`agent.saved_task`), which the prompt's checks judge against.
+    `model` is the model it runs on (a full model ID; `inherit`, the main session's)."""
     _, frontmatter, body = (AGENTS_DIR / f"{name}.md").read_text().split("---\n", 2)
     fields = dict(line.split(":", 1) for line in frontmatter.splitlines() if ":" in line)
     prompt = body.strip()
@@ -100,13 +103,15 @@ def load_definition(name: str, server: str, task_file: Path | None = None) -> Ag
         description=fields["description"].strip().strip('"'),
         prompt=prompt,
         tools=[*READ_TOOLS, *(f"mcp__{server}__{tool}" for tool in DATA_TOOLS[name])],
-        model="inherit",
+        model=model,
         maxTurns=VERIFIER_MAX_TURNS,
     )
 
 
-def verifier_agents(server: str, task_file: Path | None = None) -> dict[str, AgentDefinition]:
-    return {name: load_definition(name, server, task_file) for name in VERIFIER_NAMES}
+def verifier_agents(
+    server: str, task_file: Path | None = None, model: str = "inherit"
+) -> dict[str, AgentDefinition]:
+    return {name: load_definition(name, server, task_file, model) for name in VERIFIER_NAMES}
 
 
 def verifier_hooks(emit: Emit) -> dict[HookEvent, list[HookMatcher]]:

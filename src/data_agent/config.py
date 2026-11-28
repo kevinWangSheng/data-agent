@@ -576,6 +576,9 @@ class EffectiveConfig:
     values: Mapping[str, Any] = field(default_factory=dict[str, Any], repr=False)
     sources: Mapping[str, str] = field(default_factory=dict[str, str])
     raw: Mapping[str, Any] = field(default_factory=dict[str, Any])
+    # A file's value the environment replaced, as written, and the file: `roles.main` under
+    # `DATA_AGENT_MODEL` (decisions.md "145 实测后定" 4: the run warns, `config show` marks it).
+    overridden: Mapping[str, tuple[Any, str]] = field(default_factory=dict[str, tuple[Any, str]])
 
     def value(self, key: str) -> Any | None:
         """The key's effective value; for a table (`mcp.servers`, `sources.shop`) its keys as
@@ -688,7 +691,10 @@ def load_effective_config(
                 policy[key] = (value, path)
             raw[key], sources[key] = value, str(path)
     env_origin = Origin("environment")
+    overridden: dict[str, tuple[Any, str]] = {}
     if environ.get(MODEL_ENV):
+        if sources["roles.main"] != DEFAULT_SOURCE and raw["roles.main"] != environ[MODEL_ENV]:
+            overridden["roles.main"] = (raw["roles.main"], sources["roles.main"])
         raw["roles.main"] = leaf_value(
             Leaf("str"), "roles.main", environ[MODEL_ENV], env_origin, {}
         )
@@ -719,6 +725,8 @@ def load_effective_config(
         raw[key], sources[key] = value, CLI
     for key, (value, _, _) in locked.items():
         raw[key], sources[key] = value, POLICY
+    # Only what the environment's value still holds: a command-line override replaced both.
+    overridden = {key: was for key, was in overridden.items() if sources[key] == f"env:{MODEL_ENV}"}
     values = {key: expand(key, value, environ) for key, value in raw.items()}
     text = toml_text(raw)
     return EffectiveConfig(
@@ -728,6 +736,7 @@ def load_effective_config(
         values=values,
         sources=sources,
         raw=raw,
+        overridden=overridden,
     )
 
 

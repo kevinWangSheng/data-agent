@@ -2,14 +2,19 @@
 `agent.ModelSettings`, and the `--effort` / `[limits].effort` check of `data-agent run`. What the
 acceptance tests (tests/acceptance/test_config_models.py) do not pin."""
 
-from collections.abc import Mapping
+import json
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
+from typing import Any
 
+import duckdb
 import pytest
+from claude_agent_sdk import ResultMessage
 
 from data_agent import agent, cli
-from data_agent.agent import ConfigError, ModelSettings, Price
+from data_agent.agent import ConfigError, ModelSettings, Price, Task
 from data_agent.config import default_config, load_effective_config
+from data_agent.run_config import load_config
 
 KEY_ENV = "DATA_AGENT_TEST_MODEL_KEY"
 KEY = "model-key-" + "Wd40"
@@ -255,3 +260,112 @@ def test_a_limits_effort_outside_the_models_efforts_names_the_file_and_the_value
     assert code == 2
     assert "limits.effort" in err and str(path) in err
     assert "'max'" in err and "acme-large" in err and "low, medium" in err
+
+
+def dbt_options(run: ModelSettings, tmp_path: Path) -> Any:
+    task = Task(text="t", type="dbt", workspace=tmp_path, duckdb=tmp_path / "x.duckdb")  # pyright: ignore[reportArgumentType]
+    return agent.build_options(task, load_config("full"), run, [], lambda *_, **__: None)
+
+
+def test_every_verifier_runs_on_the_verifier_roles_model(tmp_path: Path) -> None:
+    """The returned run (145, round 1): the CLI lets no variable override a definition's
+    `inherit`, so the verifier role's model is in each definition."""
+    text = (
+        model("acme-large", PRICED)
+        + model("acme-check", PRICED)
+        + '[roles]\nmain = "acme-large"\nverifier = "acme-check"\n'
+    )
+    checked = dbt_options(settings(tmp_path, text), tmp_path)
+    assert checked.agents and {d.model for d in checked.agents.values()} == {"acme-check"}
+    # Without `[roles].verifier`: the main model's.
+    plain = settings(tmp_path, model("acme-large", PRICED) + '[roles]\nmain = "acme-large"\n')
+    unset = dbt_options(plain, tmp_path)
+    assert unset.agents and {d.model for d in unset.agents.values()} == {"acme-large"}
+
+
+def shown_main_role(capsys: pytest.CaptureFixture[str], path: Path) -> str:
+    """`config show`'s `roles.main` line."""
+    capsys.readouterr()
+    cli.main(["config", "show", "--config", str(path)])
+    (line,) = [x for x in capsys.readouterr().out.splitlines() if x.startswith("roles.main")]
+    return line
+
+
+def main_role_file(tmp_path: Path) -> Path:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        model("acme-large", PRICED) + model("acme-other", PRICED) + '[roles]\nmain = "acme-large"\n'
+    )
+    return path
+
+
+async def run_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: ModelSettings
+) -> list[dict[str, Any]]:
+    async def fake_query(**_: Any) -> AsyncIterator[Any]:
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="s",
+            usage={"input_tokens": 1, "output_tokens": 1},
+            total_cost_usd=0.0,
+            result="42",
+        )
+
+    monkeypatch.setattr(agent, "query", fake_query)
+    db = tmp_path / "x.duckdb"
+    duckdb.connect(str(db)).close()
+    task = Task(text="q", type="query", workspace=tmp_path, duckdb=db)
+    outcome = await agent.run(
+        task, load_config("full"), tmp_path / "events", {KEY_ENV: KEY}, models=run
+    )
+    return [json.loads(line) for line in outcome.events_path.read_text().splitlines()]
+
+
+async def test_data_agent_model_over_the_files_main_role_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """decisions.md "145 实测后定" 4: the override still wins, and the run says so."""
+    path = main_role_file(tmp_path)
+    env = {KEY_ENV: KEY, "DATA_AGENT_MODEL": "acme-other"}
+    run = ModelSettings.from_config(load_effective_config([path], env, {}), env)
+    assert run.model == "acme-other"
+    capsys.readouterr()
+    events = await run_query(tmp_path, monkeypatch, run)
+    err = capsys.readouterr().err
+    (line,) = [line for line in err.splitlines() if "DATA_AGENT_MODEL" in line]
+    assert line.startswith("warning:")
+    assert "acme-other" in line and "acme-large" in line and str(path) in line
+    warned = [event for event in events if event["type"] == "warning"]
+    assert [event.get("variable") for event in warned] == ["DATA_AGENT_MODEL"]
+    assert warned[0]["model"] == "acme-other" and warned[0]["overridden"] == "acme-large"
+    assert warned[0]["file"] == str(path)
+
+
+async def test_data_agent_model_without_a_files_main_role_does_not_warn(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(model("acme-other", PRICED))
+    env = {KEY_ENV: KEY, "DATA_AGENT_MODEL": "acme-other"}
+    run = ModelSettings.from_config(load_effective_config([path], env, {}), env)
+    capsys.readouterr()
+    events = await run_query(tmp_path, monkeypatch, run)
+    assert "DATA_AGENT_MODEL" not in capsys.readouterr().err
+    assert not [event for event in events if event["type"] == "warning"]
+
+
+def test_config_show_marks_the_main_role_the_environment_overrides(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = main_role_file(tmp_path)
+    monkeypatch.setenv(KEY_ENV, KEY)
+    monkeypatch.setenv("DATA_AGENT_MODEL", "acme-other")
+    line = shown_main_role(capsys, path)
+    assert line.startswith('roles.main = "acme-other"  # env:DATA_AGENT_MODEL')
+    assert "overrides" in line and '"acme-large"' in line and str(path) in line
+    monkeypatch.delenv("DATA_AGENT_MODEL")
+    assert shown_main_role(capsys, path) == f'roles.main = "acme-large"  # {path}'

@@ -1286,6 +1286,9 @@ class ModelSettings:
     efforts: tuple[str, ...] | None = None
     # Each role's model's price, None for a model without one; None for the whole: `PRICES`.
     prices: Mapping[str, Price | None] | None = None
+    # `[roles].main` as a file wrote it, and the file, when `DATA_AGENT_MODEL` overrides it
+    # (`EffectiveConfig.overridden`): the run warns.
+    main_overridden: tuple[str, str] | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str], require_key: bool = True) -> "ModelSettings":
@@ -1360,6 +1363,7 @@ class ModelSettings:
         table = tables[main]
         efforts = table.get("efforts")
         classify = roles["classify"]
+        was = config.overridden.get("roles.main")
         settings = cls(
             base_url,
             api_key,
@@ -1371,6 +1375,7 @@ class ModelSettings:
             compact_window=int(table.get("compact_window") or COMPACT_WINDOW),
             efforts=None if efforts is None else tuple(efforts),
             prices=prices,
+            main_overridden=None if was is None else (str(was[0]), was[1]),
         )
         if require_key:
             settings.check_key()
@@ -1461,7 +1466,8 @@ class ModelSettings:
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": self.small or self.model,
             "ANTHROPIC_DEFAULT_SONNET_MODEL": self.model,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": self.model,
-            # The verifiers' model: the variable wins over their definitions' `inherit`.
+            # Subagents with no model of their own. The verifiers name theirs (`build_options`):
+            # the CLI does not let this variable override a definition's model (2.1.330).
             "CLAUDE_CODE_SUBAGENT_MODEL": self.verifier or self.model,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             # Subagents (the verifiers) run in the foreground. Launched in the background, they
@@ -1838,7 +1844,9 @@ def build_options(
     agents = None
     if uses_verifiers(task.type, config):
         tools = [*tools, AGENT_TOOL]
-        agents = verifier_agents(MCP_SERVER, task_file)
+        # The verifier role's model in each definition: the CLI lets no variable override a
+        # definition's model (`CLAUDE_CODE_SUBAGENT_MODEL` did not, 2.1.330; ticket 145).
+        agents = verifier_agents(MCP_SERVER, task_file, settings.verifier or settings.model)
         all_hooks |= verifier_hooks(emit)
         # The v2 hooks need the run's snapshot and task file (`run` passes both); a caller
         # building options without them gets the verifiers but not the dispatch rewrite, the
@@ -2493,6 +2501,21 @@ async def run(
             )
             print(f"warning: {warning}", file=sys.stderr)
             log.emit("warning", model=model, warning=warning)
+        if settings.main_overridden is not None:
+            written, file = settings.main_overridden
+            warning = (
+                f"{MODEL_ENV}={settings.model} overrides [roles].main = {written!r} in {file}: "
+                f"the run's main model is {settings.model}"
+            )
+            print(f"warning: {warning}", file=sys.stderr)
+            log.emit(
+                "warning",
+                variable=MODEL_ENV,
+                model=settings.model,
+                overridden=written,
+                file=file,
+                warning=warning,
+            )
         cli_trace = None
         if export is not None:
             facts = RunFacts(

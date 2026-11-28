@@ -654,10 +654,14 @@ def model_settings(
 
 def show_config(config: EffectiveConfig) -> None:
     """`data-agent config show`: `<key> = <value as TOML>  # <source>` per key, every `${VAR}`
-    reference as written."""
+    reference as written; a file's value the environment overrides follows the source."""
     for key in in_section_order(config.raw):
         dotted = ".".join(toml_key(part) for part in parts_of(key))
-        print(f"{dotted} = {toml_value(config.raw[key])}  # {config.source(key)}")
+        note = ""
+        if key in config.overridden:
+            written, file = config.overridden[key]
+            note = f" (overrides {toml_value(written)} from {file})"
+        print(f"{dotted} = {toml_value(config.raw[key])}  # {config.source(key)}{note}")
 
 
 def run_task(
