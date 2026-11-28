@@ -1,6 +1,6 @@
 # 151 — 云端部署：验收测试（启动检查、网页 bearer 令牌、联网与锁定、`/healthz`、git 来源）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: product-config 143
 Spec: ../spec.md（Testing Decisions"验收测试接缝"）；决定：`.scratch/product-config/decisions.md` Q7、Q8；`docs/adr/0012-settings-ui-and-platform-identity.md`；`.scratch/product-config/decisions.md`"建 settings 工单时主会话定的细节"第 1 条
 Claimed by: claude (opus-5-5) 2026-11-28
@@ -167,10 +167,10 @@ spec"验收测试接缝"的四组行为都有验收测试，写在约定的接�
 
 ## Ledger
 
-- Attempts: 3（前两次因本机内存不足中断）
-- Review rounds: 2
+- Attempts: 4 (this one: rework of returned round 1)
+- Review rounds: 3 (this rework: da-review once, eng:code-review once, one round of fixes)
 - Model spend: $0
-- Outcome: —
+- Outcome: all 5 returned items fixed with reverse checks; `make check` green; waiting for the main session to push and finish step 7
 
 ## Comments
 
@@ -281,3 +281,56 @@ spec"验收测试接缝"的四组行为都有验收测试，写在约定的接�
   4. `test_cloud_web_token.py:149-151`：错凭据循环之后加 `cloud.started == []`（401 时没起运行）。
   5. `test_cloud_startup.py:108, 119, 130`：`assert_names(…, "backend", "local")` 会被任何含 "local" 的文字（如 localhost）满足，收紧成只认 `backend`（退出码 2、不起服务照旧）。
   - 不在本工单改：local 表单联网守门（归 153 验收标准）；159 不能让 `public_url` 在没接 Slack 时必填；161 保持 `send(conversation, text)` 接缝。
+- 2026-11-28 (ticket agent, returned round 1; branch `worktree-151-cloud-acceptance-tests`, `c38b070` merged `origin/main` cleanly; fixes `c340968`; review fixes `e01afa3`):
+
+  **The 5 return items:**
+  1. **Git token test (blocking), `test_cloud_git_sources.py`:**
+     - The tests' own git commands (setting up the stand-in repo, `repo.commit`, `commit_count`) now call the real git by its absolute path (`REAL_GIT`, found before PATH is patched). The wrapper on PATH therefore only records the calls `GitSources` makes.
+     - The "git ran through PATH" assertion is now `stand_in.pulls()`: there must be a `clone` or `fetch` line.
+  2. **Token test (blocking), `test_cloud_web_token.py`:**
+     - `REQUESTS` adds the 4 missing routes: `POST /api/runs/{id}/cancel`, `GET /api/conversations/{id}`, `POST /api/conversations` and `POST /api/conversations/{id}/cancel`. That makes 11 parametrized cases: all 10 `/api/*` routes in `app.py`, plus the SSE variant.
+     - With the right token the test only requires "not 401".
+  3. **Plain-path guard:** now uses `build_shop_duckdb`, a valid DuckDB file, instead of a 0-byte one.
+  4. **No run started:** after the wrong-credential loop the test asserts `cloud.started == []`. So that this check can fail today, the wrong credentials are now sent to a conversation that exists (created first with the right token), so a message that gets through would start a run.
+  5. **Backend refusal, `test_cloud_startup.py:108, 119, 130`:** the reason must name `backend`; `local` alone no longer counts. Exit code 2 and the server/session-not-started checks are unchanged.
+
+  **Reverse checks:**
+  - **Method:** a temporary reference implementation (bearer middleware, cloud refusal of the local backend, a temporary `[server].git_token` key, a minimal `git_sources.GitSources`), with each variant switched on by an environment variable.
+  - It was not committed; afterwards `git diff origin/main -- src/` is 0 lines.
+  - With no variant, all target tests pass under `--runxfail`. "Old tests" are the files at `55ddb85`, before the fixes.
+
+  | Broken implementation | New tests | Old tests |
+  |---|---|---|
+  | Calls git by absolute path, token in the arguments (`-c http.extraHeader=…`) | `no clone or fetch ran through the git on the environment's PATH` | Passed |
+  | The 4 added routes skip authentication | All 4 FAIL: `{'none': 200/201/409…} == {'none': 401…}` | Not covered |
+  | Handles the request first, then returns 401 | `messages` FAILS: `a request without the right token started a run` | Passed |
+  | Looks up the id first (unknown id → 404 before 401) | All 6 routes that take an id FAIL | Not covered |
+  | Refusal message is "cloud mode runs in docker, not local" (no `backend`) | web, run and `DATA_AGENT_MODE` all FAIL: `stderr names none of ('backend',)` | Passed |
+  | `serve_web` checks that each DuckDB source opens | New guard passes | Old guard FAILS: `data-agent web did not start: … source …` |
+
+  **`uv run pytest tests/acceptance/test_cloud_*.py -q`:**
+  - `9 passed, 34 xfailed`, nothing skipped. The 4 added xfails are the 4 new routes.
+  - Under `--runxfail` the route cases fail with `assert {'none': 200|201|202|409|422,…} == {'none': 401,…}`.
+  - The git token test fails with `server.git_token: unknown key`.
+  - Both are "feature not built yet".
+
+  **`make check` (on `e01afa3`):** passed.
+  - ruff: `All checks passed!`
+  - format: `547 files already formatted`
+  - basedpyright: `0 errors, 0 warnings, 0 notes`
+  - pytest: `3589 passed, 3 skipped, 81 deselected, 96 xfailed`
+  - web: `Test Files 30 passed`, `Tests 448 passed`
+  - The first run, on `c340968`, also passed.
+
+  **Reviews:**
+  - **`da-review main`:** "No actionable defects found". It collected 43 tests but could not run them in its read-only sandbox.
+  - **`eng:code-review main`:** Spec found all 5 items fixed and no scope creep. Standards found no hard violations. Fixed in `e01afa3`:
+    - **Unknown run id (both reviewers):** an unknown run id was never sent, so "an unknown run or conversation is 401 too" was untested for runs. Routes that take an id now also send `Ids("no-such-run", "no-such-conversation")`, labelled `"an unknown id"` and only for those routes.
+    - **Duplicated helpers:** `get`, `post`, `conversation_get` and `conversation_cancel` are merged into one factory, `call(method, template, body)`.
+    - **Loose type:** `refused` is now `dict[str, int]`.
+    - **`commit_count` beside `git()`:** kept separate on purpose (an AssertionError for the clone under test, a RuntimeError for the fixture); a docstring now says so.
+  - **Not fixed, with reasons:**
+    - "`backend` matches any stderr containing backend": this tightening is what return item 5 asked for, and exit code 2 plus the server/session-not-started checks still guard it.
+    - `REAL_GIT` and `real_git()` are two names for one value: the lookup has to happen before PATH is patched, and the None check sits in the function; minor.
+    - The spec review notes that `started == []` cannot fail for `POST /api/runs` until 144 merges (the form gets 422 today). That is the known 144 dependency; the route's 401 assertion still covers it.
+    - A `GitSources` that clones once through PATH git, but sends its token-carrying call via an absolute-path git, would still pass. Return item 1's wording accepts this.
