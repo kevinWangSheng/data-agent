@@ -11,8 +11,8 @@ tests/acceptance/test_config_wiring.py contract items 4 and 5): the MCP servers 
 config file's `[mcp]` (`file = ...`), given to `data-agent web` with `--config` and to `create_app`
 as the server's `EffectiveConfig` (`config=`); each web run gets `--config <file>`, a file holding
 the server's config, never `--mcp-servers`. The tests it moved are `TICKET_143` until ticket 143
-reads config files. The run form's `config` field is left as it was: the form is not what these
-tests are about.
+reads config files. The run form sends no `config` field (test_config_wiring.py contract item
+5), so the form's cases are `TICKET_144` until ticket 144 drops that field from `POST /api/runs`.
 
 The app is built with `create_app` and a `start_run` that records the arguments; the run it starts
 is tests/fixtures/chat/fake_chat_run.py (reused read-only), which ignores arguments it does not

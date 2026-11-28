@@ -6,14 +6,17 @@ the marker, changing nothing else. The seam: `data-agent run` in-process, sessio
 SDK's client (tests/acceptance/product_config_support.py); a conversation turn's arguments from
 the web app, run in-process the same way.
 
-The contract fixed here (for the human review). Plugin and Skill names follow the spec until
-ticket 142 settles them: the built-in `skills/` is the local plugin `data-agent`, its Skills
-`data-agent:<name>` (`skill_name`, one place below; ticket 141's final reply flags it for 142).
+The contract fixed here (for the human review). Plugin and Skill names follow the spec; ticket 142
+confirmed the form, a local plugin's Skills listed as `<plugin>:<Skill>`
+(docs/research/2026-11-27-skill-tool-spike.md): the built-in `skills/` is the local plugin
+`data-agent`, its Skills `data-agent:<name>` (`skill_name`, one place below).
 
-1. Product default (no config): the options' `skills` lists the Skills found (not `[]`), and
-   `plugins` holds `{"type": "local", "path": <the built-in skills/ directory>}`. Only the task
-   type's workflow Skill is preloaded: its whole text is in the system prompt (`sql-workflow` on a
-   query run, `dbt-workflow` on a dbt run), no other Skill's is. A conversation turn likewise.
+1. Product default (no config): the options' `skills` lists the Skills found (not `[]`), `tools`
+   holds `Skill` (ticket 142: the CLI goes by `--tools`, and `skills` alone leaves the Skill tool
+   out of the session), and `plugins` holds `{"type": "local", "path": <the built-in skills/
+   directory>}`. Only the task type's workflow Skill is preloaded: its whole text is in the system
+   prompt (`sql-workflow` on a query run, `dbt-workflow` on a dbt run), no other Skill's is. A
+   conversation turn likewise.
 2. `[skills].disabled` (Skill names as their directories are named) are left out of `skills`;
    `[skills].preload` names the Skills whose whole text goes into the system prompt.
 3. `[skills].dirs`: each directory is a local plugin of the run (made in a temp directory of the
@@ -83,7 +86,7 @@ PLUGIN = "data-agent"
 
 
 def skill_name(name: str) -> str:
-    """A built-in Skill's name as the SDK lists it (ticket 142 to confirm)."""
+    """A built-in Skill's name as the SDK lists it (`<plugin>:<Skill>`, ticket 142)."""
     return f"{PLUGIN}:{name}"
 
 
@@ -137,6 +140,7 @@ def test_a_default_query_run_loads_every_skill_and_preloads_only_its_workflow(
     prompt = system_prompt_of(options)
 
     assert options.skills, "the options list no Skill"
+    assert "Skill" in (options.tools or [])
     assert skill_name("sql-workflow") in options.skills
     assert skill_name("duckdb-sql") in options.skills
     assert SKILLS.resolve() in [path.resolve() for path in local_plugins(options)]
@@ -153,6 +157,7 @@ def test_a_default_dbt_run_preloads_only_dbt_workflow(
     prompt = system_prompt_of(options)
 
     assert skill_name("dbt-write") in (options.skills or [])
+    assert "Skill" in (options.tools or [])
     assert has_whole_text(prompt, "dbt-workflow")
     for other in ("dbt-write", "dbt-debugging", "duckdb-sql"):
         assert not has_whole_text(prompt, other), other
@@ -169,6 +174,7 @@ def test_a_conversation_turn_loads_skills_the_same_way(
     prompt = system_prompt_of(options)
 
     assert skill_name("sql-workflow") in (options.skills or [])
+    assert "Skill" in (options.tools or [])
     assert has_whole_text(prompt, "sql-workflow")
     assert not has_whole_text(prompt, "duckdb-sql")
 

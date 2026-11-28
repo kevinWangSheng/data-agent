@@ -76,6 +76,7 @@ from product_config_support import (
     fake_home,
     flag_values,
     key_of,
+    normalize_text,
     normalized_snapshot,
     query_args,
     run_cli,
@@ -112,6 +113,27 @@ def test_guard_an_evaluation_entry_gives_the_recorded_parameters(
     ran = drive_entry(entry, layer, tmp_path / "entry", capsys, capture, monkeypatch)
     got = normalized_snapshot(ran.session, ran.version, ran.roots)
     compare_or_record(f"{entry}-{layer}", got)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Each path is replaced once: a placeholder is not searched again for another path.
+        ("/work/tmp/x", "<repo>/tmp/x"),
+        ("/tmp/work/x", "<tempdir>/work/x"),
+        # Only a whole path or a path's first part.
+        ("/work/skills/x", "<repo>/skills/x"),
+        ("at /work.", "at <repo>."),
+        ("/workspace/a", "/workspace/a"),
+        ("/work-tree", "/work-tree"),
+        ("/work.d", "/work.d"),
+        ("/private/tmp/y", "/private/tmp/y"),
+        ("sk-secret in /tmp", "<api-key> in <tempdir>"),
+    ],
+)
+def test_guard_normalize_text_replaces_each_path_once(text: str, expected: str) -> None:
+    rules = [("/work", "<repo>"), ("/tmp", "<tempdir>"), ("sk-secret", "<api-key>")]
+    assert normalize_text(text, rules) == expected
 
 
 RUN_ENTRIES = [case for case in SNAPSHOT_CASES if case[0] in ("data-eng-bench", "livesqlbench")]
