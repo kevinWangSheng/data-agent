@@ -1,10 +1,10 @@
 # 164 — 修复 seam A 的 dbt 集成测试：显式传 `--dbt-target task`（140 漏改）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: 143
 Spec: ../spec.md
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-28
+Branch: worktree-164-seam-a-dbt-target
 
 ## Goal
 
@@ -45,12 +45,13 @@ Branch: —
 
 ## Ledger
 
-- Attempts:
-- Review rounds:
-- Model spend:
-- Outcome:
+- Attempts: 2 (first start was interrupted when the machine ran out of memory; the change it left uncommitted was checked and committed)
+- Review rounds: 1 (da-review: no findings; eng:code-review Standards/Spec: no findings)
+- Model spend: $0 (no real model run)
+- Outcome: 7dc568c, tests/acceptance/test_seam_a_run_cli.py +3 lines (all inside run_agent)
 - Human review minutes:
 
 ## Comments
 
 - 2026-11-28（主会话建票）：143 合并前的集成测试发现；140 的遗漏，照 140 已定的规矩修。
+- 2026-11-28 (ticket agent): run_agent now adds `*(("--dbt-target", "task") if task_type == "dbt" else ())`, same as evals/jaffle.py:364 and evals/harbor_agent.py:397. `git diff main...HEAD --stat`: 1 file, 3 insertions. `make check` exit 0; ruff, ruff format and basedpyright clean on the changed file; `data-agent run --help` shows `--dbt-target {scratch,task}`. da-review main: no findings (mocked runs: dbt gets the flag, query doesn't). eng:code-review main: Standards no violations; Spec all acceptance items met, nothing out of scope. Not fixed: the module docstring's interface list (:8-9) leaves out --dbt-target and :14 still says TICKET_143; Authority forbids editing outside run_agent, so it goes to a follow-up if needed. Pending (main session): `pytest -m integration tests/acceptance/test_seam_a_run_cli.py` on the server, 5 passing.
