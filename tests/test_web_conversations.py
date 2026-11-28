@@ -126,7 +126,7 @@ def test_the_config_file_a_turn_gets_reads_back_as_the_same_sources(tmp_path: Pa
     launcher = Launcher(RunsDir(runs), sources, lambda *_: None)  # type: ignore[arg-type]
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    [_, path] = launcher.config_args(run_dir)
+    [_, path] = launcher.config_args(run_dir, True)
     assert config_sources(load_effective_config([Path(path)], {}, {})) == [
         DataSource('or"ders.v2', duckdb=file.resolve()),
         DataSource("客户 🦆", postgres_env="CRM_URL"),

@@ -93,22 +93,29 @@ installing from it needs no Node. From a checkout, build the page once:
 ```bash
 pnpm --dir web install && pnpm --dir web build:local
 
-cat > sources.toml <<'EOF'
+cat > config.toml <<'EOF'
+[server]
+runs_dir = "runs-web"   # relative to this file; --runs-dir overrides it
+
 [sources.shop]
 kind = "duckdb"
 path = "shop.duckdb"
 EOF
 
 mkdir -p runs-web
-uv run data-agent web --runs-dir runs-web --data-sources sources.toml   # http://127.0.0.1:8765
+uv run data-agent web --config config.toml   # http://127.0.0.1:8765
 ```
 
 The form offers the data sources by name only. A Postgres source names the environment variable
 holding its URL (`kind = "postgres"`, `env = "VAR"`), so the URL stays in the server's environment.
 A source used for dbt tasks adds `dbt_project = "DIR"`. Each dbt run works on its own copy of that
-project. Without `--data-sources` the page still lists and replays runs, but cannot start one. Runs
+project. Without a `[sources.*]` table the page still lists and replays runs, but cannot start one. Runs
 started with `data-agent run --events-dir runs-web/<name>` appear in the list too. One run goes at a
-time.
+time. The form picks no ablation: every run gets the server's config, every layer on unless the
+config turns one off, and the form shows a summary of it (layers, model, effort, limits, network).
+The config's `[limits]`, `[sandbox]`, `[sources.<name>]` limits, `[policy]`, `[server]` and
+`[trace]` keys and their defaults are listed in
+[docs/setup.md](docs/setup.md#上限沙箱数据源策略服务器与追踪工单-144).
 
 Runs started from the page are online by default, with a toggle in the UI to turn network access
 off. `data-agent web --no-network` turns it off for the whole server: no run from the page, a
@@ -121,7 +128,7 @@ production schemas.
 
 ### Slack
 
-`data-agent web --im FILE` also starts a Slack bot in the same process. The bot uses Socket Mode,
+An `[im.slack]` table in the config file also starts a Slack bot in the `data-agent web` process. The bot uses Socket Mode,
 so it needs no public address. People on an allowed list message it directly, or mention it in a
 channel. It answers in the message's thread, and a reply in that thread continues the same
 conversation. These conversations are the web UI's own: they show in its conversation list and can
@@ -130,17 +137,18 @@ be replayed there. The Slack libraries are an optional extra:
 ```bash
 uv sync --extra im          # an installed wheel: the extra data-agent[im]
 
-cat > ~/.config/data-agent/im.toml <<'EOF'
-[slack]
+cat >> config.toml <<'EOF'
+
+[im.slack]
 bot_token_env = "DATA_AGENT_SLACK_BOT_TOKEN"   # the bot token (xoxb-...)
 app_token_env = "DATA_AGENT_SLACK_APP_TOKEN"   # the app-level token for Socket Mode (xapp-...)
 allowed_users = ["U012ABCDEF"]                 # Slack member ids
 EOF
 
-uv run data-agent web --runs-dir runs-web --data-sources sources.toml --im ~/.config/data-agent/im.toml
+uv run data-agent web --config config.toml
 ```
 
-- **The file holds variable names only.** Each name must start with `DATA_AGENT_SLACK_`, and the
+- **The config holds variable names only.** Each name must start with `DATA_AGENT_SLACK_`, and the
   token values stay in the environment. A missing variable, an empty `allowed_users` list or a
   name with another prefix stops the server from starting, and the error names the platform.
   Runs are started without these variables, so no run and no event file ever holds a Slack token.
@@ -172,7 +180,7 @@ Setting up the Slack app (scopes, events, tokens) is described in
 
 ### Telegram
 
-With a `[telegram]` table in the `--im` file, `data-agent web` also starts a Telegram bot in the
+With an `[im.telegram]` table in the config file, `data-agent web` also starts a Telegram bot in the
 same process. It uses long polling, so it needs no public address either, and it shares the web
 UI's conversations, like the Slack bot. Telegram chats have no threads, so each chat has one
 current conversation: every message in it continues that conversation until someone sends
@@ -181,18 +189,19 @@ current conversation: every message in it continues that conversation until some
 ```bash
 uv sync --extra im
 
-cat > ~/.config/data-agent/im.toml <<'EOF'
-[telegram]
+cat >> config.toml <<'EOF'
+
+[im.telegram]
 bot_token_env = "DATA_AGENT_TELEGRAM_BOT_TOKEN"   # the token @BotFather gave
 allowed_users = [123456789]                       # Telegram user ids (numbers)
 EOF
 
-uv run data-agent web --runs-dir runs-web --data-sources sources.toml --im ~/.config/data-agent/im.toml
+uv run data-agent web --config config.toml
 ```
 
-A file can hold both a `[slack]` and a `[telegram]` table; both bots then run.
+A config can hold both an `[im.slack]` and an `[im.telegram]` table; both bots then run.
 
-- **The file holds variable names only.** The name must start with `DATA_AGENT_TELEGRAM_`; the
+- **The config holds variable names only.** The name must start with `DATA_AGENT_TELEGRAM_`; the
   token stays in the environment, and runs are started without it.
 - **The allowed list** holds numeric user ids. Anyone else who messages the bot privately is told
   their id; in a group the bot ignores them.
@@ -224,13 +233,13 @@ Creating the bot and turning off Group Privacy is described in
 
 ### Discord
 
-The same `--im` file can also start a Discord bot, alone or next to the other bots: add a
-`[discord]` table. The bot connects to Discord's gateway, so it needs no public address either.
+The same config file can also start a Discord bot, alone or next to the other bots: add an
+`[im.discord]` table. The bot connects to Discord's gateway, so it needs no public address either.
 It uses the same extra (`uv sync --extra im`), and its conversations are the web UI's own, like
 Slack's.
 
 ```toml
-[discord]
+[im.discord]
 bot_token_env = "DATA_AGENT_DISCORD_BOT_TOKEN"   # the bot token from the Developer Portal
 allowed_users = ["123456789012345678"]           # Discord user ids, written as strings
 ```
@@ -307,10 +316,12 @@ no held-out split, uses `full`; jaffle-shop, which is not in the manifest, uses 
 
 ### External MCP servers
 
-`data-agent run --mcp-servers FILE` and `data-agent web --mcp-servers FILE` give the agent the tools
-of MCP servers you already use, such as MongoDB's or GitHub's. `FILE` is a Claude Code / Cursor
-`mcpServers` JSON kept outside the repository, with one addition: each server lists the tools the
-agent may call in `allowedTools`.
+An `[mcp]` table in the config file (`data-agent run --config` or `data-agent web --config`) gives
+the agent the tools of MCP servers you already use, such as MongoDB's or GitHub's. Either name a
+file, `[mcp] file = "FILE"`, where `FILE` is a Claude Code / Cursor `mcpServers` JSON kept outside
+the repository, or write the servers inline as `[mcp.servers.<name>]` tables with the same fields;
+not both. One addition to the usual format: each server lists the tools the agent may call in
+`allowedTools`.
 
 ```json
 {
@@ -326,7 +337,7 @@ agent may call in `allowedTools`.
 ```
 
 - Transports: `stdio` (the default when `type` is left out) and `http`. A server that uses `sse`,
-  OAuth, an unknown type or an unknown field is refused. A run with a bad file stops before its
+  OAuth, an unknown type or an unknown field is refused. A run with a bad server stops before its
   session starts, with exit code 2 and an error that names the server.
 - `allowedTools`: `["find", "aggregate"]` allows those two tools, and `["*"]` allows all of the
   server's tools. A server without the list, or with an empty one, is not mounted, and the run prints
@@ -348,7 +359,7 @@ agent may call in `allowedTools`.
 
 Complete MongoDB and GitHub setups are in [`docs/setup.md`](docs/setup.md#外部-mcp-server工单-116).
 
-Risks you take on with `--mcp-servers`:
+Risks you take on with `[mcp]` servers:
 
 - A write tool on the allow list (MongoDB's `insert-many`, say) runs without asking. Leave write
   tools off the list, or use the server's own read-only mode.
@@ -460,7 +471,7 @@ in [`docs/adr/0008-change-acceptance.md`](docs/adr/0008-change-acceptance.md).
   labels exactly; they failed in every run.
 - Data sources are DuckDB, Postgres and dbt projects. There is no memory across runs yet. The web UI
   is for one user on one machine: it has no login.
-- External MCP servers (`--mcp-servers`) have no confirmation before a write tool runs. Their stdio
+- External MCP servers (`[mcp]`) have no confirmation before a write tool runs. Their stdio
   processes run on the host, with network access that `--network` does not control. An http
   server's expanded headers reach the Claude Code CLI as part of its `--mcp-config` argument, so
   other local users who can list this machine's processes can see them. stdio servers' values do not reach any

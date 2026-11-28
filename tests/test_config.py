@@ -483,12 +483,13 @@ def test_create_app_without_a_config_reads_no_file(
     launched = app.state.conversations.launcher
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    [flag, path] = launched.config_args(run_dir)
+    [flag, path] = launched.config_args(run_dir, True)
 
     assert flag == "--config" and Path(path).name == "default.toml"
     given = load(Path(path))
     assert given.value("layers.skill") is True
-    assert dict(given.values) == dict(config.default_config().values)
+    # The code defaults, and the network `network_for` decided (ticket 144).
+    assert dict(given.values) == {**config.default_config().values, "sandbox.network": True}
 
 
 def test_a_runs_config_file_keeps_another_sources_keys_out(tmp_path: Path) -> None:
@@ -506,7 +507,7 @@ def test_a_runs_config_file_keeps_another_sources_keys_out(tmp_path: Path) -> No
     sources = [DataSource("shop", duckdb=tmp_path / "shop.duckdb")]
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    [_, path] = launcher(tmp_path, load(server), sources).config_args(run_dir)
+    [_, path] = launcher(tmp_path, load(server), sources).config_args(run_dir, True)
     given = load(Path(path))
 
     assert given.names("sources") == ["shop"]
@@ -529,7 +530,7 @@ def test_a_runs_config_file_has_the_servers_sources_and_no_im(
     sources = [DataSource("shop", duckdb=db), DataSource("wh", postgres_env="SHOP_URL")]
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    [_, path] = launcher(tmp_path, load(server), sources).config_args(run_dir)
+    [_, path] = launcher(tmp_path, load(server), sources).config_args(run_dir, True)
     text = Path(path).read_text()
     given = load(Path(path), environ={"SHOP_URL": "x"})
 
@@ -542,14 +543,14 @@ def test_a_runs_config_file_has_the_servers_sources_and_no_im(
     assert SECRET not in text
 
 
-def test_a_form_run_keeps_the_picked_layers_over_the_servers_config(tmp_path: Path) -> None:
-    """Until ticket 144 drops the form's `config`, its pick still decides the layers."""
+@pytest.mark.parametrize("network", [True, False])
+def test_a_runs_config_file_carries_the_network_the_run_gets(tmp_path: Path, network: bool) -> None:
+    """The run reads its network from the config file (ticket 144): `network_for`'s answer."""
+    server = write(tmp_path / "server.toml", "[sandbox]\nnetwork = true\n")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    [_, path] = launcher(tmp_path, None, []).layers_args(run_dir, "baseline")
-    given = load(Path(path))
-    assert Path(path).stem == "baseline"
-    assert run_config.load_config(given).layers() == run_config.load_config("baseline").layers()
+    [_, path] = launcher(tmp_path, load(server), []).config_args(run_dir, network)
+    assert load(Path(path)).value("sandbox.network") is network
 
 
 def test_inline_mcp_servers_are_checked_when_the_web_server_starts(
@@ -670,13 +671,14 @@ def test_an_empty_entry_is_refused(tmp_path: Path, text: str, key: str) -> None:
     assert error.key == key and "empty" in str(error)
 
 
-def test_the_form_refuses_a_config_that_swaps_the_skill_version(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name", ["baseline", "full-old-skill"])
+def test_a_web_run_naming_an_ablation_is_refused(tmp_path: Path, name: str) -> None:
+    """A web run gets the server's config (ticket 144): a caller still naming an ablation is
+    refused, never run with it."""
     from data_agent.web.launcher import Refused
 
     db = tmp_path / "shop.duckdb"
     db.write_bytes(b"")
     with pytest.raises(Refused) as refused:
-        launcher(tmp_path, None, [DataSource("shop", duckdb=db)]).check(
-            "t", "query", "shop", "full-old-skill"
-        )
-    assert refused.value.status == 400 and "Skill version" in refused.value.detail
+        launcher(tmp_path, None, [DataSource("shop", duckdb=db)]).submit("t", "query", "shop", name)
+    assert refused.value.status == 400 and "server's config" in refused.value.detail

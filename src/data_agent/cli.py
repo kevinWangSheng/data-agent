@@ -269,14 +269,36 @@ def served_source(settings: EffectiveConfig, args: argparse.Namespace) -> str | 
     """The `[sources.<name>]` of the MCP server's one database, found by its location: the
     `--duckdb` file or the `--postgres-env` variable (`data-agent run` writes the run's own
     location into the file the server reads, `server_config`). None when no source has it."""
+    return located_source(settings, args.duckdb, args.postgres_env)
+
+
+def located_source(
+    settings: EffectiveConfig, duckdb: Path | None, postgres_env: str | None
+) -> str | None:
+    """The `[sources.<name>]` whose `path` is the `duckdb` file or whose `env` is
+    `postgres_env`; None when no source has it."""
     for name in settings.names("sources"):
         entry = settings.value(Key(("sources", name))) or {}
         path = entry.get("path")
-        if args.duckdb is not None and path is not None and same_file(path, args.duckdb):
+        if duckdb is not None and path is not None and same_file(path, duckdb):
             return name
-        if args.postgres_env is not None and entry.get("env") == args.postgres_env:
+        if postgres_env is not None and entry.get("env") == postgres_env:
             return name
     return None
+
+
+def run_source_limits(settings: EffectiveConfig, task: Task) -> dict[str, SourceLimits]:
+    """The limits of each of the run's databases, by the name the run knows it by: its
+    `[sources.<name>]` by that name, else (`--duckdb`/`--postgres-env`) the source at its
+    location, as the MCP server finds it (`served_source`), so the run's dictionary and deadline
+    and the server's tools take the same limits."""
+    limits: dict[str, SourceLimits] = {}
+    for source in task.databases:
+        name: str | None = source.name
+        if settings.value(Key(("sources", source.name))) is None:
+            name = located_source(settings, source.duckdb, source.postgres_env)
+        limits[source.name] = source_limits(settings, name)
+    return limits
 
 
 def server_dbt(
@@ -850,6 +872,7 @@ def run_task(
         # A turn of a conversation is steered through stdin (contract item 6); a single run never
         # reads it. A cancelled run is stopped by signal, so its stdin is read no more.
         steering = None if turn is None else stdin_lines(STDIN_FD)
+        limits = run_source_limits(settings, task)
         # A product run reuses its value dictionaries; an evaluation (an old run config's name, or
         # `--no-dictionary-cache`) builds each afresh.
         cache = (
@@ -873,10 +896,8 @@ def run_task(
                 trace_tier=options.trace_tier,
                 external_mcp=external,
                 charts=args.charts,
-                deadline_margin=deadline_margin(settings, task),
-                source_limits={
-                    source.name: source_limits(settings, source.name) for source in task.databases
-                },
+                deadline_margin=deadline_margin(limits),
+                source_limits=limits,
                 dictionary_cache=cache,
             )
         )
@@ -927,12 +948,11 @@ def trace_env(env: Mapping[str, str], base_url: str | None) -> Mapping[str, str]
     return {**env, LANGFUSE_BASE_URL_ENV: base_url}
 
 
-def deadline_margin(settings: EffectiveConfig, task: Task) -> float:
+def deadline_margin(limits: Mapping[str, SourceLimits]) -> float:
     """How long before its deadline the run stops itself: the longest statement timeout of its
     data sources (`[sources.<name>].query_timeout_seconds`, else the gateway's), so a query
     started just before still ends in time."""
-    names = [source.name for source in task.sources] or [task.data_source_name]
-    return max(source_limits(settings, name).query_timeout_seconds for name in names)
+    return max(limit.query_timeout_seconds for limit in limits.values())
 
 
 def conversation_turn(

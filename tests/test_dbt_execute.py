@@ -477,16 +477,38 @@ def test_dbt_stays_in_the_servers_process_group(
 
 
 def test_dbt_past_its_limit_is_killed_and_its_output_returned(
-    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
 ) -> None:
     env, _ = fake_dbt
     # Long enough for the stand-in's interpreter to start and print on a loaded machine (1 s was
     # not), far short of its 60 s sleep.
-    monkeypatch.setattr(dbt_execute, "TIMEOUT_S", 5)
     workspace = workspace_with_project(tmp_path)
-    executor = DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb")
+    executor = DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb", timeout_seconds=5)
     started = time.monotonic()
     with pytest.raises(DbtExecuteError, match=r"timed out after 5 seconds(.|\n)*fake dbt ran"):
+        executor.execute("seed", env=env)
+    assert time.monotonic() - started < 30
+
+
+def test_a_sources_dbt_timeout_kills_dbt_at_its_limit(
+    tmp_path: Path, fake_dbt: tuple[dict[str, str], Path]
+) -> None:
+    """`[sources.<name>].dbt_timeout_seconds` (ticket 144), as `data-agent mcp-server` reads it,
+    is the limit dbt is killed at, under the code's 900 s."""
+    from data_agent import cli
+    from data_agent.config import load_effective_config
+
+    env, _ = fake_dbt
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[sources.shop]\nkind = "duckdb"\npath = "a.duckdb"\ndbt_timeout_seconds = 5\n'
+    )
+    timeout = cli.dbt_timeout(load_effective_config([config], {}, {}), "shop")
+    workspace = workspace_with_project(tmp_path)
+    executor = DbtExecutor(workspace, "task", duckdb=tmp_path / "a.duckdb", timeout_seconds=timeout)
+    assert "killed after 5 seconds" in dbt_execute.tool_description(executor)
+    started = time.monotonic()
+    with pytest.raises(DbtExecuteError, match=r"timed out after 5 seconds"):
         executor.execute("seed", env=env)
     assert time.monotonic() - started < 30
 

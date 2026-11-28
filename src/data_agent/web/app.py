@@ -7,6 +7,7 @@ app through it); tickets 77 and 78 implement it.
 import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 
@@ -185,11 +186,10 @@ def create_app(
         """Starts a run; the data source is named, never given as a connection."""
         try:
             run_id = await to_thread.run_sync(
-                launcher.submit,
+                partial(launcher.submit, network=body.network),
                 body.task,
                 body.task_type,
                 body.data_source,
-                body.network,
             )
         except Refused as exc:
             raise HTTPException(exc.status, exc.detail) from exc

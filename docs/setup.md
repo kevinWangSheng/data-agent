@@ -86,7 +86,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
 
 ## 配置文件（工单 143）
 
-所有产品入口（`data-agent run`、`data-agent web`、对话、IM）读同一个分层的 `config.toml`（spec "配置文件与分层"，ADR-0011）。类型定义（每一节的键、类型、默认值）在 `src/data_agent/config.py` 的 `SCHEMA`；各节的行为由后续工单接上（`[limits]`、`[sandbox]`、`[policy]` 的接线 144，`[models]`/`[roles]` 145，评测配置文件 146，`[skills]`/`[mcp]`/`[plugins]` 147，`[prompts]`/`[instructions]` 148）。本工单接上的是 `[layers]`、`[sources.*]`、`[mcp]`、`[im.*]`。
+所有产品入口（`data-agent run`、`data-agent web`、对话、IM）读同一个分层的 `config.toml`（spec "配置文件与分层"，ADR-0011）。类型定义（每一节的键、类型、默认值）在 `src/data_agent/config.py` 的 `SCHEMA`；各节的行为由后续工单接上（`[limits]`、`[sandbox]`、`[sources.*]` 的上限、`[policy]`、`[server]`、`[trace]` 的接线 144（下面一节），`[models]`/`[roles]` 145，评测配置文件 146，`[skills]`/`[mcp]`/`[plugins]` 147，`[prompts]`/`[instructions]` 148）。本工单接上的是 `[layers]`、`[sources.*]`、`[mcp]`、`[im.*]`。
 
 - **位置**：用户级 `~/.data-agent/config.toml`；项目级 `<工作区>/.data-agent/config.toml`（`run` 的工作区是 `--workspace`，`web` 是启动时的当前目录；项目级文件不放密钥，可以进 git）。不放 `~/.config/data-agent/`：那是密钥目录。
 - **显式文件**：`--config <路径>` 可写多次，后面的覆盖前面的；这时只读这些文件，不找用户级、项目级。没有 `--config` 时，环境变量 `DATA_AGENT_CONFIG` 指的那一个文件代替用户级和项目级；`--config` 优先于它。
@@ -102,7 +102,7 @@ DAB 算分（工单 35）：`uv run --with-requirements evals/dab-requirements.t
   - `run --data-sources`、`web --data-sources` → `[sources.<名字>]`。`run` 不给 `--duckdb`/`--postgres-env` 时用配置里的数据源（一个就当它跑，几个就都交给 agent）；给了就用给的。
   - `run --mcp-servers`、`web --mcp-servers` → `[mcp]`：`file = "<mcpServers JSON 的路径>"`，或者内联 `[mcp.servers.<名字>]`（字段同 JSON 里的一个 server），两种只能选一种。
   - `web --im` → `[im.slack]`、`[im.telegram]`、`[im.discord]`，键和原来 `--im` 文件里 `[slack]` 等表相同。
-- **网页的每次运行**拿到服务器的生效配置：服务器把它写进运行目录 `<runs-dir>/<id>/config/<名字>.toml`（数据源是服务器的数据源，不含连接串；不含 `[im.*]`；`${VAR}` 照原文），运行参数用 `--config` 指向它。表单选的消融配置（144 之前还在）另写一个只有 `[layers]` 的 `config/layers/<名字>.toml` 叠在后面。只换层开关，不换 Skill 版本，所以表单选 `full-old-skill` 返回 400（只有评测入口跑它）。`create_app(config=None)` 等于代码默认，不读任何文件。
+- **网页的每次运行**拿到服务器的生效配置：服务器把它写进运行目录 `<runs-dir>/<id>/config/<名字>.toml`（数据源是服务器的数据源，不含连接串；不含 `[im.*]`；`${VAR}` 照原文；`sandbox.network` 写成这次运行定下的联网开关），运行参数用 `--config` 指向它。表单、对话、IM 都走这一处（`Launcher.config_args`）。表单不选消融配置（工单 144）：层开关、上限、effort 都是服务器配置的，请求里还带 `config` 字段返回 422。`create_app(config=None)` 等于代码默认，不读任何文件。
 
 示例（`~/.data-agent/config.toml`，只带 `${VAR}`）：
 
@@ -133,7 +133,44 @@ app_token_env = "DATA_AGENT_SLACK_APP_TOKEN"
 allowed_users = ["U012ABCDEF"]
 ```
 
-本地网页的后端（工单 77、78）：`uv run data-agent web --runs-dir runs/web [--port 8765] [--config FILE]... [--no-network]`，只听 `127.0.0.1`；数据源、外部 MCP、IM 从配置文件来（上一节）。
+### 上限、沙箱、数据源、策略、服务器与追踪（工单 144）
+
+产品入口（`data-agent run --config <文件>`、`data-agent web`、对话、IM）的这些值都从生效配置来；不写的键用代码默认值，等于工单 144 之前写死的常量。命令行参数（`--effort`、`--agent-timeout-sec`、`--sandbox`、`--network`、`--dbt-target`、`--trace-tier`）覆盖配置；和 `[policy]` 锁住的值冲突时退出 2 并点名键，不悄悄改成锁定值。
+
+| 键 | 默认 | 作用 |
+| --- | --- | --- |
+| `limits.max_budget_usd` | `1.0` | SDK 的 `max_budget_usd` 和运行的花费上限（> 0） |
+| `limits.max_turns.query` / `.dbt` / `.large` | `50` / `200` / `75` | 查数、dbt、大任务的轮数上限（≥ 1） |
+| `limits.agent_timeout_sec` | 无 | 运行的截止时间（秒，> 0）；不写不限 |
+| `limits.effort` | 无 | 会话的 reasoning effort；不写用模型自己的 |
+| `sandbox.backend` | `docker` | `docker` 或 `local` |
+| `sandbox.image` | `data-agent-sandbox` | docker 沙箱镜像 |
+| `sandbox.cpus` | `2` | docker 沙箱的 `--cpus`（> 0） |
+| `sandbox.memory` | `4g` | docker 沙箱的 `--memory` |
+| `sandbox.network` | `run` 关，`web` 开 | 联网开关（WebSearch、WebFetch、沙箱网络，ADR-0010） |
+| `sandbox.exec_max_seconds` | `900` | 一次 `sandbox_exec` 最多能要的 `timeout_seconds`（≥ 1）；默认 300，比它短时降到它 |
+| `sources.<名字>.schemas.include` / `.exclude` | 无 | agent 的目录、`list_tables`、值字典只看 `include` 里的 schema、不看 `exclude` 里的（不分大小写）；本次运行自己的 `da_run_*` 照常可见 |
+| `sources.<名字>.query_timeout_seconds` | `150` | 每条语句的超时（> 0） |
+| `sources.<名字>.max_rows` | `10000` | `query_database` 一次最多返回的行数（1 到 10000）；截断时结果末尾写 `[ROW CAP]` |
+| `sources.<名字>.duckdb.memory_limit` / `.max_temp_directory_size` | `2GiB` / `4GiB` | 每个 DuckDB 连接的内存上限和溢写上限 |
+| `sources.<名字>.dbt_timeout_seconds` | `900` | 一条 dbt 命令的最长时间（> 0） |
+| `policy.network` | 无 | `false` 锁住不联网：`web --network`、请求里 `network=true`、`run --network` 都拒绝 |
+| `policy.dbt_target` | `scratch` | dbt 写哪里；`--dbt-target` 和它不同就拒绝 |
+| `policy.disabled_models` | 无 | `[roles]` 里任何一个模型在这里就拒绝运行，不换别的模型 |
+| `server.host` | `127.0.0.1` | `data-agent web` 监听的地址；只接受本机回环（`127.0.0.1`、`::1`、`localhost`），别的地址退出 2，等 cloud-deploy 153 加上令牌 |
+| `server.port` | `8765` | `web` 的端口（1 到 65535）；`--port` 覆盖 |
+| `server.runs_dir` | 无 | `web` 的运行目录；`--runs-dir` 覆盖，两个都没有就退出 2 |
+| `trace.tier` | `full` | Langfuse 导出的档位；`--trace-tier` 覆盖 |
+| `trace.base_url` | 无 | Langfuse 地址；环境变量 `DATA_AGENT_LANGFUSE_BASE_URL` 有值时用环境变量。公钥、私钥只从环境变量来 |
+
+几处取值的约定：
+
+- **截止余量**：运行在截止时间前停下，余量是它所有数据源 `query_timeout_seconds` 里最长的（不写时 150 秒），保证截止前刚发出的查询也能跑完。
+- **`max_rows` 和网关自己的上限**：网关的 10,000 行仍是框架读目录、`classify_text` 分页的大小；`max_rows` 只限 agent 调 `query_database` 拿到的行数。
+- **哪个数据源的值**：运行按名字找 `[sources.<名字>]`；`--duckdb`/`--postgres-env` 给的库按位置（文件路径或变量名）找配置里同一个数据源，MCP server 也这样找，所以两边的上限一致。
+- **值字典缓存**：产品运行把值字典存在 `$XDG_CACHE_HOME/data-agent/dictionaries/`（没设时 `~/.cache/data-agent/dictionaries/`），文件名是库的标识、schema 过滤和全部表与列的哈希；目录变了就重建，只有完整建成的才存。目录没变而数据变了时会复用旧的值字典（已知限制）。**评测**照旧每次重建：评测入口传旧消融名（`--config full` 等，见上一节），这种运行不用缓存；`run --no-dictionary-cache` 也不用。`dictionary` 事件里 `cached` 写这次是否复用（评测运行没有这个字段）。
+
+本地网页的后端（工单 77、78）：`uv run data-agent web [--runs-dir runs/web] [--port 8765] [--config FILE]... [--no-network]`，只听本机回环；运行目录、端口、地址从 `[server]` 来，数据源、外部 MCP、IM 从配置文件来（上两节）。表单不选消融配置，显示服务器配置的摘要（名字、层开关、主模型、effort、上限、联网），`/api/options` 的 `config` 字段就是这份摘要。
 
 - 联网开关（工单 140）：默认开（ADR-0010），网页、对话的每次运行照请求里的 `network` 决定，不传时联网；IM 的回合不传，跟随服务器。`--no-network` 时所有运行都不联网（没有 WebSearch、WebFetch，沙箱容器没有网络）；请求里 `network=true` 返回 409，不会悄悄改成不联网。网页的联网勾选框默认是勾上的，所以这时要先取消勾选再提交。
 - `data-agent run --type dbt` 的 `--dbt-target` 默认 `scratch`（工单 140）：dbt 只写本次运行自己的 `da_run_<run id>` schema，profile 生成在工作区外（`--events-dir` 下的 `profiles/`，所以 `--events-dir` 不能在工作区里）。`task` 用项目自己的 profile、写它指向的库，只给评测入口用（`evals/harbor_agent.py`、`evals/jaffle.py` 显式传）。临时 schema 跑完不删；agent 的 `list_tables`、目录和值字典不显示别的运行留下的 `da_run_*`，只显示本次运行自己的那个（和 dbt 自定义 schema 生成的 `<它>_<custom>`）。

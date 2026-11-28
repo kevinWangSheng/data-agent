@@ -52,6 +52,9 @@ from data_agent.workspace_guard import (
 )
 
 TASK_TYPES = ("query", "dbt")
+# What every product run is (spec "产品默认与入口"): the server's config, every layer on unless
+# the config turns one off. The only config name `Launcher.submit` takes.
+PRODUCT_CONFIG = "full"
 # The only sandbox backend the web backend gives a run: `local` would run the agent's commands on
 # this machine (ADR-0010).
 SANDBOX: Backend = "docker"
@@ -199,12 +202,24 @@ class Launcher:
         return self.network if asked is None else asked
 
     def submit(
-        self, task: str, task_type: str, source_name: str, network: bool | None = None
+        self,
+        task: str,
+        task_type: str,
+        source_name: str,
+        config: str = PRODUCT_CONFIG,
+        network: bool | None = None,
     ) -> str:
         """Checks the request, prepares the run's directories and starts it; returns its id. The
         run has the web tools and a sandbox with the network (`data-agent run --network`, tickets
         98 and 100) as `network_for` decides. Its layers, limits and effort are the server
-        config's (ticket 144): the form picks no ablation."""
+        config's (ticket 144): the form picks no ablation. `config` stays for callers that still
+        name one: `PRODUCT_CONFIG` only, any other name refused (400), never run as asked."""
+        if config != PRODUCT_CONFIG:
+            raise Refused(
+                400,
+                f"config {config!r}: a web run gets the server's config; only evaluations "
+                "run an ablation",
+            )
         network = self.network_for(network)
         source = self.check(task, task_type, source_name)
 
