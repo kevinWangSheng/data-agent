@@ -1,9 +1,21 @@
 # HANDOFF — 通用 data agent 求职项目
 
-> **当前状态（2026-11-27 晚）：两条线。① LiveSQLBench 诊断（D1、D4 做完，D2/D3 暂停，待对齐）。② 产品配置 + 云端部署 + 设置界面：ADR-0011、ADR-0012，三份 spec（product-config、cloud-deploy、settings），工单 140–162 都已建好、对齐完，**到可以派工为止**；140、142、152 已开 PR 未合并。下一个会话从派工开始。详见"2026-11-27 交接"。**
+> **当前状态（2026-11-27 夜）：派工已开始，见"2026-11-27 夜 编排交接"。以下为晚间状态：两条线。① LiveSQLBench 诊断（D1、D4 做完，D2/D3 暂停，待对齐）。② 产品配置 + 云端部署 + 设置界面：ADR-0011、ADR-0012，三份 spec（product-config、cloud-deploy、settings），工单 140–162 都已建好、对齐完，**到可以派工为止**；140、142、152 已开 PR 未合并。下一个会话从派工开始。详见"2026-11-27 交接"。**
 >
 > 先读：`AGENTS.md`；`docs/plan.md` §10（一期各项和结果）；`docs/report.md`（分数、消融、失败归因）。
 > 2026-11-01 到 11-22 的逐日进度记录已从本文件移出，原文见 `git show 9493448:HANDOFF.md`；各项结论以 ADR（尤其 ADR-0004、0005、0008 的各个 Update）、工单 Comments 和 plan §10 为准。
+
+## 2026-11-27 夜 编排交接（新编排会话先读这一节）
+
+**主会话只编排**（人 2026-11-27 定）：执行和验证都交给工单 agent 或子 agent；验证通过就合并，验收测试工单（141、151、157）也不再等人审，改由上下文干净的子 agent 把契约逐项对照 spec 核过、偏差为零再合，不能从 spec 推出的选择列进工单 Comments 供人事后看。
+
+- **已合并**：140（#145）、142（#146）、152（#147）、150（#148），工单都是 done，worktree 和分支已删。main 与 origin 一致。
+- **141 退回（第 1 轮）**：PR #149，分支 `worktree-141-config-acceptance-tests`（worktree 还在）。退回原因 9 条写在工单最后一条 Comment。Status `ready-for-agent`，在原分支、原 worktree 里接着修：`cd .claude/worktrees/141-config-acceptance-tests && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 claude -p --model opus --permission-mode auto "/implement <141 工单绝对路径>"`（加一句"被退回，照最后一条 Comment 修"）。修完后：CI、Codex（`runs/dispatch/watch_pr.sh 149 codex`）、服务器上 `/work` 挂载的 `python:3.12-slim` 快照复跑、上下文干净的子 agent 复核契约，都过了就合并，然后派 143。
+- **决定**：`decisions.md` 末尾"调研后定"四条（Skill tar 复制进沙箱、孤儿清理按实例 id + 开机 id、`docs` 留在工作区外只读、快照守门只管迁移第一步），取证两份笔记 `docs/research/2026-11-27-sandbox-skill-mount-and-orphans.md`、`2026-11-27-context-docs-and-snapshot-guards.md`。已按它改了 143、144、146、147、148 的票、product-config spec 第 42 行，新建 cloud-deploy 163（等 147、152；155 等 163）。
+- **派工顺序**：141 合入 → 143 → 144、145（145 等 143）→ 146（等 143、144）→ 147、148、149；cloud-deploy 151（等 143）→ 153（等 144、146、151）、154（等 143、147、148、151、152）→ 163（等 147、152）→ 155（等 152、153、163）；settings 157（等 143）→ 158（等 143、144、157）→ 159（等 153、158）、161（等 158）→ 160（等 158、159）→ 162。以各工单 `Blocked by:` 为准。
+- **146 合入前不合入改 `skills/` 的提交**（快照守门，"调研后定"第 4 条）。
+- **派工注意**：一律加 `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`（不加会在最后一轮 10 分钟后截停工单 agent 的后台子 agent，141 第一次就这样断的）；本机 main 不能有未推送提交；本机 Docker 磁盘满，要 Docker 的测试和真实运行交子 agent 用 `scripts/da-remote` 在服务器上跑，连续调用间隔 60–90 秒（会被 SSH 断开）。服务器已建好 `data-agent-sandbox` 镜像（2026-11-27，`efbaa2a`）。
+- **Codex**：`da-review` 在工单 agent 里能跑（150、141 都跑了）；PR 上的 Codex GitHub app 能用，`watch_pr.sh <PR> codex` 自动请求并等结果，只认当前 head 上 `status: completed` 的审查。
 
 ## 2026-11-27 交接（先读这一节）
 

@@ -180,3 +180,14 @@
 - 陌生人私聊的配对码批准（照 Hermes、OpenClaw）。
 - Telegram、Discord 的会话按平台成员身份在网页上看（等它们的网页登录做好）。
 - Postgres 存储（照 nao 用 `DB_URI` 切换）。
+
+## 调研后定（2026-11-27，人确认"按证据支持的方式"）
+
+起因：152 实测的两个阻塞点、141 合并前审查（上下文干净的 Opus 子 agent）和 Codex 的意见、141 在 `python:3.12-slim` 容器里的快照失败。人要求先调研"是我们的原因还是这种模式行不通、别人怎么做"再定。取证：`docs/research/2026-11-27-sandbox-skill-mount-and-orphans.md`、`docs/research/2026-11-27-context-docs-and-snapshot-guards.md`。四件都是我们的实现选择，模式本身可行。
+
+1. **沙箱里的 Skill**：Docker 后端每次运行用 tar 流把 Skill（内置和 `[skills].dirs`）复制进沙箱里与 agent 侧相同的路径，不再 bind mount；tar 头写 uid 0 或去掉写权限，保证只读。镜像仍自包含。归新工单 cloud-deploy 163（等 147、152；155 等 163）。改用挂载的条件：运行中 Skill 必须实时更新，或 `[skills].dirs` 很大。
+2. **孤儿沙箱清理**：owner 标签加实例 id 和开机 id，每个实例只清自己的；容器设存活上限兜底。同在 163。长期无人值守的 cloud 部署再考虑 Ryuk 式旁车。
+3. **`[sources.*].docs`**：留在工作区外，agent 只读（提示词给路径、`workspace_guard` 放行读拒绝写、Docker 沙箱只读挂载、小文件可进提示词）；CLI 和网页一样，不复制进工作区。148 的 Authority 随之调整，141 的 `test_config_prompts.py` 那条改成钉这个行为。
+4. **快照守门**：用途只是证明迁移第一步新旧机制一致；146 合入后完成任务，之后的重录归主会话（迁移第二步或有意的 Skill 改动），审 diff、记进工单；146 合入前不合入改 `skills/` 的提交。两处实现缺陷直接修：路径替换认路径边界；Skill 哈希照 Harbor 先过滤（`__pycache__`、`*.pyc`、gitignore）再算内容哈希，快照记真实指纹。
+
+**主会话照审查意见直接定的**（规则已定，不另问）：契约第 5 项不钉"多余的 `config` 字段静默忽略"（Q8"拒绝、不悄悄改"），旧表单删掉这个字段、删掉那条测试；每次运行写的配置文件里不能有展开后的密钥；143 不接 `--dbt-target`/`--network`；144、146 保留守门依赖的接口；146 保留 `load_config(EffectiveConfig)`；147 补"列出 Claude Code MCP 服务器和工具"的单元测试。

@@ -46,6 +46,7 @@ Branch: —
 - [ ] `TICKET_145` 标记全部删掉；`git diff main -- tests/acceptance tests/fixtures` 只有这些删除行。
 - [ ] `uv run pytest tests/acceptance/test_config_models.py -v` 全部 PASSED，0 个 xfail。
 - [ ] 141 的守门组和其他已合入的验收测试照旧通过。
+- [ ] 141 留下的缺口（141 Comments"需要主会话处理"第 3 条）：`[limits].effort` 取模型 `efforts` 里的值（如 `medium`）时，这个值进到 SDK options。144 已合入就加单元测试；没合入就写进 Comments，主会话转给后合入的一方。
 - [ ] 验收测试没钉的行为有新单元测试：未定价模型的 `classify_text` 能跑（替身模型）且花费记"未知"；`[roles].classify` 的模型真用在分类调用上；`efforts` 校验的报错点名模型和取值；`DATA_AGENT_MODEL` 覆盖 `[roles].main`。
 - [ ] `docs/setup.md` 写了 `[models.*]`、`[roles]` 的每个键、默认值，以及没填价格时的后果。
 - [ ] `make check` 通过。

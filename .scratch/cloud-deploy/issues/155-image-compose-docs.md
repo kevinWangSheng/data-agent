@@ -1,7 +1,7 @@
 # 155 — 产品镜像、Compose 示例、`docs/deploy.md`
 
 Status: ready-for-agent
-Blocked by: 152, 153
+Blocked by: 152, 153, 163
 Spec: ../spec.md（Implementation Decisions"沙箱""运行记录""健康检查""交付"）；决定：`.scratch/product-config/decisions.md` Q8
 Claimed by: —
 Branch: —
@@ -112,3 +112,4 @@ Branch: —
 - 2026-11-27（主会话建票）：cloud-deploy 的交付工单。等 152（实测）和 153 合入。依赖 152 的研究笔记 `docs/research/2026-11-27-sandbox-in-container-spike.md`，建票时还没写。真实部署由主会话照文档做。建票时发现的问题按 `decisions.md` Q8 定（两个镜像都由 Compose 构建、产品镜像装 dbt）。
 - 2026-11-27（主会话）：按 ADR-0012 调整：Compose 的持久卷加设置库 `[server].db_path`（sqlite，和 `runs_dir` 同卷）；`docs/deploy.md` 加 Sign in with Slack 的配置、`DATA_AGENT_ADMIN_TOKEN`、`[server].org_admins`、设置库的迁移与备份（照 settings 158、159 已合入时写，没合入写"见后续"）；去掉"一期不做登录、多用户"；原指向 156 的三处改指 settings 159、160。Blocked by 不变。
 - 2026-11-27（主会话）：按 ADR-0012 调整：按"建 settings 工单时主会话定的细节"第 1、7、13 条，产品镜像装 `data-agent[im]`；令牌只写 `DATA_AGENT_ADMIN_TOKEN`（不再有 `DATA_AGENT_WEB_TOKEN`）；文档加 `DATA_AGENT_SLACK_OIDC_CLIENT_ID`、`DATA_AGENT_SLACK_OIDC_CLIENT_SECRET`、`[server].public_url`、`DATA_AGENT_SESSION_KEY`。
+- 2026-11-27（主会话）：Blocked by 加 163（Skill 进沙箱和孤儿清理的代码在 163；本工单的路径方案照 163 合入的做法写，不再需要宿主机上有 Skill 目录）。

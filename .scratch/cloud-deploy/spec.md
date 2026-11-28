@@ -37,7 +37,8 @@
 | 152 | 实测：容器里挂 Docker socket 起沙箱、工作区路径能挂进沙箱、`dbt_execute` 和值字典在容器里可用；跑不通就停下回对齐 | — |
 | 153 | `[server].mode`：cloud 下的令牌、监听地址、联网默认、`policy` 锁定、`/healthz` | 144、146、151 |
 | 154 | 上下文从 git：git 地址 → 本地路径、浅克隆、`refresh`、原子切换、失败回退 | 143、151、152 |
-| 155 | 镜像、Compose 示例、`docs/deploy.md`；主会话在一台机器上按文档部署一次、IM 和网页各跑一题 | 152、153 |
+| 155 | 镜像、Compose 示例、`docs/deploy.md`；主会话在一台机器上按文档部署一次、IM 和网页各跑一题 | 152、153、163 |
+| 163 | 沙箱：Skill 用 tar 流复制进沙箱；孤儿清理按实例 id + 开机 id（decisions.md"调研后定"第 1、2 条） | product-config 147、152 |
 | ~~156~~ | 作废（wontfix），由 settings 159、160 取代（ADR-0012）。原：网页令牌与联网默认（前端为主）：输令牌页、HttpOnly Cookie、接口和事件流接受 Cookie 或 bearer；联网勾选默认值跟服务器配置；前端由 Opus 审 | 151、153 |
 
 ## Testing Decisions

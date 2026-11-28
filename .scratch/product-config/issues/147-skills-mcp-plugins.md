@@ -44,6 +44,7 @@ Branch: —
 - **`${CLAUDE_SKILL_DIR}`**：Skill 里的脚本路径（`skills/dbt-workflow/SKILL.md:50`、`:61`、`:108`、`:134`、`:391`）不改，所以 142 的两个候选里本工单只能用"Skill 目录按原路径挂进 Docker 沙箱"（改 `sandbox.py`）；142 推荐另一个时见 Stop conditions。
 - **Skill 工具事件**：字段（Skill 名、来源插件）由本工单定，写进 `record_message` 附近；不在 141 的截停接缝上（没有模型调用），用单元测试（喂一条手写的 Skill 工具调用消息）覆盖，真实运行由主会话确认。
 - **并行工单**：148 改系统提示词的其他段、145 改模型设置、144 改上限，都在 `agent.py`；后合入的一方 rebase。
+- **沙箱里的 Skill**（人 2026-11-27 定，`decisions.md`"调研后定"第 1 条）：Docker 后端改成每次运行用 tar 流把 Skill 复制进沙箱，归新工单 cloud-deploy 163，不在本工单。本工单照原计划让使用者 Skill 目录在本机模式下能用，不另做容器内的方案。
 
 ## Acceptance
 
@@ -54,6 +55,7 @@ Branch: —
 - [ ] Skill 工具调用事件有单元测试；`[skills].dirs` 包成插件的临时目录在运行结束后的去留写明并有测试；使用者 Claude Code MCP 配置的读取有单元测试（假家目录）。
 - [ ] `docs/setup.md` 写了 `[skills]`、`[mcp]`、`[plugins]`；README 写明产品默认按需加载 Skill、使用者的 MCP 不在只读保证之内。
 - [ ] `make check` 通过。
+- [ ] spec"已定"第 1 条的列出要求有单元测试：`config show` 和运行开头的事件都列出 Claude Code 的 MCP 服务器和它们的工具（141 合并前审查第 11 条，验收测试没钉）。
 
 ## Evidence required
 
@@ -89,3 +91,4 @@ Branch: —
 
 - 2026-11-27（主会话建票）：方向 1、3 和 Q3 的实现；照 142 的结论（`docs/research/2026-11-27-skill-tool-spike.md`，建票时还没有）。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：Skill 文本（含 dbt-workflow 第 2 步）不改，推到迁移第二步；插件清单不计入 `skill_version`，由本工单做；去掉"加清单或改 Skill 让快照失败"的停止条件。
+- 2026-11-27（主会话）：按调研后的决定补 Context：沙箱里 Skill 的复制方案归 cloud-deploy 163。

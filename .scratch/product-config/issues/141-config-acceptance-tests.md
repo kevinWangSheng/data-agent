@@ -1,6 +1,6 @@
 # 141 — 产品配置：验收测试（配置加载、运行参数快照、产品默认、评测隔离、`config` 事件）
 
-Status: in-progress
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md（"Testing Decisions"的"验收测试接缝"）
 Claimed by: claude (opus-5.5, worktree 141-config-acceptance-tests)
@@ -178,13 +178,148 @@ spec "验收测试接缝"的五组行为都有验收测试，写在约定的接�
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 2（第 1 个会话被 print 模式的后台等待上限截停，第 2 个接续）
+- Review rounds: 2
 - Model spend: $0
-- Outcome: —
+- Outcome: in-review；`python:3.12-slim` 容器那次由主会话在服务器上补
 - Human review minutes: —
 
 ## Comments
 
 - 2026-11-27（主会话建票）：product-config spec 的验收测试工单，人审后合入；143–148 照它转绿。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：加改写 24 个已有验收文件；`--config` 可重复、过渡期接受旧名、`config` 事件第二条、层键 `skill`、`[policy]` 冲突报错、没价格不传 SDK 上限、`[server]`/`[trace]` 归 144、插件清单不计入哈希、Skill 文本改动推到迁移第二步。
+- 2026-11-27（工单 agent，opus-5.5，接续会话；分支 `worktree-141-config-acceptance-tests` HEAD `e7d9233`）：
+  **1. 核对和补完已有验收文件**
+  - 18 个未提交的改动逐个核对过：都只改了调用方式、加了标记，断言意思没变。
+  - 另外发现并修了几处：
+    - `run_config.load_config(<名>)` 和 `CONFIG_NAMES` 还留在 `test_verifier_v2.py`、`test_observability_switch.py`、`test_observability_relay.py` 里。146 会删掉这两个名字，而这些文件之后没人能改，所以本工单改成 `product_config_support.run_config_of(<名>)`：把层文件读成生效配置，再交给 `load_config`。这是照 143 的 Authority："load_config 改成从生效配置得出 RunConfig"。
+    - `test_mcp_config.py` 有两处断言 `strict_mcp_config is True`，和 spec"产品运行不再设 strict_mcp_config"冲突，按新决定改了（见文件表）。
+  - 24 个文件里，剩下 5 个不用改，理由见文件表末尾。
+
+  **2. 第 3 步：检查和真实运行**
+  - `make check`（合并 main 之后）：通过，exit 0。
+    - pytest：3399 passed，3 skipped，190 xfailed。3 个 skip 原来就有，main 上也是 3 个。
+    - basedpyright：0 errors。web：448 passed。
+  - `pytest tests/acceptance/test_config_*.py`：14 个 PASSED（守门测试），83 个 XFAIL。
+  - 全部非集成验收测试：279 passed，190 xfailed，0 个 XPASS。
+  - 脱敏：`python -m evals scrub tests/fixtures/product_config` 报 `changed 0 file(s) of 16`。pre-commit 的密钥扫描通过。
+  - `git diff main...HEAD --stat -- src/ evals/` 只有新文件 `src/data_agent/config.py`。参考实现放在 `/tmp/141-ref/repo`，没提交。
+  - 真实运行：本工单不调模型，没有要跑的。
+
+  **3. 参考实现与反向检查**
+  - 新测试：上一会话做了，结果在 `runs/141/reverse.txt`、`reasons-after-143.txt`。
+    - 列表拼接、`[policy]` 被项目级覆盖、显式文件时还读用户级、事件里出现假密钥、评测入口读了用户配置、评测答题规则变了、对话轮次跑成 `no-verifiers`：每一种都让对应测试失败。
+  - 改过的已有文件：本会话把它们放进 143 的参考实现，用 `--runxfail` 跑。
+    - 结果 177 passed，7 failed。
+    - 失败的 7 个全是 `TICKET_146`，原因都是 `no evaluation layer file …/evals/profiles/layers/full-old-skill.toml yet (ticket 146)`。
+    - 所以标 `TICKET_143` 的改动在 143 做完后都能转绿。
+
+  **4. 每个标记今天的 `--runxfail` 失败原因（改过的已有文件，107 个，全是 AssertionError）**
+
+  | 标记 | 今天的失败原因 |
+  |---|---|
+  | `TICKET_143` | `mcp-server` 进程类：`data-agent does not take ['mcp-server', '--config', '…/layers/<名>.toml', …]` |
+  | `TICKET_143` | 进程内 `run` 类：`expected one session, got 0`，或 `stderr does not name '<server>'`（argparse 拒绝 `--config <文件>`） |
+  | `TICKET_143` | 进程内 RunConfig 类：`the config loader did not merge …/layers/full.toml` |
+  | `TICKET_143` | `web` 类：`data-agent web exited 2`；`create_app takes no config`；`the turn's --config is not a file: full` |
+  | `TICKET_144` | `'configs' not in {… 'configs': ['baseline', …]}` |
+  | `TICKET_144` | `{"detail":[{"type":"missing","loc":["body","config"]…` |
+  | `TICKET_146` | `no evaluation layer file …/full-old-skill.toml yet (ticket 146)` |
+
+  - 新测试各组的失败原因见 `runs/141/runxfail-today.txt`，全是功能缺失。
+  - 本会话新加的测试 `test_a_form_body_that_still_names_an_ablation_runs_the_servers_config`：今天因为表单照用了 `baseline`，层开关全关，`{'skill': False…} == {'skill': True…}` 失败。
+
+  **5. 两道审查**
+
+  `da-review main`（Codex），3 条：
+  - **修了**：`served()` 的 monkeypatch 漏到第二次调用（第二次包住的是第一次的替身）。改成每次调用用 `monkeypatch.context()`。修前用探针复现了失败（`created` 只剩 `args`/`kwargs`），修后通过。
+  - **修了**：`test_a_run_without_any_config_has_every_layer_on` 原标 `TICKET_144`，但 143 一做完它就会 XPASS。改标 `TICKET_143`，143 参考实现上已转绿。
+  - **不修**：快照里的 Skill 哈希比的是"被哈希的是哪个目录"，看不出脚本内容的改动。理由：守门比的是同一份 checkout 上新旧两套机制；如果录成固定的内容摘要，之后任何正当的 Skill 修改（比如 skill-improve）都会让守门永久失败，而之后的工单不许重录。
+
+  `eng:code-review main`（新上下文，Opus）：
+  - **修了**：上面两条它也报了。
+  - **修了**：两个 `TICKET_145` 测试依赖 144 的 `[limits]` 接线，但 145 只被 143 挡着。改成：
+    - 价格测试用默认 $1 预算，断言 `1.0 * 3.125`；
+    - effort 在取值范围内时只断言运行能启动。
+  - **修了**：旧测试的表单请求仍带 `"config": "full"`。契约第 5 项写明"多余的 `config` 字段收下但忽略"，并新加了上面那个用 `baseline` 的 `TICKET_144` 测试来钉住它。
+  - **列给人审、不改代码**：
+    - `run_config_of` 依赖的接口（第 5 节契约表最后一行）；
+    - `profile_path` 要求容器里的路径带 `profiles/`，`harbor_agent` 用 `run_config=` 参数（这两条约束交给 146）；
+    - DAB 只录了 `no-context`（`run_query` 拒绝 `full`）；
+    - 测试辅助函数有重复，`product_config_support.py` 长达 1163 行。
+
+  第二轮审查（只看 `65b858c`），3 条：
+  - **修了**：effort 的说明写得比测试实际断言的多。已改说明，并写明这是已知缺口。
+  - **修了**：多余 `config` 字段的契约没有测试。已加测试。
+  - **交主会话**：143 工单的 Authority 没列 `test_config_wiring.py`（见"需要主会话处理"第 1 条）。
+
+  修复用了 2 轮，到上限。
+
+  ### 契约第 1–7 项（全文在各测试文件的 docstring 里，供人审）
+
+  | 项 | 内容 | 写在哪 |
+  |---|---|---|
+  | 1 加载函数 | `load_effective_config(paths, environ, cli_overrides, workspace=None) -> EffectiveConfig`；`.value(key)`、`.source(key)`（`default` / 文件路径 / `env:<VAR>` / `cli` / `policy`）、`.files`、`.text`、`.sha256`；异常类 `ConfigFileError(path, key)` | `test_config_load.py` |
+  | 2 CLI | `config show [--config F]... [--workspace D]`，每行 `<键> = <TOML 值>  # <来源>`；`run --config` 可省、可重复 | `test_config_cli.py` |
+  | 2 补充 | `version.config` 是最后合并的那个文件去掉 `.toml` 的名字，没有文件时是 `default` | `test_config_cli.py` |
+  | 3 旧参数 | 五个旧参数由 argparse 拒绝；`[mcp].file` 指向 Claude Code 格式的 JSON；`[im.<平台>]` 的键照旧 | `test_config_cli.py` |
+  | 4 网页拿哪份配置 | `create_app(..., config=EffectiveConfig\|None)`；每次运行带 `--config <服务器写的文件>` | `test_config_wiring.py` |
+  | 5 网页接口 | `/api/options` 没有 `configs`；`POST /api/runs` 不收 `config`，收到也忽略 | `test_config_wiring.py` |
+  | 6 `config` 事件 | 字段 `config`、`sha256`、`files`、`file_hashes`，是第二条事件 | `test_config_event.py` |
+  | 7 没价格时的警告 | 写进 stderr，同时记一条 `warning` 事件；`result` 事件记 `cost_basis: unknown` | `test_config_models.py` |
+  | 本会话新增（接 1） | `run_config.load_config(<EffectiveConfig>)` 返回 RunConfig；143、146 要保留这个签名 | `product_config_support.run_config_of` |
+
+  ### spec 里的解读（供人审）
+  1. **快照里 MCP server 参数的 `--config`**：照 `config_arg_rule` 的规则比，规则写在 `product_config_support.py` 里（cb655f7）。
+  2. **LiveSQLBench、jaffle 离不开 Postgres**：截停前用 DuckDB 的值字典代替（`dictionary_from_duckdb`），快照照录（cb655f7）。
+  3. **本会话新增，argparse 拒绝**：改过的已有测试，今天的失败原因就是"argparse 不收 `--config <文件>`"，因为缺的功能本身就是这个。验收里"不是 argparse 不认识参数"这条按新测试来理解；这些改过的测试由参考实现证明以后能转绿。
+
+  ### 逐文件改动（24 个）
+
+  | 文件 | 改前 → 改后 | 断言 | 标记（PASSED→XFAIL 个数） |
+  |---|---|---|---|
+  | `test_seam_a_run_cli.py` | `--config full` → `--config layer_config(<名>)`；接口说明同步改 | 原样 | 143（集成测试，5 个；今天跑过，都是 XFAIL） |
+  | `test_seam_b_mcp_server.py` | `mcp-server --config <名>` → 层文件；先 `assert_cli_accepts` | 原样 | 143；`full-old-skill` 的 3 个是 146（30） |
+  | `test_charts_server.py` | `--config no-context` → 层文件 | 原样 | 143（21） |
+  | `test_charts_switch.py` | 同上；加了 `assert len(seen) == 1` | 原样；DAB 改成同步调用 | 143（3） |
+  | `test_chat_api.py` | `--data-sources FILE` → `--config FILE`，读里面的 `[sources.*]`；契约说明同步改 | 意思不变（名字、`env`、路径） | 143（1） |
+  | `test_chat_e2e.py` | `web --data-sources` → `--config`；场景 f 换成层文件 | 原样 | 143（集成测试，24 个，都是 XFAIL） |
+  | `test_chat_e2e.py` 夹具 | 服务器起不来时记下 `start_error`，在 `call()` 里断言 | 原样 | 夹具改动：没有它，预期失败会报成夹具错误 |
+  | `test_chat_eval_unchanged.py` | Harbor 的参数改从 `_run_command` 取；DAB 改走 `python -m evals dab --config no-context` | 原样 | 不标（仍通过） |
+  | `test_web_api.py` | `:330`、`:354-357` 是冲突断言，按契约第 5 项改 | 冲突断言按新决定改 | 144（2） |
+  | `test_im_config.py` | `web --im F` → `--config` 带 `[im.*]` 的文件 | 原样 | 143（2） |
+  | `test_im_config.py` `serve()` | 加假 HOME；`SystemExit` 转成 AssertionError | 原样 | 夹具改动：隔离用户配置，并让预期失败落在断言上 |
+  | `test_mcp_config.py` | `--mcp-servers` → `[mcp].file` | 原样，除下一行 | 143（17） |
+  | `test_mcp_config.py` `:156`、`:292` | 和 spec 冲突，改成"和不挂服务器的运行相同" | 冲突断言按新决定改 | — |
+  | `test_mcp_e2e.py` | `--mcp-servers` 和 `--config full` → 两个配置文件 | 原样 | 143（集成测试，2 个；今天 mongo 夹具超时报 ERROR，夹具没改过） |
+  | `test_mcp_eval_unchanged.py` | 层文件；DAB 改走命令行 | 原样 | 143（1） |
+  | `test_mcp_launch.py` | 层文件；`--data-sources` → `--config` | 原样 | 143（2） |
+  | `test_mcp_web.py` | `create_app(mcp_servers=)` → `config=`；`web --mcp-servers` → `--config`；`mounted` 夹具改成在测试里建 | 意思不变 | 143（4） |
+  | `mcp_support.py` | `run_args` 改用层文件和 `[mcp]` 文件；新增 `config_file`、`assert_cli_accepts` | — | — |
+  | `test_observability_evals.py` | DAB 改走命令行（`--runs 2 [--trace]`），环境变量改用 monkeypatch | 原样 | 不标（仍通过） |
+  | `test_observability_switch.py` | `run --config no-context` → 层文件；`load_config(…)` → `run_config_of(…)` | 原样 | 143（17，含原来"导出关闭"的守门） |
+  | `test_observability_relay.py` | `load_config("full")` → `run_config_of("full")` | 原样 | 143（2） |
+  | `test_verifier_v2.py` | `CONFIG_NAMES`、`load_config` → `RUN_CONFIG_NAMES`、`run_config_of` | 原样 | 143 ×2；含 `full-old-skill` 的 4 个是 146（5） |
+  | `test_seam_c_eval_cli.py`、`test_skill_improve.py`、`skill_improve_support.py` | 不改：那里的 `--config <名>` 是评测入口（`board`、`ablate`），spec 定消融名只在评测入口认 | — | — |
+  | `test_livesqlbench_entry.py` | 不改：`--mcp-servers` 只出现在"命令里没有它"的否定守门里 | — | — |
+  | `test_im_steer_cancel.py` | 不改：`--data-sources` 只出现在给假对象的拒绝文字里，是输入 | — | — |
+
+  - PASSED→XFAIL 一共 107 个：143 转回 98 个，144 转回 2 个，146 转回 7 个。完整清单在 `runs/141/passed-to-xfail.txt`，不含集成测试。
+
+  ### 需要主会话处理
+  1. 143 工单的 Authority 加上 `test_config_wiring.py::test_a_run_without_any_config_has_every_layer_on` 的 `TICKET_143` 标记，否则 143 删不掉它。
+  2. `test_im_config.py` 钉着 `im.config.load_config(path, environ)`。143 的 Authority 写着要把解析函数改成吃配置里的那一节，所以 143 要保留这个签名（或者人另定）。
+  3. 已知缺口：`[limits].effort = "medium"`（今天的 `--effort` 不收这个值）最终会不会出现在 options 里，没有测试，要 144 和 145 都合入才测得到。写进后续工单的验收标准。
+  4. `python:3.12-slim` 容器那次运行：Docker 磁盘清出空间后跑 `runs/141/linux-pytest.sh <导出目录>`。
+- 2026-11-27（主会话）：PR #149 CI 绿（ubuntu）。服务器上 `python:3.12-slim` 容器（导出挂在 `/work`）：4 failed / 10 passed；服务器普通 checkout 14 passed；挂在 `/t141src` 时 14 passed。日志在主会话 scratchpad，结论见下面第 1 条。合并前审查（上下文干净的 Opus 子 agent）结论"修完再合"，无阻塞项；Codex GitHub app 1 条 P2（Skill 快照没有内容指纹）。
+- 2026-11-27（主会话）：**退回（第 1 轮）：原因如下，在原分支 `worktree-141-config-acceptance-tests` 上接着修**。决定依据 `decisions.md`"调研后定"。
+  1. **路径替换不认边界**：`product_config_support.py` 的 `normalize_text`（约 :445-452）用 `str.replace` 把仓库路径换成 `<repo>`，checkout 在 `/work` 时把 `/workspace` 换成 `<repo>space`（容器里 dab-no-context、jaffle-full 的快照与隔离守门共 4 个失败）。改成认路径边界的替换（`/tmp` 同理）；修完后快照守门在 `/work` 挂载的容器里要通过（主会话在服务器上复跑）。
+  2. **Skill 指纹**（Codex P2；`decisions.md`"调研后定"第 4 条）：快照记过滤后的真实内容哈希（排除 `__pycache__`、`*.pyc`、gitignore 的文件，照 Harbor），不再退成目录标签。之前"之后的工单不许重录"这个不修理由已不成立：重录归主会话。
+  3. **`file_hashes` 的期望集合**（`test_config_event.py:92`）：排除 `__pycache__`、`*.pyc`，同上。
+  4. **重录规则写进注释**（`product_config_support.py:25`、`test_config_snapshot.py:4-5`）：守门只证明迁移第一步新旧一致；146 合入后由主会话在迁移第二步或有意的 Skill 改动时重录，审 diff、记进工单。
+  5. **契约第 5 项**：不钉"多余的 `config` 字段静默忽略"。删掉 `test_config_wiring.py:276` 那条测试；旧表单（`test_chat_api.py:107`、`test_mcp_web.py:64`、`test_web_api.py` 的辅助）里删掉 `config` 字段；这个字段的处理不钉。
+  6. **每次运行的配置文件里没有展开的密钥**：在已标 `TICKET_143` 的测试里加 `GITHUB_TOKEN` 不在运行的 `--config` 文件文本里（`test_mcp_web.py:196` 附近；`test_chat_api.py` 同理查连接串）。
+  7. **143 之后会变空的守门**（`test_mcp_web.py:200`）：加"`--config` 是文件时，它的 `mcp.file`、`mcp.servers` 没设"，今天通过、143 之后仍有意义。
+  8. **数据服务器 `--config` 的旁路断言**（`config_arg_rule`，`product_config_support.py:401`）：不重录快照，另断言每个值要么是等于 `version.config` 的消融名，要么是 `evals/profiles/` 或运行临时目录下的路径，不在假家目录或工作区下。
+  9. **`docs` 的测试**（`test_config_prompts.py:110-128`；`decisions.md`"调研后定"第 3 条）：改成钉"`docs` 留在工作区外、agent 只读"：不出现在 `--workspace` 下；系统提示词写出 `docs` 路径；`workspace_guard` 放行读、拒绝写。标 `TICKET_148`。
+  - 契约逐项清单、spec 解读、逐文件改动表在交回时照上次的格式更新。修复轮次另算：这是 PR 的第 1 轮退回。

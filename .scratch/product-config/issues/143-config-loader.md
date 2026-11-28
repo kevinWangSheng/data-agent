@@ -16,9 +16,9 @@ Branch: —
   - `src/data_agent/config.py`（141 的空壳）：加载、合并、校验、来源、TOML 全文与 sha256。spec Q2 全部分节的类型定义都放这里（键名、类型、默认值），各节的**行为**由 144–148 接。
   - `src/data_agent/cli.py`：`run` 的 `--config`（`cli.py:290`）改成可省、可重复的文件路径，过渡期也接受旧消融名；`mcp-server --config`（`:244`）同样接受路径或旧名；新增 `config show` 子命令；去掉 `run --data-sources`（`cli.py:93-98`，`file_task` `:212-236`）、`run --mcp-servers`（`:345-350`）、`web --data-sources`、`web --mcp-servers`、`web --im`（`:363-379`），`serve_web`（`:534-608`）改从生效配置拿数据源、外部 MCP、IM。
   - `src/data_agent/run_config.py`：`load_config`（`run_config.py:41-56`）改成从生效配置得出 `RunConfig`（或换掉 `RunConfig`，保持 `agent.py`、`mcp_server.py`、`verifier_v2/hooks.py` 的读法能用）。
-  - `src/data_agent/web/sources.py`、`src/data_agent/external_mcp.py`、`src/data_agent/im/config.py`：解析函数改成吃配置里的那一节（行为和校验不变）。
+  - `src/data_agent/web/sources.py`、`src/data_agent/external_mcp.py`、`src/data_agent/im/config.py`：解析函数改成吃配置里的那一节（行为和校验不变）。141 的 `test_im_config.py` 钉着 `im.config.load_config(path, environ)`、`product_config_support.run_config_of` 钉着 `run_config.load_config(<EffectiveConfig>)`：这两个签名保留（吃配置那一节的解析可以另加函数，旧签名转调它）。
   - `src/data_agent/web/app.py`、`web/launcher.py`、`web/conversations.py`：只改"子进程拿到哪份配置"（141 契约第 4 项）和去掉 `--data-sources`、`--mcp-servers` 的拼法（`launcher.py:162-183`、`conversations.py:138-143`）。
-  - `tests/acceptance/` 里 141 标了 `TICKET_143` 的文件（`test_config_load.py`、`test_config_cli.py`，以及 141 改写过的已有文件，清单见 141 最终回复）：**只删** `TICKET_143` 标记，以及因此没用的定义和 import。
+  - `tests/acceptance/` 里 141 标了 `TICKET_143` 的文件（`test_config_load.py`、`test_config_cli.py`、`test_config_wiring.py::test_a_run_without_any_config_has_every_layer_on`，以及 141 改写过的已有文件，清单见 141 的 Comments "逐文件改动"表）：**只删** `TICKET_143` 标记，以及因此没用的定义和 import。
   - `tests/`（除 `tests/acceptance/`）：新增或修改单元测试。
   - `docs/setup.md`：配置文件位置、分层、`config show`、三个旧参数改成哪一节。
 - Must not edit：
@@ -48,6 +48,7 @@ Branch: —
 - **类型**：pydantic（仓库已用，`web/app.py:23`）或 dataclass 加校验，未知键报错。
 - **用到 `--config <消融名>` 的地方**（本工单之后它们都要换）：`mcp-server --config`（`cli.py:244`，由 `build_options` 拼进 MCP server 参数，`agent.py:1621`）；评测入口（`harbor_agent.py:393`、`:421`，`jaffle.py:360`，`dab.py:814`，`ablate.py:511`，`board.py:178`；146 改）；网页（`launcher.py:166-167`、`conversations.py:138`）。过渡办法（Q8）：本工单让 `--config` 同时接受路径和旧消融名（名字照旧从 `src/data_agent/configs/` 读），评测入口不用改；146 改完评测入口后删掉旧名。
 - **并行工单**：144、145、147、148 都改 `cli.py`、`agent.py`，后合入的一方 rebase。
+- **`--dbt-target`、`--network` 不接进 `cli_overrides`**（141 合并前审查第 10 条）：这两个的接线归 144。本工单接了会让 `test_config_wiring.py` 里标 `TICKET_144` 的 policy 测试提前 XPASS，而本工单删不掉 144 的标记。
 
 ## Acceptance
 
@@ -88,3 +89,4 @@ Branch: —
 
 - 2026-11-27（主会话建票）：配置层的第一张实现工单，144–148 都建在它上面。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：`--config` 可重复、过渡期接受旧名（`run`、`mcp-server`）、层键 `skill`、保留变量名写法、产品 `version.config`；去掉"已有验收测试""评测入口还传消融名"两条停止条件（141 改写已有验收测试，过渡期接受旧名）。
+- 2026-11-27（主会话）：按 141 合并前审查补 Context：`--dbt-target`、`--network` 不接进 `cli_overrides`（归 144）。
