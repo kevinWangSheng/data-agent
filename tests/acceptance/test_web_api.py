@@ -55,10 +55,6 @@ from seam_support import DATA_AGENT, FIXTURES
 from data_agent.config import load_effective_config
 from data_agent.web.app import DataSource, create_app
 
-TICKET_144 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 144: the config is not wired to the run yet"
-)
-
 WEB_FIXTURES = FIXTURES / "web"
 FAKE_RUN = WEB_FIXTURES / "fake_run.py"
 NEW_FIELDS = WEB_FIXTURES / "new-fields" / "events.jsonl"
@@ -329,7 +325,6 @@ def assert_no_connection_string(text: str) -> None:
         assert secret not in text
 
 
-@TICKET_144
 def test_read_endpoints_hold_no_connection_string(web: Web) -> None:
     write_run(web.runs_dir, "r1", read_events(NEW_FIELDS))
     options = web.client.get("/api/options")
@@ -341,7 +336,6 @@ def test_read_endpoints_hold_no_connection_string(web: Web) -> None:
         assert_no_connection_string(web.client.get(url).text)
 
 
-@TICKET_144
 def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> None:
     response = submit(web, data_source="warehouse")
     assert response.status_code == 201, response.text
@@ -360,7 +354,6 @@ def test_a_run_gets_the_variable_name_never_the_connection_string(web: Web) -> N
 # --- Submitting runs -----------------------------------------------------------------------
 
 
-@TICKET_144
 def test_a_submitted_run_appears_and_streams(web: Web) -> None:
     # No `config` field: the form picks no ablation; the run gets the server's config, every layer
     # on by default (ticket 141 contract item 5; was `config="baseline"` and `--config baseline`).
@@ -396,7 +389,6 @@ def test_a_submitted_run_appears_and_streams(web: Web) -> None:
     wait_until(lambda: runs_by_id(web)[run_id]["status"] == "success")
 
 
-@TICKET_144
 def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     run_id = submit_ok(web)
     wait_until(
@@ -412,7 +404,6 @@ def test_a_live_stream_resumes_from_last_event_id(web: Web) -> None:
     )
 
 
-@TICKET_144
 def test_an_unknown_data_source_is_refused(web: Web) -> None:
     response = submit(web, data_source="no-such-source")
     assert 400 <= response.status_code < 500
@@ -421,7 +412,6 @@ def test_an_unknown_data_source_is_refused(web: Web) -> None:
     assert runs_by_id(web) == {}
 
 
-@TICKET_144
 def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     first = submit_ok(web)
     response = submit(web, task="Another question")
@@ -437,7 +427,6 @@ def test_a_second_run_is_refused_while_one_is_going(web: Web) -> None:
     assert set(runs_by_id(web)) == {first, second}
 
 
-@TICKET_144
 def test_cancel_stops_only_the_run_this_server_started(web: Web) -> None:
     write_run(web.runs_dir, "cli-run", read_events(NEW_FIELDS)[:20])
     bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])

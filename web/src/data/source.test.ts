@@ -253,21 +253,31 @@ describe('localSource', () => {
   })
 
   test('options: what the form offers', async () => {
-    const options = { data_sources: ['shop'], task_types: ['query', 'dbt'], configs: ['baseline', 'full'] }
+    const config = {
+      name: 'default',
+      layers: { skill: true, verifiers: true, context: true },
+      model: 'deepseek-flash',
+      effort: null,
+      max_budget_usd: 1,
+      max_turns: { query: 50, dbt: 200 },
+      agent_timeout_sec: null,
+      network: true,
+    }
+    const options = { data_sources: ['shop'], task_types: ['query', 'dbt'], config }
     const { fetchFn } = fakeBackend({ 'GET /api/options': [200, options] })
     expect(await localSource('/api/', fetchFn, openStream).live!.options()).toEqual(options)
   })
 
   test('submit posts the form and answers the new run id', async () => {
     const { fetchFn, calls } = fakeBackend({ 'POST /api/runs': [201, { id: 'new-run' }] })
-    const submission = { task: 'How many orders?', task_type: 'query' as const, data_source: 'shop', config: 'full' }
+    const submission = { task: 'How many orders?', task_type: 'query' as const, data_source: 'shop' }
     expect(await localSource('/api/', fetchFn, openStream).live!.submit(submission)).toBe('new-run')
     expect(calls).toEqual([{ url: '/api/runs', method: 'POST', body: submission }])
   })
 
   test('submit passes network: false when networking is turned off', async () => {
     const { fetchFn, calls } = fakeBackend({ 'POST /api/runs': [201, { id: 'offline-run' }] })
-    const submission = { task: 'How many orders?', task_type: 'query' as const, data_source: 'shop', config: 'full', network: false }
+    const submission = { task: 'How many orders?', task_type: 'query' as const, data_source: 'shop', network: false }
     expect(await localSource('/api/', fetchFn, openStream).live!.submit(submission)).toBe('offline-run')
     expect(calls).toEqual([{ url: '/api/runs', method: 'POST', body: submission }])
   })
@@ -275,14 +285,14 @@ describe('localSource', () => {
   test('a refused submit fails with the reason the backend gives', async () => {
     const detail = 'no data source is configured; start the server with --data-sources FILE'
     const { fetchFn } = fakeBackend({ 'POST /api/runs': [400, { detail }] })
-    const submission = { task: 'x', task_type: 'query' as const, data_source: '', config: 'full' }
+    const submission = { task: 'x', task_type: 'query' as const, data_source: '' }
     await expect(localSource('/api/', fetchFn, openStream).live!.submit(submission)).rejects.toThrow(detail)
   })
 
   test('a malformed submit fails with the fields FastAPI names', async () => {
     const detail = [{ loc: ['body', 'task'], msg: 'Field required', type: 'missing' }]
     const { fetchFn } = fakeBackend({ 'POST /api/runs': [422, { detail }] })
-    const submission = { task: 'x', task_type: 'query' as const, data_source: 's', config: 'full' }
+    const submission = { task: 'x', task_type: 'query' as const, data_source: 's' }
     await expect(localSource('/api/', fetchFn, openStream).live!.submit(submission)).rejects.toThrow('body.task: Field required')
   })
 

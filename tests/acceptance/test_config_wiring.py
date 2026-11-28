@@ -83,12 +83,6 @@ from product_config_support import (
     write_file,
 )
 
-TICKET_144 = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="ticket 144: the config is not wired to the run yet",
-)
-
 BASELINE_LAYERS = {"skill": False, "verifiers": False, "context": False}
 LIMITS = (
     '[limits]\nmax_budget_usd = 0.5\neffort = "max"\n\n[limits.max_turns]\ndbt = 7\nquery = 5\n'
@@ -133,7 +127,6 @@ def result_event(events_dir: Path) -> dict[str, Any]:
 # --- [limits] -------------------------------------------------------------------------------
 
 
-@TICKET_144
 def test_limits_set_the_turn_caps_spend_cap_and_effort(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -156,7 +149,6 @@ def test_limits_set_the_turn_caps_spend_cap_and_effort(
     assert key_of(options.env, "CLAUDE_CODE_EFFORT_LEVEL") == "max"
 
 
-@TICKET_144
 def test_the_command_line_wins_over_the_limits(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -168,7 +160,6 @@ def test_the_command_line_wins_over_the_limits(
     assert options.max_turns == 5
 
 
-@TICKET_144
 def test_the_agent_timeout_is_the_runs_deadline(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -184,7 +175,6 @@ def test_the_agent_timeout_is_the_runs_deadline(
 # --- [sandbox] ------------------------------------------------------------------------------
 
 
-@TICKET_144
 def test_sandbox_backend_and_network_reach_the_data_server(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -207,7 +197,6 @@ def test_sandbox_backend_and_network_reach_the_data_server(
 # --- [policy] -------------------------------------------------------------------------------
 
 
-@TICKET_144
 def test_policy_refuses_a_dbt_target_against_it(
     home: Path, tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -216,7 +205,6 @@ def test_policy_refuses_a_dbt_target_against_it(
     assert_refused_before_session(run_cli(capsys, argv), capture, "policy.dbt_target")
 
 
-@TICKET_144
 def test_policy_refuses_the_network_against_it(
     home: Path, tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -225,7 +213,6 @@ def test_policy_refuses_the_network_against_it(
     assert_refused_before_session(run_cli(capsys, argv), capture, "policy.network")
 
 
-@TICKET_144
 def test_policy_refuses_a_disabled_model(
     home: Path, tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -252,7 +239,6 @@ def test_a_run_without_any_config_has_every_layer_on(
     assert layers_of(events_dir) == FULL_LAYERS
 
 
-@TICKET_144
 def test_the_run_form_offers_no_ablation_and_runs_with_every_layer_on(
     tmp_path: Path, capture: Capture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -268,7 +254,6 @@ def test_the_run_form_offers_no_ablation_and_runs_with_every_layer_on(
     assert layers_of(events_dir) == FULL_LAYERS
 
 
-@TICKET_144
 def test_a_web_run_gets_the_servers_config(
     home: Path,
     tmp_path: Path,
@@ -297,7 +282,6 @@ def test_a_web_run_gets_the_servers_config(
     assert options.effort == "max"
 
 
-@TICKET_144
 @pytest.mark.parametrize("route", ["form", "turn", "im"])
 def test_web_and_im_runs_take_the_effort_and_time_limit_from_the_config(
     route: str,
@@ -353,7 +337,6 @@ def test_guard_conversation_and_im_turns_have_every_layer_on(
 # --- [server] and [trace] -------------------------------------------------------------------
 
 
-@TICKET_144
 def test_web_takes_its_runs_dir_and_port_from_the_server_section_unless_given(
     home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capture: Capture
 ) -> None:
@@ -377,7 +360,6 @@ def test_web_takes_its_runs_dir_and_port_from_the_server_section_unless_given(
     assert key_of(given_given, "port") == 8791
 
 
-@TICKET_144
 def test_trace_sets_the_tier_and_the_langfuse_address(
     home: Path,
     tmp_path: Path,

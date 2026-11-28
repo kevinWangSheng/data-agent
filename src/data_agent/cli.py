@@ -7,6 +7,7 @@ limit stopped it), 2 config or infrastructure error.
 import argparse
 import asyncio
 import dataclasses
+import ipaddress
 import json
 import os
 import shutil
@@ -971,19 +972,28 @@ def external_servers(parser: argparse.ArgumentParser, path: Path | None) -> Exte
 
 def serve_web(
     parser: argparse.ArgumentParser,
-    runs_dir: Path,
-    port: int,
+    runs_dir: Path | None,
+    port: int | None,
     config: EffectiveConfig,
-    network: bool = True,
 ) -> None:
     """The server's config gives the run form its `[sources.*]`, every run its `[mcp]` servers
     (each run gets a file of the server's config, never a value expanded from it;
     `create_app`) and the bot its `[im.*]` platforms (data_agent.im.service), whose tokens'
     variables no run gets. The config's sources, servers and platforms are checked here first,
-    so a bad one stops the server from starting. With `network` off no run has the network
+    so a bad one stops the server from starting. `[server]` gives the runs directory, port and
+    address unless `--runs-dir`/`--port` do (ticket 144); `[sandbox].network` (on unless the
+    config turns it off, ADR-0010) is the server's network switch: off, no run has the network
     (`create_app`)."""
+    if runs_dir is None:
+        runs_dir = config.value("server.runs_dir")
+    if runs_dir is None:
+        parser.error("no runs directory: give --runs-dir or [server].runs_dir in the config")
+    runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
         parser.error(f"runs directory not found: {runs_dir}")
+    port = int(setting(config, "server.port", WEB_PORT)) if port is None else port
+    host = web_host(parser, str(setting(config, "server.host", WEB_HOST)))
+    network = bool(setting(config, "sandbox.network", True))
     config_mcp(parser, config, None)
     # Imported here so `data-agent run` does not load the web stack.
     import uvicorn
@@ -1041,4 +1051,20 @@ def serve_web(
     # `Server.shutdown`). A few seconds. A cancel or submit cut off by the limit goes on in its
     # thread, holding the launcher's lock, so the lifespan shutdown waits for it and then
     # stops whatever run is left.
-    uvicorn.run(app, host=WEB_HOST, port=port, timeout_graceful_shutdown=3)
+    uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=3)
+
+
+def web_host(parser: argparse.ArgumentParser, host: str) -> str:
+    """`[server].host`, refused unless it is this machine's loopback address: the web UI has no
+    login until cloud-deploy ticket 153 adds a token, so it is never served beyond this
+    machine."""
+    try:
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    if not loopback:
+        parser.error(
+            f"[server].host {host}: only a loopback address (127.0.0.1, ::1, localhost) is "
+            "served until the web UI takes a token (cloud-deploy ticket 153)"
+        )
+    return host
