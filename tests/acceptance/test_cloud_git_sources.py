@@ -35,7 +35,11 @@ The contract fixed here (ticket 151 contract items 5 and 6; for the human review
      fails leaves the value at its previous path and content, logs an ERROR record naming the
      value's repository, and raises nothing.
    What a pull that fails on the first `resolve` does (refuse to start, most likely) is not
-   asserted here.
+   asserted here, nor that the server (or the config loader) hands `GitSources` the root
+   `<runs_dir>/.cache/git`: the tests give it that root themselves, and ticket 154 shows the
+   wiring in a real run.
+   A pinned commit is fetched by its id (the stand-in allows it, as GitHub does), so `git clone
+   --branch <ref>`, which takes branches and tags only, does not do for commits.
 6. `git+file://` is taken like `git+https://` (the tests' stand-in for a remote repository).
 """
 
@@ -298,4 +302,5 @@ def test_guard_a_plain_local_path_stays_as_it_is_and_nothing_is_cloned(
     assert str(config.value("sources.shop.docs")) == str(docs.resolve())
     with served(tmp_path / "server", monkeypatch, capsys, ["--config", str(path)]) as server:
         assert server.ran, f"data-agent web did not start: {server.stderr[-2000:]!r}"
-    assert not (tmp_path / "server" / "runs" / ".cache").exists()
+    clones = tmp_path / "server" / "runs" / ".cache" / "git"
+    assert not clones.exists() or not any(clones.iterdir()), "a value was cloned"
