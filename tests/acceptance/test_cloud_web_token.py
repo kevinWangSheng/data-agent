@@ -113,6 +113,21 @@ def events_stream(client: TestClient, headers: dict[str, str], _: str) -> int:
         return response.status_code
 
 
+def post(path: str) -> Request:
+    def send(client: TestClient, headers: dict[str, str], _: str) -> int:
+        return client.post(path, json={}, headers=headers).status_code
+
+    return send
+
+
+def conversation_get(client: TestClient, headers: dict[str, str], conversation: str) -> int:
+    return client.get(f"/api/conversations/{conversation}", headers=headers).status_code
+
+
+def conversation_cancel(client: TestClient, headers: dict[str, str], conversation: str) -> int:
+    return client.post(f"/api/conversations/{conversation}/cancel", headers=headers).status_code
+
+
 def message(client: TestClient, headers: dict[str, str], conversation: str) -> int:
     body = {"text": "How many orders?", "network": False}
     path = f"/api/conversations/{conversation}/messages"
@@ -125,13 +140,17 @@ REQUESTS: dict[str, Request] = {
     "POST /api/runs": submit,
     "GET /api/runs/{id}/events": get(f"/api/runs/{RUN_ID}/events"),
     "GET /api/runs/{id}/events (SSE)": events_stream,
+    "POST /api/runs/{id}/cancel": post(f"/api/runs/{RUN_ID}/cancel"),
     "GET /api/conversations": get("/api/conversations"),
+    "GET /api/conversations/{id}": conversation_get,
+    "POST /api/conversations": post("/api/conversations"),
     "POST /api/conversations/{id}/messages": message,
+    "POST /api/conversations/{id}/cancel": conversation_cancel,
 }
 
 
 def new_conversation(client: TestClient) -> str:
-    """A conversation made with the right token, for the message route."""
+    """A conversation made with the right token, for the routes that take one."""
     response = client.post("/api/conversations", json={}, headers=bearer())
     assert response.status_code == 201, f"{response.status_code}: {response.text}"
     return str(response.json()["id"])
@@ -145,12 +164,15 @@ def test_every_api_route_takes_only_the_right_bearer_token(
     caplog.set_level("DEBUG")
     send = REQUESTS[route]
     with TestClient(cloud.app) as client:
+        # A conversation that is there, so a message let through would start a run.
+        conversation = new_conversation(client)
         refused: dict[str, Any] = {}
         for name, headers in WRONG.items():
-            refused[name] = send(client, headers, "no-such-conversation")
-        assert refused == dict.fromkeys(WRONG, UNAUTHORIZED)
+            refused[name] = send(client, headers, conversation)
+        refused["an unknown conversation"] = send(client, {}, "no-such-conversation")
+        assert refused == dict.fromkeys(refused, UNAUTHORIZED)
+        assert cloud.started == [], "a request without the right token started a run"
         # The same request with the right token is let through (whatever it then answers).
-        conversation = new_conversation(client)
         assert send(client, bearer(), conversation) != UNAUTHORIZED
     assert ADMIN_TOKEN not in caplog.text
 

@@ -10,7 +10,8 @@ Seam: no function does this today, so this ticket names one (contract items 5 an
 reach it through `cloud_support.module_attr`, which asserts the module and the name are there
 first, so today's failure is an AssertionError, not an ImportError. A local repository made in
 `tmp_path` stands in for the remote one (`git+file://`, contract item 6); git runs through a
-wrapper first on `PATH` that records its arguments and hands them to the real git.
+wrapper first on `PATH` that records its arguments and hands them to the real git. The tests'
+own git commands call the real git by its path, so the wrapper records `GitSources`' alone.
 
 The contract fixed here (ticket 151 contract items 5 and 6; for the human review):
 
@@ -54,7 +55,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from cloud_support import isolated, module_attr, served, toml_path, write_file
+from cloud_support import (
+    build_shop_duckdb,
+    isolated,
+    module_attr,
+    served,
+    toml_path,
+    write_file,
+)
 
 from data_agent.config import ConfigFileError, load_effective_config
 
@@ -69,15 +77,25 @@ GIT_TOKEN_ENV = "DATA_AGENT_GIT_TOKEN"
 # Made up here; a file:// repository asks for no token, so this only shows where it never goes.
 GIT_TOKEN = "gtk-" + "Hs6m" + "-made-up-token"
 SKILL = Path("demo") / "SKILL.md"
+# The real git, found before any test puts its wrapper first on PATH.
+REAL_GIT = shutil.which("git")
 
 
 # --- The stand-in repository ----------------------------------------------------------------
 
 
+def real_git() -> str:
+    if REAL_GIT is None:
+        raise RuntimeError("git is not installed")
+    return REAL_GIT
+
+
 def git(*args: str, cwd: Path | None = None) -> str:
-    """The real git, for the tests' own repository; RuntimeError when it fails (a fixture that
-    does not come up never hides as an expected failure)."""
-    done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+    """The real git by its path (so the wrapper does not record it), for the tests' own
+    repository; RuntimeError when it fails (a fixture that does not come up never hides as an
+    expected failure)."""
+    command = [real_git(), *args]
+    done = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
     if done.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {done.stderr.strip()}")
     return done.stdout.strip()
@@ -105,20 +123,22 @@ class Git:
     repo: Repo
     # The clones' root, as a server gives it: <runs_dir>/.cache/git.
     root: Path
-    # Every argument list git was run with, through the wrapper on PATH.
+    # Every argument list `GitSources` ran git with, through the wrapper on PATH.
     argv_log: Path
 
     def argv(self) -> str:
         return self.argv_log.read_text() if self.argv_log.is_file() else ""
+
+    def pulls(self) -> list[str]:
+        """The argument lists that cloned or fetched."""
+        return [line for line in self.argv().splitlines() if {"clone", "fetch"} & set(line.split())]
 
 
 @pytest.fixture
 def stand_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Git]:
     """A local repository with two commits on `main` (so a full clone has two), git on its own
     config only, and a `git` wrapper first on PATH that records its arguments."""
-    real = shutil.which("git")
-    if real is None:
-        raise RuntimeError("git is not installed")
+    real = real_git()
     # git reads no config of this machine's: no signing, no hooks, no user from outside.
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -160,7 +180,7 @@ def skill_text(path: str) -> str:
 
 def commit_count(path: str) -> str:
     done = subprocess.run(
-        ["git", "-C", path, "rev-list", "--count", "HEAD"],
+        [real_git(), "-C", path, "rev-list", "--count", "HEAD"],
         capture_output=True,
         text=True,
         check=False,
@@ -263,7 +283,7 @@ def test_the_token_is_never_written_logged_or_passed_as_an_argument(
     stand_in.repo.commit("v3")
     pulled.refresh()
     assert skill_text(pulled.resolve(value)) == "v3"
-    assert stand_in.argv(), "git was not run as the `git` on the environment's PATH"
+    assert stand_in.pulls(), "no clone or fetch ran through the `git` on the environment's PATH"
     assert GIT_TOKEN not in stand_in.argv()
     # Every file under the root, the clones' `.git/config` among them.
     assert files_holding(stand_in.root, GIT_TOKEN) == []
@@ -290,7 +310,7 @@ def test_guard_a_plain_local_path_stays_as_it_is_and_nothing_is_cloned(
     write_file(skills / SKILL, "local")
     notes = write_file(config_dir / "notes.md", "# notes\n")
     docs = write_file(config_dir / "docs" / "shop.md", "# shop\n").parent
-    db = write_file(config_dir / "shop.duckdb", "")
+    db = build_shop_duckdb(config_dir / "shop.duckdb")
     path = write_file(
         config_dir / "config.toml",
         '[skills]\ndirs = ["skills"]\n\n[instructions]\nfiles = ["notes.md"]\n\n'

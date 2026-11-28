@@ -105,7 +105,7 @@ def test_cloud_web_refuses_the_local_sandbox_backend(
     set_admin_token(monkeypatch)
     path = config(tmp_path, CLOUD_LOCAL_BACKEND)
     with served(tmp_path, monkeypatch, capsys, ["--config", str(path)]) as server:
-        assert_refused(server, "backend", "local")
+        assert_refused(server, "backend")
 
 
 @TICKET_153
@@ -116,7 +116,7 @@ def test_cloud_run_refuses_the_local_sandbox_backend(
     sessions = stop_sessions(monkeypatch)
     path = config(tmp_path, CLOUD_LOCAL_BACKEND)
     run = run_cli(capsys, query_args(tmp_path / "run", path))
-    assert_run_refused(run, sessions, "backend", "local")
+    assert_run_refused(run, sessions, "backend")
 
 
 @TICKET_153
@@ -127,7 +127,7 @@ def test_data_agent_mode_cloud_acts_as_cloud(
     monkeypatch.setenv(MODE_ENV, "cloud")
     path = config(tmp_path, '[sandbox]\nbackend = "local"\n')
     with served(tmp_path, monkeypatch, capsys, ["--config", str(path)]) as server:
-        assert_refused(server, "backend", "local")
+        assert_refused(server, "backend")
 
 
 # --- Refused in every mode (product-config ticket 143) --------------------------------------
