@@ -2,16 +2,16 @@
 Decisions", ticket 141): test_config_*.py and the earlier acceptance files ticket 141 moved to the
 new interface.
 
-The seam (ticket 141 Context "截停接缝"): the session is stopped at `ClaudeSDKClient`. Its
-`connect` only yields to the event loop (so a run's deadline can fire) and its `query` records
-the prompt it was given and the client's options, then raises `CLIConnectionError`. Stopping at
-the transport (tests/acceptance/
-test_chat_eval_unchanged.py) sees the options but not the task prompt, which the client sends
-only after it has connected (`agent.query`), and the snapshots compare the task prompt too
-(decisions.md Q8). Replacing `data_agent.agent.query` would miss DAB, which imports the function
-by name (`evals/dab.py`), and would tie the tests to a name in agent.py; the SDK's client is what
-every entry uses. No model is called and no Claude Code CLI starts. The `version` event is written
-before the session starts (`agent.run`), so the event file is there when the session is stopped.
+The seam (ticket 141 Context "截停接缝"): the session is stopped at `ClaudeSDKClient`. Its `connect`
+only yields to the event loop (so a run's deadline can fire) and its `query` records the prompt it
+was given and the client's options, then raises `CLIConnectionError`. Stopping at the transport
+(tests/acceptance/test_chat_eval_unchanged.py) sees the options but not the task prompt, which the
+client sends only after it has connected (`agent.query`), and the snapshots compare the task prompt
+too (decisions.md Q8). Replacing `data_agent.agent.query` would miss DAB, which imports the
+function by name (`evals/dab.py`), and would tie the tests to a name in agent.py; the SDK's client
+is what every entry uses. No model is called and no Claude Code CLI starts. The `version` event is
+written before the session starts (`agent.run`), so the event file is there when the session is
+stopped.
 
 Taking a value out of something today's code does not produce goes through the helpers below,
 which `assert` it is there first: a test marked `xfail(strict=True, raises=AssertionError)` then
@@ -125,8 +125,9 @@ def stop_sessions(monkeypatch: pytest.MonkeyPatch, home: Path | None = None) -> 
     capture = Capture()
 
     async def connect(self: ClaudeSDKClient, prompt: Any = None) -> None:
-        # Yields once, as a real connect does: the run's deadline (an `asyncio.timeout`) only
-        # fires when the run gives up control, so one already past stops it before the query.
+        # Yields to the event loop, as a real connect does (it starts the CLI): the run's deadline
+        # (an `asyncio.timeout`) only fires when the run gives up control, so one already past
+        # stops it before the query.
         await asyncio.sleep(0)
 
     async def query(self: ClaudeSDKClient, prompt: Any, session_id: str = "default") -> None:
