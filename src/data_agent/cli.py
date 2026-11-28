@@ -225,7 +225,8 @@ def server_sandbox(
         args.workspace,
         config.skills_dir,
         args.run_id,
-        network=args.network,
+        # `--network` given or the config's `[sandbox].network`, as a run's (`run_settings`).
+        network=bool(args.network or setting(settings, "sandbox.network", False)),
         image=setting(settings, "sandbox.image", SANDBOX_IMAGE),
         cpus=CPUS if cpus is None else f"{cpus:g}",
         memory=setting(settings, "sandbox.memory", MEMORY),

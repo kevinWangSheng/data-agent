@@ -678,3 +678,44 @@ async def test_two_unnamed_files_of_one_name_keep_their_own_dictionaries(
             pass
     assert seen == [None, None]
     assert [event["cached"] for event in events] == [False, False] and len(counted) == 2
+
+
+@pytest.mark.parametrize(("text", "network"), [("[sandbox]\nnetwork = true\n", True), ("", False)])
+def test_a_hand_started_servers_docker_sandbox_takes_the_configs_network(
+    tmp_path: Path, text: str, network: bool
+) -> None:
+    """`mcp-server --sandbox docker` without `--network`: the sandbox's network is the config's
+    `[sandbox].network`, as `run`'s is."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    args = argparse.Namespace(sandbox="docker", run_id="r1", network=False, workspace=workspace)
+    config = load(write(tmp_path / "config.toml", text or "[layers]\nskill = true\n"))
+    built = cli.server_sandbox(argparse.ArgumentParser(), args, load_config(config), config)
+    assert isinstance(built, sandbox.DockerSandbox) and built.network is network
+
+
+def test_a_local_sandbox_takes_a_config_with_the_network_on(tmp_path: Path) -> None:
+    """The network is the docker sandbox's: a config turning it on is no error for a local one."""
+    box = sandbox_of(tmp_path, "[sandbox]\nnetwork = true\n")
+    assert isinstance(box, sandbox.LocalSandbox)
+
+
+def test_cached_dictionaries_are_the_users_alone(tmp_path: Path, shop: Path) -> None:
+    """A dictionary holds sampled values: under a umask of 022 its directory is still 0700 and
+    its file 0600, so no other user of the host reads them."""
+    import os
+    import stat
+
+    old = os.umask(0o022)
+    try:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        cache = tmp_path / "cache" / "dictionaries"
+        cache.mkdir(parents=True, mode=0o755)
+        cache.chmod(0o755)
+        build_dictionary(cli.DuckDBGateway(shop), workspace, cache)
+    finally:
+        os.umask(old)
+    [entry] = list(cache.iterdir())
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o700
+    assert stat.S_IMODE(entry.stat().st_mode) == 0o600

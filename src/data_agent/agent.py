@@ -471,14 +471,18 @@ class CachedDictionary:
     def save(self, dictionary: Dictionary) -> None:
         """Kept only when the build read every table it meant to: a failed or cut-off build, or
         one that left a table out (its statement failed or timed out), is built again next time.
-        Written whole or not at all."""
+        Written whole or not at all. It holds sampled values, so the directory is the user's alone
+        (0700) and the file too (0600), whatever the umask."""
         coverage = dictionary.coverage
         if coverage.error is not None or coverage.timed_out or coverage.not_profiled:
             return
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.path.parent.chmod(0o700)
             partial = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}")
+            os.close(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
             dictionary.save(partial)
+            partial.chmod(0o600)
             partial.replace(self.path)
         except OSError:
             return
