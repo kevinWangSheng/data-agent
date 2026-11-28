@@ -269,6 +269,14 @@ def test_the_token_is_never_written_logged_or_passed_as_an_argument(
 # --- A plain local path ---------------------------------------------------------------------
 
 
+@TICKET_154
+def test_resolve_gives_a_plain_value_back_and_clones_nothing(stand_in: Git, tmp_path: Path) -> None:
+    plain = str(tmp_path / "config" / "skills")
+    assert sources(stand_in).resolve(plain) == plain
+    assert stand_in.argv() == "", "git ran for a value that is not a git value"
+    assert not stand_in.root.exists()
+
+
 def test_guard_a_plain_local_path_stays_as_it_is_and_nothing_is_cloned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

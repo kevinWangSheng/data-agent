@@ -43,6 +43,7 @@ from cloud_support import (
     served,
     server_table,
     set_admin_token,
+    set_session_key,
     stop_sessions,
     write_file,
 )
@@ -59,8 +60,8 @@ SLACK_BOT_ENV = "DATA_AGENT_SLACK_BOT_TOKEN"
 SLACK_APP_ENV = "DATA_AGENT_SLACK_APP_TOKEN"
 
 
-def config(tmp_path: Path, text: str, name: str = "config.toml") -> Path:
-    return write_file(tmp_path / "config" / name, text)
+def config(tmp_path: Path, text: str) -> Path:
+    return write_file(tmp_path / "config" / "config.toml", text)
 
 
 # --- The listening address and the token ----------------------------------------------------
@@ -75,6 +76,8 @@ def test_a_non_loopback_host_needs_the_admin_token(
     mode: str,
 ) -> None:
     path = config(tmp_path, server_table(mode, ANY_ADDRESS))
+    # Everything a cloud server asks for but the token, so the refusal is the token's.
+    set_session_key(monkeypatch)
     with served(tmp_path / "without", monkeypatch, capsys, ["--config", str(path)]) as server:
         assert_refused(server, ADMIN_TOKEN_ENV)
     set_admin_token(monkeypatch)

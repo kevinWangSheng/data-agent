@@ -38,7 +38,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -162,11 +162,17 @@ def server_table(mode: str | None = None, host: str | None = None) -> str:
     return "[server]\n" + "\n".join(lines) + "\n" if lines else ""
 
 
+def set_session_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The session key decisions detail 7 makes cloud ask for, so a cloud server or run is
+    refused for nothing but what a test asks about."""
+    monkeypatch.setenv(SESSION_KEY_ENV, SESSION_KEY)
+
+
 def set_admin_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """The deployment's token, and the session key decisions detail 7 makes cloud ask for later
     (so a cloud server is refused for nothing but what a test asks about)."""
     monkeypatch.setenv(ADMIN_TOKEN_ENV, ADMIN_TOKEN)
-    monkeypatch.setenv(SESSION_KEY_ENV, SESSION_KEY)
+    set_session_key(monkeypatch)
 
 
 def bearer(token: str = ADMIN_TOKEN) -> dict[str, str]:
@@ -226,7 +232,8 @@ class Served:
     stderr: str
     # Every `uvicorn.run` call: its positional and keyword arguments.
     uvicorn: list[tuple[tuple[Any, ...], dict[str, Any]]]
-    # What `create_app` returned (the app's state), None when it was not called.
+    # The app `create_app` returned (its `state` holds the conversations), None when it was not
+    # called.
     created: Any
     started: list[Started] = field(default_factory=list[Started])
 
@@ -234,22 +241,23 @@ class Served:
     def ran(self) -> bool:
         return bool(self.uvicorn)
 
-    @property
-    def app(self) -> Any:
-        """The app `uvicorn.run` was given: the server started."""
+    def served_call(self) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        """The one `uvicorn.run` call: the server started."""
         assert len(self.uvicorn) == 1, (
             f"data-agent web did not start (exit {self.code!r}): {reason(self.stderr)!r}"
         )
-        args, kwargs = self.uvicorn[0]
+        return self.uvicorn[0]
+
+    @property
+    def app(self) -> Any:
+        """The app `uvicorn.run` was given."""
+        args, kwargs = self.served_call()
         return args[0] if args else kwargs["app"]
 
     @property
     def host(self) -> Any:
         """The address `uvicorn.run` was told to listen on."""
-        assert len(self.uvicorn) == 1, (
-            f"data-agent web did not start (exit {self.code!r}): {reason(self.stderr)!r}"
-        )
-        args, kwargs = self.uvicorn[0]
+        args, kwargs = self.served_call()
         return kwargs["host"] if "host" in kwargs else args[1] if len(args) > 1 else None
 
     def only(self) -> Started:
@@ -441,9 +449,3 @@ def module_attr(module: str, name: str) -> Any:
     loaded: ModuleType = importlib.import_module(module)
     assert hasattr(loaded, name), f"{module} has no {name!r}"
     return getattr(loaded, name)
-
-
-def key_of(mapping: Any, key: str) -> Any:
-    assert isinstance(mapping, Mapping), f"not a mapping: {mapping!r}"
-    assert key in mapping, f"no {key!r} in {sorted(map(str, mapping))}"
-    return mapping[key]

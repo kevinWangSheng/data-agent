@@ -18,7 +18,7 @@ the guards go through a conversation turn, which takes the same `network` today.
 
 The contract fixed here (for the human review; it extends test_cloud_startup.py contract item 1):
 
-- In cloud mode the network is off unless the config opens it with `[policy].network = true`;
+- In cloud mode the network is off unless the config opens it with `[sandbox].network = true`;
   no single run goes past the config. Off: `data-agent run --network` is refused (exit 2, stderr
   naming `network`, no session); a run form or a conversation turn asking for it
   (`"network": true`) gets 409 and no run starts; one with `"network": false`, and an IM turn
@@ -65,7 +65,7 @@ pytestmark = pytest.mark.usefixtures(isolated.__name__)
 NETWORK = "--network"
 WEB_TOOLS = ("WebSearch", "WebFetch")
 CLOUD = server_table("cloud")
-OPENED = CLOUD + "\n[policy]\nnetwork = true\n"
+OPENED = CLOUD + "\n[sandbox]\nnetwork = true\n"
 
 
 def config(root: Path, text: str) -> Path:
@@ -79,6 +79,7 @@ def config(root: Path, text: str) -> Path:
 def test_cloud_run_refuses_the_network(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    set_admin_token(monkeypatch)
     sessions = stop_sessions(monkeypatch)
     run = run_cli(capsys, query_args(tmp_path, config(tmp_path, CLOUD), NETWORK))
     assert_run_refused(run, sessions, "network")
@@ -88,6 +89,7 @@ def test_cloud_run_refuses_the_network(
 def test_cloud_run_refuses_the_task_dbt_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    set_admin_token(monkeypatch)
     sessions = stop_sessions(monkeypatch)
     argv = dbt_args(tmp_path, config(tmp_path, CLOUD), "--dbt-target", "task")
     assert_run_refused(run_cli(capsys, argv), sessions, "dbt_target")
