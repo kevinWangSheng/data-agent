@@ -45,6 +45,7 @@ Branch: —
 - **只做文件层**（ADR-0012、`.scratch/settings/spec.md`"对已有工单的调整"）：本工单的生效设置只来自代码默认值、配置文件、环境变量、命令行参数和 `[policy]`；数据库里的设置、四层作用域、单次覆盖由 settings 158 叠上去。所以网页、对话、IM 的每次运行拿生效配置要走一处解析入口（141 契约 4 那条路），158 在这一处加数据库，不另写一套合并。不建库、不读库。
 - **前端**：本工单改 `web/src/local/` 的表单，但主要是后端改动，照 AGENTS.md 后端工单的审查流程（`da-review` 加 `eng:code-review`）；`web/src/` 的改动在最终回复里单独列出，主会话合并前决定要不要另加前端审查。
 - **并行工单**：143（基础）、145、147、148 都改 `agent.py`、`cli.py`，后合入的一方 rebase。
+- **守门测试依赖的接口，保留名字和签名**（141 合并前审查第 9 条；验收测试之后不能改，改名会让守门永久失败）：`context_tools.build_interruptible`、`agent.build_interruptible`；`evals.jaffle.clone_project`、`reset_schemas`、`dbt` 和 `evals.jaffle` 模块的 `subprocess` 属性；`DataAgent(run_config=…, benchmark=…)` 和 `_run_command`；`evals dab` / `evals jaffle` 的命令行参数；`profile_path` 要求容器里的路径含 `profiles/` 一段。见 141 的 `tests/acceptance/product_config_support.py`（`dictionary_from_duckdb`、`jaffle_entry`、`profile_path`）。
 
 ## Acceptance
 
@@ -85,3 +86,4 @@ Branch: —
 - 2026-11-27（主会话建票）：把审计第 1.3（通用版）、2.1、2.2、4、5.3 节接到配置上。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：加 `[server]`（host、port、runs_dir）和 `[trace]`（base_url、tier）；`[policy]` 冲突报错；去掉"`[server]`/`[trace]` 没排给本工单""已有验收测试钉住旧行为"两条停止条件（141 改写已有验收测试）。
 - 2026-11-27（主会话）：按 ADR-0012 调整："文件 + 数据库"的生效设置交给 settings 158，本工单只做文件层；Context 加"只做文件层"一条，要求运行的生效配置经一处解析入口，供 158 叠数据库。本工单原本就没有数据库的范围，Authority、Acceptance 不变。
+- 2026-11-27（主会话）：按 141 合并前审查补 Context：守门测试依赖的接口保留名字和签名。

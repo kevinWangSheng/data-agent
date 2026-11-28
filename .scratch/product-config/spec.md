@@ -39,7 +39,7 @@
 - `[roles]`：`main`（必填，默认 `deepseek-flash`）、`small`、`classify`、`verifier`，省了都等于 `main`（审计 3.5）。
 - `[limits]`：`max_budget_usd`（默认 1.0）、`max_turns.dbt/query/large`、`agent_timeout_sec`、`effort`。
 - `[sandbox]`：`backend`、`image`、`cpus`、`memory`、`network`、`exec_max_seconds`（审计 4.4、4.6）。
-- `[sources.<名字>]`：现有 `kind`、`path`/`env`、`dbt_project`，加 `description`、`docs`（目录，复制或只读挂进工作区，审计 5.2）、`schemas.include`/`schemas.exclude`（审计 1.3 之外的通用版）、`query_timeout_seconds`、`max_rows`、`duckdb.memory_limit`、`duckdb.max_temp_directory_size`、`dbt_timeout_seconds`（审计 4.2、4.3、4.6）。
+- `[sources.<名字>]`：现有 `kind`、`path`/`env`、`dbt_project`，加 `description`、`docs`（目录，留在工作区外、agent 只读：提示词给路径、`workspace_guard` 放行读、Docker 沙箱只读挂载；审计 5.2；人 2026-11-27 定，见 decisions.md"调研后定"第 3 条）、`schemas.include`/`schemas.exclude`（审计 1.3 之外的通用版）、`query_timeout_seconds`、`max_rows`、`duckdb.memory_limit`、`duckdb.max_temp_directory_size`、`dbt_timeout_seconds`（审计 4.2、4.3、4.6）。
 - `[skills]`：`dirs`、`disabled`、`preload`；`[instructions]`：`files`；`[mcp]`：`servers`（内联，或 `file` 指向 Claude Code 格式的 JSON）、`claude_code_config`；`[plugins]`：`dirs`、`enabled`。
 - `[prompts]`：可覆盖的提示词片段，至少 `answer_rule`（审计 2.3）。产品默认用产品版答题规则（允许表格、可以写假设），DAB 的版本写进 `evals/profiles/dab.toml`。`DB_TYPE` 那句（审计 2.4）只写进 `evals/profiles/data-eng-bench.toml`。任务文件提示（审计 2.5）产品运行总是加，评测配置文件照现在的条件。
 - `[im.<平台>]`、`[trace]`、`[server]`（`host`、`port`、`runs_dir`、`mode`；`mode` 的行为见 cloud-deploy spec）、`[policy]`（`disabled_models`、`network`、`dbt_target`）。

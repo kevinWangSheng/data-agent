@@ -1,6 +1,6 @@
 # 141 — 产品配置：验收测试（配置加载、运行参数快照、产品默认、评测隔离、`config` 事件）
 
-Status: in-review
+Status: ready-for-agent
 Blocked by: —
 Spec: ../spec.md（"Testing Decisions"的"验收测试接缝"）
 Claimed by: claude (opus-5.5, worktree 141-config-acceptance-tests)
@@ -311,3 +311,15 @@ spec "验收测试接缝"的五组行为都有验收测试，写在约定的接�
   2. `test_im_config.py` 钉着 `im.config.load_config(path, environ)`。143 的 Authority 写着要把解析函数改成吃配置里的那一节，所以 143 要保留这个签名（或者人另定）。
   3. 已知缺口：`[limits].effort = "medium"`（今天的 `--effort` 不收这个值）最终会不会出现在 options 里，没有测试，要 144 和 145 都合入才测得到。写进后续工单的验收标准。
   4. `python:3.12-slim` 容器那次运行：Docker 磁盘清出空间后跑 `runs/141/linux-pytest.sh <导出目录>`。
+- 2026-11-27（主会话）：PR #149 CI 绿（ubuntu）。服务器上 `python:3.12-slim` 容器（导出挂在 `/work`）：4 failed / 10 passed；服务器普通 checkout 14 passed；挂在 `/t141src` 时 14 passed。日志在主会话 scratchpad，结论见下面第 1 条。合并前审查（上下文干净的 Opus 子 agent）结论"修完再合"，无阻塞项；Codex GitHub app 1 条 P2（Skill 快照没有内容指纹）。
+- 2026-11-27（主会话）：**退回（第 1 轮）：原因如下，在原分支 `worktree-141-config-acceptance-tests` 上接着修**。决定依据 `decisions.md`"调研后定"。
+  1. **路径替换不认边界**：`product_config_support.py` 的 `normalize_text`（约 :445-452）用 `str.replace` 把仓库路径换成 `<repo>`，checkout 在 `/work` 时把 `/workspace` 换成 `<repo>space`（容器里 dab-no-context、jaffle-full 的快照与隔离守门共 4 个失败）。改成认路径边界的替换（`/tmp` 同理）；修完后快照守门在 `/work` 挂载的容器里要通过（主会话在服务器上复跑）。
+  2. **Skill 指纹**（Codex P2；`decisions.md`"调研后定"第 4 条）：快照记过滤后的真实内容哈希（排除 `__pycache__`、`*.pyc`、gitignore 的文件，照 Harbor），不再退成目录标签。之前"之后的工单不许重录"这个不修理由已不成立：重录归主会话。
+  3. **`file_hashes` 的期望集合**（`test_config_event.py:92`）：排除 `__pycache__`、`*.pyc`，同上。
+  4. **重录规则写进注释**（`product_config_support.py:25`、`test_config_snapshot.py:4-5`）：守门只证明迁移第一步新旧一致；146 合入后由主会话在迁移第二步或有意的 Skill 改动时重录，审 diff、记进工单。
+  5. **契约第 5 项**：不钉"多余的 `config` 字段静默忽略"。删掉 `test_config_wiring.py:276` 那条测试；旧表单（`test_chat_api.py:107`、`test_mcp_web.py:64`、`test_web_api.py` 的辅助）里删掉 `config` 字段；这个字段的处理不钉。
+  6. **每次运行的配置文件里没有展开的密钥**：在已标 `TICKET_143` 的测试里加 `GITHUB_TOKEN` 不在运行的 `--config` 文件文本里（`test_mcp_web.py:196` 附近；`test_chat_api.py` 同理查连接串）。
+  7. **143 之后会变空的守门**（`test_mcp_web.py:200`）：加"`--config` 是文件时，它的 `mcp.file`、`mcp.servers` 没设"，今天通过、143 之后仍有意义。
+  8. **数据服务器 `--config` 的旁路断言**（`config_arg_rule`，`product_config_support.py:401`）：不重录快照，另断言每个值要么是等于 `version.config` 的消融名，要么是 `evals/profiles/` 或运行临时目录下的路径，不在假家目录或工作区下。
+  9. **`docs` 的测试**（`test_config_prompts.py:110-128`；`decisions.md`"调研后定"第 3 条）：改成钉"`docs` 留在工作区外、agent 只读"：不出现在 `--workspace` 下；系统提示词写出 `docs` 路径；`workspace_guard` 放行读、拒绝写。标 `TICKET_148`。
+  - 契约逐项清单、spec 解读、逐文件改动表在交回时照上次的格式更新。修复轮次另算：这是 PR 的第 1 轮退回。

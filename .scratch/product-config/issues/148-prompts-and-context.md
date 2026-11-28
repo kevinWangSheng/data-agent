@@ -17,7 +17,10 @@ Branch: —
   - `src/data_agent/agent.py`：只改提示词部分：`SYSTEM_PROMPT`（`agent.py:147-153`）后的追加段、`ANSWER_RULE`（`:212-218`）和用它的 `QUERY_PROMPT`（`:249-264`，`CHARTS_QUERY_PROMPT` `:266`）、`DBT_PROMPT` 的 `DB_TYPE` 那句（`:294-295`）、`TASK_FILE_NOTE`（`:307-314`）与 `run` 里加它的条件（`:2301`）、`system_prompt`（`:1360-1383`）里说明文件与数据源描述的段；`run`、`saved_task`（`:335-344`）里任务文件在不开验证器时也要存（产品运行）。不改 Skill 段（147）。
   - `evals/dab.py`：`TASK_PROMPT`（`dab.py:103-126`，用 `ANSWER_RULE` `:125`）改从配置文件的 `[prompts].answer_rule` 取。
   - `evals/profiles/*.toml`：加 `[prompts]`（`dab.toml`、`livesqlbench.toml` 和 jaffle 用的配置写现在的 `ANSWER_RULE`；`data-eng-bench.toml` 写 `DB_TYPE` 那句；以及保持评测行为不变所需的其他片段）。
-  - `src/data_agent/web/launcher.py`（`prepare_workspace`，查数运行的空工作区 `:411-413`）、`src/data_agent/web/sources.py`（`DataSource` `:37-47`）：`docs` 进工作区、`description` 随数据源走。
+  - `src/data_agent/web/sources.py`（`DataSource` `:37-47`）：`docs`、`description` 随数据源走。
+  - `src/data_agent/workspace_guard.py`：读放行 `[sources.*].docs` 目录（只读，写照旧拒绝）。
+  - `src/data_agent/sandbox.py`：Docker 后端把 `docs` 目录只读挂进沙箱（本机模式；容器里的复制由 cloud-deploy 163 统一处理）。
+  - `src/data_agent/web/launcher.py`、`src/data_agent/cli.py`：只为把 `docs` 路径交给运行；不复制 `docs`。
   - `tests/acceptance/` 里 141 标了 `TICKET_148` 的文件（`test_config_prompts.py` 等，清单见 141 最终回复）：**只删** `TICKET_148` 标记，以及因此没用的定义和 import。
   - `tests/`（除 `tests/acceptance/`）；`docs/setup.md`（`[prompts]`、`[instructions]`、`[sources.*].description`/`docs`）。
 - Must not edit：`tests/acceptance/` 里除 `TICKET_148` 标记以外的一切；`tests/fixtures/product_config/`；`skills/`（ADR-0005：榜单的答题格式不进 Skill）；`agent.py` 的 Skill/MCP/插件（147）、模型设置（145）、上限（144）；`evals/` 里除 `dab.py` 的提示词和 `evals/profiles/` 以外的文件；`web/src/`；其他工单的文件、`.claude/`、`CODING_STANDARDS.md`、`AGENTS.md`。
@@ -38,6 +41,7 @@ Branch: —
 - **评测不变**：141 的快照守门组含任务提示词全文。LiveSQLBench 和 jaffle 的查数题今天也经 `QUERY_PROMPT` 拿到 `ANSWER_RULE`；Q8 定所有评测配置文件都保留现在的答题规则，只有产品用新版。
 - **`docs` 的做法**：spec 写"复制或只读挂进工作区"，两种由本工单选、写明理由。挂进 Docker 沙箱时注意 `check_databases_outside`/`check_no_credentials`（`agent.py:2100-2121`）和工作区守卫（`workspace_guard`）对新文件的处理。
 - **并行工单**：147 改 `system_prompt` 的 Skill 段、145 改模型设置、144 改上限，都在 `agent.py`；后合入的一方 rebase。
+- **`docs` 放哪**（人 2026-11-27 定，`decisions.md`"调研后定"第 3 条，取证 `docs/research/2026-11-27-context-docs-and-snapshot-guards.md`）：`docs` 留在工作区外，不复制进工作区（CLI 的 `--workspace` 是使用者自己的目录）。agent 只读：系统提示词写出每个数据源的 `docs` 路径；`workspace_guard` 放行读、拒绝写；Docker 沙箱只读挂载；小文件可直接进提示词。CLI 和网页运行一样做。141 退回后会按这个改 `test_config_prompts.py` 的那条测试。
 
 ## Acceptance
 
@@ -77,3 +81,4 @@ Branch: —
 
 - 2026-11-27（主会话建票）：审计第 2.3–2.5、5.1、5.2 节。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：所有评测配置文件（含 LiveSQLBench、jaffle）保留现在的答题规则；去掉对应的停止条件。
+- 2026-11-27（主会话）：按调研后的决定改 Authority 和 Context：`docs` 留在工作区外只读，Authority 加 `workspace_guard.py`、`sandbox.py`，去掉 `prepare_workspace` 复制。

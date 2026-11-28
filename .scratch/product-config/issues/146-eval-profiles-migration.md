@@ -47,6 +47,9 @@ Branch: —
 - **`config` 事件**（spec Q6）：第二条（`version` 之后，Q8）；字段照 141 的契约第 6 项（人审结果）。Skill、说明文件、插件目录每个文件的哈希照 harbor `lock.json` 的做法；`skill_version`（`agent.py:1289-1296`）照旧记。密钥只记 `${VAR}` 原文；`EventLog(secrets=...)`（`:2242`）的兜底脱敏照旧。
 - **`check_request`**：spec 定"同一 `--out` 哈希不同就拒绝续跑"。已有 `--out` 的 `request.json` 没有哈希：照 `agent_kwargs` 的先例（`ablate.py:424-425`，"an OUT written before them stays reusable"）还是拒绝，由本工单按 141 的测试定，写明。
 - **并行工单**：147、148 Blocked by 本工单，会在评测配置文件里加 `[skills]`、`[prompts]` 的键；145 改模型设置。后合入的一方 rebase。
+- **守门测试依赖的接口，保留名字和签名**（141 合并前审查第 9 条；验收测试之后不能改，改名会让守门永久失败）：`context_tools.build_interruptible`、`agent.build_interruptible`；`evals.jaffle.clone_project`、`reset_schemas`、`dbt` 和 `evals.jaffle` 模块的 `subprocess` 属性；`DataAgent(run_config=…, benchmark=…)` 和 `_run_command`；`evals dab` / `evals jaffle` 的命令行参数；`profile_path` 要求容器里的路径含 `profiles/` 一段。见 141 的 `tests/acceptance/product_config_support.py`（`dictionary_from_duckdb`、`jaffle_entry`、`profile_path`）。
+- **保留 `run_config.load_config(<EffectiveConfig>)`**：141 的 `product_config_support.run_config_of` 和约 98 个迁移过的验收测试经它取 RunConfig；Authority 里"删掉 `load_config(<名>)`"只删按名字取的那种用法，这个签名保留。
+- **快照守门的用途**（人 2026-11-27 定，`decisions.md`"调研后定"第 4 条）：只证明迁移第一步新旧机制一致。本工单合入后快照守门完成任务；之后的重录归主会话（迁移第二步或有意的 Skill 改动），重录要审 diff 并记进工单。本工单合入前不合入改 `skills/` 的提交。
 
 ## Acceptance
 
@@ -93,3 +96,4 @@ Branch: —
 
 - 2026-11-27（主会话建票）：迁移第一步，只换机制不换行为；第二步（评测改用产品新默认、配对比较）不是工单，主会话做。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：两次 `--config`、`version.config` 写层名、`config` 事件第二条、lsb-single-shot 只读 `[models]`/`[roles]`、删过渡期的旧名；去掉"已有验收测试""lsb-single-shot 待定""`version.config` 得不到消融名"三条停止条件。
+- 2026-11-27（主会话）：按 141 合并前审查和调研后的决定补 Context：保留 `load_config(EffectiveConfig)`、守门依赖的接口、快照守门的用途与失效点。
