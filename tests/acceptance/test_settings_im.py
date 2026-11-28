@@ -579,9 +579,10 @@ async def test_without_settings_a_channel_message_still_needs_the_mention(tmp_pa
 @TICKET_161
 def test_slack_s_message_event_gives_its_team_as_the_workspace_id() -> None:
     from data_agent.im.platform import Incoming
-    from data_agent.im.slack import to_incoming
 
     has_field(Incoming, "workspace_id")
+    from data_agent.im.slack import to_incoming
+
     bot = "U0BOT0001"
     event = {
         "type": "message",
