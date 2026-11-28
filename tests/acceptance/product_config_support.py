@@ -3,8 +3,9 @@ Decisions", ticket 141): test_config_*.py and the earlier acceptance files ticke
 new interface.
 
 The seam (ticket 141 Context "截停接缝"): the session is stopped at `ClaudeSDKClient`. Its
-`connect` does nothing and its `query` records the prompt it was given and the client's options,
-then raises `CLIConnectionError`. Stopping at the transport (tests/acceptance/
+`connect` only yields to the event loop (so a run's deadline can fire) and its `query` records
+the prompt it was given and the client's options, then raises `CLIConnectionError`. Stopping at
+the transport (tests/acceptance/
 test_chat_eval_unchanged.py) sees the options but not the task prompt, which the client sends
 only after it has connected (`agent.query`), and the snapshots compare the task prompt too
 (decisions.md Q8). Replacing `data_agent.agent.query` would miss DAB, which imports the function
@@ -30,6 +31,7 @@ second step of the migration or a deliberate Skill change moves them, reviews th
 it in that ticket. Until ticket 146 is merged no commit that changes `skills/` is merged.
 """
 
+import asyncio
 import fnmatch
 import hashlib
 import json
@@ -123,7 +125,9 @@ def stop_sessions(monkeypatch: pytest.MonkeyPatch, home: Path | None = None) -> 
     capture = Capture()
 
     async def connect(self: ClaudeSDKClient, prompt: Any = None) -> None:
-        return None
+        # Yields once, as a real connect does: the run's deadline (an `asyncio.timeout`) only
+        # fires when the run gives up control, so one already past stops it before the query.
+        await asyncio.sleep(0)
 
     async def query(self: ClaudeSDKClient, prompt: Any, session_id: str = "default") -> None:
         probed: Any = None
