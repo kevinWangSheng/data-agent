@@ -1,6 +1,6 @@
 # 141 — 产品配置：验收测试（配置加载、运行参数快照、产品默认、评测隔离、`config` 事件）
 
-Status: ready-for-agent
+Status: in-review
 Blocked by: —
 Spec: ../spec.md（"Testing Decisions"的"验收测试接缝"）
 Claimed by: claude (opus-5.5, worktree 141-config-acceptance-tests)
@@ -178,10 +178,10 @@ spec "验收测试接缝"的五组行为都有验收测试，写在约定的接�
 
 ## Ledger
 
-- Attempts: 3 (this session is the return round 1 fix)
-- Review rounds: 2 + return round 1 (Codex 1 + eng:code-review 1)
+- Attempts: 4 (this session is the return round 2 fix)
+- Review rounds: 2 + return round 1 (Codex 1 + eng:code-review 1) + return round 2 (Codex 0 + eng:code-review 1)
 - Model spend: $0
-- Outcome: in-review; the `/work` container run is left to the main session
+- Outcome: in-review; the `/work` container re-run is left to the main session
 - Human review minutes: —
 
 ## Comments
@@ -399,3 +399,50 @@ spec "验收测试接缝"的五组行为都有验收测试，写在约定的接�
   4. `test_config_skills.py:9-11` 的 docstring 还写"until ticket 142 settles them"，142 已 done，顺手改掉。
   - 不在本工单改（主会话已处理）：143 加"`policy.disabled_models` 不在加载时拒绝"；146 加数据服务器 `--config` 形状的约束；147 加"先验证插件根目录是 `skills/`"和"Skill 工具进 `tools`"；148 的 `docs` 旧写法；158 的 `config show --workspace` 旗标冲突（派 158 前由人定）。插件路径钉在 `skills/` 本身照 spec 原文保留，可行性由 147 先验证。
   - 修复轮次另算：这是 PR 的第 2 轮退回（AGENTS.md 第 7 步每个 PR 最多退回 2 轮）。
+- 2026-11-27 (ticket agent, opus-5.5; return round 2; branch `worktree-141-config-acceptance-tests`; commits `0055133`, `2bf9266`; merged `origin/main` `fcf3a84` first as `c77088c`, which only changed `.scratch/`):
+
+**1. Each return reason**
+
+| # | Fix | Evidence |
+|---|---|---|
+| 1 (blocking) | `assert "Skill" in (options.tools or [])` added to the 3 product-default tests: `test_config_skills.py:143` (default query), `:160` (default dbt), `:177` (conversation turn). Contract item 1 in the docstring now says `tools` holds `Skill`, citing ticket 142 (the CLI goes by `--tools`, and `skills` alone leaves the Skill tool out). All 3 are still `TICKET_147` | The `--runxfail` failure on the conversation turn shows today's `tools=['Read','Glob','Grep','Write','Edit','WebSearch','WebFetch']` with no `Skill`, so the new assert has teeth once `skills` is filled. The two `run` tests fail first on `--config` being required, which has not changed since before this round |
+| 2 | `normalize_text` (`product_config_support.py:497-511`) now replaces in one `re.sub` over a single alternation, so a placeholder already put in is never searched again. After the review it also sorts inside the function (longest first) and keeps the first placeholder for a string listed twice | New guard `test_guard_normalize_text_replaces_each_path_once` (`test_config_snapshot.py`), 10 cases called directly, failed before each fix. Red: `/work/tmp/x` gave `<repo><tempdir>/x`; after review, `/work/run-1/x` with the `/work/run-1` rule listed last gave `<repo>/run-1/x`. Green: `<repo>/tmp/x`, `<run-id>/x`, and the boundary cases (`/workspace/a`, `/work-tree`, `/work.d`, `/private/tmp/y` unchanged; `at /work.` becomes `at <repo>.`). Snapshot and isolation guards: 22 passed, 15 xfailed (with the skills file), recorded snapshots not re-recorded |
+| 3 | `test_mcp_web.py:14-15`: the docstring now says the run form sends no `config` field (contract item 5), so the form's cases are `TICKET_144` until 144 drops that field from `POST /api/runs` | — |
+| 4 | `test_config_skills.py:9-12`: 142 confirmed the `<plugin>:<Skill>` form (`docs/research/2026-11-27-skill-tool-spike.md`), and the "until ticket 142 settles them" note is gone. The `skill_name` docstring (`:89`) had the same stale "ticket 142 to confirm"; fixed too | — |
+
+**2. Checks**
+- `make check` after the last commit: exit 0. pytest 3401 passed, 3 skipped, 198 xfailed; basedpyright 0 errors; ruff clean; web 448 passed. Before this round: 3391 passed, 198 xfailed. The +10 are the new `normalize_text` cases; no test changed between PASSED and XFAIL.
+- `git diff main...HEAD --stat -- src/ evals/` lists only `src/data_agent/config.py` (+57).
+- Scrub: `changed 0 file(s) of 16`. The pre-commit secret scan passed on both commits.
+- Real run: this ticket calls no model, so there is nothing to run.
+
+**3. Reviews**
+- `da-review main` (Codex): no findings. It also re-checked that every snapshot's Skill fingerprint matches the current content.
+- `eng:code-review main` (Standards + Spec): no blockers. Spec confirmed all 4 reasons are fixed and the scope stayed in Authority.
+  - **Fixed** (`2bf9266`): Standards found that `normalize_text` let the first listed rule win, not the longest. `normalized_snapshot` appends the `--run-id` rules after `text_rules` has sorted, so the "longest first" claim did not hold. With today's rules no input failed. It now sorts internally, and the dict is renamed `placeholder_of`.
+  - **Not fixed, with reasons:**
+    - `"Skill" in (options.tools or [])` appears 3 times (possible Duplicated Code). It is one line, and a helper would hide what each test asserts.
+    - Spec noted that spec.md:103 "产品默认……Skill 工具开" also covers the web single run and IM, which have no Skill-tool assert. This round's return scoped the fix to the 3 tests, and the conversation turn already covers the web side. Whether 147 should add web and IM cases is for the main session to decide.
+- Fix rounds: Codex 0; eng:code-review 1.
+
+### Contracts 1–7 (changes this round only)
+
+| Item | Change | Where |
+|---|---|---|
+| Skills contract 1 (product default) | `tools` holds `Skill` as well as the `skills` list | `test_config_skills.py` |
+| Snapshot normalization | One pass, longest rule first wherever it is listed; a string listed twice keeps its first placeholder | `product_config_support.py` |
+
+### File-by-file changes, this round
+
+| File | Before → after | Assertions | Marks (PASSED→XFAIL) |
+|---|---|---|---|
+| `tests/acceptance/test_config_skills.py` | 3 asserts added; contract 1, header and `skill_name` docstrings updated | Skill tool in `tools` (new) | none (already `TICKET_147`) |
+| `tests/acceptance/product_config_support.py` | `normalize_text` rewritten as one sorted pass | unchanged | — |
+| `tests/acceptance/test_config_snapshot.py` | new guard test (10 cases, no mark); imports `normalize_text` | new | — |
+| `tests/acceptance/test_mcp_web.py` | docstring lines 14-15 only | unchanged | none |
+
+PASSED→XFAIL this round: 0. Running total unchanged: 143 → 98, 144 → 10, 146 → 7.
+
+### For the main session
+1. The `normalize_text` change did not alter any recorded snapshot. Re-running the `python:3.12-slim` `/work` container check (`runs/141/linux-pytest.sh <export dir>`) would confirm that on Linux: this round's fix targets the `/work` + `/tmp` layout.
+2. Web single-run and IM Skill-tool asserts: add them to 147's acceptance criteria if wanted (see the review item above).
