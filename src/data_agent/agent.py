@@ -50,10 +50,20 @@ from claude_agent_sdk import (
 
 # Not re-exported by the SDK; the pinned SDK version fixes where they live.
 from claude_agent_sdk._cli_version import __cli_version__
-from claude_agent_sdk.types import HookEvent, McpStdioServerConfig
+from claude_agent_sdk.types import EffortLevel, HookEvent, McpStdioServerConfig
 
 from data_agent import sandbox as sandboxes
 from data_agent import tracing, verifier_v2
+from data_agent.config import (
+    BASE_URL_ENV,
+    DEFAULT_MODELS,
+    MODEL_ENV,
+    PRICE_KEYS,
+    ConfigFileError,
+    EffectiveConfig,
+    Key,
+    load_effective_config,
+)
 from data_agent.context_tools import DictionaryBuild, build_interruptible
 from data_agent.dbt_execute import DbtExecuteError, DbtRun, Target, check_outside
 from data_agent.events import EventLog, known_secrets, url_names, url_secrets
@@ -134,9 +144,11 @@ DENIED_TOOLS: list[str] = ["Bash"]
 # out of the tools: benchmark solutions are public, and the official data-eng-bench configs turn web
 # lookup off the same way (`disallowed_tools: WebSearch,WebFetch`).
 WEB_TOOLS: list[str] = ["WebSearch", "WebFetch"]
-# The run-level reasoning effort (`--effort`, ticket 104): the values DeepSeek's Anthropic format
-# takes as `output_config.effort`. Unset, the options pass none and the Claude Code CLI sends its
-# own: the `effortLevel` of the user settings the session loads, else `high` (CLI 2.1.301).
+# The run-level reasoning effort (`--effort`, ticket 104): a value of the main model's `efforts`
+# (`ModelSettings.effort_error`; any value for a model without them). These are the default
+# models' (`config.DEEPSEEK_EFFORTS`), the values DeepSeek's Anthropic format takes as
+# `output_config.effort`. Unset, the options pass none and the Claude Code CLI sends its own: the
+# `effortLevel` of the user settings the session loads, else `high` (CLI 2.1.301).
 Effort = Literal["low", "high", "max"]
 EFFORTS: tuple[Effort, ...] = get_args(Effort)
 # The CLI's effort variable, which wins over `--effort` (CLI 2.1.301): a run given an effort sets it
@@ -398,12 +410,17 @@ class Price:
     output: float
 
 
-# ADR-0001 Update (official pages, 2026-10-05), upper end of each range so spend is never
-# understated. DeepSeek bills cache writes as plain input. deepseek-v4-pro has no published
-# cache-read price there, so cache reads are charged at its input price.
-PRICES = {
-    "deepseek-flash": Price(input=0.30, cached_input=0.006, output=1.2),
-    "deepseek-v4-pro": Price(input=1.32, cached_input=1.32, output=3.96),
+def price_of(entry: Mapping[str, Any]) -> Price | None:
+    """A `[models.<name>]` table's price; None without one (`ModelSettings.from_config` refuses a
+    table with only some of the three)."""
+    if not all(entry.get(key) is not None for key in PRICE_KEYS):
+        return None
+    return Price(*(float(entry[key]) for key in PRICE_KEYS))
+
+
+# The code defaults' prices (`config.DEFAULT_MODELS`, where their sources are noted), by model.
+PRICES: dict[str, Price] = {
+    name: price for name, entry in DEFAULT_MODELS.items() if (price := price_of(entry)) is not None
 }
 
 # What the bundled CLI charges a model it has no price for: its fallback table ($5 input, $25
@@ -417,17 +434,25 @@ def priced_usd(price: Price, uncached: int, cached: int, output: int) -> float:
     return (uncached * price.input + cached * price.cached_input + output * price.output) / 1e6
 
 
-def sdk_budget_usd(budget: float, model: str) -> float:
-    """The cap handed to the SDK. A priced model is capped by `Spend` at our prices; the SDK's cap
-    is then a backstop, scaled by the largest ratio of the SDK's rate to ours, so the SDK's figure
-    cannot reach it while ours is under `budget`. A model without a price keeps the SDK's cap."""
-    price = PRICES.get(model)
-    if price is None:
-        return budget
+def backstop_usd(budget: float, price: Price) -> float | None:
+    """The cap handed to the SDK for a run capped by `Spend` at `price`: a backstop, scaled by the
+    largest ratio of the SDK's rate to ours, so the SDK's figure cannot reach it while ours is
+    under `budget`. A rate of 0 bounds nothing; with every rate 0 there is no backstop (None)."""
     sdk = SDK_UNKNOWN_MODEL_PRICE
-    return budget * max(
-        sdk.input / price.input, sdk.cached_input / price.cached_input, sdk.output / price.output
+    rates = zip(
+        (sdk.input, sdk.cached_input, sdk.output),
+        (price.input, price.cached_input, price.output),
+        strict=True,
     )
+    ratios = [sdk_rate / rate for sdk_rate, rate in rates if rate > 0]
+    return budget * max(ratios) if ratios else None
+
+
+def sdk_budget_usd(budget: float, model: str) -> float | None:
+    """`backstop_usd` at a code-default model's price (`PRICES`); a model without one keeps the
+    SDK's cap at `budget` (the evaluation entries' callers)."""
+    price = PRICES.get(model)
+    return budget if price is None else backstop_usd(budget, price)
 
 
 class Tokens(NamedTuple):
@@ -741,9 +766,11 @@ def tool_ledger(spend: Spend | None, workspace: Path) -> Iterator[None]:
         yield
 
 
-def spend_cap(model: str, budget: float) -> Spend | None:
-    """The price-table cap for a priced model; a model without a price keeps the SDK's cap."""
-    price = PRICES.get(model)
+def spend_cap(model: "str | ModelSettings", budget: float) -> Spend | None:
+    """The price-table cap: a run's `ModelSettings` at its price (`ModelSettings.price`), a model
+    by name (the evaluation entries) at the code defaults' (`PRICES`). None without a price: the
+    run has no cap at all (decisions.md Q8)."""
+    price = PRICES.get(model) if isinstance(model, str) else model.price()
     return None if price is None else Spend(price, budget)
 
 
@@ -1228,29 +1255,146 @@ class Outcome:
     events_path: Path
 
 
+def model_table(config: EffectiveConfig, name: str) -> dict[str, Any]:
+    """`[models.<name>]`'s keys, empty for a model without a table."""
+    table = config.value(Key(("models", name)))
+    return table if isinstance(table, dict) else {}
+
+
+# What a model without `context_window` or `compact_window` gets (spec Q2; `sdk_env`).
+CONTEXT_WINDOW = 1_000_000
+COMPACT_WINDOW = 400_000
+
+
 @dataclass(frozen=True)
 class ModelSettings:
+    """The run's models (`[models.<name>]`, `[roles]`; spec Q2): the main model's endpoint, key
+    and name, and what the other roles and the main model's table add. `from_config` reads them
+    from the effective config, `from_env` from the code defaults and the environment alone (the
+    evaluation entries, which read no config file)."""
+
     base_url: str
     api_key: str
     model: str
+    # The `small` and `verifier` roles' models, "" for the main one. The Claude Code CLI sends
+    # every call to one endpoint with one key: theirs are only model names sent there.
+    small: str = ""
+    verifier: str = ""
+    # The `classify` role's own endpoint, key and model (`tool_env`), None for the main model's.
+    classify: "ModelSettings | None" = None
+    context_window: int = CONTEXT_WINDOW
+    compact_window: int = COMPACT_WINDOW
+    # The main model's `efforts`; None takes any effort.
+    efforts: tuple[str, ...] | None = None
+    # Each role's model's price, None for a model without one; None for the whole: `PRICES`.
+    prices: Mapping[str, Price | None] | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "ModelSettings":
-        api_key = env.get("DATA_AGENT_API_KEY", "")
-        if not api_key:
-            raise ConfigError("DATA_AGENT_API_KEY is not set")
+        """The code defaults' models, `DATA_AGENT_MODEL` and `DATA_AGENT_BASE_URL` over them; the
+        key is `DATA_AGENT_API_KEY`."""
+        given = {name: env[name] for name in (MODEL_ENV, BASE_URL_ENV) if env.get(name)}
+        try:
+            config = load_effective_config((), given, {})
+        except ConfigFileError as exc:
+            raise ConfigError(str(exc)) from exc
+        return cls.from_config(config, env)
+
+    @classmethod
+    def from_config(cls, config: EffectiveConfig, env: Mapping[str, str]) -> "ModelSettings":
+        """The models `[roles]` names, each from its `[models.<name>]` table (`DATA_AGENT_MODEL`
+        and `DATA_AGENT_BASE_URL` already over them, `config.load_effective_config`). A model
+        without a table, or a table without `base_url` or `api_key`, gets the default endpoint
+        and `DATA_AGENT_API_KEY`. ConfigError for a role with no key, or a table with only some
+        of the three prices."""
+        main = str(config.value("roles.main"))
+        roles = {
+            role: str(config.value(f"roles.{role}") or main)
+            for role in ("small", "verifier", "classify")
+        }
+        tables = {name: model_table(config, name) for name in (main, *roles.values())}
+        prices: dict[str, Price | None] = {}
+        for name, table in tables.items():
+            given = [key for key in PRICE_KEYS if table.get(key) is not None]
+            if given and len(given) < len(PRICE_KEYS):
+                missing = [key for key in PRICE_KEYS if key not in given]
+                raise ConfigError(
+                    f"[models.{name}] gives {', '.join(given)} but not {', '.join(missing)}: "
+                    "give all three prices, or none (the spend is then unknown)"
+                )
+            prices[name] = price_of(table)
+
+        def endpoint(name: str) -> tuple[str, str]:
+            table = tables[name]
+            api_key = str(table.get("api_key") or env.get("DATA_AGENT_API_KEY") or "")
+            if not api_key:
+                raise ConfigError(
+                    f"DATA_AGENT_API_KEY is not set (nor [models.{name}].api_key, the key of "
+                    "the model the run uses)"
+                )
+            return str(table.get("base_url") or DEFAULT_BASE_URL), api_key
+
+        table = tables[main]
+        efforts = table.get("efforts")
+        classify = roles["classify"]
         return cls(
-            base_url=env.get("DATA_AGENT_BASE_URL") or DEFAULT_BASE_URL,
-            api_key=api_key,
-            model=env.get("DATA_AGENT_MODEL") or DEFAULT_MODEL,
+            *endpoint(main),
+            main,
+            small="" if roles["small"] == main else roles["small"],
+            verifier="" if roles["verifier"] == main else roles["verifier"],
+            classify=None if classify == main else cls(*endpoint(classify), classify),
+            context_window=int(table.get("context_window") or CONTEXT_WINDOW),
+            compact_window=int(table.get("compact_window") or COMPACT_WINDOW),
+            efforts=None if efforts is None else tuple(efforts),
+            prices=prices,
         )
 
+    def models(self) -> list[str]:
+        """The models the run calls: main, small, verifier, classify; each once."""
+        names = [self.model, self.small, self.verifier]
+        names.append(self.model if self.classify is None else self.classify.model)
+        return list(dict.fromkeys(name for name in names if name))
+
+    def unpriced(self) -> list[str]:
+        """The run's models without a price."""
+        prices = PRICES if self.prices is None else self.prices
+        return [name for name in self.models() if prices.get(name) is None]
+
+    def price(self) -> Price | None:
+        """The price the run's spend is counted at (`Spend`, `result_fields`, the tools' ledger):
+        with one model its price; with several each rate at its highest among them, so the spend
+        is never understated. None when any of them has no price: the spend is unknown."""
+        if self.unpriced():
+            return None
+        table = PRICES if self.prices is None else self.prices
+        prices = [price for name in self.models() if (price := table.get(name)) is not None]
+        return Price(
+            input=max(p.input for p in prices),
+            cached_input=max(p.cached_input for p in prices),
+            output=max(p.output for p in prices),
+        )
+
+    def effort_error(self, effort: str) -> str | None:
+        """Why the main model does not take `effort` (its `efforts`), None when it does."""
+        if self.efforts is None or effort in self.efforts:
+            return None
+        return (
+            f"{effort!r} is not one of the efforts of the model {self.model} "
+            f"({', '.join(self.efforts)}; [models.{self.model}].efforts)"
+        )
+
+    def secrets(self) -> list[str]:
+        """The keys, masked out of the event file whatever variable they came from."""
+        return [self.api_key] + ([] if self.classify is None else [self.classify.api_key])
+
     def tool_env(self) -> dict[str, str]:
-        """The model settings for the tool servers' own model calls (classify_text)."""
+        """The model settings for the tool servers' own model calls (classify_text): the
+        `classify` role's."""
+        model = self.classify or self
         return {
-            "DATA_AGENT_BASE_URL": self.base_url,
-            "DATA_AGENT_API_KEY": self.api_key,
-            "DATA_AGENT_MODEL": self.model,
+            "DATA_AGENT_BASE_URL": model.base_url,
+            "DATA_AGENT_API_KEY": model.api_key,
+            "DATA_AGENT_MODEL": model.model,
         }
 
     def sdk_env(self) -> dict[str, str]:
@@ -1263,22 +1407,24 @@ class ModelSettings:
             "CLAUDE_CODE_OAUTH_TOKEN": "",
             # Every model slot, so background calls do not ask the endpoint for a Claude model.
             "ANTHROPIC_MODEL": self.model,
-            "ANTHROPIC_SMALL_FAST_MODEL": self.model,
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": self.model,
+            "ANTHROPIC_SMALL_FAST_MODEL": self.small or self.model,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": self.small or self.model,
             "ANTHROPIC_DEFAULT_SONNET_MODEL": self.model,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": self.model,
-            "CLAUDE_CODE_SUBAGENT_MODEL": self.model,
+            # The verifiers' model: the variable wins over their definitions' `inherit`.
+            "CLAUDE_CODE_SUBAGENT_MODEL": self.verifier or self.model,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             # Subagents (the verifiers) run in the foreground. Launched in the background, they
             # end the main turn before their reports are in and split the run into several results.
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
             # Ticket 110: the CLI does not know the model; 2.1.301 assumed a 200,000-token
             # window and stopped the session at 177,000, and from 2.1.323 an unknown model's
-            # default is 1M. DeepSeek documents 1M, so the window is set either way. Compaction
-            # runs at this window less 33,000 (367,000). Digits work on every version (2.1.301
-            # refused `400k`; 2.1.304 and later also take the suffix).
-            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
-            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
+            # default is 1M. The main model's `context_window` (DeepSeek documents 1M, the
+            # default) is set either way. Compaction runs at `compact_window` less 33,000
+            # (367,000 by default). Digits work on every version (2.1.301 refused `400k`; 2.1.304
+            # and later also take the suffix).
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(self.context_window),
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(self.compact_window),
             # Blank, so an exported one never turns compaction off: the CLI reads both as true
             # only for "1", "true", "yes" or "on". `build_options` turns it on (`settings`).
             "DISABLE_AUTO_COMPACT": "",
@@ -1572,7 +1718,7 @@ def build_options(
     sandbox: SandboxRun | None = None,
     network: bool = False,
     dbt: DbtRun | None = None,
-    effort: Effort | None = None,
+    effort: str | None = None,
     trace: CliTrace | None = None,
     external_mcp: ExternalServers | None = None,
     charts: bool = False,
@@ -1677,10 +1823,12 @@ def build_options(
     server_env = dict(database_env or {}) | {CHAT_ENV: "" if turn is None else "1"}
     if snapshot is not None:
         server_env[SNAPSHOT_ENV] = str(snapshot)
+    # Like the Postgres URL, through the SDK subprocess's environment: never argv or the MCP
+    # config. The key is the `classify` role's (the one `sdk_env` gives the CLI, by default).
+    # Without a ledger (a model without a price) the tools' calls are not counted (classify).
+    server_env |= settings.tool_env()
     if spend is not None and spend.ledger is not None:
-        # Like the Postgres URL, through the SDK subprocess's environment: never argv or the MCP
-        # config. The key is the one `sdk_env` already gives the CLI.
-        server_env |= settings.tool_env() | {LEDGER_ENV: str(spend.ledger.directory)}
+        server_env |= {LEDGER_ENV: str(spend.ledger.directory)}
     session_env = {} if turn is None else {"CLAUDE_CONFIG_DIR": str(turn.config_dir)}
     effort_env = {} if effort is None else {EFFORT_ENV: effort}
     # The variables the stdio wrapper reads (`external_mcp.launch`); first, so none can override
@@ -1692,7 +1840,9 @@ def build_options(
     trace_env = tracing.cli_env(trace, os.environ)
     return ClaudeAgentOptions(
         model=settings.model,
-        effort=effort,
+        # A value of the main model's `efforts` (checked before the run), which the SDK passes to
+        # the CLI as given; its type names only the values Claude models take.
+        effort=cast(EffortLevel, effort),
         env=external_env | settings.sdk_env() | server_env | session_env | effort_env | trace_env,
         resume=None if turn is None else turn.resume,
         system_prompt=system_prompt(
@@ -1720,10 +1870,10 @@ def build_options(
         settings=json.dumps({"autoCompactEnabled": True}),
         skills=[],
         max_turns=max_turns,
+        # Without a price there is no cap at all (decisions.md Q8): the SDK's own would price
+        # the model at its fallback rates and stop the run at about 1/30 of the budget.
         max_budget_usd=(
-            config.max_budget_usd
-            if spend is None
-            else sdk_budget_usd(config.max_budget_usd, settings.model)
+            None if spend is None else backstop_usd(config.max_budget_usd, spend.price)
         ),
         include_partial_messages=spend is not None,
         stderr=stderr.append,
@@ -1879,14 +2029,18 @@ def message_session(message: Any) -> str | None:
     return None
 
 
-def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
+def result_fields(
+    message: ResultMessage | None, model: str, price: Price | None = None
+) -> dict[str, Any]:
     """Token counts and cost from the SDK's ResultMessage. Uncached input counts the tokens
     written to the cache too, since those are billed as fresh input.
 
     The SDK's own `total_cost_usd` (kept as `sdk_cost_usd`) is priced at Claude rates even for a
-    non-Claude model, so `cost_usd` prices the tokens from PRICES instead. A model missing there
-    (Claude among them, which the SDK prices correctly) falls back to the SDK figure, and
-    `cost_basis` says which one was used. `max_budget_usd` caps `cost_usd` (`Spend`).
+    non-Claude model, so `cost_usd` prices the tokens at `price` (the run's, `Spend.price`), or
+    without one at the model's in PRICES, instead. A model with neither (Claude among them, which
+    the SDK prices correctly) falls back to the SDK figure, and `cost_basis` says which one was
+    used; a run of `run` without a price records its cost as unknown instead (`unknown_cost`).
+    `max_budget_usd` caps `cost_usd` (`Spend`).
     """
     if message is None:
         return {
@@ -1918,7 +2072,7 @@ def result_fields(message: ResultMessage | None, model: str) -> dict[str, Any]:
         cached = int(usage.get("cache_read_input_tokens") or 0)
         output = int(usage.get("output_tokens") or 0)
     sdk_cost = message.total_cost_usd or 0.0
-    price = PRICES.get(model)
+    price = price or PRICES.get(model)
     if price is None:
         cost, basis = sdk_cost, "sdk"
     else:
@@ -2023,8 +2177,14 @@ def minus_restored(message: ResultMessage, restored: SessionCost) -> ResultMessa
 
 def ended_by_sdk(message: ResultMessage | None, model: str, spend: Spend | None) -> dict[str, Any]:
     """The result event of a run the SDK ended: `result_fields`, and what `spend` missed."""
-    fields = result_fields(message, model)
+    fields = result_fields(message, model, None if spend is None else spend.price)
     return fields if spend is None else spend.with_tools(fields | spend.unmetered(fields))
+
+
+def unknown_cost(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The result event of a run whose models have no price (decisions.md Q8): the cost is
+    unknown, whatever figure the SDK gave (still in `sdk_cost_usd`)."""
+    return {**fields, "cost_usd": None, "cost_basis": "unknown"}
 
 
 # How long before the trial deadline the run stops itself (ticket 54): the gateway's statement
@@ -2067,16 +2227,17 @@ def stopped_by_harness(
 ) -> dict[str, Any]:
     """The result event of a run the harness stopped itself; the SDK never sent its own. Spend
     is the price-table cap's count (`Spend.stopped_fields`); without a priced model nothing was
-    counted."""
+    counted, and the cost is unknown."""
     if spend is None:
-        return {
-            **result_fields(None, ""),
-            "subtype": subtype,
-            "terminal_reason": terminal_reason,
-            "cost_basis": "none",
-            "sdk_cost_usd": None,
-            "errors": [f"{error}; the model has no price, so its spend was not counted"],
-        }
+        return unknown_cost(
+            {
+                **result_fields(None, ""),
+                "subtype": subtype,
+                "terminal_reason": terminal_reason,
+                "sdk_cost_usd": None,
+                "errors": [f"{error}; the model has no price, so its spend was not counted"],
+            }
+        )
     return spend.stopped_fields(subtype, terminal_reason, error)
 
 
@@ -2132,10 +2293,11 @@ async def run(
     sandbox: Backend | None = None,
     network: bool = False,
     dbt_target: Target = "task",
-    effort: Effort | None = None,
+    effort: str | None = None,
     trace_tier: TraceTier = "full",
     external_mcp: ExternalServers | None = None,
     charts: bool = False,
+    models: ModelSettings | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself DEADLINE_MARGIN_S before it, closing the SDK session, and records a `result`
@@ -2156,10 +2318,14 @@ async def run(
     `external_mcp` (ticket 116) mounts the user's MCP servers (`build_options`); the `version`
     event names them and their allow lists, and the event log masks the values they expand.
     `charts` (ticket 119) gives the agent display_chart and the charting rule (`build_options`)
-    and, in a query run, `CHARTS_SANDBOX_RULE` in place of SANDBOX_RULE."""
+    and, in a query run, `CHARTS_SANDBOX_RULE` in place of SANDBOX_RULE. `models` (ticket 145)
+    are the run's models, from the effective config (`ModelSettings.from_config`); None, the
+    code defaults' and the environment's (`ModelSettings.from_env`). A run whose models have no
+    price warns at its start (stderr and a `warning` event), passes the SDK no cap and records
+    its cost as unknown."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
-    settings = ModelSettings.from_env(env)
+    settings = ModelSettings.from_env(env) if models is None else models
     langfuse = LangfuseSettings.from_env(env)
     if sandbox == "docker":
         # Looked up on the module, so a test can stand in for the docker CLI (fake_docker.py).
@@ -2198,8 +2364,8 @@ async def run(
     path = events_file(events_dir)
     stderr: list[str] = []
     final: ResultMessage | None = None
-    spend = spend_cap(settings.model, config.max_budget_usd)
-    secrets = known_secrets(env)
+    spend = spend_cap(settings, config.max_budget_usd)
+    secrets = known_secrets(env) + settings.secrets()
     names: list[str] = []
     for variable in task.postgres_envs:
         secrets += url_secrets(env[variable])
@@ -2269,6 +2435,13 @@ async def run(
             data_source=data_source,
             **conversation,
         )
+        for model in settings.unpriced():
+            warning = (
+                f"the model {model} has no price ([models.{model}] input_price, "
+                "cache_read_price, output_price): the run's spend is unknown and has no cap"
+            )
+            print(f"warning: {warning}", file=sys.stderr)
+            log.emit("warning", model=model, warning=warning)
         cli_trace = None
         if export is not None:
             facts = RunFacts(
@@ -2420,6 +2593,8 @@ async def run(
                 )
                 turn_result, restored = final, None
         fields = stopped or ended_by_sdk(turn_result, settings.model, spend)
+        if spend is None:
+            fields = unknown_cost(fields)
         # The run's end, before the export below waits for the relay to drain: readers time the
         # run by it, not by `result`'s own `ts` (web/runs.py, the run view's wall time).
         ended_ts = datetime.now(UTC).isoformat()

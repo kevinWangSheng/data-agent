@@ -153,23 +153,30 @@ MODEL = Table(
         "efforts": Leaf("list[str]"),
     }
 )
-# Today's prices (`agent.PRICES`, `agent.DEFAULT_BASE_URL`; tests/test_config.py keeps them
-# equal) as the code defaults' `[models.*]` (spec Q2).
+# The code defaults' `[models.*]` (spec Q2), which `agent.PRICES` is built from. Prices: ADR-0001
+# Update (official pages, 2026-10-05), upper end of each range so spend is never understated.
+# DeepSeek bills cache writes as plain input. deepseek-v4-pro has no published cache-read price
+# there, so cache reads are charged at its input price. Efforts: the values DeepSeek's Anthropic
+# format takes as `output_config.effort` (`agent.EFFORTS`; tests/test_config.py keeps them equal).
 DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
+DEEPSEEK_EFFORTS = ["low", "high", "max"]
 DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     "deepseek-flash": {
         "base_url": DEFAULT_BASE_URL,
         "input_price": 0.30,
         "cache_read_price": 0.006,
         "output_price": 1.2,
+        "efforts": DEEPSEEK_EFFORTS,
     },
     "deepseek-v4-pro": {
         "base_url": DEFAULT_BASE_URL,
         "input_price": 1.32,
         "cache_read_price": 1.32,
         "output_price": 3.96,
+        "efforts": DEEPSEEK_EFFORTS,
     },
 }
+PRICE_KEYS = ("input_price", "cache_read_price", "output_price")
 SOURCE = Table(
     {
         "kind": Leaf("enum", choices=("duckdb", "postgres")),
@@ -312,7 +319,7 @@ def default_leaves() -> dict[str, Any]:
     walk(SCHEMA, ())
     for name, entry in DEFAULT_MODELS.items():
         for key, value in entry.items():
-            leaves[Key(("models", name, key))] = value
+            leaves[Key(("models", name, key))] = list(value) if isinstance(value, list) else value
     # In schema order: `[models.*]` after `[layers]`.
     return {key: leaves[key] for key in in_section_order(leaves)}
 

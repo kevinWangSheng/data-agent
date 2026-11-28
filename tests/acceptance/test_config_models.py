@@ -51,13 +51,6 @@ from product_config_support import (
     write_file,
 )
 
-TICKET_145 = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="ticket 145: the model settings do not come from the config yet",
-)
-pytestmark = TICKET_145
-
 KEY_ENV = "DATA_AGENT_TEST_MODEL_KEY"
 MODEL_KEY = "mk-" + "Nf27" + "-made-up"
 BASE_URL = "https://llm.example/anthropic"
