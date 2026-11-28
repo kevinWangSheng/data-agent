@@ -1,10 +1,10 @@
 # 145 — 模型：`[models.*]`、`[roles]`、价格可省、上下文窗口、effort 取值、小模型/分类/验证器模型
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 143
 Spec: ../spec.md（"分节（Q2）"的 `[models.<名字>]`、`[roles]`）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-28
+Branch: worktree-145-model-settings
 
 ## Goal
 
@@ -51,6 +51,7 @@ Branch: —
 - [ ] 验收测试没钉的行为有新单元测试：未定价模型的 `classify_text` 能跑（替身模型）且花费记"未知"；`[roles].classify` 的模型真用在分类调用上；`efforts` 校验的报错点名模型和取值；`DATA_AGENT_MODEL` 覆盖 `[roles].main`。
 - [ ] `docs/setup.md` 写了 `[models.*]`、`[roles]` 的每个键、默认值，以及没填价格时的后果。
 - [ ] `make check` 通过。
+- [ ] `[limits].effort` 按 `EFFORTS`（各模型的 `efforts`）校验（144 交回：144 没校验 effort 的取值）。`check_policy` 已拒绝 `policy.disabled_models` 里的 `[roles]` 模型，别重复做。
 
 ## Evidence required
 
@@ -81,3 +82,4 @@ Branch: —
 - 2026-11-27（主会话建票）：审计第 3 节（只适配 DeepSeek 的按模型设置）。
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：没填价格时不传 SDK 的 `max_budget_usd`、开头警告；去掉对应的停止条件。
 - 2026-11-28（主会话）：按 143 交回补 Context：数据服务器里 `DATA_AGENT_MODEL` 覆盖 `roles.main`。
+- 2026-11-28（主会话）：按 144 交回补验收标准：effort 取值校验归本工单。
