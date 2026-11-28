@@ -26,8 +26,6 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
         if (gone) return
         setOptions(o)
         setDataSource((d) => d || (o.data_sources[0] ?? ''))
-        // A server without the network refuses a run asking for it: the box starts as the server is.
-        if (!o.config.network) setNetwork(false)
       })
       .catch((e: unknown) => !gone && setError(`Could not load the form's options: ${errorText(e)}`))
     taskBox.current?.focus()
@@ -44,12 +42,16 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // A server without the network refuses a run asking for it (409): such a server's runs never ask.
+  const allowed = options === null ? null : options.config.network
+  const asked = network && allowed !== false
+
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      onStarted(await live.submit({ task, task_type: taskType, data_source: dataSource, network }))
+      onStarted(await live.submit({ task, task_type: taskType, data_source: dataSource, network: asked }))
     } catch (err: unknown) {
       setError(errorText(err))
     } finally {
@@ -89,17 +91,7 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
         </label>
       </div>
       {options && <ConfigLine config={options.config} />}
-      <label className="flex items-center gap-2 text-[12px] text-ink-2 select-none cursor-pointer">
-        <input
-          type="checkbox"
-          data-testid="new-run-network"
-          checked={network}
-          disabled={options !== null && !options.config.network}
-          onChange={(e) => setNetwork(e.target.checked)}
-        />
-        <span>Network access</span>
-        <span className="text-[11px] text-ink-3">(sandbox network, WebSearch &amp; WebFetch)</span>
-      </label>
+      <NetworkBox allowed={allowed} checked={asked} onChange={setNetwork} />
       {noSources && (
         <div className="text-[11.5px] text-ink-3">
           The server's config has no data source: add a <code className="mono">[sources.&lt;name&gt;]</code> table to it and start{' '}
@@ -124,7 +116,21 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
   )
 }
 
+/** The run's network switch. `allowed` is the server's switch (null until the options load): off,
+ *  the box is off and disabled, and says so. */
+export function NetworkBox({ allowed, checked, onChange }: { allowed: boolean | null; checked: boolean; onChange: (on: boolean) => void }) {
+  const off = allowed === false
+  return (
+    <label className={`flex items-center gap-2 text-[12px] text-ink-2 select-none${off ? '' : ' cursor-pointer'}`}>
+      <input type="checkbox" data-testid="new-run-network" checked={checked && !off} disabled={off} onChange={(e) => onChange(e.target.checked)} />
+      <span>Network access</span>
+      <span className="text-[11px] text-ink-3">{off ? '(off on this server)' : '(sandbox network, WebSearch & WebFetch)'}</span>
+    </label>
+  )
+}
+
 const LAYERS = ['skill', 'verifiers', 'context'] as const
+const TURN_KINDS = ['query', 'dbt', 'large'] as const
 
 /** The server's config every run of the form gets, in one line: its name, the layers on, the model
  *  and the limits it sets. */
@@ -135,6 +141,8 @@ export function configLine(config: ConfigSummary): string {
   if (config.model) parts.push(config.model)
   if (config.effort) parts.push(`effort ${config.effort}`)
   if (config.max_budget_usd !== null) parts.push(`spend cap ${config.max_budget_usd} USD`)
+  const turns = TURN_KINDS.flatMap((kind) => (config.max_turns[kind] === null ? [] : [`${kind} ${config.max_turns[kind]}`]))
+  if (turns.length > 0) parts.push(`max turns ${turns.join(', ')}`)
   if (config.agent_timeout_sec !== null) parts.push(`time limit ${config.agent_timeout_sec} s`)
   return parts.join(' · ')
 }

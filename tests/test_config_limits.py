@@ -555,6 +555,7 @@ def test_a_copy_of_a_sources_file_reuses_its_dictionary(
         shutil.copy(shop, copy)
         copies.append(copy)
     events: list[dict[str, Any]] = []
+    origin = f"duckdb:{shop.resolve()}"
     for copy in copies:
         with agent.prebuilt_dictionary(
             cli.DuckDBGateway(copy),
@@ -562,16 +563,85 @@ def test_a_copy_of_a_sources_file_reuses_its_dictionary(
             lambda kind, **fields: events.append(fields),
             cache=cache,
             source="shop",
+            origin=origin,
         ):
             pass
     assert [event["cached"] for event in events] == [False, True]
     assert len(counted) == 1 and len(list(cache.iterdir())) == 1
     # Another source of the same catalog keeps its own.
     with agent.prebuilt_dictionary(
-        cli.DuckDBGateway(copies[0]), workspace, lambda *_, **__: None, cache=cache, source="crm"
+        cli.DuckDBGateway(copies[0]),
+        workspace,
+        lambda *_, **__: None,
+        cache=cache,
+        source="crm",
+        origin=origin,
     ):
         pass
     assert len(counted) == 2
+
+
+def duckdb_of(path: Path, value: int) -> Path:
+    """A `shop.duckdb` of one table, `items(i)`, holding `value`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(path))
+    try:
+        con.execute(f"CREATE TABLE items AS SELECT {value} AS i")
+    finally:
+        con.close()
+    return path
+
+
+def test_two_projects_sources_of_one_name_keep_their_own_dictionaries(
+    tmp_path: Path, counted: list[int]
+) -> None:
+    """Two configs' `[sources.shop]` of one catalog and other values (two projects): keyed by the
+    name alone, the second project's run would serve the first one's values. Each copy of a
+    project's file (a web dbt run's) still reuses that project's dictionary."""
+    import shutil
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cache = tmp_path / "cache"
+    events: list[dict[str, Any]] = []
+    for project, value in (("a", 1), ("b", 2), ("a", 1), ("b", 2)):
+        original = tmp_path / project / "shop.duckdb"
+        if not original.exists():
+            duckdb_of(original, value)
+        copy = tmp_path / "runs" / f"{len(events)}" / "shop.duckdb"
+        copy.parent.mkdir(parents=True)
+        shutil.copy(original, copy)
+        with agent.prebuilt_dictionary(
+            cli.DuckDBGateway(copy),
+            workspace,
+            lambda kind, **fields: events.append(fields),
+            cache=cache,
+            source="shop",
+            origin=f"duckdb:{original.resolve()}",
+        ) as path:
+            assert str(value) in path.read_text()
+    assert [event["cached"] for event in events] == [False, False, True, True]
+    assert len(counted) == 2 and len(list(cache.iterdir())) == 2
+
+
+def test_a_runs_dictionary_origin_is_its_sources_file_not_the_copy(
+    tmp_path: Path, shop: Path, run_kwargs: list[dict[str, Any]]
+) -> None:
+    """A web dbt run is `--duckdb <copy> --data-source-name shop`: its dictionary is keyed by
+    the file `[sources.shop]` names, so every copy of it shares one, and another config's
+    `shop` at another file keeps its own."""
+    import shutil
+
+    config = write(tmp_path / "config.toml", SHOP_LIMITS)
+    copy = tmp_path / "run" / "db" / "shop.duckdb"
+    copy.parent.mkdir(parents=True)
+    shutil.copy(shop, copy)
+    argv = run_argv(tmp_path, copy, "--config", str(config), "--data-source-name", "shop")
+    assert exit_of(argv) == 0
+    # A bare `--duckdb` file: no origin, keyed by the file itself.
+    assert exit_of(run_argv(tmp_path, copy, "--config", str(config))) == 0
+    origins = [kwargs["dictionary_origins"] for kwargs in run_kwargs]
+    assert origins == [{"shop": f"duckdb:{shop.resolve()}"}, {}]
 
 
 async def test_two_unnamed_files_of_one_name_keep_their_own_dictionaries(
@@ -582,9 +652,9 @@ async def test_two_unnamed_files_of_one_name_keep_their_own_dictionaries(
     seen: list[str | None] = []
     real = agent.cached_dictionary
 
-    def cached(gateway: Any, hidden: Any, cache: Path, source: str | None = None) -> Any:
+    def cached(gateway: Any, hidden: Any, cache: Path, source: Any = None, *rest: Any) -> Any:
         seen.append(source)
-        return real(gateway, hidden, cache, source)
+        return real(gateway, hidden, cache, source, *rest)
 
     monkeypatch.setattr(agent, "cached_dictionary", cached)
     workspace = tmp_path / "workspace"

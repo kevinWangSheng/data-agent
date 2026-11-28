@@ -301,6 +301,22 @@ def run_source_limits(settings: EffectiveConfig, task: Task) -> dict[str, Source
     return limits
 
 
+def dictionary_origins(settings: EffectiveConfig, task: Task) -> dict[str, str]:
+    """The DuckDB file the config names for each of the run's data sources, by name, keying its
+    cached value dictionary (`agent.cached_dictionary`): a web dbt run's per-run copy of the file
+    shares the source's dictionary, and another config's source of the same name at another file
+    keeps its own. Only a named data source has one (a config's, or `--data-source-name`); a bare
+    `--duckdb` file's dictionary is keyed by the file, a Postgres source's by its URL's hash."""
+    if not task.several and task.data_source is None:
+        return {}
+    origins: dict[str, str] = {}
+    for source in task.databases:
+        path = (settings.value(Key(("sources", source.name))) or {}).get("path")
+        if path is not None:
+            origins[source.name] = f"duckdb:{Path(path).resolve()}"
+    return origins
+
+
 def server_dbt(
     parser: argparse.ArgumentParser, args: argparse.Namespace, timeout_seconds: float
 ) -> DbtExecutor | None:
@@ -919,6 +935,7 @@ def run_task(
                 deadline_margin=deadline_margin(limits),
                 source_limits=limits,
                 dictionary_cache=cache,
+                dictionary_origins=dictionary_origins(settings, task),
             )
         )
     except ConfigError as exc:

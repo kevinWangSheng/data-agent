@@ -370,6 +370,7 @@ def prebuilt_dictionary(
     hidden: HiddenSchemas | None = None,
     cache: Path | None = None,
     source: str | None = None,
+    origin: str | None = None,
 ) -> Iterator[Path]:
     """The value dictionary (ticket 42), built before the agent starts and written as JSON
     outside the workspace for the MCP server to read; its coverage is recorded as the
@@ -377,11 +378,14 @@ def prebuilt_dictionary(
     toward the run's time, not the agent's first tool call; a signal during it cancels the
     build and ends the run. `hidden` is the data source's schema choice (`other_runs` when
     None). With `cache` (a product run's, ticket 144; never an evaluation's) a dictionary built
-    before on the same catalog of the same data source (`source`, its name) is reused
-    (`cached_dictionary`), and the event says `cached`."""
+    before on the same catalog of the same data source (`source`, its name, and `origin`, the
+    database the config names for it) is reused (`cached_dictionary`), and the event says
+    `cached`."""
     with run_directory(workspace, "data-agent-dictionary-") as directory:
         hidden = other_runs(None) if hidden is None else hidden
-        cached = None if cache is None else cached_dictionary(gateway, hidden, cache, source)
+        cached = (
+            None if cache is None else cached_dictionary(gateway, hidden, cache, source, origin)
+        )
         dictionary = None if cached is None else cached.load()
         if dictionary is None:
             dictionary = build_interruptible(
@@ -412,6 +416,7 @@ def prebuilt_dictionaries(
     emit: Emit,
     limits: Mapping[str, SourceLimits] | None = None,
     cache: Path | None = None,
+    origins: Mapping[str, str] | None = None,
 ) -> Iterator[dict[str, Path]]:
     """`prebuilt_dictionary` for each of several data sources, in order: the files by name."""
     with ExitStack() as stack:
@@ -425,6 +430,7 @@ def prebuilt_dictionaries(
                     schema_choice(source_limit(limits, source.name)),
                     cache,
                     source.name,
+                    (origins or {}).get(source.name),
                 )
             )
             for source in sources
@@ -479,14 +485,19 @@ class CachedDictionary:
 
 
 def cached_dictionary(
-    gateway: Gateway, hidden: HiddenSchemas, cache: Path, source: str | None = None
+    gateway: Gateway,
+    hidden: HiddenSchemas,
+    cache: Path,
+    source: str | None = None,
+    origin: str | None = None,
 ) -> CachedDictionary | None:
     """The cache entry of the data source's catalog as the agent sees it (its schema choice
-    applied): the data source, the schema choice and every table and column. None when the
-    catalog cannot be read; the build then goes on without the cache. The data source is its
-    name (spec: by data source) and, for Postgres, its URL's hash; a DuckDB source is its name
-    alone, not its file, so a web dbt run's per-run copy of the file reuses the source's
-    dictionary. Without a name, the database's identity (the file, the URL's hash)."""
+    applied): the data source, its database, the schema choice and every table and column. None
+    when the catalog cannot be read; the build then goes on without the cache. The data source
+    is its name (spec: by data source) and its database: `origin`, the database the config names
+    for it (a DuckDB source's file, so a web dbt run's per-run copy reuses the source's
+    dictionary, and two configs' sources of one name at other files keep their own), else the
+    gateway's own identity (the file, the URL's hash)."""
     identity = getattr(gateway, "identity", None)
     if identity is None:
         return None
@@ -497,7 +508,7 @@ def cached_dictionary(
     key = {
         "version": DICTIONARY_CACHE_VERSION,
         "source": source,
-        "database": identity() if source is None or gateway.dialect == "postgres" else None,
+        "database": identity() if origin is None else origin,
         "shown": hidden.shown("schema"),
         "catalog": [
             [table.schema, table.name, table.kind, [list(column) for column in table.columns]]
@@ -2276,6 +2287,7 @@ async def run(
     deadline_margin: float = DEADLINE_MARGIN_S,
     source_limits: Mapping[str, SourceLimits] | None = None,
     dictionary_cache: Path | None = None,
+    dictionary_origins: Mapping[str, str] | None = None,
 ) -> Outcome:
     """`deadline` is the trial's end in `time.monotonic()` seconds (ticket 54), None for none: the
     run stops itself `deadline_margin` (DEADLINE_MARGIN_S unless given) before it, closing the SDK
@@ -2300,7 +2312,8 @@ async def run(
     `source_limits` (ticket 144) are the data sources' limits by name (`Task.data_source_name`
     for one), for the value dictionary built before the run; `dictionary_cache` is the
     directory a product run reuses value dictionaries from (`prebuilt_dictionary`), None (every
-    evaluation) to build each afresh."""
+    evaluation) to build each afresh; `dictionary_origins` are the databases the config names for
+    the data sources, by name, which key their cached dictionaries (`cached_dictionary`)."""
     if task.type == "dbt" and shutil.which("dbt", path=env.get("PATH")) is None:
         raise ConfigError("dbt is not on PATH; dbt tasks run the dbt the environment provides")
     settings = ModelSettings.from_env(env)
@@ -2459,13 +2472,20 @@ async def run(
                 # Only a name given (a config's source): a bare `--duckdb` file's name is no data
                 # source, so its dictionary is keyed by the file.
                 source=task.data_source,
+                origin=(dictionary_origins or {}).get(own.name),
             )
             if config.context and not task.several
             else nullcontext()
         )
         building_each = (
             prebuilt_dictionaries(
-                task.sources, task.workspace, env, log.emit, source_limits, dictionary_cache
+                task.sources,
+                task.workspace,
+                env,
+                log.emit,
+                source_limits,
+                dictionary_cache,
+                dictionary_origins,
             )
             if config.context and task.several
             else nullcontext()
