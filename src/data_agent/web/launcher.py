@@ -33,7 +33,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from data_agent.config import EffectiveConfig, default_config, toml_text
+from data_agent.config import (
+    EffectiveConfig,
+    Key,
+    default_config,
+    parts_of,
+    table_depth,
+    toml_text,
+)
 from data_agent.run_config import CONFIG_NAMES, load_config, skills_path
 from data_agent.sandbox import Backend
 from data_agent.web.runs import RunsDir
@@ -171,8 +178,10 @@ class Launcher:
             key: value for key, value in raw.items() if not key.startswith(("sources.", "im."))
         }
         for name, source in self.sources.items():
-            prefix = f"sources.{name}."
-            leaves |= {key: value for key, value in raw.items() if key.startswith(prefix)}
+            table = Key(("sources", name))
+            leaves |= {
+                key: value for key, value in raw.items() if table_depth(parts_of(key), table)
+            }
             leaves |= source_leaves([source])
         return config_file(run_dir / CONFIG_DIR / f"{self.config.name()}.toml", leaves)
 

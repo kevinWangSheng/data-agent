@@ -602,22 +602,30 @@ class EffectiveConfig:
 
 
 def subtree(leaves: Mapping[str, Any], key: str) -> dict[str, Any] | None:
-    """The leaves under `key` (a dotted table name: `sources.shop`, `mcp.servers`) as nested
-    dicts, None when there are none."""
-    prefix = f"{key}."
+    """The leaves under `key` (a table: `sources.shop`, `mcp.servers`) as nested dicts, None when
+    there are none. Matched by key parts, never a string prefix, so `sources.shop` holds none of
+    `sources."shop.archive"`."""
     found: dict[str, Any] = {}
     for dotted, value in leaves.items():
-        if not dotted.startswith(prefix):
+        depth = table_depth(parts_of(dotted), key)
+        if depth is None:
             continue
-        parts = parts_of(dotted)
-        # The parts the table's name takes (a name may hold a dot).
-        depth = next(n for n in range(1, len(parts)) if ".".join(parts[:n]) == key)
         node = found
-        *parents, last = parts[depth:]
+        *parents, last = parts_of(dotted)[depth:]
         for part in parents:
             node = node.setdefault(part, {})
         node[last] = value
     return found or None
+
+
+def table_depth(parts: Sequence[str], key: str) -> int | None:
+    """How many of a leaf's `parts` the table `key` takes, None when the leaf is not under it. A
+    `Key` matches its own parts; a dotted string, the leading parts that join to it (a name may
+    hold a dot: `sources.a.b` is `[sources."a.b"]`)."""
+    if isinstance(key, Key):
+        depth = len(key.parts)
+        return depth if len(parts) > depth and tuple(parts[:depth]) == key.parts else None
+    return next((n for n in range(1, len(parts)) if ".".join(parts[:n]) == key), None)
 
 
 def config_files(

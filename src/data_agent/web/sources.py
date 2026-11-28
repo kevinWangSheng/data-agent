@@ -56,9 +56,11 @@ SOURCE_KEYS = {"kind", "path", "env", "dbt_project"}
 def config_sources(config: "EffectiveConfig") -> list[DataSource]:
     """The config's `[sources.<name>]` tables, in order (paths already absolute); ValueError naming
     the first problem."""
+    from data_agent.config import Key
+
     sources: list[DataSource] = []
     for name in config.names("sources"):
-        entry = config.value(f"sources.{name}") or {}
+        entry = config.value(Key(("sources", name))) or {}
         known = {key: str(value) for key, value in entry.items() if key in SOURCE_KEYS}
         sources.append(parse_source(name, known, Path("/")))
     return sources

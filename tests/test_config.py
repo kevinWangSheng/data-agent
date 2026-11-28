@@ -178,6 +178,41 @@ def test_a_name_with_a_dot_survives_the_text(tmp_path: Path) -> None:
     assert again.text == first.text
 
 
+def test_a_name_that_starts_another_names_table_stays_apart(tmp_path: Path) -> None:
+    """Ticket 143 return round 1: a table is found by its key parts, not a string prefix, so
+    `sources.shop` holds none of `sources."shop.archive"` (it raised StopIteration), and each
+    named section (`[sources.*]`, `[mcp.servers.*]`, `[models.*]`) gives each entry its own."""
+    path = write(
+        tmp_path / "c.toml",
+        '[sources.shop]\nkind = "duckdb"\npath = "shop.duckdb"\n\n'
+        '[sources."shop.archive"]\nkind = "duckdb"\npath = "old.duckdb"\n\n'
+        '[mcp.servers.gh]\nurl = "https://a.example/mcp"\n\n'
+        '[mcp.servers."gh.mirror"]\nurl = "https://b.example/mcp"\n\n'
+        '[models.gpt]\nbase_url = "https://a.example"\n\n'
+        '[models."gpt.4"]\nbase_url = "https://b.example"\n',
+    )
+    loaded = load(path)
+
+    assert loaded.names("sources") == ["shop", "shop.archive"]
+    assert loaded.value("sources.shop") == {"kind": "duckdb", "path": tmp_path / "shop.duckdb"}
+    assert loaded.value("sources.shop.archive") == {
+        "kind": "duckdb",
+        "path": tmp_path / "old.duckdb",
+    }
+    assert loaded.value(config.Key(("sources", "shop"))) == loaded.value("sources.shop")
+    assert set(loaded.raw_value("sources.shop") or {}) == {"kind", "path"}
+    servers = loaded.value("mcp.servers")
+    assert servers is not None
+    assert servers["gh"]["url"] == "https://a.example/mcp"
+    assert servers["gh.mirror"]["url"] == "https://b.example/mcp"
+    assert (loaded.value("mcp.servers.gh") or {})["url"] == "https://a.example/mcp"
+    assert "mirror" not in (loaded.value("mcp.servers.gh") or {})
+    assert loaded.value("models.gpt.base_url") == "https://a.example"
+    assert loaded.value("models.gpt.4.base_url") == "https://b.example"
+    assert (loaded.value("models.gpt") or {}).get("base_url") == "https://a.example"
+    assert "4" not in (loaded.value("models.gpt") or {})
+
+
 def test_a_missing_explicit_file_is_refused(tmp_path: Path) -> None:
     missing = tmp_path / "missing.toml"
     error = error_of(missing)
@@ -369,6 +404,29 @@ def test_create_app_without_a_config_reads_no_file(
     given = load(Path(path))
     assert given.value("layers.skill") is True
     assert dict(given.values) == dict(config.default_config().values)
+
+
+def test_a_runs_config_file_keeps_another_sources_keys_out(tmp_path: Path) -> None:
+    """Ticket 143 return round 1: the run's file takes `sources.shop`'s own keys by their parts,
+    not every key starting `sources.shop.`, so `sources."shop.archive"` (not the run's) stays
+    out."""
+    for name in ("shop", "old"):
+        (tmp_path / f"{name}.duckdb").write_bytes(b"")
+    server = write(
+        tmp_path / "server.toml",
+        '[sources.shop]\nkind = "duckdb"\npath = "shop.duckdb"\ndescription = "Shop orders"\n\n'
+        '[sources."shop.archive"]\nkind = "duckdb"\npath = "old.duckdb"\n'
+        'description = "Old orders"\n',
+    )
+    sources = [DataSource("shop", duckdb=tmp_path / "shop.duckdb")]
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    [_, path] = launcher(tmp_path, load(server), sources).config_args(run_dir)
+    given = load(Path(path))
+
+    assert given.names("sources") == ["shop"]
+    assert given.value("sources.shop.description") == "Shop orders"
+    assert "Old orders" not in Path(path).read_text()
 
 
 def test_a_runs_config_file_has_the_servers_sources_and_no_im(
