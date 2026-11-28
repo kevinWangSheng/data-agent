@@ -453,13 +453,6 @@ def backstop_usd(budget: float, price: Price) -> float | None:
     return budget * max(sdk_rate / rate for sdk_rate, rate in rates)
 
 
-def sdk_budget_usd(budget: float, model: str) -> float | None:
-    """`backstop_usd` at a code-default model's price (`PRICES`); a model without one keeps the
-    SDK's cap at `budget` (the evaluation entries' callers)."""
-    price = PRICES.get(model)
-    return budget if price is None else backstop_usd(budget, price)
-
-
 class Tokens(NamedTuple):
     """Tokens of one model call, or of several summed."""
 
@@ -1343,11 +1336,28 @@ class ModelSettings:
             api_key = str(table.get("api_key") or env.get("DATA_AGENT_API_KEY") or "")
             return str(table.get("base_url") or DEFAULT_BASE_URL), api_key
 
+        # The CLI sends every call to one endpoint with one key: a `small` or `verifier` model
+        # whose table gives another would be sent to main's, so it is refused, not ignored.
+        base_url, api_key = endpoint(main)
+        for role in ("small", "verifier"):
+            name = roles[role]
+            given = tables[name]
+            if name != main and (
+                given.get("base_url") not in (None, base_url)
+                or given.get("api_key") not in (None, api_key)
+            ):
+                raise ConfigError(
+                    f"[roles].{role} = {name!r}: [models.{name}] gives a base_url or api_key "
+                    f"other than the main model's ({main}); the Claude Code CLI sends every "
+                    "call to the main model's endpoint with its key, so give it the same ones "
+                    "or leave them out"
+                )
         table = tables[main]
         efforts = table.get("efforts")
         classify = roles["classify"]
         settings = cls(
-            *endpoint(main),
+            base_url,
+            api_key,
             main,
             small="" if roles["small"] == main else roles["small"],
             verifier="" if roles["verifier"] == main else roles["verifier"],
@@ -1376,9 +1386,13 @@ class ModelSettings:
         names.append(self.model if self.classify is None else self.classify.model)
         return list(dict.fromkeys(name for name in names if name))
 
+    def model_prices(self) -> Mapping[str, Price | None]:
+        """Each model's price: `prices`, or `PRICES` for settings built without them."""
+        return PRICES if self.prices is None else self.prices
+
     def unpriced(self) -> list[str]:
         """The run's models without a price."""
-        prices = PRICES if self.prices is None else self.prices
+        prices = self.model_prices()
         return [name for name in self.models() if prices.get(name) is None]
 
     def price(self) -> Price | None:
@@ -1387,7 +1401,7 @@ class ModelSettings:
         is never understated. None when any of them has no price: the spend is unknown."""
         if self.unpriced():
             return None
-        table = PRICES if self.prices is None else self.prices
+        table = self.model_prices()
         prices = [price for name in self.models() if (price := table.get(name)) is not None]
         return Price(
             input=max(p.input for p in prices),
@@ -1757,7 +1771,7 @@ def build_options(
     """`emit` records events from hooks (the verifiers' start and end). `guarded` collects the
     ids of the calls the workspace guard denies (`guard_recorder`). With `spend` (the
     price-table cap, which the caller enforces with `capped`), the SDK streams what it needs and
-    its own cap becomes the backstop (`sdk_budget_usd`). `database_env` holds the Postgres
+    its own cap becomes the backstop (`backstop_usd`). `database_env` holds the Postgres
     variable: it reaches the MCP server through the SDK subprocess's environment. `task_file`
     (`saved_task`, verifier runs only) is named in the verifiers' prompts and may be Read.
     `dictionary` (`prebuilt_dictionary`, context runs only) is the value dictionary file the

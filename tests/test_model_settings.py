@@ -202,3 +202,23 @@ def test_a_price_that_is_negative_or_not_finite_is_refused(tmp_path: Path, value
     with pytest.raises(ConfigError) as caught:
         settings(tmp_path, text)
     assert "[models.acme].input_price" in str(caught.value)
+
+
+@pytest.mark.parametrize("role", ["small", "verifier"])
+def test_a_small_or_verifier_model_with_another_endpoint_is_refused(
+    tmp_path: Path, role: str
+) -> None:
+    """The CLI would send its calls to the main model's endpoint: refused, not ignored."""
+    other = model("acme-other", PRICED, "https://elsewhere.example/a")
+    text = (
+        model("acme-large", PRICED)
+        + other
+        + f'[roles]\nmain = "acme-large"\n{role} = "acme-other"\n'
+    )
+    with pytest.raises(ConfigError) as caught:
+        settings(tmp_path, text)
+    assert f"[roles].{role}" in str(caught.value) and "acme-other" in str(caught.value)
+    # The same endpoint and key, or none given: the model name alone.
+    same = model("acme-large", PRICED) + model("acme-other", PRICED)
+    same += f'[roles]\nmain = "acme-large"\n{role} = "acme-other"\n'
+    assert getattr(settings(tmp_path, same), role) == "acme-other"

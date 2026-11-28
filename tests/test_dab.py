@@ -968,7 +968,7 @@ async def test_the_agent_gets_the_task_and_dab_tools_but_no_answer(
     assert args[args.index("--workspace") + 1] == str(workspace)
     assert options.max_turns == 50
     # The price-table cap holds the configured $1; the SDK gets its backstop.
-    assert options.max_budget_usd == agent.sdk_budget_usd(1.0, agent.DEFAULT_MODEL)
+    assert options.max_budget_usd == agent.backstop_usd(1.0, agent.PRICES[agent.DEFAULT_MODEL])
 
 
 async def test_the_prompt_states_the_turn_limit_in_force(
@@ -1812,7 +1812,7 @@ async def test_dab_runs_have_the_same_price_table_cap(
     assert events[-1]["cost_usd"] == pytest.approx(1.20)
     submission = json.loads((out / "submission.json").read_text())
     assert submission == [{"dataset": "toyset", "query": "1", "run": "0", "answer": ""}]
-    assert seen[0].max_budget_usd == agent.sdk_budget_usd(1.0, agent.DEFAULT_MODEL)
+    assert seen[0].max_budget_usd == agent.backstop_usd(1.0, agent.PRICES[agent.DEFAULT_MODEL])
     assert seen[0].include_partial_messages
     assert "SubagentStop" in seen[0].hooks
 
