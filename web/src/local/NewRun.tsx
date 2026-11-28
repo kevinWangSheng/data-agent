@@ -44,7 +44,7 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
 
   // A server without the network refuses a run asking for it (409): such a server's runs never ask.
   const allowed = options === null ? null : options.config.network
-  const asked = network && allowed !== false
+  const asked = askedNetwork(network, allowed)
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -114,6 +114,12 @@ export function NewRun({ live, onStarted, onClose }: { live: LiveSource; onStart
       </div>
     </form>
   )
+}
+
+/** Whether a run from the form asks for the network: as the box is, never on a server whose switch
+ *  is off (`allowed` false), which refuses such a run (409). */
+export function askedNetwork(box: boolean, allowed: boolean | null): boolean {
+  return box && allowed !== false
 }
 
 /** The run's network switch. `allowed` is the server's switch (null until the options load): off,

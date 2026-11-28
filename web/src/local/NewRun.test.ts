@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, test } from 'vitest'
 
 import type { ConfigSummary, LiveSource } from '../data/source'
-import { configLine, NetworkBox, NewRun } from './NewRun'
+import { askedNetwork, configLine, NetworkBox, NewRun } from './NewRun'
 
 const DEFAULT: ConfigSummary = {
   name: 'default',
@@ -63,6 +63,13 @@ describe('the network box follows the server switch', () => {
     expect(box(true, false)).not.toMatch(/<input[^>]*checked/)
     expect(box(true, true)).not.toContain('off on this server')
     expect(box(true, true)).toContain('cursor-pointer')
+  })
+
+  test('a run never asks a server with the network off for it; else it asks as the box is', () => {
+    expect(askedNetwork(true, false)).toBe(false)
+    expect(askedNetwork(true, true)).toBe(true)
+    expect(askedNetwork(false, true)).toBe(false)
+    expect(askedNetwork(true, null)).toBe(true)
   })
 
   test('before the options load, the box is not yet disabled', () => {
