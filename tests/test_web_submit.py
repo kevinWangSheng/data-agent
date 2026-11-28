@@ -50,7 +50,7 @@ def recorder() -> Iterator[Recorder]:
 
 
 def body(**overrides: Any) -> dict[str, Any]:
-    return {"task": "t", "task_type": "query", "data_source": "shop", "config": "full", **overrides}
+    return {"task": "t", "task_type": "query", "data_source": "shop", **overrides}
 
 
 def flag(args: list[str], name: str) -> str:
@@ -92,12 +92,31 @@ def test_without_data_sources_a_submit_is_refused_and_starts_nothing(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("name", ["full", "baseline"])
+def test_a_submit_naming_a_config_is_refused_and_starts_nothing(
+    tmp_path: Path, recorder: Recorder, name: str
+) -> None:
+    """The form picks no config (ticket 144): a body still naming one, even `full`, is refused
+    (422), never run with the server's config in its place."""
+    shop = tmp_path / "shop.duckdb"
+    shop.write_bytes(b"")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    with TestClient(
+        create_app(runs_dir, [DataSource(name="shop", duckdb=shop)], recorder)
+    ) as client:
+        response = client.post("/api/runs", json=body(config=name))
+    assert response.status_code == 422
+    assert "config" in response.text
+    assert recorder.calls == []
+    assert list(runs_dir.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     ("overrides", "detail"),
     [
         ({"task_type": "dbt"}, "dbt_project"),
         ({"task_type": "sql"}, "task type"),
-        ({"config": "fastest"}, "config"),
         ({"task": "  "}, "empty"),
         ({"data_source": "pg"}, PG_ENV),
     ],

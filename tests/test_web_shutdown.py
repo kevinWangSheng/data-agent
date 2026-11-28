@@ -192,7 +192,7 @@ def post(port: int, path: str, body: object, status: int) -> dict[str, str]:
 
 
 def submit(port: int) -> str:
-    body = {"task": "t", "task_type": "query", "data_source": "shop", "config": "full"}
+    body = {"task": "t", "task_type": "query", "data_source": "shop"}
     return post(port, "/api/runs", body, 201)["id"]
 
 

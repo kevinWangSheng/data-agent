@@ -44,7 +44,7 @@ def started_runs(tmp_path: Path) -> list[list[str]]:
         return subprocess.Popen([sys.executable, "-c", "pass"], cwd=cwd, stdin=subprocess.PIPE)
 
     with TestClient(create_app(runs_dir, [DataSource(name="shop", duckdb=shop)], start_run)) as c:
-        body = {"task": "How many?", "task_type": "query", "data_source": "shop", "config": "full"}
+        body = {"task": "How many?", "task_type": "query", "data_source": "shop"}
         assert c.post("/api/runs", json=body).status_code == 201
         conversation_id = c.post("/api/conversations", json={}).json()["id"]
         # One run at a time: the turn is refused until the form run's process is seen gone.

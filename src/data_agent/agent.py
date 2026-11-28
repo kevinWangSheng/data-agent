@@ -2428,10 +2428,12 @@ async def run(
         )
         tools: dict[str, str] = {}
         guarded: set[str] = set()
-        own_limits = source_limit(source_limits, task.data_source_name)
+        # The one database's (`Task.databases`); a run of several builds each one's below.
+        own = task.databases[0]
+        own_limits = source_limit(source_limits, own.name)
         building = (
             prebuilt_dictionary(
-                source_gateway(task.databases[0], env, own_limits),
+                source_gateway(own, env, own_limits),
                 task.workspace,
                 log.emit,
                 hidden=schema_choice(own_limits),

@@ -69,7 +69,7 @@ def default(tmp_path: Path) -> Iterator[Server]:
 
 
 def submission(**overrides: Any) -> dict[str, Any]:
-    return {"task": "t", "task_type": "query", "data_source": "shop", "config": "full", **overrides}
+    return {"task": "t", "task_type": "query", "data_source": "shop", **overrides}
 
 
 def cancel_run(server: Server, run_id: str) -> None:
