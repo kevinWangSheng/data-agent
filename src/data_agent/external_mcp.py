@@ -1,7 +1,9 @@
-"""External MCP servers from the user's config file (`--mcp-servers`, .scratch/mcp/spec.md,
-ticket 116).
+"""External MCP servers from the user's config (.scratch/mcp/spec.md, ticket 116): the config's
+`[mcp]` (data_agent.config, ticket 143) names them inline (`[mcp.servers.<name>]`) or as a file
+(`[mcp].file`).
 
-The file is a Claude Code / Cursor `mcpServers` JSON plus an `allowedTools` list per server.
+The file is a Claude Code / Cursor `mcpServers` JSON plus an `allowedTools` list per server;
+inline servers are written to such a file for the run (`data-agent run`).
 `load` reads and checks it before a session starts and gives what the session needs: the SDK's
 server configs (`sdk_servers`), the allow-list entries (`allowed_tools`), the variables the stdio
 wrapper reads (`env`), the `version` event's record (`summary`) and the values the event log
@@ -189,7 +191,16 @@ def launch_args(path: Path, name: str) -> list[str]:
 def load(path: Path, env: Mapping[str, str]) -> ExternalServers:
     """Reads and checks the file, expanding `${VAR}` from `env`. McpConfigError on any error."""
     path = path.absolute()
-    raw = read_servers(path)
+    return load_servers(read_servers(path), path, env)
+
+
+def load_servers(raw: Mapping[str, Any], path: Path, env: Mapping[str, str]) -> ExternalServers:
+    """As `load`, for servers already read: a config's `[mcp.servers]` (as written, `${VAR}` not
+    expanded; data_agent.config), `path` the `mcpServers` JSON file the stdio wrapper reads them
+    from."""
+    for name, spec in raw.items():
+        if not isinstance(spec, dict):
+            raise McpConfigError(f"MCP server '{name}' is not a table")
     servers: list[ExternalServer] = []
     warnings: list[str] = []
     for name, spec in raw.items():

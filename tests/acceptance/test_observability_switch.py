@@ -57,10 +57,6 @@ from data_agent.agent import ConversationTurn, Outcome, Task
 from data_agent.events import known_secrets
 from data_agent.tracing import CliTrace, LangfuseSettings, TraceTier
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
-
 MODEL_KEY = "sk-test-model-key"
 VALUES: dict[str, str] = dict(
     zip(LANGFUSE_ENV, (PUBLIC_KEY, SECRET_KEY, "https://langfuse.example"), strict=True)
@@ -129,7 +125,6 @@ def test_the_export_is_off_unless_all_three_variables_are_set(
     assert tracing.LangfuseSettings.from_env(env) is None
 
 
-@TICKET_143
 @pytest.mark.parametrize("present", INCOMPLETE, ids=INCOMPLETE_IDS)
 async def test_with_the_export_off_a_run_builds_nothing_and_sends_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, present: tuple[str, ...]
@@ -215,7 +210,6 @@ def assert_exports_to_the_relay(env: dict[str, str]) -> None:
             assert "Authorization" not in value, name
 
 
-@TICKET_143
 @pytest.mark.usefixtures("shell")
 def test_the_dev_tier_exports_to_the_relay_with_the_content_switches_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -228,7 +222,6 @@ def test_the_dev_tier_exports_to_the_relay_with_the_content_switches_on(
         )
 
 
-@TICKET_143
 @pytest.mark.usefixtures("shell")
 def test_the_held_out_tier_exports_to_the_relay_with_no_content_switch_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -273,7 +266,6 @@ def run_argv(tmp_path: Path, *flags: str) -> list[str]:
     ]
 
 
-@TICKET_143
 @pytest.mark.parametrize(
     ("flags", "tier"), [((), "full"), (("--trace-tier", "structure"), "structure")]
 )
@@ -365,7 +357,6 @@ def assert_usage_and_cost(attributes: Any, result: dict[str, Any]) -> None:
     assert cost["total"] == pytest.approx(result["cost_usd"])
 
 
-@TICKET_143
 async def test_the_run_has_one_parent_span_named_tagged_and_priced_from_its_events(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
@@ -385,7 +376,6 @@ async def test_the_run_has_one_parent_span_named_tagged_and_priced_from_its_even
     assert traced.settings == [langfuse.settings()]
 
 
-@TICKET_143
 async def test_the_trace_event_names_the_parent_spans_trace_and_the_relays_counts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
@@ -412,7 +402,6 @@ async def test_the_trace_event_names_the_parent_spans_trace_and_the_relays_count
     assert outcome.finished
 
 
-@TICKET_143
 async def test_each_relay_error_is_one_trace_export_error_event_and_the_run_goes_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
@@ -430,7 +419,6 @@ async def test_each_relay_error_is_one_trace_export_error_event_and_the_run_goes
     assert outcome.finished
 
 
-@TICKET_143
 async def test_a_conversations_turns_share_its_session_in_two_traces(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
@@ -448,7 +436,6 @@ async def test_a_conversations_turns_share_its_session_in_two_traces(
     assert trace_ids[0] != trace_ids[1]
 
 
-@TICKET_143
 async def test_each_single_run_is_a_session_of_its_own(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:
@@ -461,7 +448,6 @@ async def test_each_single_run_is_a_session_of_its_own(
     assert all(ids) and ids[0] != ids[1]
 
 
-@TICKET_143
 async def test_the_held_out_tiers_parent_span_names_no_run_task_or_conversation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, langfuse: FakeLangfuse
 ) -> None:

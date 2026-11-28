@@ -1,11 +1,18 @@
-"""The data-source file `data-agent web --data-sources FILE` reads (ticket 78, spec
-"本地运行的数据源"): each rule the server checks at startup."""
+"""The data sources of the config's `[sources.<name>]` tables (ticket 78, spec "本地运行的数据源";
+ticket 143 moved them from the `--data-sources` file into the config): each rule the server
+checks at startup."""
 
 from pathlib import Path
 
 import pytest
 
-from data_agent.web.sources import DataSource, load_data_sources
+from data_agent.config import load_effective_config
+from data_agent.web.sources import DataSource, config_sources
+
+
+def load_data_sources(path: Path) -> list[DataSource]:
+    """The sources of a config file, as `data-agent web --config` reads them."""
+    return config_sources(load_effective_config([path], {}, {}))
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -68,9 +75,9 @@ def test_a_connection_string_in_place_of_the_variable_name_is_refused_without_ec
     assert "s3cret" not in str(error.value)
 
 
-def test_a_file_without_sources_or_with_other_tables_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="sources"):
-        load_data_sources(write(tmp_path, ""))
+def test_a_file_without_sources_has_none_and_other_tables_are_refused(tmp_path: Path) -> None:
+    # A config needs no source (ticket 143): the web server then offers none.
+    assert load_data_sources(write(tmp_path, "")) == []
     with pytest.raises(ValueError, match="other"):
         load_data_sources(
             write(tmp_path, '[other]\nx = 1\n[sources.s]\nkind = "duckdb"\npath = "a"\n')

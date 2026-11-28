@@ -106,9 +106,6 @@ from data_agent.workspace_guard import outside_paths
 # config's layer file (tests/acceptance/product_config_support.py `run_config_of`), and the six
 # names written out. Those tests are `TICKET_143` until ticket 143 reads config files, or
 # `TICKET_146` when they take `full-old-skill`, whose layer file ticket 146 adds.
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
 TICKET_146 = pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
@@ -643,7 +640,6 @@ async def call_hooks(
     return merged
 
 
-@TICKET_143
 async def test_stop_lets_the_run_end_after_two_blocks_and_records_it(
     two_models: tuple[Path, Path], tmp_path: Path
 ) -> None:
@@ -793,7 +789,6 @@ def visible_text(messages: Sequence[Any]) -> str:
     return "\n".join(parts)
 
 
-@TICKET_143
 @pytest.mark.integration
 async def test_updated_input_replaces_the_prompt_end_to_end(
     edited: tuple[Path, Path], tmp_path: Path

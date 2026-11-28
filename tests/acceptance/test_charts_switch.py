@@ -44,9 +44,6 @@ from evals.harbor_agent import DataAgent
 
 __all__ = ["captured"]
 
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
 
 CHART_TOOL = "display_chart"
 
@@ -108,7 +105,6 @@ def query_run(tmp_path: Path, seen: list[Captured], *flags: str) -> Captured:
 # --- guards: no switch, no charts --------------------------------------------------------------
 
 
-@TICKET_143
 def test_a_run_without_the_switch_has_no_chart_tool_and_no_rule(
     tmp_path: Path, captured: list[Captured]
 ) -> None:
@@ -142,7 +138,6 @@ def test_the_dab_session_has_no_chart_tool_and_no_rule(
     assert not has_charts(dab_query(tmp_path, captured, monkeypatch))
 
 
-@TICKET_143
 async def test_a_server_without_the_switch_or_a_sandbox_adds_no_id_line(tmp_path: Path) -> None:
     import duckdb  # pyright: ignore[reportMissingImports]
     from mcp import ClientSession, StdioServerParameters  # pyright: ignore[reportMissingImports]
@@ -168,7 +163,6 @@ async def test_a_server_without_the_switch_or_a_sandbox_adds_no_id_line(tmp_path
 # --- the switch on (ticket 119) ----------------------------------------------------------------
 
 
-@TICKET_143
 def test_a_run_with_the_switch_has_the_chart_tool_and_the_rule(
     tmp_path: Path, captured: list[Captured]
 ) -> None:

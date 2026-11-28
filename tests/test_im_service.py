@@ -4,6 +4,7 @@ tests/acceptance/test_im_config.py: the missing extra, a bad file (exit code 2, 
 stderr), no platform library without `--im`, and the bot's start and
 stop around the app's. A platform in memory; no Slack."""
 
+import re
 import subprocess
 import sys
 import time
@@ -48,15 +49,18 @@ def tokens(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def web(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str | None) -> None:
-    """`data-agent web`, with `--im` when `toml` is given, up to `uvicorn.run`."""
+    """`data-agent web`, with a config of `toml`'s platform tables (`[slack]` -> `[im.slack]`)
+    when it is given, up to `uvicorn.run`; HOME is an empty directory."""
     monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DATA_AGENT_CONFIG", raising=False)
     runs = tmp_path / "runs"
     runs.mkdir(exist_ok=True)
     extra: list[str] = []
     if toml is not None:
-        path = tmp_path / "im.toml"
-        path.write_text(toml, encoding="utf-8")
-        extra = ["--im", str(path)]
+        path = tmp_path / "config.toml"
+        path.write_text(re.sub(r"^\[(\w+)\]", r"[im.\1]", toml, flags=re.M), encoding="utf-8")
+        extra = ["--config", str(path)]
     cli.main(["web", "--runs-dir", str(runs), *extra])
 
 

@@ -46,9 +46,6 @@ from product_config_support import layer_config
 from seam_support import DATA_AGENT, FIXTURES
 
 pytestmark = pytest.mark.integration
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
 
 # Each scenario three times; all three must pass.
 THREE_TIMES = pytest.mark.parametrize("attempt", [1, 2, 3])
@@ -331,7 +328,6 @@ def choose(options: list[str]) -> tuple[str, Decimal]:
 # --- a: follow-up --------------------------------------------------------------------------
 
 
-@TICKET_143
 @THREE_TIMES
 def test_a_follow_up_resumes_the_session(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -354,7 +350,6 @@ def test_a_follow_up_resumes_the_session(server: Server, attempt: int) -> None:
 # --- b: clarification ----------------------------------------------------------------------
 
 
-@TICKET_143
 @THREE_TIMES
 def test_b_an_ambiguous_question_is_clarified_and_answered_as_chosen(
     server: Server, attempt: int
@@ -379,7 +374,6 @@ def test_b_an_ambiguous_question_is_clarified_and_answered_as_chosen(
     assert turn_2["message"] == option and turn_1["message"] == REVENUE_QUESTION
 
 
-@TICKET_143
 @THREE_TIMES
 def test_b_a_plain_question_is_answered_without_clarification(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -391,7 +385,6 @@ def test_b_a_plain_question_is_answered_without_clarification(server: Server, at
 # --- c: steering ---------------------------------------------------------------------------
 
 
-@TICKET_143
 @THREE_TIMES
 def test_c_a_message_sent_while_the_agent_works_is_followed(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -419,7 +412,6 @@ def test_c_a_message_sent_while_the_agent_works_is_followed(server: Server, atte
 # --- d: cancel, then go on -----------------------------------------------------------------
 
 
-@TICKET_143
 @THREE_TIMES
 def test_d_after_a_cancelled_turn_the_next_one_is_answered(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -437,7 +429,6 @@ def test_d_after_a_cancelled_turn_the_next_one_is_answered(server: Server, attem
 # --- f: the evaluation path ----------------------------------------------------------------
 
 
-@TICKET_143
 @THREE_TIMES
 def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
     tmp_path: Path, attempt: int
@@ -473,7 +464,6 @@ def test_f_a_single_run_answers_an_ambiguous_question_with_its_assumption(
 # --- g: the agent picks the database, and uses both when it must ----------------------------
 
 
-@TICKET_143
 @THREE_TIMES
 def test_g_a_question_across_both_databases_queries_each(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)
@@ -484,7 +474,6 @@ def test_g_a_question_across_both_databases_queries_each(server: Server, attempt
     assert set(queried) <= {"orders", "customers"}, queried
 
 
-@TICKET_143
 @THREE_TIMES
 def test_g_a_question_on_one_database_queries_only_it(server: Server, attempt: int) -> None:
     conversation = new_conversation(server)

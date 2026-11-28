@@ -98,7 +98,7 @@ async def listed_tools(options: ClaudeAgentOptions) -> dict[str, dict[str, Any]]
     return {tool.name: tool.input_schema for tool in tools}
 
 
-# --- what the agent is given ---------------------------------------------------------------
+# --- what the agent is given ----------------------------------------------------------------------
 
 
 async def test_the_server_the_run_starts_serves_every_source(
@@ -150,7 +150,7 @@ async def test_no_connection_string_reaches_the_arguments_the_prompts_or_the_eve
     assert PG_ENV in given
 
 
-# --- what the event file records ------------------------------------------------------------
+# --- what the event file records ------------------------------------------------------------------
 
 
 async def test_each_query_event_names_its_database(
@@ -214,7 +214,7 @@ async def test_the_dictionary_of_each_source_is_built_and_served(
 async def test_a_conversation_turn_runs_on_every_source(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, two_duckdb: Task
 ) -> None:
-    """`--chat` with `--data-sources` (ticket 88 contract item 5): the turn resumes its session
+    """`--chat` with several sources (ticket 88 contract item 5): the turn resumes its session
     and names itself in the `task` event, and the agent still picks the database."""
     conversation = tmp_path / "c1"
     conversation.mkdir()
@@ -229,7 +229,7 @@ async def test_a_conversation_turn_runs_on_every_source(
     assert [e["database"] for e in events if e["type"] == "sql"] == ["customers"]
 
 
-# --- `data-agent run --data-sources` --------------------------------------------------------
+# --- `data-agent run --config` with `[sources.*]` -------------------------------------------------
 
 
 def sources_file(tmp_path: Path, *names: str) -> Path:
@@ -264,7 +264,7 @@ def cli_run(
     with pytest.raises(SystemExit) as exited:
         cli.main(
             [
-                *("run", "--task", "q", "--workspace", str(tmp_path), "--config", "full"),
+                *("run", "--task", "q", "--workspace", str(tmp_path)),
                 *("--events-dir", str(tmp_path / "events"), *args),
             ]
         )
@@ -281,7 +281,7 @@ def test_a_file_with_several_sources_gives_the_run_all_of_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = sources_file(tmp_path, "orders", "customers")
-    task = cli_task(tmp_path, monkeypatch, "--type", "query", "--data-sources", str(path))
+    task = cli_task(tmp_path, monkeypatch, "--type", "query", "--config", str(path))
     assert [s.name for s in task.databases] == ["orders", "customers"]
     assert task.several
 
@@ -290,7 +290,7 @@ def test_a_file_with_one_source_runs_as_that_database_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = sources_file(tmp_path, "orders")
-    task = cli_task(tmp_path, monkeypatch, "--type", "query", "--data-sources", str(path))
+    task = cli_task(tmp_path, monkeypatch, "--type", "query", "--config", str(path))
     assert not task.several
     assert (task.duckdb, task.data_source_name) == ((tmp_path / "orders.duckdb"), "orders")
     assert task.database_args() == ("--duckdb", str((tmp_path / "orders.duckdb").resolve()))
@@ -306,7 +306,7 @@ def test_a_conversation_turn_takes_a_file_of_several_sources(
     code, [task] = cli_run(
         tmp_path,
         monkeypatch,
-        *("--type", "query", "--data-sources", str(path), "--chat"),
+        *("--type", "query", "--config", str(path), "--chat"),
         *("--conversation-dir", str(conversation), "--turn", "2", "--resume", "sid-1"),
         turns=turns,
     )
@@ -330,7 +330,7 @@ def test_a_file_with_several_sources_is_refused_where_one_is_needed(
     message: str,
 ) -> None:
     path = sources_file(tmp_path, "orders", "customers")
-    code, seen = cli_run(tmp_path, monkeypatch, *args, "--data-sources", str(path))
+    code, seen = cli_run(tmp_path, monkeypatch, *args, "--config", str(path))
     assert (code, seen) == (2, [])
     assert message in capsys.readouterr().err
 
@@ -352,6 +352,6 @@ def test_each_source_of_the_file_must_be_there(
     path = sources_file(tmp_path, "orders")
     path.write_text(path.read_text() + "[sources.other]\n" + entry)
     monkeypatch.delenv(PG_ENV, raising=False)
-    code, seen = cli_run(tmp_path, monkeypatch, "--type", "query", "--data-sources", str(path))
+    code, seen = cli_run(tmp_path, monkeypatch, "--type", "query", "--config", str(path))
     assert (code, seen) == (2, [])
     assert message in capsys.readouterr().err

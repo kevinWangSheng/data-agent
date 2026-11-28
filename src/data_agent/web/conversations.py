@@ -34,13 +34,12 @@ from data_agent.web.launcher import (
     new_run_id,
 )
 from data_agent.web.runs import CONVERSATIONS, RunsDir, is_plain_name
-from data_agent.web.sources import DataSource, dump_data_sources
+from data_agent.web.sources import DataSource
 
 INDEX = "conversation.json"
 CLAUDE_CONFIG = "claude-config"
-# Every configured source, written into each turn's run directory for `--data-sources`.
-SOURCES_FILE = "data-sources.toml"
-# A conversation only queries (spec decision 3), with the full configuration.
+# A conversation only queries (spec decision 3), with the server's config (every layer on by
+# default); `CONFIG` is what its turns' records show.
 TASK_TYPE = "query"
 CONFIG = "full"
 
@@ -133,18 +132,15 @@ class Conversations:
         resume = self.resume(index)
 
         def prepare(run_dir: Path) -> tuple[list[str], Path]:
-            sources_file = run_dir / SOURCES_FILE
-            sources_file.write_text(dump_data_sources(self.sources), encoding="utf-8")
             workspace.mkdir(parents=True, exist_ok=True)
+            # The server's config, its sources the server's: every one, by name and kind.
             args = [
                 f"--task={text}",
-                *("--type", TASK_TYPE, "--config", CONFIG),
+                *("--type", TASK_TYPE, *self.launcher.config_args(run_dir)),
                 *("--events-dir", str(run_dir), "--workspace", str(workspace)),
-                *("--data-sources", str(sources_file)),
                 *("--chat", "--conversation-dir", str(directory), "--turn", str(number)),
                 *("--sandbox", SANDBOX),
                 *(("--network",) if network else ()),
-                *self.launcher.mcp_args,
                 "--charts",
             ]
             if resume is not None:

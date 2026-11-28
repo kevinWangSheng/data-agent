@@ -562,7 +562,7 @@ def web_command(runs_dir: Path, sources: Path) -> "subprocess.CompletedProcess[s
             "web",
             "--runs-dir",
             str(runs_dir),
-            "--data-sources",
+            "--config",
             str(sources),
         ],
         capture_output=True,

@@ -63,7 +63,7 @@ def query(name: str) -> CallbackQuery:
     return CallbackQuery.model_validate(UPDATES[name])
 
 
-# --- Telegram's updates -> the interface ---------------------------------------------------
+# --- Telegram's updates -> the interface ----------------------------------------------------------
 
 
 def test_a_private_message_is_direct() -> None:
@@ -252,7 +252,7 @@ def test_a_press_without_a_message_is_no_press() -> None:
     assert to_press(query("inline_press")) is None
 
 
-# --- Markdown -> MarkdownV2 ----------------------------------------------------------------
+# --- Markdown -> MarkdownV2 -----------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -360,7 +360,7 @@ def test_code_block_fences(markdown: str, v2: str) -> None:
     assert to_markdown_v2(markdown) == v2
 
 
-# --- the interface -> Telegram's calls -----------------------------------------------------
+# --- the interface -> Telegram's calls ------------------------------------------------------------
 
 
 class FakeSession:
@@ -557,7 +557,7 @@ def test_the_limits() -> None:
     assert not TelegramPlatform.capabilities.typing
 
 
-# --- handing on ----------------------------------------------------------------------------
+# --- handing on -----------------------------------------------------------------------------------
 
 
 def never_polls(telegram: TelegramPlatform, polled: list[dict[str, Any]] | None = None) -> None:
@@ -649,7 +649,7 @@ async def test_a_message_not_to_the_bot_is_not_handed_on() -> None:
     assert len(got) == 1
 
 
-# --- start and stop ------------------------------------------------------------------------
+# --- start and stop -------------------------------------------------------------------------------
 
 
 async def test_start_registers_new_and_polls_one_update_at_a_time() -> None:
@@ -712,7 +712,7 @@ async def no_press(_: Press) -> None:
     pass
 
 
-# --- the token -----------------------------------------------------------------------------
+# --- the token ------------------------------------------------------------------------------------
 
 
 def closed_port() -> int:
@@ -773,7 +773,7 @@ async def test_a_polled_update_reaches_the_adapter_through_the_dispatcher() -> N
     assert sorted(telegram.dispatcher.resolve_used_update_types()) == ["callback_query", "message"]
 
 
-# --- data-agent web --im -------------------------------------------------------------------
+# --- data-agent web with [im.telegram] ------------------------------------------------------------
 
 
 def test_service_makes_the_telegram_platform_for_a_telegram_table() -> None:
@@ -791,13 +791,14 @@ def test_without_aiogram_im_says_how_to_install_it(
     monkeypatch.setitem(sys.modules, "aiogram", None)
     runs = tmp_path / "runs"
     runs.mkdir()
-    im = tmp_path / "im.toml"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    im = tmp_path / "config.toml"
     im.write_text(
-        '[telegram]\nbot_token_env = "DATA_AGENT_TELEGRAM_BOT_TOKEN"\nallowed_users = [10001]\n',
+        '[im.telegram]\nbot_token_env = "DATA_AGENT_TELEGRAM_BOT_TOKEN"\nallowed_users = [10001]\n',
         encoding="utf-8",
     )
     with pytest.raises(SystemExit) as exited:
-        cli.main(["web", "--runs-dir", str(runs), "--im", str(im)])
+        cli.main(["web", "--runs-dir", str(runs), "--config", str(im)])
     assert exited.value.code == 2
     err = capsys.readouterr().err
     assert "uv sync --extra im" in err

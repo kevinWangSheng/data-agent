@@ -40,9 +40,6 @@ from seam_support import (
 )
 
 pytestmark = pytest.mark.integration
-TICKET_143 = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="ticket 143: the config loader is not built yet"
-)
 
 QUERY_TASK = (
     "What is the total amount of all completed orders? Order status values are inconsistent: "
@@ -99,7 +96,6 @@ def query_run(
     return proc, db, events_dir
 
 
-@TICKET_143
 def test_query_answer_within_tolerance(
     query_run: tuple[subprocess.CompletedProcess[str], Path, Path],
 ) -> None:
@@ -118,7 +114,6 @@ def test_query_answer_within_tolerance(
     )
 
 
-@TICKET_143
 def test_event_file_header_sequence_and_cost(
     query_run: tuple[subprocess.CompletedProcess[str], Path, Path],
 ) -> None:
@@ -148,7 +143,6 @@ def test_event_file_header_sequence_and_cost(
             assert value not in text, f"{name} leaked into the event file"
 
 
-@TICKET_143
 def test_dbt_model_built_with_correct_values(tmp_path: Path) -> None:
     project, db = make_dbt_workspace(tmp_path)
     proc = run_agent(DBT_TASK, "dbt", project, db, "full", tmp_path / "events")
@@ -177,7 +171,6 @@ def test_dbt_model_built_with_correct_values(tmp_path: Path) -> None:
         assert abs(Decimal(str(value)) - want_value) <= Decimal("0.01"), cid
 
 
-@TICKET_143
 def test_baseline_leaves_no_verifier_or_context_trace(tmp_path: Path) -> None:
     project, db = make_dbt_workspace(tmp_path)
     events_dir = tmp_path / "events"
@@ -192,7 +185,6 @@ def test_baseline_leaves_no_verifier_or_context_trace(tmp_path: Path) -> None:
         assert not [tool for tool in used if tool.endswith(name)], f"{name} used in a baseline run"
 
 
-@TICKET_143
 def test_write_request_is_blocked_without_crashing(tmp_path: Path) -> None:
     """The data must stay unchanged whichever path the agent tries, and the run must finish."""
     project, db = make_dbt_workspace(tmp_path)

@@ -11,8 +11,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from data_agent.config import load_effective_config
 from data_agent.web.app import create_app
-from data_agent.web.sources import DataSource, dump_data_sources, load_data_sources
+from data_agent.web.launcher import Launcher
+from data_agent.web.runs import RunsDir
+from data_agent.web.sources import DataSource, config_sources
 
 
 @dataclass
@@ -108,9 +111,9 @@ def test_an_unreadable_index_leaves_the_other_conversations_listed(
     assert json.loads((quiet.runs_dir / "conversations" / good / "conversation.json").read_text())
 
 
-def test_the_data_source_file_a_turn_gets_reads_back_as_the_same_sources(tmp_path: Path) -> None:
-    """Names and paths that TOML must escape: quotes, backslashes, a dot, non-ASCII and
-    characters outside the Basic Multilingual Plane."""
+def test_the_config_file_a_turn_gets_reads_back_as_the_same_sources(tmp_path: Path) -> None:
+    """Names and paths that TOML must escape: quotes, backslashes, non-ASCII and characters
+    outside the Basic Multilingual Plane, a dot."""
     folder = tmp_path / 'dir "q" \\ 数据 🦆'
     folder.mkdir()
     file = folder / "a.duckdb"
@@ -118,9 +121,13 @@ def test_the_data_source_file_a_turn_gets_reads_back_as_the_same_sources(tmp_pat
         DataSource('or"ders.v2', duckdb=file),
         DataSource("客户 🦆", postgres_env="CRM_URL"),
     ]
-    path = tmp_path / "sources.toml"
-    path.write_text(dump_data_sources(sources), encoding="utf-8")
-    assert load_data_sources(path) == [
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    launcher = Launcher(RunsDir(runs), sources, lambda *_: None)  # type: ignore[arg-type]
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    [_, path] = launcher.config_args(run_dir)
+    assert config_sources(load_effective_config([Path(path)], {}, {})) == [
         DataSource('or"ders.v2', duckdb=file.resolve()),
         DataSource("客户 🦆", postgres_env="CRM_URL"),
     ]
