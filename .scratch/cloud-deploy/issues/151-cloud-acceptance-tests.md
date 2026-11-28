@@ -1,6 +1,6 @@
 # 151 — 云端部署：验收测试（启动检查、网页 bearer 令牌、联网与锁定、`/healthz`、git 来源）
 
-Status: in-review
+Status: done
 Blocked by: product-config 143
 Spec: ../spec.md（Testing Decisions"验收测试接缝"）；决定：`.scratch/product-config/decisions.md` Q7、Q8；`docs/adr/0012-settings-ui-and-platform-identity.md`；`.scratch/product-config/decisions.md`"建 settings 工单时主会话定的细节"第 1 条
 Claimed by: claude (opus-5-5) 2026-11-28
@@ -334,3 +334,4 @@ spec"验收测试接缝"的四组行为都有验收测试，写在约定的接�
     - `REAL_GIT` and `real_git()` are two names for one value: the lookup has to happen before PATH is patched, and the None check sits in the function; minor.
     - The spec review notes that `started == []` cannot fail for `POST /api/runs` until 144 merges (the form gets 422 today). That is the known 144 dependency; the route's 401 assertion still covers it.
     - A `GitSources` that clones once through PATH git, but sends its token-carrying call via an absolute-path git, would still pass. Return item 1's wording accepts this.
+- 2026-11-28（主会话）：退回第 1 轮核查：CI 绿、Codex 无意见（`e01afa3`）；上下文干净的 Opus 子 agent 复核这一轮改动：5 条都修好、可合并、无阻塞（PATH 上 git 的检查只看得到 PATH 上的 git，是接缝本身的限制，spec 要求令牌走 `GIT_ASKPASS`）。PR #152 squash 合并（`a4998a7d08b80c783a13e6bbc1d36b5717f6f7f4`）。Status done。
