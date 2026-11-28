@@ -1,6 +1,6 @@
 # 141 — 产品配置：验收测试（配置加载、运行参数快照、产品默认、评测隔离、`config` 事件）
 
-Status: in-review
+Status: done
 Blocked by: —
 Spec: ../spec.md（"Testing Decisions"的"验收测试接缝"）
 Claimed by: claude (opus-5.5, worktree 141-config-acceptance-tests)
@@ -490,3 +490,4 @@ PASSED→XFAIL this round: 0. Running total unchanged: 143 → 98, 144 → 10, 1
 ### For the main session
 1. If wanted, add to 144's acceptance criteria: raise `user_config_text()`'s `agent_timeout_sec` to a value of 150 or more, so the isolation guard fails with a snapshot diff again (see the review item above).
 - 2026-11-27（主会话）：已知限制（不修）：`user_config_text()` 的 `agent_timeout_sec = 60` 低于 `DEADLINE_MARGIN_S`，144 之后评测入口若误读用户配置，隔离守门仍会失败，但报"expected one session, got 0"而不是快照差异。夹具合入后不改。
+- 2026-11-27（主会话）：第 3 轮核查：CI 绿、Codex 无意见（`c8067a6`）；服务器 `/work` 容器 24 passed；上下文干净的 Opus 子 agent 复核这一轮改动：可合并、无阻塞。PR #149 squash 合并（`3b2f3ed`）。Status done。
