@@ -179,6 +179,8 @@ def skill_text(path: str) -> str:
 
 
 def commit_count(path: str) -> str:
+    """The commits in the clone under test: an AssertionError when it is no checkout (not `git()`,
+    whose RuntimeError is for the tests' own repository)."""
     done = subprocess.run(
         [real_git(), "-C", path, "rev-list", "--count", "HEAD"],
         capture_output=True,

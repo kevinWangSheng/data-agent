@@ -28,6 +28,7 @@ The contract fixed here (ticket 151 contract item 2; for the human review):
 
 import json
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -90,63 +91,55 @@ def cloud(
 
 # --- Each `/api/*` request: a status code for the headers given -----------------------------
 
-Request = Callable[[TestClient, dict[str, str], str], int]
+
+@dataclass(frozen=True)
+class Ids:
+    """The run and the conversation a request's path names."""
+
+    run: str
+    conversation: str
 
 
-def get(path: str) -> Request:
-    def send(client: TestClient, headers: dict[str, str], _: str) -> int:
-        return client.get(path, headers=headers).status_code
+Request = Callable[[TestClient, dict[str, str], Ids], int]
+
+
+def call(method: str, template: str, body: dict[str, Any] | None = None) -> Request:
+    """A request whose path fills `{run}` and `{conversation}` from the ids given."""
+
+    def send(client: TestClient, headers: dict[str, str], ids: Ids) -> int:
+        path = template.format(run=ids.run, conversation=ids.conversation)
+        return client.request(method, path, json=body, headers=headers).status_code
 
     return send
 
 
-def submit(client: TestClient, headers: dict[str, str], _: str) -> int:
-    return client.post("/api/runs", json=FORM, headers=headers).status_code
-
-
-def events_stream(client: TestClient, headers: dict[str, str], _: str) -> int:
+def events_stream(client: TestClient, headers: dict[str, str], ids: Ids) -> int:
     headers = {**headers, "Accept": "text/event-stream"}
-    with client.stream("GET", f"/api/runs/{RUN_ID}/events", headers=headers) as response:
+    with client.stream("GET", f"/api/runs/{ids.run}/events", headers=headers) as response:
         # Read to the end: the run is finished, so a stream that was let through closes.
         for _line in response.iter_lines():
             pass
         return response.status_code
 
 
-def post(path: str) -> Request:
-    def send(client: TestClient, headers: dict[str, str], _: str) -> int:
-        return client.post(path, json={}, headers=headers).status_code
-
-    return send
-
-
-def conversation_get(client: TestClient, headers: dict[str, str], conversation: str) -> int:
-    return client.get(f"/api/conversations/{conversation}", headers=headers).status_code
-
-
-def conversation_cancel(client: TestClient, headers: dict[str, str], conversation: str) -> int:
-    return client.post(f"/api/conversations/{conversation}/cancel", headers=headers).status_code
-
-
-def message(client: TestClient, headers: dict[str, str], conversation: str) -> int:
-    body = {"text": "How many orders?", "network": False}
-    path = f"/api/conversations/{conversation}/messages"
-    return client.post(path, json=body, headers=headers).status_code
-
-
 REQUESTS: dict[str, Request] = {
-    "GET /api/runs": get("/api/runs"),
-    "GET /api/options": get("/api/options"),
-    "POST /api/runs": submit,
-    "GET /api/runs/{id}/events": get(f"/api/runs/{RUN_ID}/events"),
+    "GET /api/runs": call("GET", "/api/runs"),
+    "GET /api/options": call("GET", "/api/options"),
+    "POST /api/runs": call("POST", "/api/runs", FORM),
+    "GET /api/runs/{id}/events": call("GET", "/api/runs/{run}/events"),
     "GET /api/runs/{id}/events (SSE)": events_stream,
-    "POST /api/runs/{id}/cancel": post(f"/api/runs/{RUN_ID}/cancel"),
-    "GET /api/conversations": get("/api/conversations"),
-    "GET /api/conversations/{id}": conversation_get,
-    "POST /api/conversations": post("/api/conversations"),
-    "POST /api/conversations/{id}/messages": message,
-    "POST /api/conversations/{id}/cancel": conversation_cancel,
+    "POST /api/runs/{id}/cancel": call("POST", "/api/runs/{run}/cancel"),
+    "GET /api/conversations": call("GET", "/api/conversations"),
+    "GET /api/conversations/{id}": call("GET", "/api/conversations/{conversation}"),
+    "POST /api/conversations": call("POST", "/api/conversations", {}),
+    "POST /api/conversations/{id}/messages": call(
+        "POST",
+        "/api/conversations/{conversation}/messages",
+        {"text": "How many orders?", "network": False},
+    ),
+    "POST /api/conversations/{id}/cancel": call("POST", "/api/conversations/{conversation}/cancel"),
 }
+UNKNOWN = Ids("no-such-run", "no-such-conversation")
 
 
 def new_conversation(client: TestClient) -> str:
@@ -165,15 +158,17 @@ def test_every_api_route_takes_only_the_right_bearer_token(
     send = REQUESTS[route]
     with TestClient(cloud.app) as client:
         # A conversation that is there, so a message let through would start a run.
-        conversation = new_conversation(client)
-        refused: dict[str, Any] = {}
+        known = Ids(RUN_ID, new_conversation(client))
+        refused: dict[str, int] = {}
         for name, headers in WRONG.items():
-            refused[name] = send(client, headers, conversation)
-        refused["an unknown conversation"] = send(client, {}, "no-such-conversation")
+            refused[name] = send(client, headers, known)
+        if "{id}" in route:
+            # 401 before the run or conversation is looked up.
+            refused["an unknown id"] = send(client, {}, UNKNOWN)
         assert refused == dict.fromkeys(refused, UNAUTHORIZED)
         assert cloud.started == [], "a request without the right token started a run"
         # The same request with the right token is let through (whatever it then answers).
-        assert send(client, bearer(), conversation) != UNAUTHORIZED
+        assert send(client, bearer(), known) != UNAUTHORIZED
     assert ADMIN_TOKEN not in caplog.text
 
 
