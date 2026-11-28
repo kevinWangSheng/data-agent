@@ -180,7 +180,9 @@ class Launcher:
         for name, source in self.sources.items():
             table = Key(("sources", name))
             leaves |= {
-                key: value for key, value in raw.items() if table_depth(parts_of(key), table)
+                key: value
+                for key, value in raw.items()
+                if table_depth(parts_of(key), table) is not None
             }
             leaves |= source_leaves([source])
         return config_file(run_dir / CONFIG_DIR / f"{self.config.name()}.toml", leaves)

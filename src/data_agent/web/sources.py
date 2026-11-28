@@ -26,10 +26,9 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from data_agent.config import EffectiveConfig
+from data_agent.config import EffectiveConfig, Key
 
 KEYS = {"duckdb": {"kind", "path", "dbt_project"}, "postgres": {"kind", "env", "dbt_project"}}
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -53,11 +52,9 @@ class DataSource:
 SOURCE_KEYS = {"kind", "path", "env", "dbt_project"}
 
 
-def config_sources(config: "EffectiveConfig") -> list[DataSource]:
+def config_sources(config: EffectiveConfig) -> list[DataSource]:
     """The config's `[sources.<name>]` tables, in order (paths already absolute); ValueError naming
     the first problem."""
-    from data_agent.config import Key
-
     sources: list[DataSource] = []
     for name in config.names("sources"):
         entry = config.value(Key(("sources", name))) or {}
@@ -69,8 +66,6 @@ def config_sources(config: "EffectiveConfig") -> list[DataSource]:
 def source_leaves(sources: Sequence[DataSource]) -> dict[str, str]:
     """The sources as the config's dotted keys (`sources.shop.kind`, ...), DuckDB paths absolute:
     the file or the variable's name, never a connection string; `dbt_project` too when set."""
-    from data_agent.config import Key
-
     leaves: dict[str, str] = {}
     for source in sources:
 

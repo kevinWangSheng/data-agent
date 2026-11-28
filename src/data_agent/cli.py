@@ -33,6 +33,7 @@ from data_agent.config import (
     in_section_order,
     load_effective_config,
     parts_of,
+    toml_key,
     toml_text,
     toml_value,
 )
@@ -315,14 +316,16 @@ def server_config(config: RunConfig, effective: EffectiveConfig, scratch: Path) 
     written to the run's scratch directory, `${VAR}` references as written, without the
     `[models.*].api_key`s. The server runs under `sdk_env()`, which blanks `ANTHROPIC_API_KEY`,
     and takes its model settings from `tool_env()`."""
-    leaves = {
-        key: value
-        for key, value in effective.raw.items()
-        if not (parts_of(key)[0] == "models" and parts_of(key)[-1] == "api_key")
-    }
+    leaves = {key: value for key, value in effective.raw.items() if not is_model_key(key)}
     path = scratch / f"{config.name}.toml"
     path.write_text(toml_text(leaves), encoding="utf-8")
     return dataclasses.replace(config, server_config=str(path))
+
+
+def is_model_key(key: str) -> bool:
+    """A `[models.<name>].api_key` leaf."""
+    parts = parts_of(key)
+    return parts[0] == "models" and parts[-1] == "api_key"
 
 
 def config_mcp(
@@ -626,7 +629,8 @@ def show_config(config: EffectiveConfig) -> None:
     """`data-agent config show`: `<key> = <value as TOML>  # <source>` per key, every `${VAR}`
     reference as written."""
     for key in in_section_order(config.raw):
-        print(f"{key} = {toml_value(config.raw[key])}  # {config.source(key)}")
+        dotted = ".".join(toml_key(part) for part in parts_of(key))
+        print(f"{dotted} = {toml_value(config.raw[key])}  # {config.source(key)}")
 
 
 def run_task(

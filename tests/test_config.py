@@ -181,8 +181,8 @@ def test_a_name_with_a_dot_survives_the_text(tmp_path: Path) -> None:
 
 
 def test_a_name_that_starts_another_names_table_stays_apart(tmp_path: Path) -> None:
-    """Ticket 143 return round 1: a table is found by its key parts, not a string prefix, so
-    `sources.shop` holds none of `sources."shop.archive"` (it raised StopIteration), and each
+    """A table is found by its key parts, not a string prefix, so
+    `sources.shop` holds none of `sources."shop.archive"`, and each
     named section (`[sources.*]`, `[mcp.servers.*]`, `[models.*]`) gives each entry its own."""
     path = write(
         tmp_path / "c.toml",
@@ -216,7 +216,7 @@ def test_a_name_that_starts_another_names_table_stays_apart(tmp_path: Path) -> N
 
 
 def test_a_table_named_like_another_entrys_key_is_its_own(tmp_path: Path) -> None:
-    """Review round 3 (Codex): `sources."shop.path"` is a table, not `sources.shop`'s `path`."""
+    """`sources."shop.path"` is a table, not `sources.shop`'s `path`."""
     path = write(
         tmp_path / "c.toml",
         '[sources.shop]\nkind = "duckdb"\npath = "shop.duckdb"\n\n'
@@ -233,7 +233,7 @@ def test_a_table_named_like_another_entrys_key_is_its_own(tmp_path: Path) -> Non
 
 
 def test_the_base_url_from_the_environment_stays_a_reference_in_the_text(tmp_path: Path) -> None:
-    """Review round 3 (Codex): `DATA_AGENT_BASE_URL` may carry a credential; the text (`config
+    """`DATA_AGENT_BASE_URL` may carry a credential; the text (`config
     show`, the files runs get) holds `${DATA_AGENT_BASE_URL}`, the value is expanded."""
     url = "https://llm.example/" + SECRET
     path = write(tmp_path / "c.toml", '[roles]\nmain = "m"\n\n[models.m]\ncontext_window = 1\n')
@@ -248,7 +248,7 @@ def test_the_base_url_from_the_environment_stays_a_reference_in_the_text(tmp_pat
 
 
 def test_the_base_url_goes_to_the_model_a_referenced_role_names(tmp_path: Path) -> None:
-    """Review round 3 (Codex): `[roles].main = "${CHOSEN_MODEL}"` names the model the variable
+    """`[roles].main = "${CHOSEN_MODEL}"` names the model the variable
     holds, so `DATA_AGENT_BASE_URL` sets that model's endpoint."""
     path = write(
         tmp_path / "c.toml",
@@ -262,7 +262,7 @@ def test_the_base_url_goes_to_the_model_a_referenced_role_names(tmp_path: Path) 
 
 
 def test_our_servers_file_holds_no_model_key(tmp_path: Path) -> None:
-    """Review round 3 (Codex): the data server runs under `sdk_env()`, which blanks
+    """The data server runs under `sdk_env()`, which blanks
     `ANTHROPIC_API_KEY`; its file leaves `[models.*].api_key` out, so a model key referenced as
     `${ANTHROPIC_API_KEY}` does not stop it. It gets its model settings from `tool_env()`."""
     path = write(
@@ -437,6 +437,24 @@ def test_config_show_prints_nothing_expanded(
     assert SECRET not in out
 
 
+def test_config_show_quotes_a_name_with_a_dot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A line names its table as TOML would: `sources."shop.path".kind` is not `[sources.shop]`'s
+    `path`."""
+    path = write(
+        tmp_path / "c.toml",
+        '[sources.shop]\nkind = "duckdb"\npath = "shop.duckdb"\n\n'
+        '[sources."shop.path"]\nkind = "duckdb"\npath = "other.duckdb"\n',
+    )
+    cli.main(["config", "show", "--config", str(path)])
+    out = capsys.readouterr().out
+
+    assert 'sources.shop.kind = "duckdb"' in out
+    assert 'sources."shop.path".kind = "duckdb"' in out
+    assert "sources.shop.path.path" not in out
+
+
 # --- The web server's config ----------------------------------------------------------------
 
 
@@ -474,7 +492,7 @@ def test_create_app_without_a_config_reads_no_file(
 
 
 def test_a_runs_config_file_keeps_another_sources_keys_out(tmp_path: Path) -> None:
-    """Ticket 143 return round 1: the run's file takes `sources.shop`'s own keys by their parts,
+    """The run's file takes `sources.shop`'s own keys by their parts,
     not every key starting `sources.shop.`, so `sources."shop.archive"` (not the run's) stays
     out."""
     for name in ("shop", "old"):
