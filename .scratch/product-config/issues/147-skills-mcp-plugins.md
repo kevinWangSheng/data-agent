@@ -59,6 +59,8 @@ Branch: —
 - [ ] `docs/setup.md` 写了 `[skills]`、`[mcp]`、`[plugins]`；README 写明产品默认按需加载 Skill、使用者的 MCP 不在只读保证之内。
 - [ ] `make check` 通过。
 - [ ] spec"已定"第 1 条的列出要求有单元测试：`config show` 和运行开头的事件都列出 Claude Code 的 MCP 服务器和它们的工具（141 合并前审查第 11 条，验收测试没钉）。
+- [ ] 网页单次运行和 IM 运行的产品默认 `tools` 里也有 `Skill`（单元测试；141 只在 CLI 查数、dbt 和对话轮次钉了，141 第 2 轮审查）。
+- [ ] `config` 事件的 `file_hashes` 包含插件目录里的文件（单元测试；141 只钉了 Skill 和说明文件，第 2 轮复核 N2）。
 
 ## Evidence required
 
@@ -96,3 +98,5 @@ Branch: —
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：Skill 文本（含 dbt-workflow 第 2 步）不改，推到迁移第二步；插件清单不计入 `skill_version`，由本工单做；去掉"加清单或改 Skill 让快照失败"的停止条件。
 - 2026-11-27（主会话）：按调研后的决定补 Context：沙箱里 Skill 的复制方案归 cloud-deploy 163。
 - 2026-11-27（主会话）：按 141 退回第 1 轮后的契约复核补 Context：先验证插件根目录是 `skills/` 的布局；Skill 工具要进 `tools`。
+- 2026-11-27（主会话）：验收标准加"网页单次运行和 IM 运行的 `tools` 里也有 `Skill`"（141 第 2 轮审查）。
+- 2026-11-27（主会话）：按 141 第 2 轮契约复核补验收标准：`file_hashes` 含插件目录。
