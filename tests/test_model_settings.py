@@ -3,7 +3,8 @@
 acceptance tests (tests/acceptance/test_config_models.py) do not pin."""
 
 import json
-from collections.abc import AsyncIterator, Mapping
+import subprocess
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from data_agent import agent, cli
 from data_agent.agent import ConfigError, ModelSettings, Price, Task
 from data_agent.config import default_config, load_effective_config
 from data_agent.run_config import load_config
+from data_agent.web.launcher import Launcher
+from data_agent.web.runs import RunsDir
 
 KEY_ENV = "DATA_AGENT_TEST_MODEL_KEY"
 KEY = "model-key-" + "Wd40"
@@ -369,3 +372,52 @@ def test_config_show_marks_the_main_role_the_environment_overrides(
     assert "overrides" in line and '"acme-large"' in line and str(path) in line
     monkeypatch.delenv("DATA_AGENT_MODEL")
     assert shown_main_role(capsys, path) == f'roles.main = "acme-large"  # {path}'
+
+
+def launched_settings(tmp_path: Path, text: str, env: Mapping[str, str]) -> ModelSettings:
+    """The model settings a web, conversation or IM run gets: the server's config written into
+    the run's directory (`Launcher.config_args`), read again with the same environment."""
+
+    def start_run(args: Sequence[str], cwd: Path) -> "subprocess.Popen[bytes]":
+        raise AssertionError("not started")
+
+    tmp_path.mkdir(exist_ok=True)
+    server = tmp_path / "server.toml"
+    server.write_text(text)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    loaded = load_effective_config([server], env, {})
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    [_, path] = Launcher(RunsDir(runs), [], start_run, loaded).config_args(run_dir)
+    return ModelSettings.from_config(load_effective_config([Path(path)], env, {}), env)
+
+
+def test_a_launched_run_keeps_a_default_models_code_default_endpoint_unwritten(
+    tmp_path: Path,
+) -> None:
+    """The run's file writes every key, code defaults too: a default model's own endpoint is
+    still not one the user wrote (da-review, 145 round 1)."""
+    proxy = {"DATA_AGENT_BASE_URL": "https://proxy.example/anthropic", "DATA_AGENT_API_KEY": KEY}
+    text = '[roles]\nmain = "deepseek-v4-pro"\nsmall = "deepseek-flash"\n'
+    run = launched_settings(tmp_path / "proxy", text, proxy)
+    assert (run.base_url, run.small) == ("https://proxy.example/anthropic", "deepseek-flash")
+    custom = (
+        model("acme-large", PRICED) + '[roles]\nmain = "acme-large"\nsmall = "deepseek-flash"\n'
+    )
+    run = launched_settings(tmp_path / "custom", custom, {KEY_ENV: KEY})
+    assert (run.model, run.small) == ("acme-large", "deepseek-flash")
+
+
+def test_a_launched_run_still_sees_data_agent_model_override_the_files_main_role(
+    tmp_path: Path,
+) -> None:
+    """The run inherits the server's environment (`serve_web`'s `start_run`), so its file keeps
+    the server file's `[roles].main` and the run itself sees the override and warns."""
+    env = {KEY_ENV: KEY, "DATA_AGENT_MODEL": "acme-other"}
+    text = (
+        model("acme-large", PRICED) + model("acme-other", PRICED) + '[roles]\nmain = "acme-large"\n'
+    )
+    run = launched_settings(tmp_path, text, env)
+    assert run.model == "acme-other"
+    assert run.main_overridden is not None and run.main_overridden[0] == "acme-large"

@@ -172,8 +172,12 @@ class Launcher:
         `[sources.*]` are the server's sources, in their order, never a connection string; its
         `[im.*]` are left out (the run has none of their tokens); every `${VAR}` reference is as
         written, never expanded. Named after the server's config (`<name>.toml`), so the run's
-        `version.config` is the server's."""
-        raw = self.config.raw
+        `version.config` is the server's. A file's value the environment overrides
+        (`roles.main` under `DATA_AGENT_MODEL`) is written as the file has it: the run inherits
+        the server's environment, so it applies the override again and warns of it (ticket
+        145)."""
+        raw = {**self.config.raw}
+        raw |= {key: value for key, (value, _) in self.config.overridden.items()}
         leaves = {
             key: value for key, value in raw.items() if not key.startswith(("sources.", "im."))
         }
