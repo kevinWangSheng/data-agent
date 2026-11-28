@@ -319,16 +319,24 @@ async def test_an_override_out_of_bounds_is_refused_and_nothing_runs(
     monkeypatch: pytest.MonkeyPatch,
     words: str,
 ) -> None:
-    extra = MCP + '[policy]\ndisabled_models = ["deepseek-v4-pro"]\n'
+    third = build_shop_duckdb(tmp_path / "shop3.duckdb")
+    extra = (
+        MCP
+        + '[mcp.servers.wiki]\ntype = "http"\nurl = "https://mcp.example/wiki"\n'
+        + 'allowedTools = ["*"]\n\n'
+        + f'[sources.shop3]\nkind = "duckdb"\npath = {toml_path(third)}\n\n'
+        + '[policy]\ndisabled_models = ["deepseek-v4-pro"]\n'
+    )
+    opened_sources, opened_mcp = ["shop", "shop3"], ["acme", "wiki"]
     with product(tmp_path, monkeypatch, capsys, extra) as p:
-        p.store.set(channel(SALES), "chat.sources", ["shop"], by=BY)
-        p.store.set(channel(SALES), "chat.mcp", ["acme"], by=BY)
+        p.store.set(channel(SALES), "chat.sources", opened_sources, by=BY)
+        p.store.set(channel(SALES), "chat.mcp", opened_mcp, by=BY)
         fake = FakePlatform("slack")
         await product_bot(p, fake)
-        # Allowed ones first: the channel's own source and server.
-        await fake.deliver(incoming("source=shop mcp=acme effort=high How many orders?"))
+        # Allowed ones first: one of the channel's sources and servers each, not all it opens.
+        await fake.deliver(incoming("source=shop3 mcp=wiki effort=high How many orders?"))
         allowed = p.turn(0)
-        assert allowed.get("chat.sources") == ["shop"] and allowed.get("chat.mcp") == ["acme"]
+        assert allowed.get("chat.sources") == ["shop3"] and allowed.get("chat.mcp") == ["wiki"]
         p.web.finish()
 
         shown = len(fake.shown)
@@ -340,8 +348,17 @@ async def test_an_override_out_of_bounds_is_refused_and_nothing_runs(
 
         await fake.deliver(incoming("And now?", mentioned=False))
         after = p.turn(1)
-        assert after.get("chat.sources") == ["shop"] and after.get("limits.effort") == "high"
+        assert (after.get("chat.sources"), after.get("chat.mcp")) == (["shop3"], ["wiki"])
+        assert after.get("limits.effort") == "high"
         assert after.get("roles.main") != "deepseek-v4-pro"
+        p.web.finish()
+
+        await fake.deliver(
+            incoming("source=default mcp=default And without them?", mentioned=False)
+        )
+        reset = p.turn(2)
+        assert (reset.get("chat.sources"), reset.get("chat.mcp")) == (opened_sources, opened_mcp)
+        assert reset.get("limits.effort") == "high"
 
 
 @TICKET_161

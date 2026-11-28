@@ -17,7 +17,8 @@ The store and its functions are contract 1 (test_settings_resolve.py). Here:
   `api_key`, `token`, `password`, `secret`, or a credential header) has `secret` true and neither
   value (`before`, `after` None), so no value of it is anywhere in the history.
 - `open_store(path, config, version=1)` makes the file at schema version 1; opened again without
-  `version`, it is upgraded to `SCHEMA_VERSION`, its data kept.
+  `version`, it is upgraded to `SCHEMA_VERSION`, its data kept. `SCHEMA_VERSION` is more than 1
+  (the store's first release already has a migration past version 1, so the upgrade is tested).
 - Contract 6 (ticket 160), "use the file's value": `POST /api/settings/use-file?scope=<scope id>`
   with `{"keys": [...]}` writes the files' values of those keys into that scope (recorded as a
   change); organisation admins only, anyone else 403 and the store unchanged.
@@ -178,6 +179,7 @@ def test_every_write_is_recorded_and_a_secret_only_as_changed(
 @TICKET_158
 def test_an_older_store_is_upgraded_and_keeps_its_data(tmp_path: Path) -> None:
     current = settings_attr("store", "SCHEMA_VERSION")
+    assert current > 1, f"SCHEMA_VERSION {current}: no older version to upgrade from"
     config = load_config([shop_config(tmp_path)], {})
     db = tmp_path / "settings.sqlite"
     old = open_store(db, config, version=1)
