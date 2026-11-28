@@ -21,6 +21,7 @@ Branch: —
   - `src/data_agent/web/app.py`（`Submit` `:47-52`、`/api/options` `:110-114`）、`web/launcher.py`（`:162-183`、`:256-257`）、`web/conversations.py`（`:45`、`:138-143`）、`src/data_agent/im/adapter.py`：产品默认 `full`、不收消融名、effort 与超时从配置来。
   - `web/src/local/NewRun.tsx`、`web/src/data/source.ts`（`RunOptions`、`Submission`，`:37-39`）及其测试：表单不再有配置下拉，改显示生效配置的摘要（spec"产品默认与入口"排在本工单）。
   - `tests/acceptance/` 里 141 标了 `TICKET_144` 的文件（`test_config_wiring.py`，以及 141 改写过的已有文件，如 `test_web_api.py`；清单见 141 最终回复）：**只删** `TICKET_144` 标记，以及因此没用的定义和 import。
+  - `README.md`：删掉已不存在的 `--im`、`--data-sources`、`--mcp-servers`，改写成 `--config` 文件里的 `[im.*]`、`[sources.*]`、`[mcp]`（143 删了参数，README 不在 143 的 Authority）。
   - `tests/`（除 `tests/acceptance/`）；`docs/setup.md`（`[limits]`、`[sandbox]`、`[sources.*]`、`[policy]` 各键）。
 - Must not edit：`tests/acceptance/` 里除 `TICKET_144` 标记以外的一切；`tests/fixtures/product_config/`；`agent.py` 的提示词与 `ModelSettings`（145、148）；`classify.py`、`verifiers.py`（145）；`evals/`（146）；`skills/`；`web/src/run-page/`、`web/src/run-view/`（149）；`src/data_agent/configs/`；其他工单的文件、`.claude/`、`CODING_STANDARDS.md`、`AGENTS.md`。
 - Server access：none。
@@ -55,6 +56,8 @@ Branch: —
 - [ ] 验收测试没钉的每个键（例如 `duckdb.memory_limit` 真进了 `SET memory_limit`、`dbt_timeout_seconds` 真限住了 dbt、`exec_max_seconds` 真限住了 `sandbox_exec`、值字典第二次运行复用了缓存、评测运行没复用）有新单元测试。
 - [ ] `docs/setup.md` 写了这几节的每个键和默认值。
 - [ ] `make check` 通过（含 web 的 typecheck 与 vitest）。
+- [ ] README 不再提 `--im`、`--data-sources`、`--mcp-servers`；用法改成配置文件（143 交回）。
+- [ ] 不重复实现"命令行值和 `[policy]` 冲突时拒绝"：143 的加载器已经做了（141 的 `test_a_command_line_value_against_the_policy_is_refused`），本工单只把命令行值接进去。
 
 ## Evidence required
 
@@ -87,3 +90,4 @@ Branch: —
 - 2026-11-27（主会话）：按 `decisions.md` Q8 改票：加 `[server]`（host、port、runs_dir）和 `[trace]`（base_url、tier）；`[policy]` 冲突报错；去掉"`[server]`/`[trace]` 没排给本工单""已有验收测试钉住旧行为"两条停止条件（141 改写已有验收测试）。
 - 2026-11-27（主会话）：按 ADR-0012 调整："文件 + 数据库"的生效设置交给 settings 158，本工单只做文件层；Context 加"只做文件层"一条，要求运行的生效配置经一处解析入口，供 158 叠数据库。本工单原本就没有数据库的范围，Authority、Acceptance 不变。
 - 2026-11-27（主会话）：按 141 合并前审查补 Context：守门测试依赖的接口保留名字和签名。
+- 2026-11-27（主会话）：按 143 交回补：README 旧参数归本工单；`[policy]` 冲突的拒绝 143 已做，别重复。

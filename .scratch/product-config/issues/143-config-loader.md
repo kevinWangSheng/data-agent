@@ -1,10 +1,10 @@
 # 143 — 配置加载：分层合并、`${VAR}`、未知键、明文密钥、`config show`、`--config` 路径、三个旧参数并入
 
-Status: ready-for-agent
+Status: in-progress
 Blocked by: 141
 Spec: ../spec.md（"配置文件与分层（Q1）""分节（Q2）"）
-Claimed by: —
-Branch: —
+Claimed by: claude (opus-5-5) 2026-11-27
+Branch: worktree-143-config-loader
 
 ## Goal
 
@@ -81,11 +81,10 @@ Branch: —
 
 ## Ledger
 
-- Attempts: 0
-- Review rounds: 0
+- Attempts: 1
+- Review rounds: 2, plus one fix commit after them
 - Model spend: $0
-- Outcome: —
-- Human review minutes: —
+- Outcome: implemented, `in-review`
 
 ## Comments
 
@@ -94,3 +93,74 @@ Branch: —
 - 2026-11-27（主会话）：按 141 合并前审查补 Context：`--dbt-target`、`--network` 不接进 `cli_overrides`（归 144）。
 - 2026-11-27（主会话）：按 141 退回第 1 轮后的契约复核补 Context：`policy.disabled_models` 不在加载时拒绝（否则 144 的标记提前 XPASS）。
 - 2026-11-27（主会话）：按 141 第 2 轮契约复核补验收标准：`create_app(config=None)` 不读用户级文件。
+- 2026-11-27（工单 agent，opus-5.5；分支 `worktree-143-config-loader`，`c2308a0`…`322d38d`）：
+  **What was built**
+  - **Loader** (`src/data_agent/config.py`):
+    - Merges code defaults, then the user-level file, then the project-level file (or the explicit files, or the one file `DATA_AGENT_CONFIG` names), then environment variables, then command-line values. Merging is key by key; lists are replaced, not joined. `[policy]` sits above all of them and records its source as `policy`.
+    - It refuses, naming `<file>: <key>: <reason>` and never the value: unknown keys, wrong types, plaintext secrets, unset `${VAR}`, empty `[im.*]` / `[mcp.servers.*]` / `[sources.*]` tables, and recognisable keys or literal `Authorization` headers.
+    - Text comes out canonical, with `${VAR}` references kept as written, plus its sha256. Relative paths resolve against the file that sets them. Every Q2 section has its keys, types and defaults defined here.
+  - **CLI**:
+    - New `config show` command.
+    - `run --config` / `mcp-server --config` are optional and repeatable. During the transition they still accept an old ablation name, given alone; a file with the same name is written `./full`.
+    - `--data-sources`, `--mcp-servers` and `--im` are removed; their contents come from `[sources.*]`, `[mcp]` (`file` or inline `servers`) and `[im.*]`.
+  - **Web**:
+    - `create_app(config=None)` means code defaults and reads no file (unit test uses a fake HOME).
+    - Each web run gets `--config <run_dir>/config/<name>.toml`: the server's config with its own data sources, no `[im.*]`, references unexpanded.
+    - Until 144, a form run adds a second `[layers]`-only file for the ablation it picked. Picking `full-old-skill` returns 400.
+
+  **Evidence (from this session)**
+  - `make check`: exit 0; 3573 passed, 3 skipped, 62 xfailed; basedpyright 0 errors; web 448 passed (`runs/143/check-3.txt`).
+  - `pytest tests/acceptance/test_config_load.py tests/acceptance/test_config_cli.py -v`: 38 PASSED, 0 xfail.
+  - Full non-integration acceptance suite: 417 passed, 62 xfailed (144/145/146/147/148), 0 XPASS, 0 failed.
+  - `git diff main...HEAD -- tests/acceptance tests/fixtures` is 131 deleted lines and 2 added lines. Both added lines replace an inline mark: `pytest.param("turn", marks=TICKET_143)` became `"turn"`, and `else TICKET_143` became `else ()`. `tests/fixtures` is unchanged.
+  - $0 real run, `HOME=<tmp>/home uv run data-agent config show --workspace <tmp>/ws` (exit 0). The keys not from defaults:
+    ```
+    models.my-model.api_key = "${MY_MODEL_API_KEY}"  # <tmp>/home/.data-agent/config.toml
+    roles.main = "my-model"  # <tmp>/home/.data-agent/config.toml
+    limits.max_budget_usd = 2.0  # <tmp>/home/.data-agent/config.toml
+    limits.effort = "high"  # <tmp>/ws/.data-agent/config.toml
+    sandbox.network = false  # policy        (the project file set it true)
+    sources.shop.path = "/private/tmp/.../ws/.data-agent/shop.duckdb"  # <tmp>/ws/...
+    policy.network = false  # policy
+    ```
+    With an unknown key: exit 2, stderr `data-agent config show: error: <tmp>/bad.toml: limits.max_budget: unknown key`.
+
+  **Reviews**
+  - **`da-review` (Codex):** 4 findings, all fixed in `4b7531e`, each with a test that failed first:
+    - P1: only DeepSeek-shaped keys were caught. It now also catches GitHub, Slack, Anthropic, OpenAI and AWS keys, private keys, `*api-key` headers, and `Authorization`/`Cookie` values without a reference.
+    - P2: IM `allowed_users` reached the bot unexpanded.
+    - P2: an unset `${VAR}` inside `allowed_users` crashed with a traceback instead of a config error.
+    - P2: empty entries were silently dropped.
+  - **`eng:code-review`:**
+    - Spec axis found nothing missing. It judged the `agent.py` change below to be within the ticket's intent (the Context names `agent.py:1621` as a place that has to change).
+    - Standards axis, fixed in `2c44022`: removed the now-dead `load_data_sources`/`dump_data_sources` and the duplicate `toml_string`; dropped a return value nobody used; one helper for section ordering and one for writing run config files; renamed confusing names; took the hard-coded `im` case out of the generic walker; updated stale docstrings.
+    - Not fixed, with reasons:
+      - `im.config.load_config(path, environ)` stays because the ticket pins that signature.
+      - Old ablation names on `--config` stay per Q8 until 146.
+      - `Leaf.kind` as a string, the tuple returned by `locks()`, and file size are judgement calls, left alone.
+  - **Found after the reviews, fixed in `322d38d`:**
+    - A model or source name with a dot (e.g. `DATA_AGENT_MODEL=gpt-4.1`) produced text that failed to reload with `models.gpt-4.1: unknown key`. That would have broken the data server and every web run. Keys now keep their parts, and dotted names round-trip; the original dotted test input is back.
+    - The form now refuses `full-old-skill`, which would otherwise have run the current Skills under that label.
+    - Two web tests now use a fake HOME so they don't read a real `~/.data-agent/config.toml`.
+
+  **Deviations and known limits**
+  - **`agent.py:1621`, one line outside May-edit.** The data server's `--config` is now `config.server_arg()`, a file of the effective config written to the run's temp directory. It had to change because `version.config` is now the file's stem (e.g. `product`), and the data server can't load that by name. 144/145/147/148 need to rebase over it.
+  - **README** still documents `--im`, `--data-sources` and `--mcp-servers`. It is outside Authority; `docs/setup.md` is updated.
+  - **`[limits]`** is shown by `config show` but has no effect until 144. `RunConfig` keeps the code-default caps, otherwise `test_the_command_line_wins_over_the_limits` would pass early.
+  - **For 144:** the loader already refuses a command-line value against `[policy]`, because 141's `test_a_command_line_value_against_the_policy_is_refused` requires it. Nothing feeds command-line values in yet, so 144 should not build this a second time.
+  - A form run's `version.config` is the picked ablation name until 144 drops the form's pick.
+
+  ## For the main session
+  1. **Integration tests I removed marks from but could not run** (no model env here): `test_seam_a_run_cli.py`, `test_chat_e2e.py`, `test_mcp_e2e.py`. Run `make test-integration` before merging.
+  2. **Smoke run.** Build `shop.duckdb` from `tests/fixtures/shop.sql`, then write `/tmp/143-smoke/product.toml`:
+     ```toml
+     [sources.shop]
+     kind = "duckdb"
+     path = "shop.duckdb"
+     ```
+     Run: `uv run data-agent run --type query --workspace /tmp/143-smoke/ws --config /tmp/143-smoke/product.toml --events-dir runs/143-smoke --task "How many orders are there?"`
+     It passes if the answer is right, the `version` event has `config: "product"`, and there is a `sql` event. The `sql` event shows the data server started from the temp config file.
+- 2026-11-27（主会话）：`agent.py:1621` 一行超出 May-edit，接受：Context 点名了这里要改（`version.config` 改成文件名后数据服务器按名字找不到）；Spec 审查也判在意图内。README 里旧参数的说明转给 144（下面）。
+- 2026-11-28（主会话）：合并前真实运行（服务器，`322d38d`）：冒烟通过（答案 37 与 DuckDB 一致；`version.config = "product"`；`sql` 事件；`ps` 看到数据服务器 `--config /tmp/data-agent-config-*/product.toml`，文件里没有 `api_key`，运行后已删；$0.0032 ×2）。集成测试 31 个：30 passed，1 failed（`test_seam_a_run_cli.py::test_dbt_model_built_with_correct_values`，模型建在 `da_run_*` 临时 schema、测试查 `main`；140 改默认 `scratch` 时漏了这个测试的 `run_agent`，不是本工单的问题，开 164 修）。花费约 $0.16。
+- 2026-11-28（主会话）：PR #150 CI 绿；Codex GitHub app 1 条 P2，核实属实。**退回（第 1 轮）：原因如下，在原分支 `worktree-143-config-loader` 上接着修**。
+  1. **`subtree` 按扁平字符串前缀匹配**（`src/data_agent/config.py:604-618`）：数据源 `shop` 和 `shop.archive` 同时存在时，查 `sources.shop` 也会匹配 `sources.shop.archive.*`；它的键段是 `["sources", "shop.archive", ...]`，没有哪段前缀等于 `sources.shop`，`next()` 抛 `StopIteration`，`web` 和用配置文件的 `run` 都起不来。改成按键段（表边界）匹配，不靠扁平字符串前缀；配一个修复前会失败的单元测试（`shop` 与 `shop.archive` 两个数据源都能取到、互不混入），同类检查 `[mcp.servers.*]`、`[models.*]`、`[im.*]` 等用 `subtree` 的地方。
